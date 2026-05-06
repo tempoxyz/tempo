@@ -88,27 +88,6 @@ def find-tempo-pids [] {
     ps | where name =~ "tempo" | where name !~ "tempo-bench" | get pid
 }
 
-# Signal a process, retrying through sudo for stale runner-owned processes.
-def signal-process [pid: int, signal: int] {
-    try {
-        kill -s $signal $pid
-    } catch { |e|
-        print $"  Warning: kill -s ($signal) ($pid) failed: ($e.msg). Retrying with sudo..."
-        sudo kill -s $signal $pid
-    }
-}
-
-def remove-reth-ipc [] {
-    if ("/tmp/reth.ipc" | path exists) {
-        try {
-            rm --force /tmp/reth.ipc
-        } catch { |e|
-            print $"  Warning: removing /tmp/reth.ipc failed: ($e.msg). Retrying with sudo..."
-            sudo rm -f /tmp/reth.ipc
-        }
-    }
-}
-
 # Initialize node with state bloat
 # 1. Run `tempo init` to create the database
 # 2. Generate state bloat binary file
@@ -663,7 +642,7 @@ def run-bench-single [
     print "  Stopping node..."
     let pids = (find-tempo-pids)
     for pid in $pids {
-        signal-process $pid 2
+        kill -s 2 $pid
     }
     # Wait for tempo processes to fully exit
     for pid in $pids {
@@ -675,7 +654,7 @@ def run-bench-single [
         }
         if $wait >= 30 {
             print $"  Warning: PID ($pid) did not exit, sending SIGKILL"
-            signal-process $pid 9
+            kill -s 9 $pid
             sleep 1sec
         }
     }
@@ -703,7 +682,9 @@ def run-bench-single [
     }
 
     # Remove stale IPC socket
-    remove-reth-ipc
+    if ("/tmp/reth.ipc" | path exists) {
+        rm --force /tmp/reth.ipc
+    }
 
     print $"=== Run ($run_label) complete ==="
 }
@@ -1105,13 +1086,13 @@ def "main kill" [
     if ($pids | length) > 0 {
         print $"Sending SIGINT to ($pids | length) tempo processes..."
         for pid in $pids {
-            signal-process $pid 2
+            kill -s 2 $pid
         }
     }
 
     # Remove stale IPC socket
     if $has_stale_ipc {
-        remove-reth-ipc
+        rm --force /tmp/reth.ipc
         print "Removed /tmp/reth.ipc"
     }
     print "Done."
@@ -2700,7 +2681,7 @@ tempo-precompiles = { path = '($tempo_root)/crates/precompiles' }
             print "Stopping instrumented node (SIGINT for profraw flush)..."
             let pids = (find-tempo-pids)
             for pid in $pids {
-                signal-process $pid 2
+                kill -s 2 $pid
             }
             sleep 3sec
             print "Node stopped."
