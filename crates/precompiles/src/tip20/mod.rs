@@ -1847,6 +1847,7 @@ pub(crate) mod tests {
                 .apply()?;
 
             // Pre-T5: caller is unchecked (preserves pre-TIP-1035 FeeAMM behavior).
+            StorageCtx.set_msg_sender(from);
             assert!(token.system_transfer_from(to, from, amount).is_ok());
             assert_eq!(
                 token.emitted_events().last().unwrap(),
@@ -1871,6 +1872,7 @@ pub(crate) mod tests {
                 .apply()?;
 
             // Listed precompile is allowed to invoke `system_transfer_from`.
+            StorageCtx.set_msg_sender(from);
             assert!(
                 token
                     .system_transfer_from(TIP_FEE_MANAGER_ADDRESS, from, amount)
