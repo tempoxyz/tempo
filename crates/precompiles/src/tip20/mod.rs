@@ -762,16 +762,31 @@ impl TIP20Token {
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool> {
         let to = Recipient::resolve(call.to)?;
-        self._transfer_from(msg_sender, call.from, &to, call.amount)?;
+        if self.storage.spec().is_t6() && (call.to == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS)
+        {
+            return Err(TIP1028EscrowError::escrow_address_reserved().into());
+        }
 
-        self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-            from: call.from,
-            to: call.to,
-            amount: call.amount,
-            memo: call.memo,
-        }))?;
-        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
-            self.emit_event(hop)?;
+        self.validate_transfer(call.from, &to)?;
+        self.consume_allowance(call.from, msg_sender, call.amount)?;
+
+        let transferred = self.transfer_or_escrow(
+            call.from,
+            &to,
+            call.amount,
+            InboundKind::TRANSFER,
+            call.memo,
+        )?;
+        if transferred {
+            self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: call.from,
+                to: call.to,
+                amount: call.amount,
+                memo: call.memo,
+            }))?;
+            if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+                self.emit_event(hop)?;
+            }
         }
         Ok(true)
     }
@@ -804,20 +819,6 @@ impl TIP20Token {
         Ok(true)
     }
 
-    fn _transfer_from(
-        &mut self,
-        msg_sender: Address,
-        from: Address,
-        to: &Recipient,
-        amount: U256,
-    ) -> Result<bool> {
-        self.validate_transfer(from, to)?;
-        self.consume_allowance(from, msg_sender, amount)?;
-        self._transfer(from, to, amount)?;
-
-        Ok(true)
-    }
-
     fn consume_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
         let allowed = self.get_allowance(owner, spender)?;
         if amount > allowed {
@@ -840,19 +841,31 @@ impl TIP20Token {
         call: ITIP20::transferWithMemoCall,
     ) -> Result<()> {
         let to = Recipient::resolve(call.to)?;
+        if self.storage.spec().is_t6() && (call.to == ESCROW_ADDRESS || to.target == ESCROW_ADDRESS)
+        {
+            return Err(TIP1028EscrowError::escrow_address_reserved().into());
+        }
+
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        self._transfer(msg_sender, &to, call.amount)?;
-
-        self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-            from: msg_sender,
-            to: call.to,
-            amount: call.amount,
-            memo: call.memo,
-        }))?;
-        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
-            self.emit_event(hop)?;
+        let transferred = self.transfer_or_escrow(
+            msg_sender,
+            &to,
+            call.amount,
+            InboundKind::TRANSFER,
+            call.memo,
+        )?;
+        if transferred {
+            self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+                from: msg_sender,
+                to: call.to,
+                amount: call.amount,
+                memo: call.memo,
+            }))?;
+            if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+                self.emit_event(hop)?;
+            }
         }
         Ok(())
     }
