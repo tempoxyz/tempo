@@ -68,8 +68,8 @@ contract TIP20ChannelEscrowTest is Test {
     address public payer;
     uint256 public payerKey;
     address public payee;
-    bytes32 internal lastOpenTxHash;
-    uint256 internal openTxCounter;
+    bytes32 internal lastExpiringNonceHash;
+    uint256 internal expiringNonceCounter;
 
     uint96 internal constant DEPOSIT = 1_000_000;
     bytes32 internal constant SALT = bytes32(uint256(1));
@@ -90,13 +90,13 @@ contract TIP20ChannelEscrowTest is Test {
     }
 
     function _openChannel() internal returns (bytes32) {
-        _prepareNextOpenTxHash();
+        _prepareNextExpiringNonceHash();
         vm.prank(payer);
         return channel.open(payee, address(0), address(token), DEPOSIT, SALT, address(0));
     }
 
     function _descriptor() internal view returns (ITIP20ChannelEscrow.ChannelDescriptor memory) {
-        return _descriptor(SALT, address(0), lastOpenTxHash);
+        return _descriptor(SALT, address(0), lastExpiringNonceHash);
     }
 
     function _descriptor(
@@ -107,26 +107,26 @@ contract TIP20ChannelEscrowTest is Test {
         view
         returns (ITIP20ChannelEscrow.ChannelDescriptor memory)
     {
-        return _descriptor(salt, authorizedSigner, lastOpenTxHash);
+        return _descriptor(salt, authorizedSigner, lastExpiringNonceHash);
     }
 
     function _descriptor(
         bytes32 salt,
         address authorizedSigner,
-        bytes32 openTxHash
+        bytes32 expiringNonceHash
     )
         internal
         view
         returns (ITIP20ChannelEscrow.ChannelDescriptor memory)
     {
-        return _descriptorWithOperator(salt, address(0), authorizedSigner, openTxHash);
+        return _descriptorWithOperator(salt, address(0), authorizedSigner, expiringNonceHash);
     }
 
     function _descriptorWithOperator(
         bytes32 salt,
         address operator,
         address authorizedSigner,
-        bytes32 openTxHash
+        bytes32 expiringNonceHash
     )
         internal
         view
@@ -139,14 +139,14 @@ contract TIP20ChannelEscrowTest is Test {
             token: address(token),
             salt: salt,
             authorizedSigner: authorizedSigner,
-            openTxHash: openTxHash
+            expiringNonceHash: expiringNonceHash
         });
     }
 
-    function _prepareNextOpenTxHash() internal returns (bytes32 openTxHash) {
-        openTxHash = keccak256(abi.encodePacked("open", ++openTxCounter));
-        channel.setOpenTxHashForTest(openTxHash);
-        lastOpenTxHash = openTxHash;
+    function _prepareNextExpiringNonceHash() internal returns (bytes32 expiringNonceHash) {
+        expiringNonceHash = keccak256(abi.encodePacked("open", ++expiringNonceCounter));
+        channel.setExpiringNonceHashForTest(expiringNonceHash);
+        lastExpiringNonceHash = expiringNonceHash;
     }
 
     function _channelStateSlot(bytes32 channelId) internal pure returns (bytes32) {
@@ -172,7 +172,7 @@ contract TIP20ChannelEscrowTest is Test {
     }
 
     function test_open_success() public {
-        bytes32 openTxHash = _prepareNextOpenTxHash();
+        bytes32 expiringNonceHash = _prepareNextExpiringNonceHash();
 
         vm.prank(payer);
         bytes32 channelId =
@@ -184,7 +184,7 @@ contract TIP20ChannelEscrowTest is Test {
         assertEq(ch.descriptor.operator, address(0));
         assertEq(ch.descriptor.token, address(token));
         assertEq(ch.descriptor.authorizedSigner, address(0));
-        assertEq(ch.descriptor.openTxHash, openTxHash);
+        assertEq(ch.descriptor.expiringNonceHash, expiringNonceHash);
         assertEq(ch.state.settled, 0);
         assertEq(ch.state.deposit, DEPOSIT);
         assertEq(ch.state.closeData, 0);
@@ -192,53 +192,53 @@ contract TIP20ChannelEscrowTest is Test {
     }
 
     function test_open_revert_zeroPayee() public {
-        _prepareNextOpenTxHash();
+        _prepareNextExpiringNonceHash();
         vm.prank(payer);
         vm.expectRevert(ITIP20ChannelEscrow.InvalidPayee.selector);
         channel.open(address(0), address(0), address(token), DEPOSIT, SALT, address(0));
     }
 
     function test_open_revert_zeroToken() public {
-        _prepareNextOpenTxHash();
+        _prepareNextExpiringNonceHash();
         vm.prank(payer);
         vm.expectRevert(ITIP20ChannelEscrow.InvalidToken.selector);
         channel.open(payee, address(0), address(0), DEPOSIT, SALT, address(0));
     }
 
     function test_open_revert_zeroDeposit() public {
-        _prepareNextOpenTxHash();
+        _prepareNextExpiringNonceHash();
         vm.prank(payer);
         vm.expectRevert(ITIP20ChannelEscrow.ZeroDeposit.selector);
         channel.open(payee, address(0), address(token), 0, SALT, address(0));
     }
 
-    function test_open_same_descriptor_uses_distinct_open_tx_hashes() public {
+    function test_open_same_descriptor_uses_distinct_expiring_nonce_hashes() public {
         bytes32 channelId1 = _openChannel();
-        bytes32 openTxHash1 = lastOpenTxHash;
+        bytes32 expiringNonceHash1 = lastExpiringNonceHash;
 
         bytes32 channelId2 = _openChannel();
-        bytes32 openTxHash2 = lastOpenTxHash;
+        bytes32 expiringNonceHash2 = lastExpiringNonceHash;
 
-        assertNotEq(openTxHash1, openTxHash2);
+        assertNotEq(expiringNonceHash1, expiringNonceHash2);
         assertNotEq(channelId1, channelId2);
     }
 
-    function test_open_allows_distinct_channel_ids_with_same_open_tx_hash() public {
-        bytes32 sharedOpenTxHash = keccak256("same top-level tx");
+    function test_open_allows_distinct_channel_ids_with_same_expiring_nonce_hash() public {
+        bytes32 sharedExpiringNonceHash = keccak256("same top-level tx");
 
-        channel.setOpenTxHashForTest(sharedOpenTxHash);
+        channel.setExpiringNonceHashForTest(sharedExpiringNonceHash);
         vm.prank(payer);
         bytes32 channelId1 =
             channel.open(payee, address(0), address(token), DEPOSIT, SALT, address(0));
 
-        channel.setOpenTxHashForTest(sharedOpenTxHash);
+        channel.setExpiringNonceHashForTest(sharedExpiringNonceHash);
         vm.prank(payer);
         bytes32 channelId2 = channel.open(
             payee, address(0), address(token), DEPOSIT, bytes32(uint256(2)), address(0)
         );
 
-        // Same top-level transaction means the same openTxHash, but distinct descriptors still
-        // derive independent channel IDs and are safe to open atomically in one AA batch.
+        // Same top-level transaction means the same expiringNonceHash, but distinct descriptors
+        // still derive independent channel IDs and are safe to open atomically in one AA batch.
         assertNotEq(channelId1, channelId2);
         assertEq(channel.getChannelState(channelId1).deposit, DEPOSIT);
         assertEq(channel.getChannelState(channelId2).deposit, DEPOSIT);
@@ -277,7 +277,7 @@ contract TIP20ChannelEscrowTest is Test {
     function test_authorizedSigner_settleSuccess() public {
         (address delegateSigner, uint256 delegateKey) = makeAddrAndKey("delegate");
 
-        _prepareNextOpenTxHash();
+        _prepareNextExpiringNonceHash();
         vm.prank(payer);
         bytes32 channelId =
             channel.open(payee, address(0), address(token), DEPOSIT, SALT, delegateSigner);
@@ -293,7 +293,7 @@ contract TIP20ChannelEscrowTest is Test {
     function test_operator_settleSuccess() public {
         address operator = makeAddr("operator");
 
-        _prepareNextOpenTxHash();
+        _prepareNextExpiringNonceHash();
         vm.prank(payer);
         bytes32 channelId = channel.open(payee, operator, address(token), DEPOSIT, SALT, address(0));
 
@@ -301,7 +301,7 @@ contract TIP20ChannelEscrowTest is Test {
 
         vm.prank(operator);
         channel.settle(
-            _descriptorWithOperator(SALT, operator, address(0), lastOpenTxHash), 500_000, sig
+            _descriptorWithOperator(SALT, operator, address(0), lastExpiringNonceHash), 500_000, sig
         );
 
         assertEq(channel.getChannelState(channelId).settled, 500_000);
@@ -415,26 +415,26 @@ contract TIP20ChannelEscrowTest is Test {
         channel.close(_descriptor(), 300_000, 200_000, "");
     }
 
-    function test_close_clears_state_and_allows_reopen_with_new_open_tx_hash() public {
+    function test_close_clears_state_and_allows_reopen_with_new_expiring_nonce_hash() public {
         bytes32 channelId = _openChannel();
         bytes memory sig = _signVoucher(channelId, 600_000);
-        bytes32 originalOpenTxHash = lastOpenTxHash;
+        bytes32 originalExpiringNonceHash = lastExpiringNonceHash;
 
         vm.prank(payee);
         channel.close(_descriptor(), 600_000, 600_000, sig);
 
         assertEq(channel.getChannelState(channelId).closeData, 0);
 
-        // Reusing the original openTxHash approximates a later call in the same top-level AA batch.
+        // Reusing the original expiringNonceHash approximates a later call in the same top-level AA batch.
         // The persistent channel slot has been deleted by close, so the per-transaction opened-ID
         // guard is what prevents reopening the same channel ID before the transaction ends.
-        channel.setOpenTxHashForTest(originalOpenTxHash);
+        channel.setExpiringNonceHashForTest(originalExpiringNonceHash);
         vm.prank(payer);
         vm.expectRevert(ITIP20ChannelEscrow.ChannelAlreadyExists.selector);
         channel.open(payee, address(0), address(token), DEPOSIT, SALT, address(0));
 
-        // A later transaction has a fresh openTxHash, so the same logical descriptor derives a new
-        // channel ID and may be opened after the previous channel terminally closed.
+        // A later transaction has a fresh expiringNonceHash, so the same logical descriptor derives
+        // a new channel ID and may be opened after the previous channel terminally closed.
         bytes32 reopenedChannelId = _openChannel();
         assertNotEq(reopenedChannelId, channelId);
     }
@@ -457,9 +457,9 @@ contract TIP20ChannelEscrowTest is Test {
 
     function test_getChannelStatesBatch_success() public {
         bytes32 channelId1 = _openChannel();
-        bytes32 channel1OpenTxHash = lastOpenTxHash;
+        bytes32 channel1ExpiringNonceHash = lastExpiringNonceHash;
 
-        _prepareNextOpenTxHash();
+        _prepareNextExpiringNonceHash();
         vm.prank(payer);
         bytes32 channelId2 = channel.open(
             payee, address(0), address(token), DEPOSIT, bytes32(uint256(2)), address(0)
@@ -467,7 +467,7 @@ contract TIP20ChannelEscrowTest is Test {
 
         bytes memory sig = _signVoucher(channelId1, 400_000);
         vm.prank(payee);
-        channel.settle(_descriptor(SALT, address(0), channel1OpenTxHash), 400_000, sig);
+        channel.settle(_descriptor(SALT, address(0), channel1ExpiringNonceHash), 400_000, sig);
 
         bytes32[] memory ids = new bytes32[](2);
         ids[0] = channelId1;
@@ -481,13 +481,13 @@ contract TIP20ChannelEscrowTest is Test {
 
     function test_computeChannelId_usesFixedPrecompileAddress() public {
         TIP20ChannelEscrow other = new TIP20ChannelEscrow();
-        bytes32 openTxHash = keccak256("openTxHash");
+        bytes32 expiringNonceHash = keccak256("expiringNonceHash");
 
         bytes32 id1 = channel.computeChannelId(
-            payer, payee, address(0), address(token), SALT, address(0), openTxHash
+            payer, payee, address(0), address(token), SALT, address(0), expiringNonceHash
         );
         bytes32 id2 = other.computeChannelId(
-            payer, payee, address(0), address(token), SALT, address(0), openTxHash
+            payer, payee, address(0), address(token), SALT, address(0), expiringNonceHash
         );
 
         assertEq(id1, id2);
