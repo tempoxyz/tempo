@@ -1,5 +1,5 @@
 use super::tt_signed::AASigned;
-use crate::{TempoTransaction, subblock::PartialValidatorKey};
+use crate::{TempoAddressExt, TempoTransaction, subblock::PartialValidatorKey};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
     TxLegacy, TxType, TypedTransaction,
@@ -7,13 +7,14 @@ use alloy_consensus::{
     error::{UnsupportedTransactionType, ValueError},
     transaction::Either,
 };
-use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, hex};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
+use alloy_rlp::Encodable;
 use core::fmt;
 use tempo_contracts::precompiles::ITIP20;
 
-/// TIP20 payment address prefix (12 bytes for payment classification)
-/// Same as TIP20_TOKEN_PREFIX
-pub const TIP20_PAYMENT_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
+/// Maximum RLP-encoded size of a `key_authorization` permitted in a payment transaction
+/// (TIP-1045). Comfortably fits realistic provisioning payloads with limits and scopes.
+pub const KEY_AUTHORIZATION_MAX_RLP_LEN: usize = 1024;
 
 /// Fake signature for Tempo system transactions.
 pub const TEMPO_SYSTEM_TX_SIGNATURE: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
@@ -168,7 +169,7 @@ impl TempoTxEnvelope {
     ///
     /// # NOTE
     /// Consensus-level classifier, used during block validation, against `general_gas_limit`.
-    /// See [`is_payment_v2`](Self::is_payment_v2) for the stricter builder-level variant.
+    /// See [`is_payment_v2`](Self::is_payment_v2) for the stricter T5+ variant.
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v1(&self) -> bool {
@@ -181,17 +182,19 @@ impl TempoTxEnvelope {
         }
     }
 
-    /// Strict [TIP-20 payment]: `0x20c0` prefix, recognized calldata, and NO gas-bearing sidecars.
+    /// Strict [TIP-20 payment] (TIP-1045): every call matches the payment call allow-list,
+    /// `access_list` and authorization lists are empty, and key authorization is bounded.
     ///
     /// Like [`is_payment_v1`](Self::is_payment_v1), but additionally requires:
     /// - calldata to match a recognized payment selector with exact ABI-encoded length.
-    /// - NO access lists or authorization lists are attached.
-    /// - AA transactions have at least one call.
+    /// - `access_list` is empty.
+    /// - `authorization_list` (EIP-7702) is empty.
+    /// - For AA: `calls` is non-empty, `tempo_authorization_list` is empty, and any
+    ///   `key_authorization` has RLP-encoded length `<= KEY_AUTHORIZATION_MAX_RLP_LEN`.
     ///
     /// # NOTE
-    /// Builder-level classifier, used by the transaction pool and payload builder to prevent DoS of
-    /// the payment lane. NOT enforced during block validation — a future TIP will enshrine this
-    /// stricter classification at the protocol level.
+    /// Used by the transaction pool and payload builder to prevent DoS of the payment lane,
+    /// and enshrined at the consensus level at the T5 hardfork.
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment_v2(&self) -> bool {
@@ -214,13 +217,16 @@ impl TempoTxEnvelope {
             Self::AA(tx) => {
                 let tx = tx.tx();
                 !tx.calls.is_empty()
-                    && tx.key_authorization.is_none()
                     && tx.access_list.is_empty()
                     && tx.tempo_authorization_list.is_empty()
                     && tx
                         .calls
                         .iter()
                         .all(|call| is_tip20_payment(call.to.to(), &call.input))
+                    && tx
+                        .key_authorization
+                        .as_ref()
+                        .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
             }
         }
     }
@@ -475,7 +481,7 @@ impl From<TempoTransaction> for TempoTypedTransaction {
 /// Returns `true` if `to` has the TIP-20 payment prefix.
 #[inline]
 fn is_tip20_call(to: Option<&Address>) -> bool {
-    to.is_some_and(|to| to.starts_with(&TIP20_PAYMENT_PREFIX))
+    to.is_some_and(|to| to.is_tip20())
 }
 
 /// Returns `true` if `to` has the TIP-20 payment prefix and `input` is recognized payment
@@ -850,8 +856,9 @@ mod tests {
         );
     }
 
-    #[test]
-    fn test_payment_v2_aa_rejects_key_authorization() {
+    fn aa_with_key_authorization(
+        limits: Option<Vec<crate::transaction::key_authorization::TokenLimit>>,
+    ) -> TempoTxEnvelope {
         let calldata = ITIP20::transferCall {
             to: Address::random(),
             amount: U256::from(1),
@@ -870,21 +877,57 @@ mod tests {
                     key_type: crate::SignatureType::Secp256k1,
                     key_id: Address::random(),
                     expiry: None,
-                    limits: None,
+                    limits,
                     allowed_calls: None,
                 },
                 signature: PrimitiveSignature::Secp256k1(Signature::test_signature()),
             }),
             ..Default::default()
         };
-        let envelope = TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()));
+        TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()))
+    }
+
+    #[test]
+    fn test_payment_v2_aa_accepts_small_key_authorization() {
+        // TIP-1045: key_authorization is allowed in payment txs as long as it's bounded.
+        let envelope = aa_with_key_authorization(None);
+        assert!(envelope.is_payment_v1());
+        assert!(
+            envelope.is_payment_v2(),
+            "V2 must accept AA tx with small key_authorization"
+        );
+    }
+
+    #[test]
+    fn test_payment_v2_aa_rejects_oversized_key_authorization() {
+        use crate::transaction::key_authorization::TokenLimit;
+        // Pad `limits` with enough entries to push the RLP encoding past the 1 KB cap.
+        let limits = (0..32)
+            .map(|i| TokenLimit {
+                token: Address::repeat_byte(i as u8),
+                limit: U256::from(u128::MAX),
+                period: 1,
+            })
+            .collect::<Vec<_>>();
+        let envelope = aa_with_key_authorization(Some(limits));
+        let key_authorization = envelope
+            .as_aa()
+            .unwrap()
+            .tx()
+            .key_authorization
+            .as_ref()
+            .unwrap();
+        assert!(
+            key_authorization.length() > KEY_AUTHORIZATION_MAX_RLP_LEN,
+            "test fixture must exceed the key_authorization size cap"
+        );
         assert!(
             envelope.is_payment_v1(),
-            "V1 ignores side-effect fields (backwards compat)"
+            "V1 ignores key_authorization size"
         );
         assert!(
             !envelope.is_payment_v2(),
-            "V2 must reject AA tx with key_authorization"
+            "V2 must reject AA tx with key_authorization larger than {KEY_AUTHORIZATION_MAX_RLP_LEN} bytes",
         );
     }
 
