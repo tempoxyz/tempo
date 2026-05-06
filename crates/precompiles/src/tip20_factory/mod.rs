@@ -484,8 +484,16 @@ mod tests {
 
     #[test]
     fn test_create_token_with_logo() -> eyre::Result<()> {
+        use alloy::sol_types::SolEvent;
+        use tempo_contracts::precompiles::ITIP20;
+
         let mut storage = HashMapStorageProvider::new(1);
         let sender = Address::random();
+        // Use a distinct `admin` to lock in the spec-mandated
+        // `updater = msg.sender` semantics for the deploy-time
+        // `LogoURIUpdated` event (TIP-1026).
+        let admin = Address::random();
+        assert_ne!(sender, admin);
 
         StorageCtx::enter(&mut storage, || {
             let mut factory = TIP20Setup::factory()?;
@@ -499,7 +507,7 @@ mod tests {
                 symbol: "LOGO".to_string(),
                 currency: "USD".to_string(),
                 quoteToken: path_usd.address(),
-                admin: sender,
+                admin,
                 salt,
                 logoURI: logo_uri.clone(),
             };
@@ -513,6 +521,19 @@ mod tests {
             // logoURI is stored on the new token
             let token = TIP20Token::from_address(token_addr)?;
             assert_eq!(token.logo_uri()?, logo_uri);
+
+            // The deploy-time LogoURIUpdated event uses `updater = msg.sender`
+            // per TIP-1026.
+            let logo_topic = ITIP20::LogoURIUpdated::SIGNATURE_HASH;
+            let logo_event = token
+                .emitted_events()
+                .iter()
+                .find(|e| e.topics().first() == Some(&logo_topic))
+                .expect("LogoURIUpdated event missing")
+                .clone();
+            let decoded = ITIP20::LogoURIUpdated::decode_log_data(&logo_event).expect("decode log");
+            assert_eq!(decoded.updater, sender);
+            assert_eq!(decoded.newLogoURI, logo_uri);
 
             // Factory emits TokenCreated (unchanged signature)
             factory.assert_emitted_events(vec![TIP20FactoryEvent::TokenCreated(
