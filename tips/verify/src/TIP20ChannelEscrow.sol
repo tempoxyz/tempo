@@ -28,7 +28,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
     bytes32 internal constant _VERSION_HASH = keccak256("1");
 
     mapping(bytes32 => uint256) internal channelStates;
-    bytes32 internal _openTxHashContext;
+    bytes32 internal _expiringNonceHashContext;
 
     // Reference-contract-only approximation of the precompile's transient per-transaction guard.
     // The enshrined precompile should track `openedThisTx[channelId]` in transient storage and
@@ -38,15 +38,16 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
     // persistent state slot.
     //
     // This Solidity reference uses persistent storage because tests cannot model precompile
-    // transient storage directly. Since `channelId` includes `openTxHash`, a real cross-transaction
-    // reopen has a different ID and is not blocked by this persistent approximation.
+    // transient storage directly. Since `channelId` includes `expiringNonceHash`, a real
+    // cross-transaction reopen has a different ID and is not blocked by this persistent
+    // approximation.
     mapping(bytes32 => bool) internal _openedChannelIdsForTest;
 
-    error OpenTxHashNotSet();
+    error ExpiringNonceHashNotSet();
 
-    /// @dev Reference-contract-only hook. The precompile derives this from the enclosing tx hash.
-    function setOpenTxHashForTest(bytes32 openTxHash) external {
-        _openTxHashContext = openTxHash;
+    /// @dev Reference-contract-only hook. The precompile derives this from the enclosing tx's expiring nonce hash.
+    function setExpiringNonceHashForTest(bytes32 expiringNonceHash) external {
+        _expiringNonceHashContext = expiringNonceHash;
     }
 
     function open(
@@ -64,9 +65,9 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         if (token == address(0)) revert InvalidToken();
         if (deposit == 0) revert ZeroDeposit();
 
-        bytes32 openTxHash = _consumeOpenTxHash();
+        bytes32 expiringNonceHash = _consumeExpiringNonceHash();
         channelId = computeChannelId(
-            msg.sender, payee, operator, token, salt, authorizedSigner, openTxHash
+            msg.sender, payee, operator, token, salt, authorizedSigner, expiringNonceHash
         );
 
         // Reject ordinary duplicate opens while the channel is still active.
@@ -74,8 +75,8 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
         // Also reject same-top-level-transaction reopens of a channel ID that was opened earlier
         // and then terminally closed or withdrawn. Without this guard, terminal deletion would make
-        // the persistent state slot look unused again even though the enclosing tx hash, and thus
-        // the derived channel ID, is unchanged for later calls in the same AA batch.
+        // the persistent state slot look unused again even though the enclosing expiring nonce
+        // hash, and thus the derived channel ID, is unchanged for later calls in the same AA batch.
         if (_openedChannelIdsForTest[channelId]) revert ChannelAlreadyExists();
 
         channelStates[channelId] =
@@ -98,7 +99,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
             token,
             authorizedSigner,
             salt,
-            openTxHash,
+            expiringNonceHash,
             deposit
         );
     }
@@ -261,7 +262,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
             token: descriptor.token,
             salt: descriptor.salt,
             authorizedSigner: descriptor.authorizedSigner,
-            openTxHash: descriptor.openTxHash
+            expiringNonceHash: descriptor.expiringNonceHash
         });
         channel.state = _decodeChannelState(channelStates[_channelId(descriptor)]);
     }
@@ -290,7 +291,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         address token,
         bytes32 salt,
         address authorizedSigner,
-        bytes32 openTxHash
+        bytes32 expiringNonceHash
     )
         public
         view
@@ -304,7 +305,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
                 token,
                 salt,
                 authorizedSigner,
-                openTxHash,
+                expiringNonceHash,
                 TIP20_CHANNEL_ESCROW,
                 block.chainid
             )
@@ -335,7 +336,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
             descriptor.token,
             descriptor.salt,
             descriptor.authorizedSigner,
-            descriptor.openTxHash
+            descriptor.expiringNonceHash
         );
     }
 
@@ -417,10 +418,10 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         return keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
     }
 
-    function _consumeOpenTxHash() internal returns (bytes32 openTxHash) {
-        openTxHash = _openTxHashContext;
-        if (openTxHash == bytes32(0)) revert OpenTxHashNotSet();
-        delete _openTxHashContext;
+    function _consumeExpiringNonceHash() internal returns (bytes32 expiringNonceHash) {
+        expiringNonceHash = _expiringNonceHashContext;
+        if (expiringNonceHash == bytes32(0)) revert ExpiringNonceHashNotSet();
+        delete _expiringNonceHashContext;
     }
 
 }

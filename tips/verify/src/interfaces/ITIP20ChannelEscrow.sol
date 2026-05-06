@@ -12,7 +12,7 @@ interface ITIP20ChannelEscrow {
         address token;
         bytes32 salt;
         address authorizedSigner;
-        bytes32 openTxHash;
+        bytes32 expiringNonceHash;
     }
 
     struct ChannelState {
@@ -80,7 +80,7 @@ interface ITIP20ChannelEscrow {
         address token,
         bytes32 salt,
         address authorizedSigner,
-        bytes32 openTxHash
+        bytes32 expiringNonceHash
     )
         external
         view
@@ -104,7 +104,7 @@ interface ITIP20ChannelEscrow {
         address token,
         address authorizedSigner,
         bytes32 salt,
-        bytes32 openTxHash,
+        bytes32 expiringNonceHash,
         uint96 deposit
     );
 
