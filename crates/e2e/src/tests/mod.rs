@@ -7,6 +7,7 @@ mod backfill;
 mod consensus_rpc;
 mod dkg;
 mod fee_recipient;
+mod follow;
 mod linkage;
 mod metrics;
 mod migration_from_v3_to_v4;

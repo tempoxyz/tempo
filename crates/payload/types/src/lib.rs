@@ -47,6 +47,14 @@ impl TempoBuiltPayload {
             executed_block,
         }
     }
+
+    /// Converts the built payload into [`TempoExecutionData`].
+    pub fn into_execution_data(self) -> TempoExecutionData {
+        TempoExecutionData {
+            block: Arc::new(self.inner.block().clone()),
+            validator_set: None,
+        }
+    }
 }
 
 impl BuiltPayload for TempoBuiltPayload {
@@ -125,6 +133,12 @@ impl ExecutionPayload for TempoExecutionData {
 
     fn block_access_list(&self) -> Option<&alloy_primitives::Bytes> {
         None
+    }
+}
+
+impl From<TempoBuiltPayload> for TempoExecutionData {
+    fn from(value: TempoBuiltPayload) -> Self {
+        value.into_execution_data()
     }
 }
 

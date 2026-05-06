@@ -20,7 +20,7 @@ use std::{
     fmt::Debug,
     sync::{Arc, OnceLock},
 };
-use tempo_precompiles::{DEFAULT_FEE_TOKEN, nonce::NonceManager};
+use tempo_precompiles::{DEFAULT_FEE_TOKEN, nonce::NonceManager, tip20::TIP20Token};
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 use thiserror::Error;
@@ -51,6 +51,11 @@ pub struct TempoPooledTransaction {
     /// Used by `keychain_subject()` so pool maintenance matches against the same token
     /// that was validated without requiring state access.
     resolved_fee_token: OnceLock<Address>,
+    /// Cached TIP20 balance storage slot for the fee payer.
+    ///
+    /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
+    /// can check if the fee payer's balance was modified without recomputing the keccak.
+    fee_balance_slot: OnceLock<Option<(Address, U256)>>,
 }
 
 impl TempoPooledTransaction {
@@ -79,6 +84,7 @@ impl TempoPooledTransaction {
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
+            fee_balance_slot: OnceLock::new(),
         }
     }
 
@@ -221,6 +227,19 @@ impl TempoPooledTransaction {
     /// Returns the resolved fee token cached during validation, if available.
     pub fn resolved_fee_token(&self) -> Option<Address> {
         self.resolved_fee_token.get().copied()
+    }
+
+    /// Returns the `(fee_token, balance_slot)` pair for this transaction's fee payer,
+    /// lazily computed and cached on first access.
+    pub fn fee_balance_slot(&self) -> Option<(Address, U256)> {
+        *self.fee_balance_slot.get_or_init(|| {
+            let fee_token = self
+                .resolved_fee_token()
+                .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
+            let fee_payer = self.inner().fee_payer(self.sender()).ok()?;
+            let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
+            Some((fee_token, slot))
+        })
     }
 
     /// Returns the expiring nonce hash for AA expiring nonce transactions.

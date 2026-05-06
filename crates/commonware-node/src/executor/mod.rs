@@ -1,5 +1,8 @@
 //! The executor is sending fork-choice-updates to the execution layer.
+use std::sync::Arc;
+
 use commonware_consensus::types::Height;
+use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, Metrics, Pacer, Spawner};
 
 mod actor;
@@ -27,7 +30,7 @@ where
 pub(crate) struct Config {
     /// A handle to the execution node layer. Used to forward finalized blocks
     /// and to update the canonical chain by sending forkchoice updates.
-    pub(crate) execution_node: TempoFullNode,
+    pub(crate) execution_node: Arc<TempoFullNode>,
 
     /// The last finalized height according to the consensus layer.
     /// If on startup there is a mismatch between the execution layer and the
@@ -41,4 +44,8 @@ pub(crate) struct Config {
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer.
     pub(crate) fcu_heartbeat_interval: std::time::Duration,
+
+    /// The node's ed25519 public key if the node is participating in
+    /// consensus. Not set if not, for example for followers.
+    pub(crate) public_key: Option<PublicKey>,
 }
