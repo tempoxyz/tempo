@@ -57,6 +57,15 @@ pub const MAX_LOGO_URI_BYTES: usize = 256;
 /// responsibility — see the spec's "Security Considerations" section.
 ///
 /// Schemes are matched ASCII-case-insensitively per RFC 3986 §3.1.
+///
+/// # Consensus-critical
+///
+/// This list is part of state-transition validity: a `setLogoURI` /
+/// `createTokenWithLogo` call succeeds or reverts depending on whether the
+/// scheme is present here. **Any addition or removal must be gated behind a
+/// new hardfork** so historical replay continues to produce identical
+/// receipts; mutating this constant in place would silently change the
+/// validity of past blocks.
 pub const ALLOWED_LOGO_URI_SCHEMES: &[&str] = &["https", "http", "ipfs", "data"];
 
 /// Validates a logo URI against the TIP-1026 protocol rules:
@@ -360,10 +369,24 @@ impl TIP20Token {
     /// Internal helper: runs [`validate_logo_uri`] (length cap + scheme allowlist),
     /// writes the slot, and emits `LogoURIUpdated`.
     ///
-    /// Used by `set_logo_uri` (after role check) and by the factory at token creation
-    /// time (skipping the role check, since admin role hasn't been used yet by the new
-    /// token's caller). The `updater` field is set verbatim — callers are responsible
-    /// for choosing the appropriate value.
+    /// # Authorization
+    ///
+    /// **This function performs NO role check.** It is `pub(crate)` precisely
+    /// because the factory needs to set the URI on a brand-new token where
+    /// the calling factory address is not — and must not be — in the new
+    /// token's `RolesAuth`, so the normal `DEFAULT_ADMIN_ROLE` check would
+    /// (correctly) reject it. Do not "fix" this by calling `check_role` here:
+    /// that would break `createTokenWithLogo`. Any new caller MUST perform
+    /// its own authorization upstream (as `set_logo_uri` does) or have an
+    /// equivalent justification (as the factory does at deploy time).
+    ///
+    /// # `updater`
+    ///
+    /// The `updater` field is written verbatim into the `LogoURIUpdated`
+    /// event. Callers are responsible for choosing the correct value
+    /// (`msg_sender` for `setLogoURI`, the original transaction sender for
+    /// the factory's deploy-time emission). It is intentionally not derived
+    /// from any internal state here.
     pub(crate) fn write_logo_uri(&mut self, updater: Address, new_logo_uri: String) -> Result<()> {
         validate_logo_uri(&new_logo_uri)?;
 
