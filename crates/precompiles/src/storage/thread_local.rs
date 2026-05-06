@@ -202,6 +202,12 @@ impl StorageCtx {
         Self::with_storage(|s| s.spec())
     }
 
+    /// Mirrors `CfgEnv::enable_amsterdam_eip8037`. Used by precompiles to gate the TIP-1016
+    /// regular/state gas split independently of the active hardfork.
+    pub fn amsterdam_eip8037_enabled(&self) -> bool {
+        Self::with_storage(|s| s.amsterdam_eip8037_enabled())
+    }
+
     /// Returns whether the current call context is static.
     pub fn is_static(&self) -> bool {
         Self::with_storage(|s| s.is_static())
@@ -467,6 +473,11 @@ impl StorageCtx {
     /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
     pub fn counter_sstore(&self) -> u64 {
         self.as_hashmap().counter_sstore()
+    }
+
+    /// NOTE: assumes storage tests always use the `HashMapStorageProvider`
+    pub fn reset_counters(&mut self) {
+        self.as_hashmap().reset_counters()
     }
 
     /// Checks if a contract at the given address has bytecode deployed.

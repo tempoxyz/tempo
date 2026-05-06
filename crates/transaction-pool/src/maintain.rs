@@ -13,6 +13,7 @@ use alloy_primitives::{
 };
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
+use itertools::{Either, Itertools};
 use reth_chainspec::ChainSpecProvider;
 use reth_primitives_traits::AlloyBlockHeader;
 use reth_provider::{CanonStateNotification, CanonStateSubscriptions, Chain, HeaderProvider};
@@ -76,13 +77,13 @@ pub struct TempoPoolUpdates {
     /// We only track the debited `from` account from TIP20 `Transfer` logs because credits to the
     /// `to` account cannot make an already-admitted transaction newly invalid.
     pub fee_balance_changes: AddressMap<HashSet<Address>>,
-    /// Keychain transactions that were included in the block, decrementing spending limits.
+    /// Spending-limit spends emitted by the account keychain during execution.
     ///
-    /// We record which (account, key_id, fee_token) combos had their limits decremented by
-    /// included txs. During eviction, we re-read the remaining limit from state for these
-    /// combos and compare against pending tx costs. This is needed because the pool only
-    /// monitors `SpendingLimitUpdated` events (from `update_spending_limit()`), but doesn't
-    /// account for actual spends (from `verify_and_update_spending()` during execution).
+    /// We record the exact `(account, key_id, token)` triples emitted by `AccessKeySpend`
+    /// events. During eviction, the pool re-reads the remaining limit from state for these
+    /// triples and compares against pending tx fee costs. This keeps maintenance aligned
+    /// with the runtime's actual spending-limit decrements instead of inferring them from
+    /// the mined transaction body.
     pub spending_limit_spends: SpendingLimitUpdates,
 }
 
@@ -132,6 +133,12 @@ impl TempoPoolUpdates {
                         event.publicKey,
                         Some(event.token),
                     );
+                } else if let Ok(event) = IAccountKeychain::AccessKeySpend::decode_log(log) {
+                    updates.spending_limit_spends.insert(
+                        event.account,
+                        event.publicKey,
+                        Some(event.token),
+                    );
                 }
             }
             // Validator and user token changes
@@ -174,38 +181,6 @@ impl TempoPoolUpdates {
                         .insert(event.from);
                 }
             }
-        }
-
-        // Extract (account, key_id, fee_token) from included keychain transactions.
-        // When these txs execute, verify_and_update_spending() decrements spending limits,
-        // but no SpendingLimitUpdated event is emitted. We record which combos were affected
-        // so the pool can re-read the remaining limit from state and evict over-limit txs.
-        for tx in chain
-            .blocks_iter()
-            .flat_map(|block| block.body().transactions())
-        {
-            let Some(aa_tx) = tx.as_aa() else {
-                continue;
-            };
-            let Some(keychain_sig) = aa_tx.signature().as_keychain() else {
-                continue;
-            };
-            let Ok(key_id) = keychain_sig.key_id(&aa_tx.signature_hash()) else {
-                continue;
-            };
-            // Skip main keys (key_id == Address::ZERO) - they don't have spending limits
-            if key_id.is_zero() {
-                continue;
-            }
-            // Always wildcard the token: a mined tx paying fees in token Y can also
-            // decrement token X's spending limit via transfer/approve.
-            // `None` wildcards the token in `SpendingLimitUpdates::contains`, so every
-            // pending tx for this (account, key_id) is re-checked regardless of fee token.
-            // Safe because eviction is still gated on `exceeds_spending_limit()` which
-            // reads the actual remaining limit from state.
-            updates
-                .spending_limit_spends
-                .insert(keychain_sig.user_address, key_id, None);
         }
 
         updates
@@ -332,18 +307,21 @@ impl PendingStalenessTracker {
     ///
     /// Call `should_check` first to avoid collecting the pending set on every block.
     fn check_and_update(&mut self, current_pending: HashSet<TxHash>, now: u64) -> Vec<TxHash> {
-        // Find transactions present in both snapshots (stale)
-        let stale: Vec<TxHash> = self
-            .previous_pending
-            .intersection(&current_pending)
-            .copied()
-            .collect();
+        let previous_pending = std::mem::take(&mut self.previous_pending);
 
-        // Update snapshot: store current pending (excluding stale ones we're about to evict)
-        self.previous_pending = current_pending
-            .into_iter()
-            .filter(|hash| !stale.contains(hash))
-            .collect();
+        // Split the current snapshot into stale transactions to evict and fresh
+        // transactions to track. A transaction is stale if it appears in both
+        // the previous and current pending snapshots.
+        let (stale, next_pending): (Vec<TxHash>, HashSet<TxHash>) =
+            current_pending.into_iter().partition_map(|hash| {
+                if previous_pending.contains(&hash) {
+                    Either::Left(hash)
+                } else {
+                    Either::Right(hash)
+                }
+            });
+
+        self.previous_pending = next_pending;
         self.last_snapshot_time = Some(now);
 
         stale
@@ -828,13 +806,7 @@ mod tests {
     fn create_test_chain(
         blocks: Vec<reth_primitives_traits::RecoveredBlock<Block>>,
     ) -> Arc<Chain<TempoPrimitives>> {
-        use reth_provider::{Chain, ExecutionOutcome};
-
-        Arc::new(Chain::new(
-            blocks,
-            ExecutionOutcome::default(),
-            Default::default(),
-        ))
+        create_test_chain_with_receipts(blocks, Vec::new())
     }
 
     fn create_test_chain_with_receipts(
@@ -885,13 +857,65 @@ mod tests {
         use alloy_signer_local::PrivateKeySigner;
         use tempo_primitives::{TempoReceipt, TempoTxType};
 
-        /// Verify from_chain extracts (account, key_id) with wildcard token from included
-        /// keychain txs, so all pending txs for that key are rechecked regardless of fee token.
+        /// Verify from_chain uses AccessKeySpend logs so it can track the actually spent token
+        /// even when it differs from the mined tx's fee token.
         #[test]
-        fn extracts_keychain_tx_spending_limit_spends() {
+        fn extracts_access_key_spend_events() {
             let user_address = Address::random();
             let access_key_signer = PrivateKeySigner::random();
             let key_id = access_key_signer.address();
+            let fee_token = Address::random();
+            let spent_token = Address::random();
+
+            let keychain_tx = TxBuilder::aa(user_address)
+                .fee_token(fee_token)
+                .build_keychain(user_address, &access_key_signer);
+            let envelope = extract_envelope(&keychain_tx);
+
+            let spend_log = alloy_primitives::Log::new_from_event_unchecked(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                IAccountKeychain::AccessKeySpend {
+                    account: user_address,
+                    publicKey: key_id,
+                    token: spent_token,
+                    amount: U256::from(25),
+                    remainingLimit: U256::from(75),
+                },
+            )
+            .reserialize();
+            let receipt = tempo_primitives::TempoReceipt {
+                tx_type: tempo_primitives::TempoTxType::AA,
+                success: true,
+                cumulative_gas_used: 1,
+                logs: vec![spend_log],
+            };
+
+            let block = create_block_with_txs(1, vec![envelope], vec![user_address]);
+            let chain = create_test_chain_with_receipts(vec![block], vec![vec![receipt]]);
+
+            let updates = TempoPoolUpdates::from_chain(&chain);
+
+            assert!(
+                updates
+                    .spending_limit_spends
+                    .contains(user_address, key_id, spent_token),
+                "Should contain the AccessKeySpend event's (account, key_id, token)"
+            );
+            assert!(
+                !updates
+                    .spending_limit_spends
+                    .contains(user_address, key_id, fee_token),
+                "Should not infer spends from the tx fee token"
+            );
+            assert_eq!(updates.spending_limit_spends.len(), 1);
+        }
+
+        /// The pool should only track actual AccessKeySpend events, not infer spends from the
+        /// mined transaction body.
+        #[test]
+        fn ignores_keychain_transactions_without_access_key_spend_logs() {
+            let user_address = Address::random();
+            let access_key_signer = PrivateKeySigner::random();
             let fee_token = Address::random();
 
             let keychain_tx = TxBuilder::aa(user_address)
@@ -903,21 +927,7 @@ mod tests {
             let chain = create_test_chain(vec![block]);
 
             let updates = TempoPoolUpdates::from_chain(&chain);
-
-            // Wildcard: matches both the original fee token and any other token
-            assert!(
-                updates
-                    .spending_limit_spends
-                    .contains(user_address, key_id, fee_token),
-                "Should match the keychain tx's fee token"
-            );
-            assert!(
-                updates
-                    .spending_limit_spends
-                    .contains(user_address, key_id, Address::random()),
-                "Should match any other token (wildcard)"
-            );
-            assert_eq!(updates.spending_limit_spends.len(), 1);
+            assert!(updates.spending_limit_spends.is_empty());
         }
 
         /// Non-keychain AA txs should NOT produce spending limit spends.
@@ -946,69 +956,6 @@ mod tests {
 
             let updates = TempoPoolUpdates::from_chain(&chain);
             assert!(updates.spending_limit_spends.is_empty());
-        }
-
-        /// When a keychain tx has no explicit fee_token, it is stored as a wildcard.
-        #[test]
-        fn uses_wildcard_fee_token_when_none_set() {
-            let user_address = Address::random();
-            let access_key_signer = PrivateKeySigner::random();
-            let key_id = access_key_signer.address();
-
-            // Build keychain tx without explicit fee_token
-            let keychain_tx =
-                TxBuilder::aa(user_address).build_keychain(user_address, &access_key_signer);
-            let envelope = extract_envelope(&keychain_tx);
-
-            let block = create_block_with_txs(1, vec![envelope], vec![user_address]);
-            let chain = create_test_chain(vec![block]);
-
-            let updates = TempoPoolUpdates::from_chain(&chain);
-
-            // Wildcard should match any token
-            assert!(updates.spending_limit_spends.contains(
-                user_address,
-                key_id,
-                Address::random(),
-            ));
-        }
-
-        /// When a keychain tx has an explicit fee_token, spending_limit_spends should
-        /// still use a wildcard so pending txs with ANY fee token are rechecked.
-        /// This prevents the case where a mined tx pays fees in token Y but also
-        /// spends token X's limit via transfer/approve, leaving pending txs paying
-        /// in token X unrechecked.
-        #[test]
-        fn always_wildcards_fee_token_for_cross_token_recheck() {
-            let user_address = Address::random();
-            let access_key_signer = PrivateKeySigner::random();
-            let key_id = access_key_signer.address();
-            let fee_token_y = Address::random();
-            let fee_token_x = Address::random();
-
-            let keychain_tx = TxBuilder::aa(user_address)
-                .fee_token(fee_token_y)
-                .build_keychain(user_address, &access_key_signer);
-            let envelope = extract_envelope(&keychain_tx);
-
-            let block = create_block_with_txs(1, vec![envelope], vec![user_address]);
-            let chain = create_test_chain(vec![block]);
-
-            let updates = TempoPoolUpdates::from_chain(&chain);
-
-            // Must match ANY fee token (wildcard), not just the included tx's fee token
-            assert!(
-                updates
-                    .spending_limit_spends
-                    .contains(user_address, key_id, fee_token_x),
-                "spending_limit_spends should wildcard fee_token to catch cross-token limit spends"
-            );
-            assert!(
-                updates
-                    .spending_limit_spends
-                    .contains(user_address, key_id, fee_token_y),
-                "spending_limit_spends should also match the original fee token"
-            );
         }
 
         /// has_invalidation_events returns true when spending_limit_spends is non-empty.

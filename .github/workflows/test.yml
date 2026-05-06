@@ -8,7 +8,6 @@ on:
   pull_request:
   merge_group:
 
-
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -44,7 +43,7 @@ jobs:
           if [[ "$EVENT_NAME" != "pull_request" ]]; then
             echo "coverage=false" >> "$GITHUB_OUTPUT"
             echo "Skipping coverage: not a pull_request event (event: $EVENT_NAME)"
-          elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/ref-impls/)'; then
+          elif git diff --name-only origin/"$BASE_REF"...HEAD | grep -qE '^(crates/(precompiles|contracts)/|tips/verify/)'; then
             echo "coverage=true" >> "$GITHUB_OUTPUT"
             echo "Running coverage: precompiles/contracts changed"
           else

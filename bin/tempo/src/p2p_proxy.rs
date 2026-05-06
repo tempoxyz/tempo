@@ -303,7 +303,12 @@ async fn run_p2p_network(
     config.sessions_config.session_event_buffer = cfg.max_concurrent_inbound;
 
     let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel(1024);
-    let (transactions_tx, mut transactions_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (transactions_tx, mut transactions_rx) = reth_metrics::common::mpsc::memory_bounded_channel(
+        config
+            .transactions_manager_config
+            .tx_channel_memory_limit_bytes,
+        "p2p-proxy.tx",
+    );
 
     let network = NetworkManager::new(config)
         .await
@@ -585,10 +590,11 @@ fn requested_header_numbers(
     mut current: u64,
     request: &reth_eth_wire_types::GetBlockHeaders,
 ) -> Vec<u64> {
-    let mut numbers = Vec::with_capacity(request.limit.min(HEADER_BATCH_SIZE as u64) as usize);
+    let limit = request.limit.min(HEADER_BATCH_SIZE as u64) as usize;
+    let mut numbers = Vec::with_capacity(limit);
     let step = u64::from(request.skip) + 1;
 
-    for _ in 0..request.limit {
+    for _ in 0..limit {
         numbers.push(current);
 
         match request.direction {

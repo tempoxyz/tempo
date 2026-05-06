@@ -1,4 +1,4 @@
-use std::{pin::Pin, time::Duration};
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use commonware_codec::ReadExt as _;
@@ -38,7 +38,7 @@ where
     context: ContextCell<TContext>,
 
     oracle: TPeerManager,
-    execution_node: TempoFullNode,
+    execution_node: Arc<TempoFullNode>,
     epoch_strategy: FixedEpocher,
     last_finalized_height: Height,
     mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
