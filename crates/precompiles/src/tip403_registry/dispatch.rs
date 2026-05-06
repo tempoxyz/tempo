@@ -64,10 +64,11 @@ impl Precompile for TIP403Registry {
                 }
                 ITIP403RegistryCalls::receivePolicy(call) => view(call, |c| self.receive_policy(c)),
                 ITIP403RegistryCalls::validateReceivePolicy(call) => view(call, |c| {
-                    let (authorized, blocked_reason, _) =
-                        self.validate_receive_policy(c.token, c.sender, c.receiver)?;
+                    let blocked_reason = self
+                        .validate_receive_policy(c.token, c.sender, c.receiver)?
+                        .unwrap_or(ITIP403Registry::BlockedReason::NONE);
                     Ok(ITIP403Registry::validateReceivePolicyReturn {
-                        authorized,
+                        authorized: blocked_reason == ITIP403Registry::BlockedReason::NONE,
                         blockedReason: blocked_reason,
                     })
                 }),
@@ -554,8 +555,9 @@ mod tests {
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        // Use T2 to test all selectors including TIP-1015 compound policy functions
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        // Use T6 to test all selectors including TIP-1015 compound policy functions and
+        // TIP-1028 receive-policy functions added in T6.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 

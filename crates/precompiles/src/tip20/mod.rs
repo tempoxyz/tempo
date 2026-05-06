@@ -395,15 +395,26 @@ impl TIP20Token {
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
         let to = Recipient::resolve(call.to)?;
-        let minted = self.mint_or_escrow(msg_sender, &to, call.amount, B256::ZERO)?;
-        if minted {
-            self.emit_event(TIP20Event::Mint(ITIP20::Mint {
-                to: call.to,
-                amount: call.amount,
-            }))?;
-            if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
-                self.emit_event(hop)?;
-            }
+        self.check_role(msg_sender, *ISSUER_ROLE)?;
+        self.validate_mint(&to)?;
+
+        if self.validate_or_escrow_funds(
+            Address::ZERO,
+            &to,
+            call.amount,
+            InboundKind::MINT,
+            B256::ZERO,
+        )? {
+            return Ok(());
+        }
+
+        self._mint(&to, call.amount)?;
+        self.emit_event(TIP20Event::Mint(ITIP20::Mint {
+            to: call.to,
+            amount: call.amount,
+        }))?;
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+            self.emit_event(hop)?;
         }
 
         Ok(())
@@ -416,21 +427,32 @@ impl TIP20Token {
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
         let to = Recipient::resolve(call.to)?;
-        let minted = self.mint_or_escrow(msg_sender, &to, call.amount, call.memo)?;
-        if minted {
-            self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-                from: Address::ZERO,
-                to: call.to,
-                amount: call.amount,
-                memo: call.memo,
-            }))?;
-            self.emit_event(TIP20Event::Mint(ITIP20::Mint {
-                to: call.to,
-                amount: call.amount,
-            }))?;
-            if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
-                self.emit_event(hop)?;
-            }
+        self.check_role(msg_sender, *ISSUER_ROLE)?;
+        self.validate_mint(&to)?;
+
+        if self.validate_or_escrow_funds(
+            Address::ZERO,
+            &to,
+            call.amount,
+            InboundKind::MINT,
+            call.memo,
+        )? {
+            return Ok(());
+        }
+
+        self._mint(&to, call.amount)?;
+        self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+            from: Address::ZERO,
+            to: call.to,
+            amount: call.amount,
+            memo: call.memo,
+        }))?;
+        self.emit_event(TIP20Event::Mint(ITIP20::Mint {
+            to: call.to,
+            amount: call.amount,
+        }))?;
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+            self.emit_event(hop)?;
         }
         Ok(())
     }
@@ -685,27 +707,24 @@ impl TIP20Token {
 
     /// Transfers `amount` tokens from the caller to `to`. Enforces compliance via the
     /// [`TIP403Registry`] and deducts from the caller's [`AccountKeychain`] spending limit.
-    ///
-    /// # Errors
-    /// - `Paused` — token transfers are currently paused
-    /// - `InvalidRecipient` — recipient address is zero
-    /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
-    /// - `SpendingLimitExceeded` — access key spending limit exceeded
-    /// - `InsufficientBalance` — sender balance lower than transfer amount
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         let to = Recipient::resolve(call.to)?;
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        let transferred = self.transfer_or_escrow(
+        if self.validate_or_escrow_funds(
             msg_sender,
             &to,
             call.amount,
             InboundKind::TRANSFER,
             B256::ZERO,
-        )?;
-        if transferred && let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+        )? {
+            return Ok(true);
+        }
+
+        self._transfer(msg_sender, &to, call.amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
 
@@ -714,28 +733,27 @@ impl TIP20Token {
 
     /// Transfers `amount` on behalf of `from` using the caller's allowance.
     /// Enforces compliance via the [`TIP403Registry`].
-    ///
-    /// # Errors
-    /// - `Paused` — token transfers are currently paused
-    /// - `InvalidRecipient` — recipient address is zero
-    /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
-    /// - `InsufficientAllowance` — caller allowance lower than transfer amount
-    /// - `InsufficientBalance` — `from` balance lower than transfer amount
     pub fn transfer_from(
         &mut self,
         msg_sender: Address,
         call: ITIP20::transferFromCall,
     ) -> Result<bool> {
         let to = Recipient::resolve(call.to)?;
-        let transferred = self.transfer_from_or_escrow(
-            msg_sender,
+        self.validate_transfer(call.from, &to)?;
+        self.consume_allowance(call.from, msg_sender, call.amount)?;
+
+        if self.validate_or_escrow_funds(
             call.from,
             &to,
             call.amount,
             InboundKind::TRANSFER,
             B256::ZERO,
-        )?;
-        if transferred && let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+        )? {
+            return Ok(true);
+        }
+
+        self._transfer(call.from, &to, call.amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
         Ok(true)
@@ -748,24 +766,28 @@ impl TIP20Token {
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool> {
         let to = Recipient::resolve(call.to)?;
-        let transferred = self.transfer_from_or_escrow(
-            msg_sender,
+        self.validate_transfer(call.from, &to)?;
+        self.consume_allowance(call.from, msg_sender, call.amount)?;
+
+        if self.validate_or_escrow_funds(
             call.from,
             &to,
             call.amount,
             InboundKind::TRANSFER,
             call.memo,
-        )?;
-        if transferred {
-            self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-                from: call.from,
-                to: call.to,
-                amount: call.amount,
-                memo: call.memo,
-            }))?;
-            if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
-                self.emit_event(hop)?;
-            }
+        )? {
+            return Ok(true);
+        }
+
+        self._transfer(call.from, &to, call.amount)?;
+        self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+            from: call.from,
+            to: call.to,
+            amount: call.amount,
+            memo: call.memo,
+        }))?;
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+            self.emit_event(hop)?;
         }
         Ok(true)
     }
@@ -790,28 +812,16 @@ impl TIP20Token {
         self.validate_transfer(from, &to)?;
         self.check_and_update_spending_limit(from, amount)?;
 
-        let transferred =
-            self.transfer_or_escrow(from, &to, amount, InboundKind::TRANSFER, B256::ZERO)?;
-        if transferred && let Some(hop) = to.build_virtual_transfer_event(amount) {
+        if self.validate_or_escrow_funds(from, &to, amount, InboundKind::TRANSFER, B256::ZERO)? {
+            return Ok(true);
+        }
+
+        self._transfer(from, &to, amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(amount) {
             self.emit_event(hop)?;
         }
 
         Ok(true)
-    }
-
-    /// Allowance-aware inbound transfer routed through [`Self::transfer_or_escrow`].
-    fn transfer_from_or_escrow(
-        &mut self,
-        msg_sender: Address,
-        from: Address,
-        to: &Recipient,
-        amount: U256,
-        kind: InboundKind,
-        memo: B256,
-    ) -> Result<bool> {
-        self.validate_transfer(from, to)?;
-        self.consume_allowance(from, msg_sender, amount)?;
-        self.transfer_or_escrow(from, to, amount, kind, memo)
     }
 
     /// Debits `spender`'s allowance on `owner`. No-op when unlimited.
@@ -840,23 +850,25 @@ impl TIP20Token {
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        let transferred = self.transfer_or_escrow(
+        if self.validate_or_escrow_funds(
             msg_sender,
             &to,
             call.amount,
             InboundKind::TRANSFER,
             call.memo,
-        )?;
-        if transferred {
-            self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
-                from: msg_sender,
-                to: call.to,
-                amount: call.amount,
-                memo: call.memo,
-            }))?;
-            if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
-                self.emit_event(hop)?;
-            }
+        )? {
+            return Ok(());
+        }
+
+        self._transfer(msg_sender, &to, call.amount)?;
+        self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
+            from: msg_sender,
+            to: call.to,
+            amount: call.amount,
+            memo: call.memo,
+        }))?;
+        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+            self.emit_event(hop)?;
         }
         Ok(())
     }
@@ -1010,100 +1022,6 @@ impl TIP20Token {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
 
-    /// Transfers `amount` from `from` to `to`, escrowing if `to`'s receive policy blocks
-    /// `from`. Returns `true` on direct transfer, `false` on escrow.
-    fn transfer_or_escrow(
-        &mut self,
-        from: Address,
-        to: &Recipient,
-        amount: U256,
-        kind: InboundKind,
-        memo: B256,
-    ) -> Result<bool> {
-        if !self.storage.spec().is_t6() {
-            self._transfer(from, to, amount)?;
-            return Ok(true);
-        }
-
-        if to.target == ESCROW_ADDRESS {
-            return Err(TIP1028EscrowError::escrow_address_reserved().into());
-        }
-        let recipient = if let Some(virtual_addr) = to.virtual_addr {
-            virtual_addr
-        } else {
-            to.target
-        };
-
-        let (authorized, blocked_reason, recovery_address) =
-            TIP403Registry::new().validate_receive_policy(self.address, from, to.target)?;
-        if authorized {
-            self._transfer(from, to, amount)?;
-            return Ok(true);
-        }
-
-        self.escrow_funds(
-            from,
-            recipient,
-            amount,
-            recovery_address,
-            blocked_reason,
-            kind,
-            memo,
-        )?;
-        Ok(false)
-    }
-
-    /// Mints `amount` to `to`, escrowing if `to`'s receive policy blocks the mint.
-    /// Returns `true` on direct mint, `false` on escrow.
-    fn mint_or_escrow(
-        &mut self,
-        msg_sender: Address,
-        to: &Recipient,
-        amount: U256,
-        memo: B256,
-    ) -> Result<bool> {
-        self.check_role(msg_sender, *ISSUER_ROLE)?;
-        self.validate_mint(to)?;
-
-        if !self.storage.spec().is_t6() {
-            self._mint(to, amount)?;
-            return Ok(true);
-        }
-
-        if to.target == ESCROW_ADDRESS {
-            return Err(TIP1028EscrowError::escrow_address_reserved().into());
-        }
-        let recipient = if let Some(virtual_addr) = to.virtual_addr {
-            virtual_addr
-        } else {
-            to.target
-        };
-
-        let (authorized, blocked_reason, recovery_address) = TIP403Registry::new()
-            .validate_receive_policy(self.address, Address::ZERO, to.target)?;
-        if authorized {
-            self._mint(to, amount)?;
-            return Ok(true);
-        }
-
-        let receiver = AddressRegistry::new().resolve_recipient(recipient)?;
-        let guard = self.storage.checkpoint();
-        self._mint(&Recipient::direct(ESCROW_ADDRESS), amount)?;
-        TIP1028Escrow::new().store_blocked(
-            self.address,
-            Address::ZERO,
-            receiver,
-            recipient,
-            recovery_address,
-            amount,
-            blocked_reason,
-            InboundKind::MINT,
-            memo,
-        )?;
-        guard.commit();
-        Ok(false)
-    }
-
     /// Core transfer: debits `from`, credits `to.target`, emits `Transfer(from, event_addr, amount)`.
     ///
     /// For virtual recipients the event address is the virtual alias; the balance update always
@@ -1137,33 +1055,115 @@ impl TIP20Token {
         self.emit_event(to.build_transfer_event(from, amount))
     }
 
-    /// Atomically debits `originator` to [`ESCROW_ADDRESS`] and stores the blocked
-    /// receipt under the resolved master of `recipient`.
-    fn escrow_funds(
+    /// Validates the TIP-1028 receive-policy check for the destination address. If the receive
+    /// policy prohibits the action, the funds are escrowed.
+    fn validate_or_escrow_funds(
         &mut self,
         originator: Address,
-        recipient: Address,
+        to: &Recipient,
         amount: U256,
-        recovery_address: Address,
-        blocked_reason: ITIP403Registry::BlockedReason,
         kind: InboundKind,
         memo: B256,
-    ) -> Result<()> {
-        let receiver = AddressRegistry::new().resolve_recipient(recipient)?;
+    ) -> Result<bool> {
+        if !self.storage.spec().is_t6() {
+            return Ok(false);
+        }
+        if to.target == ESCROW_ADDRESS {
+            return Err(TIP1028EscrowError::escrow_address_reserved().into());
+        }
+        let registry = TIP403Registry::new();
+        let Some(reason) = registry.validate_receive_policy(self.address, originator, to.target)?
+        else {
+            return Ok(false);
+        };
+        let recovery = registry.receive_policy_recovery(to.target)?;
+        let recipient = to.virtual_addr.unwrap_or(to.target);
+
         let guard = self.storage.checkpoint();
-        self._transfer(originator, &Recipient::direct(ESCROW_ADDRESS), amount)?;
+        match kind {
+            InboundKind::TRANSFER => {
+                self._transfer(originator, &Recipient::direct(ESCROW_ADDRESS), amount)?
+            }
+            InboundKind::MINT => self._mint(&Recipient::direct(ESCROW_ADDRESS), amount)?,
+            InboundKind::__Invalid => {
+                return Err(TIP1028EscrowError::invalid_receipt_claim().into());
+            }
+        }
         TIP1028Escrow::new().store_blocked(
             self.address,
             originator,
-            receiver,
+            to.target,
             recipient,
-            recovery_address,
+            recovery,
             amount,
-            blocked_reason,
+            reason,
             kind,
             memo,
         )?;
         guard.commit();
+        Ok(true)
+    }
+
+    /// Releases escrowed funds to `to`. Self-recovery skips policy checks. Redirects
+    /// revalidate the transfer and receive policies and meter the spending limit when set.
+    pub(crate) fn release_from_tip1028_escrow(
+        &mut self,
+        originator: Address,
+        receiver: Address,
+        to: Address,
+        amount: U256,
+        meter_spending_limit: bool,
+    ) -> Result<()> {
+        if to == ESCROW_ADDRESS {
+            return Err(TIP1028EscrowError::escrow_address_reserved().into());
+        }
+
+        let destination = Recipient::resolve(to)?;
+        destination.validate()?;
+
+        if destination.target != receiver {
+            let registry = TIP403Registry::new();
+            let policy_id = self.transfer_policy_id()?;
+            if !registry.is_authorized_as(policy_id, destination.target, AuthRole::recipient())? {
+                return Err(TIP20Error::policy_forbids().into());
+            }
+            if registry
+                .validate_receive_policy(self.address, originator, destination.target)?
+                .is_some()
+            {
+                return Err(TIP20Error::policy_forbids().into());
+            }
+            if meter_spending_limit {
+                self.check_and_update_spending_limit(receiver, amount)?;
+            }
+        }
+
+        let escrow_balance = self.get_balance(ESCROW_ADDRESS)?;
+        if amount > escrow_balance {
+            return Err(TIP1028EscrowError::insufficient_escrow_balance().into());
+        }
+
+        self.handle_rewards_on_transfer(ESCROW_ADDRESS, destination.target, amount)?;
+
+        self.set_balance(
+            ESCROW_ADDRESS,
+            escrow_balance
+                .checked_sub(amount)
+                .ok_or(TempoPrecompileError::under_overflow())?,
+        )?;
+
+        let to_balance = self.get_balance(destination.target)?;
+        self.set_balance(
+            destination.target,
+            to_balance
+                .checked_add(amount)
+                .ok_or(TempoPrecompileError::under_overflow())?,
+        )?;
+
+        self.emit_event(destination.build_transfer_event(ESCROW_ADDRESS, amount))?;
+        if let Some(hop) = destination.build_virtual_transfer_event(amount) {
+            self.emit_event(hop)?;
+        }
         Ok(())
     }
 

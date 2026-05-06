@@ -255,40 +255,35 @@ impl TIP403Registry {
         })
     }
 
-    /// Checks `receiver`'s receive policy for an inbound transfer. Returns whether the
-    /// transfer is authorized, the blocked reason, and the recovery address.
+    /// Checks `receiver`'s receive policy for an inbound transfer. Returns the blocking
+    /// reason, or `None` if authorized.
     pub fn validate_receive_policy(
         &self,
         token: Address,
         sender: Address,
         receiver: Address,
-    ) -> Result<(bool, ITIP403Registry::BlockedReason, Address)> {
+    ) -> Result<Option<ITIP403Registry::BlockedReason>> {
         let config = self.address_receive_config[receiver].read()?;
         if !config.has_receive_policy {
-            return Ok((true, ITIP403Registry::BlockedReason::NONE, Address::ZERO));
+            return Ok(None);
         }
 
         if !self.is_authorized_simple(config.token_filter_id, token)? {
-            return Ok((
-                false,
-                ITIP403Registry::BlockedReason::TOKEN_FILTER,
-                config.recovery_address,
-            ));
+            return Ok(Some(ITIP403Registry::BlockedReason::TOKEN_FILTER));
         }
 
         if !self.is_authorized_simple(config.sender_policy_id, sender)? {
-            return Ok((
-                false,
-                ITIP403Registry::BlockedReason::RECEIVE_POLICY,
-                config.recovery_address,
-            ));
+            return Ok(Some(ITIP403Registry::BlockedReason::RECEIVE_POLICY));
         }
 
-        Ok((
-            true,
-            ITIP403Registry::BlockedReason::NONE,
-            config.recovery_address,
-        ))
+        Ok(None)
+    }
+
+    /// Returns `receiver`'s configured recovery address, or zero if no receive policy is set.
+    pub fn receive_policy_recovery(&self, receiver: Address) -> Result<Address> {
+        Ok(self.address_receive_config[receiver]
+            .read()?
+            .recovery_address)
     }
 
     /// Creates a new simple (whitelist or blacklist) policy and returns its ID.

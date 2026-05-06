@@ -13,6 +13,7 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
+    tip20::TIP20Token,
 };
 use alloy::{
     primitives::{Address, B256, U256},
@@ -156,13 +157,13 @@ impl TIP1028Escrow {
         let guard = self.storage.checkpoint();
         self.blocked_receipt_amount[key].write(U256::ZERO)?;
 
-        // NOTE: we will update this
-        // TIP20Token::from_address(call.token)?.release_from_tip1028_escrow(
-        //     receiver,
-        //     call.to,
-        //     amount,
-        //     recovery_address == Address::ZERO,
-        // )?;
+        TIP20Token::from_address(call.token)?.release_from_tip1028_escrow(
+            receipt.originator,
+            receiver,
+            call.to,
+            amount,
+            recovery_address == Address::ZERO,
+        )?;
 
         self.emit_event(TIP1028EscrowEvent::BlockedReceiptClaimed(
             ITIP1028Escrow::BlockedReceiptClaimed {
