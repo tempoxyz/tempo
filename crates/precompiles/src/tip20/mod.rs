@@ -727,7 +727,7 @@ impl TIP20Token {
         call: ITIP20::transferFromCall,
     ) -> Result<bool> {
         let to = Recipient::resolve(call.to)?;
-        let transferred = self._transfer_from(
+        let transferred = self.transfer_from_or_escrow(
             msg_sender,
             call.from,
             &to,
@@ -748,7 +748,7 @@ impl TIP20Token {
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool> {
         let to = Recipient::resolve(call.to)?;
-        let transferred = self._transfer_from(
+        let transferred = self.transfer_from_or_escrow(
             msg_sender,
             call.from,
             &to,
@@ -800,7 +800,7 @@ impl TIP20Token {
     }
 
     /// Allowance-aware inbound transfer routed through [`Self::transfer_or_escrow`].
-    fn _transfer_from(
+    fn transfer_from_or_escrow(
         &mut self,
         msg_sender: Address,
         from: Address,
