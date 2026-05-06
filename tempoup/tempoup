@@ -170,6 +170,7 @@ update_tempoup() {
 
 # Parse command-line arguments
 VERSION=""
+UNSAFE_SKIP_VERIFY=0
 while [[ $# -gt 0 ]]; do
     case $1 in
         -v|--version)
@@ -182,20 +183,26 @@ while [[ $# -gt 0 ]]; do
         -U|--update)
             update_tempoup
             ;;
+        --unsafe-skip-verify)
+            UNSAFE_SKIP_VERIFY=1
+            shift
+            ;;
         -h|--help)
             echo "Usage: tempoup [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  -v, --version         Print tempoup installer version"
-            echo "  -i, --install <VER>   Install specific tempo version (e.g., v1.0.0)"
-            echo "  -U, --update          Update tempoup to the latest version"
-            echo "  -h, --help            Show this help message"
+            echo "  -v, --version           Print tempoup installer version"
+            echo "  -i, --install <VER>     Install specific tempo version (e.g., v1.0.0)"
+            echo "  -U, --update            Update tempoup to the latest version"
+            echo "  --unsafe-skip-verify    Skip verification when gpg/gh are missing or unauthenticated"
+            echo "  -h, --help              Show this help message"
             echo ""
             echo "Examples:"
             echo "  tempoup                   # Install latest release"
             echo "  tempoup -i v1.0.0         # Install specific version"
             echo "  tempoup -v                # Print installer version"
             echo "  tempoup --update          # Update tempoup itself"
+            echo "  tempoup --unsafe-skip-verify  # Install without gpg/gh verification"
             exit 0
             ;;
         *)
@@ -381,9 +388,10 @@ main() {
                 info "Fetching Tempo release signing key..."
                 if curl -sSfL "$GPG_KEY_URL" 2>/dev/null | gpg --import 2>/dev/null; then
                     : # key imported via HTTPS
+                elif [[ "$UNSAFE_SKIP_VERIFY" == "1" ]]; then
+                    warn "Failed to fetch GPG key. Skipping signature verification (--unsafe-skip-verify)."
                 else
-                    warn "Failed to fetch GPG key. Skipping signature verification."
-                    warn "To import manually: curl -sSfL '$GPG_KEY_URL' | gpg --import"
+                    error "Failed to fetch GPG key. Re-run with --unsafe-skip-verify to bypass."
                 fi
             fi
 
@@ -394,9 +402,10 @@ main() {
                     error "GPG signature verification failed. The binary may have been tampered with."
                 fi
             fi
+        elif [[ "$UNSAFE_SKIP_VERIFY" == "1" ]]; then
+            warn "gpg not found. Skipping signature verification (--unsafe-skip-verify)."
         else
-            warn "gpg not found. Skipping signature verification."
-            warn "Install gpg to enable signature verification of releases."
+            error "gpg not found. Install gpg, or re-run with --unsafe-skip-verify to bypass."
         fi
     else
         info "Skipping GPG signature verification (not available for versions <= 1.1.1)"
@@ -426,8 +435,17 @@ main() {
             warn "(Older releases may not carry attestations.)"
         fi
     else
-        warn "gh CLI not found or not authenticated. Skipping SLSA + SBOM attestation verification."
-        warn "Install gh and run 'gh auth login' to enable full attestation verification."
+        if ! check_cmd gh; then
+            GH_MSG="gh not found"
+        else
+            GH_MSG="gh not authenticated (run 'gh auth login')"
+        fi
+
+        if [[ "$UNSAFE_SKIP_VERIFY" == "1" ]]; then
+            warn "$GH_MSG. Skipping SLSA + SBOM attestation verification (--unsafe-skip-verify)."
+        else
+            error "$GH_MSG. Re-run with --unsafe-skip-verify to bypass attestation verification."
+        fi
     fi
 
     # Extract archive
