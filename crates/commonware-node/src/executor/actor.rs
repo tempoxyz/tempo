@@ -240,14 +240,13 @@ where
                 payload_attributes,
                 response,
             }) => {
-                if let Some(prev) = self.build_sync.take() {
-                    if let SyncAction::Build {
+                if let Some(prev) = self.build_sync.take()
+                    && let SyncAction::Build {
                         response: prev_resp,
                         ..
                     } = prev.action
-                    {
-                        let _ = prev_resp.send(Err(eyre!("build request superseded")));
-                    }
+                {
+                    let _ = prev_resp.send(Err(eyre!("build request superseded")));
                 }
 
                 self.build_sync.replace(Sync {
@@ -301,7 +300,7 @@ where
             }
 
             super::ingress::Message::FinalizedBlock(finalized_block) => {
-                self.pending_finalizations.push_back(finalized_block);
+                self.pending_finalizations.push_back(*finalized_block);
             }
 
             super::ingress::Message::FinalizedTip(new_tip) => {
@@ -382,17 +381,14 @@ where
     /// will roll back to finalized tip on a mismatch, thus continuing the walk
     async fn next_pending_sync_fetch(&mut self) -> Option<SyncFetch> {
         let latest_certified_digest = self.latest_state.certified_digest;
-        let Some(sync) = self
+        let sync = self
             .build_sync
             .as_ref()
             .filter(|s| latest_certified_digest != s.target_digest)
             .or(self
                 .head_sync
                 .as_ref()
-                .filter(|s| latest_certified_digest != s.target_digest))
-        else {
-            return None;
-        };
+                .filter(|s| latest_certified_digest != s.target_digest))?;
 
         let mut current_digest = sync.target_digest;
         loop {
@@ -817,11 +813,13 @@ impl StateSubmission {
             }
             SubmissionType::Finalized { .. } => base_state.with_updated_finalized(height, digest),
         };
+
         let fcu_response = execution_node
             .add_ons_handle
             .beacon_engine_handle
             .fork_choice_updated(submitted_state.to_fcu_state(), payload_attributes.take())
             .await;
+
         StateSubmissionResponse {
             submission_type,
             fcu_response,

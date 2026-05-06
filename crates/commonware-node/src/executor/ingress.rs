@@ -107,7 +107,7 @@ pub(super) enum Message {
     // ===
     /// A finalized block received from the marshal actor and waiting to be
     /// executed and acknowledged.
-    FinalizedBlock(FinalizedBlock),
+    FinalizedBlock(Box<FinalizedBlock>),
 
     /// The highest finalized tip known to the marshal actor.
     FinalizedTip(FinalizedTip),
@@ -141,13 +141,13 @@ impl From<CanonicalizeAndBuild> for Message {
 
 impl From<FinalizedBlock> for Message {
     fn from(value: FinalizedBlock) -> Self {
-        Message::FinalizedBlock(value)
+        Self::FinalizedBlock(Box::new(value))
     }
 }
 
 impl From<FinalizedTip> for Message {
     fn from(value: FinalizedTip) -> Self {
-        Message::FinalizedTip(value)
+        Self::FinalizedTip(value)
     }
 }
 
