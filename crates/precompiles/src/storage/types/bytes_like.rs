@@ -216,7 +216,7 @@ fn store_bytes_like<S: StorageOps>(
     // (T4+) Cleanup stale tail if necessary.
     if !ctx.skip_tail_cleanup() && StorageCtx.spec().is_t4() {
         let prev = storage.load(base_slot)?;
-        // Only applicable to long strings, as short ones always get overriden.
+        // Only applicable to long strings, as short ones always get overridden.
         if is_long_string(prev) {
             let prev_chunks = calc_chunks(calc_string_length(prev, true)?);
             let new_chunks = if new_is_long { calc_chunks(new_len) } else { 0 };

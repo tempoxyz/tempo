@@ -306,7 +306,7 @@ struct DynStringRecord {
 #[test]
 fn test_struct_overwrite_cleans_dyn_field_tails() -> error::Result<()> {
     let address = Address::random();
-    let base_slot = ONE;
+    let base_slot = U256::ONE;
     for &hardfork in &[TempoHardfork::T3, TempoHardfork::T4] {
         let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
         StorageCtx::enter(&mut storage, || {
