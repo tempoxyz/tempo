@@ -8,7 +8,6 @@ const TXGEN_SCRAPE_INTERVAL_MS = 500
 const TXGEN_DRAIN_TIMEOUT_SECS = 300
 const TXGEN_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_TIP20_TEMPLATE = "contrib/bench/txgen/tip20-template.yaml"
-const TXGEN_ERC20_ABI = "contrib/bench/txgen/erc20.abi.json"
 
 def shell-quote [value: any] {
     let s = ($value | into string)
@@ -167,11 +166,6 @@ def wait-for-txpool-drain [rpc_url: string, timeout_secs: int] {
     print $"  Warning: txpool drain timeout reached after ($timeout_secs)s"
 }
 
-def write-tip20-spec [spec_path: string] {
-    cp $TXGEN_ERC20_ABI $"($spec_path | path dirname)/erc20.abi.json"
-    cp $TXGEN_TIP20_TEMPLATE $spec_path
-}
-
 def fund-txgen-accounts [txgen_bin: string, spec_path: string, rpc_url: string] {
     let result = (^$txgen_bin addresses -s $spec_path -f shell | complete)
     if $result.exit_code != 0 {
@@ -308,9 +302,8 @@ def run-txgen-bench-single [
     } else { false }
 
     let chain_id = (fetch-chain-id "http://localhost:8545")
-    let spec_path = $"($results_dir)/txgen-spec-($run_label).yaml"
-    write-tip20-spec $spec_path
     $env.TXGEN_ACCOUNTS = ($accounts | into string)
+    let spec_path = ($TXGEN_TIP20_TEMPLATE | path expand)
     fund-txgen-accounts $txgen_tempo_bin $spec_path "http://localhost:8545"
 
     let report_path = $"($results_dir)/report-($run_label).json"
