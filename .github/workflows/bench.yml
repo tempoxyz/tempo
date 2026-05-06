@@ -83,7 +83,7 @@ jobs:
         env:
           INPUT_REF_NAME: ${{ github.ref_name }}
         with:
-          github-token: ${{ secrets.DEREK_BENCH_REPLAY_TOKEN }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             let pr, actor, mode, preset, duration, bloat, tps, baseline, feature, backend, txgenRef, samply, tracy, tracySeconds, tracyOffset, baselineArgs, featureArgs, baselineHardfork, featureHardfork, runType, forceBloat, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv, blocks, warmup;
 
@@ -356,7 +356,7 @@ jobs:
           ACK_BASELINE_HARDFORK: ${{ steps.args.outputs.baseline-hardfork }}
           ACK_FEATURE_HARDFORK: ${{ steps.args.outputs.feature-hardfork }}
         with:
-          github-token: ${{ secrets.DEREK_BENCH_REPLAY_TOKEN }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             if (context.eventName === 'issue_comment') {
               await github.rest.reactions.createForIssueComment({
@@ -437,7 +437,7 @@ jobs:
       feature-env: ${{ needs.tempo-bench-ack.outputs.feature-env }}
       comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
     secrets:
-      DEREK_PAT: ${{ secrets.DEREK_BENCH_REPLAY_TOKEN }}
+      DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
@@ -465,5 +465,5 @@ jobs:
       warmup: ${{ needs.tempo-bench-ack.outputs.warmup }}
       comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
     secrets:
-      DEREK_BENCH_REPLAY_TOKEN: ${{ secrets.DEREK_BENCH_REPLAY_TOKEN }}
+      DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}

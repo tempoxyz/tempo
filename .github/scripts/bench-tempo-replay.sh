@@ -55,7 +55,7 @@ mkdir -p "$BENCH_WORK_DIR"
 # ============================================================================
 
 echo "Installing txgen-tempo and bench-cli..."
-cargo install --git "https://x-access-token:${DEREK_BENCH_REPLAY_TOKEN}@github.com/tempoxyz/txgen" --locked txgen-tempo bench-cli
+cargo install --git "https://x-access-token:${DEREK_BENCH_TOKEN}@github.com/tempoxyz/txgen" --locked txgen-tempo bench-cli
 
 # ============================================================================
 # Build baseline + feature binaries
