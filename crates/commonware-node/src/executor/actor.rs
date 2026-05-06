@@ -16,7 +16,7 @@
 //!    certificate is received, a stream walking the ancestors of the proposal
 //!    is kickstarted to backfill all blocks to the execution layer.
 use std::{
-    collections::{BTreeMap, VecDeque},
+    collections::{BTreeMap, HashMap, VecDeque},
     pin::Pin,
     sync::Arc,
     task::{Poll, ready},
@@ -27,8 +27,8 @@ use alloy_rpc_types_engine::{
     ForkchoiceState, ForkchoiceUpdated, PayloadId, PayloadStatus, PayloadStatusEnum,
 };
 use commonware_consensus::{
-    CertifiableBlock as _, Epochable, Heightable as _,
-    types::{Epocher as _, FixedEpocher, Height, Round, View},
+    Heightable as _,
+    types::{Height, Round},
 };
 
 use commonware_runtime::{Clock, ContextCell, Handle, Metrics, Pacer, Spawner, spawn_cell};
@@ -46,7 +46,6 @@ use pin_project::pin_project;
 use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
 use reth_node_builder::{BeaconForkChoiceUpdateError, BeaconOnNewPayloadError};
 use reth_provider::BlockIdReader as _;
-use tempo_chainspec::hardfork::TempoHardforks as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::TempoPayloadAttributes;
 use tokio::select;
@@ -66,9 +65,6 @@ pub(crate) struct Actor<TContext> {
     /// A handle to the execution node layer. Used to forward finalized blocks
     /// and to update the canonical chain by sending forkchoice updates.
     execution_node: Arc<TempoFullNode>,
-
-    /// The epoch strategy used throughout the node.
-    epoch_strategy: FixedEpocher,
 
     /// The last finalized height as reported by the marshal actor. Important
     /// when reconciling Consensus Layer and Execution Layer state at startup.
@@ -102,31 +98,29 @@ pub(crate) struct Actor<TContext> {
     /// forwards block sequentially and without gaps.
     pending_finalizations: VecDeque<FinalizedBlock>,
 
-    /// Pending certifications are notarizations that have been been locally
-    /// executed and verified.
-    pending_certifications: VecDeque<Notarization>,
-
-    /// A map of notarizations and the round they were received in.
-    observed_notarizations: BTreeMap<Round, Notarization>,
-
     /// A state submission that is currently in flight to the execution layer.
     pending_state_submission: OptionFuture<BoxFuture<'static, StateSubmissionResponse>>,
 
-    /// An in-flight fetch of a notarized block from the marshal actor.
-    // TODO: Can this be parallelized in any fashion? If we have multiple
-    // notarization certificates, we should be able to just schedule several
-    // concurrent walks.
-    pending_certified_block_fetch: OptionFuture<FetchCertifiedBlock>,
+    // A cache of blocks that are certified
+    cache_of_certified_blocks: CertifiedBlockCache,
 
-    /// A pending request to canonicalize a (notarized/head) block and build
-    /// a block for a proposal.
-    pending_build_request: Option<CanonicalizeAndBuild>,
+    /// ===
+    /// Sync slots (new, parallel pipeline). Each slot represents a desired
+    /// canonical state of the execution layer. The dispatcher catches up
+    /// the execution layer to these targets in the right priority
+    /// ===
 
-    // A cache of blocks that is continuously populated from notarizations
-    // coming in. Note that this contains stricly certified blocks only. These
-    // are blocks that have been notarized and certified. As notarizations come
-    // in, their parents are assumed notarized and certified.
-    cache_of_certified_blocks: BTreeMap<Height, Block>,
+    /// In-flight proposal request.
+    build_sync: Option<Sync>,
+
+    /// Highest known sync target — either a locally-certified block (safe
+    /// to HEAD-advance to) or a notarization target (HEAD-advances only
+    /// to its parent, which the protocol guarantees is locally
+    /// certified).
+    head_sync: Option<Sync>,
+
+    /// In-flight sync-pipeline fetch .
+    pending_sync_fetch: OptionFuture<SyncFetch>,
 }
 
 impl<TContext> Actor<TContext>
@@ -141,7 +135,6 @@ where
     ) -> eyre::Result<Self> {
         let Config {
             execution_node,
-            epoch_strategy,
             last_finalized_height,
             marshal,
             fcu_heartbeat_interval,
@@ -165,7 +158,6 @@ where
         Ok(Self {
             context: ContextCell::new(context),
             execution_node,
-            epoch_strategy,
             last_marshal_finalized_height: last_finalized_height,
             mailbox,
             marshal,
@@ -179,13 +171,13 @@ where
             finalized_tip: None,
 
             pending_finalizations: VecDeque::new(),
-            pending_certifications: VecDeque::new(),
-            observed_notarizations: BTreeMap::new(),
 
-            pending_build_request: None,
             pending_state_submission: OptionFuture::none(),
-            pending_certified_block_fetch: OptionFuture::none(),
-            cache_of_certified_blocks: BTreeMap::new(),
+            cache_of_certified_blocks: CertifiedBlockCache::default(),
+
+            build_sync: None,
+            head_sync: None,
+            pending_sync_fetch: OptionFuture::none(),
         })
     }
 
@@ -204,17 +196,19 @@ where
                     }
                 }
 
-                rsp = &mut self.pending_certified_block_fetch => {
-                    self.continue_notarization_ancestry_walk(rsp).await;
+                rsp = &mut self.pending_sync_fetch => {
+                    if let Err(error) = self.handle_sync_fetch_response(rsp) {
+                        warn!(%error, "failed handle fetching block in the sync pipeline");
+                    }
                 }
 
                 msg = self.mailbox.next() => {
-                    let Some(msg) = msg else { break Err(eyre::Report::msg(
-                        "actor mailbox closed unexpectedly"
-                    )); };
+                    let Some(msg) = msg else {
+                        break Err(eyre::Report::msg("actor mailbox closed unexpectedly"));
+                    };
                     if let Err(error) = self.handle_message(msg).await {
                         break Err(error).wrap_err(
-                            "executor encountered fatal fork choice update error; \
+                            "executor encountered fatal error; \
                             shutting down to prevent consensus-execution divergence"
                         );
                     }
@@ -223,15 +217,13 @@ where
                 () = &mut self.fcu_heartbeat_timer => {},
             }
 
-            self.prune_certifications();
             if let Err(err) = self
-                .submit_next_state()
+                .drive_sync()
                 .await
-                .wrap_err("failed to submit next state")
+                .wrap_err("dispatcher failed to drive sync")
             {
                 break Err(err);
             }
-            self.kick_off_notarization_ancestry_walk().await;
         };
 
         match reason {
@@ -243,25 +235,74 @@ where
     async fn handle_message(&mut self, message: MessageWithSpan) -> eyre::Result<()> {
         let _cause = message.cause;
         match message.inner {
-            super::ingress::Message::CanonicalizeAndBuild(canonicalize_and_build) => {
-                self.pending_build_request.replace(canonicalize_and_build);
+            super::ingress::Message::CanonicalizeAndBuild(CanonicalizeAndBuild {
+                height,
+                digest,
+                payload_attributes,
+                response,
+            }) => {
+                if let Some(prev) = self.build_sync.take() {
+                    if let SyncAction::Build {
+                        response: prev_resp,
+                        ..
+                    } = prev.action
+                    {
+                        let _ = prev_resp.send(Err(eyre!("build request superseded")));
+                    }
+                }
+
+                self.build_sync.replace(Sync {
+                    target_digest: digest,
+                    target_height: Some(height),
+                    target_round: None,
+                    target_notarized: false,
+                    action: SyncAction::Build {
+                        payload_attributes,
+                        response,
+                    },
+                });
             }
+
             super::ingress::Message::Certification(certification) => {
-                self.pending_certifications.push_back(certification);
-            }
-            super::ingress::Message::Notarization(notarization) => {
-                if Some(notarization.round())
-                    > self
-                        .observed_notarizations
-                        .last_key_value()
-                        .map(|(round, _)| *round)
-                {
-                    self.observed_notarizations
-                        .insert(notarization.round(), notarization);
+                let incoming_round = certification.round();
+                let should_replace = self
+                    .head_sync
+                    .as_ref()
+                    .and_then(|s| s.target_round)
+                    .is_none_or(|cur| incoming_round > cur);
+
+                if should_replace {
+                    self.head_sync.replace(Sync {
+                        target_digest: certification.proposal.payload,
+                        target_height: None,
+                        target_round: Some(incoming_round),
+                        target_notarized: false,
+                        action: SyncAction::Head,
+                    });
                 }
             }
+
+            super::ingress::Message::Notarization(notarization) => {
+                let incoming_round = notarization.round();
+                let should_replace = self
+                    .head_sync
+                    .as_ref()
+                    .and_then(|s| s.target_round)
+                    .is_none_or(|cur| incoming_round > cur);
+
+                if should_replace {
+                    self.head_sync.replace(Sync {
+                        target_digest: notarization.proposal.payload,
+                        target_height: None,
+                        target_round: Some(incoming_round),
+                        target_notarized: true,
+                        action: SyncAction::Head,
+                    });
+                }
+            }
+
             super::ingress::Message::FinalizedBlock(finalized_block) => {
-                self.pending_finalizations.push_back(finalized_block)
+                self.pending_finalizations.push_back(finalized_block);
             }
 
             super::ingress::Message::FinalizedTip(new_tip) => {
@@ -271,9 +312,323 @@ where
                     .is_none_or(|old_tip| new_tip.round > old_tip.round)
                 {
                     self.finalized_tip.replace(new_tip);
+                    self.prune()
                 }
             }
         }
+        Ok(())
+    }
+
+    // Drops syncing state up to the finalzed tip
+    fn prune(&mut self) {
+        if let Some(finalized_tip) = self.finalized_tip.as_ref() {
+            if self
+                .head_sync
+                .as_ref()
+                .and_then(|s| s.target_round)
+                .is_some_and(|r| r <= finalized_tip.round)
+            {
+                self.head_sync = None;
+            }
+
+            if let Some(build) = self.build_sync.as_ref()
+                && build
+                    .target_height
+                    .is_some_and(|h| h <= finalized_tip.height)
+            {
+                debug!(%finalized_tip.height, "pruning build sync whose target height is now finalized");
+                if let Some(prev) = self.build_sync.take()
+                    && let SyncAction::Build {
+                        response: prev_resp,
+                        ..
+                    } = prev.action
+                {
+                    let _ = prev_resp.send(Err(eyre!("build target is finalized")));
+                }
+            }
+
+            self.cache_of_certified_blocks
+                .retain(|height, _| *height > finalized_tip.height);
+        }
+    }
+
+    /// Handles a completed sync-pipeline fetch.
+    fn handle_sync_fetch_response(&mut self, response: SyncFetchResponse) -> eyre::Result<()> {
+        let block = response.block_response.wrap_err(format!(
+            "fetch subsciption failed. digest={}",
+            response.target_digest
+        ))?;
+
+        // If this response for the notarized sync target, adjust the to the parent (certified)
+        if response.target_notarized
+            && let Some(head_sync) = self.head_sync.as_mut()
+            && head_sync.target_digest == response.target_digest
+            && head_sync.target_notarized
+        {
+            head_sync.target_digest = block.parent_digest();
+            head_sync.target_height = block.height().previous();
+            head_sync.target_notarized = false;
+            return Ok(());
+        }
+
+        // Cache the certified block
+        self.cache_of_certified_blocks.insert(block);
+        Ok(())
+    }
+
+    /// Fetches the next unavailable block in the certified chain.
+    ///
+    /// Returns `None` when the chain is fully connected from `target` back to
+    /// `latest_state.certified`. This marker is ensured to be correct as the driver
+    /// will roll back to finalized tip on a mismatch, thus continuing the walk
+    async fn next_pending_sync_fetch(&mut self) -> Option<SyncFetch> {
+        let latest_certified_digest = self.latest_state.certified_digest;
+        let Some(sync) = self
+            .build_sync
+            .as_ref()
+            .filter(|s| latest_certified_digest != s.target_digest)
+            .or(self
+                .head_sync
+                .as_ref()
+                .filter(|s| latest_certified_digest != s.target_digest))
+        else {
+            return None;
+        };
+
+        let mut current_digest = sync.target_digest;
+        loop {
+            match self
+                .cache_of_certified_blocks
+                .get_by_digest(&current_digest)
+            {
+                None => {
+                    // First missing link in the chain — fetch this.
+                    let subscription = self.marshal.subscribe_by_digest(None, current_digest).await;
+                    return Some(SyncFetch {
+                        target_digest: current_digest,
+                        target_height: None,
+                        target_notarized: sync.target_notarized
+                            && current_digest == sync.target_digest,
+                        subscription,
+                    });
+                }
+                Some(b) if b.parent_digest() == self.latest_state.certified_digest => {
+                    // Chain is fully connected from target back to certified.
+                    return None;
+                }
+                Some(b) => {
+                    // Continue walking back through cached parents.
+                    current_digest = b.parent_digest();
+                }
+            }
+        }
+    }
+
+    /// Drives one syncing step.
+    ///
+    /// Order of operations:
+    ///
+    ///   1. If a state submission is in flight, do nothing.
+    ///   2. Startup backfill. Catch the EL's finalized pointer to the CL
+    ///   3. Check if HEAD has reorged. Otherwise submit the next contigous certified block
+    ///   4. If build_sync is satisfied, fire its FCU+payloadAttrs.
+    ///   5. Kick off fetching needed blocks
+    ///   6. Drain pending finalizations.
+    ///   7. FCU heartbeat
+    #[allow(dead_code)]
+    async fn drive_sync(&mut self) -> eyre::Result<()> {
+        // Flush any stale sync targets
+        if let Some(sync) = self.head_sync.as_ref()
+            && self.latest_state.certified_digest == sync.target_digest
+        {
+            self.head_sync = None;
+        }
+
+        // 1. FCU in progress
+        if self.pending_state_submission.is_some() {
+            return Ok(());
+        }
+
+        // 2. Backfill: catch the EL's finalized pointer up to marshal's
+        if self.last_marshal_finalized_height > self.latest_state.finalized_height {
+            debug!(
+                consensus_layer.finalized_height = %self.last_marshal_finalized_height,
+                execution_layer.finalized_height = %self.latest_state.finalized_height,
+                "backfilling finalized blocks",
+            );
+            let next_block_to_backfill = self.latest_state.finalized_height.next();
+            let block = self
+                .marshal
+                .get_block(next_block_to_backfill)
+                .await
+                .ok_or_else(|| {
+                    eyre!(
+                        "v2 reconciliation failed; consensus layer is at height `{}` while \
+                        execution layer is at height `{}`, but consensus layer does not have \
+                        block `{next_block_to_backfill}`",
+                        self.last_marshal_finalized_height,
+                        self.latest_state.finalized_height,
+                    )
+                })?;
+            let (acknowledgement, _) = Exact::handle();
+            self.pending_state_submission.replace(
+                StateSubmission {
+                    execution_node: self.execution_node.clone(),
+                    submission_type: SubmissionType::Finalized { acknowledgement },
+                    digest: block.digest(),
+                    height: block.height(),
+                    block: Some(block),
+                    base_state: self.latest_state,
+                    payload_attributes: None,
+                }
+                .send()
+                .boxed(),
+            );
+            return Ok(());
+        }
+
+        // 3. Detect Reorg or Submit forward
+        let next_height = self.latest_state.certified_height.next();
+        if let Some(next) = self.cache_of_certified_blocks.get_by_height(&next_height) {
+            if next.parent_digest() != self.latest_state.certified_digest {
+                warn!(
+                    height = %self.latest_state.certified_height,
+                    old.head.digest = %self.latest_state.certified_digest,
+                    reported.head.digest = %next.parent_digest(),
+                    "sibling fork detected at certified head; rolling EL back to finalized",
+                );
+
+                let rolled_back = self.latest_state.with_rolled_back_to_finalized();
+                self.pending_state_submission.replace(
+                    StateSubmission {
+                        execution_node: self.execution_node.clone(),
+                        digest: rolled_back.finalized_digest,
+                        height: rolled_back.finalized_height,
+                        block: None,
+                        submission_type: SubmissionType::Head,
+                        base_state: rolled_back,
+                        payload_attributes: None,
+                    }
+                    .send()
+                    .boxed(),
+                );
+            } else {
+                let block = self
+                    .cache_of_certified_blocks
+                    .remove_by_height(&next_height)
+                    .expect("just observed");
+
+                debug!(block.height = %block.height(), block.digest = %block.digest(), "setting head hash");
+                self.pending_state_submission.replace(
+                    StateSubmission {
+                        execution_node: self.execution_node.clone(),
+                        digest: block.digest(),
+                        height: block.height(),
+                        block: Some(block),
+                        submission_type: SubmissionType::Head,
+                        base_state: self.latest_state,
+                        payload_attributes: None,
+                    }
+                    .send()
+                    .boxed(),
+                );
+            }
+
+            return Ok(());
+        }
+
+        // 4. Payload Build
+        if self
+            .build_sync
+            .as_ref()
+            .is_some_and(|s| self.latest_state.certified_digest == s.target_digest)
+        {
+            let Sync {
+                target_digest,
+                target_height,
+                action,
+                ..
+            } = self.build_sync.take().expect("just checked");
+
+            let SyncAction::Build {
+                payload_attributes,
+                response,
+            } = action
+            else {
+                return Err(eyre!(
+                    "build_sync slot did not contain SyncAction::Build (invariant violated)"
+                ));
+            };
+
+            let height = target_height.ok_or_eyre("build sync missing target_height")?;
+            debug!(%height, %target_digest, "v2 firing build FCU + payload attributes");
+            self.pending_state_submission.replace(
+                StateSubmission {
+                    execution_node: self.execution_node.clone(),
+                    digest: target_digest,
+                    height,
+                    block: None,
+                    submission_type: SubmissionType::Build { response },
+                    base_state: self.latest_state,
+                    payload_attributes: Some(*payload_attributes),
+                }
+                .send()
+                .boxed(),
+            );
+            return Ok(());
+        }
+
+        // 5. Fetch missing blocks
+        if self.pending_sync_fetch.is_none()
+            && let Some(next) = self.next_pending_sync_fetch().await
+        {
+            debug!(digest=%next.target_digest, "fetching ancestor");
+            self.pending_sync_fetch.replace(next);
+            return Ok(());
+        }
+
+        // 6. Drain the the marshal finalization pipeline.
+        if let Some(FinalizedBlock {
+            block,
+            acknowledgement,
+        }) = self.pending_finalizations.pop_front()
+        {
+            debug!(block.height = %block.height(), block.digest = %block.digest(), "finalizing block");
+            self.pending_state_submission.replace(
+                StateSubmission {
+                    execution_node: self.execution_node.clone(),
+                    digest: block.digest(),
+                    height: block.height(),
+                    block: Some(block),
+                    submission_type: SubmissionType::Finalized { acknowledgement },
+                    base_state: self.latest_state,
+                    payload_attributes: None,
+                }
+                .send()
+                .boxed(),
+            );
+            return Ok(());
+        }
+
+        // 7. Heartbeat
+        if self.fcu_heartbeat_timer.is_none() {
+            debug!("heartbeat timer fired, resending latest FCU");
+            self.pending_state_submission.replace(
+                StateSubmission {
+                    execution_node: self.execution_node.clone(),
+                    digest: self.latest_state.certified_digest,
+                    height: self.latest_state.certified_height,
+                    block: None,
+                    submission_type: SubmissionType::Head,
+                    base_state: self.latest_state,
+                    payload_attributes: None,
+                }
+                .send()
+                .boxed(),
+            );
+            return Ok(());
+        }
+
         Ok(())
     }
 
@@ -332,336 +687,9 @@ where
         }
 
         self.latest_state = submitted_state;
+        self.fcu_heartbeat_timer
+            .replace(self.context.sleep(self.fcu_heartbeat_interval).boxed());
 
-        Ok(())
-    }
-
-    /// Kicks off an ancestry walk from the oldest certificate received.
-    async fn kick_off_notarization_ancestry_walk(&mut self) {
-        // Keep
-        if self.pending_certified_block_fetch.is_some() {
-            return;
-        }
-
-        if let Some((_, notarization)) = self.observed_notarizations.pop_first() {
-            // If on the first notarization of an epoch, don't start the fetch
-            // process: the goal is to forward all ancestors to the execution
-            // layer. But an epoch's first block's parent is the last block
-            // of the previous epoch. And for that boundary block it is expected
-            // that a) there exists finalization certificate, that b) this block
-            // always enters the system through the finalization pipeline, and
-            // finally c) that simplex engines for a specific epoch are only
-            // started after the genesis block for that epoch was processed and
-            // finalized (such that the executor actor would never observe a
-            // notarization for the new epoch).
-            if notarization.proposal.parent != View::zero() {
-                // TODO: investigate how this can be de-asynced. Manual future
-                // impl? This initial communication with the marshal actor to
-                // get a subscription should resolve immediately and would only
-                // stall if the marshal actor is extering backpressure.
-                let fetch_digest = notarization.proposal.payload;
-                let subscription = self
-                    .marshal
-                    .subscribe_by_digest(Some(notarization.round()), fetch_digest)
-                    .await;
-
-                self.pending_certified_block_fetch
-                    .replace(FetchCertifiedBlock {
-                        source_notarization: notarization,
-                        fetch_digest,
-                        fetch_height: None,
-                        marshal: self.marshal.clone(),
-                        subscription,
-                    });
-            }
-        }
-    }
-
-    #[instrument(
-        skip_all,
-        fields(
-            %fetch_digest,
-            fetch_height = fetch_height.map(tracing::field::display),
-            source_notarization.digest = %source_notarization.proposal.payload,
-            source_notarization.round = %source_notarization.round(),
-        ),
-    )]
-    async fn continue_notarization_ancestry_walk(
-        &mut self,
-        FetchCertifiedBlockResponse {
-            source_notarization,
-            marshal,
-            block_response,
-            fetch_digest,
-            fetch_height,
-        }: FetchCertifiedBlockResponse,
-    ) {
-        // TODO: move to a separate handler
-        match block_response {
-            Err(error) => {
-                warn!(
-                    %error,
-                    "an error occured while walking and fetching the \
-                    notarization ancestors; aborting");
-                return;
-            }
-
-            Ok(block) => {
-                // Don't cache the block matching the certifcate: it is not
-                // guaranteed to be certified, only its parent blocks are.
-                // Certified blocks arrive as `Certified` activity from the
-                // simplex engine.
-                if source_notarization.proposal.payload != block.digest() {
-                    self.cache_of_certified_blocks
-                        .insert(block.height(), block.clone());
-                }
-
-                let parent_digest = block.parent_digest();
-
-                let epoch_info = self
-                    .epoch_strategy
-                    .containing(block.height())
-                    .expect("epoch strategy is valid for all heights and epochs");
-
-                // Only schedule the parent if:
-                // 1. it is still within the same epoch,
-                // 2. isn't already cached,
-                // 3. is ahead of the latest canonicalized head,
-                if let Some(parent_height) = block.height().previous()
-                    && parent_height >= epoch_info.first()
-                    && self
-                        .cache_of_certified_blocks
-                        .get(&parent_height)
-                        .is_none_or(|cached| cached.digest() != parent_digest)
-                    && (parent_height > self.latest_state.certified_height
-                        || (parent_height == self.latest_state.certified_height
-                            && parent_digest != self.latest_state.certified_digest))
-                {
-                    let parent_round = self
-                        .execution_node
-                        .chain_spec()
-                        .is_t4_active_at_timestamp(block.timestamp())
-                        .then(|| {
-                            let context = block.context();
-                            let (parent_view, _) = &context.parent;
-                            Round::new(context.epoch(), *parent_view)
-                        });
-
-                    let subscription = marshal
-                        .subscribe_by_digest(parent_round, parent_digest)
-                        .await;
-                    self.pending_certified_block_fetch
-                        .replace(FetchCertifiedBlock {
-                            source_notarization,
-                            fetch_digest: parent_digest,
-                            fetch_height: Some(parent_height),
-                            marshal,
-                            subscription,
-                        });
-                }
-            }
-        }
-    }
-
-    /// Prunes those certifications and blocks older than what was finalized
-    /// locally.
-    ///
-    /// Also cancels those requests that are currently under way so that they
-    /// never complete.
-    ///
-    /// Older notarizations will not have their ancestors fetched pro-actively,
-    /// and older blocks will never be forwarded as head blocks.
-    fn prune_certifications(&mut self) {
-        if let Some(finalized_tip) = &self.finalized_tip {
-            self.observed_notarizations
-                .retain(|round, _| round > &finalized_tip.round);
-            self.cache_of_certified_blocks
-                .retain(|height, _| height > &finalized_tip.height);
-
-            if self
-                .pending_certified_block_fetch
-                .as_ref()
-                .is_some_and(|fetch| fetch.source_notarization.round() <= finalized_tip.round)
-            {
-                self.pending_certified_block_fetch.take();
-            }
-        }
-    }
-
-    /// Submits the next block + FCU to the execution layer.
-    ///
-    /// The order of blocks and state updates submitted is like this:
-    ///
-    /// 1. backfilling has highest priority: if the marshal actor's finalization
-    ///    view is ahead of the execution layer, the node likely suffered a
-    ///    persistence loss after shutdown/restart.
-    /// 2. `canonicalize-and-build` have highest priority so that proposers can
-    ///    return as proposal as soon as follow.
-    /// 3. certified blocks follow to ensure the node stays at the tip of the
-    ///    (notarized/certified) tip.
-    /// 4. notarized (but not yet finalized) blocks to get a lagging node to the
-    ///    tip of the chain as fast as possible.
-    /// 5. finalized blocks last.
-    #[instrument(skip_all, err)]
-    async fn submit_next_state(&mut self) -> eyre::Result<()> {
-        if self.pending_state_submission.is_some() {
-            return Ok(());
-        }
-
-        if self.last_marshal_finalized_height > self.latest_state.finalized_height {
-            debug!(
-                consensus_layer.finalized_height = %self.last_marshal_finalized_height,
-                execution_layer.finalized_height = %self.latest_state.finalized_height,
-                "gap detected on startup; reconciling consensus and exection layers",
-            );
-            let next_block_to_backfill = self.latest_state.finalized_height.next();
-            let block = self
-                .marshal
-                .get_block(next_block_to_backfill)
-                .await
-                .ok_or_else(|| {
-                    eyre!(
-                        "reconciliation on restart failed; consensus layer is \
-                        at height `{}` while execution layer is at height `{}`, \
-                        but consensus layer does not have block `{next_block_to_backfill}`",
-                        self.last_marshal_finalized_height,
-                        self.latest_state.finalized_height,
-                    )
-                })?;
-            let (acknowledgement, _) = Exact::handle();
-            self.pending_state_submission.replace(
-                StateSubmission {
-                    execution_node: self.execution_node.clone(),
-                    submission_type: SubmissionType::Finalized { acknowledgement },
-                    digest: block.digest(),
-                    height: block.height(),
-                    block: Some(block),
-                    base_state: self.latest_state.clone(),
-                    payload_attributes: None,
-                }
-                .send()
-                .boxed(),
-            );
-        } else if let Some(CanonicalizeAndBuild {
-            height,
-            digest,
-            payload_attributes,
-            response,
-        }) = self.pending_build_request.take()
-        {
-            debug!(
-                %height,
-                %digest,
-                "setting head hash and kicking off payload build",
-            );
-            // TODO: add a sanity check here: proposals should only work if on
-            // top of the canonicalized chain. That is,
-            // if `height = latest.certified_height`.
-            self.pending_state_submission.replace(
-                StateSubmission {
-                    execution_node: self.execution_node.clone(),
-                    digest,
-                    height,
-                    block: None,
-                    submission_type: SubmissionType::Build { response },
-                    base_state: self.latest_state,
-                    payload_attributes: Some(*payload_attributes),
-                }
-                .send()
-                .boxed(),
-            );
-        } else if let Some(certification) = self.pending_certifications.pop_front() {
-            debug!(
-                certification.round = %certification.round(),
-                digest = %certification.proposal.payload,
-                "setting head hash from certified block",
-            );
-            let digest = certification.proposal.payload;
-            let block = self.marshal.get_block(&digest).await.ok_or_else(|| {
-                eyre!("we observed a certificatoin for block `{digest}`, we must have it")
-            })?;
-            self.pending_state_submission.replace(
-                StateSubmission {
-                    execution_node: self.execution_node.clone(),
-                    digest,
-                    height: block.height(),
-                    block: Some(block),
-                    submission_type: SubmissionType::Head,
-                    base_state: self.latest_state,
-                    payload_attributes: None,
-                }
-                .send()
-                .boxed(),
-            );
-        } else if let Some(FinalizedBlock {
-            block,
-            acknowledgement,
-        }) = self.pending_finalizations.pop_front()
-        {
-            debug!(
-                block.height = %block.height(),
-                block.digest = %block.digest(),
-                "finalizing block",
-            );
-            // TODO: need to assert contiguity - the finalized block here must be
-            // on top of the last finalized block as per the execution layer. Need
-            // to ensure this at startup so that it holds for the lifetime of the
-            // actor.
-            self.pending_state_submission.replace(
-                StateSubmission {
-                    execution_node: self.execution_node.clone(),
-                    digest: block.digest(),
-                    height: block.height(),
-                    block: Some(block),
-                    submission_type: SubmissionType::Finalized { acknowledgement },
-                    base_state: self.latest_state,
-                    payload_attributes: None,
-                }
-                .send()
-                .boxed(),
-            );
-        } else if let Some(block) = self
-            .cache_of_certified_blocks
-            .remove(&self.latest_state.certified_height.next())
-        {
-            debug!(
-                block.height = %block.height(),
-                block.digest = %block.digest(),
-                "setting head hash from certified block",
-            );
-            self.pending_state_submission.replace(
-                StateSubmission {
-                    execution_node: self.execution_node.clone(),
-                    digest: block.digest(),
-                    height: block.height(),
-                    block: Some(block),
-                    submission_type: SubmissionType::Head,
-                    base_state: self.latest_state,
-                    payload_attributes: None,
-                }
-                .send()
-                .boxed(),
-            );
-        } else if self.fcu_heartbeat_timer.is_none() {
-            debug!("heartbeat timer fired, resending latest FCU");
-            self.pending_state_submission.replace(
-                StateSubmission {
-                    execution_node: self.execution_node.clone(),
-                    digest: self.latest_state.certified_digest,
-                    height: self.latest_state.certified_height,
-                    block: None,
-                    submission_type: SubmissionType::Head,
-                    base_state: self.latest_state,
-                    payload_attributes: None,
-                }
-                .send()
-                .boxed(),
-            );
-        }
-        if self.pending_state_submission.is_some() {
-            self.fcu_heartbeat_timer
-                .replace(self.context.sleep(self.fcu_heartbeat_interval).boxed());
-        }
         Ok(())
     }
 }
@@ -674,6 +702,63 @@ enum SubmissionType {
         acknowledgement: Exact,
     },
     Head,
+}
+
+struct SyncFetch {
+    target_digest: Digest,
+    target_height: Option<Height>,
+    target_notarized: bool,
+    subscription: tokio::sync::oneshot::Receiver<Block>,
+}
+
+#[derive(Debug)]
+struct SyncFetchResponse {
+    target_digest: Digest,
+    target_height: Option<Height>,
+    target_notarized: bool,
+    block_response: Result<Block, tokio::sync::oneshot::error::RecvError>,
+}
+
+impl Future for SyncFetch {
+    type Output = SyncFetchResponse;
+
+    fn poll(mut self: Pin<&mut Self>, cx: &mut std::task::Context<'_>) -> Poll<Self::Output> {
+        let block_response = ready!(self.subscription.poll_unpin(cx));
+        Poll::Ready(SyncFetchResponse {
+            target_digest: self.target_digest,
+            target_height: self.target_height,
+            target_notarized: self.target_notarized,
+            block_response,
+        })
+    }
+}
+
+/// A desired EL canonical state plus a follow-up action to perform once the
+/// EL has been brought to that state. A sync captures the precondition and the
+/// action to run once held.
+struct Sync {
+    /// Digest of the block
+    target_digest: Digest,
+
+    /// Height of the target block, if known up-front.
+    target_height: Option<Height>,
+
+    /// The consensus round that produced this sync
+    target_round: Option<Round>,
+
+    /// If this target was notarized.
+    target_notarized: bool,
+
+    /// The action to perform once the EL is at the target.
+    action: SyncAction,
+}
+
+enum SyncAction {
+    Head,
+    Build {
+        payload_attributes: Box<TempoPayloadAttributes>,
+        response: oneshot::Sender<eyre::Result<PayloadId>>,
+    },
 }
 
 struct FetchCertifiedBlockResponse {
@@ -812,6 +897,60 @@ struct StateSubmissionResponse {
     submitted_state: LatestState,
 }
 
+/// A cache of `Block`s indexed by both height and digest.
+#[derive(Default)]
+struct CertifiedBlockCache {
+    by_height: BTreeMap<Height, Block>,
+    by_digest: HashMap<Digest, Height>,
+}
+
+impl CertifiedBlockCache {
+    /// Inserts `block`, replacing any prior block at the same height.
+    ///
+    /// If a different block previously occupied this height, its digest
+    /// entry is removed from the index before the new digest is inserted.
+    fn insert(&mut self, block: Block) {
+        let height = block.height();
+        let digest = block.digest();
+        if let Some(prev) = self.by_height.insert(height, block)
+            && prev.digest() != digest
+        {
+            self.by_digest.remove(&prev.digest());
+        }
+
+        self.by_digest.insert(digest, height);
+    }
+
+    fn get_by_height(&self, height: &Height) -> Option<&Block> {
+        self.by_height.get(height)
+    }
+
+    fn get_by_digest(&self, digest: &Digest) -> Option<&Block> {
+        let height = self.by_digest.get(digest)?;
+        self.by_height.get(height)
+    }
+
+    fn remove_by_height(&mut self, height: &Height) -> Option<Block> {
+        let block = self.by_height.remove(height)?;
+        self.by_digest.remove(&block.digest());
+        Some(block)
+    }
+
+    /// Mirrors `BTreeMap::retain`, keeping the digest index consistent.
+    fn retain<F>(&mut self, mut f: F)
+    where
+        F: FnMut(&Height, &Block) -> bool,
+    {
+        self.by_height.retain(|height, block| {
+            let keep = f(height, block);
+            if !keep {
+                self.by_digest.remove(&block.digest());
+            }
+            keep
+        });
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct LatestState {
     finalized_digest: Digest,
@@ -835,7 +974,7 @@ impl LatestState {
         ForkchoiceState {
             head_block_hash: self.certified_digest.0,
             safe_block_hash: self.finalized_digest.0,
-            finalized_block_hash: self.certified_digest.0,
+            finalized_block_hash: self.finalized_digest.0,
         }
     }
 
@@ -858,6 +997,16 @@ impl LatestState {
             this.certified_height = height;
             this.certified_digest = digest;
         }
+        this
+    }
+
+    /// Rolls the optimistic certified pointer back to match the finalized
+    /// pointer. Used to express a reorg at the certified head; bypasses
+    /// the monotonicity of `with_updated_certification`.
+    fn with_rolled_back_to_finalized(&self) -> Self {
+        let mut this = *self;
+        this.certified_height = this.finalized_height;
+        this.certified_digest = this.finalized_digest;
         this
     }
 }

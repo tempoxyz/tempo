@@ -281,7 +281,6 @@ where
             context.with_label("executor"),
             crate::executor::Config {
                 execution_node: execution_node.clone(),
-                epoch_strategy: epoch_strategy.clone(),
                 last_finalized_height,
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
