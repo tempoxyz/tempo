@@ -274,7 +274,12 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
     use reth_primitives_traits::Recovered;
     use reth_transaction_pool::TransactionOrigin;
-    use tempo_primitives::{TempoTxEnvelope, transaction::tt_signed::AASigned};
+    use tempo_primitives::{
+        SignatureType, TempoTxEnvelope,
+        transaction::{
+            KeyAuthorization, PrimitiveSignature, SignedKeyAuthorization, tt_signed::AASigned,
+        },
+    };
 
     fn create_valid_tx(sender: Address) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
         let pooled = TxBuilder::aa(sender).build();
@@ -539,6 +544,78 @@ mod tests {
 
         assert_eq!(evicted, 0, "Sponsored keychain tx should not be evicted");
         assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn test_evict_invalidated_with_key_authorization_nonce_consumption() {
+        let mut pool = PausedFeeTokenPool::new();
+        let user_address = Address::random();
+        let fee_token = Address::random();
+        let consumed_nonce = B256::random();
+        let other_nonce = B256::random();
+
+        let key_authorization = |nonce| SignedKeyAuthorization {
+            authorization: KeyAuthorization::unrestricted(
+                42431,
+                SignatureType::Secp256k1,
+                Address::random(),
+            )
+            .with_nonce(nonce),
+            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        };
+
+        let matching = Arc::new(wrap_valid_tx(
+            TxBuilder::aa(user_address)
+                .fee_token(fee_token)
+                .key_authorization(key_authorization(consumed_nonce))
+                .build(),
+            TransactionOrigin::External,
+        ));
+        let untouched = Arc::new(wrap_valid_tx(
+            TxBuilder::aa(user_address)
+                .nonce(1)
+                .fee_token(fee_token)
+                .key_authorization(key_authorization(other_nonce))
+                .build(),
+            TransactionOrigin::External,
+        ));
+
+        pool.insert_batch(
+            fee_token,
+            vec![
+                PausedEntry {
+                    tx: matching,
+                    valid_before: None,
+                },
+                PausedEntry {
+                    tx: untouched,
+                    valid_before: None,
+                },
+            ],
+        );
+
+        let mut consumed = AddressMap::default();
+        consumed
+            .entry(user_address)
+            .or_insert_with(HashSet::default)
+            .insert(consumed_nonce);
+
+        let evicted = pool.evict_invalidated(
+            &RevokedKeys::new(),
+            &SpendingLimitUpdates::new(),
+            &SpendingLimitUpdates::new(),
+            &consumed,
+        );
+
+        assert_eq!(evicted, 1);
+        assert_eq!(pool.len(), 1);
+        assert_eq!(
+            pool.all_entries()
+                .next()
+                .and_then(|entry| entry.tx.transaction.key_authorization_nonce_subject())
+                .map(|subject| subject.nonce),
+            Some(other_nonce)
+        );
     }
 
     #[test]

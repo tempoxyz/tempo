@@ -327,6 +327,22 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             },
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_p256_0_limits::noop".into()),
         },
+        AuthDef {
+            name: "key_auth_secp256k1_nonce",
+            auth: AuthKind::KeyAuthNonce {
+                key_type: SignatureType::Secp256k1,
+                num_limits: 0,
+            },
+            noop_expected: ExpectedGasDiff::GreaterThan("key_auth_secp256k1_0_limits::noop".into()),
+        },
+        AuthDef {
+            name: "key_auth_secp256k1_nonce_1_limit",
+            auth: AuthKind::KeyAuthNonce {
+                key_type: SignatureType::Secp256k1,
+                num_limits: 1,
+            },
+            noop_expected: ExpectedGasDiff::GreaterThan("key_auth_secp256k1_nonce::noop".into()),
+        },
     ];
 
     let payloads: &[(&str, GasPayload)] = &[
@@ -346,7 +362,9 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             if matches!(payload, GasPayload::ContractCreation)
                 && matches!(
                     &auth_def.auth,
-                    AuthKind::Keychain { .. } | AuthKind::KeyAuth { .. }
+                    AuthKind::Keychain { .. }
+                        | AuthKind::KeyAuth { .. }
+                        | AuthKind::KeyAuthNonce { .. }
                 )
             {
                 continue;
@@ -567,6 +585,28 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
                     env.chain_id(),
                     *allowed_calls,
                     recipient,
+                );
+                request.key_authorization = Some(auth);
+            }
+            AuthKind::KeyAuthNonce {
+                key_type,
+                num_limits,
+            } => {
+                let mut auth = create_signed_key_authorization(
+                    &signer,
+                    *key_type,
+                    *num_limits,
+                    env.chain_id(),
+                    AllowedCallsMode::None,
+                    recipient,
+                );
+                auth.authorization = auth
+                    .authorization
+                    .with_nonce(B256::with_last_byte((i + 1) as u8));
+                auth.signature = PrimitiveSignature::Secp256k1(
+                    signer
+                        .sign_hash_sync(&auth.authorization.signature_hash())
+                        .expect("signing should succeed"),
                 );
                 request.key_authorization = Some(auth);
             }
