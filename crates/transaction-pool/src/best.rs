@@ -44,26 +44,20 @@ enum MergeSource {
 pub struct MergeBestTransactions<L, R, T>
 where
     L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
-    R: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
+    R: BestPriorityTransactions<T, Item = L::Item>,
     T: TransactionOrdering,
 {
     left: L,
     right: R,
-    next_left: Option<(
-        Arc<ValidPoolTransaction<T::Transaction>>,
-        Priority<T::PriorityValue>,
-    )>,
-    next_right: Option<(
-        Arc<ValidPoolTransaction<T::Transaction>>,
-        Priority<T::PriorityValue>,
-    )>,
+    next_left: Option<(L::Item, Priority<T::PriorityValue>)>,
+    next_right: Option<(L::Item, Priority<T::PriorityValue>)>,
     yielded_sources: HashMap<B256, MergeSource>,
 }
 
 impl<L, R, T> MergeBestTransactions<L, R, T>
 where
     L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
-    R: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
+    R: BestPriorityTransactions<T, Item = L::Item>,
     T: TransactionOrdering,
 {
     /// Creates a new iterator over the given iterators.
@@ -81,15 +75,11 @@ where
 impl<L, R, T> MergeBestTransactions<L, R, T>
 where
     L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
-    R: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
+    R: BestPriorityTransactions<T, Item = L::Item>,
     T: TransactionOrdering,
 {
-    /// Records the source for a transaction that is about to be yielded.
-    fn record_source(
-        &mut self,
-        item: &Arc<ValidPoolTransaction<T::Transaction>>,
-        source: MergeSource,
-    ) {
+    /// Records the source for a yielded transaction.
+    fn record_source(&mut self, item: &L::Item, source: MergeSource) {
         self.yielded_sources.insert(*item.hash(), source);
     }
 
@@ -139,10 +129,10 @@ where
 impl<L, R, T> Iterator for MergeBestTransactions<L, R, T>
 where
     L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
-    R: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
+    R: BestPriorityTransactions<T, Item = L::Item>,
     T: TransactionOrdering,
 {
-    type Item = Arc<ValidPoolTransaction<T::Transaction>>;
+    type Item = L::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_best().map(|(tx, _)| tx)
@@ -152,7 +142,7 @@ where
 impl<L, R, T> BestTransactions for MergeBestTransactions<L, R, T>
 where
     L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>> + Send,
-    R: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>> + Send,
+    R: BestPriorityTransactions<T, Item = L::Item> + Send,
     T: TransactionOrdering,
 {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
