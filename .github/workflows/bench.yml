@@ -1,7 +1,7 @@
 # Runs tempo benchmarks.
 #
-# Benchmarks use `nu tempo.nu bench` which runs an interleaved B-F-F-B
-# comparison against a schelk-managed snapshot on a self-hosted runner.
+# E2E benchmarks run `nu bench-e2e.nu e2e` against the dual-schelk runner.
+# Replay benchmarks use `nu tempo.nu bench-replay`.
 #
 # Trigger via PR comment (`@decofe bench` or `derek bench`).
 
@@ -237,7 +237,7 @@ jobs:
               return;
             }
 
-            // E2E currently owns the two-runner consensus harness. The txgen
+            // E2E currently owns the single-runner local consensus harness. The txgen
             // sender plugs into this path once #3669 lands.
             if (mode === 'e2e') {
               const unsupported = [];

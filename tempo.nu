@@ -172,11 +172,23 @@ def bench-clean-datadir [datadir: string] {
 # Initialize a database: run `tempo init`, optionally load state bloat
 def bench-init-db [tempo_bin: string, genesis: string, datadir: string, bloat: int, bloat_file: string] {
     print $"Initializing database at ($datadir)..."
-    run-external $tempo_bin "init" "--chain" $genesis "--datadir" $datadir
+    let init_result = (run-external $tempo_bin "init" "--chain" $genesis "--datadir" $datadir | complete)
+    if $init_result.stdout != "" { print $init_result.stdout }
+    if $init_result.stderr != "" { print $init_result.stderr }
+    if $init_result.exit_code != 0 {
+        print $"Error: tempo init failed for ($datadir) with exit code ($init_result.exit_code)"
+        exit $init_result.exit_code
+    }
 
     if $bloat > 0 {
         print $"Loading state bloat into ($datadir)..."
-        run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file | complete
+        let bloat_result = (run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file | complete)
+        if $bloat_result.stdout != "" { print $bloat_result.stdout }
+        if $bloat_result.stderr != "" { print $bloat_result.stderr }
+        if $bloat_result.exit_code != 0 {
+            print $"Error: state bloat load failed for ($datadir) with exit code ($bloat_result.exit_code)"
+            exit $bloat_result.exit_code
+        }
     }
 }
 
@@ -1579,7 +1591,7 @@ def restore-system-tuning [tuning_state: record] {
     }
 
     print "Restoring system tuning..."
-    for svc in ["cron"] {
+    for svc in ["cron" "unattended-upgrades"] {
         try { sudo systemctl start $svc } catch { }
     }
     print "System tuning restored."
