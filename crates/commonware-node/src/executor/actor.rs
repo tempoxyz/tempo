@@ -103,20 +103,14 @@ pub(crate) struct Actor<TContext> {
     // A cache of blocks that are certified
     cache_of_certified_blocks: CertifiedBlockCache,
 
-    /// ===
-    /// Sync slots (new, parallel pipeline). Each slot represents a desired
-    /// canonical state of the execution layer. The dispatcher catches up
-    /// the execution layer to these targets in the right priority
-    /// ===
-
-    /// In-flight proposal request.
-    build_sync: Option<Sync>,
+    /// In-flight proposal build.
+    build: Option<PendingBuild>,
 
     /// Highest known sync target — either a locally-certified block (safe
     /// to HEAD-advance to) or a notarization target (HEAD-advances only
     /// to its parent, which the protocol guarantees is locally
     /// certified).
-    head_sync: Option<Sync>,
+    head_sync: Option<HeadSync>,
 
     /// In-flight sync-pipeline fetch .
     pending_sync_fetch: OptionFuture<SyncFetch>,
@@ -174,7 +168,7 @@ where
             pending_state_submission: OptionFuture::none(),
             cache_of_certified_blocks: CertifiedBlockCache::default(),
 
-            build_sync: None,
+            build: None,
             head_sync: None,
             pending_sync_fetch: OptionFuture::none(),
         })
@@ -240,24 +234,15 @@ where
                 payload_attributes,
                 response,
             }) => {
-                if let Some(prev) = self.build_sync.take()
-                    && let SyncAction::Build {
-                        response: prev_resp,
-                        ..
-                    } = prev.action
-                {
-                    let _ = prev_resp.send(Err(eyre!("build request superseded")));
+                if let Some(prev) = self.build.take() {
+                    let _ = prev.response.send(Err(eyre!("build request superseded")));
                 }
 
-                self.build_sync.replace(Sync {
+                self.build.replace(PendingBuild {
                     target_digest: digest,
-                    target_height: Some(height),
-                    target_round: None,
-                    target_notarized: false,
-                    action: SyncAction::Build {
-                        payload_attributes,
-                        response,
-                    },
+                    target_height: height,
+                    payload_attributes,
+                    response,
                 });
             }
 
@@ -266,16 +251,13 @@ where
                 let should_replace = self
                     .head_sync
                     .as_ref()
-                    .and_then(|s| s.target_round)
-                    .is_none_or(|cur| incoming_round > cur);
+                    .is_none_or(|cur| incoming_round > cur.target_round);
 
                 if should_replace {
-                    self.head_sync.replace(Sync {
+                    self.head_sync.replace(HeadSync {
                         target_digest: certification.proposal.payload,
-                        target_height: None,
-                        target_round: Some(incoming_round),
+                        target_round: incoming_round,
                         target_notarized: false,
-                        action: SyncAction::Head,
                     });
                 }
             }
@@ -285,16 +267,13 @@ where
                 let should_replace = self
                     .head_sync
                     .as_ref()
-                    .and_then(|s| s.target_round)
-                    .is_none_or(|cur| incoming_round > cur);
+                    .is_none_or(|cur| incoming_round > cur.target_round);
 
                 if should_replace {
-                    self.head_sync.replace(Sync {
+                    self.head_sync.replace(HeadSync {
                         target_digest: notarization.proposal.payload,
-                        target_height: None,
-                        target_round: Some(incoming_round),
+                        target_round: incoming_round,
                         target_notarized: true,
-                        action: SyncAction::Head,
                     });
                 }
             }
@@ -323,26 +302,17 @@ where
             if self
                 .head_sync
                 .as_ref()
-                .and_then(|s| s.target_round)
-                .is_some_and(|r| r <= finalized_tip.round)
+                .is_some_and(|s| s.target_round <= finalized_tip.round)
             {
                 self.head_sync = None;
             }
 
-            if let Some(build) = self.build_sync.as_ref()
-                && build
-                    .target_height
-                    .is_some_and(|h| h <= finalized_tip.height)
+            if let Some(build) = self.build.as_ref()
+                && build.target_height <= finalized_tip.height
             {
-                debug!(%finalized_tip.height, "pruning build sync whose target height is now finalized");
-                if let Some(prev) = self.build_sync.take()
-                    && let SyncAction::Build {
-                        response: prev_resp,
-                        ..
-                    } = prev.action
-                {
-                    let _ = prev_resp.send(Err(eyre!("build target is finalized")));
-                }
+                debug!(%finalized_tip.height, "pruning build whose target height is now finalized");
+                let prev = self.build.take().expect("just checked");
+                let _ = prev.response.send(Err(eyre!("build target is finalized")));
             }
 
             self.cache_of_certified_blocks
@@ -364,7 +334,6 @@ where
             && head_sync.target_notarized
         {
             head_sync.target_digest = block.parent_digest();
-            head_sync.target_height = block.height().previous();
             head_sync.target_notarized = false;
             return Ok(());
         }
@@ -376,19 +345,18 @@ where
 
     /// Fetches the next unavailable block in the certified chain.
     ///
+    /// Walks back from `head_sync.target_digest` until it finds the first
+    /// block not present in the cache.
+    ///
     /// Returns `None` when the chain is fully connected from `target` back to
     /// `latest_state.certified`. This marker is ensured to be correct as the driver
     /// will roll back to finalized tip on a mismatch, thus continuing the walk
     async fn next_pending_sync_fetch(&mut self) -> Option<SyncFetch> {
         let latest_certified_digest = self.latest_state.certified_digest;
         let sync = self
-            .build_sync
+            .head_sync
             .as_ref()
-            .filter(|s| latest_certified_digest != s.target_digest)
-            .or(self
-                .head_sync
-                .as_ref()
-                .filter(|s| latest_certified_digest != s.target_digest))?;
+            .filter(|s| latest_certified_digest != s.target_digest)?;
 
         let mut current_digest = sync.target_digest;
         loop {
@@ -423,12 +391,12 @@ where
     /// Order of operations:
     ///
     ///   1. If a state submission is in flight, do nothing.
-    ///   2. Startup backfill. Catch the EL's finalized pointer to the CL
-    ///   3. Check if HEAD has reorged. Otherwise submit the next contigous certified block
-    ///   4. If build_sync is satisfied, fire its FCU+payloadAttrs.
-    ///   5. Kick off fetching needed blocks
+    ///   2. Startup backfill. Catch up the ELs finalized pointer to the CL.
+    ///   3. If `build` is satisfied (EL is at the build's parent), fire its FCU+payloadAttrs.
+    ///   4. Check if HEAD has reorged. Otherwise submit the next contiguous certified block.
+    ///   5. Kick off fetching needed blocks.
     ///   6. Drain pending finalizations.
-    ///   7. FCU heartbeat
+    ///   7. FCU heartbeat.
     #[allow(dead_code)]
     async fn drive_sync(&mut self) -> eyre::Result<()> {
         // Flush any stale sync targets
@@ -481,7 +449,37 @@ where
             return Ok(());
         }
 
-        // 3. Detect Reorg or Submit forward
+        // 3. Payload Build
+        if self
+            .build
+            .as_ref()
+            .is_some_and(|b| self.latest_state.certified_digest == b.target_digest)
+        {
+            let PendingBuild {
+                target_digest,
+                target_height,
+                payload_attributes,
+                response,
+            } = self.build.take().expect("just checked");
+
+            debug!(%target_height, %target_digest, "firing build FCU + payload attributes");
+            self.pending_state_submission.replace(
+                StateSubmission {
+                    execution_node: self.execution_node.clone(),
+                    digest: target_digest,
+                    height: target_height,
+                    block: None,
+                    submission_type: SubmissionType::Build { response },
+                    base_state: self.latest_state,
+                    payload_attributes: Some(*payload_attributes),
+                }
+                .send()
+                .boxed(),
+            );
+            return Ok(());
+        }
+
+        // 4. Detect Reorg or Submit forward
         let next_height = self.latest_state.certified_height.next();
         if let Some(next) = self.cache_of_certified_blocks.get_by_height(&next_height) {
             if next.parent_digest() != self.latest_state.certified_digest {
@@ -528,47 +526,6 @@ where
                 );
             }
 
-            return Ok(());
-        }
-
-        // 4. Payload Build
-        if self
-            .build_sync
-            .as_ref()
-            .is_some_and(|s| self.latest_state.certified_digest == s.target_digest)
-        {
-            let Sync {
-                target_digest,
-                target_height,
-                action,
-                ..
-            } = self.build_sync.take().expect("just checked");
-
-            let SyncAction::Build {
-                payload_attributes,
-                response,
-            } = action
-            else {
-                return Err(eyre!(
-                    "build_sync slot did not contain SyncAction::Build (invariant violated)"
-                ));
-            };
-
-            let height = target_height.ok_or_eyre("build sync missing target_height")?;
-            debug!(%height, %target_digest, "v2 firing build FCU + payload attributes");
-            self.pending_state_submission.replace(
-                StateSubmission {
-                    execution_node: self.execution_node.clone(),
-                    digest: target_digest,
-                    height,
-                    block: None,
-                    submission_type: SubmissionType::Build { response },
-                    base_state: self.latest_state,
-                    payload_attributes: Some(*payload_attributes),
-                }
-                .send()
-                .boxed(),
-            );
             return Ok(());
         }
 
@@ -724,32 +681,25 @@ impl Future for SyncFetch {
     }
 }
 
-/// A desired EL canonical state plus a follow-up action to perform once the
-/// EL has been brought to that state. A sync captures the precondition and the
-/// action to run once held.
-struct Sync {
-    /// Digest of the block
+/// A desired EL canonical head
+struct HeadSync {
     target_digest: Digest,
+    target_round: Round,
 
-    /// Height of the target block, if known up-front.
-    target_height: Option<Height>,
-
-    /// The consensus round that produced this sync
-    target_round: Option<Round>,
-
-    /// If this target was notarized.
+    /// If this target came from a notarization (vs a certification). The
+    /// notarization itself is not safe to set as HEAD; only its parent is.
     target_notarized: bool,
-
-    /// The action to perform once the EL is at the target.
-    action: SyncAction,
 }
 
-enum SyncAction {
-    Head,
-    Build {
-        payload_attributes: Box<TempoPayloadAttributes>,
-        response: oneshot::Sender<eyre::Result<PayloadId>>,
-    },
+/// A pending payload-build request. Fires once the EL's certified head reaches
+/// `target_digest`. Backfill is driven by `head_sync` — the build target is,
+/// by construction, locally certified and on `head_sync`'s walk path, so this
+/// slot is purely a passive trigger.
+struct PendingBuild {
+    target_digest: Digest,
+    target_height: Height,
+    payload_attributes: Box<TempoPayloadAttributes>,
+    response: oneshot::Sender<eyre::Result<PayloadId>>,
 }
 
 /// A state submission that is currently in flight to the execution layer.
