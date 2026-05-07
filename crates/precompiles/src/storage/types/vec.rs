@@ -302,12 +302,11 @@ where
             let mut elem_slot = Self::compute_handler(self.data_slot(), self.address, length);
             elem_slot.write(value)?;
         } else {
-            // Handlers always use `FULL` ctx:
-            // `T::Handler::write(v)` → `self.as_slot().write(v)` → `Slot::<T>::new(s, a).write(v)`.
-            // Since the slot we push to is guaranteed empty, we build the `Slot<T>` directly to
-            // thread `INIT` into `T::store` and skip its tail-cleanup SLOAD for dynamic types.
+            // Handlers always use `FULL` ctx. Since the slot we push to is guaranteed empty,
+            // call `T::store` with `INIT` to skip tail-cleanup SLOADs for dynamic types.
             let elem_slot = self.data_slot() + U256::from(length * T::SLOTS);
-            Slot::<T>::new_with_ctx(elem_slot, LayoutCtx::INIT, self.address).write(value)?;
+            let mut storage = Slot::<T>::new(elem_slot, self.address);
+            value.store(&mut storage, elem_slot, LayoutCtx::INIT)?;
         }
 
         // Increment length
