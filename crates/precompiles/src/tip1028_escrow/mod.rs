@@ -322,7 +322,7 @@ mod tests {
     }
 
     #[test]
-    fn receipt_balance_store_and_claim() -> eyre::Result<()> {
+    fn test_receipt_balance_store_and_claim() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_000u64));
 
@@ -406,7 +406,7 @@ mod tests {
     }
 
     #[test]
-    fn receipt_rejects_bad_encoding() -> eyre::Result<()> {
+    fn test_receipt_rejects_bad_encoding() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         let admin = Address::random();
 
@@ -445,7 +445,7 @@ mod tests {
     }
 
     #[test]
-    fn store_rejects_invalid_metadata() -> eyre::Result<()> {
+    fn test_store_rejects_invalid_metadata() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         let admin = Address::random();
 
@@ -479,7 +479,7 @@ mod tests {
     }
 
     #[test]
-    fn store_emits_transfer_blocked_for_transfers() -> eyre::Result<()> {
+    fn test_store_emits_transfer_blocked_for_transfers() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_001u64));
 
@@ -542,7 +542,7 @@ mod tests {
     }
 
     #[test]
-    fn receipt_key_binds_receipt_fields() -> eyre::Result<()> {
+    fn test_receipt_key_binds_receipt_fields() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_002u64));
 
@@ -697,7 +697,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_rejects_missing_receipt() -> eyre::Result<()> {
+    fn test_claim_rejects_missing_receipt() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_003u64));
 
@@ -748,7 +748,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_requires_authorized_caller() -> eyre::Result<()> {
+    fn test_claim_requires_authorized_caller() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_004u64));
 
@@ -842,7 +842,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_self_recovery() -> eyre::Result<()> {
+    fn test_claim_self_recovery() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_005u64));
 
@@ -917,7 +917,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_via_recovery_contract() -> eyre::Result<()> {
+    fn test_claim_via_recovery_contract() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_006u64));
 
@@ -995,7 +995,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_rolls_back_on_release_error() -> eyre::Result<()> {
+    fn test_claim_rolls_back_on_release_error() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_007u64));
 
@@ -1065,7 +1065,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_binds_recovery_contract() -> eyre::Result<()> {
+    fn test_claim_binds_recovery_contract() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_008u64));
 
@@ -1135,7 +1135,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_virtual_recipient() -> eyre::Result<()> {
+    fn test_claim_virtual_recipient() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_009u64));
 
@@ -1207,7 +1207,7 @@ mod tests {
     }
 
     #[test]
-    fn claim_blocked_mint() -> eyre::Result<()> {
+    fn test_claim_blocked_mint() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_010u64));
 

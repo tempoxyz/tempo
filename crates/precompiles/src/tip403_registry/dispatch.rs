@@ -109,9 +109,11 @@ mod tests {
         test_util::{assert_full_coverage, check_selector_coverage},
         tip403_registry::ITIP403Registry,
     };
-    use alloy::sol_types::{SolCall, SolValue};
+    use alloy::sol_types::{SolCall, SolError, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::ITIP403Registry::ITIP403RegistryCalls;
+    use tempo_contracts::precompiles::{
+        ITIP403Registry::ITIP403RegistryCalls, UnknownFunctionSelector,
+    };
 
     #[test]
     fn test_is_authorized_precompile() -> eyre::Result<()> {
@@ -570,6 +572,57 @@ mod tests {
 
             assert_full_coverage([unsupported]);
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_receive_policy_selectors_are_t6_gated() -> eyre::Result<()> {
+        let account = Address::random();
+        let receive_policy = ITIP403Registry::receivePolicyCall { account }.abi_encode();
+        let validate_receive_policy = ITIP403Registry::validateReceivePolicyCall {
+            token: Address::random(),
+            sender: Address::random(),
+            receiver: account,
+        }
+        .abi_encode();
+        let set_receive_policy = ITIP403Registry::setReceivePolicyCall {
+            senderPolicyId: 1,
+            tokenFilterId: 1,
+            recoveryAddress: Address::ZERO,
+        }
+        .abi_encode();
+
+        for calldata in [
+            receive_policy.as_slice(),
+            validate_receive_policy.as_slice(),
+            set_receive_policy.as_slice(),
+        ] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+            StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+                let mut registry = TIP403Registry::new();
+                let result = registry
+                    .call(calldata, account)
+                    .map_err(|err| eyre::eyre!("{err:?}"))?;
+                assert!(result.is_revert());
+                assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+                Ok(())
+            })?;
+        }
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut registry = TIP403Registry::new();
+            for calldata in [
+                receive_policy.as_slice(),
+                validate_receive_policy.as_slice(),
+                set_receive_policy.as_slice(),
+            ] {
+                let result = registry
+                    .call(calldata, account)
+                    .map_err(|err| eyre::eyre!("{err:?}"))?;
+                assert!(!result.is_revert());
+            }
             Ok(())
         })
     }

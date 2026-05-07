@@ -1044,6 +1044,220 @@ mod tests {
     }
 
     #[test]
+    fn test_receive_policy_defaults_to_none() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let account = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
+
+            let policy = registry.receive_policy(ITIP403Registry::receivePolicyCall { account })?;
+            assert!(!policy.hasReceivePolicy);
+            assert_eq!(policy.senderPolicyId, REJECT_ALL_POLICY_ID);
+            assert_eq!(
+                policy.senderPolicyType,
+                ITIP403Registry::PolicyType::WHITELIST
+            );
+            assert_eq!(policy.tokenFilterId, REJECT_ALL_POLICY_ID);
+            assert_eq!(
+                policy.tokenFilterType,
+                ITIP403Registry::PolicyType::WHITELIST
+            );
+            assert_eq!(policy.recoveryAddress, Address::ZERO);
+
+            assert_eq!(
+                registry.validate_receive_policy(Address::random(), Address::random(), account)?,
+                None
+            );
+            assert_eq!(registry.receive_policy_recovery(account)?, Address::ZERO);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_receive_policy_stores_config() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let account = Address::random();
+        let recovery = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            registry.set_receive_policy(
+                account,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAddress: recovery,
+                },
+            )?;
+
+            let policy = registry.receive_policy(ITIP403Registry::receivePolicyCall { account })?;
+            assert!(policy.hasReceivePolicy);
+            assert_eq!(policy.senderPolicyId, REJECT_ALL_POLICY_ID);
+            assert_eq!(
+                policy.senderPolicyType,
+                ITIP403Registry::PolicyType::WHITELIST
+            );
+            assert_eq!(policy.tokenFilterId, ALLOW_ALL_POLICY_ID);
+            assert_eq!(
+                policy.tokenFilterType,
+                ITIP403Registry::PolicyType::BLACKLIST
+            );
+            assert_eq!(policy.recoveryAddress, recovery);
+            assert_eq!(registry.receive_policy_recovery(account)?, recovery);
+
+            registry.assert_emitted_events(vec![TIP403RegistryEvent::ReceivePolicyUpdated(
+                ITIP403Registry::ReceivePolicyUpdated {
+                    account,
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAddress: recovery,
+                },
+            )]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_receive_policy_rejects_invalid_account() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            let escrow_result = registry.set_receive_policy(
+                ESCROW_ADDRESS,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAddress: Address::ZERO,
+                },
+            );
+            assert!(matches!(
+                escrow_result,
+                Err(TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::InvalidReceivePolicyAddress(_)
+                ))
+            ));
+
+            let virtual_result = registry.set_receive_policy(
+                Address::new_virtual(MasterId::ZERO, UserTag::ZERO),
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAddress: Address::ZERO,
+                },
+            );
+            assert!(matches!(
+                virtual_result,
+                Err(TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::VirtualAddressNotAllowed(_)
+                ))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_receive_policy_rejects_invalid_policy() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let account = Address::random();
+        let creator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            let missing_result = registry.set_receive_policy(
+                account,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: 99,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAddress: Address::ZERO,
+                },
+            );
+            assert!(matches!(
+                missing_result,
+                Err(TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::PolicyNotFound(_)
+                ))
+            ));
+
+            let compound_id = registry.create_compound_policy(
+                creator,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    recipientPolicyId: ALLOW_ALL_POLICY_ID,
+                    mintRecipientPolicyId: ALLOW_ALL_POLICY_ID,
+                },
+            )?;
+            let compound_result = registry.set_receive_policy(
+                account,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: compound_id,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAddress: Address::ZERO,
+                },
+            );
+            assert!(matches!(
+                compound_result,
+                Err(TempoPrecompileError::TIP403RegistryError(
+                    TIP403RegistryError::InvalidReceivePolicyType(_)
+                ))
+            ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_validate_receive_policy_reports_token_filter_first() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let receiver = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            registry.set_receive_policy(
+                receiver,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: REJECT_ALL_POLICY_ID,
+                    recoveryAddress: Address::ZERO,
+                },
+            )?;
+
+            assert_eq!(
+                registry.validate_receive_policy(Address::random(), Address::random(), receiver)?,
+                Some(ITIP403Registry::BlockedReason::TOKEN_FILTER)
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_validate_receive_policy_reports_sender_policy() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let receiver = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            registry.set_receive_policy(
+                receiver,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAddress: Address::ZERO,
+                },
+            )?;
+
+            assert_eq!(
+                registry.validate_receive_policy(Address::random(), Address::random(), receiver)?,
+                Some(ITIP403Registry::BlockedReason::RECEIVE_POLICY)
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_policy_exists() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();

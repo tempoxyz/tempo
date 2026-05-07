@@ -1625,7 +1625,7 @@ pub(crate) mod tests {
         }
 
         #[test]
-        fn transfer_blocked_by_receive_policy_escrows_funds() -> eyre::Result<()> {
+        fn test_transfer_blocked_by_receive_policy_escrows_funds() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             storage.set_timestamp(U256::from(BLOCKED_AT));
             let admin = Address::random();
@@ -1696,7 +1696,7 @@ pub(crate) mod tests {
         }
 
         #[test]
-        fn transfer_blocked_by_token_filter_records_reason() -> eyre::Result<()> {
+        fn test_transfer_blocked_by_token_filter_records_reason() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             storage.set_timestamp(U256::from(BLOCKED_AT));
             let admin = Address::random();
@@ -1757,7 +1757,7 @@ pub(crate) mod tests {
         }
 
         #[test]
-        fn transfer_to_escrow_address_rejects() -> eyre::Result<()> {
+        fn test_transfer_to_escrow_address_rejects() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             let admin = Address::random();
             let sender = Address::random();
@@ -1788,7 +1788,7 @@ pub(crate) mod tests {
         }
 
         #[test]
-        fn pre_t6_receive_policy_does_not_escrow() -> eyre::Result<()> {
+        fn test_pre_t6_receive_policy_does_not_escrow() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
             storage.set_timestamp(U256::from(BLOCKED_AT));
             let admin = Address::random();
@@ -1846,7 +1846,7 @@ pub(crate) mod tests {
         }
 
         #[test]
-        fn transfer_from_blocked_consumes_allowance() -> eyre::Result<()> {
+        fn test_transfer_from_blocked_consumes_allowance() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             storage.set_timestamp(U256::from(BLOCKED_AT));
             let admin = Address::random();
@@ -1891,7 +1891,7 @@ pub(crate) mod tests {
         }
 
         #[test]
-        fn transfer_with_memo_blocked_preserves_memo() -> eyre::Result<()> {
+        fn test_transfer_with_memo_blocked_preserves_memo() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             storage.set_timestamp(U256::from(BLOCKED_AT));
             let admin = Address::random();
@@ -1945,7 +1945,7 @@ pub(crate) mod tests {
         }
 
         #[test]
-        fn mint_blocked_credits_escrow() -> eyre::Result<()> {
+        fn test_mint_blocked_credits_escrow() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             storage.set_timestamp(U256::from(BLOCKED_AT));
             let admin = Address::random();
