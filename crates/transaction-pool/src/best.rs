@@ -43,9 +43,9 @@ enum MergeSource {
 /// A [`BestTransactions`] iterator that merges two individual implementations and always yields the next best item from either of the iterators.
 pub struct MergeBestTransactions<L, R, T>
 where
-    T: TransactionOrdering,
     L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
     R: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
+    T: TransactionOrdering,
 {
     left: L,
     right: R,
@@ -62,9 +62,9 @@ where
 
 impl<L, R, T> MergeBestTransactions<L, R, T>
 where
-    T: TransactionOrdering,
     L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
     R: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
+    T: TransactionOrdering,
 {
     /// Creates a new iterator over the given iterators.
     pub fn new(left: L, right: R) -> Self {
@@ -80,9 +80,9 @@ where
 
 impl<L, R, T> MergeBestTransactions<L, R, T>
 where
-    T: TransactionOrdering,
     L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
     R: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
+    T: TransactionOrdering,
 {
     /// Records the source for a transaction that is about to be yielded.
     fn record_source(
@@ -138,9 +138,9 @@ where
 
 impl<L, R, T> Iterator for MergeBestTransactions<L, R, T>
 where
-    T: TransactionOrdering,
     L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
     R: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
+    T: TransactionOrdering,
 {
     type Item = Arc<ValidPoolTransaction<T::Transaction>>;
 
@@ -151,9 +151,9 @@ where
 
 impl<L, R, T> BestTransactions for MergeBestTransactions<L, R, T>
 where
-    T: TransactionOrdering,
     L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>> + Send,
     R: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>> + Send,
+    T: TransactionOrdering,
 {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
         match self.yielded_sources.get(transaction.hash()).copied() {
