@@ -172,23 +172,11 @@ def bench-clean-datadir [datadir: string] {
 # Initialize a database: run `tempo init`, optionally load state bloat
 def bench-init-db [tempo_bin: string, genesis: string, datadir: string, bloat: int, bloat_file: string] {
     print $"Initializing database at ($datadir)..."
-    let init_result = (run-external $tempo_bin "init" "--chain" $genesis "--datadir" $datadir | complete)
-    if $init_result.stdout != "" { print $init_result.stdout }
-    if $init_result.stderr != "" { print $init_result.stderr }
-    if $init_result.exit_code != 0 {
-        print $"Error: tempo init failed for ($datadir) with exit code ($init_result.exit_code)"
-        exit $init_result.exit_code
-    }
+    run-external $tempo_bin "init" "--chain" $genesis "--datadir" $datadir
 
     if $bloat > 0 {
         print $"Loading state bloat into ($datadir)..."
-        let bloat_result = (run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file | complete)
-        if $bloat_result.stdout != "" { print $bloat_result.stdout }
-        if $bloat_result.stderr != "" { print $bloat_result.stderr }
-        if $bloat_result.exit_code != 0 {
-            print $"Error: state bloat load failed for ($datadir) with exit code ($bloat_result.exit_code)"
-            exit $bloat_result.exit_code
-        }
+        run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file | complete
     }
 }
 
@@ -285,23 +273,6 @@ def read-bench-marker [datadir: string] {
     } else {
         null
     }
-}
-
-def validator-dirs-in-localnet [localnet_dir: string] {
-    ls $localnet_dir
-    | where type == "dir"
-    | get name
-    | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' }
-}
-
-def trusted-peers-from-localnet [localnet_dir: string] {
-    validator-dirs-in-localnet $localnet_dir | each { |d|
-        let addr = ($d | path basename)
-        let ip = ($addr | split row ":" | get 0)
-        let port = ($addr | split row ":" | get 1 | into int)
-        let identity = (open $"($d)/enode.identity" | str trim)
-        $"enode://($identity)@($ip):($port + 1)"
-    } | str join ","
 }
 
 # ============================================================================
@@ -1294,8 +1265,14 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
     let genesis_path = if $genesis != "" { $genesis } else { $"($LOCALNET_DIR)/genesis.json" }
 
     # Build trusted peers from enode.identity files
-    let validator_dirs = (validator-dirs-in-localnet $LOCALNET_DIR)
-    let trusted_peers = (trusted-peers-from-localnet $LOCALNET_DIR)
+    let validator_dirs = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' })
+    let trusted_peers = ($validator_dirs | each { |d|
+        let addr = ($d | path basename)
+        let ip = ($addr | split row ":" | get 0)
+        let port = ($addr | split row ":" | get 1 | into int)
+        let identity = (open $"($d)/enode.identity" | str trim)
+        $"enode://($identity)@($ip):($port + 1)"
+    } | str join ",")
 
     print $"Found ($validator_dirs | length) validator configs"
 
@@ -1423,74 +1400,6 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
     ]
 }
 
-# Build consensus args for a single validator running on an isolated e2e runner.
-def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int, consensus_ip: string] {
-    let addr = ($node_dir | path basename)
-    let inferred_ip = if ($addr | str contains ":") {
-        $addr | split row ":" | get 0
-    } else {
-        "0.0.0.0"
-    }
-    let ip = if $consensus_ip != "" { $consensus_ip } else { $inferred_ip }
-    let signing_key = $"($node_dir)/signing.key"
-    let signing_share = $"($node_dir)/signing.share"
-    let enode_key = $"($node_dir)/enode.key"
-
-    let execution_p2p_port = $port + 1
-    let metrics_port = $port + 2
-    let authrpc_port = $port + 3
-    let discv5_port = $port + 4
-
-    [
-        "--consensus.signing-key" $signing_key
-        "--consensus.signing-share" $signing_share
-        "--consensus.listen-address" $"($ip):($port)"
-        "--consensus.metrics-address" $"($ip):($metrics_port)"
-        "--trusted-peers" $trusted_peers
-        "--port" $"($execution_p2p_port)"
-        "--discovery.port" $"($execution_p2p_port)"
-        "--discovery.v5.port" $"($discv5_port)"
-        "--p2p-secret-key" $enode_key
-        "--authrpc.port" $"($authrpc_port)"
-        "--consensus.fee-recipient" "0x0000000000000000000000000000000000000000"
-        "--consensus.use-local-defaults"
-        "--consensus.bypass-ip-check"
-    ]
-}
-
-def stop-tracy-capture [] {
-    print "  Stopping tracy-capture..."
-    let capture_pids = (ps | where name =~ "tracy-capture" | get pid)
-    for pid in $capture_pids {
-        kill -s 2 $pid
-    }
-    mut wait_tracy = 0
-    while $wait_tracy < 30 {
-        if (ps | where name =~ "tracy-capture" | length) == 0 { break }
-        sleep 1sec
-        $wait_tracy = $wait_tracy + 1
-    }
-    if $wait_tracy >= 30 {
-        print "  Warning: tracy-capture did not exit, sending SIGKILL"
-        for pid in (ps | where name =~ "tracy-capture" | get pid) {
-            kill -s 9 $pid
-        }
-    }
-}
-
-def wait-for-samply-profile [] {
-    print "  Waiting for samply to finish saving profile..."
-    mut wait = 0
-    while $wait < 120 {
-        if (ps | where name =~ "samply" | length) == 0 { break }
-        sleep 500ms
-        $wait = $wait + 1
-    }
-    if $wait >= 120 {
-        print "  Warning: samply did not exit in time"
-    }
-}
-
 # ============================================================================
 # System tuning for benchmarks
 # ============================================================================
@@ -1565,7 +1474,7 @@ def restore-system-tuning [tuning_state: record] {
     }
 
     print "Restoring system tuning..."
-    for svc in ["cron" "unattended-upgrades"] {
+    for svc in ["cron"] {
         try { sudo systemctl start $svc } catch { }
     }
     print "System tuning restored."
@@ -2294,43 +2203,10 @@ def "main bench" [
     print "Done."
 }
 
-# Fetch the current block number from an RPC endpoint.
-def rpc-block-number [url: string] {
-    let result = (do { curl -sf $url -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' } | complete)
-    if $result.exit_code != 0 {
-        return null
-    }
-    let parsed = (try { $result.stdout | from json } catch { null })
-    if $parsed == null {
-        return null
-    }
-    let hex = ($parsed | get -o result | default "")
-    if $hex == "" {
-        return null
-    }
-    try { $hex | str replace "0x" "" | into int --radix 16 } catch { null }
-}
-
-# Fetch the current peer count from an RPC endpoint.
-def rpc-peer-count [url: string] {
-    let result = (do { curl -sf $url -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"net_peerCount","params":[],"id":1}' } | complete)
-    if $result.exit_code != 0 {
-        return null
-    }
-    let parsed = (try { $result.stdout | from json } catch { null })
-    if $parsed == null {
-        return null
-    }
-    let hex = ($parsed | get -o result | default "")
-    if $hex == "" {
-        return null
-    }
-    try { $hex | str replace "0x" "" | into int --radix 16 } catch { null }
-}
-
-# Wait for an RPC endpoint to answer eth_blockNumber.
-def wait-for-rpc-online [url: string, max_attempts: int = 120] {
+# Wait for an RPC endpoint to be ready and chain advancing
+def wait-for-rpc [url: string, max_attempts: int = 120] {
     mut attempt = 0
+    mut start_block: int = -1
 
     loop {
         $attempt = $attempt + 1
@@ -2338,10 +2214,21 @@ def wait-for-rpc-online [url: string, max_attempts: int = 120] {
             print $"  Timeout waiting for ($url)"
             exit 1
         }
-        let block = (rpc-block-number $url)
-        if $block != null {
-            print $"  ($url) online \(block ($block)\)"
-            break
+        let result = (do { curl -sf $url -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' } | complete)
+        if $result.exit_code == 0 {
+            let hex = ($result.stdout | from json | get result)
+            let block = ($hex | str replace "0x" "" | into int --radix 16)
+            if $start_block == -1 {
+                $start_block = $block
+                print $"  ($url) connected \(block ($block)\), waiting for chain to advance..."
+            } else if $block > $start_block {
+                print $"  ($url) ready \(block ($start_block) -> ($block)\)"
+                break
+            } else {
+                if ($attempt mod 10) == 0 {
+                    print $"  ($url) still at block ($block)... \(($attempt)s\)"
+                }
+            }
         } else {
             if ($attempt mod 10) == 0 {
                 print $"  Still waiting for ($url)... \(($attempt)s\)"
@@ -2349,41 +2236,6 @@ def wait-for-rpc-online [url: string, max_attempts: int = 120] {
         }
         sleep 1sec
     }
-}
-
-# Wait for an RPC endpoint's chain to advance beyond its first observed block.
-def wait-for-chain-advance [url: string, max_attempts: int = 120] {
-    mut attempt = 0
-    mut start_block: int = -1
-
-    loop {
-        $attempt = $attempt + 1
-        if $attempt > $max_attempts {
-            print $"  Timeout waiting for ($url) chain to advance"
-            exit 1
-        }
-        let block = (rpc-block-number $url)
-        if $block != null {
-            if $start_block == -1 {
-                $start_block = $block
-                print $"  ($url) connected \(block ($block)\), waiting for chain to advance..."
-            } else if $block > $start_block {
-                print $"  ($url) ready \(block ($start_block) -> ($block)\)"
-                break
-            } else if ($attempt mod 10) == 0 {
-                print $"  ($url) still at block ($block)... \(($attempt)s\)"
-            }
-        } else if ($attempt mod 10) == 0 {
-            print $"  Still waiting for ($url)... \(($attempt)s\)"
-        }
-        sleep 1sec
-    }
-}
-
-# Wait for an RPC endpoint to be ready and chain advancing.
-def wait-for-rpc [url: string, max_attempts: int = 120] {
-    wait-for-rpc-online $url $max_attempts
-    wait-for-chain-advance $url $max_attempts
 }
 
 # ============================================================================

@@ -127,6 +127,45 @@ def ensure-bloat-space [bloat: int] {
     }
 }
 
+def validator-dirs-in-localnet [localnet_dir: string] {
+    ls $localnet_dir
+    | where type == "dir"
+    | get name
+    | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' }
+}
+
+def trusted-peers-from-localnet [localnet_dir: string] {
+    validator-dirs-in-localnet $localnet_dir | each { |d|
+        let addr = ($d | path basename)
+        let ip = ($addr | split row ":" | get 0)
+        let port = ($addr | split row ":" | get 1 | into int)
+        let identity = (open $"($d)/enode.identity" | str trim)
+        $"enode://($identity)@($ip):($port + 1)"
+    } | str join ","
+}
+
+def init-e2e-db [tempo_bin: string, genesis: string, datadir: string, bloat: int, bloat_file: string] {
+    print $"Initializing database at ($datadir)..."
+    let init_result = (run-external $tempo_bin "init" "--chain" $genesis "--datadir" $datadir | complete)
+    if $init_result.stdout != "" { print $init_result.stdout }
+    if $init_result.stderr != "" { print $init_result.stderr }
+    if $init_result.exit_code != 0 {
+        print $"Error: tempo init failed for ($datadir) with exit code ($init_result.exit_code)"
+        exit $init_result.exit_code
+    }
+
+    if $bloat > 0 {
+        print $"Loading state bloat into ($datadir)..."
+        let bloat_result = (run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file | complete)
+        if $bloat_result.stdout != "" { print $bloat_result.stdout }
+        if $bloat_result.stderr != "" { print $bloat_result.stderr }
+        if $bloat_result.exit_code != 0 {
+            print $"Error: state bloat load failed for ($datadir) with exit code ($bloat_result.exit_code)"
+            exit $bloat_result.exit_code
+        }
+    }
+}
+
 def bench-save-e2e-meta [datadir: string, meta_dir: string, marker: record, genesis_files: list] {
     mkdir $meta_dir
     for pair in $genesis_files {
@@ -197,6 +236,40 @@ def start-e2e-local-node [
     }
 }
 
+def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int, consensus_ip: string] {
+    let addr = ($node_dir | path basename)
+    let inferred_ip = if ($addr | str contains ":") {
+        $addr | split row ":" | get 0
+    } else {
+        "0.0.0.0"
+    }
+    let ip = if $consensus_ip != "" { $consensus_ip } else { $inferred_ip }
+    let signing_key = $"($node_dir)/signing.key"
+    let signing_share = $"($node_dir)/signing.share"
+    let enode_key = $"($node_dir)/enode.key"
+
+    let execution_p2p_port = $port + 1
+    let metrics_port = $port + 2
+    let authrpc_port = $port + 3
+    let discv5_port = $port + 4
+
+    [
+        "--consensus.signing-key" $signing_key
+        "--consensus.signing-share" $signing_share
+        "--consensus.listen-address" $"($ip):($port)"
+        "--consensus.metrics-address" $"($ip):($metrics_port)"
+        "--trusted-peers" $trusted_peers
+        "--port" $"($execution_p2p_port)"
+        "--discovery.port" $"($execution_p2p_port)"
+        "--discovery.v5.port" $"($discv5_port)"
+        "--p2p-secret-key" $enode_key
+        "--authrpc.port" $"($authrpc_port)"
+        "--consensus.fee-recipient" "0x0000000000000000000000000000000000000000"
+        "--consensus.use-local-defaults"
+        "--consensus.bypass-ip-check"
+    ]
+}
+
 def stop-e2e-processes-gracefully [] {
     let pids = (find-tempo-pids)
     if ($pids | length) > 0 {
@@ -223,6 +296,39 @@ def stop-e2e-processes-gracefully [] {
     }
 }
 
+def stop-tracy-capture [] {
+    print "  Stopping tracy-capture..."
+    let capture_pids = (ps | where name =~ "tracy-capture" | get pid)
+    for pid in $capture_pids {
+        kill -s 2 $pid
+    }
+    mut wait_tracy = 0
+    while $wait_tracy < 30 {
+        if (ps | where name =~ "tracy-capture" | length) == 0 { break }
+        sleep 1sec
+        $wait_tracy = $wait_tracy + 1
+    }
+    if $wait_tracy >= 30 {
+        print "  Warning: tracy-capture did not exit, sending SIGKILL"
+        for pid in (ps | where name =~ "tracy-capture" | get pid) {
+            kill -s 9 $pid
+        }
+    }
+}
+
+def wait-for-samply-profile [] {
+    print "  Waiting for samply to finish saving profile..."
+    mut wait = 0
+    while $wait < 120 {
+        if (ps | where name =~ "samply" | length) == 0 { break }
+        sleep 500ms
+        $wait = $wait + 1
+    }
+    if $wait >= 120 {
+        print "  Warning: samply did not exit in time"
+    }
+}
+
 def stop-local-e2e-systemd-scopes [] {
     if (^uname | str trim) != "Linux" or ((which systemctl | length) == 0) {
         return
@@ -244,6 +350,38 @@ def cleanup-local-e2e-processes [] {
     stop-local-e2e-systemd-scopes
     stop-e2e-processes-gracefully
     stop-tracy-capture
+}
+
+def rpc-block-number [url: string] {
+    let result = (do { curl -sf $url -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' } | complete)
+    if $result.exit_code != 0 {
+        return null
+    }
+    let parsed = (try { $result.stdout | from json } catch { null })
+    if $parsed == null {
+        return null
+    }
+    let hex = ($parsed | get -o result | default "")
+    if $hex == "" {
+        return null
+    }
+    try { $hex | str replace "0x" "" | into int --radix 16 } catch { null }
+}
+
+def rpc-peer-count [url: string] {
+    let result = (do { curl -sf $url -X POST -H "Content-Type: application/json" -d '{"jsonrpc":"2.0","method":"net_peerCount","params":[],"id":1}' } | complete)
+    if $result.exit_code != 0 {
+        return null
+    }
+    let parsed = (try { $result.stdout | from json } catch { null })
+    if $parsed == null {
+        return null
+    }
+    let hex = ($parsed | get -o result | default "")
+    if $hex == "" {
+        return null
+    }
+    try { $hex | str replace "0x" "" | into int --radix 16 } catch { null }
 }
 
 def e2e-wait-for-rpc-online [url: string, max_attempts: int] {
@@ -338,7 +476,7 @@ def init-local-e2e-side [
     mkdir $datadir
     mkdir $node_dir
 
-    bench-init-db $tempo_bin $generated_genesis $datadir $bloat $bloat_file
+    init-e2e-db $tempo_bin $generated_genesis $datadir $bloat $bloat_file
     for file in ["signing.key" "signing.share" "enode.key" "enode.identity"] {
         cp $"($generated_node_dir)/($file)" $"($node_dir)/($file)"
     }
