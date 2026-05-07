@@ -53,6 +53,8 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) validator_set: Option<Vec<B256>>,
     pub(crate) parent_beacon_block_root: Option<B256>,
     pub(crate) subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
+    /// Sets `cfg_env.enable_amsterdam_eip8037` to gate TIP-1016 behavior in tests.
+    pub(crate) amsterdam_eip8037_enabled: bool,
     // Test state to seed into the executor after creation
     pub(crate) initial_section: Option<BlockSection>,
     pub(crate) initial_seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
@@ -69,6 +71,7 @@ impl Default for TestExecutorBuilder {
             validator_set: None,
             parent_beacon_block_root: None,
             subblock_fee_recipients: HashMap::new(),
+            amsterdam_eip8037_enabled: false,
             initial_section: None,
             initial_seen_subblocks: Vec::new(),
             initial_incentive_gas_used: 0,
@@ -94,6 +97,13 @@ impl TestExecutorBuilder {
 
     pub(crate) fn with_parent_beacon_block_root(mut self, root: B256) -> Self {
         self.parent_beacon_block_root = Some(root);
+        self
+    }
+
+    /// Toggles `cfg_env.enable_amsterdam_eip8037`, which gates TIP-1016 (state gas split)
+    /// behavior independently of the T4 hardfork.
+    pub(crate) fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
+        self.amsterdam_eip8037_enabled = enabled;
         self
     }
 
@@ -124,9 +134,13 @@ impl TestExecutorBuilder {
         db: DB,
         chainspec: &'a Arc<TempoChainSpec>,
     ) -> TempoBlockExecutor<'a, DB, NoOpInspector> {
+        let mut cfg_env = revm::context::CfgEnv::default();
+        cfg_env.enable_amsterdam_eip8037 = self.amsterdam_eip8037_enabled;
+
         let evm = TempoEvm::new(
             db,
             EvmEnv {
+                cfg_env,
                 block_env: TempoBlockEnv {
                     inner: BlockEnv {
                         number: U256::from(self.block_number),
@@ -136,7 +150,6 @@ impl TestExecutorBuilder {
                     },
                     ..Default::default()
                 },
-                ..Default::default()
             },
         );
 

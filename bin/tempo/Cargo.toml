@@ -44,6 +44,7 @@ alloy-provider = { workspace = true, features = [
 	"reqwest",
 	"reqwest-rustls-tls",
 ] }
+alloy-rlp.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-signer-aws.workspace = true
 alloy-signer-gcp.workspace = true

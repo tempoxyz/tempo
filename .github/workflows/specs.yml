@@ -192,7 +192,7 @@ jobs:
       - name: Build foundry forge with coverage instrumentation
         if: needs.check-precompiles.outputs.coverage == 'true'
         working-directory: foundry
-        run: RUSTFLAGS="-C instrument-coverage" cargo build -p forge --profile release
+        run: RUSTFLAGS="-C instrument-coverage" cargo build -p forge --profile release --no-default-features
 
       - name: Run Forge tests with Rust precompiles (with coverage)
         if: needs.check-precompiles.outputs.coverage == 'true'
@@ -205,7 +205,7 @@ jobs:
       - name: Build foundry forge
         if: needs.check-precompiles.outputs.coverage != 'true'
         working-directory: foundry
-        run: cargo build -p forge --profile release
+        run: cargo build -p forge --profile release --no-default-features
 
       - name: Run Forge tests with Rust precompiles
         if: needs.check-precompiles.outputs.coverage != 'true'

@@ -231,12 +231,14 @@ impl FullConsensus<TempoPrimitives> for TempoConsensus {
         block: &RecoveredBlock<Block>,
         result: &BlockExecutionResult<TempoReceipt>,
         receipt_root_bloom: Option<ReceiptRootBloom>,
+        block_access_list_hash: Option<alloy_primitives::B256>,
     ) -> Result<(), ConsensusError> {
         FullConsensus::<TempoPrimitives>::validate_block_post_execution(
             &self.inner,
             block,
             result,
             receipt_root_bloom,
+            block_access_list_hash,
         )
     }
 }
@@ -833,9 +835,11 @@ mod tests {
 
         let user_tx = create_tx(chain_id);
 
+        use tempo_chainspec::constants::moderato::MODERATO_T4_TIMESTAMP;
+
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
-            .timestamp(current_timestamp_millis())
+            .timestamp(MODERATO_T4_TIMESTAMP - 1)
             .build();
         let block = create_valid_block(header, vec![user_tx]);
         let sealed = SealedBlock::seal_slow(block);
@@ -922,7 +926,7 @@ mod tests {
         };
 
         let err = consensus
-            .validate_block_post_execution(&recovered, &result, None)
+            .validate_block_post_execution(&recovered, &result, None, None)
             .unwrap_err();
         assert!(
             matches!(err, ConsensusError::BodyReceiptRootDiff(_)),
@@ -973,9 +977,11 @@ mod tests {
         let wrong_addr = Address::repeat_byte(0xFF);
         let system_tx = create_system_tx(chain_id, wrong_addr);
 
+        use tempo_chainspec::constants::moderato::MODERATO_T4_TIMESTAMP;
+
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
-            .timestamp(current_timestamp_millis())
+            .timestamp(MODERATO_T4_TIMESTAMP - 1)
             .build();
         let block = create_valid_block(header, vec![system_tx]);
         let sealed = SealedBlock::seal_slow(block);

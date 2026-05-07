@@ -26,6 +26,8 @@
 //! overall peer set `{dealers, players, active validators}` together with
 //! addresses.
 
+use std::sync::Arc;
+
 use commonware_consensus::types::{FixedEpocher, Height};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_p2p::AddressableManager;
@@ -45,7 +47,7 @@ pub(crate) struct Config<TOracle> {
     pub(crate) oracle: TOracle,
     /// A handle to the full execution node to read block headers and look up
     /// the Validator Config contract
-    pub(crate) execution_node: TempoFullNode,
+    pub(crate) execution_node: Arc<TempoFullNode>,
     /// The  epoch strategy used by the node.
     pub(crate) epoch_strategy: FixedEpocher,
     /// The last finalized height according to the consensus layer (marshal).

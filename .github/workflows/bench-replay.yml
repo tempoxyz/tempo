@@ -86,7 +86,7 @@ on:
         type: string
         required: false
     secrets:
-      DEREK_PAT:
+      DEREK_BENCH_TOKEN:
         required: false
       DEREK_TOKEN:
         required: false
@@ -120,7 +120,7 @@ jobs:
         id: checkout-ref
         uses: actions/github-script@v8
         with:
-          github-token: ${{ secrets.DEREK_PAT || secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || secrets.GITHUB_TOKEN }}
           script: |
             if (context.eventName === 'workflow_dispatch') {
               // Auto-discover PR for the current branch
@@ -183,7 +183,7 @@ jobs:
         if: env.BENCH_COMMENT_ID
         uses: actions/github-script@v8
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({
               owner: context.repo.owner,
@@ -288,7 +288,7 @@ jobs:
         if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@v8
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             const s = require('./.github/scripts/bench-update-status.js');
             await s({github, context, status: 'Running replay benchmark...'});
@@ -298,7 +298,7 @@ jobs:
         env:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
-          DEREK_PAT: ${{ secrets.DEREK_PAT }}
+          DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
         run: bash .github/scripts/bench-tempo-replay.sh
 
       - name: Parse results
@@ -377,7 +377,7 @@ jobs:
         if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@v8
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             const fs = require('fs');
 
@@ -432,7 +432,7 @@ jobs:
         if: failure() && env.BENCH_COMMENT_ID
         uses: actions/github-script@v8
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({
@@ -446,7 +446,7 @@ jobs:
         if: cancelled() && env.BENCH_COMMENT_ID
         uses: actions/github-script@v8
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({
