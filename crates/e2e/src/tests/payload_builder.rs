@@ -27,6 +27,8 @@ const POOL_TRANSACTIONS_INCLUSION_RATIO_LAST_METRIC: &str =
     "reth_tempo_payload_builder_pool_transactions_inclusion_ratio_last";
 const NULLIFICATIONS_PER_LEADER_METRIC_SUFFIX: &str = "_nullifications_per_leader";
 
+// These tests compute deltas from the process-global Prometheus recorder, so
+// running them concurrently lets one test observe the other's payload-builder metrics.
 static PAYLOAD_BUILDER_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 #[test_traced]
