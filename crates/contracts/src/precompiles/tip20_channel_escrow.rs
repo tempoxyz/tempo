@@ -85,7 +85,7 @@ crate::sol! {
         )
             external;
 
-        /// Closes the channel from the payee side and refunds uncaptured deposit.
+        /// Closes the channel from the payee/operator side and refunds uncaptured deposit.
         function close(
             ChannelDescriptor calldata descriptor,
             uint96 cumulativeAmount,
@@ -202,7 +202,7 @@ crate::sol! {
         error NotPayer();
         /// Caller must be the descriptor payee.
         error NotPayee();
-        /// Caller must be the descriptor payee or operator.
+        /// Caller must be the descriptor payee or nonzero operator.
         error NotPayeeOrOperator();
         /// Payee is zero or a TIP-20-prefix address.
         error InvalidPayee();

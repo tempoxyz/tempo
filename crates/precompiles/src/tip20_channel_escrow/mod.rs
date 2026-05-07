@@ -178,11 +178,7 @@ impl TIP20ChannelEscrow {
         let channel_id = self.channel_id(&call.descriptor)?;
         let mut state = self.load_existing_state(channel_id)?;
 
-        if msg_sender != call.descriptor.payee
-            && (call.descriptor.operator.is_zero() || msg_sender != call.descriptor.operator)
-        {
-            return Err(TIP20ChannelEscrowError::not_payee_or_operator().into());
-        }
+        Self::ensure_payee_or_operator(msg_sender, &call.descriptor)?;
 
         let cumulative = call.cumulativeAmount;
         if cumulative > state.deposit {
@@ -315,6 +311,9 @@ impl TIP20ChannelEscrow {
 
     /// Closes a channel from the payee side and refunds any uncaptured deposit to the payer.
     ///
+    /// The payee can call directly. If an operator was set when the channel was opened, that
+    /// operator can close the channel and route any capture to the descriptor payee.
+    ///
     /// `captureAmount` can be below `cumulativeAmount` but cannot be below what has already
     /// settled. A new voucher is only required when the close captures more than `settled`.
     pub fn close(
@@ -325,9 +324,7 @@ impl TIP20ChannelEscrow {
         let channel_id = self.channel_id(&call.descriptor)?;
         let state = self.load_existing_state(channel_id)?;
 
-        if msg_sender != call.descriptor.payee {
-            return Err(TIP20ChannelEscrowError::not_payee().into());
-        }
+        Self::ensure_payee_or_operator(msg_sender, &call.descriptor)?;
 
         let cumulative = call.cumulativeAmount;
         let capture = call.captureAmount;
@@ -510,6 +507,19 @@ impl TIP20ChannelEscrow {
             descriptor.authorizedSigner,
             descriptor.expiringNonceHash,
         )
+    }
+
+    /// Ensures the caller is the payee or the descriptor's nonzero operator.
+    fn ensure_payee_or_operator(
+        msg_sender: Address,
+        descriptor: &ITIP20ChannelEscrow::ChannelDescriptor,
+    ) -> Result<()> {
+        if msg_sender != descriptor.payee
+            && (descriptor.operator.is_zero() || msg_sender != descriptor.operator)
+        {
+            return Err(TIP20ChannelEscrowError::not_payee_or_operator().into());
+        }
+        Ok(())
     }
 
     /// Loads the transaction-scoped nonce hash seeded by the handler.
@@ -1072,6 +1082,100 @@ mod tests {
                 ITIP20ChannelEscrow::settleCall {
                     descriptor: descriptor_without_operator,
                     cumulativeAmount: abi_u96(1),
+                    signature: Bytes::copy_from_slice(&Signature::test_signature().as_bytes()),
+                },
+            );
+            assert_eq!(
+                result.unwrap_err(),
+                TIP20ChannelEscrowError::not_payee_or_operator().into()
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_close_allows_operator_and_rejects_unrelated_sender() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let payer_signer = PrivateKeySigner::random();
+        let payer = payer_signer.address();
+        let payee = Address::random();
+        let operator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::path_usd(payer)
+                .with_issuer(payer)
+                .with_mint(payer, U256::from(300u128))
+                .apply()?;
+            let mut escrow = TIP20ChannelEscrow::new();
+            escrow.initialize()?;
+
+            let salt = B256::random();
+            let expiring_nonce_hash = seed_expiring_nonce_hash(&mut escrow)?;
+            let channel_id = escrow.open(
+                payer,
+                open_call(payee, operator, token.address(), 100, salt, Address::ZERO),
+            )?;
+            let channel_descriptor = descriptor(
+                payer,
+                payee,
+                operator,
+                token.address(),
+                salt,
+                Address::ZERO,
+                expiring_nonce_hash,
+            );
+            let digest = escrow.get_voucher_digest(ITIP20ChannelEscrow::getVoucherDigestCall {
+                channelId: channel_id,
+                cumulativeAmount: abi_u96(80),
+            })?;
+            let signature =
+                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
+
+            escrow.close(
+                operator,
+                ITIP20ChannelEscrow::closeCall {
+                    descriptor: channel_descriptor,
+                    cumulativeAmount: abi_u96(80),
+                    captureAmount: abi_u96(40),
+                    signature,
+                },
+            )?;
+            let state = escrow.get_channel_state(ITIP20ChannelEscrow::getChannelStateCall {
+                channelId: channel_id,
+            })?;
+            assert!(state.deposit.is_zero());
+            assert!(state.settled.is_zero());
+            assert_eq!(state.closeRequestedAt, 0);
+
+            let salt = B256::random();
+            let expiring_nonce_hash = seed_expiring_nonce_hash(&mut escrow)?;
+            escrow.open(
+                payer,
+                open_call(
+                    payee,
+                    Address::ZERO,
+                    token.address(),
+                    10,
+                    salt,
+                    Address::ZERO,
+                ),
+            )?;
+            let descriptor_without_operator = descriptor(
+                payer,
+                payee,
+                Address::ZERO,
+                token.address(),
+                salt,
+                Address::ZERO,
+                expiring_nonce_hash,
+            );
+            let result = escrow.close(
+                Address::random(),
+                ITIP20ChannelEscrow::closeCall {
+                    descriptor: descriptor_without_operator,
+                    cumulativeAmount: abi_u96(1),
+                    captureAmount: abi_u96(1),
                     signature: Bytes::copy_from_slice(&Signature::test_signature().as_bytes()),
                 },
             );
