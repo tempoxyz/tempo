@@ -1488,7 +1488,7 @@ mod recipient_tests {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
-    use tempo_contracts::precompiles::ITIP20Factory;
+    use tempo_contracts::precompiles::{ITIP20Factory, ITIP1028Escrow, TIP1028EscrowEvent};
 
     use super::*;
     use crate::{
@@ -1563,6 +1563,442 @@ pub(crate) mod tests {
 
             Ok(())
         })
+    }
+
+    mod tip1028_tests {
+        use super::*;
+        use crate::{
+            tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
+            tip1028_escrow::BLOCKED_RECEIPT_VERSION,
+        };
+
+        const BLOCKED_AT: u64 = 1_728_100;
+
+        fn set_receive_policy(
+            receiver: Address,
+            sender_policy_id: u64,
+            token_filter_id: u64,
+            recovery_address: Address,
+        ) -> Result<()> {
+            TIP403Registry::new().set_receive_policy(
+                receiver,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: sender_policy_id,
+                    tokenFilterId: token_filter_id,
+                    recoveryAddress: recovery_address,
+                },
+            )
+        }
+
+        fn receipt_v1(
+            originator: Address,
+            recipient: Address,
+            blocked_nonce: u64,
+            blocked_reason: ITIP403Registry::BlockedReason,
+            kind: InboundKind,
+            memo: B256,
+        ) -> ITIP1028Escrow::ClaimReceiptV1 {
+            ITIP1028Escrow::ClaimReceiptV1 {
+                originator,
+                recipient,
+                blockedAt: BLOCKED_AT,
+                blockedNonce: blocked_nonce,
+                blockedReason: blocked_reason as u8,
+                kind,
+                memo,
+            }
+        }
+
+        fn receipt_balance(
+            token: Address,
+            recovery_contract: Address,
+            receipt: &ITIP1028Escrow::ClaimReceiptV1,
+        ) -> Result<U256> {
+            TIP1028Escrow::new().blocked_receipt_balance(
+                ITIP1028Escrow::blockedReceiptBalanceCall {
+                    token,
+                    recoveryContract: recovery_contract,
+                    receiptVersion: BLOCKED_RECEIPT_VERSION,
+                    receipt: receipt.abi_encode().into(),
+                },
+            )
+        }
+
+        #[test]
+        fn transfer_blocked_by_receive_policy_escrows_funds() -> eyre::Result<()> {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+            storage.set_timestamp(U256::from(BLOCKED_AT));
+            let admin = Address::random();
+            let sender = Address::random();
+            let receiver = Address::random();
+            let amount = U256::from(100u64);
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_mint(sender, amount)
+                    .clear_events()
+                    .apply()?;
+                set_receive_policy(
+                    receiver,
+                    REJECT_ALL_POLICY_ID,
+                    ALLOW_ALL_POLICY_ID,
+                    Address::ZERO,
+                )?;
+
+                token.transfer(
+                    sender,
+                    ITIP20::transferCall {
+                        to: receiver,
+                        amount,
+                    },
+                )?;
+
+                assert_eq!(token.get_balance(sender)?, U256::ZERO);
+                assert_eq!(token.get_balance(receiver)?, U256::ZERO);
+                assert_eq!(token.get_balance(ESCROW_ADDRESS)?, amount);
+                token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
+                    from: sender,
+                    to: ESCROW_ADDRESS,
+                    amount,
+                })]);
+
+                let receipt = receipt_v1(
+                    sender,
+                    receiver,
+                    1,
+                    ITIP403Registry::BlockedReason::RECEIVE_POLICY,
+                    InboundKind::TRANSFER,
+                    B256::ZERO,
+                );
+                assert_eq!(
+                    receipt_balance(token.address, Address::ZERO, &receipt)?,
+                    amount
+                );
+                TIP1028Escrow::new().assert_emitted_events(vec![
+                    TIP1028EscrowEvent::TransferBlocked(ITIP1028Escrow::TransferBlocked {
+                        token: token.address,
+                        from: sender,
+                        receiver,
+                        receiptVersion: BLOCKED_RECEIPT_VERSION,
+                        blockedNonce: 1,
+                        blockedAt: BLOCKED_AT,
+                        recipient: receiver,
+                        amount,
+                        blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
+                        recoveryContract: Address::ZERO,
+                        memo: B256::ZERO,
+                    }),
+                ]);
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn transfer_blocked_by_token_filter_records_reason() -> eyre::Result<()> {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+            storage.set_timestamp(U256::from(BLOCKED_AT));
+            let admin = Address::random();
+            let sender = Address::random();
+            let receiver = Address::random();
+            let amount = U256::from(40u64);
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_mint(sender, amount)
+                    .apply()?;
+                set_receive_policy(
+                    receiver,
+                    ALLOW_ALL_POLICY_ID,
+                    REJECT_ALL_POLICY_ID,
+                    Address::ZERO,
+                )?;
+
+                token.transfer(
+                    sender,
+                    ITIP20::transferCall {
+                        to: receiver,
+                        amount,
+                    },
+                )?;
+
+                let receipt = receipt_v1(
+                    sender,
+                    receiver,
+                    1,
+                    ITIP403Registry::BlockedReason::TOKEN_FILTER,
+                    InboundKind::TRANSFER,
+                    B256::ZERO,
+                );
+                assert_eq!(
+                    receipt_balance(token.address, Address::ZERO, &receipt)?,
+                    amount
+                );
+                TIP1028Escrow::new().assert_emitted_events(vec![
+                    TIP1028EscrowEvent::TransferBlocked(ITIP1028Escrow::TransferBlocked {
+                        token: token.address,
+                        from: sender,
+                        receiver,
+                        receiptVersion: BLOCKED_RECEIPT_VERSION,
+                        blockedNonce: 1,
+                        blockedAt: BLOCKED_AT,
+                        recipient: receiver,
+                        amount,
+                        blockedReason: ITIP403Registry::BlockedReason::TOKEN_FILTER as u8,
+                        recoveryContract: Address::ZERO,
+                        memo: B256::ZERO,
+                    }),
+                ]);
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn transfer_to_escrow_address_rejects() -> eyre::Result<()> {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+            let admin = Address::random();
+            let sender = Address::random();
+            let amount = U256::from(10u64);
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_mint(sender, amount)
+                    .apply()?;
+
+                let result = token.transfer(
+                    sender,
+                    ITIP20::transferCall {
+                        to: ESCROW_ADDRESS,
+                        amount,
+                    },
+                );
+                assert!(matches!(
+                    result,
+                    Err(e) if e == TIP1028EscrowError::escrow_address_reserved().into()
+                ));
+                assert_eq!(token.get_balance(sender)?, amount);
+                assert_eq!(token.get_balance(ESCROW_ADDRESS)?, U256::ZERO);
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn pre_t6_receive_policy_does_not_escrow() -> eyre::Result<()> {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+            storage.set_timestamp(U256::from(BLOCKED_AT));
+            let admin = Address::random();
+            let sender = Address::random();
+            let receiver = Address::random();
+            let amount = U256::from(25u64);
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_mint(sender, amount)
+                    .clear_events()
+                    .apply()?;
+                set_receive_policy(
+                    receiver,
+                    REJECT_ALL_POLICY_ID,
+                    ALLOW_ALL_POLICY_ID,
+                    Address::ZERO,
+                )?;
+
+                token.transfer(
+                    sender,
+                    ITIP20::transferCall {
+                        to: receiver,
+                        amount,
+                    },
+                )?;
+
+                assert_eq!(token.get_balance(sender)?, U256::ZERO);
+                assert_eq!(token.get_balance(receiver)?, amount);
+                assert_eq!(token.get_balance(ESCROW_ADDRESS)?, U256::ZERO);
+                token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
+                    from: sender,
+                    to: receiver,
+                    amount,
+                })]);
+                assert_eq!(
+                    receipt_balance(
+                        token.address,
+                        Address::ZERO,
+                        &receipt_v1(
+                            sender,
+                            receiver,
+                            1,
+                            ITIP403Registry::BlockedReason::RECEIVE_POLICY,
+                            InboundKind::TRANSFER,
+                            B256::ZERO,
+                        ),
+                    )?,
+                    U256::ZERO
+                );
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn transfer_from_blocked_consumes_allowance() -> eyre::Result<()> {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+            storage.set_timestamp(U256::from(BLOCKED_AT));
+            let admin = Address::random();
+            let owner = Address::random();
+            let spender = Address::random();
+            let receiver = Address::random();
+            let amount = U256::from(30u64);
+            let allowance = amount + U256::from(5u64);
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_mint(owner, amount)
+                    .with_approval(owner, spender, allowance)
+                    .apply()?;
+                set_receive_policy(
+                    receiver,
+                    REJECT_ALL_POLICY_ID,
+                    ALLOW_ALL_POLICY_ID,
+                    Address::ZERO,
+                )?;
+
+                token.transfer_from(
+                    spender,
+                    ITIP20::transferFromCall {
+                        from: owner,
+                        to: receiver,
+                        amount,
+                    },
+                )?;
+
+                assert_eq!(
+                    token.allowance(ITIP20::allowanceCall { owner, spender })?,
+                    allowance - amount
+                );
+                assert_eq!(token.get_balance(owner)?, U256::ZERO);
+                assert_eq!(token.get_balance(receiver)?, U256::ZERO);
+                assert_eq!(token.get_balance(ESCROW_ADDRESS)?, amount);
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn transfer_with_memo_blocked_preserves_memo() -> eyre::Result<()> {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+            storage.set_timestamp(U256::from(BLOCKED_AT));
+            let admin = Address::random();
+            let sender = Address::random();
+            let receiver = Address::random();
+            let amount = U256::from(55u64);
+            let memo = B256::repeat_byte(0xab);
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_mint(sender, amount)
+                    .clear_events()
+                    .apply()?;
+                set_receive_policy(
+                    receiver,
+                    REJECT_ALL_POLICY_ID,
+                    ALLOW_ALL_POLICY_ID,
+                    Address::ZERO,
+                )?;
+
+                token.transfer_with_memo(
+                    sender,
+                    ITIP20::transferWithMemoCall {
+                        to: receiver,
+                        amount,
+                        memo,
+                    },
+                )?;
+
+                token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
+                    from: sender,
+                    to: ESCROW_ADDRESS,
+                    amount,
+                })]);
+                let receipt = receipt_v1(
+                    sender,
+                    receiver,
+                    1,
+                    ITIP403Registry::BlockedReason::RECEIVE_POLICY,
+                    InboundKind::TRANSFER,
+                    memo,
+                );
+                assert_eq!(
+                    receipt_balance(token.address, Address::ZERO, &receipt)?,
+                    amount
+                );
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn mint_blocked_credits_escrow() -> eyre::Result<()> {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+            storage.set_timestamp(U256::from(BLOCKED_AT));
+            let admin = Address::random();
+            let receiver = Address::random();
+            let amount = U256::from(70u64);
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .clear_events()
+                    .apply()?;
+                set_receive_policy(
+                    receiver,
+                    REJECT_ALL_POLICY_ID,
+                    ALLOW_ALL_POLICY_ID,
+                    Address::ZERO,
+                )?;
+
+                TIP1028Escrow::new().clear_emitted_events();
+                token.mint(
+                    admin,
+                    ITIP20::mintCall {
+                        to: receiver,
+                        amount,
+                    },
+                )?;
+
+                assert_eq!(token.total_supply()?, amount);
+                assert_eq!(token.get_balance(receiver)?, U256::ZERO);
+                assert_eq!(token.get_balance(ESCROW_ADDRESS)?, amount);
+                token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
+                    from: Address::ZERO,
+                    to: ESCROW_ADDRESS,
+                    amount,
+                })]);
+                TIP1028Escrow::new().assert_emitted_events(Vec::<TIP1028EscrowEvent>::new());
+
+                let receipt = receipt_v1(
+                    Address::ZERO,
+                    receiver,
+                    1,
+                    ITIP403Registry::BlockedReason::RECEIVE_POLICY,
+                    InboundKind::MINT,
+                    B256::ZERO,
+                );
+                assert_eq!(
+                    receipt_balance(token.address, Address::ZERO, &receipt)?,
+                    amount
+                );
+
+                Ok(())
+            })
+        }
     }
 
     #[test]
