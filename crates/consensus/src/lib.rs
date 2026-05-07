@@ -401,9 +401,11 @@ mod tests {
     #[test]
     fn test_validate_header() {
         let consensus = TempoConsensus::new(MODERATO.clone());
+        let timestamp = current_timestamp_millis();
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
-            .timestamp_millis(current_timestamp_millis())
+            .timestamp_millis(timestamp)
+            .shared_gas_limit(MODERATO.shared_gas_limit_at(timestamp / 1000, 30_000_000))
             .build();
         let sealed = SealedHeader::seal_slow(header);
 
@@ -440,6 +442,7 @@ mod tests {
             .gas_limit(gas_limit)
             .timestamp_millis(current_timestamp_millis())
             .general_gas_limit(999)
+            .shared_gas_limit(shared_gas_limit)
             .build();
         let sealed = SealedHeader::seal_slow(header);
 
@@ -457,6 +460,7 @@ mod tests {
             .gas_limit(gas_limit)
             .timestamp_millis(current_timestamp_millis())
             .general_gas_limit(expected_general_gas_limit)
+            .shared_gas_limit(shared_gas_limit)
             .build();
         let sealed = SealedHeader::seal_slow(header);
         assert!(consensus.validate_header(&sealed).is_ok());
@@ -554,6 +558,7 @@ mod tests {
             .gas_limit(gas_limit)
             .timestamp_millis(current_timestamp_millis())
             .general_gas_limit(999)
+            .shared_gas_limit(50_000_000)
             .build();
         let sealed = SealedHeader::seal_slow(header);
 
@@ -570,6 +575,7 @@ mod tests {
             .gas_limit(gas_limit)
             .timestamp_millis(current_timestamp_millis())
             .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
+            .shared_gas_limit(50_000_000)
             .build();
         let sealed = SealedHeader::seal_slow(header);
         consensus.validate_header(&sealed).expect("should be valid");
@@ -938,6 +944,7 @@ mod tests {
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp_millis(boundary_timestamp)
+            .shared_gas_limit(MODERATO.shared_gas_limit_at(boundary_timestamp / 1000, 30_000_000))
             .build();
         let sealed = SealedHeader::seal_slow(header);
 

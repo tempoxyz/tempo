@@ -565,7 +565,7 @@ mod tests {
             },
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 0,
-            shared_gas_limit: 3_000_000,
+            shared_gas_limit: 0,
             ..Default::default()
         };
         let parent = SealedHeader::seal_slow(parent_header);
@@ -600,7 +600,7 @@ mod tests {
 
         // Verify context fields from attributes
         assert_eq!(context.general_gas_limit, 12_000_000);
-        assert_eq!(context.shared_gas_limit, 3_000_000);
+        assert_eq!(context.shared_gas_limit, 4_000_000);
         assert!(context.validator_set.is_none());
         assert_eq!(context.inner.parent_hash, parent.hash());
         assert_eq!(
