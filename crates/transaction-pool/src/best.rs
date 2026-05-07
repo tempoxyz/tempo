@@ -1,7 +1,7 @@
 //! An iterator over the best transactions in the tempo pool.
 
 use crate::transaction::TempoPooledTransaction;
-use alloy_primitives::{Address, U256, map::HashMap};
+use alloy_primitives::{Address, B256, U256, map::HashMap};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
@@ -33,7 +33,7 @@ impl BestPriorityTransactions<CoinbaseTipOrdering<TempoPooledTransaction>>
     }
 }
 
-/// Tracks which side of a [`MergeBestTransactions`] yielded the last transaction.
+/// Tracks which side of a [`MergeBestTransactions`] yielded a transaction.
 #[derive(Debug, Clone, Copy)]
 enum MergeSource {
     Left,
@@ -43,22 +43,28 @@ enum MergeSource {
 /// A [`BestTransactions`] iterator that merges two individual implementations and always yields the next best item from either of the iterators.
 pub struct MergeBestTransactions<L, R, T>
 where
-    L: BestPriorityTransactions<T>,
-    R: BestPriorityTransactions<T, Item = L::Item>,
     T: TransactionOrdering,
+    L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
+    R: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
 {
     left: L,
     right: R,
-    next_left: Option<(L::Item, Priority<T::PriorityValue>)>,
-    next_right: Option<(L::Item, Priority<T::PriorityValue>)>,
-    last_source: Option<MergeSource>,
+    next_left: Option<(
+        Arc<ValidPoolTransaction<T::Transaction>>,
+        Priority<T::PriorityValue>,
+    )>,
+    next_right: Option<(
+        Arc<ValidPoolTransaction<T::Transaction>>,
+        Priority<T::PriorityValue>,
+    )>,
+    yielded_sources: HashMap<B256, MergeSource>,
 }
 
 impl<L, R, T> MergeBestTransactions<L, R, T>
 where
-    L: BestPriorityTransactions<T>,
-    R: BestPriorityTransactions<T, Item = L::Item>,
     T: TransactionOrdering,
+    L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
+    R: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
 {
     /// Creates a new iterator over the given iterators.
     pub fn new(left: L, right: R) -> Self {
@@ -67,17 +73,26 @@ where
             right,
             next_left: None,
             next_right: None,
-            last_source: None,
+            yielded_sources: HashMap::default(),
         }
     }
 }
 
 impl<L, R, T> MergeBestTransactions<L, R, T>
 where
-    L: BestPriorityTransactions<T>,
-    R: BestPriorityTransactions<T, Item = L::Item>,
     T: TransactionOrdering,
+    L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
+    R: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
 {
+    /// Records the source for a transaction that is about to be yielded.
+    fn record_source(
+        &mut self,
+        item: &Arc<ValidPoolTransaction<T::Transaction>>,
+        source: MergeSource,
+    ) {
+        self.yielded_sources.insert(*item.hash(), source);
+    }
+
     /// Returns the next transaction from either the left or the right iterator with the higher priority.
     fn next_best(&mut self) -> Option<(L::Item, Priority<T::PriorityValue>)> {
         if self.next_left.is_none() {
@@ -94,26 +109,26 @@ where
             }
             // Only left has an item - take it
             (Some(_), None) => {
-                self.last_source = Some(MergeSource::Left);
                 let (item, priority) = self.next_left.take()?;
+                self.record_source(&item, MergeSource::Left);
                 Some((item, priority))
             }
             // Only right has an item - take it
             (None, Some(_)) => {
-                self.last_source = Some(MergeSource::Right);
                 let (item, priority) = self.next_right.take()?;
+                self.record_source(&item, MergeSource::Right);
                 Some((item, priority))
             }
             // Both sides have items - compare priorities and take the higher one
             (Some((_, left_priority)), Some((_, right_priority))) => {
                 // Higher priority value is better
                 if left_priority >= right_priority {
-                    self.last_source = Some(MergeSource::Left);
                     let (item, priority) = self.next_left.take()?;
+                    self.record_source(&item, MergeSource::Left);
                     Some((item, priority))
                 } else {
-                    self.last_source = Some(MergeSource::Right);
                     let (item, priority) = self.next_right.take()?;
+                    self.record_source(&item, MergeSource::Right);
                     Some((item, priority))
                 }
             }
@@ -123,11 +138,11 @@ where
 
 impl<L, R, T> Iterator for MergeBestTransactions<L, R, T>
 where
-    L: BestPriorityTransactions<T>,
-    R: BestPriorityTransactions<T, Item = L::Item>,
     T: TransactionOrdering,
+    L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
+    R: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
 {
-    type Item = L::Item;
+    type Item = Arc<ValidPoolTransaction<T::Transaction>>;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_best().map(|(tx, _)| tx)
@@ -136,12 +151,12 @@ where
 
 impl<L, R, T> BestTransactions for MergeBestTransactions<L, R, T>
 where
-    L: BestPriorityTransactions<T, Item: Send> + Send,
-    R: BestPriorityTransactions<T, Item = L::Item> + Send,
     T: TransactionOrdering,
+    L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>> + Send,
+    R: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>> + Send,
 {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
-        match self.last_source {
+        match self.yielded_sources.get(transaction.hash()).copied() {
             Some(MergeSource::Left) => self.left.mark_invalid(transaction, kind),
             Some(MergeSource::Right) => self.right.mark_invalid(transaction, kind),
             None => {
@@ -257,8 +272,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_utils::{TxBuilder, wrap_valid_tx};
+    use alloy_primitives::Address;
     use reth_primitives_traits::transaction::error::InvalidTransactionError;
+    use reth_transaction_pool::TransactionOrigin;
     use std::sync::{Arc, Mutex};
+
+    type MockTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+
+    fn mock_tx(nonce: u64) -> MockTx {
+        Arc::new(wrap_valid_tx(
+            TxBuilder::aa(Address::random()).nonce(nonce).build(),
+            TransactionOrigin::External,
+        ))
+    }
 
     /// A simple mock iterator for testing that yields items with priorities
     struct MockBestTransactions<T> {
@@ -335,69 +362,91 @@ mod tests {
         // Left: priorities [10, 5, 3]
         // Right: priorities [8, 4, 1]
         // Expected order: [10, 8, 5, 4, 3, 1]
-        let left = MockBestTransactions::new(vec![("tx_a", 10), ("tx_b", 5), ("tx_c", 3)]);
-        let right = MockBestTransactions::new(vec![("tx_d", 8), ("tx_e", 4), ("tx_f", 1)]);
+        let tx_a = mock_tx(0);
+        let tx_b = mock_tx(1);
+        let tx_c = mock_tx(2);
+        let tx_d = mock_tx(3);
+        let tx_e = mock_tx(4);
+        let tx_f = mock_tx(5);
+        let left = MockBestTransactions::new(vec![
+            (tx_a.clone(), 10),
+            (tx_b.clone(), 5),
+            (tx_c.clone(), 3),
+        ]);
+        let right = MockBestTransactions::new(vec![
+            (tx_d.clone(), 8),
+            (tx_e.clone(), 4),
+            (tx_f.clone(), 1),
+        ]);
 
         let mut merged = MergeBestTransactions::new(left, right);
 
-        assert_eq!(merged.next(), Some("tx_a")); // priority 10
-        assert_eq!(merged.next(), Some("tx_d")); // priority 8
-        assert_eq!(merged.next(), Some("tx_b")); // priority 5
-        assert_eq!(merged.next(), Some("tx_e")); // priority 4
-        assert_eq!(merged.next(), Some("tx_c")); // priority 3
-        assert_eq!(merged.next(), Some("tx_f")); // priority 1
-        assert_eq!(merged.next(), None);
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash())); // priority 10
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_d.hash())); // priority 8
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_b.hash())); // priority 5
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_e.hash())); // priority 4
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_c.hash())); // priority 3
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_f.hash())); // priority 1
+        assert!(merged.next().is_none());
     }
 
     #[test]
     fn test_merge_best_transactions_empty_left() {
         // Left iterator is empty
+        let tx_a = mock_tx(0);
+        let tx_b = mock_tx(1);
         let left = MockBestTransactions::new(vec![]);
-        let right = MockBestTransactions::new(vec![("tx_a", 10), ("tx_b", 5)]);
+        let right = MockBestTransactions::new(vec![(tx_a.clone(), 10), (tx_b.clone(), 5)]);
 
         let mut merged = MergeBestTransactions::new(left, right);
 
-        assert_eq!(merged.next(), Some("tx_a"));
-        assert_eq!(merged.next(), Some("tx_b"));
-        assert_eq!(merged.next(), None);
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash()));
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_b.hash()));
+        assert!(merged.next().is_none());
     }
 
     #[test]
     fn test_merge_best_transactions_empty_right() {
         // Right iterator is empty
-        let left = MockBestTransactions::new(vec![("tx_a", 10), ("tx_b", 5)]);
+        let tx_a = mock_tx(0);
+        let tx_b = mock_tx(1);
+        let left = MockBestTransactions::new(vec![(tx_a.clone(), 10), (tx_b.clone(), 5)]);
         let right = MockBestTransactions::new(vec![]);
 
         let mut merged = MergeBestTransactions::new(left, right);
 
-        assert_eq!(merged.next(), Some("tx_a"));
-        assert_eq!(merged.next(), Some("tx_b"));
-        assert_eq!(merged.next(), None);
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash()));
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_b.hash()));
+        assert!(merged.next().is_none());
     }
 
     #[test]
     fn test_merge_best_transactions_both_empty() {
-        let left: MockBestTransactions<&str> = MockBestTransactions::new(vec![]);
-        let right: MockBestTransactions<&str> = MockBestTransactions::new(vec![]);
+        let left: MockBestTransactions<MockTx> = MockBestTransactions::new(vec![]);
+        let right: MockBestTransactions<MockTx> = MockBestTransactions::new(vec![]);
 
         let mut merged = MergeBestTransactions::new(left, right);
 
-        assert_eq!(merged.next(), None);
+        assert!(merged.next().is_none());
     }
 
     #[test]
     fn test_merge_best_transactions_equal_priorities() {
         // When priorities are equal, left should be preferred (based on >= comparison)
-        let left = MockBestTransactions::new(vec![("tx_a", 10), ("tx_b", 5)]);
-        let right = MockBestTransactions::new(vec![("tx_c", 10), ("tx_d", 5)]);
+        let tx_a = mock_tx(0);
+        let tx_b = mock_tx(1);
+        let tx_c = mock_tx(2);
+        let tx_d = mock_tx(3);
+        let left = MockBestTransactions::new(vec![(tx_a.clone(), 10), (tx_b.clone(), 5)]);
+        let right = MockBestTransactions::new(vec![(tx_c.clone(), 10), (tx_d.clone(), 5)]);
 
         let mut merged = MergeBestTransactions::new(left, right);
 
-        assert_eq!(merged.next(), Some("tx_a")); // equal priority, left preferred
-        assert_eq!(merged.next(), Some("tx_c"));
-        assert_eq!(merged.next(), Some("tx_b")); // equal priority, left preferred
-        assert_eq!(merged.next(), Some("tx_d"));
-        assert_eq!(merged.next(), None);
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash())); // equal priority, left preferred
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_c.hash()));
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_b.hash())); // equal priority, left preferred
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_d.hash()));
+        assert!(merged.next().is_none());
     }
 
     // ============================================
@@ -406,24 +455,26 @@ mod tests {
 
     #[test]
     fn test_merge_best_transactions_single_left() {
-        let left = MockBestTransactions::new(vec![("tx_a", 10)]);
-        let right: MockBestTransactions<&str> = MockBestTransactions::new(vec![]);
+        let tx_a = mock_tx(0);
+        let left = MockBestTransactions::new(vec![(tx_a.clone(), 10)]);
+        let right: MockBestTransactions<MockTx> = MockBestTransactions::new(vec![]);
 
         let mut merged = MergeBestTransactions::new(left, right);
 
-        assert_eq!(merged.next(), Some("tx_a"));
-        assert_eq!(merged.next(), None);
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash()));
+        assert!(merged.next().is_none());
     }
 
     #[test]
     fn test_merge_best_transactions_single_right() {
-        let left: MockBestTransactions<&str> = MockBestTransactions::new(vec![]);
-        let right = MockBestTransactions::new(vec![("tx_a", 10)]);
+        let tx_a = mock_tx(0);
+        let left: MockBestTransactions<MockTx> = MockBestTransactions::new(vec![]);
+        let right = MockBestTransactions::new(vec![(tx_a.clone(), 10)]);
 
         let mut merged = MergeBestTransactions::new(left, right);
 
-        assert_eq!(merged.next(), Some("tx_a"));
-        assert_eq!(merged.next(), None);
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash()));
+        assert!(merged.next().is_none());
     }
 
     // ============================================
@@ -433,26 +484,37 @@ mod tests {
     #[test]
     fn test_merge_best_transactions_interleaved() {
         // Left has higher odd positions, right has higher even positions
-        let left = MockBestTransactions::new(vec![("L1", 9), ("L2", 7), ("L3", 5)]);
-        let right = MockBestTransactions::new(vec![("R1", 10), ("R2", 6), ("R3", 4)]);
+        let l1 = mock_tx(0);
+        let l2 = mock_tx(1);
+        let l3 = mock_tx(2);
+        let r1 = mock_tx(3);
+        let r2 = mock_tx(4);
+        let r3 = mock_tx(5);
+        let left =
+            MockBestTransactions::new(vec![(l1.clone(), 9), (l2.clone(), 7), (l3.clone(), 5)]);
+        let right =
+            MockBestTransactions::new(vec![(r1.clone(), 10), (r2.clone(), 6), (r3.clone(), 4)]);
 
         let mut merged = MergeBestTransactions::new(left, right);
 
-        assert_eq!(merged.next(), Some("R1")); // 10
-        assert_eq!(merged.next(), Some("L1")); // 9
-        assert_eq!(merged.next(), Some("L2")); // 7
-        assert_eq!(merged.next(), Some("R2")); // 6
-        assert_eq!(merged.next(), Some("L3")); // 5
-        assert_eq!(merged.next(), Some("R3")); // 4
-        assert_eq!(merged.next(), None);
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*r1.hash())); // 10
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*l1.hash())); // 9
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*l2.hash())); // 7
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*r2.hash())); // 6
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*l3.hash())); // 5
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*r3.hash())); // 4
+        assert!(merged.next().is_none());
     }
 
     #[test]
     fn test_mark_invalid_only_forwards_to_source_pool() {
         // Invalidating a right-side (AA-2D) tx must NOT propagate to the
         // left-side (protocol) pool.
-        let left = MockBestTransactions::new(vec![("L1", 5), ("L2", 3)]);
-        let right = MockBestTransactions::new(vec![("R1", 10)]);
+        let l1 = mock_tx(0);
+        let l2 = mock_tx(1);
+        let r1 = mock_tx(2);
+        let left = MockBestTransactions::new(vec![(l1.clone(), 5), (l2.clone(), 3)]);
+        let right = MockBestTransactions::new(vec![(r1.clone(), 10)]);
 
         let left_invalidated = left.invalidated();
         let right_invalidated = right.invalidated();
@@ -461,7 +523,7 @@ mod tests {
 
         // Right has highest priority, so R1 is yielded first
         let first = merged.next().unwrap();
-        assert_eq!(first, "R1");
+        assert_eq!(*first.hash(), *r1.hash());
 
         // Simulate payload builder marking R1 as invalid
         let kind =
@@ -474,14 +536,57 @@ mod tests {
             "left pool must NOT be invalidated when a right-side tx fails"
         );
         assert_eq!(
-            *right_invalidated.lock().unwrap(),
-            vec!["R1"],
+            right_invalidated
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|tx| *tx.hash())
+                .collect::<Vec<_>>(),
+            vec![*r1.hash()],
             "right pool must receive the invalidation"
         );
 
         // Remaining left-side txs must still be yielded
-        assert_eq!(merged.next(), Some("L1"));
-        assert_eq!(merged.next(), Some("L2"));
-        assert_eq!(merged.next(), None);
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*l1.hash()));
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*l2.hash()));
+        assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn test_mark_invalid_uses_original_source_after_later_next() {
+        let l1 = mock_tx(0);
+        let l2 = mock_tx(1);
+        let r1 = mock_tx(2);
+        let r2 = mock_tx(3);
+        let left = MockBestTransactions::new(vec![(l1.clone(), 9), (l2, 7)]);
+        let right = MockBestTransactions::new(vec![(r1.clone(), 10), (r2, 8)]);
+
+        let left_invalidated = left.invalidated();
+        let right_invalidated = right.invalidated();
+
+        let mut merged = MergeBestTransactions::new(left, right);
+        let first = merged.next().unwrap();
+        let second = merged.next().unwrap();
+
+        assert_eq!(*first.hash(), *r1.hash());
+        assert_eq!(*second.hash(), *l1.hash());
+
+        let kind =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        merged.mark_invalid(&first, &kind);
+
+        assert!(
+            left_invalidated.lock().unwrap().is_empty(),
+            "delayed invalidation must not use the most recent source"
+        );
+        assert_eq!(
+            right_invalidated
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|tx| *tx.hash())
+                .collect::<Vec<_>>(),
+            vec![*r1.hash()]
+        );
     }
 }
