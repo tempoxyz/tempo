@@ -568,9 +568,11 @@ mod tests {
         ITIP20ChannelEscrow::ChannelDescriptor {
             payer: Address::random(),
             payee: Address::random(),
+            operator: Address::random(),
             token: PAYMENT_TKN,
             salt: B256::random(),
             authorizedSigner: Address::random(),
+            expiringNonceHash: B256::random(),
         }
     }
 
@@ -578,7 +580,7 @@ mod tests {
     fn channel_escrow_payment_calldatas() -> [Bytes; 4] {
         let descriptor = channel_descriptor();
         [
-            ITIP20ChannelEscrow::openCall { payee: Address::random(), token: PAYMENT_TKN, deposit: U96::from(1), salt: B256::random(), authorizedSigner: Address::random() }.abi_encode().into(),
+            ITIP20ChannelEscrow::openCall { payee: Address::random(), operator: Address::random(), token: PAYMENT_TKN, deposit: U96::from(1), salt: B256::random(), authorizedSigner: Address::random() }.abi_encode().into(),
             ITIP20ChannelEscrow::topUpCall { descriptor: descriptor.clone(), additionalDeposit: U96::from(1) }.abi_encode().into(),
             ITIP20ChannelEscrow::settleCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), signature: vec![1, 2, 3].into() }.abi_encode().into(),
             ITIP20ChannelEscrow::closeCall { descriptor, cumulativeAmount: U96::from(1), captureAmount: U96::from(1), signature: vec![1, 2, 3].into() }.abi_encode().into(),
@@ -851,7 +853,7 @@ mod tests {
         }
         .abi_encode();
         // Corrupt the dynamic `signature` offset word.
-        corrupted_calldata[4 + 6 * 32 + 31] = 0;
+        corrupted_calldata[4 + 8 * 32 + 31] = 0;
 
         for envelope in
             payment_envelopes_to(TIP20_CHANNEL_ESCROW_ADDRESS, corrupted_calldata.into())

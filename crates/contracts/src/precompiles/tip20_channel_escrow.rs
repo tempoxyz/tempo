@@ -3,6 +3,7 @@ pub use ITIP20ChannelEscrow::{
     ITIP20ChannelEscrowEvents as TIP20ChannelEscrowEvent,
 };
 use alloy_primitives::{Address, address};
+use alloy_sol_types::{SolCall, SolType};
 
 pub const TIP20_CHANNEL_ESCROW_ADDRESS: Address =
     address!("0x4D50500000000000000000000000000000000000");
@@ -279,9 +280,11 @@ mod tests {
         ITIP20ChannelEscrow::ChannelDescriptor {
             payer: Address::random(),
             payee: Address::random(),
+            operator: Address::random(),
             token: Address::random(),
             salt: B256::random(),
             authorizedSigner: Address::random(),
+            expiringNonceHash: B256::random(),
         }
     }
 
@@ -289,7 +292,7 @@ mod tests {
     fn payment_calldatas() -> [Vec<u8>; 4] {
         let descriptor = descriptor();
         [
-            ITIP20ChannelEscrow::openCall { payee: Address::random(), token: Address::random(), deposit: U96::from(1), salt: B256::random(), authorizedSigner: Address::random() }.abi_encode(),
+            ITIP20ChannelEscrow::openCall { payee: Address::random(), operator: Address::random(), token: Address::random(), deposit: U96::from(1), salt: B256::random(), authorizedSigner: Address::random() }.abi_encode(),
             ITIP20ChannelEscrow::topUpCall { descriptor: descriptor.clone(), additionalDeposit: U96::from(1) }.abi_encode(),
             ITIP20ChannelEscrow::settleCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), signature: vec![1, 2, 3].into() }.abi_encode(),
             ITIP20ChannelEscrow::closeCall { descriptor, cumulativeAmount: U96::from(1), captureAmount: U96::from(1), signature: vec![1, 2, 3].into() }.abi_encode(),
@@ -327,7 +330,7 @@ mod tests {
         }
         .abi_encode();
         // Corrupt the dynamic `signature` offset word.
-        calldata[4 + 6 * 32 + 31] = 0;
+        calldata[4 + 8 * 32 + 31] = 0;
         assert!(!ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
             &calldata
         ));
