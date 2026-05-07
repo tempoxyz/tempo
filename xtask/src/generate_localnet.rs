@@ -1,6 +1,5 @@
 use std::{net::SocketAddr, path::PathBuf};
 
-use alloy_primitives::Address;
 use eyre::{OptionExt as _, WrapErr as _, ensure};
 use rand_08::SeedableRng as _;
 use reth_network_peers::pk2id;
@@ -125,8 +124,8 @@ impl GenerateLocalnet {
             let target_dir = validator.dst_dir(&output);
             std::fs::create_dir(&target_dir).wrap_err_with(|| {
                 format!(
-                    "failed creating target directory to store validator specifici keys at `{}`",
-                    &target_dir.display()
+                    "failed creating target directory to store validator specific keys at `{}`",
+                    target_dir.display()
                 )
             })?;
 
@@ -174,8 +173,7 @@ impl GenerateLocalnet {
                 \\\n--port {execution_p2p_port} \
                 \\\n--discovery.port {execution_p2p_port} \
                 \\\n--p2p-secret-key {execution_p2p_secret_key} \
-                \\\n--authrpc.port {authrpc_port} \
-                \\\n--consensus.fee-recipient {fee_recipient}",
+                \\\n--authrpc.port {authrpc_port}",
                 signing_key = signing_key_dst.display(),
                 signing_share = signing_share_dst.display(),
                 listen_port = config.consensus_p2p_port,
@@ -185,7 +183,6 @@ impl GenerateLocalnet {
                 trusted_peers = trusted_peers.join(","),
                 execution_p2p_port = config.execution_p2p_port,
                 execution_p2p_secret_key = enode_key_dst.display(),
-                fee_recipient = Address::ZERO,
                 authrpc_port = config.execution_p2p_port + 2,
             );
             println!("{cmd}\n\n");

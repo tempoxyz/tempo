@@ -21,6 +21,7 @@ pub struct HashMapStorageProvider {
     beneficiary: Address,
     block_number: u64,
     spec: TempoHardfork,
+    amsterdam_eip8037_enabled: bool,
     is_static: bool,
     counter_sload: u64,
     counter_sstore: u64,
@@ -64,6 +65,7 @@ impl HashMapStorageProvider {
             beneficiary: Address::ZERO,
             block_number: 0,
             spec,
+            amsterdam_eip8037_enabled: false,
             is_static: false,
             counter_sload: 0,
             counter_sstore: 0,
@@ -73,6 +75,12 @@ impl HashMapStorageProvider {
     /// Returns self with the hardfork spec overridden (builder pattern).
     pub fn with_spec(mut self, spec: TempoHardfork) -> Self {
         self.spec = spec;
+        self
+    }
+
+    /// Returns self with `amsterdam_eip8037_enabled` overridden (builder pattern).
+    pub fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
+        self.amsterdam_eip8037_enabled = enabled;
         self
     }
 }
@@ -190,6 +198,10 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         self.spec
     }
 
+    fn amsterdam_eip8037_enabled(&self) -> bool {
+        self.amsterdam_eip8037_enabled
+    }
+
     fn is_static(&self) -> bool {
         self.is_static
     }
@@ -286,12 +298,20 @@ impl HashMapStorageProvider {
             .or_default();
     }
 
+    /// Returns the amount of counted SLOADs.
     pub fn counter_sload(&self) -> u64 {
         self.counter_sload
     }
 
+    /// Returns the amount of counted SSTOREs.
     pub fn counter_sstore(&self) -> u64 {
         self.counter_sstore
+    }
+
+    /// Resets the SLOAD and SSTORE counters.
+    pub fn reset_counters(&mut self) {
+        self.counter_sload = 0;
+        self.counter_sstore = 0;
     }
 
     /// Returns all storage entries as `(address, slot, value)`.
