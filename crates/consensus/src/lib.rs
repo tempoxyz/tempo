@@ -33,10 +33,6 @@ use tempo_primitives::{
 /// to be in the future even assuming 50-100ms clock drift.
 pub const ALLOWED_FUTURE_BLOCK_TIME_MILLIS: u64 = 0;
 
-/// Divisor for calculating shared gas limit (payment lane capacity).
-/// shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR
-pub const TEMPO_SHARED_GAS_DIVISOR: u64 = 10;
-
 /// Maximum extra data size for Tempo blocks.
 pub const TEMPO_MAXIMUM_EXTRA_DATA_SIZE: usize = 10 * 1_024; // 10KiB
 
@@ -79,7 +75,10 @@ impl TempoConsensus {
             });
         }
 
-        let expected_shared = header.gas_limit() / TEMPO_SHARED_GAS_DIVISOR;
+        let expected_shared = self
+            .inner
+            .chain_spec()
+            .shared_gas_limit_at(header.timestamp(), header.gas_limit());
         if header.shared_gas_limit != expected_shared {
             return Err(TempoConsensusError::SharedGasLimitMismatch {
                 expected: expected_shared,
@@ -326,9 +325,7 @@ mod tests {
         }
 
         fn build(self) -> TempoHeader {
-            let shared_gas_limit = self
-                .shared_gas_limit
-                .unwrap_or(self.gas_limit / TEMPO_SHARED_GAS_DIVISOR);
+            let shared_gas_limit = self.shared_gas_limit.unwrap_or(0);
             // Default to T1 fixed general gas limit
             let general_gas_limit = self
                 .general_gas_limit
@@ -437,7 +434,7 @@ mod tests {
         // Pre-T1 chainspec uses the divisor-based calculation
         let consensus = TempoConsensus::new(create_pre_t1_chainspec());
         let gas_limit = 500_000_000u64;
-        let shared_gas_limit = gas_limit / TEMPO_SHARED_GAS_DIVISOR;
+        let shared_gas_limit = gas_limit / 10;
         // Pre-T1: expected = (gas_limit - shared_gas_limit) / 2
         let header = TestHeaderBuilder::default()
             .gas_limit(gas_limit)
