@@ -5,7 +5,6 @@
 
 mod assemble;
 use alloy_consensus::{BlockHeader as _, Transaction};
-use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
 mod block;
@@ -225,7 +224,7 @@ impl ConfigureEvm for TempoEvmConfig {
             .transactions
             .iter()
             .rev()
-            .filter(|tx| (*tx).to() == Some(Address::ZERO))
+            .filter(|tx| tx.is_system_tx())
             .find_map(|tx| Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref()).ok())
             .unwrap_or_default()
             .into_iter()
@@ -296,7 +295,7 @@ mod tests {
     use super::*;
     use crate::test_utils::test_chainspec;
     use alloy_consensus::{BlockHeader, Signed, TxLegacy};
-    use alloy_primitives::{B256, Bytes, TxKind, U256};
+    use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use std::collections::HashMap;

@@ -900,6 +900,7 @@ pub fn is_more_subblocks(
         .transactions
         .iter()
         .rev()
+        .filter(|tx| tx.is_system_tx())
         .find_map(|tx| Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref()).ok())
     else {
         return false;
@@ -981,7 +982,7 @@ fn resolve_validator_fee_token(
 mod tests {
     use super::*;
     use alloy_consensus::BlockBody;
-    use alloy_primitives::{Address, B256, Bytes, Signature};
+    use alloy_primitives::{Address, B256, Bytes};
     use core::num::NonZeroU64;
     use reth_primitives_traits::SealedBlock;
     use tempo_primitives::{
@@ -1053,7 +1054,7 @@ mod tests {
                 value: U256::ZERO,
                 input,
             },
-            Signature::test_signature(),
+            TEMPO_SYSTEM_TX_SIGNATURE,
         ));
         let block = Block {
             header: TempoHeader::default(),
