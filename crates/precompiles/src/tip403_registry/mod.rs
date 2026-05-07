@@ -345,6 +345,15 @@ impl TIP403Registry {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
 
+        let recovery_address = call.recoveryAddress;
+        if recovery_address == ESCROW_ADDRESS
+            || recovery_address == msg_sender
+            || recovery_address.is_tip20()
+            || recovery_address.is_virtual()
+        {
+            return Err(TIP403RegistryError::invalid_receive_policy_address().into());
+        }
+
         self.validate_receive_policy_id(call.senderPolicyId)?;
         self.validate_receive_policy_id(call.tokenFilterId)?;
 
@@ -352,7 +361,7 @@ impl TIP403Registry {
             has_receive_policy: true,
             sender_policy_id: call.senderPolicyId,
             token_filter_id: call.tokenFilterId,
-            recovery_address: call.recoveryAddress,
+            recovery_address,
         })?;
 
         self.emit_event(TIP403RegistryEvent::ReceivePolicyUpdated(
@@ -360,7 +369,7 @@ impl TIP403Registry {
                 account: msg_sender,
                 senderPolicyId: call.senderPolicyId,
                 tokenFilterId: call.tokenFilterId,
-                recoveryAddress: call.recoveryAddress,
+                recoveryAddress: recovery_address,
             },
         ))
     }
@@ -866,7 +875,7 @@ mod tests {
     };
     use rand_08::Rng;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::TIP403_REGISTRY_ADDRESS;
+    use tempo_contracts::precompiles::{PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS};
     use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
     #[test]
@@ -1154,6 +1163,44 @@ mod tests {
                     TIP403RegistryError::VirtualAddressNotAllowed(_)
                 ))
             ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_receive_policy_rejects_invalid_recovery_address() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let account = Address::random();
+        let virtual_addr = Address::new_virtual(MasterId::random(), UserTag::random());
+
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+
+            for recovery_address in [ESCROW_ADDRESS, PATH_USD_ADDRESS, virtual_addr, account] {
+                let result = registry.set_receive_policy(
+                    account,
+                    ITIP403Registry::setReceivePolicyCall {
+                        senderPolicyId: REJECT_ALL_POLICY_ID,
+                        tokenFilterId: ALLOW_ALL_POLICY_ID,
+                        recoveryAddress: recovery_address,
+                    },
+                );
+                assert_eq!(
+                    result.unwrap_err(),
+                    TIP403RegistryError::invalid_receive_policy_address().into()
+                );
+            }
+
+            // Zero remains the self-recovery sentinel.
+            registry.set_receive_policy(
+                account,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAddress: Address::ZERO,
+                },
+            )?;
 
             Ok(())
         })
