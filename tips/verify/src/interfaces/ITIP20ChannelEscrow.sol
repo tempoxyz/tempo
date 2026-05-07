@@ -18,7 +18,7 @@ interface ITIP20ChannelEscrow {
     struct ChannelState {
         uint96 settled;
         uint96 deposit;
-        uint32 closeData;
+        uint32 closeRequestedAt;
     }
 
     struct Channel {
@@ -152,6 +152,7 @@ interface ITIP20ChannelEscrow {
     error InvalidPayee();
     error InvalidToken();
     error ZeroDeposit();
+    error ExpiringNonceHashNotSet();
     error InvalidSignature();
     error AmountExceedsDeposit();
     error AmountNotIncreasing();

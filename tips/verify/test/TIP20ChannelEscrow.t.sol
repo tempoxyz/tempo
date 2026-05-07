@@ -187,7 +187,7 @@ contract TIP20ChannelEscrowTest is Test {
         assertEq(ch.descriptor.expiringNonceHash, expiringNonceHash);
         assertEq(ch.state.settled, 0);
         assertEq(ch.state.deposit, DEPOSIT);
-        assertEq(ch.state.closeData, 0);
+        assertEq(ch.state.closeRequestedAt, 0);
         assertEq(channel.getChannelState(channelId).deposit, DEPOSIT);
     }
 
@@ -337,10 +337,10 @@ contract TIP20ChannelEscrowTest is Test {
         vm.prank(payer);
         channel.topUp(_descriptor(), 100_000);
 
-        assertEq(channel.getChannelState(channelId).closeData, 0);
+        assertEq(channel.getChannelState(channelId).closeRequestedAt, 0);
     }
 
-    function test_requestClose_storesTimestampInCloseData() public {
+    function test_requestClose_storesTimestampInCloseRequestedAt() public {
         bytes32 channelId = _openChannel();
         uint32 closeRequestedAt = uint32(block.timestamp);
 
@@ -348,7 +348,7 @@ contract TIP20ChannelEscrowTest is Test {
         channel.requestClose(_descriptor());
 
         ITIP20ChannelEscrow.ChannelState memory ch = channel.getChannelState(channelId);
-        assertEq(ch.closeData, closeRequestedAt);
+        assertEq(ch.closeRequestedAt, closeRequestedAt);
 
         uint256 raw = uint256(vm.load(address(channel), _channelStateSlot(channelId)));
         assertEq(uint32(raw >> 192), closeRequestedAt);
@@ -366,7 +366,7 @@ contract TIP20ChannelEscrowTest is Test {
 
         ITIP20ChannelEscrow.ChannelState memory ch = channel.getChannelState(channelId);
         assertEq(ch.settled, 0);
-        assertEq(ch.closeData, 0);
+        assertEq(ch.closeRequestedAt, 0);
         assertEq(token.balanceOf(payee), payeeBalanceBefore + 600_000);
         assertEq(token.balanceOf(payer), payerBalanceBefore + 400_000);
     }
@@ -399,7 +399,7 @@ contract TIP20ChannelEscrowTest is Test {
 
         ITIP20ChannelEscrow.ChannelState memory ch = channel.getChannelState(channelId);
         assertEq(ch.settled, 0);
-        assertEq(ch.closeData, 0);
+        assertEq(ch.closeRequestedAt, 0);
         assertEq(token.balanceOf(payee), payeeBalanceBefore + DEPOSIT);
     }
 
@@ -423,7 +423,7 @@ contract TIP20ChannelEscrowTest is Test {
         vm.prank(payee);
         channel.close(_descriptor(), 600_000, 600_000, sig);
 
-        assertEq(channel.getChannelState(channelId).closeData, 0);
+        assertEq(channel.getChannelState(channelId).closeRequestedAt, 0);
 
         // Reusing the original expiringNonceHash approximates a later call in the same top-level AA batch.
         // The persistent channel slot has been deleted by close, so the per-transaction opened-ID
@@ -451,7 +451,7 @@ contract TIP20ChannelEscrowTest is Test {
         vm.prank(payer);
         channel.withdraw(_descriptor());
 
-        assertEq(channel.getChannelState(channelId).closeData, 0);
+        assertEq(channel.getChannelState(channelId).closeRequestedAt, 0);
         assertEq(token.balanceOf(payer), payerBalanceBefore + DEPOSIT);
     }
 
