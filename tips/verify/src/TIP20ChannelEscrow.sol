@@ -19,7 +19,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
     uint64 public constant CLOSE_GRACE_PERIOD = 15 minutes;
 
     uint256 internal constant _DEPOSIT_OFFSET = 96;
-    uint256 internal constant _CLOSE_DATA_OFFSET = 192;
+    uint256 internal constant _CLOSE_REQUESTED_AT_OFFSET = 192;
 
     bytes32 internal constant _EIP712_DOMAIN_TYPEHASH = keccak256(
         "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
@@ -38,14 +38,14 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
     // persistent state slot.
     //
     // This Solidity reference uses persistent storage because tests cannot model precompile
-    // transient storage directly. Since `channelId` includes `expiringNonceHash`, a real
-    // cross-transaction reopen has a different ID and is not blocked by this persistent
+    // transient storage directly. Since `channelId` includes the transaction-derived
+    // `expiringNonceHash` context value, a real cross-transaction reopen has a different ID
+    // and is not blocked by this persistent
     // approximation.
     mapping(bytes32 => bool) internal _openedChannelIdsForTest;
 
-    error ExpiringNonceHashNotSet();
-
-    /// @dev Reference-contract-only hook. The precompile derives this from the enclosing tx's expiring nonce hash.
+    /// @dev Reference-contract-only hook. The precompile derives this as
+    /// `keccak256(abi.encodePacked(encodeForSigning, sender))` for every real transaction type.
     function setExpiringNonceHashForTest(bytes32 expiringNonceHash) external {
         _expiringNonceHashContext = expiringNonceHash;
     }
@@ -75,12 +75,14 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
         // Also reject same-top-level-transaction reopens of a channel ID that was opened earlier
         // and then terminally closed or withdrawn. Without this guard, terminal deletion would make
-        // the persistent state slot look unused again even though the enclosing expiring nonce
-        // hash, and thus the derived channel ID, is unchanged for later calls in the same AA batch.
+        // the persistent state slot look unused again even though the enclosing transaction-derived
+        // context hash, and thus the derived channel ID, is unchanged for later calls in the same
+        // top-level transaction.
         if (_openedChannelIdsForTest[channelId]) revert ChannelAlreadyExists();
 
-        channelStates[channelId] =
-            _encodeChannelState(ChannelState({ settled: 0, deposit: deposit, closeData: 0 }));
+        channelStates[channelId] = _encodeChannelState(
+            ChannelState({ settled: 0, deposit: deposit, closeRequestedAt: 0 })
+        );
 
         // The reference contract keeps ERC-20-style allowance flow for local verification.
         // The enshrined precompile should use TIP-20 `systemTransferFrom` semantics instead.
@@ -155,8 +157,8 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
             if (!success) revert TransferFailed();
         }
 
-        if (channel.closeData != 0) {
-            channel.closeData = 0;
+        if (channel.closeRequestedAt != 0) {
+            channel.closeRequestedAt = 0;
             emit CloseRequestCancelled(channelId, descriptor.payer, descriptor.payee);
         }
 
@@ -173,8 +175,8 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
         if (msg.sender != descriptor.payer) revert NotPayer();
 
-        if (channel.closeData == 0) {
-            channel.closeData = uint32(block.timestamp);
+        if (channel.closeRequestedAt == 0) {
+            channel.closeRequestedAt = uint32(block.timestamp);
             channelStates[channelId] = _encodeChannelState(channel);
             emit CloseRequested(
                 channelId,
@@ -233,7 +235,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
         if (msg.sender != descriptor.payer) revert NotPayer();
 
-        uint32 closeRequestedAt = _closeRequestedAt(channel.closeData);
+        uint32 closeRequestedAt = channel.closeRequestedAt;
         bool closeGracePassed = closeRequestedAt != 0
             && block.timestamp >= uint256(closeRequestedAt) + CLOSE_GRACE_PERIOD;
 
@@ -357,7 +359,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
         state.settled = uint96(packedState);
         state.deposit = uint96(packedState >> _DEPOSIT_OFFSET);
-        state.closeData = uint32(packedState >> _CLOSE_DATA_OFFSET);
+        state.closeRequestedAt = uint32(packedState >> _CLOSE_REQUESTED_AT_OFFSET);
     }
 
     function _encodeChannelState(ChannelState memory state)
@@ -367,11 +369,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
     {
         packedState = uint256(state.settled);
         packedState |= uint256(state.deposit) << _DEPOSIT_OFFSET;
-        packedState |= uint256(state.closeData) << _CLOSE_DATA_OFFSET;
-    }
-
-    function _closeRequestedAt(uint32 closeData) internal pure returns (uint32) {
-        return closeData;
+        packedState |= uint256(state.closeRequestedAt) << _CLOSE_REQUESTED_AT_OFFSET;
     }
 
     function _validateVoucher(
