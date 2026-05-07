@@ -195,10 +195,16 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
 
     let cpu_args = if $cpus != "" { ["-p" $"AllowedCPUs=($cpus)"] } else { [] }
     let memory_args = if $memory != "" { ["-p" $"MemoryMax=($memory)"] } else { [] }
+    let telemetry_env = if ($env.TEMPO_TELEMETRY_URL? | default "" | str length) > 0 {
+        ["--setenv=TEMPO_TELEMETRY_URL"]
+    } else {
+        []
+    }
     let uid = (id -u | str trim)
     let gid = (id -g | str trim)
     [
         "sudo"
+        "--preserve-env=TEMPO_TELEMETRY_URL"
         "systemd-run"
         "--scope"
         "--quiet"
@@ -207,6 +213,7 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
         "--unit" $unit
         "--uid" $uid
         "--gid" $gid
+        ...$telemetry_env
         "-p" "CPUWeight=100"
         ...$cpu_args
         ...$memory_args
