@@ -105,7 +105,7 @@ where
     ///    changed for a token matching the transaction's fee token
     ///    2b. **Spending limit spends**: AA transactions whose remaining spending limit (re-read
     ///    from state) is now insufficient after included keychain txs decremented it
-    /// 2c. **Key-authorization nonce consumptions**: AA transactions with a nonce-bearing
+    ///    2c. **Key-authorization nonce consumptions**: AA transactions with a nonce-bearing
     ///    inline key authorization whose `(account, nonce)` has already been consumed
     /// 3. **Validator token changes**: Transactions that would fail due to insufficient
     ///    liquidity in the new (user_token, validator_token) AMM pool
@@ -1547,7 +1547,7 @@ mod tests {
                 .disable_balance_check()
                 .build(InMemoryBlobStore::default());
         let amm_cache =
-            AmmLiquidityCache::new(provider.clone()).expect("failed to setup AmmLiquidityCache");
+            AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
         let validator = TempoTransactionValidator::new(
             inner,
             crate::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
