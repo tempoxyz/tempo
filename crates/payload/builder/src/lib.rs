@@ -869,6 +869,7 @@ pub fn is_more_subblocks(
         .transactions
         .iter()
         .rev()
+        .filter(|tx| tx.is_system_tx())
         .find_map(|tx| Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref()).ok())
     else {
         return false;
