@@ -9,15 +9,15 @@ on:
   workflow_dispatch:
     inputs:
       baseline:
-        description: Git ref for the baseline run. Use `local` to use the checked-out tree.
+        description: Git ref for the baseline run. Empty = merge-base with main.
         type: string
-        required: true
-        default: origin/main
+        required: false
+        default: ""
       feature:
-        description: Git ref for the feature run. Use `local` to use the checked-out tree.
+        description: Git ref for the feature run. Empty = current dispatch ref.
         type: string
-        required: true
-        default: local
+        required: false
+        default: ""
       txgen-ref:
         description: Optional ref to pin in tempoxyz/txgen.
         type: string
@@ -34,10 +34,14 @@ on:
         required: true
         default: "30"
       bloat:
-        description: State bloat size in MiB.
-        type: string
+        description: State bloat size in GB.
+        type: choice
         required: true
         default: "1"
+        options:
+          - "1"
+          - "10"
+          - "100"
       tps:
         description: Target transactions per second.
         type: string
@@ -137,6 +141,11 @@ on:
         type: boolean
         required: true
         default: false
+      no-slack:
+        description: Skip Slack notification.
+        type: boolean
+        required: true
+        default: true
 
 env:
   CARGO_TERM_COLOR: always
@@ -152,50 +161,154 @@ jobs:
     name: bench-txgen-dispatch
     runs-on: [self-hosted, Linux, X64, bare-metal]
     timeout-minutes: 300
+    env:
+      BENCH_ACTOR: ${{ github.actor }}
+      BENCH_PRESET: ${{ inputs.preset }}
+      BENCH_DURATION: ${{ inputs.duration }}
+      BENCH_BLOAT_GB: ${{ inputs.bloat }}
+      BENCH_TPS: ${{ inputs.tps }}
+      BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
+      BENCH_ACCOUNTS: ${{ inputs.accounts }}
+      BENCH_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests }}
+      BENCH_SAMPLY: ${{ inputs.samply }}
+      BENCH_TRACY: ${{ inputs.tracy }}
+      BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds }}
+      BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
+      BENCH_NODE_ARGS: ${{ inputs.node-args }}
+      BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
+      BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
+      BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
+      BENCH_BENCH_ENV: ${{ inputs.bench-env }}
+      BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
+      BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
+      BENCH_BASELINE_HARDFORK: ${{ inputs.baseline-hardfork }}
+      BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
+      BENCH_GAS_LIMIT: ${{ inputs.gas-limit }}
+      BENCH_NO_CACHE: ${{ inputs.no-cache }}
+      BENCH_FORCE: ${{ inputs.force }}
+      BENCH_NO_SLACK: ${{ inputs.no-slack }}
+      BENCH_RUN_TYPE: dispatch
+      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
+      GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
+      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
+      - name: Mask telemetry URL
+        if: env.TEMPO_TELEMETRY_URL
+        run: echo "::add-mask::$TEMPO_TELEMETRY_URL"
+
+      - name: Mask Grafana Tempo URL
+        if: env.GRAFANA_TEMPO
+        run: echo "::add-mask::$GRAFANA_TEMPO"
+
+      - name: Resolve bloat size
+        run: |
+          case "$BENCH_BLOAT_GB" in
+            1|10|100) ;;
+            *)
+              echo "::error::Unsupported bloat size: $BENCH_BLOAT_GB GB"
+              exit 1
+              ;;
+          esac
+          echo "BENCH_BLOAT_MIB=$((BENCH_BLOAT_GB * 1000))" >> "$GITHUB_ENV"
+          echo "Using bloat: ${BENCH_BLOAT_GB} GB ($((BENCH_BLOAT_GB * 1000)) MiB)"
+
       - name: Clean up previous results
         run: sudo rm -rf bench-results/ 2>/dev/null || true
 
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          persist-credentials: false
           fetch-depth: 0
+
+      - name: Resolve baseline and feature refs
+        id: refs
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INPUT_BASELINE: ${{ inputs.baseline }}
+          INPUT_FEATURE: ${{ inputs.feature }}
+          INPUT_REF_NAME: ${{ github.ref_name }}
+        with:
+          script: |
+            const { execSync } = require('child_process');
+            const run = (cmd) => execSync(cmd, { encoding: 'utf8' }).trim();
+            const sh = (value) => `'${String(value).replace(/'/g, `'\\''`)}'`;
+
+            const baselineArg = process.env.INPUT_BASELINE;
+            const featureArg = process.env.INPUT_FEATURE;
+            const currentSha = run('git rev-parse HEAD');
+
+            let baselineRef, baselineName, featureRef, featureName;
+
+            if (baselineArg) {
+              try { run(`git fetch origin ${sh(baselineArg)} --quiet`); } catch {}
+              try {
+                baselineRef = run(`git rev-parse ${sh(baselineArg)}`);
+              } catch {
+                baselineRef = run(`git rev-parse ${sh(`origin/${baselineArg}`)}`);
+              }
+              baselineName = baselineArg;
+            } else {
+              try { run('git fetch origin main --quiet'); } catch {}
+              try {
+                baselineRef = run('git merge-base HEAD origin/main');
+              } catch {
+                baselineRef = currentSha;
+              }
+              baselineName = 'main';
+            }
+
+            if (featureArg) {
+              try { run(`git fetch origin ${sh(featureArg)} --quiet`); } catch {}
+              try {
+                featureRef = run(`git rev-parse ${sh(featureArg)}`);
+              } catch {
+                featureRef = run(`git rev-parse ${sh(`origin/${featureArg}`)}`);
+              }
+              featureName = featureArg;
+            } else {
+              featureRef = currentSha;
+              featureName = process.env.INPUT_REF_NAME;
+            }
+
+            core.setOutput('baseline-ref', baselineRef);
+            core.setOutput('baseline-name', baselineName);
+            core.setOutput('feature-ref', featureRef);
+            core.setOutput('feature-name', featureName);
+
+      - name: Resolve PR attribution
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INPUT_FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
+        with:
+          script: |
+            let pr = '';
+            const featureRef = process.env.INPUT_FEATURE_REF;
+            try {
+              const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                commit_sha: featureRef,
+              });
+              const openPr = prs.find(candidate => candidate.state === 'open');
+              if (openPr) {
+                pr = String(openPr.number);
+                core.info(`Using PR #${pr} for feature ref ${featureRef}`);
+              }
+            } catch (error) {
+              core.info(`No PR associated with feature ref ${featureRef}: ${error.message}`);
+            }
+            core.exportVariable('BENCH_PR', pr);
 
       - name: Create PR status comment
         id: pr-comment
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          INPUT_BASELINE: ${{ inputs.baseline }}
-          INPUT_FEATURE: ${{ inputs.feature }}
-          INPUT_TXGEN_REF: ${{ inputs.txgen-ref }}
-          INPUT_PRESET: ${{ inputs.preset }}
-          INPUT_DURATION: ${{ inputs.duration }}
-          INPUT_BLOAT: ${{ inputs.bloat }}
-          INPUT_TPS: ${{ inputs.tps }}
-          INPUT_ACCOUNTS: ${{ inputs.accounts }}
-          INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests }}
-          INPUT_SAMPLY: ${{ inputs.samply }}
-          INPUT_TRACY: ${{ inputs.tracy }}
-          INPUT_BASELINE_HARDFORK: ${{ inputs.baseline-hardfork }}
-          INPUT_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
+          INPUT_BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
+          INPUT_FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
-            const branch = process.env.GITHUB_REF_NAME;
-            const { data: prs } = await github.rest.pulls.list({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              head: `${context.repo.owner}:${branch}`,
-              state: 'open',
-              per_page: 1,
-            });
-
-            if (!prs.length) {
-              core.info(`No open PR found for branch '${branch}', results will be in job summary`);
-              return;
-            }
-
-            const pr = prs[0];
-            const actor = context.actor;
             const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             let jobUrl = runUrl;
             try {
@@ -210,41 +323,40 @@ jobs:
               core.info(`Could not resolve job URL: ${error.message}`);
             }
 
-            const txgenRef = process.env.INPUT_TXGEN_REF || 'default';
-            const samply = process.env.INPUT_SAMPLY === 'true';
+            const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
+            const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
-            const tracy = process.env.INPUT_TRACY || 'off';
+            const tracy = process.env.BENCH_TRACY || 'off';
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
-            const baselineHardfork = process.env.INPUT_BASELINE_HARDFORK || '';
-            const featureHardfork = process.env.INPUT_FEATURE_HARDFORK || '';
+            const baselineHardfork = process.env.BENCH_BASELINE_HARDFORK || '';
+            const featureHardfork = process.env.BENCH_FEATURE_HARDFORK || '';
             const hardforkNote = baselineHardfork ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
-            const config = `**Config:** mode: \`e2e\`, preset: \`${process.env.INPUT_PRESET}\`, duration: \`${process.env.INPUT_DURATION}s\`, bloat: \`${process.env.INPUT_BLOAT} MiB\`, tps: \`${process.env.INPUT_TPS}\`, accounts: \`${process.env.INPUT_ACCOUNTS}\`, max-concurrent-requests: \`${process.env.INPUT_MAX_CONCURRENT_REQUESTS}\`, baseline: \`${process.env.INPUT_BASELINE}\`, feature: \`${process.env.INPUT_FEATURE}\`, backend: \`txgen\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${hardforkNote}`;
+            const config = `**Config:** mode: \`e2e\`, preset: \`${process.env.BENCH_PRESET}\`, duration: \`${process.env.BENCH_DURATION}s\`, bloat: \`${process.env.BENCH_BLOAT_GB} GB\`, tps: \`${process.env.BENCH_TPS}\`, accounts: \`${process.env.BENCH_ACCOUNTS}\`, max-concurrent-requests: \`${process.env.BENCH_MAX_CONCURRENT_REQUESTS}\`, baseline: \`${process.env.INPUT_BASELINE_NAME}\`, feature: \`${process.env.INPUT_FEATURE_NAME}\`, backend: \`txgen\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${hardforkNote}`;
 
+            process.env.BENCH_JOB_URL = jobUrl;
+            process.env.BENCH_CONFIG = config;
+            core.exportVariable('BENCH_JOB_URL', jobUrl);
+            core.exportVariable('BENCH_CONFIG', config);
+
+            if (!process.env.BENCH_PR) {
+              core.info('No open PR associated with feature ref, results will be in job summary');
+              return;
+            }
+
+            const s = require('./.github/scripts/bench-update-status.js');
             const { data: comment } = await github.rest.issues.createComment({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              issue_number: pr.number,
-              body: `cc @${actor}\n\nTxgen benchmark started. [View job](${jobUrl})\n\nStatus: Setting up runner...\n\n${config}`,
+              issue_number: parseInt(process.env.BENCH_PR),
+              body: s.buildBody('Setting up runner...'),
             });
 
-            core.exportVariable('BENCH_PR', String(pr.number));
-            core.exportVariable('BENCH_ACTOR', actor);
             core.exportVariable('BENCH_COMMENT_ID', String(comment.id));
-            core.exportVariable('BENCH_JOB_URL', jobUrl);
-            core.exportVariable('BENCH_CONFIG', config);
             core.setOutput('comment-id', String(comment.id));
-
-      - name: Pre-fetch comparison refs
-        run: |
-          for ref in "${{ inputs.baseline }}" "${{ inputs.feature }}"; do
-            [ -z "$ref" ] && continue
-            [ "$ref" = "local" ] && continue
-            git fetch origin "$ref" --quiet || true
-          done
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
         continue-on-error: true
 
       - name: Update status (installing txgen)
@@ -253,18 +365,12 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
-            const { buildBody } = require('./.github/scripts/bench-update-status.js');
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: parseInt(process.env.BENCH_COMMENT_ID),
-              body: buildBody('Installing txgen backend...'),
-            });
+            const s = require('./.github/scripts/bench-update-status.js');
+            await s({github, context, status: 'Installing txgen backend...'});
 
       - name: Install txgen backend
         env:
           TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
-          TXGEN_REF: ${{ inputs.txgen-ref }}
         run: |
           CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
           echo "$CARGO_BIN_DIR" >> "$GITHUB_PATH"
@@ -272,9 +378,9 @@ jobs:
 
           TXGEN_GIT_URL="https://x-access-token:${TXGEN_GIT_TOKEN}@github.com/tempoxyz/txgen"
           install_args=(--git "$TXGEN_GIT_URL" --locked)
-          if [ -n "$TXGEN_REF" ]; then
-            TXGEN_REV="$(git ls-remote "$TXGEN_GIT_URL" "$TXGEN_REF" "refs/heads/$TXGEN_REF" "refs/tags/$TXGEN_REF" | awk 'BEGIN { rev = "" } /\^\{\}$/ { rev = $1; exit } rev == "" { rev = $1 } END { if (rev != "") print rev }')"
-            install_args+=(--rev "${TXGEN_REV:-$TXGEN_REF}")
+          if [ -n "$BENCH_TXGEN_REF" ]; then
+            TXGEN_REV="$(git ls-remote "$TXGEN_GIT_URL" "$BENCH_TXGEN_REF" "refs/heads/$BENCH_TXGEN_REF" "refs/tags/$BENCH_TXGEN_REF" | awk 'BEGIN { rev = "" } /\^\{\}$/ { rev = $1; exit } rev == "" { rev = $1 } END { if (rev != "") print rev }')"
+            install_args+=(--rev "${TXGEN_REV:-$BENCH_TXGEN_REF}")
           fi
 
           cargo install "${install_args[@]}" txgen-tempo bench-cli
@@ -293,51 +399,61 @@ jobs:
             await s({github, context, status: 'Running txgen benchmark...'});
 
       - name: Run txgen benchmark
+        env:
+          BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
+          FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
         run: |
-          tracy_mode='${{ inputs.tracy }}'
+          tracy_mode="$BENCH_TRACY"
 
           cmd=(
             nu contrib/bench/bench-txgen.nu run
             --mode e2e
-            --preset "${{ inputs.preset }}"
-            --duration "${{ inputs.duration }}"
-            --bloat "${{ inputs.bloat }}"
-            --tps "${{ inputs.tps }}"
-            --accounts "${{ inputs.accounts }}"
-            --max-concurrent-requests "${{ inputs.max-concurrent-requests }}"
+            --preset "$BENCH_PRESET"
+            --duration "$BENCH_DURATION"
+            --bloat "$BENCH_BLOAT_MIB"
+            --tps "$BENCH_TPS"
+            --accounts "$BENCH_ACCOUNTS"
+            --max-concurrent-requests "$BENCH_MAX_CONCURRENT_REQUESTS"
             --no-infra
-            --baseline "${{ inputs.baseline }}"
-            --feature "${{ inputs.feature }}"
-            --bench-datadir "/reth-bench/tempo_${{ inputs.bloat }}mb"
+            --baseline "$BASELINE_REF"
+            --feature "$FEATURE_REF"
+            --bench-datadir "/reth-bench/tempo_${BENCH_BLOAT_MIB}mb"
             --tune
-            --gas-limit "${{ inputs.gas-limit }}"
+            --gas-limit "$BENCH_GAS_LIMIT"
           )
 
-          [ "${{ inputs.samply }}" = 'true' ] && cmd+=(--samply)
-          [ "${{ inputs.no-cache }}" = 'true' ] && cmd+=(--no-cache)
-          [ "${{ inputs.force }}" = 'true' ] && cmd+=(--force)
+          [ "$BENCH_SAMPLY" = 'true' ] && cmd+=(--samply)
+          [ "$BENCH_NO_CACHE" = 'true' ] && cmd+=(--no-cache)
+          [ "$BENCH_FORCE" = 'true' ] && cmd+=(--force)
           case "$tracy_mode" in
             ''|off|false)
               ;;
             true)
-              cmd+=(--tracy on --tracy-seconds "${{ inputs.tracy-seconds }}" --tracy-offset "${{ inputs.tracy-offset }}")
+              cmd+=(--tracy on --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
               ;;
             on|full)
-              cmd+=(--tracy "$tracy_mode" --tracy-seconds "${{ inputs.tracy-seconds }}" --tracy-offset "${{ inputs.tracy-offset }}")
+              cmd+=(--tracy "$tracy_mode" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
               ;;
             *)
               echo "::error::Unsupported tracy input value: $tracy_mode"
               exit 1
               ;;
           esac
-          [ -n "${{ inputs.node-args }}" ] && cmd+=(--node-args="${{ inputs.node-args }}")
-          [ -n "${{ inputs.baseline-args }}" ] && cmd+=(--baseline-args="${{ inputs.baseline-args }}")
-          [ -n "${{ inputs.feature-args }}" ] && cmd+=(--feature-args="${{ inputs.feature-args }}")
-          [ -n "${{ inputs.bench-args }}" ] && cmd+=(--bench-args="${{ inputs.bench-args }}")
-          [ -n "${{ inputs.bench-env }}" ] && cmd+=(--bench-env="${{ inputs.bench-env }}")
-          [ -n "${{ inputs.baseline-env }}" ] && cmd+=(--baseline-env="${{ inputs.baseline-env }}")
-          [ -n "${{ inputs.feature-env }}" ] && cmd+=(--feature-env="${{ inputs.feature-env }}")
-          [ -n "${{ inputs.baseline-hardfork }}" ] && cmd+=(--baseline-hardfork "${{ inputs.baseline-hardfork }}" --feature-hardfork "${{ inputs.feature-hardfork }}")
+          if [ -n "$GRAFANA_TEMPO" ]; then
+            base="${GRAFANA_TEMPO%/}"
+            cmd+=(--tracing-otlp "$base/v1/traces")
+          elif [ -n "$TEMPO_TELEMETRY_URL" ]; then
+            base="${TEMPO_TELEMETRY_URL%/}"
+            cmd+=(--tracing-otlp "$base/opentelemetry/v1/traces")
+          fi
+          [ -n "$BENCH_NODE_ARGS" ] && cmd+=(--node-args="$BENCH_NODE_ARGS")
+          [ -n "$BENCH_BASELINE_ARGS" ] && cmd+=(--baseline-args="$BENCH_BASELINE_ARGS")
+          [ -n "$BENCH_FEATURE_ARGS" ] && cmd+=(--feature-args="$BENCH_FEATURE_ARGS")
+          [ -n "$BENCH_BENCH_ARGS" ] && cmd+=(--bench-args="$BENCH_BENCH_ARGS")
+          [ -n "$BENCH_BENCH_ENV" ] && cmd+=(--bench-env="$BENCH_BENCH_ENV")
+          [ -n "$BENCH_BASELINE_ENV" ] && cmd+=(--baseline-env="$BENCH_BASELINE_ENV")
+          [ -n "$BENCH_FEATURE_ENV" ] && cmd+=(--feature-env="$BENCH_FEATURE_ENV")
+          [ -n "$BENCH_BASELINE_HARDFORK" ] && cmd+=(--baseline-hardfork "$BENCH_BASELINE_HARDFORK" --feature-hardfork "$BENCH_FEATURE_HARDFORK")
 
           printf 'Running command:\n'
           printf '  %q' "${cmd[@]}"
@@ -357,18 +473,15 @@ jobs:
           echo "path=$RESULTS_DIR" >> "$GITHUB_OUTPUT"
           echo "Results directory: $RESULTS_DIR"
 
-      - name: Add Summary To Job
-        if: success()
-        run: |
-          RESULTS_DIR="${{ steps.results-dir.outputs.path }}"
-          if [ -f "$RESULTS_DIR/summary.md" ]; then
-            cat "$RESULTS_DIR/summary.md" >> "$GITHUB_STEP_SUMMARY"
-          else
-            echo "Benchmark completed, but no summary.md was produced." >> "$GITHUB_STEP_SUMMARY"
-          fi
+      - name: Upload results
+        if: "!cancelled()"
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tempo-bench-txgen-results
+          path: bench-results/
 
       - name: Post results to PR
-        if: success() && env.BENCH_COMMENT_ID
+        if: success()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
@@ -382,23 +495,123 @@ jobs:
             try {
               summary = fs.readFileSync(`${resultsDir}/summary.md`, 'utf8');
             } catch (e) {
-              summary = 'Benchmark completed but failed to read summary.';
+              summary = '⚠️ Benchmark completed but failed to read summary.';
+            }
+
+            let grafanaSection = '';
+            try {
+              const meta = JSON.parse(fs.readFileSync(`${resultsDir}/summary.json`, 'utf8'));
+              const refEpoch = meta.reference_epoch;
+              const benchId = meta.benchmark_id;
+              if (refEpoch && benchId) {
+                const fromMs = refEpoch * 1000;
+                const toMs = Date.now();
+                const grafanaUrl = `https://tempoxyz.grafana.net/d/tikv2tn/tempo-bench?orgId=1&from=${fromMs}&to=${toMs}&var-benchmark_id=${benchId}&var-job=tempo-bench`;
+                const logsPane = JSON.stringify({
+                  pw4: {
+                    datasource: 'ffdsfozmb3eo0e',
+                    queries: [{
+                      refId: 'A',
+                      datasource: { type: 'victoriametrics-logs-datasource', uid: 'ffdsfozmb3eo0e' },
+                      editorMode: 'code',
+                      expr: `benchmark_id:${benchId}`,
+                      queryType: 'instant',
+                    }],
+                    range: { from: String(fromMs), to: String(toMs) },
+                    panelsState: { logs: { sortOrder: 'Descending' } },
+                    compact: false,
+                  },
+                });
+                const logsUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(logsPane)}&orgId=1`;
+                const tracesPane = JSON.stringify({
+                  g39: {
+                    datasource: 'cf59s9gws8z5se',
+                    queries: [{
+                      refId: 'A',
+                      datasource: { type: 'tempo', uid: 'cf59s9gws8z5se' },
+                      queryType: 'traceqlSearch',
+                      limit: 20,
+                      tableType: 'traces',
+                      metricsQueryType: 'range',
+                      serviceMapUseNativeHistograms: false,
+                      filters: [
+                        { id: '0ff61fb0', operator: '=', scope: 'resource', tag: 'benchmark_id', value: [benchId], valueType: 'string', isCustomValue: false },
+                        { id: 'service-name', tag: 'service.name', operator: '=', scope: 'resource', value: ['reth'], valueType: 'string', isCustomValue: false },
+                      ],
+                    }],
+                    range: { from: String(fromMs), to: String(toMs) },
+                    compact: false,
+                  },
+                });
+                const tracesUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(tracesPane)}&orgId=1`;
+                grafanaSection = `\n\n### Observability\n\n- [Metrics dashboard](${grafanaUrl})\n- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n`;
+              }
+            } catch (e) {}
+
+            let samplySection = '';
+            if (process.env.BENCH_SAMPLY === 'true') {
+              const runs = ['baseline-1', 'feature-1', 'feature-2', 'baseline-2'];
+              const links = [];
+              for (const run of runs) {
+                try {
+                  const url = fs.readFileSync(`${resultsDir}/profile-${run}-url.txt`, 'utf8').trim();
+                  if (url) links.push(`- **${run}**: [Firefox Profiler](${url})`);
+                } catch (e) {}
+              }
+              if (links.length > 0) {
+                samplySection = `\n\n### Samply Profiles\n\n${links.join('\n')}\n`;
+              }
+            }
+
+            let tracySection = '';
+            if (process.env.BENCH_TRACY && process.env.BENCH_TRACY !== 'off') {
+              const runs = ['baseline-1', 'feature-1', 'feature-2', 'baseline-2'];
+              const links = [];
+              for (const run of runs) {
+                try {
+                  const url = fs.readFileSync(`${resultsDir}/tracy-${run}-url.txt`, 'utf8').trim();
+                  if (url) links.push(`- **${run}**: [Tracy Viewer](${url})`);
+                } catch (e) {}
+              }
+              if (links.length > 0) {
+                tracySection = `\n\n### Tracy Profiles\n\n${links.join('\n')}\n`;
+              }
             }
 
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: parseInt(process.env.BENCH_COMMENT_ID),
-              body: `cc @${process.env.BENCH_ACTOR}\n\nTxgen benchmark complete. [View job](${jobUrl})\n\n${summary}`,
-            });
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Txgen benchmark complete! [View job](${jobUrl})\n\n${summary}${grafanaSection}${samplySection}${tracySection}`;
+            const ackCommentId = process.env.BENCH_COMMENT_ID;
 
-      - name: Upload results
-        if: "!cancelled()"
-        uses: actions/upload-artifact@v4
+            if (ackCommentId) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: parseInt(ackCommentId),
+                body,
+              });
+            } else {
+              await core.summary.addRaw(body).write();
+            }
+
+      - name: Send Slack notification (success)
+        if: success() && steps.results-dir.outputs.path && env.BENCH_NO_SLACK != 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BENCH_WORK_DIR: ${{ steps.results-dir.outputs.path }}
+          BENCH_BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
+          BENCH_FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
         with:
-          name: tempo-bench-txgen-results
-          path: bench-results/
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.success({ core, context });
+
+      - name: Send Slack notification (failure)
+        if: failure() && env.BENCH_NO_SLACK != 'true'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.failure({ core, context, failedStep: 'running txgen benchmark' });
 
       - name: Update status (failed)
         if: failure() && env.BENCH_COMMENT_ID
@@ -411,7 +624,7 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               comment_id: parseInt(process.env.BENCH_COMMENT_ID),
-              body: `cc @${process.env.BENCH_ACTOR}\n\nTxgen benchmark failed. [View logs](${jobUrl})`,
+              body: `cc @${process.env.BENCH_ACTOR}\n\n❌ Txgen benchmark failed. [View logs](${jobUrl})`,
             });
 
       - name: Update status (cancelled)
@@ -425,5 +638,5 @@ jobs:
               owner: context.repo.owner,
               repo: context.repo.repo,
               comment_id: parseInt(process.env.BENCH_COMMENT_ID),
-              body: `cc @${process.env.BENCH_ACTOR}\n\nTxgen benchmark cancelled. [View logs](${jobUrl})`,
+              body: `cc @${process.env.BENCH_ACTOR}\n\n⚠️ Txgen benchmark cancelled. [View logs](${jobUrl})`,
             });
