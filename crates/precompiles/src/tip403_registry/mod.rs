@@ -49,7 +49,7 @@ pub struct TIP403Registry {
     /// address is restricted.
     policy_set: Mapping<u64, Mapping<Address, bool>>,
     /// Account receive policy configuration.
-    address_receive_config: Mapping<Address, ReceivePolicyConfig>,
+    receive_policy_config: Mapping<Address, ReceivePolicyConfig>,
 }
 
 #[derive(Debug, Clone, Default, Storable)]
@@ -240,11 +240,8 @@ impl TIP403Registry {
     }
 
     /// Returns `account`'s receive-policy configuration.
-    pub fn receive_policy(
-        &self,
-        call: ITIP403Registry::receivePolicyCall,
-    ) -> Result<ITIP403Registry::receivePolicyReturn> {
-        let config = self.address_receive_config[call.account].read()?;
+    pub fn receive_policy(&self, account: Address) -> Result<ITIP403Registry::receivePolicyReturn> {
+        let config = self.receive_policy_config[account].read()?;
         Ok(ITIP403Registry::receivePolicyReturn {
             hasReceivePolicy: config.has_receive_policy,
             senderPolicyId: config.sender_policy_id,
@@ -263,7 +260,7 @@ impl TIP403Registry {
         sender: Address,
         receiver: Address,
     ) -> Result<Option<ITIP403Registry::BlockedReason>> {
-        let config = self.address_receive_config[receiver].read()?;
+        let config = self.receive_policy_config[receiver].read()?;
         if !config.has_receive_policy {
             return Ok(None);
         }
@@ -281,7 +278,7 @@ impl TIP403Registry {
 
     /// Returns `receiver`'s configured recovery address, or zero if no receive policy is set.
     pub fn receive_policy_recovery(&self, receiver: Address) -> Result<Address> {
-        Ok(self.address_receive_config[receiver]
+        Ok(self.receive_policy_config[receiver]
             .read()?
             .recovery_address)
     }
@@ -357,7 +354,7 @@ impl TIP403Registry {
         self.validate_receive_policy_id(call.senderPolicyId)?;
         self.validate_receive_policy_id(call.tokenFilterId)?;
 
-        self.address_receive_config[msg_sender].write(ReceivePolicyConfig {
+        self.receive_policy_config[msg_sender].write(ReceivePolicyConfig {
             has_receive_policy: true,
             sender_policy_id: call.senderPolicyId,
             token_filter_id: call.tokenFilterId,
@@ -1059,7 +1056,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let registry = TIP403Registry::new();
 
-            let policy = registry.receive_policy(ITIP403Registry::receivePolicyCall { account })?;
+            let policy = registry.receive_policy(account)?;
             assert!(!policy.hasReceivePolicy);
             assert_eq!(policy.senderPolicyId, REJECT_ALL_POLICY_ID);
             assert_eq!(
@@ -1100,7 +1097,7 @@ mod tests {
                 },
             )?;
 
-            let policy = registry.receive_policy(ITIP403Registry::receivePolicyCall { account })?;
+            let policy = registry.receive_policy(account)?;
             assert!(policy.hasReceivePolicy);
             assert_eq!(policy.senderPolicyId, REJECT_ALL_POLICY_ID);
             assert_eq!(

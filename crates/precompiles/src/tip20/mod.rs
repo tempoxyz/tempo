@@ -402,7 +402,7 @@ impl TIP20Token {
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
         let (to, total_supply) = self.preflight_mint(msg_sender, call.to)?;
 
-        if self.validate_or_escrow_funds(
+        if self.validate_inbound_or_escrow(
             Address::ZERO,
             &to,
             call.amount,
@@ -432,7 +432,7 @@ impl TIP20Token {
     ) -> Result<()> {
         let (to, total_supply) = self.preflight_mint(msg_sender, call.to)?;
 
-        if self.validate_or_escrow_funds(
+        if self.validate_inbound_or_escrow(
             Address::ZERO,
             &to,
             call.amount,
@@ -725,7 +725,7 @@ impl TIP20Token {
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        if self.validate_or_escrow_funds(
+        if self.validate_inbound_or_escrow(
             msg_sender,
             &to,
             call.amount,
@@ -761,7 +761,7 @@ impl TIP20Token {
         self.validate_transfer(call.from, &to)?;
         self.consume_allowance(call.from, msg_sender, call.amount)?;
 
-        if self.validate_or_escrow_funds(
+        if self.validate_inbound_or_escrow(
             call.from,
             &to,
             call.amount,
@@ -788,7 +788,7 @@ impl TIP20Token {
         self.validate_transfer(call.from, &to)?;
         self.consume_allowance(call.from, msg_sender, call.amount)?;
 
-        if self.validate_or_escrow_funds(
+        if self.validate_inbound_or_escrow(
             call.from,
             &to,
             call.amount,
@@ -831,7 +831,7 @@ impl TIP20Token {
         self.validate_transfer(from, &to)?;
         self.check_and_update_spending_limit(from, amount)?;
 
-        if self.validate_or_escrow_funds(from, &to, amount, InboundKind::TRANSFER, B256::ZERO)? {
+        if self.validate_inbound_or_escrow(from, &to, amount, InboundKind::TRANSFER, B256::ZERO)? {
             return Ok(true);
         }
 
@@ -869,7 +869,7 @@ impl TIP20Token {
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        if self.validate_or_escrow_funds(
+        if self.validate_inbound_or_escrow(
             msg_sender,
             &to,
             call.amount,
@@ -1097,9 +1097,11 @@ impl TIP20Token {
         self.emit_event(to.build_transfer_event(from, amount))
     }
 
-    /// Validates the TIP-1028 receive-policy check for the destination address. If the receive
-    /// policy prohibits the action, the funds are escrowed.
-    fn validate_or_escrow_funds(
+    /// Validates inbound TIP-1028 receive policy for `to`.
+    ///
+    /// Returns `true` when receive-policies block the inbound and this function escrows the funds.
+    /// Callers must ONLY move funds when `false` is returned.
+    fn validate_inbound_or_escrow(
         &mut self,
         originator: Address,
         to: &Recipient,
