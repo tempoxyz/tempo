@@ -18,6 +18,7 @@ mod snapshot;
 // FIXME: subblocks are currently flaky.
 // mod subblocks;
 mod sync;
+mod tip1028_escrow;
 mod v4_at_genesis;
 
 #[test_traced]

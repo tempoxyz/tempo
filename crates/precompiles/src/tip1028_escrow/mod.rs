@@ -406,6 +406,138 @@ mod tests {
     }
 
     #[test]
+    fn test_escrow_balance_matches_open_receipts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        storage.set_timestamp(U256::from(1_728_001u64));
+
+        let admin = Address::random();
+        let originator = Address::random();
+        let receiver_a = Address::random();
+        let receiver_b = Address::random();
+        let receiver_c = Address::random();
+        let recovery = Address::random();
+        let amount_a = U256::from(30u64);
+        let amount_b = U256::from(45u64);
+        let amount_c = U256::from(70u64);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token_a = TIP20Setup::create("A", "A", admin)
+                .with_issuer(admin)
+                .with_mint(originator, amount_a + amount_b)
+                .apply()?;
+            let mut token_b = TIP20Setup::create("B", "B", admin)
+                .with_issuer(admin)
+                .with_mint(originator, amount_c)
+                .apply()?;
+
+            block_all_senders(receiver_a, Address::ZERO)?;
+            block_all_senders(receiver_b, recovery)?;
+            block_all_senders(receiver_c, Address::ZERO)?;
+
+            token_a.transfer(
+                originator,
+                ITIP20::transferCall {
+                    to: receiver_a,
+                    amount: amount_a,
+                },
+            )?;
+            token_a.transfer(
+                originator,
+                ITIP20::transferCall {
+                    to: receiver_b,
+                    amount: amount_b,
+                },
+            )?;
+            token_b.transfer(
+                originator,
+                ITIP20::transferCall {
+                    to: receiver_c,
+                    amount: amount_c,
+                },
+            )?;
+
+            let receipt_a = receipt_v1(
+                originator,
+                receiver_a,
+                1_728_001,
+                1,
+                BlockedReason::RECEIVE_POLICY,
+                InboundKind::TRANSFER,
+                B256::ZERO,
+            );
+            let receipt_b = receipt_v1(
+                originator,
+                receiver_b,
+                1_728_001,
+                2,
+                BlockedReason::RECEIVE_POLICY,
+                InboundKind::TRANSFER,
+                B256::ZERO,
+            );
+            let receipt_c = receipt_v1(
+                originator,
+                receiver_c,
+                1_728_001,
+                3,
+                BlockedReason::RECEIVE_POLICY,
+                InboundKind::TRANSFER,
+                B256::ZERO,
+            );
+
+            let escrow = TIP1028Escrow::new();
+            assert_eq!(
+                token_a.balance_of(ITIP20::balanceOfCall {
+                    account: ESCROW_ADDRESS
+                })?,
+                receipt_balance(&escrow, token_a.address(), Address::ZERO, &receipt_a)?
+                    + receipt_balance(&escrow, token_a.address(), recovery, &receipt_b)?
+            );
+            assert_eq!(
+                token_b.balance_of(ITIP20::balanceOfCall {
+                    account: ESCROW_ADDRESS
+                })?,
+                receipt_balance(&escrow, token_b.address(), Address::ZERO, &receipt_c)?
+            );
+
+            TIP1028Escrow::new().claim_blocked(
+                receiver_a,
+                claim_call(token_a.address(), Address::ZERO, &receipt_a, receiver_a),
+            )?;
+            assert_eq!(
+                token_a.balance_of(ITIP20::balanceOfCall {
+                    account: ESCROW_ADDRESS
+                })?,
+                receipt_balance(&escrow, token_a.address(), recovery, &receipt_b)?
+            );
+            assert_eq!(
+                token_b.balance_of(ITIP20::balanceOfCall {
+                    account: ESCROW_ADDRESS
+                })?,
+                receipt_balance(&escrow, token_b.address(), Address::ZERO, &receipt_c)?
+            );
+
+            TIP1028Escrow::new().claim_blocked(
+                recovery,
+                claim_call(token_a.address(), recovery, &receipt_b, receiver_b),
+            )?;
+            assert_eq!(
+                token_a.balance_of(ITIP20::balanceOfCall {
+                    account: ESCROW_ADDRESS
+                })?,
+                U256::ZERO
+            );
+            assert_eq!(
+                token_b.balance_of(ITIP20::balanceOfCall {
+                    account: ESCROW_ADDRESS
+                })?,
+                receipt_balance(&escrow, token_b.address(), Address::ZERO, &receipt_c)?
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_receipt_rejects_bad_encoding() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         let admin = Address::random();
