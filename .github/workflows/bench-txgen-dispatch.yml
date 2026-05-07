@@ -211,7 +211,7 @@ jobs:
               ;;
           esac
           echo "BENCH_BLOAT_MIB=$((BENCH_BLOAT_GB * 1000))" >> "$GITHUB_ENV"
-          echo "Using bloat: ${BENCH_BLOAT_GB} GB ($((BENCH_BLOAT_GB * 1000)) MiB)"
+          echo "Using bloat: ${BENCH_BLOAT_GB} GB"
 
       - name: Clean up previous results
         run: sudo rm -rf bench-results/ 2>/dev/null || true
