@@ -547,8 +547,10 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                         storage.store(base_slot + ::alloy::primitives::U256::from(offset), pending_val)?;
                         pending_offset = None;
                     }
-                    // Dynamic fields inherit ctx so LayoutCtx::INIT propagates; Static ones ignore it.
+                    // Dynamic fields need INIT to skip stale-tail cleanup on virgin storage.
+                    // Static fields ignore INIT, so we always use FULL for them.
                     let ctx = if <#ty as crate::storage::StorableType>::IS_DYNAMIC { ctx } else { crate::storage::LayoutCtx::FULL };
+                    debug_assert!(ctx.is_full(), "Struct types can only use full-slot LayoutCtx (FULL or INIT)");
                     <#ty as crate::storage::Storable>::store(&self.#name, storage, #slot_addr, ctx)?;
                 }
 
@@ -581,8 +583,10 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                         pending_offset = None;
                     }
                 } else {
-                    // Dynamic fields inherit ctx so LayoutCtx::INIT propagates; Static ones ignore it.
+                    // Dynamic fields need INIT to skip stale-tail cleanup on virgin storage.
+                    // Static fields ignore INIT, so we always use FULL for them.
                     let ctx = if <#ty as crate::storage::StorableType>::IS_DYNAMIC { ctx } else { crate::storage::LayoutCtx::FULL };
+                    debug_assert!(ctx.is_full(), "Struct types can only use full-slot LayoutCtx (FULL or INIT)");
                     <#ty as crate::storage::Storable>::store(&self.#name, storage, #slot_addr, ctx)?;
                 }
             }}
