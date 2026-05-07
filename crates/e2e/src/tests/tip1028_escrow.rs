@@ -103,7 +103,7 @@ fn test_escrow_claim_no_recovery() {
             .await?
             .get_receipt()
             .await?;
-        assert!(claim.status());
+        assert!(claim.status(), "claim receipt: {claim:#?}");
 
         let token = token_view(http_url, blocked.token);
         assert_eq!(token.balanceOf(blocked.receiver).call().await?, amount);
@@ -147,7 +147,7 @@ fn test_escrow_claim_with_recovery() {
             .await?
             .get_receipt()
             .await?;
-        assert!(claim.status());
+        assert!(claim.status(), "claim receipt: {claim:#?}");
 
         let token = token_view(http_url, blocked.token);
         assert_eq!(token.balanceOf(blocked.receiver).call().await?, U256::ZERO);
@@ -257,7 +257,7 @@ async fn create_blocked_transfer(
         ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8
     );
 
-    let receipt = ITIP1028Escrow::ClaimReceiptV1 {
+    let receipt: Bytes = ITIP1028Escrow::ClaimReceiptV1 {
         originator: blocked.from,
         recipient: blocked.recipient,
         blockedAt: blocked.blockedAt,
@@ -268,6 +268,19 @@ async fn create_blocked_transfer(
     }
     .abi_encode()
     .into();
+
+    let escrow = ITIP1028Escrow::new(
+        ESCROW_ADDRESS,
+        ProviderBuilder::new().connect_http(http_url.clone()),
+    );
+    assert_eq!(
+        escrow
+            .blockedReceiptBalance(token, recovery, BLOCKED_RECEIPT_VERSION, receipt.clone())
+            .call()
+            .await?,
+        amount,
+        "blocked event: {blocked:#?}"
+    );
 
     let token_view = token_view(http_url.clone(), token);
     assert_eq!(token_view.balanceOf(sender).call().await?, U256::ZERO);

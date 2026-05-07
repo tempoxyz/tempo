@@ -59,6 +59,7 @@ use tempo_precompiles::{
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
+    tip1028_escrow::TIP1028Escrow,
     validator_config_v2::ValidatorConfigV2,
 };
 
@@ -416,6 +417,11 @@ impl GenesisArgs {
         if self.t3_time == 0 {
             println!("Initializing signature verifier (T3 active at genesis)");
             initialize_signature_verifier(&mut evm)?;
+        }
+
+        if self.t6_time == 0 {
+            println!("Initializing TIP1028 escrow (T6 active at genesis)");
+            initialize_tip1028_escrow(&mut evm)?;
         }
 
         if !self.no_pairwise_liquidity {
@@ -925,6 +931,19 @@ fn initialize_signature_verifier(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::
         &ctx.cfg,
         &ctx.tx,
         || SignatureVerifier::new().initialize(),
+    )?;
+
+    Ok(())
+}
+
+fn initialize_tip1028_escrow(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || TIP1028Escrow::new().initialize(),
     )?;
 
     Ok(())

@@ -28,7 +28,8 @@ use reth_revm::{
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, ESCROW_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -458,6 +459,9 @@ where
             self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
             self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
         }
+        if self.inner.spec.is_t6_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(ESCROW_ADDRESS)?;
+        }
 
         Ok(())
     }
@@ -664,7 +668,7 @@ mod tests {
         context::result::{ExecutionResult, ResultGas},
         database::EmptyDB,
     };
-    use std::sync::Arc;
+    use std::sync::{Arc, Mutex};
     use tempo_chainspec::spec::DEV;
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
@@ -1553,9 +1557,6 @@ mod tests {
 
     #[test]
     fn test_apply_pre_execution_deploys_validator_v2_code() {
-        use std::sync::Arc;
-        use tempo_chainspec::spec::DEV;
-
         // Dev chainspec has t2Time: 0, so T2 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
@@ -1572,9 +1573,6 @@ mod tests {
 
     #[test]
     fn test_apply_pre_execution_deploys_signature_verifier_code() {
-        use std::sync::Arc;
-        use tempo_chainspec::spec::DEV;
-
         // Dev chainspec has t3Time: 0, so T3 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
@@ -1585,6 +1583,22 @@ mod tests {
         executor.apply_pre_execution_changes().unwrap();
 
         let acc = db.load_cache_account(SIGNATURE_VERIFIER_ADDRESS).unwrap();
+        let info = acc.account_info().unwrap();
+        assert!(!info.is_empty_code_hash());
+    }
+
+    #[test]
+    fn test_apply_pre_execution_deploys_escrow_code() {
+        // Dev chainspec has t6Time: 0, so T6 is active at any timestamp.
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let acc = db.load_cache_account(ESCROW_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
     }
@@ -1610,8 +1624,6 @@ mod tests {
 
     #[test]
     fn test_deploy_precompile_at_boundary_dispatches_state_hook() {
-        use std::sync::{Arc, Mutex};
-
         let chainspec = test_chainspec();
         let mut db = State::builder().with_bundle_update().build();
         let mut executor = TestExecutorBuilder::default()
@@ -1653,9 +1665,6 @@ mod tests {
     /// exempted from block capacity.
     #[test]
     fn test_t4_finish_exempts_state_gas_from_header() {
-        use std::sync::Arc;
-        use tempo_chainspec::spec::DEV;
-
         // DEV chainspec has T4 active at timestamp 0.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();
