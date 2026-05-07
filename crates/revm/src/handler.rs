@@ -52,6 +52,7 @@ use tempo_precompiles::{
     },
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
+    tip20_channel_escrow::TIP20ChannelEscrow,
 };
 use tempo_primitives::{
     TempoAddressExt,
@@ -396,14 +397,15 @@ impl<DB, I> TempoEvmHandler<DB, I> {
 }
 
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
-    fn seed_tx_origin(
+    fn seed_precompile_tx_context(
         &self,
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         let ctx = evm.ctx_mut();
+        let channel_open_context_hash = ctx.tx.channel_open_context_hash();
 
-        // Seed tx.origin in keychain transient storage for both regular execution and
-        // RPC simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
+        // Seed transient precompile transaction context for both regular execution and RPC
+        // simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
         StorageCtx::enter_evm(
             &mut ctx.journaled_state,
             &ctx.block,
@@ -411,7 +413,14 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             &ctx.tx,
             || {
                 let mut keychain = AccountKeychain::new();
-                keychain.set_tx_origin(ctx.tx.caller())
+                keychain.set_tx_origin(ctx.tx.caller())?;
+
+                if let Some(channel_open_context_hash) = channel_open_context_hash {
+                    let mut channel_escrow = TIP20ChannelEscrow::new();
+                    channel_escrow.set_channel_open_context_hash(channel_open_context_hash)?;
+                }
+
+                Ok::<(), TempoPrecompileError>(())
             },
         )
         .map_err(|e| EVMError::Custom(e.to_string()))
@@ -868,7 +877,7 @@ where
         evm: &mut Self::Evm,
         init_gas: &mut InitialAndFloorGas,
     ) -> Result<(), Self::Error> {
-        self.seed_tx_origin(evm)?;
+        self.seed_precompile_tx_context(evm)?;
 
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
