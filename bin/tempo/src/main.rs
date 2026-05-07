@@ -46,8 +46,11 @@ mod tempo_cmd;
 
 use clap::{CommandFactory, FromArgMatches};
 use commonware_runtime::{Metrics, Runner};
-use eyre::WrapErr as _;
-use futures::{FutureExt as _, future::FusedFuture as _};
+use eyre::{OptionExt, WrapErr as _};
+use futures::{
+    FutureExt as _,
+    future::{Either, FusedFuture as _},
+};
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
 use reth_ethereum_cli::Cli;
 use reth_network_api::Peers;
@@ -56,7 +59,7 @@ use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
 use std::{sync::Arc, thread, time::Duration};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack};
+use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
 use tempo_consensus::TempoConsensus;
 use tempo_evm::TempoEvmConfig;
 use tempo_faucet::{
@@ -70,7 +73,7 @@ use tempo_node::{
     telemetry::{PrometheusMetricsConfig, install_prometheus_metrics},
 };
 use tokio::sync::oneshot;
-use tracing::{debug, info, info_span, warn};
+use tracing::{debug, info, info_span, warn, warn_span};
 
 type TempoCli =
     Cli<TempoChainSpecParser, TempoArgs, TempoRpcModuleValidator, tempo_cmd::TempoSubcommand>;
@@ -105,10 +108,20 @@ impl RpcModuleValidator for TempoRpcModuleValidator {
 // TODO: migrate this to tempo_node eventually.
 #[derive(Debug, Clone, clap::Args)]
 struct TempoArgs {
-    /// Follow this specific RPC node for block hashes.
+    /// Run in follow mode from an upstream node.
     /// If provided without a value, defaults to the RPC URL for the selected chain.
-    #[arg(long, value_name = "URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
+    #[arg(long, value_name = "WEBSOCKET_URL", default_missing_value = "auto", num_args(0..=1), env = "TEMPO_FOLLOW")]
     pub follow: Option<String>,
+
+    /// Disable consensus certification in follow mode. The follower syncs execution
+    /// state from the upstream node without validating consensus state.
+    /// DO NOT USE IN PRODUCTION.
+    #[arg(
+        long = "follow.experimental.certify",
+        requires = "follow",
+        default_value_t = false
+    )]
+    pub follow_certify: bool,
 
     /// HTTP endpoint that returns a JSON object mapping chain IDs to bootnode lists.
     ///
@@ -141,6 +154,19 @@ struct TempoArgs {
     #[command(flatten)]
     #[cfg(feature = "pyroscope")]
     pub pyroscope_args: PyroscopeArgs,
+}
+
+impl TempoArgs {
+    fn is_following_uncertified(&self) -> bool {
+        self.follow.is_some() && !self.follow_certify
+    }
+
+    /// Whether the consensus engine should be active.
+    ///
+    /// The engine runs when not in dev mode and not following uncertified.
+    fn has_consensus_engine(&self, dev: bool) -> bool {
+        !dev && !self.is_following_uncertified()
+    }
 }
 
 /// Command line arguments for configuring Pyroscope continuous profiling.
@@ -391,6 +417,7 @@ fn main() -> eyre::Result<()> {
 
     let shutdown_token_clone = shutdown_token.clone();
     let cl_feed_state_clone = cl_feed_state.clone();
+
     let consensus_handle = thread::spawn(move || {
         // Exit early if we are not executing `tempo node` command.
         if !is_node {
@@ -402,109 +429,119 @@ fn main() -> eyre::Result<()> {
                 and a handle to the execution node could be received",
         )?;
 
-        let ret = if node.config.dev.dev || args.follow.is_some() {
-            // When --follow is used (with or without a URL), skip consensus stack
-            futures::executor::block_on(async move {
+        if !args.has_consensus_engine(node.config.dev.dev) {
+            return futures::executor::block_on(async move {
                 shutdown_token_clone.cancelled().await;
                 Ok(())
-            })
-        } else {
-            let consensus_storage = args.consensus.storage_dir.clone().unwrap_or_else(|| {
-                node.config
-                    .datadir
-                    .clone()
-                    .resolve_datadir(node.chain_spec().chain())
-                    .data_dir()
-                    .join("consensus")
             });
+        }
 
-            info_span!("prepare_consensus").in_scope(|| {
-                info!(
-                    path = %consensus_storage.display(),
-                    "determined directory for consensus data",
-                )
-            });
+        let consensus_storage = args.consensus.storage_dir.clone().unwrap_or_else(|| {
+            node.config
+                .datadir
+                .clone()
+                .resolve_datadir(node.chain_spec().chain())
+                .data_dir()
+                .join("consensus")
+        });
 
-            let runtime_config = commonware_runtime::tokio::Config::default()
-                .with_tcp_nodelay(Some(true))
-                .with_worker_threads(args.consensus.worker_threads)
-                .with_storage_directory(consensus_storage)
-                .with_catch_panics(true);
+        info_span!("prepare_consensus").in_scope(|| {
+            info!(
+                path = %consensus_storage.display(),
+                "determined directory for consensus data",
+            )
+        });
 
-            let runner = commonware_runtime::tokio::Runner::new(runtime_config);
+        let runtime_config = commonware_runtime::tokio::Config::default()
+            .with_tcp_nodelay(Some(true))
+            .with_worker_threads(args.consensus.worker_threads)
+            .with_storage_directory(consensus_storage)
+            .with_catch_panics(true);
 
-            runner.start(async move |ctx| {
-                // Ensure all consensus metrics are prefixed. Shadow `ctx` to
-                // not forget.
-                let ctx = ctx.with_label("consensus");
+        let runner = commonware_runtime::tokio::Runner::new(runtime_config);
+        let ret = runner.start(async move |ctx| {
+            let mut metrics_server = tempo_commonware_node::metrics::install(
+                ctx.with_label("metrics"),
+                args.consensus.metrics_address,
+            )
+            .fuse();
 
-                let mut metrics_server = tempo_commonware_node::metrics::install(
-                    ctx.with_label("metrics"),
-                    args.consensus.metrics_address,
-                )
-                .fuse();
+            // Start the unified metrics exporter if configured
+            if let Some(config) = telemetry_config {
+                let consensus_pubkey = args
+                    .consensus
+                    .public_key()
+                    .wrap_err("failed parsing consensus key")?
+                    .map(|k| k.to_string());
 
-                // Start the unified metrics exporter if configured
-                if let Some(config) = telemetry_config {
-                    let consensus_pubkey = args
-                        .consensus
-                        .public_key()
-                        .wrap_err("failed parsing consensus key")?
-                        .map(|k| k.to_string());
+                let prometheus_config = PrometheusMetricsConfig {
+                    endpoint: config.metrics_prometheus_url,
+                    interval: config.metrics_prometheus_interval,
+                    auth_header: config.metrics_auth_header,
+                    consensus_pubkey,
+                    peer_id: format!("{:x}", node.network.peer_id()),
+                };
 
-                    let prometheus_config = PrometheusMetricsConfig {
-                        endpoint: config.metrics_prometheus_url,
-                        interval: config.metrics_prometheus_interval,
-                        auth_header: config.metrics_auth_header,
-                        consensus_pubkey,
-                        peer_id: format!("{:x}", node.network.peer_id()),
-                    };
-
-                    install_prometheus_metrics(
-                        ctx.with_label("telemetry_metrics"),
-                        prometheus_config,
-                    )
+                install_prometheus_metrics(ctx.with_label("telemetry_metrics"), prometheus_config)
                     .wrap_err("failed to start Prometheus metrics exporter")?;
-                }
+            }
 
-                if args.consensus.fee_recipient.is_some() {
-                    warn!(
-                        "`--consensus.fee-recipient` is deprecated and will be \
-                         removed. It is only used pre-T2 hardfork, if validator \
-                         config v2 is not yet activated, or if the on-chain fee \
-                         recipient is set to the zero address",
-                    );
-                }
+            let consensus_stack = if let Some(follow) = args.follow {
+                let follow_url = if follow == "auto" {
+                    node.chain_spec()
+                        .default_follow_url()
+                        .map(|s| s.to_string())
+                        .ok_or_eyre("No default follow URL for this chain")?
+                } else {
+                    follow
+                };
 
-                let consensus_stack =
-                    run_consensus_stack(&ctx, args.consensus, node, cl_feed_state_clone);
-                tokio::pin!(consensus_stack);
-                loop {
-                    tokio::select!(
-                        biased;
+                Either::Left(run_follow_stack(
+                    ctx.with_label("follow"),
+                    args.consensus,
+                    follow_url,
+                    Arc::new(node),
+                    cl_feed_state_clone,
+                ))
+            } else {
+                Either::Right(run_consensus_stack(
+                    ctx.with_label("consensus"),
+                    args.consensus,
+                    Arc::new(node),
+                    cl_feed_state_clone,
+                ))
+            };
 
-                        () = shutdown_token_clone.cancelled() => {
-                            break Ok(());
-                        }
+            tokio::pin!(consensus_stack);
+            loop {
+                tokio::select!(
+                    biased;
 
-                        ret = &mut consensus_stack => {
-                            break ret.and_then(|()| Err(eyre::eyre!(
-                                "consensus stack exited unexpectedly"))
-                            )
-                            .wrap_err("consensus stack failed");
-                        }
+                    () = shutdown_token_clone.cancelled() => {
+                        break Ok(());
+                    }
 
-                        ret = &mut metrics_server, if !metrics_server.is_terminated() => {
-                            let reason = match ret.wrap_err("task_panicked") {
-                                Ok(Ok(())) => "unexpected regular exit".to_string(),
-                                Ok(Err(err)) | Err(err) => format!("{err}"),
-                            };
-                            tracing::warn!(reason, "the metrics server exited");
-                        }
-                    )
-                }
-            })
-        };
+                    ret = &mut consensus_stack => {
+                        break ret.and_then(|()| Err(eyre::eyre!(
+                            "consensus stack exited unexpectedly"))
+                        )
+                        .wrap_err("consensus stack failed");
+                    }
+
+                    ret = &mut metrics_server, if !metrics_server.is_terminated() => {
+                        let reason = match ret.wrap_err("task_panicked") {
+                            Ok(Ok(())) => "unexpected regular exit".to_string(),
+                            Ok(Err(err)) | Err(err) => format!("{err}"),
+                        };
+
+                        warn_span!("consensus_metrics").in_scope(|| {
+                            warn!(reason, "the metrics server exited");
+                        })
+                    }
+                )
+            }
+        });
+
         let _ = consensus_dead_tx.send(());
         ret
     });
@@ -562,41 +599,54 @@ fn main() -> eyre::Result<()> {
         } = builder
             .node(TempoNode::new(&args.node_args, validator_key))
             .apply(|mut builder: WithLaunchContext<_>| {
-                // Resolve the follow URL:
-                // --follow or --follow=auto -> use chain-specific default
-                // --follow=URL -> use provided URL
-                if let Some(follow) = &args.follow {
-                    let follow_url = if follow == "auto" {
-                        builder
-                            .config()
-                            .chain
-                            .default_follow_url()
-                            .map(|s| s.to_string())
-                    } else {
-                        Some(follow.clone())
-                    };
+                // Enable discv5 peer discovery
+                builder
+                    .config_mut()
+                    .network
+                    .discovery
+                    .enable_discv5_discovery = true;
+
+                // Uncertified follower mode: set debug RPC when certification is off
+                if args.is_following_uncertified() {
+                    let follow_url = args.follow.clone().and_then(|v| {
+                        if v != "auto" {
+                            Some(v)
+                        } else {
+                            builder
+                                .config()
+                                .chain
+                                .default_follow_url()
+                                .map(|s| s.to_string())
+                        }
+                    });
+
                     builder.config_mut().debug.rpc_consensus_url = follow_url;
                 }
 
-                builder
-            })
-            .extend_rpc_modules(move |ctx| {
-                if faucet_args.enabled {
-                    let ext = TempoFaucetExt::new(
-                        faucet_args.addresses(),
-                        faucet_args.amount(),
-                        faucet_args.provider(),
-                    );
 
-                    ctx.modules.merge_configured(ext.into_rpc())?;
-                }
+                let has_consensus_engine =
+                    args.has_consensus_engine(builder.config().dev.dev);
 
-                if validator_key.is_some() {
-                    ctx.modules
-                        .merge_configured(TempoConsensusRpc::new(cl_feed_state).into_rpc())?;
-                }
+                builder.extend_rpc_modules(move |ctx| {
+                    if faucet_args.enabled {
+                        let faucet_ext = TempoFaucetExt::new(
+                            faucet_args.addresses(),
+                            faucet_args.amount(),
+                            faucet_args.provider(),
+                        );
 
-                Ok(())
+                        ctx.modules.merge_configured(faucet_ext.into_rpc())
+                            .wrap_err("failed to register faucet rpc module")?;
+                    }
+
+                    if has_consensus_engine {
+                        let consensus_rpc = TempoConsensusRpc::new(cl_feed_state);
+                        ctx.modules.merge_configured(consensus_rpc.into_rpc())
+                            .wrap_err("failed to register consensus rpc module")?;
+                    }
+
+                    Ok(())
+                })
             })
             .launch_with_debug_capabilities()
             .await

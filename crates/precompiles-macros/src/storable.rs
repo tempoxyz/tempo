@@ -487,6 +487,12 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
 ///
 /// For consecutive packable fields sharing a slot, accumulates changes in memory
 /// and writes once, avoiding redundant SLOAD + SSTORE pairs.
+///
+/// # Zero-init behaviour (T4+)
+///
+/// Each packed slot group starts from `U256::ZERO` instead of a previous SLOAD, so any byte not
+/// written by a declared packed field is zeroed on every store. If a struct later on removes a
+/// trailing field, those formerly-occupied bytes will be cleared on the next write.
 fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
     if fields.is_empty() {
         return quote! {};

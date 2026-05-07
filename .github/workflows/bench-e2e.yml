@@ -215,7 +215,7 @@ on:
         type: string
         required: false
     secrets:
-      DEREK_PAT:
+      DEREK_BENCH_TOKEN:
         required: false
       TEMPO_TELEMETRY_URL:
         required: false
@@ -332,23 +332,6 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.checkout-ref.outputs.ref }}
 
-      - name: Checkout txgen repository
-        if: env.BENCH_BACKEND == 'txgen'
-        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          repository: tempoxyz/txgen
-          token: ${{ secrets.DEREK_PAT || github.token }}
-          persist-credentials: false
-          path: txgen
-          fetch-depth: 0
-
-      - name: Checkout txgen ref
-        if: env.BENCH_BACKEND == 'txgen' && env.BENCH_TXGEN_REF != ''
-        working-directory: txgen
-        run: |
-          git fetch origin "$BENCH_TXGEN_REF" --quiet
-          git checkout --detach FETCH_HEAD
-
       - name: Resolve job URL and update status
         if: env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -356,7 +339,7 @@ jobs:
           INPUT_BASELINE_NAME: ${{ inputs.baseline-name }}
           INPUT_FEATURE_NAME: ${{ inputs.feature-name }}
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({
               owner: context.repo.owner,
@@ -404,14 +387,27 @@ jobs:
             exit 1
           fi
 
-      - name: Build txgen backend
+      - name: Install txgen backend
         if: env.BENCH_BACKEND == 'txgen'
-        working-directory: txgen
+        env:
+          TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: |
-          cargo build --release --bin txgen-tempo --bin bench
-          echo "TXGEN_REPO_DIR=$GITHUB_WORKSPACE/txgen" >> "$GITHUB_ENV"
-          echo "TXGEN_TEMPO_BIN=$GITHUB_WORKSPACE/txgen/target/release/txgen-tempo" >> "$GITHUB_ENV"
-          echo "TXGEN_BENCH_BIN=$GITHUB_WORKSPACE/txgen/target/release/bench" >> "$GITHUB_ENV"
+          CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
+          echo "$CARGO_BIN_DIR" >> "$GITHUB_PATH"
+          export PATH="$CARGO_BIN_DIR:$PATH"
+
+          TXGEN_GIT_URL="https://x-access-token:${TXGEN_GIT_TOKEN}@github.com/tempoxyz/txgen"
+          install_args=(--git "$TXGEN_GIT_URL" --locked)
+          if [ -n "$BENCH_TXGEN_REF" ]; then
+            TXGEN_REV="$(git ls-remote "$TXGEN_GIT_URL" "$BENCH_TXGEN_REF" "refs/heads/$BENCH_TXGEN_REF" "refs/tags/$BENCH_TXGEN_REF" | awk 'BEGIN { rev = "" } /\^\{\}$/ { rev = $1; exit } rev == "" { rev = $1 } END { if (rev != "") print rev }')"
+            install_args+=(--rev "${TXGEN_REV:-$BENCH_TXGEN_REF}")
+          fi
+
+          cargo install "${install_args[@]}" txgen-tempo bench-cli
+          echo "TXGEN_TEMPO_BIN=$CARGO_BIN_DIR/txgen-tempo" >> "$GITHUB_ENV"
+          echo "TXGEN_BENCH_BIN=$CARGO_BIN_DIR/bench" >> "$GITHUB_ENV"
+          command -v txgen-tempo
+          command -v bench
 
       - name: Resolve PR head branch
         id: pr-info
@@ -518,7 +514,7 @@ jobs:
         if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             const s = require('./.github/scripts/bench-update-status.js');
             await s({github, context, status: 'Running benchmark...'});
@@ -593,7 +589,7 @@ jobs:
         env:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             const fs = require('fs');
             const resultsDir = process.env.BENCH_RESULTS_DIR;
@@ -730,7 +726,7 @@ jobs:
         if: failure() && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({
@@ -744,7 +740,7 @@ jobs:
         if: cancelled() && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({
