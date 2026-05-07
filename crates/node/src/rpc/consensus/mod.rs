@@ -106,11 +106,7 @@ impl<I: ConsensusFeed> TempoConsensusRpc<I> {
 #[async_trait::async_trait]
 impl<I: ConsensusFeed> TempoConsensusApiServer for TempoConsensusRpc<I> {
     async fn get_finalization(&self, query: Query) -> RpcResult<CertifiedBlock> {
-        match self.consensus_feed.get_finalization(query).await {
-            types::Response::Success(obj) => Ok(obj),
-            types::Response::NotReady => todo!(),
-            types::Response::Missing(_) => todo!(),
-        }
+        self.consensus_feed.get_finalization(query).await.into()
     }
 
     async fn get_latest(&self) -> RpcResult<ConsensusState> {
