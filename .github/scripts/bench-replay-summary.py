@@ -377,6 +377,45 @@ def compute_changes(
     return changes
 
 
+def pct(base: float, feat: float) -> float:
+    return (feat - base) / base * 100.0 if base > 0 else 0.0
+
+
+def rounded_pct(base: float, feat: float) -> float:
+    return round(pct(base, feat), 4)
+
+
+def replay_result_stats(stats: dict) -> dict:
+    return {
+        "new_payload_mean": stats["mean_ms"],
+        "new_payload_p50": stats["p50_ms"],
+        "new_payload_p90": stats["p90_ms"],
+        "new_payload_p99": stats["p99_ms"],
+        "new_payload_mgas_s": stats["mean_mgas_s"],
+        "wall_clock_s": stats["wall_clock_s"],
+        "persist_wait_ms": stats["mean_persist_ms"],
+        "blocks": stats["n"],
+    }
+
+
+def replay_result_deltas(baseline_stats: dict, feature_stats: dict) -> dict:
+    return {
+        "new_payload_mean": rounded_pct(baseline_stats["mean_ms"], feature_stats["mean_ms"]),
+        "new_payload_p50": rounded_pct(baseline_stats["p50_ms"], feature_stats["p50_ms"]),
+        "new_payload_p90": rounded_pct(baseline_stats["p90_ms"], feature_stats["p90_ms"]),
+        "new_payload_p99": rounded_pct(baseline_stats["p99_ms"], feature_stats["p99_ms"]),
+        "new_payload_mgas_s": rounded_pct(
+            baseline_stats["mean_mgas_s"], feature_stats["mean_mgas_s"]
+        ),
+        "wall_clock": rounded_pct(
+            baseline_stats["wall_clock_s"], feature_stats["wall_clock_s"]
+        ),
+        "persist_wait": rounded_pct(
+            baseline_stats["mean_persist_ms"], feature_stats["mean_persist_ms"]
+        ),
+    }
+
+
 def generate_comparison_table(
     run1: dict,
     run2: dict,
@@ -392,11 +431,6 @@ def generate_comparison_table(
     bal_mode: str | None = None,
 ) -> str:
     """Generate a markdown comparison table between baseline and feature."""
-    n = paired["blocks"]
-
-    def pct(base: float, feat: float) -> float:
-        return (feat - base) / base * 100.0 if base > 0 else 0.0
-
     mean_pct = pct(run1["mean_ms"], run2["mean_ms"])
     gas_pct = pct(run1["mean_mgas_s"], run2["mean_mgas_s"])
     wall_pct = pct(run1["wall_clock_s"], run2["wall_clock_s"])
@@ -467,6 +501,33 @@ def generate_markdown(
 ) -> str:
     """Generate a markdown comment body."""
     lines = ["## Benchmark Results", ""]
+    config = summary.get("config", {})
+    chain = config.get("chain") or "unknown"
+    chain_name = config.get("chain_name")
+    chain_id = config.get("chain_id")
+    chain_bits = [f"`{chain}`"]
+    if chain_name and chain_name != chain:
+        chain_bits.append(f"name: `{chain_name}`")
+    if chain_id is not None:
+        chain_bits.append(f"id: `{chain_id}`")
+
+    lines.extend([
+        "## Configuration",
+        "",
+        f"- Mode: `{config.get('mode', 'replay')}`",
+        f"- Chain: {', '.join(chain_bits)}",
+        f"- Requested blocks: `{config.get('blocks', '-')}`",
+        f"- Warmup blocks: `{config.get('warmup', '-')}`",
+        f"- Compared blocks: `{summary.get('blocks', '-')}`",
+    ])
+    if config.get("samply") == "true":
+        lines.append("- Samply: `enabled`")
+    if config.get("tracy") and config.get("tracy") != "off":
+        lines.append(f"- Tracy: `{config.get('tracy')}`")
+    if config.get("txgen_ref"):
+        lines.append(f"- txgen-ref: `{config.get('txgen_ref')}`")
+    lines.append("")
+
     if behind_baseline > 0:
         s = "s" if behind_baseline > 1 else ""
         diff_link = f"https://github.com/{repo}/compare/{baseline_ref[:12]}...{baseline_name}"
@@ -525,6 +586,16 @@ def main():
     parser.add_argument("--wait-time", default=None, help="Wait time interval used between blocks")
     parser.add_argument("--bal-mode", default=None, help="BAL mode (true, feature, baseline)")
     parser.add_argument("--grafana-url", default=None, help="Grafana dashboard URL for this benchmark run")
+    parser.add_argument("--chain", default="mainnet", help="Configured replay chain")
+    parser.add_argument("--chain-name", default=None, help="Node chain name used for replay")
+    parser.add_argument("--chain-id", type=int, default=None, help="Replay chain ID")
+    parser.add_argument("--requested-blocks", "--blocks", default=None, help="Configured benchmark block count")
+    parser.add_argument("--warmup-blocks", "--warmup", default=None, help="Configured warmup block count")
+    parser.add_argument("--samply", default="false", help="Whether samply profiling was enabled")
+    parser.add_argument("--tracy", default="off", help="Tracy profiling mode")
+    parser.add_argument("--txgen-ref", default="", help="Optional txgen ref")
+    parser.add_argument("--benchmark-id", default="", help="Benchmark ID for observability")
+    parser.add_argument("--reference-epoch", type=int, default=0, help="Reference epoch for observability")
     args = parser.parse_args()
 
     if len(args.baseline_json) != len(args.feature_json):
@@ -628,10 +699,34 @@ def main():
         if len(lines) > 5:
             metrics_tables.append("\n".join(lines))
 
+    config = {
+        "mode": "replay",
+        "chain": args.chain,
+        "chain_name": args.chain_name or args.chain,
+        "chain_id": args.chain_id,
+        "blocks": args.requested_blocks,
+        "warmup": args.warmup_blocks,
+        "samply": args.samply,
+        "tracy": args.tracy,
+        "txgen_ref": args.txgen_ref,
+    }
+    results = {
+        "baseline": replay_result_stats(baseline_stats),
+        "feature": replay_result_stats(feature_stats),
+        "deltas": replay_result_deltas(baseline_stats, feature_stats),
+    }
+
     summary = {
+        "benchmark_id": args.benchmark_id,
+        "reference_epoch": args.reference_epoch,
+        "baseline_ref": baseline_ref,
+        "feature_ref": feature_sha,
+        "config": config,
+        "results": results,
         "blocks": paired_stats["blocks"],
         "big_blocks": args.big_blocks,
-        "warmup_blocks": None,
+        "requested_blocks": args.requested_blocks,
+        "warmup_blocks": args.warmup_blocks,
         "wait_time": args.wait_time,
         "bal_mode": bal_mode,
         "baseline": {

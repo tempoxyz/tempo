@@ -25,8 +25,28 @@ on:
         default: "1000"
       samply:
         description: "Enable samply profiling"
+        type: boolean
+        default: false
+      tracy:
+        description: "Tracy mode"
+        type: choice
+        default: "off"
+        options:
+          - "off"
+          - "on"
+          - full
+      tracy-seconds:
+        description: "Tracy capture duration in seconds"
         type: string
-        default: "false"
+        default: "30"
+      tracy-offset:
+        description: "Tracy capture start offset in seconds"
+        type: string
+        default: "120"
+      no-slack:
+        description: "Skip Slack notification"
+        type: boolean
+        default: true
       baseline:
         description: "Baseline git ref (default: merge-base)"
         type: string
@@ -41,6 +61,26 @@ on:
         default: ""
       feature-args:
         description: "Extra node args for feature"
+        type: string
+        default: ""
+      txgen-ref:
+        description: "Optional ref to pin in tempoxyz/txgen"
+        type: string
+        default: ""
+      bench-args:
+        description: "Extra bench send-blocks args"
+        type: string
+        default: ""
+      bench-env:
+        description: "Extra env vars for bench send-blocks"
+        type: string
+        default: ""
+      baseline-env:
+        description: "Extra env vars for the baseline node"
+        type: string
+        default: ""
+      feature-env:
+        description: "Extra env vars for the feature node"
         type: string
         default: ""
   workflow_call:
@@ -70,10 +110,41 @@ on:
       samply:
         type: string
         required: true
+      tracy:
+        type: string
+        required: false
+        default: "off"
+      tracy-seconds:
+        type: string
+        required: false
+        default: "30"
+      tracy-offset:
+        type: string
+        required: false
+        default: "120"
+      no-slack:
+        type: string
+        required: false
+        default: "true"
       baseline-args:
         type: string
         required: false
       feature-args:
+        type: string
+        required: false
+      txgen-ref:
+        type: string
+        required: false
+      bench-args:
+        type: string
+        required: false
+      bench-env:
+        type: string
+        required: false
+      baseline-env:
+        type: string
+        required: false
+      feature-env:
         type: string
         required: false
       blocks:
@@ -89,6 +160,14 @@ on:
       DEREK_BENCH_TOKEN:
         required: false
       DEREK_TOKEN:
+        required: false
+      TEMPO_TELEMETRY_URL:
+        required: false
+      GRAFANA_TEMPO:
+        required: false
+      SLACK_BENCH_BOT_TOKEN:
+        required: false
+      SLACK_BENCH_CHANNEL:
         required: false
 
 env:
@@ -107,20 +186,41 @@ jobs:
     env:
       BENCH_CHAIN: ${{ inputs.chain || 'mainnet' }}
       BENCH_PR: ${{ inputs.pr }}
-      BENCH_ACTOR: ${{ inputs.actor }}
+      BENCH_ACTOR: ${{ inputs.actor || github.actor }}
       BENCH_SAMPLY: ${{ inputs.samply }}
+      BENCH_TRACY: ${{ inputs.tracy || 'off' }}
+      BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '30' }}
+      BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset || '120' }}
+      BENCH_NO_SLACK: ${{ inputs.no-slack }}
       BENCH_BASELINE_ARGS: "--dev.block-time 999999s ${{ inputs.baseline-args }}"
       BENCH_FEATURE_ARGS: "--dev.block-time 999999s ${{ inputs.feature-args }}"
+      BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
+      BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
+      BENCH_BENCH_ENV: ${{ inputs.bench-env }}
+      BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
+      BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
       BENCH_BLOCKS: ${{ inputs.blocks }}
       BENCH_WARMUP_BLOCKS: ${{ inputs.warmup }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_WORK_DIR: bench-results/replay
+      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
+      GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
+      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
+      - name: Mask telemetry URL
+        if: env.TEMPO_TELEMETRY_URL
+        run: echo "::add-mask::$TEMPO_TELEMETRY_URL"
+
+      - name: Mask Grafana Tempo URL
+        if: env.GRAFANA_TEMPO
+        run: echo "::add-mask::$GRAFANA_TEMPO"
+
       - name: Resolve checkout ref
         id: checkout-ref
         uses: actions/github-script@v8
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN || secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
             if (context.eventName === 'workflow_dispatch') {
               // Auto-discover PR for the current branch
@@ -142,7 +242,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: pr.number,
-                  body: `cc @${'${{ github.actor }}'}\n\n🚀 Replay benchmark started! [View run](${runUrl})\n\n⏳ **Status:** Running...\n\n**Config:** chain: \`${'${{ inputs.chain || 'mainnet' }}'}\`, blocks: \`${'${{ inputs.blocks || '5000' }}'}\`, warmup: \`${'${{ inputs.warmup || '1000' }}'}\``,
+                  body: `cc @${'${{ github.actor }}'}\n\n🚀 Replay benchmark started! [View run](${runUrl})\n\n⏳ **Status:** Running...\n\n**Config:** mode: \`replay\`, chain: \`${'${{ inputs.chain || 'mainnet' }}'}\`, blocks: \`${'${{ inputs.blocks || '5000' }}'}\`, warmup: \`${'${{ inputs.warmup || '1000' }}'}\``,
                 });
                 core.exportVariable('BENCH_COMMENT_ID', String(comment.id));
                 if (pr.mergeable) {
@@ -182,8 +282,11 @@ jobs:
       - name: Resolve job URL and update status
         if: env.BENCH_COMMENT_ID
         uses: actions/github-script@v8
+        env:
+          INPUT_BASELINE_NAME: ${{ inputs.baseline-name || inputs.baseline || 'main' }}
+          INPUT_FEATURE_NAME: ${{ inputs.feature-name || inputs.feature || github.ref_name }}
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
             const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({
               owner: context.repo.owner,
@@ -196,12 +299,15 @@ jobs:
 
             const blocks = process.env.BENCH_BLOCKS;
             const warmup = process.env.BENCH_WARMUP_BLOCKS;
-            const baseline = '${{ inputs.baseline-name }}';
-            const feature = '${{ inputs.feature-name }}';
+            const baseline = process.env.INPUT_BASELINE_NAME;
+            const feature = process.env.INPUT_FEATURE_NAME;
             const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
+            const tracy = process.env.BENCH_TRACY || 'off';
+            const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
+            const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
             const chain = process.env.BENCH_CHAIN || 'mainnet';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}`);
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -217,6 +323,12 @@ jobs:
 
       - name: Install uv
         run: curl -LsSf https://astral.sh/uv/install.sh | env UV_INSTALL_DIR="$HOME/.local/bin" sh
+
+      - name: Initialize benchmark metadata
+        run: |
+          timestamp=$(date -u +%Y%m%d-%H%M%S)
+          echo "BENCH_BENCHMARK_ID=bench-replay-${timestamp}" >> "$GITHUB_ENV"
+          echo "BENCH_REFERENCE_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
 
       - name: Resolve PR head branch
         id: pr-info
@@ -284,11 +396,37 @@ jobs:
             core.setOutput('feature-ref', featureRef);
             core.setOutput('feature-name', featureName);
 
+      - name: Resolve PR attribution
+        uses: actions/github-script@v8
+        env:
+          INPUT_FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
+        with:
+          script: |
+            let pr = process.env.BENCH_PR || '';
+            if (!pr) {
+              const featureRef = process.env.INPUT_FEATURE_REF;
+              try {
+                const { data: prs } = await github.rest.repos.listPullRequestsAssociatedWithCommit({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  commit_sha: featureRef,
+                });
+                const openPr = prs.find(candidate => candidate.state === 'open');
+                if (openPr) {
+                  pr = String(openPr.number);
+                  core.info(`Using PR #${pr} for feature ref ${featureRef}`);
+                }
+              } catch (error) {
+                core.info(`No PR associated with feature ref ${featureRef}: ${error.message}`);
+              }
+            }
+            core.exportVariable('BENCH_PR', pr);
+
       - name: Update status (running benchmark)
         if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@v8
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
             const s = require('./.github/scripts/bench-update-status.js');
             await s({github, context, status: 'Running replay benchmark...'});
@@ -298,7 +436,7 @@ jobs:
         env:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
-          DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
+          DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: bash .github/scripts/bench-tempo-replay.sh
 
       - name: Parse results
@@ -310,19 +448,46 @@ jobs:
           FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
         run: |
-          SUMMARY_ARGS="--output-summary $BENCH_WORK_DIR/summary.json"
-          SUMMARY_ARGS="$SUMMARY_ARGS --output-markdown $BENCH_WORK_DIR/comment.md"
-          SUMMARY_ARGS="$SUMMARY_ARGS --repo ${{ github.repository }}"
-          SUMMARY_ARGS="$SUMMARY_ARGS --baseline-ref ${BASELINE_REF}"
-          SUMMARY_ARGS="$SUMMARY_ARGS --baseline-name ${BASELINE_NAME}"
-          SUMMARY_ARGS="$SUMMARY_ARGS --feature-name ${FEATURE_NAME}"
-          SUMMARY_ARGS="$SUMMARY_ARGS --feature-ref ${FEATURE_REF}"
-          BASELINE_JSONS="$BENCH_WORK_DIR/baseline-1/report.json $BENCH_WORK_DIR/baseline-2/report.json"
-          FEATURE_JSONS="$BENCH_WORK_DIR/feature-1/report.json $BENCH_WORK_DIR/feature-2/report.json"
-          SUMMARY_ARGS="$SUMMARY_ARGS --baseline-json $BASELINE_JSONS"
-          SUMMARY_ARGS="$SUMMARY_ARGS --feature-json $FEATURE_JSONS"
-          # shellcheck disable=SC2086
-          python3 .github/scripts/bench-replay-summary.py $SUMMARY_ARGS
+          case "$BENCH_CHAIN" in
+            mainnet)
+              BENCH_CHAIN_NAME=mainnet
+              BENCH_CHAIN_ID=4217
+              ;;
+            testnet)
+              BENCH_CHAIN_NAME=moderato
+              BENCH_CHAIN_ID=42431
+              ;;
+            *)
+              echo "::error::Unknown chain: $BENCH_CHAIN"
+              exit 1
+              ;;
+          esac
+
+          SUMMARY_ARGS=(
+            --output-summary "$BENCH_WORK_DIR/summary.json"
+            --output-markdown "$BENCH_WORK_DIR/summary.md"
+            --repo "${{ github.repository }}"
+            --baseline-ref "$BASELINE_REF"
+            --baseline-name "$BASELINE_NAME"
+            --feature-name "$FEATURE_NAME"
+            --feature-ref "$FEATURE_REF"
+            --chain "$BENCH_CHAIN"
+            --chain-name "$BENCH_CHAIN_NAME"
+            --chain-id "$BENCH_CHAIN_ID"
+            --requested-blocks "$BENCH_BLOCKS"
+            --warmup-blocks "$BENCH_WARMUP_BLOCKS"
+            --samply "$BENCH_SAMPLY"
+            --tracy "$BENCH_TRACY"
+            --benchmark-id "$BENCH_BENCHMARK_ID"
+            --reference-epoch "$BENCH_REFERENCE_EPOCH"
+            --baseline-json "$BENCH_WORK_DIR/baseline-1/report.json" "$BENCH_WORK_DIR/baseline-2/report.json"
+            --feature-json "$BENCH_WORK_DIR/feature-1/report.json" "$BENCH_WORK_DIR/feature-2/report.json"
+          )
+          if [ -n "${BENCH_TXGEN_REF:-}" ]; then
+            SUMMARY_ARGS+=(--txgen-ref "$BENCH_TXGEN_REF")
+          fi
+          python3 .github/scripts/bench-replay-summary.py "${SUMMARY_ARGS[@]}"
+          cp "$BENCH_WORK_DIR/summary.md" "$BENCH_WORK_DIR/comment.md"
 
       - name: Generate charts
         if: success()
@@ -373,24 +538,26 @@ jobs:
           echo "sha=$(git -C "${TMP_DIR}" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
           rm -rf "${TMP_DIR}"
 
-      - name: Compare & comment
-        if: success() && env.BENCH_COMMENT_ID
+      - name: Post results to PR
+        if: success()
         uses: actions/github-script@v8
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
             const fs = require('fs');
+            const resultsDir = process.env.BENCH_WORK_DIR;
 
-            let comment = '';
+            let summary = '';
             try {
-              comment = fs.readFileSync(process.env.BENCH_WORK_DIR + '/comment.md', 'utf8');
+              summary = fs.readFileSync(`${resultsDir}/summary.md`, 'utf8');
             } catch (e) {
-              comment = '⚠️ Replay benchmark completed but failed to generate comparison.';
+              summary = '⚠️ Replay benchmark completed but failed to generate comparison.';
             }
 
             const sha = '${{ steps.push-charts.outputs.sha }}';
             const prNumber = process.env.BENCH_PR || '0';
             const runId = '${{ github.run_id }}';
+            let chartMarkdown = '';
 
             if (sha) {
               const baseUrl = `https://raw.githubusercontent.com/decofe/tempo-bench-charts/${sha}/pr/${prNumber}/${runId}`;
@@ -399,40 +566,133 @@ jobs:
                 { file: 'wait_breakdown.png', label: 'Wait Time Breakdown' },
                 { file: 'gas_vs_latency.png', label: 'Gas vs Latency' },
               ];
-              let chartMarkdown = '\n\n### Charts\n\n';
+              chartMarkdown = '\n\n### Charts\n\n';
               for (const chart of charts) {
                 chartMarkdown += `<details><summary>${chart.label}</summary>\n\n`;
                 chartMarkdown += `![${chart.label}](${baseUrl}/${chart.file})\n\n`;
                 chartMarkdown += `</details>\n\n`;
               }
-              comment += chartMarkdown;
+            }
+
+            let observabilitySection = '';
+            try {
+              const meta = JSON.parse(fs.readFileSync(`${resultsDir}/summary.json`, 'utf8'));
+              const refEpoch = meta.reference_epoch;
+              const benchId = meta.benchmark_id;
+              if (refEpoch && benchId) {
+                const fromMs = refEpoch * 1000;
+                const toMs = Date.now();
+                const grafanaUrl = `https://tempoxyz.grafana.net/d/tikv2tn/tempo-bench?orgId=1&from=${fromMs}&to=${toMs}&var-benchmark_id=${benchId}&var-job=tempo-bench`;
+                const logsPane = JSON.stringify({
+                  pw4: {
+                    datasource: 'ffdsfozmb3eo0e',
+                    queries: [{
+                      refId: 'A',
+                      datasource: { type: 'victoriametrics-logs-datasource', uid: 'ffdsfozmb3eo0e' },
+                      editorMode: 'code',
+                      expr: `benchmark_id:${benchId}`,
+                      queryType: 'instant',
+                    }],
+                    range: { from: String(fromMs), to: String(toMs) },
+                    panelsState: { logs: { sortOrder: 'Descending' } },
+                    compact: false,
+                  },
+                });
+                const logsUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(logsPane)}&orgId=1`;
+                const tracesPane = JSON.stringify({
+                  g39: {
+                    datasource: 'cf59s9gws8z5se',
+                    queries: [{
+                      refId: 'A',
+                      datasource: { type: 'tempo', uid: 'cf59s9gws8z5se' },
+                      queryType: 'traceqlSearch',
+                      limit: 20,
+                      tableType: 'traces',
+                      metricsQueryType: 'range',
+                      serviceMapUseNativeHistograms: false,
+                      filters: [
+                        { id: '0ff61fb0', operator: '=', scope: 'resource', tag: 'benchmark_id', value: [benchId], valueType: 'string', isCustomValue: false },
+                        { id: 'service-name', tag: 'service.name', operator: '=', scope: 'resource', value: ['reth'], valueType: 'string', isCustomValue: false },
+                      ],
+                    }],
+                    range: { from: String(fromMs), to: String(toMs) },
+                    compact: false,
+                  },
+                });
+                const tracesUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(tracesPane)}&orgId=1`;
+                observabilitySection = `\n\n### Observability\n\n- [Metrics dashboard](${grafanaUrl})\n- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n`;
+              }
+            } catch (e) {}
+
+            let samplySection = '';
+            if (process.env.BENCH_SAMPLY === 'true') {
+              const runs = ['baseline-1', 'feature-1', 'feature-2', 'baseline-2'];
+              const links = [];
+              for (const run of runs) {
+                try {
+                  const url = fs.readFileSync(`${resultsDir}/profile-${run}-url.txt`, 'utf8').trim();
+                  if (url) links.push(`- **${run}**: [Firefox Profiler](${url})`);
+                } catch (e) {}
+              }
+              if (links.length > 0) {
+                samplySection = `\n\n### Samply Profiles\n\n${links.join('\n')}\n`;
+              }
+            }
+
+            let tracySection = '';
+            if (process.env.BENCH_TRACY && process.env.BENCH_TRACY !== 'off') {
+              const runs = ['baseline-1', 'feature-1', 'feature-2', 'baseline-2'];
+              const links = [];
+              for (const run of runs) {
+                try {
+                  const url = fs.readFileSync(`${resultsDir}/tracy-${run}-url.txt`, 'utf8').trim();
+                  if (url) links.push(`- **${run}**: [Tracy Viewer](${url})`);
+                } catch (e) {}
+              }
+              if (links.length > 0) {
+                tracySection = `\n\n### Tracy Profiles\n\n${links.join('\n')}\n`;
+              }
             }
 
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const chain = process.env.BENCH_CHAIN || 'mainnet';
-            const blocks = process.env.BENCH_BLOCKS || '5000';
-            const warmup = process.env.BENCH_WARMUP_BLOCKS || '1000';
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Replay benchmark complete! [View job](${jobUrl})\n\nChain: \`${chain}\`\nWarmup: \`${warmup}\`\nBlocks: \`${blocks}\`\n\n${comment}`;
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Replay benchmark complete! [View job](${jobUrl})\n\n${summary}${chartMarkdown}${observabilitySection}${samplySection}${tracySection}`;
+            const ackCommentId = process.env.BENCH_COMMENT_ID;
 
-            await github.rest.issues.updateComment({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              comment_id: parseInt(process.env.BENCH_COMMENT_ID),
-              body,
-            });
+            if (ackCommentId) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: parseInt(ackCommentId),
+                body,
+              });
+            } else {
+              await core.summary.addRaw(body).write();
+            }
 
-      - name: Write job summary
-        if: success()
-        run: |
-          if [ -f "$BENCH_WORK_DIR/comment.md" ]; then
-            cat "$BENCH_WORK_DIR/comment.md" >> "$GITHUB_STEP_SUMMARY"
-          fi
+      - name: Send Slack notification (success)
+        if: success() && env.BENCH_NO_SLACK != 'true'
+        uses: actions/github-script@v8
+        env:
+          BENCH_BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
+          BENCH_FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.success({ core, context });
+
+      - name: Send Slack notification (failure)
+        if: failure() && env.BENCH_NO_SLACK != 'true'
+        uses: actions/github-script@v8
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.failure({ core, context, failedStep: 'running replay benchmark' });
 
       - name: Update status (failed)
         if: failure() && env.BENCH_COMMENT_ID
         uses: actions/github-script@v8
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({
@@ -446,7 +706,7 @@ jobs:
         if: cancelled() && env.BENCH_COMMENT_ID
         uses: actions/github-script@v8
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({

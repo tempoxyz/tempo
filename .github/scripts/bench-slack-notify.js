@@ -70,6 +70,25 @@ function tempoThroughputDeltas(deltas) {
   return [deltas.tps, deltas.tps_p50, deltas.tps_p90, deltas.tps_p99, deltas.mgas_s];
 }
 
+function isReplaySummary(summary) {
+  return summary.config && summary.config.mode === 'replay';
+}
+
+function replayLatencyDeltas(deltas) {
+  return [
+    deltas.new_payload_mean,
+    deltas.new_payload_p50,
+    deltas.new_payload_p90,
+    deltas.new_payload_p99,
+    deltas.wall_clock,
+    deltas.persist_wait,
+  ];
+}
+
+function replayThroughputDeltas(deltas) {
+  return [deltas.new_payload_mgas_s];
+}
+
 function fmtDelta(pct) {
   if (pct == null) return '';
   const sign = pct >= 0 ? '+' : '';
@@ -96,9 +115,10 @@ function fmtDeltaInverse(pct) {
   return `${sign}${pct.toFixed(2)}% ${emoji}`;
 }
 
-function verdict(deltas) {
-  const blockTimeDeltas = tempoBlockTimeDeltas(deltas);
-  const throughputDeltas = tempoThroughputDeltas(deltas);
+function verdict(summary) {
+  const deltas = summary.results.deltas;
+  const blockTimeDeltas = isReplaySummary(summary) ? replayLatencyDeltas(deltas) : tempoBlockTimeDeltas(deltas);
+  const throughputDeltas = isReplaySummary(summary) ? replayThroughputDeltas(deltas) : tempoThroughputDeltas(deltas);
 
   const hasBad = blockTimeDeltas.some(d => d != null && d > THRESHOLD_PCT) ||
                  throughputDeltas.some(d => d != null && d < -THRESHOLD_PCT);
@@ -111,8 +131,11 @@ function verdict(deltas) {
   return { emoji: ':white_circle:', label: 'No Significant Change' };
 }
 
-function hasSignificantChange(deltas) {
-  const all = [...tempoThroughputDeltas(deltas), ...tempoBlockTimeDeltas(deltas)];
+function hasSignificantChange(summary) {
+  const deltas = summary.results.deltas;
+  const all = isReplaySummary(summary)
+    ? [...replayThroughputDeltas(deltas), ...replayLatencyDeltas(deltas)]
+    : [...tempoThroughputDeltas(deltas), ...tempoBlockTimeDeltas(deltas)];
   return all.some(d => d != null && Math.abs(d) >= THRESHOLD_PCT);
 }
 
@@ -133,6 +156,17 @@ function buildMetricRows(summary) {
   const b = summary.results.baseline;
   const f = summary.results.feature;
   const d = summary.results.deltas;
+  if (isReplaySummary(summary)) {
+    return [
+      { label: 'newPayload Mean',   baseline: fmtMs(b.new_payload_mean),       feature: fmtMs(f.new_payload_mean),       change: fmtDelta(d.new_payload_mean) },
+      { label: 'newPayload P50',    baseline: fmtMs(b.new_payload_p50),        feature: fmtMs(f.new_payload_p50),        change: fmtDelta(d.new_payload_p50) },
+      { label: 'newPayload P90',    baseline: fmtMs(b.new_payload_p90),        feature: fmtMs(f.new_payload_p90),        change: fmtDelta(d.new_payload_p90) },
+      { label: 'newPayload P99',    baseline: fmtMs(b.new_payload_p99),        feature: fmtMs(f.new_payload_p99),        change: fmtDelta(d.new_payload_p99) },
+      { label: 'newPayload Gas/s',  baseline: fmtVal(b.new_payload_mgas_s, ' Mgas/s', 1), feature: fmtVal(f.new_payload_mgas_s, ' Mgas/s', 1), change: fmtDeltaInverse(d.new_payload_mgas_s) },
+      { label: 'Wall Clock',        baseline: fmtVal(b.wall_clock_s, 's', 2),  feature: fmtVal(f.wall_clock_s, 's', 2),  change: fmtDelta(d.wall_clock) },
+      { label: 'Persist Wait',      baseline: fmtMs(b.persist_wait_ms),        feature: fmtMs(f.persist_wait_ms),        change: fmtDelta(d.persist_wait) },
+    ];
+  }
   return [
     { label: 'Avg TPS',         baseline: fmtVal(b.tps, '', 0),     feature: fmtVal(f.tps, '', 0),     change: fmtDeltaInverse(d.tps) },
     { label: 'TPS P50',         baseline: fmtVal(b.tps_p50, '', 1), feature: fmtVal(f.tps_p50, '', 1), change: fmtDeltaInverse(d.tps_p50) },
@@ -148,8 +182,7 @@ function buildMetricRows(summary) {
 function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo }) {
   const b = summary.results.baseline;
   const f = summary.results.feature;
-  const d = summary.results.deltas;
-  const { emoji, label } = verdict(d);
+  const { emoji, label } = verdict(summary);
 
   const prUrl = prNumber ? `https://github.com/${repo}/pull/${prNumber}` : '';
   const commitUrl = `https://github.com/${repo}/commit`;
@@ -163,17 +196,41 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
   metaParts.push(`triggered by ${actorSlackId ? `<@${actorSlackId}>` : `@${actor}`}`);
 
   const config = summary.config;
-  const blockCount = fmtBlockCount(b.blocks, f.blocks);
+  const blockCount = isReplaySummary(summary)
+    ? `\`${summary.blocks}\``
+    : fmtBlockCount(b.blocks, f.blocks);
 
-  const sectionText = [
-    metaParts.join(' | '),
-    '',
-    `*Baseline:* ${baselineLink}`,
-    `*Feature:* ${featureLink}`,
-    '',
-    `*Preset:* \`${config.preset}\` | *Bloat:* \`${Math.round(config.bloat / 1000)} GB\``,
-    `*Duration:* \`${config.duration}s\` | *Target TPS:* \`${config.tps}\` | *Blocks:* ${blockCount}`,
-  ].join('\n');
+  let sectionText;
+  if (isReplaySummary(summary)) {
+    const chain = config.chain_id
+      ? `\`${config.chain}\` (${config.chain_name}, id ${config.chain_id})`
+      : `\`${config.chain}\``;
+    const profiling = [
+      config.samply === 'true' ? '*Samply:* `enabled`' : '',
+      config.tracy && config.tracy !== 'off' ? `*Tracy:* \`${config.tracy}\`` : '',
+      config.txgen_ref ? `*txgen-ref:* \`${config.txgen_ref}\`` : '',
+    ].filter(Boolean);
+    sectionText = [
+      metaParts.join(' | '),
+      '',
+      `*Baseline:* ${baselineLink}`,
+      `*Feature:* ${featureLink}`,
+      '',
+      `*Chain:* ${chain}`,
+      `*Warmup:* \`${config.warmup}\` | *Requested Blocks:* \`${config.blocks}\` | *Compared Blocks:* ${blockCount}`,
+      ...profiling,
+    ].join('\n');
+  } else {
+    sectionText = [
+      metaParts.join(' | '),
+      '',
+      `*Baseline:* ${baselineLink}`,
+      `*Feature:* ${featureLink}`,
+      '',
+      `*Preset:* \`${config.preset}\` | *Bloat:* \`${Math.round(config.bloat / 1000)} GB\``,
+      `*Duration:* \`${config.duration}s\` | *Target TPS:* \`${config.tps}\` | *Blocks:* ${blockCount}`,
+    ].join('\n');
+  }
 
   const rows = buildMetricRows(summary);
   const tableRows = [
@@ -282,12 +339,11 @@ async function success({ core, context }) {
   const blocks = buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo });
   const text = `Tempo bench: baseline vs feature`;
 
-  const deltas = summary.results.deltas;
   const channel = process.env.SLACK_BENCH_CHANNEL;
   let postedToChannel = false;
 
   // Post to public channel if any metric shows significant change
-  if (channel && hasSignificantChange(deltas)) {
+  if (channel && hasSignificantChange(summary)) {
     await postToSlack(token, channel, blocks, text, core);
     postedToChannel = true;
   } else if (channel) {

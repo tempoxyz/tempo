@@ -355,6 +355,9 @@ jobs:
           ACK_FEATURE_ARGS: ${{ steps.args.outputs.feature-args }}
           ACK_BASELINE_HARDFORK: ${{ steps.args.outputs.baseline-hardfork }}
           ACK_FEATURE_HARDFORK: ${{ steps.args.outputs.feature-hardfork }}
+          ACK_BLOCKS: ${{ steps.args.outputs.blocks }}
+          ACK_WARMUP: ${{ steps.args.outputs.warmup }}
+          ACK_CHAIN: ${{ steps.args.outputs.chain }}
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
@@ -382,6 +385,9 @@ jobs:
             const feature = process.env.ACK_FEATURE_NAME;
             const backend = process.env.ACK_BACKEND;
             const txgenRef = process.env.ACK_TXGEN_REF || 'default';
+            const chain = process.env.ACK_CHAIN;
+            const blocks = process.env.ACK_BLOCKS;
+            const warmup = process.env.ACK_WARMUP;
             const samply = process.env.ACK_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = process.env.ACK_TRACY;
@@ -392,7 +398,9 @@ jobs:
             const bHf = process.env.ACK_BASELINE_HARDFORK || '';
             const fHf = process.env.ACK_FEATURE_HARDFORK || '';
             const hfNote = bHf ? `, baseline-hardfork: \`${bHf}\`, feature-hardfork: \`${fHf}\`` : '';
-            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, backend: \`${backend}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${naNote}${hfNote}`;
+            const config = mode === 'replay'
+              ? `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${naNote}`
+              : `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, backend: \`${backend}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${naNote}${hfNote}`;
 
             const { data: comment } = await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -459,11 +467,24 @@ jobs:
       baseline-name: ${{ needs.tempo-bench-ack.outputs.baseline-name }}
       feature-name: ${{ needs.tempo-bench-ack.outputs.feature-name }}
       samply: ${{ needs.tempo-bench-ack.outputs.samply }}
+      tracy: ${{ needs.tempo-bench-ack.outputs.tracy }}
+      tracy-seconds: ${{ needs.tempo-bench-ack.outputs.tracy-seconds }}
+      tracy-offset: ${{ needs.tempo-bench-ack.outputs.tracy-offset }}
+      no-slack: ${{ needs.tempo-bench-ack.outputs.no-slack }}
       baseline-args: ${{ needs.tempo-bench-ack.outputs.baseline-args }}
       feature-args: ${{ needs.tempo-bench-ack.outputs.feature-args }}
+      txgen-ref: ${{ needs.tempo-bench-ack.outputs.txgen-ref }}
+      bench-args: ${{ needs.tempo-bench-ack.outputs.bench-args }}
+      bench-env: ${{ needs.tempo-bench-ack.outputs.bench-env }}
+      baseline-env: ${{ needs.tempo-bench-ack.outputs.baseline-env }}
+      feature-env: ${{ needs.tempo-bench-ack.outputs.feature-env }}
       blocks: ${{ needs.tempo-bench-ack.outputs.blocks }}
       warmup: ${{ needs.tempo-bench-ack.outputs.warmup }}
       comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
     secrets:
       DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
+      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
+      GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
+      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
