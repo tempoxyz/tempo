@@ -124,6 +124,12 @@ pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_R
 pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
 /// Role hash that authorizes burning tokens from blocked accounts.
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
+/// System custody addresses protected from burn-blocked operations, to protect accounting invariants.
+pub const PROTECTED: &[Address] = &[
+    TIP_FEE_MANAGER_ADDRESS,
+    STABLECOIN_DEX_ADDRESS,
+    ESCROW_ADDRESS,
+];
 
 impl TIP20Token {
     /// Returns the token name.
@@ -521,7 +527,7 @@ impl TIP20Token {
     /// - `ContractPaused` — (+T3) token is paused
     /// - `Unauthorized` — caller does not hold `BURN_BLOCKED_ROLE`
     /// - `PolicyForbids` — target address is not blocked by policy
-    /// - `ProtectedAddress` — cannot burn from fee manager or stablecoin DEX addresses
+    /// - `ProtectedAddress` — cannot burn from the system custody addresses
     pub fn burn_blocked(
         &mut self,
         msg_sender: Address,
@@ -533,8 +539,8 @@ impl TIP20Token {
         }
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
-        // Prevent burning from `FeeManager` and `StablecoinDEX` to protect accounting invariants
-        if matches!(call.from, TIP_FEE_MANAGER_ADDRESS | STABLECOIN_DEX_ADDRESS) {
+        // Prevent burning from system custody addresses to protect accounting invariants.
+        if PROTECTED.contains(&call.from) {
             return Err(TIP20Error::protected_address().into());
         }
 
@@ -2937,47 +2943,26 @@ pub(crate) mod tests {
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
                 // Mint tokens to StablecoinDEX
                 .with_mint(STABLECOIN_DEX_ADDRESS, amount)
+                // Simulate funds backing blocked TIP-1028 receipts
+                .with_mint(ESCROW_ADDRESS, amount)
                 .apply()?;
 
-            // Attempt to burn from FeeManager
-            let result = token.burn_blocked(
-                burner,
-                ITIP20::burnBlockedCall {
-                    from: TIP_FEE_MANAGER_ADDRESS,
-                    amount: amount / U256::from(2),
-                },
-            );
+            for protected in PROTECTED {
+                let result = token.burn_blocked(
+                    burner,
+                    ITIP20::burnBlockedCall {
+                        from: *protected,
+                        amount: amount / U256::from(2),
+                    },
+                );
+                assert_eq!(result.unwrap_err(), TIP20Error::protected_address().into());
 
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
-            ));
-
-            // Verify FeeManager balance is unchanged
-            let balance = token.balance_of(ITIP20::balanceOfCall {
-                account: TIP_FEE_MANAGER_ADDRESS,
-            })?;
-            assert_eq!(balance, amount);
-
-            // Attempt to burn from StablecoinDEX
-            let result = token.burn_blocked(
-                burner,
-                ITIP20::burnBlockedCall {
-                    from: STABLECOIN_DEX_ADDRESS,
-                    amount: amount / U256::from(2),
-                },
-            );
-
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
-            ));
-
-            // Verify StablecoinDEX balance is unchanged
-            let balance = token.balance_of(ITIP20::balanceOfCall {
-                account: STABLECOIN_DEX_ADDRESS,
-            })?;
-            assert_eq!(balance, amount);
+                // Verify balance is unchanged
+                let balance = token.balance_of(ITIP20::balanceOfCall {
+                    account: *protected,
+                })?;
+                assert_eq!(balance, amount);
+            }
 
             Ok(())
         })
