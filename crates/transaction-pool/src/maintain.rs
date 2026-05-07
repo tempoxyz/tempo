@@ -8,7 +8,7 @@ use crate::{
 };
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
-    Address, TxHash,
+    Address, B256, TxHash,
     map::{AddressMap, HashMap, HashSet},
 };
 use alloy_sol_types::SolEvent;
@@ -85,6 +85,11 @@ pub struct TempoPoolUpdates {
     /// with the runtime's actual spending-limit decrements instead of inferring them from
     /// the mined transaction body.
     pub spending_limit_spends: SpendingLimitUpdates,
+    /// TIP-1053 key-authorization nonce consumptions.
+    ///
+    /// Pending AA transactions carrying the same `(account, nonce)` key authorization are no
+    /// longer executable once either a sibling authorization or an explicit burn consumes it.
+    pub key_authorization_nonce_consumptions: AddressMap<HashSet<B256>>,
 }
 
 impl TempoPoolUpdates {
@@ -106,6 +111,7 @@ impl TempoPoolUpdates {
             && self.transfer_policy_updates.is_empty()
             && self.fee_balance_changes.is_empty()
             && self.spending_limit_spends.is_empty()
+            && self.key_authorization_nonce_consumptions.is_empty()
     }
 
     /// Extracts pool updates from a committed chain segment.
@@ -139,6 +145,14 @@ impl TempoPoolUpdates {
                         event.publicKey,
                         Some(event.token),
                     );
+                } else if let Ok(event) =
+                    IAccountKeychain::KeyAuthorizationNonceConsumed::decode_log(log)
+                {
+                    updates
+                        .key_authorization_nonce_consumptions
+                        .entry(event.account)
+                        .or_default()
+                        .insert(event.nonce);
                 }
             }
             // Validator and user token changes
@@ -196,6 +210,7 @@ impl TempoPoolUpdates {
             || !self.blacklist_additions.is_empty()
             || !self.whitelist_removals.is_empty()
             || !self.fee_balance_changes.is_empty()
+            || !self.key_authorization_nonce_consumptions.is_empty()
     }
 }
 
@@ -560,11 +575,13 @@ where
                 if !updates.revoked_keys.is_empty()
                     || !updates.spending_limit_changes.is_empty()
                     || !updates.spending_limit_spends.is_empty()
+                    || !updates.key_authorization_nonce_consumptions.is_empty()
                 {
                     state.paused_pool.evict_invalidated(
                         &updates.revoked_keys,
                         &updates.spending_limit_changes,
                         &updates.spending_limit_spends,
+                        &updates.key_authorization_nonce_consumptions,
                     );
                 }
                 metrics.pause_events_duration_seconds.record(pause_start.elapsed());
@@ -908,6 +925,38 @@ mod tests {
                 "Should not infer spends from the tx fee token"
             );
             assert_eq!(updates.spending_limit_spends.len(), 1);
+        }
+
+        #[test]
+        fn extracts_key_authorization_nonce_consumed_events() {
+            let account = Address::random();
+            let nonce = B256::random();
+
+            let log = alloy_primitives::Log::new_from_event_unchecked(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                IAccountKeychain::KeyAuthorizationNonceConsumed { account, nonce },
+            )
+            .reserialize();
+            let receipt = tempo_primitives::TempoReceipt {
+                tx_type: tempo_primitives::TempoTxType::AA,
+                success: true,
+                cumulative_gas_used: 1,
+                logs: vec![log],
+            };
+
+            let block = create_block_with_txs(1, vec![], vec![]);
+            let chain = create_test_chain_with_receipts(vec![block], vec![vec![receipt]]);
+
+            let updates = TempoPoolUpdates::from_chain(&chain);
+
+            assert!(
+                updates
+                    .key_authorization_nonce_consumptions
+                    .get(&account)
+                    .is_some_and(|nonces| nonces.contains(&nonce)),
+                "Should contain the consumed (account, nonce)"
+            );
+            assert!(updates.has_invalidation_events());
         }
 
         /// The pool should only track actual AccessKeySpend events, not infer spends from the

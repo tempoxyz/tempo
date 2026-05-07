@@ -164,6 +164,21 @@ impl TempoPooledTransaction {
         })
     }
 
+    /// Extracts the TIP-1053 key-authorization nonce consumed by this transaction, if any.
+    pub fn key_authorization_nonce_subject(&self) -> Option<KeyAuthorizationNonceSubject> {
+        let aa_tx = self.inner().as_aa()?;
+        let nonce = aa_tx
+            .tx()
+            .key_authorization
+            .as_ref()?
+            .authorization
+            .nonce()?;
+        Some(KeyAuthorizationNonceSubject {
+            account: *self.sender_ref(),
+            nonce,
+        })
+    }
+
     /// Returns the unique identifier for this AA transaction.
     pub(crate) fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
         let nonce_key = self.nonce_key()?;
@@ -1158,6 +1173,15 @@ pub struct KeychainSubject {
     pub key_id: Address,
     /// The fee token used by this transaction.
     pub fee_token: Address,
+}
+
+/// Key-authorization nonce identity extracted from an AA transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyAuthorizationNonceSubject {
+    /// The account whose key-authorization nonce is consumed.
+    pub account: Address,
+    /// The consumed TIP-1053 nonce.
+    pub nonce: B256,
 }
 
 impl KeychainSubject {
