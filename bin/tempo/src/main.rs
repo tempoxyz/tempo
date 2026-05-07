@@ -42,6 +42,8 @@ static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 mod defaults;
 mod init_state;
 mod p2p_proxy;
+mod snapshot_download;
+mod snapshot_manifest;
 mod tempo_cmd;
 
 use clap::{CommandFactory, FromArgMatches};
@@ -313,12 +315,15 @@ fn main() -> eyre::Result<()> {
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
-    let mut cli = match TempoCli::command()
+    // `tempo snapshot-manifest` and `tempo download` wrap the Reth variants, so they
+    // cannot be added without colliding. Mutate those subcommands with the wrapped ones.
+    let matches = match TempoCli::command()
         .about("Tempo")
+        .mut_subcommand("snapshot-manifest", |_| snapshot_manifest::Args::command())
+        .mut_subcommand("download", |_| snapshot_download::Args::command())
         .try_get_matches_from(std::env::args_os())
-        .and_then(|matches| TempoCli::from_arg_matches(&matches))
     {
-        Ok(cli) => cli,
+        Ok(matches) => matches,
         Err(err) => {
             if err.kind() == clap::error::ErrorKind::InvalidSubcommand {
                 // Unknown subcommand — try the extension launcher.
@@ -344,6 +349,19 @@ fn main() -> eyre::Result<()> {
 
             err.exit();
         }
+    };
+
+    // Detect overwritten subcommands and directly run them as
+    // `from_arg_matches` would map them to their original variants.
+    match matches.subcommand() {
+        Some(("snapshot-manifest", sub)) => return snapshot_manifest::run(sub),
+        Some(("download", sub)) => return snapshot_download::run(sub),
+        _ => {}
+    }
+
+    let mut cli = match TempoCli::from_arg_matches(&matches) {
+        Ok(cli) => cli,
+        Err(err) => err.exit(),
     };
 
     if let Commands::Node(node_cmd) = &cli.command

@@ -101,6 +101,15 @@ pyroscope = { workspace = true, optional = true }
 pyroscope_pprofrs = { workspace = true, optional = true }
 tracy-client = { workspace = true, optional = true }
 
+# `tempo snapshot-manifest` (see `src/snapshot_manifest.rs`).
+blake3 = "1.8"
+tar = "0.4"
+walkdir = "2.5"
+zstd = "0.13"
+
+[dev-dependencies]
+tempfile.workspace = true
+
 [[bin]]
 name = "tempo"
 path = "src/main.rs"

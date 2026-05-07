@@ -12462,6 +12462,7 @@ dependencies = [
  "alloy-signer-trezor",
  "alloy-sol-types",
  "base64 0.22.1",
+ "blake3",
  "clap",
  "commonware-codec",
  "commonware-consensus",
@@ -12502,6 +12503,8 @@ dependencies = [
  "secp256k1 0.30.0",
  "serde",
  "serde_json",
+ "tar",
+ "tempfile",
  "tempo-alloy",
  "tempo-chainspec",
  "tempo-commonware-node",
@@ -12522,6 +12525,8 @@ dependencies = [
  "tracing",
  "tracy-client",
  "url",
+ "walkdir",
+ "zstd",
 ]
 
 [[package]]
