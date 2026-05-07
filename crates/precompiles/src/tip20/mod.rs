@@ -1150,6 +1150,8 @@ impl TIP20Token {
         amount: U256,
         meter_spending_limit: bool,
     ) -> Result<()> {
+        self.check_not_paused()?;
+
         if to == ESCROW_ADDRESS {
             return Err(TIP1028EscrowError::escrow_address_reserved().into());
         }
