@@ -1,124 +1,78 @@
 //! An iterator over the best transactions in the tempo pool.
 
-use crate::transaction::TempoPooledTransaction;
-use alloy_primitives::{Address, B256, U256, map::HashMap};
+use crate::{transaction::TempoPooledTransaction, tt_2d_pool::BestAA2dTransactions};
+use alloy_primitives::{Address, U256, map::HashMap};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    BestTransactions, CoinbaseTipOrdering, Priority, TransactionOrdering, ValidPoolTransaction,
-    error::InvalidPoolTransactionError,
+    BestTransactions as BestTransactionsTrait, CoinbaseTipOrdering, Priority, ValidPoolTransaction,
+    error::InvalidPoolTransactionError, pool::BestTransactions,
 };
 use std::sync::Arc;
 use tempo_evm::TempoTxResult;
 use tempo_precompiles::tip20::is_tip20_prefix;
 
-/// An extension trait for [`BestTransactions`] that in addition to the transaction also yields the priority value.
-pub trait BestPriorityTransactions<T: TransactionOrdering>: BestTransactions {
-    /// Returns the next best transaction and its priority value.
-    fn next_tx_and_priority(&mut self) -> Option<(Self::Item, Priority<T::PriorityValue>)>;
+type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
+type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+type BestTransactionWithPriority = (BestTransaction, Priority<u128>);
+
+/// A best-transaction iterator that merges the protocol pool and the AA2D pool,
+/// always yielding the next best item from either iterator.
+pub struct MergeBestTransactions {
+    protocol_pool: BestTransactions<TxOrdering>,
+    aa_2d_pool: BestAA2dTransactions,
+    next_protocol_pool: Option<BestTransactionWithPriority>,
+    next_aa_2d_pool: Option<BestTransactionWithPriority>,
 }
 
-impl<T: TransactionOrdering> BestPriorityTransactions<T>
-    for reth_transaction_pool::pool::BestTransactions<T>
-{
-    fn next_tx_and_priority(&mut self) -> Option<(Self::Item, Priority<T::PriorityValue>)> {
-        Self::next_tx_and_priority(self)
-    }
-}
-impl BestPriorityTransactions<CoinbaseTipOrdering<TempoPooledTransaction>>
-    for crate::tt_2d_pool::BestAA2dTransactions
-{
-    fn next_tx_and_priority(&mut self) -> Option<(Self::Item, Priority<u128>)> {
-        Self::next_tx_and_priority(self)
-    }
-}
-
-/// Tracks which side of a [`MergeBestTransactions`] yielded a transaction.
-#[derive(Debug, Clone, Copy)]
-enum MergeSource {
-    Left,
-    Right,
-}
-
-/// A [`BestTransactions`] iterator that merges two individual implementations and always yields the next best item from either of the iterators.
-pub struct MergeBestTransactions<L, R, T>
-where
-    L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
-    R: BestPriorityTransactions<T, Item = L::Item>,
-    T: TransactionOrdering,
-{
-    left: L,
-    right: R,
-    next_left: Option<(L::Item, Priority<T::PriorityValue>)>,
-    next_right: Option<(L::Item, Priority<T::PriorityValue>)>,
-    yielded_sources: HashMap<B256, MergeSource>,
-}
-
-impl<L, R, T> MergeBestTransactions<L, R, T>
-where
-    L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
-    R: BestPriorityTransactions<T, Item = L::Item>,
-    T: TransactionOrdering,
-{
+impl MergeBestTransactions {
     /// Creates a new iterator over the given iterators.
-    pub fn new(left: L, right: R) -> Self {
+    pub(crate) fn new(
+        protocol_pool: BestTransactions<TxOrdering>,
+        aa_2d_pool: BestAA2dTransactions,
+    ) -> Self {
         Self {
-            left,
-            right,
-            next_left: None,
-            next_right: None,
-            yielded_sources: HashMap::default(),
+            protocol_pool,
+            aa_2d_pool,
+            next_protocol_pool: None,
+            next_aa_2d_pool: None,
         }
     }
 }
 
-impl<L, R, T> MergeBestTransactions<L, R, T>
-where
-    L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
-    R: BestPriorityTransactions<T, Item = L::Item>,
-    T: TransactionOrdering,
-{
-    /// Records the source for a yielded transaction.
-    fn record_source(&mut self, item: &L::Item, source: MergeSource) {
-        self.yielded_sources.insert(*item.hash(), source);
-    }
-
-    /// Returns the next transaction from either the left or the right iterator with the higher priority.
-    fn next_best(&mut self) -> Option<(L::Item, Priority<T::PriorityValue>)> {
-        if self.next_left.is_none() {
-            self.next_left = self.left.next_tx_and_priority();
+impl MergeBestTransactions {
+    /// Returns the next transaction from either pool with the higher priority.
+    fn next_best(&mut self) -> Option<BestTransactionWithPriority> {
+        if self.next_protocol_pool.is_none() {
+            self.next_protocol_pool = self.protocol_pool.next_tx_and_priority();
         }
-        if self.next_right.is_none() {
-            self.next_right = self.right.next_tx_and_priority();
+        if self.next_aa_2d_pool.is_none() {
+            self.next_aa_2d_pool = self.aa_2d_pool.next_tx_and_priority();
         }
 
-        match (&mut self.next_left, &mut self.next_right) {
+        match (&mut self.next_protocol_pool, &mut self.next_aa_2d_pool) {
             (None, None) => {
                 // both iters are done
                 None
             }
-            // Only left has an item - take it
+            // Only the protocol pool has an item - take it
             (Some(_), None) => {
-                let (item, priority) = self.next_left.take()?;
-                self.record_source(&item, MergeSource::Left);
+                let (item, priority) = self.next_protocol_pool.take()?;
                 Some((item, priority))
             }
-            // Only right has an item - take it
+            // Only the AA2D pool has an item - take it
             (None, Some(_)) => {
-                let (item, priority) = self.next_right.take()?;
-                self.record_source(&item, MergeSource::Right);
+                let (item, priority) = self.next_aa_2d_pool.take()?;
                 Some((item, priority))
             }
-            // Both sides have items - compare priorities and take the higher one
-            (Some((_, left_priority)), Some((_, right_priority))) => {
+            // Both pools have items - compare priorities and take the higher one
+            (Some((_, protocol_priority)), Some((_, aa_2d_priority))) => {
                 // Higher priority value is better
-                if left_priority >= right_priority {
-                    let (item, priority) = self.next_left.take()?;
-                    self.record_source(&item, MergeSource::Left);
+                if protocol_priority >= aa_2d_priority {
+                    let (item, priority) = self.next_protocol_pool.take()?;
                     Some((item, priority))
                 } else {
-                    let (item, priority) = self.next_right.take()?;
-                    self.record_source(&item, MergeSource::Right);
+                    let (item, priority) = self.next_aa_2d_pool.take()?;
                     Some((item, priority))
                 }
             }
@@ -126,44 +80,31 @@ where
     }
 }
 
-impl<L, R, T> Iterator for MergeBestTransactions<L, R, T>
-where
-    L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>>,
-    R: BestPriorityTransactions<T, Item = L::Item>,
-    T: TransactionOrdering,
-{
-    type Item = L::Item;
+impl Iterator for MergeBestTransactions {
+    type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_best().map(|(tx, _)| tx)
     }
 }
 
-impl<L, R, T> BestTransactions for MergeBestTransactions<L, R, T>
-where
-    L: BestPriorityTransactions<T, Item = Arc<ValidPoolTransaction<T::Transaction>>> + Send,
-    R: BestPriorityTransactions<T, Item = L::Item> + Send,
-    T: TransactionOrdering,
-{
+impl BestTransactionsTrait for MergeBestTransactions {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
-        match self.yielded_sources.get(transaction.hash()).copied() {
-            Some(MergeSource::Left) => self.left.mark_invalid(transaction, kind),
-            Some(MergeSource::Right) => self.right.mark_invalid(transaction, kind),
-            None => {
-                self.left.mark_invalid(transaction, kind);
-                self.right.mark_invalid(transaction, kind);
-            }
+        if transaction.transaction.is_aa_2d() {
+            self.aa_2d_pool.mark_invalid(transaction, kind);
+        } else {
+            self.protocol_pool.mark_invalid(transaction, kind);
         }
     }
 
     fn no_updates(&mut self) {
-        self.left.no_updates();
-        self.right.no_updates();
+        self.protocol_pool.no_updates();
+        self.aa_2d_pool.no_updates();
     }
 
     fn set_skip_blobs(&mut self, skip_blobs: bool) {
-        self.left.set_skip_blobs(skip_blobs);
-        self.right.set_skip_blobs(skip_blobs);
+        self.protocol_pool.set_skip_blobs(skip_blobs);
+        self.aa_2d_pool.set_skip_blobs(skip_blobs);
     }
 }
 
@@ -180,7 +121,7 @@ pub struct StateAwareBestTransactions<I> {
 
 impl<I> StateAwareBestTransactions<I>
 where
-    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    I: BestTransactionsTrait<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
 {
     /// Wraps an existing [`BestTransactions`] iterator.
     pub fn new(inner: I) -> Self {
@@ -210,7 +151,7 @@ where
 
 impl<I> Iterator for StateAwareBestTransactions<I>
 where
-    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    I: BestTransactionsTrait<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
 {
     type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
@@ -242,9 +183,9 @@ where
     }
 }
 
-impl<I> BestTransactions for StateAwareBestTransactions<I>
+impl<I> BestTransactionsTrait for StateAwareBestTransactions<I>
 where
-    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
+    I: BestTransactionsTrait<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
 {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
         self.inner.mark_invalid(transaction, kind);
@@ -262,88 +203,103 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::{TxBuilder, wrap_valid_tx};
+    use crate::{
+        test_utils::{TxBuilder, wrap_valid_tx},
+        tt_2d_pool::AA2dPool,
+    };
     use alloy_primitives::Address;
+    use futures::executor::block_on;
     use reth_primitives_traits::transaction::error::InvalidTransactionError;
-    use reth_transaction_pool::TransactionOrigin;
-    use std::sync::{Arc, Mutex};
+    use reth_transaction_pool::{
+        Pool, PoolConfig, TransactionOrigin, TransactionPool, blobstore::InMemoryBlobStore,
+        test_utils::OkValidator,
+    };
+    use std::sync::Arc;
+    use tempo_chainspec::hardfork::TempoHardfork;
 
-    type MockTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+    type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
-    fn mock_tx(nonce: u64) -> MockTx {
+    fn tx_with_nonce_key(nonce_key: U256, sender: Address, nonce: u64, priority: u128) -> TestTx {
         Arc::new(wrap_valid_tx(
-            TxBuilder::aa(Address::random()).nonce(nonce).build(),
+            TxBuilder::aa(sender)
+                .nonce_key(nonce_key)
+                .nonce(nonce)
+                .max_priority_fee(priority)
+                .max_fee(TempoHardfork::T1.base_fee() as u128 + priority)
+                .build(),
             TransactionOrigin::External,
         ))
     }
 
-    /// A simple mock iterator for testing that yields items with priorities
-    struct MockBestTransactions<T> {
-        items: Vec<(T, Priority<u128>)>,
-        index: usize,
-        invalidated: Arc<Mutex<Vec<T>>>,
+    fn protocol_tx(nonce: u64, priority: u128) -> TestTx {
+        protocol_tx_for_sender(Address::random(), nonce, priority)
     }
 
-    impl<T> MockBestTransactions<T> {
-        fn new(items: Vec<(T, u128)>) -> Self {
-            let items = items
-                .into_iter()
-                .map(|(item, priority)| (item, Priority::Value(priority)))
-                .collect();
-            Self {
-                items,
-                index: 0,
-                invalidated: Arc::new(Mutex::new(Vec::new())),
-            }
-        }
-
-        fn invalidated(&self) -> Arc<Mutex<Vec<T>>> {
-            self.invalidated.clone()
-        }
+    fn protocol_tx_for_sender(sender: Address, nonce: u64, priority: u128) -> TestTx {
+        tx_with_nonce_key(U256::ZERO, sender, nonce, priority)
     }
 
-    impl<T: Clone> Iterator for MockBestTransactions<T> {
-        type Item = T;
-
-        fn next(&mut self) -> Option<Self::Item> {
-            if self.index < self.items.len() {
-                let item = self.items[self.index].0.clone();
-                self.index += 1;
-                Some(item)
-            } else {
-                None
-            }
-        }
+    fn aa_2d_tx(nonce: u64, priority: u128) -> TestTx {
+        aa_2d_tx_for_sequence(Address::random(), nonce, priority)
     }
 
-    impl<T: Clone + Send>
-        BestPriorityTransactions<CoinbaseTipOrdering<crate::transaction::TempoPooledTransaction>>
-        for MockBestTransactions<T>
-    {
-        fn next_tx_and_priority(&mut self) -> Option<(Self::Item, Priority<u128>)> {
-            if self.index < self.items.len() {
-                let (item, priority) = &self.items[self.index];
-                let result = (item.clone(), priority.clone());
-                self.index += 1;
-                Some(result)
-            } else {
-                None
-            }
-        }
+    fn aa_2d_tx_for_sequence(sender: Address, nonce: u64, priority: u128) -> TestTx {
+        tx_with_nonce_key(U256::from(1), sender, nonce, priority)
     }
 
-    impl<T: Clone + Send> BestTransactions for MockBestTransactions<T> {
-        fn mark_invalid(&mut self, transaction: &Self::Item, _kind: &InvalidPoolTransactionError) {
-            self.invalidated.lock().unwrap().push(transaction.clone());
+    fn protocol_best_transactions(txs: Vec<TestTx>) -> BestTransactions<TxOrdering> {
+        let pool = Pool::new(
+            OkValidator::<TempoPooledTransaction>::default(),
+            CoinbaseTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default(),
+        );
+
+        let results = block_on(pool.add_transactions(
+            TransactionOrigin::External,
+            txs.into_iter().map(|tx| tx.transaction.clone()).collect(),
+        ));
+        assert!(
+            results.iter().all(Result::is_ok),
+            "all protocol transactions must be added successfully: {results:?}"
+        );
+        pool.inner().best_transactions()
+    }
+
+    fn aa_2d_best_transactions(txs: Vec<TestTx>) -> BestAA2dTransactions {
+        let mut pool = AA2dPool::default();
+        let mut on_chain_nonces: HashMap<crate::tt_2d_pool::AASequenceId, u64> = HashMap::default();
+        for tx in &txs {
+            let id = tx
+                .transaction
+                .aa_transaction_id()
+                .expect("AA2D transaction must have an AA transaction id");
+            on_chain_nonces
+                .entry(id.seq_id)
+                .and_modify(|nonce: &mut u64| *nonce = (*nonce).min(id.nonce))
+                .or_insert(id.nonce);
         }
 
-        fn no_updates(&mut self) {
-            // No-op for mock
+        for tx in txs {
+            let id = tx
+                .transaction
+                .aa_transaction_id()
+                .expect("AA2D transaction must have an AA transaction id");
+            let on_chain_nonce = on_chain_nonces[&id.seq_id];
+            pool.add_transaction(tx, on_chain_nonce, TempoHardfork::T1)
+                .expect("AA2D transaction must be added successfully");
         }
+        pool.best_transactions()
+    }
 
-        fn set_skip_blobs(&mut self, _skip_blobs: bool) {
-            // No-op for mock
-        }
+    fn merged_best_transactions(
+        protocol_txs: Vec<TestTx>,
+        aa_2d_txs: Vec<TestTx>,
+    ) -> MergeBestTransactions {
+        MergeBestTransactions::new(
+            protocol_best_transactions(protocol_txs),
+            aa_2d_best_transactions(aa_2d_txs),
+        )
     }
 
     #[test]
@@ -352,24 +308,16 @@ mod tests {
         // Left: priorities [10, 5, 3]
         // Right: priorities [8, 4, 1]
         // Expected order: [10, 8, 5, 4, 3, 1]
-        let tx_a = mock_tx(0);
-        let tx_b = mock_tx(1);
-        let tx_c = mock_tx(2);
-        let tx_d = mock_tx(3);
-        let tx_e = mock_tx(4);
-        let tx_f = mock_tx(5);
-        let left = MockBestTransactions::new(vec![
-            (tx_a.clone(), 10),
-            (tx_b.clone(), 5),
-            (tx_c.clone(), 3),
-        ]);
-        let right = MockBestTransactions::new(vec![
-            (tx_d.clone(), 8),
-            (tx_e.clone(), 4),
-            (tx_f.clone(), 1),
-        ]);
-
-        let mut merged = MergeBestTransactions::new(left, right);
+        let tx_a = protocol_tx(0, 10);
+        let tx_b = protocol_tx(1, 5);
+        let tx_c = protocol_tx(2, 3);
+        let tx_d = aa_2d_tx(3, 8);
+        let tx_e = aa_2d_tx(4, 4);
+        let tx_f = aa_2d_tx(5, 1);
+        let mut merged = merged_best_transactions(
+            vec![tx_a.clone(), tx_b.clone(), tx_c.clone()],
+            vec![tx_d.clone(), tx_e.clone(), tx_f.clone()],
+        );
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash())); // priority 10
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_d.hash())); // priority 8
@@ -383,12 +331,9 @@ mod tests {
     #[test]
     fn test_merge_best_transactions_empty_left() {
         // Left iterator is empty
-        let tx_a = mock_tx(0);
-        let tx_b = mock_tx(1);
-        let left = MockBestTransactions::new(vec![]);
-        let right = MockBestTransactions::new(vec![(tx_a.clone(), 10), (tx_b.clone(), 5)]);
-
-        let mut merged = MergeBestTransactions::new(left, right);
+        let tx_a = aa_2d_tx(0, 10);
+        let tx_b = aa_2d_tx(1, 5);
+        let mut merged = merged_best_transactions(vec![], vec![tx_a.clone(), tx_b.clone()]);
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash()));
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_b.hash()));
@@ -398,12 +343,9 @@ mod tests {
     #[test]
     fn test_merge_best_transactions_empty_right() {
         // Right iterator is empty
-        let tx_a = mock_tx(0);
-        let tx_b = mock_tx(1);
-        let left = MockBestTransactions::new(vec![(tx_a.clone(), 10), (tx_b.clone(), 5)]);
-        let right = MockBestTransactions::new(vec![]);
-
-        let mut merged = MergeBestTransactions::new(left, right);
+        let tx_a = protocol_tx(0, 10);
+        let tx_b = protocol_tx(1, 5);
+        let mut merged = merged_best_transactions(vec![tx_a.clone(), tx_b.clone()], vec![]);
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash()));
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_b.hash()));
@@ -412,10 +354,7 @@ mod tests {
 
     #[test]
     fn test_merge_best_transactions_both_empty() {
-        let left: MockBestTransactions<MockTx> = MockBestTransactions::new(vec![]);
-        let right: MockBestTransactions<MockTx> = MockBestTransactions::new(vec![]);
-
-        let mut merged = MergeBestTransactions::new(left, right);
+        let mut merged = merged_best_transactions(vec![], vec![]);
 
         assert!(merged.next().is_none());
     }
@@ -423,14 +362,14 @@ mod tests {
     #[test]
     fn test_merge_best_transactions_equal_priorities() {
         // When priorities are equal, left should be preferred (based on >= comparison)
-        let tx_a = mock_tx(0);
-        let tx_b = mock_tx(1);
-        let tx_c = mock_tx(2);
-        let tx_d = mock_tx(3);
-        let left = MockBestTransactions::new(vec![(tx_a.clone(), 10), (tx_b.clone(), 5)]);
-        let right = MockBestTransactions::new(vec![(tx_c.clone(), 10), (tx_d.clone(), 5)]);
-
-        let mut merged = MergeBestTransactions::new(left, right);
+        let tx_a = protocol_tx(0, 10);
+        let tx_b = protocol_tx(1, 5);
+        let tx_c = aa_2d_tx(2, 10);
+        let tx_d = aa_2d_tx(3, 5);
+        let mut merged = merged_best_transactions(
+            vec![tx_a.clone(), tx_b.clone()],
+            vec![tx_c.clone(), tx_d.clone()],
+        );
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash())); // equal priority, left preferred
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_c.hash()));
@@ -445,11 +384,8 @@ mod tests {
 
     #[test]
     fn test_merge_best_transactions_single_left() {
-        let tx_a = mock_tx(0);
-        let left = MockBestTransactions::new(vec![(tx_a.clone(), 10)]);
-        let right: MockBestTransactions<MockTx> = MockBestTransactions::new(vec![]);
-
-        let mut merged = MergeBestTransactions::new(left, right);
+        let tx_a = protocol_tx(0, 10);
+        let mut merged = merged_best_transactions(vec![tx_a.clone()], vec![]);
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash()));
         assert!(merged.next().is_none());
@@ -457,11 +393,8 @@ mod tests {
 
     #[test]
     fn test_merge_best_transactions_single_right() {
-        let tx_a = mock_tx(0);
-        let left: MockBestTransactions<MockTx> = MockBestTransactions::new(vec![]);
-        let right = MockBestTransactions::new(vec![(tx_a.clone(), 10)]);
-
-        let mut merged = MergeBestTransactions::new(left, right);
+        let tx_a = aa_2d_tx(0, 10);
+        let mut merged = merged_best_transactions(vec![], vec![tx_a.clone()]);
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash()));
         assert!(merged.next().is_none());
@@ -474,18 +407,16 @@ mod tests {
     #[test]
     fn test_merge_best_transactions_interleaved() {
         // Left has higher odd positions, right has higher even positions
-        let l1 = mock_tx(0);
-        let l2 = mock_tx(1);
-        let l3 = mock_tx(2);
-        let r1 = mock_tx(3);
-        let r2 = mock_tx(4);
-        let r3 = mock_tx(5);
-        let left =
-            MockBestTransactions::new(vec![(l1.clone(), 9), (l2.clone(), 7), (l3.clone(), 5)]);
-        let right =
-            MockBestTransactions::new(vec![(r1.clone(), 10), (r2.clone(), 6), (r3.clone(), 4)]);
-
-        let mut merged = MergeBestTransactions::new(left, right);
+        let l1 = protocol_tx(0, 9);
+        let l2 = protocol_tx(1, 7);
+        let l3 = protocol_tx(2, 5);
+        let r1 = aa_2d_tx(3, 10);
+        let r2 = aa_2d_tx(4, 6);
+        let r3 = aa_2d_tx(5, 4);
+        let mut merged = merged_best_transactions(
+            vec![l1.clone(), l2.clone(), l3.clone()],
+            vec![r1.clone(), r2.clone(), r3.clone()],
+        );
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*r1.hash())); // 10
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*l1.hash())); // 9
@@ -497,19 +428,16 @@ mod tests {
     }
 
     #[test]
-    fn test_mark_invalid_only_forwards_to_source_pool() {
-        // Invalidating a right-side (AA-2D) tx must NOT propagate to the
+    fn test_mark_invalid_routes_aa_2d_to_right_pool() {
+        // Invalidating an AA2D tx must NOT propagate to the
         // left-side (protocol) pool.
-        let l1 = mock_tx(0);
-        let l2 = mock_tx(1);
-        let r1 = mock_tx(2);
-        let left = MockBestTransactions::new(vec![(l1.clone(), 5), (l2.clone(), 3)]);
-        let right = MockBestTransactions::new(vec![(r1.clone(), 10)]);
-
-        let left_invalidated = left.invalidated();
-        let right_invalidated = right.invalidated();
-
-        let mut merged = MergeBestTransactions::new(left, right);
+        let aa_2d_sender = Address::random();
+        let l1 = protocol_tx(0, 9);
+        let l2 = protocol_tx(1, 7);
+        let r1 = aa_2d_tx_for_sequence(aa_2d_sender, 0, 10);
+        let r2 = aa_2d_tx_for_sequence(aa_2d_sender, 1, 8);
+        let mut merged =
+            merged_best_transactions(vec![l1.clone(), l2.clone()], vec![r1.clone(), r2]);
 
         // Right has highest priority, so R1 is yielded first
         let first = merged.next().unwrap();
@@ -520,41 +448,20 @@ mod tests {
             InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
         merged.mark_invalid(&first, &kind);
 
-        // Only the right (source) pool should have received the invalidation
-        assert!(
-            left_invalidated.lock().unwrap().is_empty(),
-            "left pool must NOT be invalidated when a right-side tx fails"
-        );
-        assert_eq!(
-            right_invalidated
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|tx| *tx.hash())
-                .collect::<Vec<_>>(),
-            vec![*r1.hash()],
-            "right pool must receive the invalidation"
-        );
-
-        // Remaining left-side txs must still be yielded
+        // The AA2D descendant must be skipped, while protocol txs still yield.
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*l1.hash()));
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*l2.hash()));
         assert!(merged.next().is_none());
     }
 
     #[test]
-    fn test_mark_invalid_uses_original_source_after_later_next() {
-        let l1 = mock_tx(0);
-        let l2 = mock_tx(1);
-        let r1 = mock_tx(2);
-        let r2 = mock_tx(3);
-        let left = MockBestTransactions::new(vec![(l1.clone(), 9), (l2, 7)]);
-        let right = MockBestTransactions::new(vec![(r1.clone(), 10), (r2, 8)]);
-
-        let left_invalidated = left.invalidated();
-        let right_invalidated = right.invalidated();
-
-        let mut merged = MergeBestTransactions::new(left, right);
+    fn test_mark_invalid_routes_aa_2d_after_later_protocol_next() {
+        let aa_2d_sender = Address::random();
+        let protocol_sender = Address::random();
+        let l1 = protocol_tx_for_sender(protocol_sender, 0, 9);
+        let l2 = protocol_tx_for_sender(protocol_sender, 1, 7);
+        let r1 = aa_2d_tx_for_sequence(aa_2d_sender, 0, 10);
+        let mut merged = merged_best_transactions(vec![l1.clone(), l2.clone()], vec![r1.clone()]);
         let first = merged.next().unwrap();
         let second = merged.next().unwrap();
 
@@ -565,18 +472,32 @@ mod tests {
             InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
         merged.mark_invalid(&first, &kind);
 
-        assert!(
-            left_invalidated.lock().unwrap().is_empty(),
-            "delayed invalidation must not use the most recent source"
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*l2.hash()));
+        assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn test_mark_invalid_routes_protocol_aa_to_left_pool() {
+        let protocol_sender = Address::random();
+        let left_tx = protocol_tx_for_sender(protocol_sender, 0, 10);
+        let left_descendant = protocol_tx_for_sender(protocol_sender, 1, 9);
+        let right_tx = aa_2d_tx(0, 8);
+        assert!(left_tx.transaction.is_aa());
+        assert!(!left_tx.transaction.is_aa_2d());
+        assert!(right_tx.transaction.is_aa_2d());
+
+        let mut merged = merged_best_transactions(
+            vec![left_tx.clone(), left_descendant],
+            vec![right_tx.clone()],
         );
-        assert_eq!(
-            right_invalidated
-                .lock()
-                .unwrap()
-                .iter()
-                .map(|tx| *tx.hash())
-                .collect::<Vec<_>>(),
-            vec![*r1.hash()]
-        );
+        let first = merged.next().unwrap();
+        assert_eq!(*first.hash(), *left_tx.hash());
+
+        let kind =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        merged.mark_invalid(&first, &kind);
+
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*right_tx.hash()));
+        assert!(merged.next().is_none());
     }
 }
