@@ -241,7 +241,6 @@ impl AccountKeychain {
         if nonce.is_some() && !self.storage.spec().is_t5() {
             return Err(AccountKeychainError::invalid_key_authorization_nonce().into());
         }
-        let has_nonce = nonce.is_some();
 
         // Validate inputs
         if key_id == Address::ZERO {
@@ -283,23 +282,12 @@ impl AccountKeychain {
                     if !seen_tokens.insert(limit.token) {
                         return Err(AccountKeychainError::invalid_spending_limit().into());
                     }
-
-                    // Nonce-bearing authorizations must fail before consuming the nonce. Keep this
-                    // validation nonce-only so legacy no-nonce failure gas/storage-touch behavior
-                    // remains unchanged for reexecution.
-                    if has_nonce {
-                        Self::t3_spending_limit_cap(limit.amount)?;
-                    }
                 }
             }
 
             if config.allowAnyCalls {
                 None
             } else {
-                // See the nonce-only validation note above.
-                if has_nonce {
-                    self.validate_call_scopes(&config.allowedCalls)?;
-                }
                 Some(config.allowedCalls.as_slice())
             }
         } else {
@@ -313,6 +301,11 @@ impl AccountKeychain {
 
             None
         };
+
+        // Nonce-bearing authorizations must commit atomically: if any later key,
+        // restriction, or event write fails, the TIP-1053 nonce must remain reusable.
+        // No-nonce authorizations keep the legacy mutation/error ordering unchanged.
+        let checkpoint = nonce.map(|_| self.storage.checkpoint());
 
         if let Some(nonce) = nonce {
             self.consume_key_authorization_nonce(msg_sender, nonce)?;
@@ -349,7 +342,13 @@ impl AccountKeychain {
                 signatureType: signature_type,
                 expiry: config.expiry,
             },
-        ))
+        ))?;
+
+        if let Some(checkpoint) = checkpoint {
+            checkpoint.commit();
+        }
+
+        Ok(())
     }
 
     /// Burns a TIP-1053 nonce without authorizing a key.
@@ -1546,6 +1545,82 @@ mod tests {
             assert_nonce_already_used(replay.expect_err("nonce replay must fail"));
 
             assert_eq!(keychain.keys[account][second_key].read()?.expiry, 0);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t5_authorize_key_with_nonce_reverts_partial_restriction_writes() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let account = Address::random();
+        let key_id = Address::random();
+        let nonce = B256::repeat_byte(0x77);
+        let valid_token = Address::random();
+        let invalid_token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+
+            let result = keychain.authorize_key_with_nonce(
+                account,
+                authorizeKeyWithNonceCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: true,
+                        limits: vec![
+                            TokenLimit {
+                                token: valid_token,
+                                amount: U256::from(100),
+                                period: 0,
+                            },
+                            TokenLimit {
+                                token: invalid_token,
+                                amount: U256::from(u128::MAX) + U256::from(1),
+                                period: 0,
+                            },
+                        ],
+                        allowAnyCalls: true,
+                        allowedCalls: vec![],
+                    },
+                    nonce,
+                },
+            );
+
+            assert!(
+                matches!(
+                    result,
+                    Err(TempoPrecompileError::AccountKeychainError(
+                        AccountKeychainError::InvalidSpendingLimit(_)
+                    ))
+                ),
+                "expected InvalidSpendingLimit, got {result:?}"
+            );
+            assert!(
+                !keychain.is_key_authorization_nonce_used(isKeyAuthorizationNonceUsedCall {
+                    account,
+                    nonce,
+                })?,
+                "failed nonce-bearing authorization must not consume nonce"
+            );
+            assert_eq!(
+                keychain.keys[account][key_id].read()?.expiry,
+                0,
+                "failed nonce-bearing authorization must not create key"
+            );
+
+            let limit_key = AccountKeychain::spending_limit_key(account, key_id);
+            assert_eq!(
+                keychain.spending_limits[limit_key][valid_token]
+                    .read()?
+                    .remaining,
+                U256::ZERO,
+                "failed nonce-bearing authorization must revert earlier limit writes"
+            );
+
             Ok(())
         })
     }
