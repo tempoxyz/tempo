@@ -30,13 +30,9 @@ on:
         default: "300"
       bloat:
         description: State bloat snapshot size (1g, 10g, 100g).
-        type: choice
+        type: string
         required: true
         default: "100g"
-        options:
-          - "1g"
-          - "10g"
-          - "100g"
       tps:
         description: Target transactions per second.
         type: string
