@@ -597,6 +597,11 @@ where
 
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
+
+            // Artificial limit: max 1 transaction per block
+            if pool_transactions_included >= 1 {
+                break;
+            }
         }
         drop(_block_fill_span);
         let total_normal_transaction_execution_elapsed = execution_start.elapsed();
