@@ -144,6 +144,8 @@ env:
 
 permissions:
   contents: read
+  issues: write
+  pull-requests: read
 
 jobs:
   bench-txgen-dispatch:
@@ -158,6 +160,80 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Create PR status comment
+        id: pr-comment
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INPUT_BASELINE: ${{ inputs.baseline }}
+          INPUT_FEATURE: ${{ inputs.feature }}
+          INPUT_TXGEN_REF: ${{ inputs.txgen-ref }}
+          INPUT_PRESET: ${{ inputs.preset }}
+          INPUT_DURATION: ${{ inputs.duration }}
+          INPUT_BLOAT: ${{ inputs.bloat }}
+          INPUT_TPS: ${{ inputs.tps }}
+          INPUT_ACCOUNTS: ${{ inputs.accounts }}
+          INPUT_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests }}
+          INPUT_SAMPLY: ${{ inputs.samply }}
+          INPUT_TRACY: ${{ inputs.tracy }}
+          INPUT_BASELINE_HARDFORK: ${{ inputs.baseline-hardfork }}
+          INPUT_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
+        with:
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          script: |
+            const branch = process.env.GITHUB_REF_NAME;
+            const { data: prs } = await github.rest.pulls.list({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              head: `${context.repo.owner}:${branch}`,
+              state: 'open',
+              per_page: 1,
+            });
+
+            if (!prs.length) {
+              core.info(`No open PR found for branch '${branch}', results will be in job summary`);
+              return;
+            }
+
+            const pr = prs[0];
+            const actor = context.actor;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            let jobUrl = runUrl;
+            try {
+              const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                run_id: context.runId,
+              });
+              const job = jobs.jobs.find(j => j.name === 'bench-txgen-dispatch');
+              if (job) jobUrl = job.html_url;
+            } catch (error) {
+              core.info(`Could not resolve job URL: ${error.message}`);
+            }
+
+            const txgenRef = process.env.INPUT_TXGEN_REF || 'default';
+            const samply = process.env.INPUT_SAMPLY === 'true';
+            const samplyNote = samply ? ', samply: `enabled`' : '';
+            const tracy = process.env.INPUT_TRACY || 'off';
+            const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
+            const baselineHardfork = process.env.INPUT_BASELINE_HARDFORK || '';
+            const featureHardfork = process.env.INPUT_FEATURE_HARDFORK || '';
+            const hardforkNote = baselineHardfork ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
+            const config = `**Config:** mode: \`e2e\`, preset: \`${process.env.INPUT_PRESET}\`, duration: \`${process.env.INPUT_DURATION}s\`, bloat: \`${process.env.INPUT_BLOAT} MiB\`, tps: \`${process.env.INPUT_TPS}\`, accounts: \`${process.env.INPUT_ACCOUNTS}\`, max-concurrent-requests: \`${process.env.INPUT_MAX_CONCURRENT_REQUESTS}\`, baseline: \`${process.env.INPUT_BASELINE}\`, feature: \`${process.env.INPUT_FEATURE}\`, backend: \`txgen\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${hardforkNote}`;
+
+            const { data: comment } = await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: pr.number,
+              body: `cc @${actor}\n\nTxgen benchmark started. [View job](${jobUrl})\n\nStatus: Setting up runner...\n\n${config}`,
+            });
+
+            core.exportVariable('BENCH_PR', String(pr.number));
+            core.exportVariable('BENCH_ACTOR', actor);
+            core.exportVariable('BENCH_COMMENT_ID', String(comment.id));
+            core.exportVariable('BENCH_JOB_URL', jobUrl);
+            core.exportVariable('BENCH_CONFIG', config);
+            core.setOutput('comment-id', String(comment.id));
+
       - name: Pre-fetch comparison refs
         run: |
           for ref in "${{ inputs.baseline }}" "${{ inputs.feature }}"; do
@@ -170,6 +246,20 @@ jobs:
 
       - uses: mozilla-actions/sccache-action@v0.0.9
         continue-on-error: true
+
+      - name: Update status (installing txgen)
+        if: success() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          script: |
+            const { buildBody } = require('./.github/scripts/bench-update-status.js');
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(process.env.BENCH_COMMENT_ID),
+              body: buildBody('Installing txgen backend...'),
+            });
 
       - name: Install txgen backend
         env:
@@ -192,6 +282,15 @@ jobs:
           echo "TXGEN_BENCH_BIN=$CARGO_BIN_DIR/bench" >> "$GITHUB_ENV"
           command -v txgen-tempo
           command -v bench
+
+      - name: Update status (running benchmark)
+        if: success() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          script: |
+            const s = require('./.github/scripts/bench-update-status.js');
+            await s({github, context, status: 'Running txgen benchmark...'});
 
       - name: Run txgen benchmark
         run: |
@@ -268,9 +367,63 @@ jobs:
             echo "Benchmark completed, but no summary.md was produced." >> "$GITHUB_STEP_SUMMARY"
           fi
 
+      - name: Post results to PR
+        if: success() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
+        with:
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          script: |
+            const fs = require('fs');
+            const resultsDir = process.env.BENCH_RESULTS_DIR;
+
+            let summary = '';
+            try {
+              summary = fs.readFileSync(`${resultsDir}/summary.md`, 'utf8');
+            } catch (e) {
+              summary = 'Benchmark completed but failed to read summary.';
+            }
+
+            const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(process.env.BENCH_COMMENT_ID),
+              body: `cc @${process.env.BENCH_ACTOR}\n\nTxgen benchmark complete. [View job](${jobUrl})\n\n${summary}`,
+            });
+
       - name: Upload results
         if: "!cancelled()"
         uses: actions/upload-artifact@v4
         with:
           name: tempo-bench-txgen-results
           path: bench-results/
+
+      - name: Update status (failed)
+        if: failure() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          script: |
+            const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(process.env.BENCH_COMMENT_ID),
+              body: `cc @${process.env.BENCH_ACTOR}\n\nTxgen benchmark failed. [View logs](${jobUrl})`,
+            });
+
+      - name: Update status (cancelled)
+        if: cancelled() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          script: |
+            const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            await github.rest.issues.updateComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              comment_id: parseInt(process.env.BENCH_COMMENT_ID),
+              body: `cc @${process.env.BENCH_ACTOR}\n\nTxgen benchmark cancelled. [View logs](${jobUrl})`,
+            });
