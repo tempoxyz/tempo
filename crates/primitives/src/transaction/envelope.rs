@@ -523,7 +523,7 @@ impl reth_rpc_convert::TryIntoSimTx<TempoTxEnvelope> for alloy_rpc_types_eth::Tr
 mod tests {
     use super::*;
     use crate::transaction::{
-        Call, TempoSignedAuthorization, TempoTransaction,
+        Call, TempoSignedAuthorization, TempoTransaction, TokenLimit,
         key_authorization::{KeyAuthorization, SignedKeyAuthorization},
         tt_signature::PrimitiveSignature,
     };
@@ -856,9 +856,7 @@ mod tests {
         );
     }
 
-    fn aa_with_key_authorization(
-        limits: Option<Vec<crate::transaction::key_authorization::TokenLimit>>,
-    ) -> TempoTxEnvelope {
+    fn aa_with_key_authorization(limits: Option<Vec<TokenLimit>>) -> TempoTxEnvelope {
         let calldata = ITIP20::transferCall {
             to: Address::random(),
             amount: U256::from(1),
@@ -888,19 +886,12 @@ mod tests {
     }
 
     #[test]
-    fn test_payment_v2_aa_accepts_small_key_authorization() {
-        // TIP-1045: key_authorization is allowed in payment txs as long as it's bounded.
+    fn test_payment_v2_aa_accepts_bounded_key_authorization() {
+        // TIP-1045: key auth is allowed in payment txs as long as it's bounded.
         let envelope = aa_with_key_authorization(None);
         assert!(envelope.is_payment_v1());
-        assert!(
-            envelope.is_payment_v2(),
-            "V2 must accept AA tx with small key_authorization"
-        );
-    }
+        assert!(envelope.is_payment_v2(), "V2 must accept bounded key auth");
 
-    #[test]
-    fn test_payment_v2_aa_rejects_oversized_key_authorization() {
-        use crate::transaction::key_authorization::TokenLimit;
         // Pad `limits` with enough entries to push the RLP encoding past the 1 KB cap.
         let limits = (0..32)
             .map(|i| TokenLimit {
@@ -910,25 +901,12 @@ mod tests {
             })
             .collect::<Vec<_>>();
         let envelope = aa_with_key_authorization(Some(limits));
-        let key_authorization = envelope
-            .as_aa()
-            .unwrap()
-            .tx()
-            .key_authorization
-            .as_ref()
-            .unwrap();
-        assert!(
-            key_authorization.length() > KEY_AUTHORIZATION_MAX_RLP_LEN,
-            "test fixture must exceed the key_authorization size cap"
-        );
-        assert!(
-            envelope.is_payment_v1(),
-            "V1 ignores key_authorization size"
-        );
-        assert!(
-            !envelope.is_payment_v2(),
-            "V2 must reject AA tx with key_authorization larger than {KEY_AUTHORIZATION_MAX_RLP_LEN} bytes",
-        );
+        assert!(envelope.is_payment_v1(), "V1 ignores key auth size");
+        assert!(!envelope.is_payment_v2(), "V2 must reject huge key auth");
+
+        let tx = envelope.as_aa().unwrap().tx();
+        let key_auth = tx.key_authorization.as_ref().unwrap();
+        assert!(key_auth.length() > KEY_AUTHORIZATION_MAX_RLP_LEN);
     }
 
     #[test]
