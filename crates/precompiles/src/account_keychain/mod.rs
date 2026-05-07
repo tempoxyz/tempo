@@ -286,6 +286,9 @@ impl AccountKeychain {
                         return Err(AccountKeychainError::invalid_spending_limit().into());
                     }
 
+                    // Nonce-bearing authorizations must fail before consuming the nonce. Keep this
+                    // validation nonce-only so legacy no-nonce failure gas/storage-touch behavior
+                    // remains unchanged for reexecution.
                     if has_nonce {
                         Self::t3_spending_limit_cap(limit.amount)?;
                     }
@@ -295,6 +298,7 @@ impl AccountKeychain {
             if config.allowAnyCalls {
                 None
             } else {
+                // See the nonce-only validation note above.
                 if has_nonce {
                     self.validate_call_scopes(&config.allowedCalls)?;
                 }
