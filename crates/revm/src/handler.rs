@@ -83,6 +83,9 @@ const KEY_AUTH_BASE_GAS: u64 = 27_000;
 /// Gas per spending limit in KeyAuthorization
 const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
 
+/// Extra buffer for the second LOG3 emitted by T5 nonce-bearing key authorizations.
+const KEY_AUTH_T5_NONCE_EVENT_BUFFER: u64 = 1_500;
+
 /// Gas cost for expiring nonce transactions (replay check + insert).
 ///
 /// See [TIP-1009] for full specification.
@@ -336,6 +339,7 @@ fn calculate_key_authorization_gas(
         // T1B+: Accurate gas matching actual precompile storage operations.
         // authorize_key does: 1 SLOAD (read existing key) + 1 SSTORE (write key)
         //   + N SSTOREs (one per spending limit) + 2k buffer (TSTORE + keccak + event)
+        // T5 nonce authorizations emit one additional LOG3 event with no data.
         const BUFFER: u64 = 2_000;
         let sload_cost =
             gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
@@ -363,7 +367,7 @@ fn calculate_key_authorization_gas(
         let mut total_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
 
         if has_t5_nonce {
-            total_gas += sload_cost;
+            total_gas += sload_cost + KEY_AUTH_T5_NONCE_EVENT_BUFFER;
         }
 
         // T4+: include extra gas for call scopes configuration
@@ -3080,8 +3084,8 @@ mod tests {
 
         assert_eq!(
             nonce_t5_gas - base_t5_gas,
-            t5_sload + t5_sstore + t5_sstore_state,
-            "T5 nonce adds one consumed-nonce SLOAD and one consumed-nonce SSTORE"
+            t5_sload + t5_sstore + t5_sstore_state + KEY_AUTH_T5_NONCE_EVENT_BUFFER,
+            "T5 nonce adds one consumed-nonce SLOAD, one consumed-nonce SSTORE, and one event"
         );
         assert_eq!(
             nonce_t5_state_gas - base_t5_state_gas,
