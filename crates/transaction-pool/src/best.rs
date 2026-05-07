@@ -5,8 +5,8 @@ use alloy_primitives::{Address, U256, map::HashMap};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    BestTransactions as BestTransactionsTrait, CoinbaseTipOrdering, Priority, ValidPoolTransaction,
-    error::InvalidPoolTransactionError, pool::BestTransactions,
+    BestTransactions, CoinbaseTipOrdering, Priority, ValidPoolTransaction,
+    error::InvalidPoolTransactionError, pool::BestTransactions as BestProtocolTransactions,
 };
 use std::sync::Arc;
 use tempo_evm::TempoTxResult;
@@ -16,10 +16,10 @@ type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
 type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u128>);
 
-/// A best-transaction iterator that merges the protocol pool and the AA2D pool,
+/// A best-transaction iterator that merges the protocol pool and the 2D nonces pool,
 /// always yielding the next best item from either iterator.
 pub struct MergeBestTransactions {
-    protocol_pool: BestTransactions<TxOrdering>,
+    protocol_pool: BestProtocolTransactions<TxOrdering>,
     aa_2d_pool: BestAA2dTransactions,
     next_protocol_pool: Option<BestTransactionWithPriority>,
     next_aa_2d_pool: Option<BestTransactionWithPriority>,
@@ -28,7 +28,7 @@ pub struct MergeBestTransactions {
 impl MergeBestTransactions {
     /// Creates a new iterator over the given iterators.
     pub(crate) fn new(
-        protocol_pool: BestTransactions<TxOrdering>,
+        protocol_pool: BestProtocolTransactions<TxOrdering>,
         aa_2d_pool: BestAA2dTransactions,
     ) -> Self {
         Self {
@@ -88,7 +88,7 @@ impl Iterator for MergeBestTransactions {
     }
 }
 
-impl BestTransactionsTrait for MergeBestTransactions {
+impl BestTransactions for MergeBestTransactions {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
         if transaction.transaction.is_aa_2d() {
             self.aa_2d_pool.mark_invalid(transaction, kind);
@@ -121,7 +121,7 @@ pub struct StateAwareBestTransactions<I> {
 
 impl<I> StateAwareBestTransactions<I>
 where
-    I: BestTransactionsTrait<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
 {
     /// Wraps an existing [`BestTransactions`] iterator.
     pub fn new(inner: I) -> Self {
@@ -151,7 +151,7 @@ where
 
 impl<I> Iterator for StateAwareBestTransactions<I>
 where
-    I: BestTransactionsTrait<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
 {
     type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
@@ -183,9 +183,9 @@ where
     }
 }
 
-impl<I> BestTransactionsTrait for StateAwareBestTransactions<I>
+impl<I> BestTransactions for StateAwareBestTransactions<I>
 where
-    I: BestTransactionsTrait<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
+    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
 {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
         self.inner.mark_invalid(transaction, kind);
@@ -247,7 +247,7 @@ mod tests {
         tx_with_nonce_key(U256::from(1), sender, nonce, priority)
     }
 
-    fn protocol_best_transactions(txs: Vec<TestTx>) -> BestTransactions<TxOrdering> {
+    fn protocol_best_transactions(txs: Vec<TestTx>) -> BestProtocolTransactions<TxOrdering> {
         let pool = Pool::new(
             OkValidator::<TempoPooledTransaction>::default(),
             CoinbaseTipOrdering::default(),
