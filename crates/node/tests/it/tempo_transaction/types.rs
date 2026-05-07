@@ -764,6 +764,11 @@ pub(crate) enum AuthKind {
         num_limits: usize,
         allowed_calls: AllowedCallsMode,
     },
+    /// Inline key authorization carrying a TIP-1053 nonce.
+    KeyAuthNonce {
+        key_type: SignatureType,
+        num_limits: usize,
+    },
 }
 
 #[derive(Clone)]
