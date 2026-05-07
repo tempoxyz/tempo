@@ -16,6 +16,7 @@ mod stablecoin_dex;
 mod tempo_transaction;
 mod tip1016_storage_gas;
 mod tip20;
+mod tip20_channel_escrow_gas;
 mod tip20_factory;
 mod tip20_gas_fees;
 mod tip_fee_amm;
