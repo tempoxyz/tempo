@@ -187,6 +187,33 @@ def bench-save-e2e-meta [datadir: string, meta_dir: string, marker: record, gene
     print $"Bench marker written to ($marker_path)"
 }
 
+def e2e-snapshot-required-files [datadir: string] {
+    let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
+    [
+        $"($meta_dir)/genesis.json"
+        $"($meta_dir)/trusted-peers.txt"
+        $"($meta_dir)/marker.json"
+        $"($datadir)/signing.key"
+        $"($datadir)/signing.share"
+        $"($datadir)/enode.key"
+        $"($datadir)/enode.identity"
+        $"($datadir)/db"
+        $"($datadir)/static_files"
+    ]
+}
+
+def e2e-snapshot-missing-files [datadir: string] {
+    e2e-snapshot-required-files $datadir | where { |path| not ($path | path exists) }
+}
+
+def e2e-snapshot-ready [datadir: string] {
+    (e2e-snapshot-missing-files $datadir | length) == 0
+}
+
+def e2e-snapshots-ready [a_db: string, b_db: string] {
+    (e2e-snapshot-ready $a_db) and (e2e-snapshot-ready $b_db)
+}
+
 def derive-tracing-otlp [tracing_otlp: string] {
     if $tracing_otlp == "" and ($env.GRAFANA_TEMPO? | default "" | str length) > 0 {
         let base = ($env.GRAFANA_TEMPO | str trim --right --char '/')
@@ -787,14 +814,29 @@ def "main e2e" [
     validate-schelk-state $E2E_A_STATE_PATH $E2E_B_STATE_PATH
     cleanup-local-e2e-processes
 
-    if $force_bloat {
+    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
+    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+
+    let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
+    let should_init_snapshots = $force_bloat or (not $snapshots_ready)
+    if (not $snapshots_ready) and (not $force_bloat) {
+        print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
+        let missing_a = (e2e-snapshot-missing-files $a_db)
+        let missing_b = (e2e-snapshot-missing-files $b_db)
+        if ($missing_a | length) > 0 {
+            print $"  Missing from a: ($missing_a | str join ', ')"
+        }
+        if ($missing_b | length) > 0 {
+            print $"  Missing from b: ($missing_b | str join ', ')"
+        }
+    }
+
+    if $should_init_snapshots {
         let init_dir = $"($LOCALNET_DIR)/e2e-local-init"
         let generated_genesis = $"($init_dir)/genesis.json"
         let bloat_file = $"($E2E_BLOAT_TMP_DIR)/state_bloat.bin"
         if ($init_dir | path exists) { rm -rf $init_dir }
         mkdir $init_dir
-        bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-        bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
         if ($E2E_BLOAT_TMP_DIR | path exists) { rm -rf $E2E_BLOAT_TMP_DIR }
         mkdir $E2E_BLOAT_TMP_DIR
 
@@ -833,10 +875,10 @@ def "main e2e" [
         }
         bench-promote-at $E2E_A_STATE_PATH $a_db
         bench-promote-at $E2E_B_STATE_PATH $b_db
+        bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
+        bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
     }
 
-    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
     if $init_only {
         cleanup-local-e2e-processes
         return
