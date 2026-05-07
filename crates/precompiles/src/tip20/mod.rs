@@ -394,9 +394,7 @@ impl TIP20Token {
     /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
-        let to = Recipient::resolve(call.to)?;
-        self.check_role(msg_sender, *ISSUER_ROLE)?;
-        self.validate_mint(&to)?;
+        let (to, total_supply) = self.preflight_mint(msg_sender, call.to)?;
 
         if self.validate_or_escrow_funds(
             Address::ZERO,
@@ -408,7 +406,7 @@ impl TIP20Token {
             return Ok(());
         }
 
-        self._mint(&to, call.amount)?;
+        self._mint(&to, call.amount, total_supply)?;
         self.emit_event(TIP20Event::Mint(ITIP20::Mint {
             to: call.to,
             amount: call.amount,
@@ -426,9 +424,7 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
-        let to = Recipient::resolve(call.to)?;
-        self.check_role(msg_sender, *ISSUER_ROLE)?;
-        self.validate_mint(&to)?;
+        let (to, total_supply) = self.preflight_mint(msg_sender, call.to)?;
 
         if self.validate_or_escrow_funds(
             Address::ZERO,
@@ -440,7 +436,7 @@ impl TIP20Token {
             return Ok(());
         }
 
-        self._mint(&to, call.amount)?;
+        self._mint(&to, call.amount, total_supply)?;
         self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
             from: Address::ZERO,
             to: call.to,
@@ -458,9 +454,13 @@ impl TIP20Token {
     }
 
     /// Internal helper to mint new tokens and update balances.
-    fn _mint(&mut self, to: &Recipient, amount: U256) -> Result<()> {
-        let total_supply = self.total_supply()?;
+    ///
+    /// Accepts an optional pre-fetched `total_supply` to preserve re-execution behavior (pre-T6).
+    /// If `None`, reads from storage.
+    fn _mint(&mut self, to: &Recipient, amount: U256, total_supply: Option<U256>) -> Result<()> {
         let new_supply = total_supply
+            .map(Ok)
+            .unwrap_or_else(|| self.total_supply())?
             .checked_add(amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
 
@@ -998,6 +998,29 @@ impl TIP20Token {
         Ok(())
     }
 
+    /// Resolves the effective recipient, checks that `msg_sender` has the issuer role, preserves
+    /// the pre-T6 `total_supply` read position, validates that the token is not paused, and the
+    /// recipient can receive mints. On T6+, the `total_supply` read is deferred to `_mint`.
+    ///
+    /// Returns the resolved recipient and, pre-T6, the total supply.
+    fn preflight_mint(
+        &self,
+        msg_sender: Address,
+        to: Address,
+    ) -> Result<(Recipient, Option<U256>)> {
+        let to = Recipient::resolve(to)?;
+        self.check_role(msg_sender, *ISSUER_ROLE)?;
+
+        let total_supply = if self.storage.spec().is_t6() {
+            None
+        } else {
+            Some(self.total_supply()?)
+        };
+
+        self.validate_mint(&to)?;
+        Ok((to, total_supply))
+    }
+
     /// Check whether a transfer is authorized by the token's [`TIP403Registry`] policy.
     /// [TIP-1015]: For T2+, uses directional sender/recipient checks.
     ///
@@ -1097,7 +1120,7 @@ impl TIP20Token {
             InboundKind::TRANSFER => {
                 self._transfer(originator, &Recipient::direct(ESCROW_ADDRESS), amount)?
             }
-            InboundKind::MINT => self._mint(&Recipient::direct(ESCROW_ADDRESS), amount)?,
+            InboundKind::MINT => self._mint(&Recipient::direct(ESCROW_ADDRESS), amount, None)?,
             InboundKind::__Invalid => {
                 return Err(TIP1028EscrowError::invalid_receipt_claim().into());
             }
@@ -4061,6 +4084,33 @@ pub(crate) mod tests {
 
             Ok(())
         }
+    }
+
+    #[test]
+    fn test_mint_paused_pre_t6_preserves_sload_count() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let (admin, amount) = (Address::random(), U256::random());
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_role(admin, *PAUSE_ROLE)
+                .apply()?;
+            token.pause(admin, ITIP20::pauseCall {})?;
+
+            token.storage.reset_counters();
+            let result = token.mint(admin, ITIP20::mintCall { to: admin, amount });
+
+            assert_eq!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::contract_paused()))
+            );
+            assert_eq!(token.storage.counter_sload(), 3);
+
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        Ok(())
     }
 
     #[test]
