@@ -1,5 +1,5 @@
 ---
-id: TIP-1060
+id: TIP-XXXX
 title: Protocol Feature Rollout and Activation
 description: Defines a source-controlled protocol feature model that lets Tempo ship reviewed TIP behavior independently from named hardfork bundles.
 authors: Emma (@emmajam)
@@ -8,7 +8,7 @@ related: N/A
 protocolVersion: TBD
 ---
 
-# TIP-1060: Protocol Feature Rollout and Activation
+# TIP-XXXX: Protocol Feature Rollout and Activation
 
 ## Abstract
 
@@ -32,6 +32,8 @@ That has a few problems:
 This TIP introduces a feature model so we can review, ship, observe, and eventually activate TIP behavior without always waiting for the next hardfork bundle.
 
 It also separates shipping code from activating behavior. `tempo` can release binaries that include inactive TIP implementations, operators can upgrade over a rollout window, and the feature can activate only after the relevant operators are running a `tempo` version that supports it. Nodes do not need to run the same exact release, but any node validating blocks after activation needs a release that understands every active feature.
+
+The near-term goal is release-free activation for features already supported by the running `tempo` version. Scheduling and cancellation may stay tied to reviewed repo changes at first, and can become release-free in a later phase.
 
 This is not per-node feature flagging where each operator picks their own behavior. A protocol feature is a network-level rule. For a given chain and activation data, `tempo` nodes need to calculate the same active feature set.
 
@@ -90,7 +92,7 @@ The initial activation source is the existing hardfork schedule:
 chain + timestamp -> TempoHardfork -> FeatureSet
 ```
 
-A later activation source might be an on-chain registry, a signed manifest checkpoint, or something similar. That part is out of scope for the first rollout and needs its own spec before we use it.
+A later activation source might be a multisig-approved activation checkpoint, an on-chain registry, or something similar. That part is out of scope for the first rollout and needs its own spec before we use it.
 
 ## Repository boundaries
 
@@ -346,7 +348,7 @@ The feature review UI should make this distinction clear: cancelling a scheduled
 
 ## Activation beyond hardforks
 
-Hardfork-independent activation is intentionally deferred.
+This TIP sets up the feature model, but the first rollout still uses the existing hardfork schedule for activation. Activating features without a hardfork is left for a later phase.
 
 Before any feature activates independently from a named hardfork, a future TIP or TIP update needs to specify:
 
@@ -361,14 +363,21 @@ Before any feature activates independently from a named hardfork, a future TIP o
 - observability requirements
 - rollback or cancellation process before activation
 
-The main activation source options are:
+The suggested long-term approach is a hybrid multisig-approved checkpoint model:
+
+- feature records, review state, and readiness live in `tempo-protocol-features`
+- the UI helps review the feature and prepare activation
+- final activation is published as a multisig-approved checkpoint that `tempo` can verify
+- the checkpoint includes the feature ID, chain ID, activation block or timestamp, manifest hash, minimum `tempo` version, dependencies, multisig approval data, and replay protection
+- later, multisig-approved checkpoints can be anchored on-chain for auditability without making an on-chain registry the first dependency
+
+Other activation source options are:
 
 - **Bundled manifest artifact**: `tempo` releases include a reviewed generated schedule from `tempo-protocol-features`. This is simple and keeps activation data tied to releases, but still requires a new `tempo` release to change the schedule.
-- **Signed manifest checkpoint**: `tempo` reads an activation file and verifies signatures from approved signers. This allows schedule changes without a full release, but needs key management, replay protection, and a clear failure mode when signatures or files are missing.
+- **Multisig-approved checkpoint**: `tempo` reads an activation file and verifies approval from the configured multisig. This allows activation without a full release, but needs replay protection, multisig configuration, and a clear failure mode when approvals or files are missing.
 - **On-chain registry**: `tempo` reads activation state from a chain contract or system registry. This gives a strong shared source, but it is the most complex option and needs bootstrap rules for how `tempo` validates the registry before the feature system itself is live.
-- **Hybrid**: feature records live in Git, the UI opens reviewed PRs, and activation is published as a signed checkpoint or registry update. This keeps review ergonomic while making the final activation record explicit and verifiable.
 
-The implementation that reads, verifies, and applies the activation source lives in `tempo`. Source-controlled feature records and scheduled activation metadata should live in `tempo-protocol-features` unless a later TIP replaces them with an on-chain registry or another agreed protocol source.
+The implementation that reads, verifies, and applies the activation source lives in `tempo`. Source-controlled feature records and scheduled activation metadata should live in `tempo-protocol-features` unless a later TIP replaces them with another agreed protocol source.
 
 Until then, `TempoHardfork` remains the source of historical activation behavior.
 
@@ -469,6 +478,6 @@ Threat model the activation flow before using hardfork-independent activation in
 
 ### Phase 6: Activation source
 
-Decide the activation source through a follow-up TIP or focused design review, then implement the mechanism that lets approved features activate independently from a named hardfork.
+Decide the activation source through a follow-up TIP or focused design review. The suggested path is the hybrid multisig-approved checkpoint model described above: feature records stay in `tempo-protocol-features`, and final activation is a multisig-approved checkpoint that `tempo` can verify.
 
 This phase is out of scope until the preceding phases are complete.
