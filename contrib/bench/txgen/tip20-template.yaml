@@ -31,7 +31,9 @@ templates:
       abi: ERC20
       function: transfer
       args:
-        - { pool: users, select: random }
+        - pool:
+            pool: users
+            select: random
         - 1
 
 mix:
