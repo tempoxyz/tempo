@@ -42,10 +42,10 @@ on:
         description: Benchmark backend.
         type: choice
         required: true
-        default: tempo-bench
+        default: txgen
         options:
-          - tempo-bench
           - txgen
+          - tempo-bench
       txgen-ref:
         description: Optional ref to pin in tempoxyz/txgen.
         type: string
@@ -399,10 +399,6 @@ jobs:
 
       - name: Validate e2e options
         run: |
-          if [ "$BENCH_BACKEND" = "txgen" ]; then
-            echo "::error::mode=e2e currently supports backend=tempo-bench only; backend=txgen will be wired in the txgen bench PR."
-            exit 1
-          fi
           if [ -n "$BENCH_BASELINE_HARDFORK" ] || [ -n "$BENCH_FEATURE_HARDFORK" ]; then
             echo "::error::mode=e2e hardfork comparison is not wired for the single-runner local harness yet."
             exit 1
@@ -537,6 +533,7 @@ jobs:
           cmd+=(
             --preset "$BENCH_PRESET"
             --bloat "$BENCH_BLOAT"
+            --backend "$BENCH_BACKEND"
             --duration "$BENCH_DURATION"
             --tps "$BENCH_TPS"
             --baseline "$BASELINE_REF"
@@ -583,7 +580,12 @@ jobs:
           BENCH_RUN_TYPE: ${{ env.BENCH_RUN_TYPE }}
           BENCH_JOB_URL: ${{ env.BENCH_JOB_URL }}
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
-        run: bash contrib/bench/upload-clickhouse.sh "$BENCH_RESULTS_DIR"
+        run: |
+          if [ "$BENCH_BACKEND" = "txgen" ]; then
+            bash contrib/bench/upload-clickhouse-txgen.sh "$BENCH_RESULTS_DIR"
+          else
+            bash contrib/bench/upload-clickhouse.sh "$BENCH_RESULTS_DIR"
+          fi
 
       - name: Post results to PR
         if: success()
