@@ -62,7 +62,7 @@ TXGEN_BENCH_BIN="${TXGEN_BENCH_BIN:-bench}"
 # ============================================================================
 
 echo "Installing txgen-tempo and bench-cli..."
-cargo install --git "https://x-access-token:${DEREK_BENCH_REPLAY_TOKEN}@github.com/tempoxyz/txgen" --locked txgen-tempo bench-cli
+cargo install --git "https://x-access-token:${DEREK_BENCH_TOKEN}@github.com/tempoxyz/txgen" --locked txgen-tempo bench-cli
 command -v "$TXGEN_TEMPO_BIN"
 command -v "$TXGEN_BENCH_BIN"
 

@@ -245,11 +245,12 @@ def run-txgen-bench-single [
         run_start_epoch: $"($run_start_epoch)"
         reference_epoch: $"($reference_epoch)"
     }
-    $labels | to json | save -f $METRICS_LABELS_FILE
+    let labels_file = $"($results_dir)/metrics-labels-($run_label).json"
+    $labels | to json | save -f $labels_file
 
     let proxy_pid = if ($METRICS_PROXY_SCRIPT | path exists) {
         let proxy_job = (job spawn {
-            python3 $METRICS_PROXY_SCRIPT --upstream "http://127.0.0.1:9001/" --port 9090
+            python3 $METRICS_PROXY_SCRIPT --upstream "http://127.0.0.1:9001/" --port 9090 --labels $labels_file
         })
         sleep 500ms
         $proxy_job

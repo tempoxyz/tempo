@@ -168,6 +168,7 @@ impl<TUpstream> Config<TUpstream> {
                 last_finalized_height,
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
+                public_key: None,
             },
         )
         .wrap_err("failed to initialize executor")?;

@@ -12,7 +12,6 @@ const BENCH_WORKTREES_DIR = ".bench-worktrees"
 const BENCH_RESULTS_DIR = "bench-results"
 const BLOAT_MNEMONIC = "test test test test test test test test test test test junk"
 const METRICS_PROXY_SCRIPT = "contrib/bench/bench-metrics-proxy.py"
-const METRICS_LABELS_FILE = "/tmp/bench-metrics-labels.json"
 const MINIO_BUCKET = "minio/tempo-binaries"
 const BENCH_META_SUBDIR = ".bench-meta"
 
@@ -503,11 +502,12 @@ def run-bench-single [
         run_start_epoch: $"($run_start_epoch)"
         reference_epoch: $"($reference_epoch)"
     }
-    $labels | to json | save -f $METRICS_LABELS_FILE
+    let labels_file = $"($results_dir)/metrics-labels-($run_label).json"
+    $labels | to json | save -f $labels_file
 
     let proxy_pid = if ($METRICS_PROXY_SCRIPT | path exists) {
         let proxy_job = (job spawn {
-            python3 $METRICS_PROXY_SCRIPT --upstream "http://127.0.0.1:9001/" --port 9090
+            python3 $METRICS_PROXY_SCRIPT --upstream "http://127.0.0.1:9001/" --port 9090 --labels $labels_file
         })
         sleep 500ms
         $proxy_job

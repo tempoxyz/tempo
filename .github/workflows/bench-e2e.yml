@@ -215,7 +215,7 @@ on:
         type: string
         required: false
     secrets:
-      DEREK_PAT:
+      DEREK_BENCH_TOKEN:
         required: false
       TEMPO_TELEMETRY_URL:
         required: false
@@ -337,7 +337,7 @@ jobs:
           INPUT_BASELINE_NAME: ${{ inputs.baseline-name }}
           INPUT_FEATURE_NAME: ${{ inputs.feature-name }}
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({
               owner: context.repo.owner,
@@ -381,7 +381,7 @@ jobs:
       - name: Install txgen backend
         if: env.BENCH_BACKEND == 'txgen'
         env:
-          TXGEN_GIT_TOKEN: ${{ secrets.DEREK_PAT || github.token }}
+          TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: |
           CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
           echo "$CARGO_BIN_DIR" >> "$GITHUB_PATH"
@@ -505,7 +505,7 @@ jobs:
         if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             const s = require('./.github/scripts/bench-update-status.js');
             await s({github, context, status: 'Running benchmark...'});
@@ -586,7 +586,7 @@ jobs:
         env:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             const fs = require('fs');
             const resultsDir = process.env.BENCH_RESULTS_DIR;
@@ -720,7 +720,7 @@ jobs:
         if: failure() && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({
@@ -734,7 +734,7 @@ jobs:
         if: cancelled() && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({

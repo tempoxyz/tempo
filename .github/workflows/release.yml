@@ -81,6 +81,11 @@ jobs:
     runs-on: ${{ matrix.platform.os }}
     permissions:
       contents: read
+      # Required by actions/attest-build-provenance and actions/attest-sbom for
+      # keyless Sigstore signing via GitHub OIDC, and to upload the resulting
+      # in-toto attestations to the repository's attestation store.
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -124,7 +129,7 @@ jobs:
         shell: bash
 
       - name: Build binary
-        run: cargo build --bin ${{ matrix.binary.name }} --features "${{ matrix.binary.features }}" --profile ${{ steps.profile.outputs.profile }} --target ${{ matrix.platform.target }}
+        run: cargo build --locked --bin ${{ matrix.binary.name }} --features "${{ matrix.binary.features }}" --profile ${{ steps.profile.outputs.profile }} --target ${{ matrix.platform.target }}
         env:
           CARGO_TARGET_DIR: target
 
@@ -148,11 +153,19 @@ jobs:
 
           echo "archive_name=$ARCHIVE_NAME" >> $GITHUB_OUTPUT
           echo "archive_path=$ARCHIVE_NAME" >> $GITHUB_OUTPUT
+          echo "binary_name=$BINARY_NAME"   >> $GITHUB_OUTPUT
 
       - name: Generate checksums
         shell: bash
+        # Two separate single-line .sha256 files, one per artifact, so that
+        # `sha256sum -c <file>.sha256` works cleanly for whichever artifact
+        # the user downloaded. The bare-binary checksum is what an
+        # independent rebuilder will compare against once the reproducible
+        # build path lands (ELF hashes reproduce far more reliably than
+        # tar/gzip hashes).
         run: |
           shasum -a 256 "${{ steps.prepare.outputs.archive_path }}" > "${{ steps.prepare.outputs.archive_name }}.sha256"
+          shasum -a 256 "${{ steps.prepare.outputs.binary_name }}"  > "${{ steps.prepare.outputs.binary_name }}.sha256"
 
       - name: GPG sign archive
         shell: bash
@@ -165,6 +178,39 @@ jobs:
           echo -n "$GPG_SIGNING_KEY" | base64 --decode | gpg --batch --import
           printf '%s' "$GPG_PASSPHRASE" | gpg --passphrase-fd 0 --pinentry-mode loopback --batch -ab "${{ steps.prepare.outputs.archive_path }}"
 
+      - name: Generate SBOM (SPDX-JSON) for archive
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
+        with:
+          file: ${{ steps.prepare.outputs.archive_path }}
+          format: spdx-json
+          output-file: ${{ steps.prepare.outputs.archive_name }}.spdx.json
+          # The release workflow uploads SBOMs explicitly via actions/upload-artifact
+          # below, so disable the action's own artifact / release upload to keep
+          # the asset list deterministic.
+          upload-artifact: false
+          upload-release-assets: false
+
+      - name: Attest SBOM
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          # Attest both the archive and the bare binary so consumers can verify
+          # provenance whether they hold the .tar.gz or the unpacked ELF
+          # (containers, distro packages, the independent rebuilder).
+          # `sbom-path` switches actions/attest into SBOM-attestation mode.
+          subject-path: |
+            ${{ steps.prepare.outputs.archive_path }}
+            ${{ steps.prepare.outputs.binary_name }}
+          sbom-path: ${{ steps.prepare.outputs.archive_name }}.spdx.json
+
+      - name: Attest build provenance (SLSA v1)
+        uses: actions/attest@59d89421af93a897026c735860bf21b6eb4f7b26 # v4.1.0
+        with:
+          # No `sbom-path` / `predicate-*` → actions/attest auto-emits a SLSA
+          # build provenance predicate.
+          subject-path: |
+            ${{ steps.prepare.outputs.archive_path }}
+            ${{ steps.prepare.outputs.binary_name }}
+
       - name: Upload artifacts
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -173,6 +219,8 @@ jobs:
             ${{ steps.prepare.outputs.archive_path }}
             ${{ steps.prepare.outputs.archive_name }}.sha256
             ${{ steps.prepare.outputs.archive_name }}.asc
+            ${{ steps.prepare.outputs.archive_name }}.spdx.json
+            ${{ steps.prepare.outputs.binary_name }}.sha256
           if-no-files-found: error
 
   create-release:
