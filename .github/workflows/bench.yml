@@ -404,8 +404,52 @@ jobs:
 
   bench-e2e:
     needs: tempo-bench-ack
-    if: needs.tempo-bench-ack.outputs.mode == 'e2e'
+    if: needs.tempo-bench-ack.outputs.mode == 'e2e' && needs.tempo-bench-ack.outputs.backend == 'txgen'
     uses: ./.github/workflows/bench-e2e.yml
+    with:
+      pr: ${{ needs.tempo-bench-ack.outputs.pr }}
+      actor: ${{ needs.tempo-bench-ack.outputs.actor }}
+      mode: ${{ needs.tempo-bench-ack.outputs.mode }}
+      preset: ${{ needs.tempo-bench-ack.outputs.preset }}
+      duration: ${{ needs.tempo-bench-ack.outputs.duration }}
+      bloat: ${{ needs.tempo-bench-ack.outputs.bloat }}
+      tps: ${{ needs.tempo-bench-ack.outputs.tps }}
+      baseline: ${{ needs.tempo-bench-ack.outputs.baseline }}
+      feature: ${{ needs.tempo-bench-ack.outputs.feature }}
+      backend: ${{ needs.tempo-bench-ack.outputs.backend }}
+      txgen-ref: ${{ needs.tempo-bench-ack.outputs.txgen-ref }}
+      baseline-name: ${{ needs.tempo-bench-ack.outputs.baseline-name }}
+      feature-name: ${{ needs.tempo-bench-ack.outputs.feature-name }}
+      samply: ${{ needs.tempo-bench-ack.outputs.samply }}
+      tracy: ${{ needs.tempo-bench-ack.outputs.tracy }}
+      tracy-seconds: ${{ needs.tempo-bench-ack.outputs.tracy-seconds }}
+      tracy-offset: ${{ needs.tempo-bench-ack.outputs.tracy-offset }}
+      baseline-args: ${{ needs.tempo-bench-ack.outputs.baseline-args }}
+      feature-args: ${{ needs.tempo-bench-ack.outputs.feature-args }}
+      baseline-hardfork: ${{ needs.tempo-bench-ack.outputs.baseline-hardfork }}
+      feature-hardfork: ${{ needs.tempo-bench-ack.outputs.feature-hardfork }}
+      run-type: ${{ needs.tempo-bench-ack.outputs.run-type }}
+      force-bloat: ${{ needs.tempo-bench-ack.outputs.force-bloat }}
+      no-slack: ${{ needs.tempo-bench-ack.outputs.no-slack }}
+      bench-args: ${{ needs.tempo-bench-ack.outputs.bench-args }}
+      bench-env: ${{ needs.tempo-bench-ack.outputs.bench-env }}
+      baseline-env: ${{ needs.tempo-bench-ack.outputs.baseline-env }}
+      feature-env: ${{ needs.tempo-bench-ack.outputs.feature-env }}
+      comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
+    secrets:
+      DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
+      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
+      GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+
+  bench-e2e-old:
+    needs: tempo-bench-ack
+    if: needs.tempo-bench-ack.outputs.mode == 'e2e' && needs.tempo-bench-ack.outputs.backend == 'tempo-bench'
+    uses: ./.github/workflows/bench-e2e-old.yml
     with:
       pr: ${{ needs.tempo-bench-ack.outputs.pr }}
       actor: ${{ needs.tempo-bench-ack.outputs.actor }}
