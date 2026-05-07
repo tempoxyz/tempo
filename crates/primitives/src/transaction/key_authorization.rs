@@ -704,6 +704,33 @@ mod tests {
     }
 
     #[test]
+    fn test_nonzero_nonce_encoding_preserves_prior_absent_trailing_fields() {
+        let nonce = B256::repeat_byte(0x53);
+        let auth = make_auth(None, None).with_nonce(nonce);
+
+        let mut encoded = Vec::new();
+        auth.encode(&mut encoded);
+
+        let mut payload = &encoded[..];
+        let header = alloy_rlp::Header::decode(&mut payload).expect("decode list header");
+        assert!(header.list);
+        assert_eq!(header.payload_length, payload.len());
+
+        let fixed_fields_len =
+            auth.chain_id.length() + auth.key_type.length() + auth.key_id.length();
+        assert_eq!(
+            &payload[fixed_fields_len..fixed_fields_len + 3],
+            &[alloy_rlp::EMPTY_STRING_CODE; 3],
+            "expiry, limits, and allowed_calls must be explicit empty placeholders before nonce"
+        );
+
+        let mut nonce_payload = &payload[fixed_fields_len + 3..];
+        let decoded_nonce = B256::decode(&mut nonce_payload).expect("decode nonce field");
+        assert_eq!(decoded_nonce, nonce);
+        assert!(nonce_payload.is_empty());
+    }
+
+    #[test]
     fn test_decode_rejects_explicit_zero_nonce() {
         let auth = make_auth(None, None);
         let mut encoded = Vec::new();
@@ -725,6 +752,26 @@ mod tests {
 
         <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice())
             .expect_err("explicit zero nonce must be rejected");
+    }
+
+    #[test]
+    fn test_decode_rejects_explicit_absent_nonce_field() {
+        let auth = make_auth(None, None);
+        let mut encoded = Vec::new();
+        let payload_length =
+            auth.chain_id.length() + auth.key_type.length() + auth.key_id.length() + 4;
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(&mut encoded);
+        auth.chain_id.encode(&mut encoded);
+        auth.key_type.encode(&mut encoded);
+        auth.key_id.encode(&mut encoded);
+        encoded.extend_from_slice(&[alloy_rlp::EMPTY_STRING_CODE; 4]);
+
+        <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice())
+            .expect_err("absent nonce field must be omitted, not encoded as 0x80");
     }
 
     #[test]
