@@ -92,8 +92,6 @@ The initial activation source is the existing hardfork schedule:
 chain + timestamp -> TempoHardfork -> FeatureSet
 ```
 
-A later activation source might be a multisig-approved activation checkpoint, an on-chain registry, or something similar. That part is out of scope for the first rollout and needs its own spec before we use it.
-
 ## Repository boundaries
 
 Protocol execution code stays in `tempo`. Feature records, review metadata, and the review UI live in `tempo-protocol-features`.
@@ -139,7 +137,7 @@ Shipping inactive code is not activation. A shipped feature should not affect bl
 
 This allows `tempo` releases to include multiple TIP implementations without requiring all operators to move to one exact binary at one hardfork boundary. Instead, a feature can declare the minimum `tempo` version that understands it, operators can upgrade during a rollout window, and activation can be scheduled after the network is ready.
 
-For features that affect block validity or state transitions, activation should be delayed or cancelled if the operators that validate or produce blocks after activation are not running a `tempo` version that supports the feature. A node that does not understand an active feature should fail clearly instead of silently applying old rules.
+For features that affect block validity or state transitions, activation should be delayed or cancelled if the operators that validate or produce blocks after activation are not running a `tempo` version that supports the feature. If activation data marks a feature active but the running `tempo` binary does not support that feature, `tempo` should error clearly and stop following that activation path instead of treating the feature as inactive.
 
 ## Feature manifest
 
@@ -334,7 +332,7 @@ This is enforced in a few ways:
 
 - production `tempo` does not expose a local config flag that changes the active protocol feature set
 - activation data is read and validated by `tempo`, not applied directly by the UI
-- if `tempo` sees an active feature it does not understand, it fails clearly instead of treating the feature as inactive
+- activation data that marks an unsupported feature active causes `tempo` to error clearly instead of treating the feature as inactive
 
 If an active feature needs to be rolled back, the rollback should be handled as one of:
 
@@ -394,9 +392,9 @@ During the first rollout:
 - feature queries come from existing hardfork state
 - already-shipped T1 through T4 behavior maps to features at the same legacy activation points
 
-Multiple `tempo` releases can coexist before activation if they all agree that the feature is inactive. Once a feature activates, every validating node needs a `tempo` release that implements the new behavior.
+Before activation, different `tempo` versions can run at the same time as long as they produce the same chain behavior. Once a feature activates, validators need to be running a `tempo` version that supports that feature.
 
-External systems that depend on hardfork names can keep doing so. Over time, tooling should prefer feature IDs because they describe the behavior being activated more clearly than hardfork bundle names.
+Tooling that currently displays or tracks hardfork names can keep doing so. Over time, dashboards, docs, release tooling, and monitoring should prefer feature IDs because they describe the active behavior more clearly than hardfork bundle names.
 
 The exact initial feature list lives in `tempo-protocol-features`.
 
