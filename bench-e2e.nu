@@ -13,8 +13,8 @@ const E2E_VALIDATORS = "127.0.0.2:8000,127.0.0.3:8100"
 const E2E_SEED = 42
 const E2E_A_CPUS = "0-7,16-23"
 const E2E_B_CPUS = "8-15,24-31"
-const E2E_A_MEMORY = ""
-const E2E_B_MEMORY = ""
+const E2E_A_MEMORY = "60G"
+const E2E_B_MEMORY = "60G"
 const E2E_GAS_LIMIT = "1000000000000"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
@@ -356,7 +356,6 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
         return ["bash" "-lc" $script]
     }
 
-    let cpu_args = if $cpus != "" { ["-p" $"AllowedCPUs=($cpus)"] } else { [] }
     let memory_args = if $memory != "" { ["-p" $"MemoryMax=($memory)"] } else { [] }
     mut telemetry_env_names = []
     if ($env.TEMPO_TELEMETRY_URL? | default "" | str length) > 0 {
@@ -384,12 +383,19 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
         "--gid" $gid
         ...$telemetry_env
         "-p" "CPUWeight=100"
-        ...$cpu_args
         ...$memory_args
         "bash"
         "-lc"
         $script
     ]
+}
+
+def taskset-command [cmd: list<string>, cpus: string] {
+    if $cpus != "" {
+        ["taskset" "-c" $cpus ...$cmd]
+    } else {
+        $cmd
+    }
 }
 
 def start-e2e-local-node [
@@ -410,7 +416,8 @@ def start-e2e-local-node [
     let full_samply_args = if $samply {
         $samply_args | append ["--save-only" "--presymbolicate" "--output" $"($results_dir)/profile-($profile_label).json.gz"]
     } else { [] }
-    let node_cmd = wrap-samply [$tempo_bin ...$args] $samply $full_samply_args
+    let pinned_cmd = taskset-command [$tempo_bin ...$args] $cpus
+    let node_cmd = wrap-samply $pinned_cmd $samply $full_samply_args
     let node_cmd_str = ($node_cmd | str join " ")
     let script = $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
     let unit_phase = ($phase | str replace -a "_" "-" | str replace -a "." "-")
