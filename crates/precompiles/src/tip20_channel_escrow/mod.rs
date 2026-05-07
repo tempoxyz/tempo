@@ -1,4 +1,9 @@
 //! TIP-1034 TIP-20 channel escrow precompile.
+//!
+//! Channels lock TIP-20 deposits from a payer and let the payee claim signed
+//! cumulative vouchers. A channel is identified by its descriptor, the current
+//! chain, this precompile address, and a transaction-derived nonce hash that
+//! prevents accidental replay of `open` calls across transactions.
 
 pub mod dispatch;
 
@@ -22,14 +27,23 @@ use tempo_precompiles_macros::{Storable, contract};
 /// 15 minute grace period between `requestClose` and `withdraw`.
 pub const CLOSE_GRACE_PERIOD: u64 = 15 * 60;
 
+/// EIP-712 type hash for signed cumulative payment vouchers.
 static VOUCHER_TYPEHASH: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"Voucher(bytes32 channelId,uint96 cumulativeAmount)"));
+/// EIP-712 domain type hash used by [`domain_separator_inner`].
 static EIP712_DOMAIN_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
 });
+/// EIP-712 domain name hash for the escrow voucher domain.
 static NAME_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"TIP20 Channel Escrow"));
+/// EIP-712 domain version hash for the escrow voucher domain.
 static VERSION_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"1"));
 
+/// Packed persistent state for one channel.
+///
+/// `deposit` being non-zero is the existence marker. `settled` is the cumulative amount
+/// already transferred to the payee. `close_requested_at` is zero until the payer starts
+/// the unilateral close timer.
 #[derive(Debug, Clone, Copy, Default, Storable)]
 struct PackedChannelState {
     settled: U96,
@@ -38,14 +52,17 @@ struct PackedChannelState {
 }
 
 impl PackedChannelState {
+    /// Returns whether this storage slot contains an active channel.
     fn exists(self) -> bool {
         !self.deposit.is_zero()
     }
 
+    /// Returns the payer's close request timestamp, if the close timer is active.
     fn close_requested_at(self) -> Option<u32> {
         (self.close_requested_at != 0).then_some(self.close_requested_at)
     }
 
+    /// Converts packed native storage to the public Solidity ABI shape.
     fn to_sol(self) -> ITIP20ChannelEscrow::ChannelState {
         ITIP20ChannelEscrow::ChannelState {
             settled: self.settled,
@@ -57,15 +74,19 @@ impl PackedChannelState {
 
 #[contract(addr = TIP20_CHANNEL_ESCROW_ADDRESS)]
 pub struct TIP20ChannelEscrow {
+    /// Persistent channel state keyed by `compute_channel_id_inner`.
     channel_states: Mapping<B256, PackedChannelState>,
 
     // WARNING: transient storage slots must remain after persistent storage fields until the
     // `contract` macro supports independent persistent/transient layouts.
+    /// Transient same-transaction guard that prevents close-and-reopen with the same id.
     opened_this_tx: Mapping<B256, bool>,
+    /// Transient per-transaction entropy seeded by the EVM handler before calls can open channels.
     channel_open_context_hash: B256,
 }
 
 impl TIP20ChannelEscrow {
+    /// Initializes the precompile storage layout.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
@@ -80,12 +101,16 @@ impl TIP20ChannelEscrow {
         self.channel_open_context_hash.t_write(hash)
     }
 
+    /// Opens a channel and pulls the initial deposit from the payer into escrow.
+    ///
+    /// Payees cannot be zero or TIP-20-prefix addresses. TIP-20-prefix payees would be token
+    /// contracts rather than ordinary recipients, which can make later payee payouts fail.
     pub fn open(
         &mut self,
         msg_sender: Address,
         call: ITIP20ChannelEscrow::openCall,
     ) -> Result<B256> {
-        if call.payee == Address::ZERO {
+        if call.payee == Address::ZERO || is_tip20_prefix(call.payee) {
             return Err(TIP20ChannelEscrowError::invalid_payee().into());
         }
         if !is_tip20_prefix(call.token) {
@@ -113,7 +138,6 @@ impl TIP20ChannelEscrow {
             return Err(TIP20ChannelEscrowError::channel_already_exists().into());
         }
 
-        let batch = self.storage.checkpoint();
         self.channel_states[channel_id].write(PackedChannelState {
             settled: U96::ZERO,
             deposit,
@@ -138,11 +162,14 @@ impl TIP20ChannelEscrow {
                 deposit: call.deposit,
             },
         ))?;
-        batch.commit();
 
         Ok(channel_id)
     }
 
+    /// Settles an increasing cumulative voucher, paying only the unsettled delta to the payee.
+    ///
+    /// The payee can call directly. If an operator was set when the channel was opened, that
+    /// operator can submit the payee's voucher and route the payment to the descriptor payee.
     pub fn settle(
         &mut self,
         msg_sender: Address,
@@ -176,7 +203,6 @@ impl TIP20ChannelEscrow {
             .checked_sub(state.settled)
             .expect("cumulative amount already checked to be increasing");
 
-        let batch = self.storage.checkpoint();
         state.settled = cumulative;
         self.channel_states[channel_id].write(state)?;
         TIP20Token::from_address(call.descriptor.token)?.system_transfer_from(
@@ -194,11 +220,13 @@ impl TIP20ChannelEscrow {
                 newSettled: cumulative.into(),
             },
         ))?;
-        batch.commit();
 
         Ok(())
     }
 
+    /// Adds deposit to an existing channel and cancels a pending close request.
+    ///
+    /// A zero top-up is allowed and only cancels a pending close request.
     pub fn top_up(
         &mut self,
         msg_sender: Address,
@@ -218,7 +246,6 @@ impl TIP20ChannelEscrow {
             .ok_or_else(TIP20ChannelEscrowError::deposit_overflow)?;
 
         let had_close_request = state.close_requested_at().is_some();
-        let batch = self.storage.checkpoint();
 
         if !additional.is_zero() {
             state.deposit = next_deposit;
@@ -249,11 +276,13 @@ impl TIP20ChannelEscrow {
             additionalDeposit: call.additionalDeposit,
             newDeposit: state.deposit,
         }))?;
-        batch.commit();
 
         Ok(())
     }
 
+    /// Starts the payer's unilateral close timer.
+    ///
+    /// Repeated calls are idempotent while the timer is active.
     pub fn request_close(
         &mut self,
         msg_sender: Address,
@@ -270,7 +299,6 @@ impl TIP20ChannelEscrow {
         }
 
         let close_requested_at = self.now_u32();
-        let batch = self.storage.checkpoint();
         state.close_requested_at = close_requested_at;
         self.channel_states[channel_id].write(state)?;
         self.emit_event(TIP20ChannelEscrowEvent::CloseRequested(
@@ -281,11 +309,14 @@ impl TIP20ChannelEscrow {
                 closeGraceEnd: U256::from(self.now() + CLOSE_GRACE_PERIOD),
             },
         ))?;
-        batch.commit();
 
         Ok(())
     }
 
+    /// Closes a channel from the payee side and refunds any uncaptured deposit to the payer.
+    ///
+    /// `captureAmount` can be below `cumulativeAmount` but cannot be below what has already
+    /// settled. A new voucher is only required when the close captures more than `settled`.
     pub fn close(
         &mut self,
         msg_sender: Address,
@@ -325,7 +356,6 @@ impl TIP20ChannelEscrow {
             .checked_sub(capture)
             .expect("capture amount already checked against deposit");
 
-        let batch = self.storage.checkpoint();
         self.channel_states[channel_id].delete()?;
 
         let mut token = TIP20Token::from_address(call.descriptor.token)?;
@@ -345,11 +375,11 @@ impl TIP20ChannelEscrow {
                 refundedToPayer: refund.into(),
             },
         ))?;
-        batch.commit();
 
         Ok(())
     }
 
+    /// Withdraws the payer's remaining deposit after the close grace period has elapsed.
     pub fn withdraw(
         &mut self,
         msg_sender: Address,
@@ -374,7 +404,6 @@ impl TIP20ChannelEscrow {
             .checked_sub(state.settled)
             .expect("settled is always <= deposit");
 
-        let batch = self.storage.checkpoint();
         self.channel_states[channel_id].delete()?;
         if !refund.is_zero() {
             TIP20Token::from_address(call.descriptor.token)?.system_transfer_from(
@@ -392,11 +421,11 @@ impl TIP20ChannelEscrow {
                 refundedToPayer: refund.into(),
             },
         ))?;
-        batch.commit();
 
         Ok(())
     }
 
+    /// Returns a descriptor with its current on-chain state.
     pub fn get_channel(
         &self,
         call: ITIP20ChannelEscrow::getChannelCall,
@@ -408,6 +437,7 @@ impl TIP20ChannelEscrow {
         })
     }
 
+    /// Returns the current state for a channel id, or the zero state for an empty slot.
     pub fn get_channel_state(
         &self,
         call: ITIP20ChannelEscrow::getChannelStateCall,
@@ -415,6 +445,7 @@ impl TIP20ChannelEscrow {
         Ok(self.channel_states[call.channelId].read()?.to_sol())
     }
 
+    /// Returns current states for multiple channel ids.
     pub fn get_channel_states_batch(
         &self,
         call: ITIP20ChannelEscrow::getChannelStatesBatchCall,
@@ -429,6 +460,7 @@ impl TIP20ChannelEscrow {
             .collect()
     }
 
+    /// Computes the deterministic channel id for a full channel descriptor.
     pub fn compute_channel_id(
         &self,
         call: ITIP20ChannelEscrow::computeChannelIdCall,
@@ -444,6 +476,7 @@ impl TIP20ChannelEscrow {
         )
     }
 
+    /// Returns the EIP-712 digest that the payer or authorized signer must sign.
     pub fn get_voucher_digest(
         &self,
         call: ITIP20ChannelEscrow::getVoucherDigestCall,
@@ -451,18 +484,22 @@ impl TIP20ChannelEscrow {
         self.get_voucher_digest_inner(call.channelId, call.cumulativeAmount)
     }
 
+    /// Returns the EIP-712 domain separator for this chain and precompile address.
     pub fn domain_separator(&self) -> Result<B256> {
         self.domain_separator_inner()
     }
 
+    /// Returns the current block timestamp as `u64`.
     fn now(&self) -> u64 {
         self.storage.timestamp().saturating_to::<u64>()
     }
 
+    /// Returns the current block timestamp as the packed close-request representation.
     fn now_u32(&self) -> u32 {
         self.storage.timestamp().saturating_to::<u32>()
     }
 
+    /// Computes the channel id from a descriptor.
     fn channel_id(&self, descriptor: &ITIP20ChannelEscrow::ChannelDescriptor) -> Result<B256> {
         self.compute_channel_id_inner(
             descriptor.payer,
@@ -475,6 +512,7 @@ impl TIP20ChannelEscrow {
         )
     }
 
+    /// Loads the transaction-scoped nonce hash seeded by the handler.
     fn enclosing_channel_open_context_hash(&self) -> Result<B256> {
         let hash = self.channel_open_context_hash.t_read()?;
         if hash.is_zero() {
@@ -483,6 +521,7 @@ impl TIP20ChannelEscrow {
         Ok(hash)
     }
 
+    /// Computes the channel id including chain and precompile domain separation.
     fn compute_channel_id_inner(
         &self,
         payer: Address,
@@ -509,6 +548,7 @@ impl TIP20ChannelEscrow {
         )
     }
 
+    /// Loads an active channel or returns `ChannelNotFound`.
     fn load_existing_state(&self, channel_id: B256) -> Result<PackedChannelState> {
         let state = self.channel_states[channel_id].read()?;
         if !state.exists() {
@@ -517,6 +557,7 @@ impl TIP20ChannelEscrow {
         Ok(state)
     }
 
+    /// Returns the address authorized to sign vouchers for this descriptor.
     fn expected_signer(&self, descriptor: &ITIP20ChannelEscrow::ChannelDescriptor) -> Address {
         if descriptor.authorizedSigner.is_zero() {
             descriptor.payer
@@ -525,6 +566,7 @@ impl TIP20ChannelEscrow {
         }
     }
 
+    /// Validates a voucher signature against the descriptor's expected signer.
     fn validate_voucher(
         &self,
         descriptor: &ITIP20ChannelEscrow::ChannelDescriptor,
@@ -542,6 +584,7 @@ impl TIP20ChannelEscrow {
         Ok(())
     }
 
+    /// Computes the EIP-712 voucher digest.
     fn get_voucher_digest_inner(&self, channel_id: B256, cumulative_amount: U96) -> Result<B256> {
         let struct_hash = self
             .storage
@@ -556,6 +599,7 @@ impl TIP20ChannelEscrow {
         self.storage.keccak256(&digest_input)
     }
 
+    /// Computes the EIP-712 domain separator.
     fn domain_separator_inner(&self) -> Result<B256> {
         self.storage.keccak256(
             &(
@@ -679,6 +723,39 @@ mod tests {
             assert_eq!(
                 result.unwrap_err(),
                 TIP20ChannelEscrowError::expiring_nonce_hash_not_set().into()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_open_rejects_tip20_prefix_payee() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let payer = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::path_usd(payer)
+                .with_issuer(payer)
+                .with_mint(payer, U256::from(100u128))
+                .apply()?;
+            let mut escrow = TIP20ChannelEscrow::new();
+            escrow.initialize()?;
+            seed_expiring_nonce_hash(&mut escrow)?;
+
+            let result = escrow.open(
+                payer,
+                open_call(
+                    token.address(),
+                    Address::ZERO,
+                    token.address(),
+                    1,
+                    B256::random(),
+                    Address::ZERO,
+                ),
+            );
+            assert_eq!(
+                result.unwrap_err(),
+                TIP20ChannelEscrowError::invalid_payee().into()
             );
             Ok(())
         })
