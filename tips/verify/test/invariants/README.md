@@ -602,3 +602,19 @@ The SignatureVerifier precompile (`0x5165300000000000000000000000000000000000`) 
 - **TEMPO-VA14**: Policy-on-master semantics - recipient and mint-recipient authorization is evaluated on the resolved master, not the alias.
 - **TEMPO-VA15**: Policy-operation rejection - TIP-403 configuration APIs reject virtual aliases as literal policy members.
 - **TEMPO-VA16**: Reward-recipient rejection - `setRewardRecipient` rejects virtual aliases.
+
+## TIP-1026 Token Logo URI
+
+TIP-1026 adds a `logoURI` field to TIP-20 tokens — mutable by the token admin (`setLogoURI`) or set at deploy time via the new 7-arg `createToken` overload — capped at 256 bytes and validated against a scheme allowlist (`https`, `http`, `ipfs`, `data`, ASCII-case-insensitive).
+
+### Global Invariants
+
+- **TEMPO-1026-1**: `bytes(logoURI()).length <= 256` for every TIP-20 token, after every fuzz run.
+- **TEMPO-1026-2**: The legacy 6-argument `createToken` selector (`0x68130445`) and the `TokenCreated` event signature hash are unchanged by this TIP. Asserted as one-shot constants in `setUp`.
+
+### Per-Handler Assertions
+
+These verify correct behavior when the specific function is called:
+
+- **TEMPO-1026-1**: `setLogoURI` reverts with `LogoURITooLong` when `bytes(newLogoURI).length > 256`; reverts with `InvalidLogoURI` when the URI is non-empty and either has no parseable scheme (RFC 3986 §3.1) or its scheme is not in the allowlist; reverts with `Unauthorized` for non-admin callers; on success, persists the URI with length ≤ 256 bytes.
+- **TEMPO-1026 factory**: the 7-arg `createToken` overload validates `logoURI` atomically — a rejected URI must revert and leave the predicted address undeployed. On success, the new token is deployed at the address returned by `getTokenAddress` and `logoURI()` returns the supplied value.
