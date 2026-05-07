@@ -112,7 +112,7 @@ crate::sol! {
         ) external;
 
         /// Authorize a new key with a TIP-1053 replay nonce.
-        /// @dev The nonce must be non-zero and unused for the caller's account.
+        /// @dev The nonce must be unused for the caller's account. bytes32(0) is a valid nonce.
         function authorizeKey(
             address keyId,
             SignatureType signatureType,
@@ -284,7 +284,7 @@ impl AccountKeychainError {
         Self::InvalidCallScope(IAccountKeychain::InvalidCallScope {})
     }
 
-    /// Creates an error for a zero or otherwise invalid TIP-1053 nonce.
+    /// Creates an error for a TIP-1053 nonce path that is unavailable for the current hardfork.
     pub const fn invalid_key_authorization_nonce() -> Self {
         Self::InvalidKeyAuthorizationNonce(IAccountKeychain::InvalidKeyAuthorizationNonce {})
     }

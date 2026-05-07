@@ -172,8 +172,9 @@ impl From<SelectorRule> for AbiSelectorRule {
 /// - `allowed_calls`: `None` (canonically omitted, explicit 0x80 accepted) = unrestricted,
 ///   `Some([])` = scoped with no allowed calls, `Some([...])` = scoped calls
 /// - `nonce`: `None` (canonically omitted) = no TIP-1053 uniqueness tracking,
-///   `Some(non_zero_bytes32)` = arbitrary nonce consumed on successful T5+ authorization
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+///   `Some(bytes32)` = arbitrary nonce consumed on successful T5+ authorization.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
+#[rlp(trailing(canonical))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
@@ -212,8 +213,8 @@ pub struct KeyAuthorization {
 
     /// Optional TIP-1053 nonce for per-account uniqueness tracking.
     ///
-    /// `None` means no nonce. `Some(B256::ZERO)` is normalized to `None` by constructors and
-    /// encoding so zero-nonce authorizations remain byte-identical to pre-TIP-1053 payloads.
+    /// `None` means no nonce. `Some(nonce)` means the nonce field is present, including when
+    /// `nonce == B256::ZERO`.
     pub nonce: Option<B256>,
 }
 
@@ -263,16 +264,14 @@ impl KeyAuthorization {
     }
 
     /// Attach a TIP-1053 nonce to this authorization.
-    ///
-    /// A zero nonce is the protocol's no-nonce sentinel and is therefore normalized to `None`.
     pub fn with_nonce(mut self, nonce: B256) -> Self {
-        self.nonce = (nonce != B256::ZERO).then_some(nonce);
+        self.nonce = Some(nonce);
         self
     }
 
-    /// Returns this authorization's non-zero TIP-1053 nonce, if present.
+    /// Returns this authorization's TIP-1053 nonce, if present.
     pub fn nonce(&self) -> Option<B256> {
-        self.normalized_nonce()
+        self.nonce
     }
 
     /// Computes the authorization message hash for this key authorization.
@@ -294,9 +293,9 @@ impl KeyAuthorization {
         self.allowed_calls.is_some()
     }
 
-    /// Returns whether this authorization carries a non-zero TIP-1053 nonce.
+    /// Returns whether this authorization carries a TIP-1053 nonce field.
     pub fn has_nonce(&self) -> bool {
-        self.normalized_nonce().is_some()
+        self.nonce.is_some()
     }
 
     /// Returns whether this key has unlimited spending (limits is None)
@@ -359,10 +358,6 @@ impl KeyAuthorization {
                     + scopes.iter().map(CallScope::heap_size).sum::<usize>()
             })
     }
-
-    fn normalized_nonce(&self) -> Option<B256> {
-        self.nonce.filter(|nonce| *nonce != B256::ZERO)
-    }
 }
 
 /// Error returned when a [`KeyAuthorization`]'s `chain_id` does not match the expected value.
@@ -422,10 +417,7 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
             expiry: u.arbitrary()?,
             limits: u.arbitrary()?,
             allowed_calls: u.arbitrary()?,
-            nonce: u
-                .arbitrary::<Option<[u8; 32]>>()?
-                .map(B256::from)
-                .filter(|nonce| *nonce != B256::ZERO),
+            nonce: u.arbitrary::<Option<[u8; 32]>>()?.map(B256::from),
         })
     }
 }
@@ -462,101 +454,6 @@ pub mod serde_nonzero_quantity_opt {
 mod rlp {
     use super::*;
     use alloy_rlp::{Decodable, Encodable};
-
-    /// RLP-only wrapper for TIP-1053's nonce semantics. Deriving directly on `Option<B256>`
-    /// would encode `Some(B256::ZERO)` as an explicit zero nonce, but the wire format reserves
-    /// zero as the absent sentinel and requires it to be omitted.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-    struct KeyAuthorizationNonce(B256);
-
-    impl Encodable for KeyAuthorizationNonce {
-        fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-            self.0.encode(out)
-        }
-
-        fn length(&self) -> usize {
-            self.0.length()
-        }
-    }
-
-    impl Decodable for KeyAuthorizationNonce {
-        fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-            let nonce = B256::decode(buf)?;
-            if nonce == B256::ZERO {
-                return Err(alloy_rlp::Error::Custom(
-                    "zero key authorization nonce must be omitted",
-                ));
-            }
-            Ok(Self(nonce))
-        }
-    }
-
-    #[derive(
-        Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable,
-    )]
-    #[rlp(trailing(canonical))]
-    struct KeyAuthorizationWire {
-        chain_id: u64,
-        key_type: SignatureType,
-        key_id: Address,
-        expiry: Option<NonZeroU64>,
-        limits: Option<Vec<TokenLimit>>,
-        allowed_calls: Option<Vec<CallScope>>,
-        nonce: Option<KeyAuthorizationNonce>,
-    }
-
-    impl From<&KeyAuthorization> for KeyAuthorizationWire {
-        fn from(value: &KeyAuthorization) -> Self {
-            let KeyAuthorization {
-                chain_id,
-                key_type,
-                key_id,
-                expiry,
-                limits,
-                allowed_calls,
-                nonce: _,
-            } = value;
-            Self {
-                chain_id: *chain_id,
-                key_type: *key_type,
-                key_id: *key_id,
-                expiry: *expiry,
-                limits: limits.clone(),
-                allowed_calls: allowed_calls.clone(),
-                nonce: value.normalized_nonce().map(KeyAuthorizationNonce),
-            }
-        }
-    }
-
-    impl From<KeyAuthorizationWire> for KeyAuthorization {
-        fn from(value: KeyAuthorizationWire) -> Self {
-            Self {
-                chain_id: value.chain_id,
-                key_type: value.key_type,
-                key_id: value.key_id,
-                expiry: value.expiry,
-                limits: value.limits,
-                allowed_calls: value.allowed_calls,
-                nonce: value.nonce.map(|nonce| nonce.0),
-            }
-        }
-    }
-
-    impl Encodable for KeyAuthorization {
-        fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-            KeyAuthorizationWire::from(self).encode(out)
-        }
-
-        fn length(&self) -> usize {
-            KeyAuthorizationWire::from(self).length()
-        }
-    }
-
-    impl Decodable for KeyAuthorization {
-        fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
-            Ok(KeyAuthorizationWire::decode(buf)?.into())
-        }
-    }
 
     #[derive(
         Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable,
@@ -666,23 +563,28 @@ mod tests {
     }
 
     #[test]
-    fn test_zero_nonce_is_canonical_no_nonce_encoding() {
+    fn test_zero_nonce_roundtrip_and_changes_signature_hash() {
         let auth = make_auth(None, None);
         let zero_nonce_auth = auth.clone().with_nonce(B256::ZERO);
 
         let mut encoded = Vec::new();
-        auth.encode(&mut encoded);
+        zero_nonce_auth.encode(&mut encoded);
 
-        let mut zero_encoded = Vec::new();
-        zero_nonce_auth.encode(&mut zero_encoded);
+        assert_eq!(zero_nonce_auth.nonce(), Some(B256::ZERO));
+        assert!(zero_nonce_auth.has_nonce());
+        assert_ne!(zero_nonce_auth.signature_hash(), auth.signature_hash());
 
-        assert_eq!(zero_nonce_auth.nonce(), None);
-        assert_eq!(zero_encoded, encoded);
-        assert_eq!(zero_nonce_auth.signature_hash(), auth.signature_hash());
+        let decoded =
+            <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
+        assert_eq!(decoded, zero_nonce_auth);
+
+        let mut reencoded = Vec::new();
+        decoded.encode(&mut reencoded);
+        assert_eq!(reencoded, encoded);
     }
 
     #[test]
-    fn test_nonzero_nonce_roundtrip_and_changes_signature_hash() {
+    fn test_nonce_roundtrip_and_changes_signature_hash() {
         let auth = make_auth(None, None);
         let nonce = B256::repeat_byte(0x53);
         let nonce_auth = auth.clone().with_nonce(nonce);
@@ -704,7 +606,7 @@ mod tests {
     }
 
     #[test]
-    fn test_nonzero_nonce_encoding_preserves_prior_absent_trailing_fields() {
+    fn test_nonce_encoding_preserves_prior_absent_trailing_fields() {
         let nonce = B256::repeat_byte(0x53);
         let auth = make_auth(None, None).with_nonce(nonce);
 
@@ -731,7 +633,7 @@ mod tests {
     }
 
     #[test]
-    fn test_decode_rejects_explicit_zero_nonce() {
+    fn test_decode_accepts_explicit_zero_nonce() {
         let auth = make_auth(None, None);
         let mut encoded = Vec::new();
         let payload_length = auth.chain_id.length()
@@ -750,8 +652,9 @@ mod tests {
         encoded.extend_from_slice(&[alloy_rlp::EMPTY_STRING_CODE; 3]);
         B256::ZERO.encode(&mut encoded);
 
-        <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice())
-            .expect_err("explicit zero nonce must be rejected");
+        let decoded =
+            <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
+        assert_eq!(decoded.nonce(), Some(B256::ZERO));
     }
 
     #[test]

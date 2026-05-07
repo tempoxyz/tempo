@@ -210,8 +210,8 @@ impl AccountKeychain {
         )
     }
 
-    /// Registers a new access key and consumes a non-zero TIP-1053 nonce atomically with the
-    /// successful authorization.
+    /// Registers a new access key and consumes a TIP-1053 nonce atomically with the successful
+    /// authorization.
     pub fn authorize_key_with_nonce(
         &mut self,
         msg_sender: Address,
@@ -238,10 +238,8 @@ impl AccountKeychain {
         self.ensure_admin_caller(msg_sender)?;
         let is_t3 = self.storage.spec().is_t3();
 
-        if let Some(nonce) = nonce {
-            if nonce == B256::ZERO || !self.storage.spec().is_t5() {
-                return Err(AccountKeychainError::invalid_key_authorization_nonce().into());
-            }
+        if nonce.is_some() && !self.storage.spec().is_t5() {
+            return Err(AccountKeychainError::invalid_key_authorization_nonce().into());
         }
         let has_nonce = nonce.is_some();
 
@@ -659,10 +657,6 @@ impl AccountKeychain {
         &self,
         call: isKeyAuthorizationNonceUsedCall,
     ) -> Result<bool> {
-        if call.nonce == B256::ZERO {
-            return Ok(false);
-        }
-
         self.key_authorization_nonces[call.account][call.nonce].read()
     }
 
@@ -1076,10 +1070,6 @@ impl AccountKeychain {
     }
 
     fn consume_key_authorization_nonce(&mut self, account: Address, nonce: B256) -> Result<()> {
-        if nonce == B256::ZERO {
-            return Err(AccountKeychainError::invalid_key_authorization_nonce().into());
-        }
-
         if self.key_authorization_nonces[account][nonce].read()? {
             return Err(AccountKeychainError::key_authorization_nonce_already_used().into());
         }
@@ -1517,7 +1507,7 @@ mod tests {
         let account = Address::random();
         let first_key = Address::random();
         let second_key = Address::random();
-        let nonce = B256::repeat_byte(0x53);
+        let nonce = B256::ZERO;
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
