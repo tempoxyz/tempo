@@ -29,10 +29,10 @@ on:
         required: true
         default: "300"
       bloat:
-        description: State bloat size in MiB.
+        description: State bloat snapshot size (1g, 10g, 100g).
         type: string
         required: true
-        default: "100000"
+        default: "100g"
       tps:
         description: Target transactions per second.
         type: string
@@ -383,7 +383,7 @@ jobs:
             const bHf2 = process.env.BENCH_BASELINE_HARDFORK || '';
             const fHf2 = process.env.BENCH_FEATURE_HARDFORK || '';
             const hfNote2 = bHf2 ? `, baseline-hardfork: \`${bHf2}\`, feature-hardfork: \`${fHf2}\`` : '';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, backend: \`${backend}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${hfNote2}`);
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat}\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, backend: \`${backend}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${hfNote2}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({

@@ -18,8 +18,7 @@ const E2E_B_MEMORY = ""
 const E2E_GAS_LIMIT = "1000000000000"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
-const E2E_DEFAULT_BLOAT_MIB = 100000
-const E2E_SUPPORTED_BLOAT_MIB = [1000 10000 100000]
+const E2E_DEFAULT_BLOAT = "100g"
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
     "--disable-discovery"
@@ -127,6 +126,16 @@ def ensure-bloat-space [bloat: int] {
             exit 1
         }
     }
+}
+
+def parse-e2e-bloat [bloat: string] {
+    let normalized = ($bloat | str downcase)
+    if $normalized == "1g" { return 1000 }
+    if $normalized == "10g" { return 10000 }
+    if $normalized == "100g" { return 100000 }
+
+    print "Error: --bloat must be one of: 1g, 10g, 100g"
+    exit 1
 }
 
 def validator-dirs-in-localnet [localnet_dir: string] {
@@ -666,7 +675,7 @@ def "main e2e" [
     --duration: int = 300                               # Duration in seconds
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 100                # Max concurrent requests
-    --bloat: int = $E2E_DEFAULT_BLOAT_MIB               # State bloat size in MiB
+    --bloat: string = $E2E_DEFAULT_BLOAT                # State bloat snapshot size: 1g, 10g, or 100g
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
@@ -707,11 +716,7 @@ def "main e2e" [
         print "Error: --samply and --tracy are mutually exclusive. Choose one."
         exit 1
     }
-    if $bloat not-in $E2E_SUPPORTED_BLOAT_MIB {
-        let supported = ($E2E_SUPPORTED_BLOAT_MIB | each { |size| $"($size)" } | str join ", ")
-        print $"Error: --bloat must be one of ($supported) MiB \(1G, 10G, 100G snapshots\)"
-        exit 1
-    }
+    let bloat_mib = (parse-e2e-bloat $bloat)
     if $init_only and not $force_bloat {
         print "Error: --init-only requires --force-bloat"
         exit 1
@@ -737,8 +742,8 @@ def "main e2e" [
     let a_consensus_port = ($a_validator | split row ":" | get 1 | into int)
     let b_ip = ($b_validator | split row ":" | get 0)
     let b_consensus_port = ($b_validator | split row ":" | get 1 | into int)
-    let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat)mb"
-    let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat)mb"
+    let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb"
+    let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb"
     let a_identity = $a_db
     let b_identity = $b_db
     let genesis_path = $"($a_db)/($BENCH_META_SUBDIR)/genesis.json"
@@ -774,15 +779,16 @@ def "main e2e" [
             print "Error: generated localnet did not produce trusted peers"
             exit 1
         }
-        if $bloat > 0 {
-            ensure-bloat-space $bloat
-            print $"Generating local e2e state bloat \(($bloat) MiB\)..."
+        if $bloat_mib > 0 {
+            ensure-bloat-space $bloat_mib
+            print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
             let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
         }
 
         let marker = {
-            bloat_mib: $bloat
+            bloat_mib: $bloat_mib
+            bloat: $bloat
             accounts: $genesis_accounts
             validators: $E2E_VALIDATORS
             seed: $E2E_SEED
@@ -790,8 +796,8 @@ def "main e2e" [
             dkg_in_genesis: true
             topology: "single-runner"
         }
-        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
-        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
+        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
+        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
         if ($E2E_BLOAT_TMP_DIR | path exists) {
             rm -rf $E2E_BLOAT_TMP_DIR
         }
@@ -878,7 +884,7 @@ def "main e2e" [
         duration: $duration
         accounts: $accounts
         max_concurrent_requests: $max_concurrent_requests
-        bloat: $bloat
+        bloat: $bloat_mib
         results_dir: $results_dir
         profile: $profile
         samply: $samply
@@ -943,7 +949,7 @@ def "main e2e" [
     let baseline_label = if $baseline_name != "" { $baseline_name } else { $baseline }
     let feature_label = if $feature_name != "" { $feature_name } else { $feature }
     if $e2e_exit == 0 {
-        generate-summary $results_dir $baseline_label $feature_label $bloat $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch
+        generate-summary $results_dir $baseline_label $feature_label $bloat_mib $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch
     }
 
     try { git worktree remove --force $baseline_wt } catch { }
