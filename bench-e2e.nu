@@ -187,6 +187,18 @@ def bench-save-e2e-meta [datadir: string, meta_dir: string, marker: record, gene
     print $"Bench marker written to ($marker_path)"
 }
 
+def derive-tracing-otlp [tracing_otlp: string] {
+    if $tracing_otlp == "" and ($env.GRAFANA_TEMPO? | default "" | str length) > 0 {
+        let base = ($env.GRAFANA_TEMPO | str trim --right --char '/')
+        return $"($base)/v1/traces"
+    }
+    if $tracing_otlp == "" and ($env.TEMPO_TELEMETRY_URL? | default "" | str length) > 0 {
+        let base = ($env.TEMPO_TELEMETRY_URL | str trim --right --char '/')
+        return $"($base)/opentelemetry/v1/traces"
+    }
+    $tracing_otlp
+}
+
 def systemd-scope-command [unit: string, cpus: string, memory: string, script: string] {
     let can_scope = (^uname | str trim) == "Linux" and ((which systemd-run | length) > 0) and ($cpus != "" or $memory != "")
     if not $can_scope {
@@ -195,16 +207,22 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
 
     let cpu_args = if $cpus != "" { ["-p" $"AllowedCPUs=($cpus)"] } else { [] }
     let memory_args = if $memory != "" { ["-p" $"MemoryMax=($memory)"] } else { [] }
-    let telemetry_env = if ($env.TEMPO_TELEMETRY_URL? | default "" | str length) > 0 {
-        ["--setenv=TEMPO_TELEMETRY_URL"]
-    } else {
-        []
+    mut telemetry_env_names = []
+    if ($env.TEMPO_TELEMETRY_URL? | default "" | str length) > 0 {
+        $telemetry_env_names = ($telemetry_env_names | append "TEMPO_TELEMETRY_URL")
     }
+    if ($env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT? | default "" | str length) > 0 {
+        $telemetry_env_names = ($telemetry_env_names | append "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+    }
+    let preserve_env_args = if ($telemetry_env_names | length) > 0 {
+        [$"--preserve-env=($telemetry_env_names | str join ',')"]
+    } else { [] }
+    let telemetry_env = ($telemetry_env_names | each { |name| $"--setenv=($name)" })
     let uid = (id -u | str trim)
     let gid = (id -g | str trim)
     [
         "sudo"
-        "--preserve-env=TEMPO_TELEMETRY_URL"
+        ...$preserve_env_args
         "systemd-run"
         "--scope"
         "--quiet"
@@ -693,6 +711,7 @@ def "main e2e" [
     --tracy-filter: string = "debug"                    # Tracy tracing filter level
     --tracy-seconds: int = 30                           # Tracy capture duration limit in seconds
     --tracy-offset: int = 120                           # Seconds to wait before starting tracy capture
+    --tracing-otlp: string = ""                         # OTLP endpoint for tracing (auto-derived from GRAFANA_TEMPO/TEMPO_TELEMETRY_URL)
     --node-args: string = ""                            # Additional node args for all phases
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
@@ -760,6 +779,10 @@ def "main e2e" [
     let benchmark_id = $"bench-e2e-local-($timestamp)"
     let reference_epoch = (($run_started_at | into int) / 1_000_000_000 | into int)
     let gas_limit_args = if $E2E_GAS_LIMIT != "" { ["--gas-limit" $E2E_GAS_LIMIT] } else { [] }
+    let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
+    if $tracing_otlp != "" {
+        $env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = $tracing_otlp
+    }
 
     validate-schelk-state $E2E_A_STATE_PATH $E2E_B_STATE_PATH
     cleanup-local-e2e-processes
