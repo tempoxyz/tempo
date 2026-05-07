@@ -1,17 +1,18 @@
 // SPDX-License-Identifier: MIT OR Apache-2.0
 pragma solidity >=0.8.13 <0.9.0;
 
-import {InvariantBaseTest} from "./InvariantBaseTest.t.sol";
-import {IFeeAMM} from "tempo-std/interfaces/IFeeAMM.sol";
-import {IFeeManager} from "tempo-std/interfaces/IFeeManager.sol";
-import {ITIP20, ITIP20Token} from "tempo-std/interfaces/ITIP20.sol";
-import {ITIP403Registry} from "tempo-std/interfaces/ITIP403Registry.sol";
+import { InvariantBaseTest } from "./InvariantBaseTest.t.sol";
+import { IFeeAMM } from "tempo-std/interfaces/IFeeAMM.sol";
+import { IFeeManager } from "tempo-std/interfaces/IFeeManager.sol";
+import { ITIP20, ITIP20Token } from "tempo-std/interfaces/ITIP20.sol";
+import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 /// @title FeeAMM Invariant Test
 /// @notice Invariant tests for the FeeAMM/FeeManager implementation
 /// forge-config: default.hardfork = "tempo:T5"
 /// forge-config: fuzz500.hardfork = "tempo:T5"
 contract FeeAMMInvariantTest is InvariantBaseTest {
+
     /// @dev Constants from Rust tip_fee_manager/amm.rs
     uint256 private constant M = 9970; // Fee swap rate (0.997 = 0.30% fee)
     uint256 private constant N = 9985; // Rebalance swap rate (0.9985 = 0.15% fee)
@@ -209,7 +210,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @param poolId The pool ID to check liquidity for
     /// @return actor The selected actor with liquidity > 0
     /// @return liquidity The actor's liquidity balance
-    function _selectLiquidityHolder(uint256 seed, bytes32 poolId)
+    function _selectLiquidityHolder(
+        uint256 seed,
+        bytes32 poolId
+    )
         internal
         view
         returns (address actor, uint256 liquidity)
@@ -275,7 +279,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @param token Token to check blacklist status for
     /// @return actor The selected blacklisted actor, or address(0) if none
     /// @return balance The actor's balance of the token
-    function _selectBlacklistedActor(uint256 seed, address token)
+    function _selectBlacklistedActor(
+        uint256 seed,
+        address token
+    )
         internal
         view
         returns (address actor, uint256 balance)
@@ -340,11 +347,20 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// `validatorToken != _hopToken`.
     function _setupTwoHopTokens() internal {
         // hopToken: USD currency, quoted in pathUSD (the standard hub topology).
-        _hopToken = ITIP20Token(factory.createToken("HOP_TOKEN", "HOP", "USD", pathUSD, admin, bytes32("tip1033_hop")));
+        _hopToken = ITIP20Token(
+            factory.createToken("HOP_TOKEN", "HOP", "USD", pathUSD, admin, bytes32("tip1033_hop"))
+        );
         // userTokenWithHop: USD currency, quoted in hopToken. USD-with-USD-quote is permitted
         // by the TIP-20 factory (USD tokens require a USD quote, which hopToken satisfies).
         _userTokenWithHop = ITIP20Token(
-            factory.createToken("USER_HOP", "UH", "USD", ITIP20(address(_hopToken)), admin, bytes32("tip1033_userhop"))
+            factory.createToken(
+                "USER_HOP",
+                "UH",
+                "USD",
+                ITIP20(address(_hopToken)),
+                admin,
+                bytes32("tip1033_userhop")
+            )
         );
         // Separate token for the degenerate route model. Its quote token is `_hopToken`, but
         // unlike `_userTokenWithHop` its direct pool to `_hopToken` is not bootstrapped. This
@@ -352,7 +368,12 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         // depending on fuzzed burns draining the deep hop-1 pool.
         _degenerateUserToken = ITIP20Token(
             factory.createToken(
-                "DEGENERATE_USER", "DGEN", "USD", ITIP20(address(_hopToken)), admin, bytes32("tip1033_degenerate")
+                "DEGENERATE_USER",
+                "DGEN",
+                "USD",
+                ITIP20(address(_hopToken)),
+                admin,
+                bytes32("tip1033_degenerate")
             )
         );
 
@@ -371,7 +392,8 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         _tokenPolicyIds[address(_userTokenWithHop)] = uhPolicyId;
         _tokens.push(_userTokenWithHop);
 
-        uint64 degeneratePolicyId = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
+        uint64 degeneratePolicyId =
+            registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
         _degenerateUserToken.changeTransferPolicyId(degeneratePolicyId);
         _tokenPolicyIds[address(_degenerateUserToken)] = degeneratePolicyId;
         _tokens.push(_degenerateUserToken);
@@ -384,7 +406,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     function _bootstrapTwoHopPools() internal {
         address bootstrapper = _actors[0];
         // Hop 1: (userTokenWithHop, hopToken) — hopToken is the validator-side reserve.
-        _bootstrapPool(bootstrapper, address(_userTokenWithHop), address(_hopToken), TWO_HOP_BOOTSTRAP_AMOUNT);
+        _bootstrapPool(
+            bootstrapper, address(_userTokenWithHop), address(_hopToken), TWO_HOP_BOOTSTRAP_AMOUNT
+        );
         // Hop 2: (hopToken, validatorToken) for every base USD token. Each is a candidate
         // validatorToken that the fuzzer can route through the hop.
         _bootstrapPool(bootstrapper, address(_hopToken), address(token1), TWO_HOP_BOOTSTRAP_AMOUNT);
@@ -393,7 +417,14 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         _bootstrapPool(bootstrapper, address(_hopToken), address(token4), TWO_HOP_BOOTSTRAP_AMOUNT);
     }
 
-    function _bootstrapPool(address lp, address userToken, address validatorToken, uint256 amount) internal {
+    function _bootstrapPool(
+        address lp,
+        address userToken,
+        address validatorToken,
+        uint256 amount
+    )
+        internal
+    {
         _ensureFunds(lp, ITIP20(validatorToken), amount);
         vm.startPrank(lp);
         ITIP20(validatorToken).approve(address(amm), type(uint256).max);
@@ -437,17 +468,25 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             // TEMPO-AMM2: Total supply should increase by minted liquidity (+ MIN_LIQUIDITY for first mint)
             uint256 totalSupplyAfter = amm.totalSupply(poolId);
             if (totalSupplyBefore == 0) {
-                assertEq(totalSupplyAfter, liquidity + MIN_LIQUIDITY, "TEMPO-AMM2: First mint total supply mismatch");
+                assertEq(
+                    totalSupplyAfter,
+                    liquidity + MIN_LIQUIDITY,
+                    "TEMPO-AMM2: First mint total supply mismatch"
+                );
             } else {
                 assertEq(
-                    totalSupplyAfter, totalSupplyBefore + liquidity, "TEMPO-AMM2: Subsequent mint total supply mismatch"
+                    totalSupplyAfter,
+                    totalSupplyBefore + liquidity,
+                    "TEMPO-AMM2: Subsequent mint total supply mismatch"
                 );
             }
 
             // TEMPO-AMM3: Actor's liquidity balance should increase
             uint256 actorLiquidityAfter = amm.liquidityBalances(poolId, actor);
             assertEq(
-                actorLiquidityAfter, actorLiquidityBefore + liquidity, "TEMPO-AMM3: Actor liquidity balance mismatch"
+                actorLiquidityAfter,
+                actorLiquidityBefore + liquidity,
+                "TEMPO-AMM3: Actor liquidity balance mismatch"
             );
 
             // TEMPO-AMM4: Validator token reserve should increase by deposited amount
@@ -494,9 +533,13 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             require(reason.length >= 4, "TEMPO-AMM33: Empty revert data");
             bytes4 selector = bytes4(reason);
             bool isExpectedError = selector == ITIP20.PolicyForbids.selector
-                || selector == ITIP20.InsufficientBalance.selector || selector == ITIP20.InsufficientAllowance.selector
+                || selector == ITIP20.InsufficientBalance.selector
+                || selector == ITIP20.InsufficientAllowance.selector
                 || selector == IFeeAMM.InsufficientLiquidity.selector;
-            assertTrue(isExpectedError, "TEMPO-AMM33: Blacklisted mint should revert with PolicyForbids or known error");
+            assertTrue(
+                isExpectedError,
+                "TEMPO-AMM33: Blacklisted mint should revert with PolicyForbids or known error"
+            );
         }
     }
 
@@ -533,8 +576,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             // Track theoretical vs actual for dust analysis
             // Theoretical (unrounded): liquidity * reserve / totalSupply
             // Due to integer division, actual <= theoretical
-            uint256 theoreticalUser = (ctx.liquidityToBurn * ctx.reserveUserBefore) / ctx.totalSupplyBefore;
-            uint256 theoreticalValidator = (ctx.liquidityToBurn * ctx.reserveValidatorBefore) / ctx.totalSupplyBefore;
+            uint256 theoreticalUser =
+                (ctx.liquidityToBurn * ctx.reserveUserBefore) / ctx.totalSupplyBefore;
+            uint256 theoreticalValidator =
+                (ctx.liquidityToBurn * ctx.reserveValidatorBefore) / ctx.totalSupplyBefore;
             _ghostBurnUserTheoretical += theoreticalUser;
             _ghostBurnUserActual += amountUserToken;
             _ghostBurnValidatorTheoretical += theoreticalValidator;
@@ -548,15 +593,25 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     }
 
     /// @dev Verifies burn invariants
-    function _assertBurnInvariants(BurnContext memory ctx, uint256 amountUserToken, uint256 amountValidatorToken)
+    function _assertBurnInvariants(
+        BurnContext memory ctx,
+        uint256 amountUserToken,
+        uint256 amountValidatorToken
+    )
         internal
         view
     {
         // TEMPO-AMM5: Returned amounts should match pro-rata calculation
-        uint256 expectedUserAmount = (ctx.liquidityToBurn * ctx.reserveUserBefore) / ctx.totalSupplyBefore;
-        uint256 expectedValidatorAmount = (ctx.liquidityToBurn * ctx.reserveValidatorBefore) / ctx.totalSupplyBefore;
+        uint256 expectedUserAmount =
+            (ctx.liquidityToBurn * ctx.reserveUserBefore) / ctx.totalSupplyBefore;
+        uint256 expectedValidatorAmount =
+            (ctx.liquidityToBurn * ctx.reserveValidatorBefore) / ctx.totalSupplyBefore;
         assertEq(amountUserToken, expectedUserAmount, "TEMPO-AMM5: User token amount mismatch");
-        assertEq(amountValidatorToken, expectedValidatorAmount, "TEMPO-AMM5: Validator token amount mismatch");
+        assertEq(
+            amountValidatorToken,
+            expectedValidatorAmount,
+            "TEMPO-AMM5: Validator token amount mismatch"
+        );
 
         // TEMPO-AMM6: Total supply should decrease by burned liquidity
         assertEq(
@@ -624,7 +679,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         ctx.actorUserBefore = ITIP20(ctx.userToken).balanceOf(ctx.actor);
 
         vm.startPrank(ctx.actor);
-        try amm.rebalanceSwap(ctx.userToken, ctx.validatorToken, ctx.amountOut, ctx.actor) returns (uint256 amountIn) {
+        try amm.rebalanceSwap(ctx.userToken, ctx.validatorToken, ctx.amountOut, ctx.actor) returns (
+            uint256 amountIn
+        ) {
             vm.stopPrank();
             _totalRebalanceSwaps++;
             _ghostRebalanceInputSum += amountIn;
@@ -654,7 +711,13 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     }
 
     /// @dev Verifies rebalance swap invariants
-    function _assertRebalanceInvariants(RebalanceContext memory ctx, uint256 amountIn) internal view {
+    function _assertRebalanceInvariants(
+        RebalanceContext memory ctx,
+        uint256 amountIn
+    )
+        internal
+        view
+    {
         // TEMPO-AMM10: amountIn should match expected calculation
         assertEq(amountIn, ctx.expectedAmountIn, "TEMPO-AMM10: Rebalance swap amountIn mismatch");
 
@@ -749,13 +812,16 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         vm.startPrank(actor);
         try amm.mint(userToken, validatorToken, amount, actor) returns (uint256 liquidity) {
             if (liquidity > 0) {
-                try amm.burn(userToken, validatorToken, liquidity, actor) returns (uint256, uint256) {
+                try amm.burn(userToken, validatorToken, liquidity, actor) returns (
+                    uint256, uint256
+                ) {
                     _totalMintBurnCycles++;
 
                     uint256 actorBalAfter = ITIP20(validatorToken).balanceOf(actor);
                     // TEMPO-AMM17: Mint/burn cycle should not profit the actor
                     assertTrue(
-                        actorBalAfter <= actorBalBefore, "TEMPO-AMM17: Actor should not profit from mint/burn cycle"
+                        actorBalAfter <= actorBalBefore,
+                        "TEMPO-AMM17: Actor should not profit from mint/burn cycle"
                     );
                 } catch (bytes memory reason) {
                     _assertKnownError(reason);
@@ -783,12 +849,16 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         _ensureFunds(actor, ITIP20(validatorToken), expectedIn * 2);
 
         vm.startPrank(actor);
-        try amm.rebalanceSwap(userToken, validatorToken, amountOut, actor) returns (uint256 amountIn) {
+        try amm.rebalanceSwap(userToken, validatorToken, amountOut, actor) returns (
+            uint256 amountIn
+        ) {
             // TEMPO-AMM10/18: Rebalance swap must follow exact formula: amountIn = floor(amountOut * N / SCALE) + 1
             // This is the exact rounding-up formula that always favors the pool
             uint256 expectedAmountIn = (amountOut * N) / SCALE + 1;
             assertEq(
-                amountIn, expectedAmountIn, "TEMPO-AMM18: Small swap amountIn must equal exact formula (floor + 1)"
+                amountIn,
+                expectedAmountIn,
+                "TEMPO-AMM18: Small swap amountIn must equal exact formula (floor + 1)"
             );
             // TEMPO-AMM19: Must pay at least 1 for any swap (implicit from +1 in formula)
             assertTrue(amountIn >= 1, "TEMPO-AMM19: Must pay at least 1 for any swap");
@@ -872,14 +942,20 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         _ensureFunds(actor, ITIP20(validatorToken), expectedIn * 2);
 
         vm.startPrank(actor);
-        try amm.rebalanceSwap(userToken, validatorToken, amountOut, actor) returns (uint256 amountIn) {
+        try amm.rebalanceSwap(userToken, validatorToken, amountOut, actor) returns (
+            uint256 amountIn
+        ) {
             vm.stopPrank();
 
             // TEMPO-AMM22: Even with exact division, the +1 should still apply
             // Without +1: amountIn would be (2000 * 9985) / 10000 = 1997
             // With +1: amountIn should be 1998
             uint256 floorValue = (amountOut * N) / SCALE;
-            assertEq(amountIn, floorValue + 1, "TEMPO-AMM22: Rebalance with exact division should still add +1");
+            assertEq(
+                amountIn,
+                floorValue + 1,
+                "TEMPO-AMM22: Rebalance with exact division should still add +1"
+            );
         } catch (bytes memory reason) {
             vm.stopPrank();
             _assertKnownError(reason);
@@ -903,7 +979,13 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @param actorSeed Seed for selecting actor
     /// @param tokenSeed Seed for selecting token
     /// @param probabilitySeed Seed for probabilistic decisions
-    function toggleBlacklist(uint256 actorSeed, uint256 tokenSeed, uint256 probabilitySeed) external {
+    function toggleBlacklist(
+        uint256 actorSeed,
+        uint256 tokenSeed,
+        uint256 probabilitySeed
+    )
+        external
+    {
         address actor = _selectActor(actorSeed);
         address token = _selectToken(tokenSeed);
 
@@ -957,7 +1039,11 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             // TEMPO-FEE3 & TEMPO-AMM31: Collected fees should be zeroed after distribution
             // This prevents double-counting of fees for the same validator/token pair
             uint256 collectedAfter = amm.collectedFees(validator, token);
-            assertEq(collectedAfter, 0, "TEMPO-FEE3/AMM31: Collected fees should be zero after distribution");
+            assertEq(
+                collectedAfter,
+                0,
+                "TEMPO-FEE3/AMM31: Collected fees should be zero after distribution"
+            );
 
             // TEMPO-AMM31: Track that fees were properly zeroed
             _ghostDistributeFeesCalls++;
@@ -996,7 +1082,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         uint256 validatorSeed,
         uint256 feeAmountRaw,
         uint256 crossTokenBias
-    ) external {
+    )
+        external
+    {
         address user = _selectActor(userSeed);
         address validator = _selectActor(validatorSeed);
 
@@ -1012,7 +1100,8 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         uint256 expectedOutForCheck = (feeAmount * M) / SCALE;
 
         // Skip if user is blacklisted for userToken (can't mint funds to them or transfer from them)
-        uint64 userTokenPolicyId = userToken == address(pathUSD) ? _pathUsdPolicyId : _tokenPolicyIds[userToken];
+        uint64 userTokenPolicyId =
+            userToken == address(pathUSD) ? _pathUsdPolicyId : _tokenPolicyIds[userToken];
         vm.assume(registry.isAuthorized(userTokenPolicyId, user));
 
         // Bias toward cross-token swaps: 90% chance to force different tokens
@@ -1123,7 +1212,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         uint256 validatorSeed,
         uint256 feeAmountRaw,
         uint256 forceFallbackBias
-    ) external {
+    )
+        external
+    {
         TwoHopContext memory ctx;
         ctx.user = _selectActor(userSeed);
         ctx.validator = _selectActor(validatorSeed);
@@ -1181,14 +1272,19 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// must differ from `userTokenWithHop` and `hopToken` (otherwise the topology degenerates).
     function _pickTwoHopValidatorToken(uint256 seed) internal view returns (address) {
         // Base candidates are token1..token4. token3/token4 are added to `_tokens` at index 2/3.
-        address[4] memory candidates = [address(token1), address(token2), address(token3), address(token4)];
+        address[4] memory candidates =
+            [address(token1), address(token2), address(token3), address(token4)];
         return candidates[seed % candidates.length];
     }
 
     /// @dev Picks a fee amount. When `biasFallback` is true, ensure the chosen amount exceeds
     /// `directReserve / M * SCALE` so that fallback is required. Otherwise stay below that
     /// bound so the direct path can settle. Bounds match `simulateFeeCollection`'s [1k, 1M] range.
-    function _pickTwoHopFeeAmount(uint256 seed, IFeeAMM.Pool memory directPool, bool biasFallback)
+    function _pickTwoHopFeeAmount(
+        uint256 seed,
+        IFeeAMM.Pool memory directPool,
+        bool biasFallback
+    )
         internal
         pure
         returns (uint256)
@@ -1322,7 +1418,13 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     }
 
     /// @dev Pushes a witness onto the bounded ghost array.
-    function _recordTwoHopWitness(TwoHopContext memory ctx, bool tookFallback, bool directWasInsufficient) internal {
+    function _recordTwoHopWitness(
+        TwoHopContext memory ctx,
+        bool tookFallback,
+        bool directWasInsufficient
+    )
+        internal
+    {
         if (_ghostTwoHopWitnesses.length >= MAX_TWO_HOP_WITNESSES) return;
 
         IFeeAMM.Pool memory directAfter = amm.getPool(ctx.userToken, ctx.validatorToken);
@@ -1362,7 +1464,11 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @param userSeed Seed for selecting the user actor.
     /// @param validatorSeed Seed for selecting the validator actor.
     /// @param feeAmountRaw Seed for the fee amount.
-    function simulateDegenerateQuoteEqualsValidator(uint256 userSeed, uint256 validatorSeed, uint256 feeAmountRaw)
+    function simulateDegenerateQuoteEqualsValidator(
+        uint256 userSeed,
+        uint256 validatorSeed,
+        uint256 feeAmountRaw
+    )
         external
     {
         // Force `validatorToken == userToken.quoteToken()` by picking validatorToken = hopToken.
@@ -1403,13 +1509,21 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         );
         // No transient leak — see TWO_HOP_INTERMEDIATE_SLOT comment for vm.load semantics.
         bytes32 stored = vm.load(address(amm), bytes32(TWO_HOP_INTERMEDIATE_SLOT));
-        assertEq(stored, bytes32(0), "TEMPO-FEE10: degenerate revert must not leak intermediate slot");
+        assertEq(
+            stored, bytes32(0), "TEMPO-FEE10: degenerate revert must not leak intermediate slot"
+        );
 
         _totalDegenerateReverts++;
     }
 
     /// @dev Stores pool reserves directly using vm.store
-    function _storePoolReserves(bytes32 poolId, uint128 reserveUser, uint128 reserveValidator) internal {
+    function _storePoolReserves(
+        bytes32 poolId,
+        uint128 reserveUser,
+        uint128 reserveValidator
+    )
+        internal
+    {
         // Storage layout in Rust implementation:
         //   slot 0: validator_tokens
         //   slot 1: user_tokens
@@ -1566,13 +1680,20 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 uint256 totalSupply = amm.totalSupply(poolId);
 
                 // TEMPO-AMM13: Pool solvency - use cached balances
-                assertTrue(ammBalances[i] >= pool.reserveUserToken, "TEMPO-AMM13: AMM user token balance < reserve");
                 assertTrue(
-                    ammBalances[j] >= pool.reserveValidatorToken, "TEMPO-AMM13: AMM validator token balance < reserve"
+                    ammBalances[i] >= pool.reserveUserToken,
+                    "TEMPO-AMM13: AMM user token balance < reserve"
+                );
+                assertTrue(
+                    ammBalances[j] >= pool.reserveValidatorToken,
+                    "TEMPO-AMM13: AMM validator token balance < reserve"
                 );
 
                 // TEMPO-AMM20: Reserves bounded by uint128
-                assertTrue(uint256(pool.reserveUserToken) <= MAX_U128, "TEMPO-AMM20: reserveUserToken exceeds uint128");
+                assertTrue(
+                    uint256(pool.reserveUserToken) <= MAX_U128,
+                    "TEMPO-AMM20: reserveUserToken exceeds uint128"
+                );
                 assertTrue(
                     uint256(pool.reserveValidatorToken) <= MAX_U128,
                     "TEMPO-AMM20: reserveValidatorToken exceeds uint128"
@@ -1581,7 +1702,8 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 // TEMPO-AMM15: MIN_LIQUIDITY locked on first mint
                 if (pool.reserveValidatorToken > 0 || pool.reserveUserToken > 0) {
                     assertTrue(
-                        totalSupply >= MIN_LIQUIDITY, "TEMPO-AMM15: Total supply < MIN_LIQUIDITY after initialization"
+                        totalSupply >= MIN_LIQUIDITY,
+                        "TEMPO-AMM15: Total supply < MIN_LIQUIDITY after initialization"
                     );
                 }
 
@@ -1591,7 +1713,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                     for (uint256 k = 0; k < numActors; k++) {
                         sumBalances += amm.liquidityBalances(poolId, _actors[k]);
                     }
-                    assertTrue(totalSupply >= sumBalances, "TEMPO-AMM14: Total supply < sum of balances");
+                    assertTrue(
+                        totalSupply >= sumBalances, "TEMPO-AMM14: Total supply < sum of balances"
+                    );
                     assertTrue(
                         totalSupply <= sumBalances + MIN_LIQUIDITY,
                         "TEMPO-AMM14: Total supply > sum of balances + MIN_LIQUIDITY"
@@ -1606,7 +1730,8 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
             IFeeAMM.Pool memory pool1 = amm.getPool(address(pathUSD), token);
             assertTrue(
-                ammPathUsdBalance >= pool1.reserveUserToken, "TEMPO-AMM13: AMM pathUSD balance < reserve (as user)"
+                ammPathUsdBalance >= pool1.reserveUserToken,
+                "TEMPO-AMM13: AMM pathUSD balance < reserve (as user)"
             );
 
             IFeeAMM.Pool memory pool2 = amm.getPool(token, address(pathUSD));
@@ -1626,7 +1751,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         if (_ghostRebalanceOutputSum > 0) {
             // Total input should be >= theoretical (due to +1 rounding per swap)
             uint256 theoretical = (_ghostRebalanceOutputSum * N) / SCALE;
-            assertTrue(_ghostRebalanceInputSum >= theoretical, "TEMPO-AMM22: Rebalance rounding should favor pool");
+            assertTrue(
+                _ghostRebalanceInputSum >= theoretical,
+                "TEMPO-AMM22: Rebalance rounding should favor pool"
+            );
         }
     }
 
@@ -1640,7 +1768,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         // So output should always be <= input
         if (_ghostFeeInputSum > 0 && _totalFeeCollections > 0) {
             // TEMPO-AMM25: Fee output never exceeds fee input
-            assertTrue(_ghostFeeOutputSum <= _ghostFeeInputSum, "TEMPO-AMM25: Fee output exceeds fee input");
+            assertTrue(
+                _ghostFeeOutputSum <= _ghostFeeInputSum, "TEMPO-AMM25: Fee output exceeds fee input"
+            );
 
             // TEMPO-FEE6: Explicit check that amountOut <= amountIn for fee swaps
             // This is the core fee swap rate invariant - the 0.3% fee means output < input
@@ -1668,12 +1798,15 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             );
 
             // The captured fee should equal input - output (the 0.3% spread)
-            uint256 capturedFee = _ghostFeeSwapUserReserveIncrease - _ghostFeeSwapValidatorReserveDecrease;
+            uint256 capturedFee =
+                _ghostFeeSwapUserReserveIncrease - _ghostFeeSwapValidatorReserveDecrease;
 
             // Captured fee should be approximately 0.3% of input (with rounding tolerance)
             // Expected: capturedFee = input * (SCALE - M) / SCALE = input * 30 / 10000
             uint256 expectedFeeMin = (_ghostFeeSwapUserReserveIncrease * (SCALE - M)) / SCALE;
-            assertTrue(capturedFee >= expectedFeeMin, "TEMPO-AMM26: Captured fee less than expected 0.3%");
+            assertTrue(
+                capturedFee >= expectedFeeMin, "TEMPO-AMM26: Captured fee less than expected 0.3%"
+            );
         }
     }
 
@@ -1698,7 +1831,8 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         // Actual amounts received should never exceed theoretical
         // (they should be equal or less due to rounding down)
         assertTrue(
-            _ghostBurnUserActual <= _ghostBurnUserTheoretical, "TEMPO-AMM23: Burn user actual exceeds theoretical"
+            _ghostBurnUserActual <= _ghostBurnUserTheoretical,
+            "TEMPO-AMM23: Burn user actual exceeds theoretical"
         );
         assertTrue(
             _ghostBurnValidatorActual <= _ghostBurnValidatorTheoretical,
@@ -1718,7 +1852,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 bytes32 poolIdBA = amm.getPoolId(tokenB, tokenA);
 
                 // Pool IDs must be different for directional separation
-                assertTrue(poolIdAB != poolIdBA, "TEMPO-AMM27: Pool(A,B) and Pool(B,A) must have different IDs");
+                assertTrue(
+                    poolIdAB != poolIdBA,
+                    "TEMPO-AMM27: Pool(A,B) and Pool(B,A) must have different IDs"
+                );
             }
         }
     }
@@ -1740,7 +1877,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                     // Pool is uninitialized - verify no actor has LP tokens
                     for (uint256 k = 0; k < _actors.length; k++) {
                         uint256 balance = amm.liquidityBalances(poolId, _actors[k]);
-                        assertEq(balance, 0, "TEMPO-AMM28: Actor has LP tokens in uninitialized pool");
+                        assertEq(
+                            balance, 0, "TEMPO-AMM28: Actor has LP tokens in uninitialized pool"
+                        );
                     }
                 }
             }
@@ -1779,8 +1918,16 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
         if (totalSupply == 0) {
             // Uninitialized: reserves must also be zero
-            assertEq(pool.reserveUserToken, 0, "TEMPO-AMM30: Uninitialized pool has non-zero user reserve");
-            assertEq(pool.reserveValidatorToken, 0, "TEMPO-AMM30: Uninitialized pool has non-zero validator reserve");
+            assertEq(
+                pool.reserveUserToken,
+                0,
+                "TEMPO-AMM30: Uninitialized pool has non-zero user reserve"
+            );
+            assertEq(
+                pool.reserveValidatorToken,
+                0,
+                "TEMPO-AMM30: Uninitialized pool has non-zero validator reserve"
+            );
         } else {
             // Initialized: totalSupply must be >= MIN_LIQUIDITY
             assertTrue(
@@ -1812,11 +1959,23 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             if (!w.tookFallback) continue;
             uint256 expectedOut1 = (w.actualSpending * M) / SCALE;
             uint256 expectedOut2 = (expectedOut1 * M) / SCALE;
-            assertEq(w.out1, expectedOut1, "TEMPO-AMM37: hop1 output must equal floor(amountIn * M / SCALE)");
-            assertEq(w.out2, expectedOut2, "TEMPO-AMM35: hop2 output must equal floor(out1 * M / SCALE)");
+            assertEq(
+                w.out1,
+                expectedOut1,
+                "TEMPO-AMM37: hop1 output must equal floor(amountIn * M / SCALE)"
+            );
+            assertEq(
+                w.out2, expectedOut2, "TEMPO-AMM35: hop2 output must equal floor(out1 * M / SCALE)"
+            );
         }
-        assertTrue(_ghostHop1OutputSum <= _ghostHop1InputSum, "TEMPO-AMM37: cumulative hop1 output exceeds input");
-        assertTrue(_ghostHop2OutputSum <= _ghostHop2InputSum, "TEMPO-AMM37: cumulative hop2 output exceeds input");
+        assertTrue(
+            _ghostHop1OutputSum <= _ghostHop1InputSum,
+            "TEMPO-AMM37: cumulative hop1 output exceeds input"
+        );
+        assertTrue(
+            _ghostHop2OutputSum <= _ghostHop2InputSum,
+            "TEMPO-AMM37: cumulative hop2 output exceeds input"
+        );
         // Validator credit equals expected sequential math, in aggregate.
         assertEq(
             _ghostTwoHopValidatorCredited,
@@ -1840,26 +1999,39 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         uint256 regressionAmount = 12_345;
         uint256 sequential = (((regressionAmount * M) / SCALE) * M) / SCALE;
         uint256 fused = (regressionAmount * M * M) / (SCALE * SCALE);
-        assertTrue(sequential < fused, "TEMPO-AMM36: regression amount must distinguish sequential from fused");
+        assertTrue(
+            sequential < fused,
+            "TEMPO-AMM36: regression amount must distinguish sequential from fused"
+        );
 
         for (uint256 i = 0; i < _ghostTwoHopWitnesses.length; i++) {
             TwoHopWitness memory w = _ghostTwoHopWitnesses[i];
             if (!w.tookFallback) continue;
             uint256 wFused = (w.actualSpending * M * M) / (SCALE * SCALE);
             // Must never exceed fused (sequential floors more aggressively).
-            assertTrue(w.out2 <= wFused, "TEMPO-AMM36: sequential math must never exceed fused math");
+            assertTrue(
+                w.out2 <= wFused, "TEMPO-AMM36: sequential math must never exceed fused math"
+            );
             // Pin to the sequential value (redundant with TEMPO-AMM35 but documents intent).
             uint256 wSequential = (((w.actualSpending * M) / SCALE) * M) / SCALE;
-            assertEq(w.out2, wSequential, "TEMPO-AMM36: validator credit must match sequential math, not fused");
+            assertEq(
+                w.out2,
+                wSequential,
+                "TEMPO-AMM36: validator credit must match sequential math, not fused"
+            );
             if (wSequential < wFused) {
-                assertTrue(w.out2 < wFused, "TEMPO-AMM36: divergent witness must not use fused math");
+                assertTrue(
+                    w.out2 < wFused, "TEMPO-AMM36: divergent witness must not use fused math"
+                );
             }
         }
 
         if (_ghostMaxFallbackAmount > 0) {
             uint256 maxSequential = (((_ghostMaxFallbackAmount * M) / SCALE) * M) / SCALE;
             assertEq(
-                _ghostMaxFallbackCredited, maxSequential, "TEMPO-AMM36: max fallback witness must use sequential math"
+                _ghostMaxFallbackCredited,
+                maxSequential,
+                "TEMPO-AMM36: max fallback witness must use sequential math"
             );
         }
     }
@@ -1896,7 +2068,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         for (uint256 i = 0; i < _ghostTwoHopWitnesses.length; i++) {
             TwoHopWitness memory w = _ghostTwoHopWitnesses[i];
             if (!w.tookFallback) continue;
-            assertTrue(w.directWasInsufficient, "TEMPO-FEE8: fallback engaged only when direct was insufficient");
+            assertTrue(
+                w.directWasInsufficient,
+                "TEMPO-FEE8: fallback engaged only when direct was insufficient"
+            );
             assertTrue(
                 uint256(w.hop1ReserveValBefore) >= w.out1,
                 "TEMPO-FEE8: fallback requires hop1 reserve >= out1 at planning time"
@@ -1905,7 +2080,10 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 uint256(w.hop2ReserveValBefore) >= w.out2,
                 "TEMPO-FEE8: fallback requires hop2 reserve >= out2 at planning time"
             );
-            assertTrue(uint256(w.directReserveBefore) < w.out1, "TEMPO-FEE8: fallback engaged only when direct < out1");
+            assertTrue(
+                uint256(w.directReserveBefore) < w.out1,
+                "TEMPO-FEE8: fallback engaged only when direct < out1"
+            );
         }
     }
 
@@ -2027,7 +2205,11 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// clearing is covered by Rust unit tests in `crates/precompiles/src/tip_fee_manager`.
     function _invariantTransientCleared() internal view {
         bytes32 stored = vm.load(address(amm), bytes32(TWO_HOP_INTERMEDIATE_SLOT));
-        assertEq(stored, bytes32(0), "TEMPO-FEE14: two_hop_intermediate slot must remain zero in persistent storage");
+        assertEq(
+            stored,
+            bytes32(0),
+            "TEMPO-FEE14: two_hop_intermediate slot must remain zero in persistent storage"
+        );
     }
 
     /// @notice TEMPO-AMM24: All participants can exit - verify everyone can withdraw
@@ -2135,7 +2317,11 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             remainingFees += amm.collectedFees(_actors[i], address(pathUSD));
         }
 
-        assertEq(remainingFees, 0, "TEMPO-AMM34: All fees should be distributable after unblacklisting all actors");
+        assertEq(
+            remainingFees,
+            0,
+            "TEMPO-AMM34: All fees should be distributable after unblacklisting all actors"
+        );
 
         // Step 5: Verify no LP positions remain (all should be burned now)
         uint256 remainingLP = 0;
@@ -2154,7 +2340,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             }
         }
 
-        assertEq(remainingLP, 0, "TEMPO-AMM34: All LP should be burnable after unblacklisting all actors");
+        assertEq(
+            remainingLP, 0, "TEMPO-AMM34: All LP should be burnable after unblacklisting all actors"
+        );
     }
 
     /// @dev Track frozen fees per token from blacklisted actors that cannot exit
@@ -2178,7 +2366,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 address token = address(_tokens[t]);
                 uint256 pendingFees = amm.collectedFees(validator, token);
                 if (pendingFees > 0) {
-                    try amm.distributeFees(validator, token) {}
+                    try amm.distributeFees(validator, token) { }
                     catch (bytes memory reason) {
                         _assertKnownFeeManagerError(reason);
                         // If distribution failed (likely due to blacklist), track as frozen
@@ -2190,7 +2378,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             // Also distribute pathUSD fees
             uint256 pendingPathUSD = amm.collectedFees(validator, address(pathUSD));
             if (pendingPathUSD > 0) {
-                try amm.distributeFees(validator, address(pathUSD)) {}
+                try amm.distributeFees(validator, address(pathUSD)) { }
                 catch (bytes memory reason) {
                     _assertKnownFeeManagerError(reason);
                     _exitFrozenFeesPathUSD += pendingPathUSD;
@@ -2217,7 +2405,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                     uint256 lpBalance = amm.liquidityBalances(poolId, actor);
                     if (lpBalance > 0) {
                         vm.prank(actor);
-                        try amm.burn(userToken, validatorToken, lpBalance, actor) {}
+                        try amm.burn(userToken, validatorToken, lpBalance, actor) { }
                         catch (bytes memory reason) {
                             _assertKnownError(reason);
                         }
@@ -2232,7 +2420,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 uint256 lpBalance1 = amm.liquidityBalances(poolId1, actor);
                 if (lpBalance1 > 0) {
                     vm.prank(actor);
-                    try amm.burn(token, address(pathUSD), lpBalance1, actor) {}
+                    try amm.burn(token, address(pathUSD), lpBalance1, actor) { }
                     catch (bytes memory reason) {
                         _assertKnownError(reason);
                     }
@@ -2243,7 +2431,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 uint256 lpBalance2 = amm.liquidityBalances(poolId2, actor);
                 if (lpBalance2 > 0) {
                     vm.prank(actor);
-                    try amm.burn(address(pathUSD), token, lpBalance2, actor) {}
+                    try amm.burn(address(pathUSD), token, lpBalance2, actor) { }
                     catch (bytes memory reason) {
                         _assertKnownError(reason);
                     }
@@ -2297,14 +2485,20 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
 
         // Assert: actual balance >= expected reserves (solvency)
         // The difference is dust from fee swaps that accumulated
-        assertTrue(ammPathUSD >= expectedPathUSD, "TEMPO-AMM24: pathUSD balance < expected reserves after exit");
+        assertTrue(
+            ammPathUSD >= expectedPathUSD,
+            "TEMPO-AMM24: pathUSD balance < expected reserves after exit"
+        );
         uint256 pathUSDDust = ammPathUSD - expectedPathUSD;
 
         uint256 totalDust = pathUSDDust;
         for (uint256 t = 0; t < _tokens.length; t++) {
             uint256 ammBalance = _tokens[t].balanceOf(address(amm));
 
-            assertTrue(ammBalance >= expectedTokens[t], "TEMPO-AMM24: Token balance < expected reserves after exit");
+            assertTrue(
+                ammBalance >= expectedTokens[t],
+                "TEMPO-AMM24: Token balance < expected reserves after exit"
+            );
 
             uint256 tokenDust = ammBalance - expectedTokens[t];
             totalDust += tokenDust;
@@ -2332,7 +2526,8 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         uint256 maxExpectedDust = expectedDust + burnDust + totalFrozenFees;
 
         assertTrue(
-            totalDust <= maxExpectedDust, "TEMPO-AMM24: AMM has more dust than expected - potential value creation bug"
+            totalDust <= maxExpectedDust,
+            "TEMPO-AMM24: AMM has more dust than expected - potential value creation bug"
         );
     }
 
@@ -2364,7 +2559,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         if (totalSupply == 0) return;
 
         // TEMPO-AMM15: totalSupply >= MIN_LIQUIDITY for initialized pools
-        assertTrue(totalSupply >= MIN_LIQUIDITY, "TEMPO-AMM24: totalSupply < MIN_LIQUIDITY after burns");
+        assertTrue(
+            totalSupply >= MIN_LIQUIDITY, "TEMPO-AMM24: totalSupply < MIN_LIQUIDITY after burns"
+        );
 
         // Sum all user LP balances
         uint256 sumUserBalances = 0;
@@ -2419,7 +2616,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     function _addPendingFee(address validator, address token) internal {
         bytes32 key = _pendingFeeKey(validator, token);
         if (_pendingFeesIndex[key] == 0) {
-            _pendingFeesList.push(PendingFee({validator: validator, token: token}));
+            _pendingFeesList.push(PendingFee({ validator: validator, token: token }));
             _pendingFeesIndex[key] = _pendingFeesList.length;
         }
     }
@@ -2446,7 +2643,11 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @dev Selects a pending fee entry from the list
     /// @return validator The validator address
     /// @return token The token address
-    function _selectPendingFee(uint256 seed) internal view returns (address validator, address token) {
+    function _selectPendingFee(uint256 seed)
+        internal
+        view
+        returns (address validator, address token)
+    {
         uint256 count = _pendingFeesList.length;
         vm.assume(count > 0);
         uint256 index = bound(seed, 0, count - 1);
@@ -2459,11 +2660,14 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @param reason The revert reason bytes from the failed call
     function _assertKnownError(bytes memory reason) internal pure {
         bytes4 selector = bytes4(reason);
-        bool isKnownError = selector == IFeeAMM.IdenticalAddresses.selector || selector == IFeeAMM.InvalidToken.selector
-            || selector == IFeeAMM.InsufficientLiquidity.selector || selector == IFeeAMM.InsufficientReserves.selector
-            || selector == IFeeAMM.InvalidAmount.selector || selector == IFeeAMM.DivisionByZero.selector
-            || selector == IFeeAMM.InvalidSwapCalculation.selector || selector == ITIP20.InvalidCurrency.selector
-            || _isKnownTIP20Error(selector);
+        bool isKnownError = selector == IFeeAMM.IdenticalAddresses.selector
+            || selector == IFeeAMM.InvalidToken.selector
+            || selector == IFeeAMM.InsufficientLiquidity.selector
+            || selector == IFeeAMM.InsufficientReserves.selector
+            || selector == IFeeAMM.InvalidAmount.selector
+            || selector == IFeeAMM.DivisionByZero.selector
+            || selector == IFeeAMM.InvalidSwapCalculation.selector
+            || selector == ITIP20.InvalidCurrency.selector || _isKnownTIP20Error(selector);
         assertTrue(isKnownError, "Failed with unknown error");
     }
 
@@ -2471,12 +2675,16 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// @param reason The revert reason bytes from the failed call
     function _assertKnownFeeManagerError(bytes memory reason) internal pure {
         bytes4 selector = bytes4(reason);
-        bool isKnownError = selector == IFeeAMM.IdenticalAddresses.selector || selector == IFeeAMM.InvalidToken.selector
-            || selector == IFeeAMM.InsufficientLiquidity.selector || selector == ITIP20.InvalidCurrency.selector
-            || _isKnownTIP20Error(selector)
+        bool isKnownError = selector == IFeeAMM.IdenticalAddresses.selector
+            || selector == IFeeAMM.InvalidToken.selector
+            || selector == IFeeAMM.InsufficientLiquidity.selector
+            || selector == ITIP20.InvalidCurrency.selector || _isKnownTIP20Error(selector)
             // FeeManager specific (string reverts)
-            || keccak256(reason) == keccak256(abi.encodeWithSignature("Error(string)", "ONLY_DIRECT_CALL"))
-            || keccak256(reason) == keccak256(abi.encodeWithSignature("Error(string)", "CANNOT_CHANGE_WITHIN_BLOCK"));
+            || keccak256(reason)
+                == keccak256(abi.encodeWithSignature("Error(string)", "ONLY_DIRECT_CALL"))
+            || keccak256(reason)
+                == keccak256(abi.encodeWithSignature("Error(string)", "CANNOT_CHANGE_WITHIN_BLOCK"));
         assertTrue(isKnownError, "Failed with unknown FeeManager error");
     }
+
 }
