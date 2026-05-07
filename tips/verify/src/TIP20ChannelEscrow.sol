@@ -44,8 +44,6 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
     // approximation.
     mapping(bytes32 => bool) internal _openedChannelIdsForTest;
 
-    error ExpiringNonceHashNotSet();
-
     /// @dev Reference-contract-only hook. The precompile derives this as
     /// `keccak256(abi.encodePacked(encodeForSigning, sender))` for every real transaction type.
     function setExpiringNonceHashForTest(bytes32 expiringNonceHash) external {
