@@ -397,11 +397,20 @@ pub(crate) fn calc_data_slot(len_slot: U256) -> U256 {
     U256::from_be_bytes(alloy::primitives::keccak256(len_slot.to_be_bytes::<32>()).0)
 }
 
-/// Clears `Vec` element slots in the index range `[from, to)`.
+/// Clears storage occupied exclusively by `Vec` elements in the index range `[from, to)`.
 ///
-/// - Packed (`T::BYTES <= 16`): zeroes whole slots from `ceil(from)` to `ceil(to)`.
-///   Boundary slot at is left intact; callers that shrink to non-aligned `from` must handle manually.
-/// - Unpacked: delegates to `T::delete` per element so nested storables are recursively cleared.
+/// Packed elements (`T::BYTES <= 16`) share storage words, so this only zeroes whole packed
+/// slots that contain no element before `from`:
+///
+/// - `from = 0` clears from slot 0. This is the delete path and clears every slot that may contain
+///   any element in `[0, to)`; e.g. for 16-byte elements, `[0, 1)` clears slot 0.
+/// - `from > 0` starts at `calc_packed_slot_count(from, T::BYTES)`, intentionally preserving the
+///   boundary slot that may also contain live elements `< from`; e.g. for 16-byte elements,
+///   `[1, 2)` clears nothing because elements 0 and 1 share slot 0. Shrink callers rely on the
+///   subsequent packed-slot rewrite to clear stale lanes in that boundary slot.
+///
+/// Unpacked elements delegate to `T::delete` per element so nested dynamic storables are
+/// recursively cleared.
 fn clear_elements<T: Storable, S: StorageOps>(
     storage: &mut S,
     data_start: U256,
