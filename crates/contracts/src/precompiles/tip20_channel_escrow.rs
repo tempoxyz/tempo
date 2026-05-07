@@ -15,15 +15,17 @@ crate::sol! {
         struct ChannelDescriptor {
             address payer;
             address payee;
+            address operator;
             address token;
             bytes32 salt;
             address authorizedSigner;
+            bytes32 expiringNonceHash;
         }
 
         struct ChannelState {
             uint96 settled;
             uint96 deposit;
-            uint32 closeData;
+            uint32 closeRequestedAt;
         }
 
         struct Channel {
@@ -36,6 +38,7 @@ crate::sol! {
 
         function open(
             address payee,
+            address operator,
             address token,
             uint96 deposit,
             bytes32 salt,
@@ -84,9 +87,11 @@ crate::sol! {
         function computeChannelId(
             address payer,
             address payee,
+            address operator,
             address token,
             bytes32 salt,
-            address authorizedSigner
+            address authorizedSigner,
+            bytes32 expiringNonceHash
         )
             external
             view
@@ -103,9 +108,11 @@ crate::sol! {
             bytes32 indexed channelId,
             address indexed payer,
             address indexed payee,
+            address operator,
             address token,
             address authorizedSigner,
             bytes32 salt,
+            bytes32 expiringNonceHash,
             uint96 deposit
         );
 
@@ -149,12 +156,13 @@ crate::sol! {
 
         error ChannelAlreadyExists();
         error ChannelNotFound();
-        error ChannelFinalized();
         error NotPayer();
         error NotPayee();
+        error NotPayeeOrOperator();
         error InvalidPayee();
         error InvalidToken();
         error ZeroDeposit();
+        error ExpiringNonceHashNotSet();
         error InvalidSignature();
         error AmountExceedsDeposit();
         error AmountNotIncreasing();
@@ -174,16 +182,16 @@ impl TIP20ChannelEscrowError {
         Self::ChannelNotFound(ITIP20ChannelEscrow::ChannelNotFound {})
     }
 
-    pub const fn channel_finalized() -> Self {
-        Self::ChannelFinalized(ITIP20ChannelEscrow::ChannelFinalized {})
-    }
-
     pub const fn not_payer() -> Self {
         Self::NotPayer(ITIP20ChannelEscrow::NotPayer {})
     }
 
     pub const fn not_payee() -> Self {
         Self::NotPayee(ITIP20ChannelEscrow::NotPayee {})
+    }
+
+    pub const fn not_payee_or_operator() -> Self {
+        Self::NotPayeeOrOperator(ITIP20ChannelEscrow::NotPayeeOrOperator {})
     }
 
     pub const fn invalid_payee() -> Self {
@@ -196,6 +204,10 @@ impl TIP20ChannelEscrowError {
 
     pub const fn zero_deposit() -> Self {
         Self::ZeroDeposit(ITIP20ChannelEscrow::ZeroDeposit {})
+    }
+
+    pub const fn expiring_nonce_hash_not_set() -> Self {
+        Self::ExpiringNonceHashNotSet(ITIP20ChannelEscrow::ExpiringNonceHashNotSet {})
     }
 
     pub const fn invalid_signature() -> Self {
