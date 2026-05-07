@@ -18,6 +18,8 @@ const E2E_B_MEMORY = ""
 const E2E_GAS_LIMIT = "1000000000000"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
+const E2E_DEFAULT_BLOAT_MIB = 100000
+const E2E_SUPPORTED_BLOAT_MIB = [1000 10000 100000]
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
     "--disable-discovery"
@@ -664,7 +666,7 @@ def "main e2e" [
     --duration: int = 300                               # Duration in seconds
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 100                # Max concurrent requests
-    --bloat: int = 0                                    # State bloat size in MiB
+    --bloat: int = $E2E_DEFAULT_BLOAT_MIB               # State bloat size in MiB
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
@@ -703,6 +705,11 @@ def "main e2e" [
     }
     if $samply and $tracy != "off" {
         print "Error: --samply and --tracy are mutually exclusive. Choose one."
+        exit 1
+    }
+    if $bloat not-in $E2E_SUPPORTED_BLOAT_MIB {
+        let supported = ($E2E_SUPPORTED_BLOAT_MIB | each { |size| $"($size)" } | str join ", ")
+        print $"Error: --bloat must be one of ($supported) MiB \(1G, 10G, 100G snapshots\)"
         exit 1
     }
     if $init_only and not $force_bloat {
