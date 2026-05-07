@@ -92,6 +92,9 @@ crate::sol! {
             uint256 remainingLimit
         );
 
+        /// Emitted when a TIP-1053 key-authorization nonce is consumed.
+        event KeyAuthorizationNonceConsumed(address indexed account, bytes32 indexed nonce);
+
         /// Legacy authorize-key entrypoint used before T3.
         function authorizeKey(
             address keyId,

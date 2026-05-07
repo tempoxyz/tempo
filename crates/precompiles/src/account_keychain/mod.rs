@@ -1074,7 +1074,10 @@ impl AccountKeychain {
             return Err(AccountKeychainError::key_authorization_nonce_already_used().into());
         }
 
-        self.key_authorization_nonces[account][nonce].write(true)
+        self.key_authorization_nonces[account][nonce].write(true)?;
+        self.emit_event(AccountKeychainEvent::KeyAuthorizationNonceConsumed(
+            IAccountKeychain::KeyAuthorizationNonceConsumed { account, nonce },
+        ))
     }
 
     /// Load and validate a key exists, is not revoked, and is not expired.
