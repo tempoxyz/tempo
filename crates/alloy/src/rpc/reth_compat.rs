@@ -1,7 +1,7 @@
 use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
-use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
+use alloy_consensus::{EthereumTxEnvelope, SignableTransaction, TxEip4844, error::ValueError};
 use alloy_network::{NetworkTransactionBuilder, TxSigner};
-use alloy_primitives::{Address, B256, Bytes, Signature};
+use alloy_primitives::{Address, B256, Bytes, Signature, keccak256};
 use core::num::NonZeroU64;
 use reth_evm::EvmEnv;
 use reth_primitives_traits::SealedHeader;
@@ -99,6 +99,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
         evm_env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
     ) -> Result<TempoTxEnv, Self::Err> {
         let caller_addr = self.inner.from.unwrap_or_default();
+        let channel_open_context_hash = simulation_channel_open_context_hash(&self, caller_addr);
 
         let fee_payer = if self.fee_payer_signature.is_some() {
             // Try to recover the fee payer address from the signature.
@@ -132,7 +133,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
         Ok(TempoTxEnv {
             fee_token,
             is_system_tx: false,
-            channel_open_context_hash: None,
+            channel_open_context_hash: Some(channel_open_context_hash),
             fee_payer,
             tempo_tx_env: if !calls.is_empty()
                 || !tempo_authorization_list.is_empty()
@@ -196,6 +197,32 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
             },
             inner: inner.try_into_tx_env(evm_env)?,
         })
+    }
+}
+
+fn simulation_channel_open_context_hash(req: &TempoTransactionRequest, sender: Address) -> B256 {
+    <TempoTransactionRequest as TryIntoSimTx<TempoTxEnvelope>>::try_into_sim_tx(req.clone())
+        .map(|tx| channel_open_context_hash_from_sim_tx(&tx, sender))
+        .unwrap_or_else(|_| B256::repeat_byte(0x01))
+}
+
+fn channel_open_context_hash_from_signable<T>(tx: &T, sender: Address) -> B256
+where
+    T: SignableTransaction<Signature>,
+{
+    let mut buf = Vec::with_capacity(tx.payload_len_for_signature() + sender.as_slice().len());
+    tx.encode_for_signing(&mut buf);
+    buf.extend_from_slice(sender.as_slice());
+    keccak256(buf)
+}
+
+fn channel_open_context_hash_from_sim_tx(tx: &TempoTxEnvelope, sender: Address) -> B256 {
+    match tx {
+        TempoTxEnvelope::Legacy(tx) => channel_open_context_hash_from_signable(tx.tx(), sender),
+        TempoTxEnvelope::Eip2930(tx) => channel_open_context_hash_from_signable(tx.tx(), sender),
+        TempoTxEnvelope::Eip1559(tx) => channel_open_context_hash_from_signable(tx.tx(), sender),
+        TempoTxEnvelope::Eip7702(tx) => channel_open_context_hash_from_signable(tx.tx(), sender),
+        TempoTxEnvelope::AA(tx) => tx.expiring_nonce_hash(sender),
     }
 }
 
@@ -388,6 +415,44 @@ mod tests {
         let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
 
         assert_eq!(estimated_calls, built_calls);
+    }
+
+    #[test]
+    fn test_try_into_tx_env_sets_channel_open_context_hash_for_rpc_simulation() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let target = address!("0x2222222222222222222222222222222222222222");
+
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(sender),
+                to: Some(TxKind::Call(target)),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let evm_env = EvmEnv::default();
+        let tx_env = req
+            .clone()
+            .try_into_tx_env(&evm_env)
+            .expect("try_into_tx_env");
+        let expected = channel_open_context_hash_from_sim_tx(
+            &<TempoTransactionRequest as TryIntoSimTx<TempoTxEnvelope>>::try_into_sim_tx(req)
+                .expect("try_into_sim_tx"),
+            sender,
+        );
+
+        assert_eq!(tx_env.channel_open_context_hash(), Some(expected));
+        assert_ne!(
+            tx_env.channel_open_context_hash(),
+            Some(B256::ZERO),
+            "RPC simulations must seed a non-zero context hash so TIP20ChannelEscrow.open() does not treat it as unset"
+        );
     }
 
     #[test]
