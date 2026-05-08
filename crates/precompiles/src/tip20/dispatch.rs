@@ -20,6 +20,12 @@ const T2_ADDED: &[[u8; 4]] = &[
     ITIP20::DOMAIN_SEPARATORCall::SELECTOR,
 ];
 
+/// Selectors added at T5: TIP-1026 Token Logo URI.
+const T5_ADDED: &[[u8; 4]] = &[
+    ITIP20::logoURICall::SELECTOR,
+    ITIP20::setLogoURICall::SELECTOR,
+];
+
 /// Decoded call variant — either a TIP-20 token call or a role-management call.
 enum TIP20Call {
     TIP20(ITIP20Calls),
@@ -57,7 +63,10 @@ impl Precompile for TIP20Token {
 
         dispatch_call(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T2).with_added(T2_ADDED)],
+            &[
+                SelectorSchedule::new(TempoHardfork::T2).with_added(T2_ADDED),
+                SelectorSchedule::new(TempoHardfork::T5).with_added(T5_ADDED),
+            ],
             TIP20Call::decode,
             |call| match call {
                 // Metadata functions (no calldata decoding needed)
@@ -84,6 +93,9 @@ impl Precompile for TIP20Token {
                 }
                 TIP20Call::TIP20(ITIP20Calls::paused(_)) => {
                     metadata::<ITIP20::pausedCall>(|| self.paused())
+                }
+                TIP20Call::TIP20(ITIP20Calls::logoURI(_)) => {
+                    metadata::<ITIP20::logoURICall>(|| self.logo_uri())
                 }
 
                 // View functions
@@ -127,6 +139,9 @@ impl Precompile for TIP20Token {
                 }
                 TIP20Call::TIP20(ITIP20Calls::setSupplyCap(call)) => {
                     mutate_void(call, msg_sender, |s, c| self.set_supply_cap(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::setLogoURI(call)) => {
+                    mutate_void(call, msg_sender, |s, c| self.set_logo_uri(s, c))
                 }
                 TIP20Call::TIP20(ITIP20Calls::pause(call)) => {
                     mutate_void(call, msg_sender, |s, c| self.pause(s, c))
@@ -755,8 +770,8 @@ mod tests {
         use crate::test_util::{assert_full_coverage, check_selector_coverage};
         use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
 
-        // Use T2 hardfork so T2-gated selectors (permit, nonces, DOMAIN_SEPARATOR) are active
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        // Use T5 hardfork so all selectors are active.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -775,6 +790,63 @@ mod tests {
             );
 
             assert_full_coverage([itip20_unsupported, roles_unsupported]);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_logo_uri_selectors_gated_behind_t5() -> eyre::Result<()> {
+        // Pre-T5: logoURI/setLogoURI should return unknown selector.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+            // logoURI selector is gated
+            let logo_uri_calldata = ITIP20::logoURICall {}.abi_encode();
+            let result = token.call(&logo_uri_calldata, admin)?;
+            assert!(result.is_revert());
+            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+
+            // setLogoURI selector is gated
+            let set_logo_uri_calldata = ITIP20::setLogoURICall {
+                newLogoURI: "https://example.com/icon.svg".to_string(),
+            }
+            .abi_encode();
+            let result = token.call(&set_logo_uri_calldata, admin)?;
+            assert!(result.is_revert());
+            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_logo_uri_pre_t5_deploy_post_t5_read_returns_empty() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        let admin = Address::random();
+        let token_address = StorageCtx::enter(&mut storage, || -> eyre::Result<Address> {
+            let token = TIP20Setup::create("Test", "TST", admin).apply()?;
+            Ok(token.address())
+        })?;
+
+        // Activate T5; the token deployed under T4 is now read under T5.
+        storage.set_spec(TempoHardfork::T5);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Token::from_address(token_address)?;
+
+            // Direct accessor: empty by default for pre-T5-deployed tokens.
+            assert_eq!(token.logo_uri()?, "");
+
+            // ABI-level: the previously-gated selector now dispatches and returns "".
+            let calldata = ITIP20::logoURICall {}.abi_encode();
+            let result = token.call(&calldata, admin)?;
+            assert!(!result.is_revert(), "logoURI() must succeed post-T5");
+            let decoded = ITIP20::logoURICall::abi_decode_returns(&result.bytes)?;
+            assert_eq!(decoded, "");
+
             Ok(())
         })
     }

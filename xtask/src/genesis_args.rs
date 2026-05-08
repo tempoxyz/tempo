@@ -43,7 +43,7 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::{ITIP20Factory, IValidatorConfigV2},
+    precompiles::{IValidatorConfigV2, createTokenCall},
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -737,7 +737,7 @@ fn create_and_mint_token(
                 SaltOrAddress::Salt(salt) => factory
                     .create_token(
                         admin,
-                        ITIP20Factory::createTokenCall {
+                        createTokenCall {
                             name: name.into(),
                             symbol: symbol.into(),
                             currency: currency.into(),
