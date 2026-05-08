@@ -44,6 +44,8 @@ async fn test_get_expiring_nonce_status() -> eyre::Result<()> {
     assert_receipt_status(&provider, included_hash, true).await?;
 
     let (expired, _) = signed_expiring_nonce_tx(&signer, chain_id, current_timestamp + 29, 1)?;
+    let (expired_at_boundary, _) =
+        signed_expiring_nonce_tx(&signer, chain_id, current_timestamp + 30, 2)?;
     advance_until_finalized_after(&mut setup, &provider, current_timestamp + 30).await?;
 
     assert_eq!(
@@ -52,6 +54,10 @@ async fn test_get_expiring_nonce_status() -> eyre::Result<()> {
     );
     assert_eq!(
         get_expiring_nonce_status(&provider, &expired).await?,
+        ExpiringNonceStatus::Expired,
+    );
+    assert_eq!(
+        get_expiring_nonce_status(&provider, &expired_at_boundary).await?,
         ExpiringNonceStatus::Expired,
     );
 
