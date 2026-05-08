@@ -989,11 +989,7 @@ impl TIP20Token {
     /// recipient can receive mints. On T6+, the `total_supply` read is deferred to `_mint`.
     ///
     /// Returns the resolved recipient and, pre-T6, the total supply.
-    fn validate_mint(
-        &self,
-        msg_sender: Address,
-        to: Address,
-    ) -> Result<(Recipient, Option<U256>)> {
+    fn validate_mint(&self, msg_sender: Address, to: Address) -> Result<(Recipient, Option<U256>)> {
         let to = Recipient::resolve(to)?;
         self.check_role(msg_sender, *ISSUER_ROLE)?;
 
