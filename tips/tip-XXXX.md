@@ -211,6 +211,8 @@ Some changes may need to move together. Those features can list each other in `a
 
 Multisig approval is necessary for the suggested checkpoint flow, but it is not the only guard. `tempo` should validate every activation checkpoint against the generated feature records before accepting it. If a signed checkpoint tries to activate feature `C` without its required features, or only activates half of an activation group, `tempo` rejects it.
 
+The checkpoint should reference the reviewed manifest hash. It should not carry its own alternate dependency graph that signers have to remember or audit by hand. `tempo` validates the checkpoint against the feature records for that hash.
+
 Manifest validation should reject:
 
 - unknown dependencies
@@ -376,6 +378,8 @@ Before any feature activates independently from a named hardfork, a future TIP o
 - validation rules
 - replay protection
 - chain- and zone-specific behavior
+- transaction pool behavior for features that change transaction validity
+- RPC simulation and `eth_call` behavior for dynamic feature context
 - `tempo` bootstrap behavior
 - failure behavior when activation metadata is unavailable
 - minimum supported `tempo` version and readiness requirements
@@ -388,9 +392,13 @@ The suggested long-term approach is a hybrid multisig-approved checkpoint model:
 - feature records, review state, and readiness live in `tempo-protocol-features`
 - the UI helps review the feature and prepare activation
 - final activation is published as a multisig-approved checkpoint that `tempo` can verify
-- the checkpoint includes feature IDs, chain or zone ID, activation block or timestamp, manifest hash, minimum `tempo` version, dependency and activation-group data, multisig approval data, and replay protection
+- the checkpoint includes feature IDs, chain or zone ID, activation block or timestamp, manifest hash, minimum `tempo` version, readiness evidence, dependency and activation-group data, multisig approval data, and replay protection
 - `tempo` validates the checkpoint against the feature records before using it, so a signed but invalid checkpoint is still rejected
 - later, multisig-approved checkpoints can be anchored on-chain for auditability without making an on-chain registry the first dependency
+
+### Zones
+
+Zones are a named requirement for Phase 6, not a follow-up after activation is designed.
 
 Zones should be treated as explicit activation scopes. A checkpoint for Tempo L1 should not accidentally activate behavior on a Zone unless that Zone is included in the checkpoint. A Zone checkpoint should also say which L1 network or anchor it depends on. The follow-up activation design should decide which features Zones inherit from Tempo automatically and which ones need their own Zone-scoped activation, but the records should make that choice explicit.
 
@@ -434,6 +442,7 @@ Before hardfork-independent activation is used in production, the design needs a
 - unknown active features
 - dependency mistakes
 - incomplete activation groups
+- activation before the required validators/operators are on a compatible `tempo` version
 - activation data replayed across the wrong chain or zone
 - multisig approval of a checkpoint that does not match the feature records
 - validator readiness data that is missing, stale, or wrong
@@ -453,6 +462,7 @@ Generated artifacts should be reproducible from manifests. CI should fail if gen
 - Legacy hardfork mappings are cumulative.
 - A feature cannot become active unless all of its dependencies are already active, or become active in the same validated checkpoint.
 - Features in an activation group become active together, or not at all.
+- A feature cannot be scheduled for activation until the required validators/operators are on a compatible `tempo` version or the reviewed activation design explicitly defines another rule.
 - Activation data is scoped to a chain or zone and cannot replay across scopes.
 - Feature IDs are stable after publication.
 - Generated artifacts match the manifests.
@@ -510,5 +520,7 @@ Threat model the activation flow before using hardfork-independent activation in
 ### Phase 6: Activation source
 
 Decide the activation source through a follow-up TIP or focused design review. The suggested path is the hybrid multisig-approved checkpoint model described above: feature records stay in `tempo-protocol-features`, final activation is a multisig-approved checkpoint, and `tempo` verifies the checkpoint against dependency rules, activation groups, manifest hashes, minimum versions, and chain or zone scope before using it.
+
+This phase also needs to close the dynamic-context risks for transaction pool and RPC simulation. The transaction pool should not accept transactions under one feature set if they become invalid at the activation point, and `eth_call` or other simulations should use the same chain, zone, and block-specific feature set as execution.
 
 This phase is out of scope until the preceding phases are complete.
