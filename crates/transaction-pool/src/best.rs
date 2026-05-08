@@ -121,6 +121,98 @@ impl BestTransactions for MergeBestTransactions {
     }
 }
 
+/// A [`BestTransactions`] wrapper that tracks execution state changes and skips
+/// transactions that would fail due to state mutations from previously
+/// included transactions.
+pub struct StateAwareBestTransactions<I> {
+    inner: I,
+    /// Tracks decreased TIP20 balance slots: `(token_address, slot) -> new_balance`.
+    /// Updated after each executed transaction. Used to check if a candidate
+    /// transaction's fee payer can still cover its fee cost.
+    decreased_balances: HashMap<(Address, U256), U256>,
+}
+
+impl<I> StateAwareBestTransactions<I>
+where
+    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+{
+    /// Wraps an existing [`BestTransactions`] iterator.
+    pub fn new(inner: I) -> Self {
+        Self {
+            inner,
+            decreased_balances: HashMap::default(),
+        }
+    }
+
+    /// Processes a new transaction execution result and collects any relevant
+    /// state changes that might affect other transactions validity.
+    pub fn on_new_result(&mut self, result: &TempoTxResult) {
+        for (&address, account) in &result.result().state {
+            if !is_tip20_prefix(address) {
+                continue;
+            }
+
+            for (&slot, storage_slot) in &account.storage {
+                if storage_slot.present_value < storage_slot.original_value {
+                    self.decreased_balances
+                        .insert((address, slot), storage_slot.present_value);
+                }
+            }
+        }
+    }
+}
+
+impl<I> Iterator for StateAwareBestTransactions<I>
+where
+    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+{
+    type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let tx = self.inner.next()?;
+
+            let Some(key) = tx.transaction.fee_balance_slot() else {
+                debug_assert!(false, "pool transaction must have cached fee_balance_slot");
+                continue;
+            };
+
+            if let Some(&balance) = self.decreased_balances.get(&key)
+                && balance < tx.transaction.fee_token_cost()
+            {
+                self.inner.mark_invalid(
+                    &tx,
+                    &InvalidPoolTransactionError::Consensus(
+                        InvalidTransactionError::InsufficientFunds(
+                            (balance, tx.transaction.fee_token_cost()).into(),
+                        ),
+                    ),
+                );
+                continue;
+            }
+
+            return Some(tx);
+        }
+    }
+}
+
+impl<I> BestTransactions for StateAwareBestTransactions<I>
+where
+    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
+{
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
+        self.inner.mark_invalid(transaction, kind);
+    }
+
+    fn no_updates(&mut self) {
+        self.inner.no_updates();
+    }
+
+    fn set_skip_blobs(&mut self, skip_blobs: bool) {
+        self.inner.set_skip_blobs(skip_blobs);
+    }
+}
+
 /// Event returned by [`BestTransactionsStream`].
 #[derive(Debug)]
 pub enum BestTransactionsStreamEvent {
@@ -289,98 +381,6 @@ fn is_invalidated_buffered_transaction(
     !candidate.transaction.is_aa_2d()
         && candidate.sender() == invalid.sender()
         && candidate.nonce() >= invalid.nonce()
-}
-
-/// A [`BestTransactions`] wrapper that tracks execution state changes and skips
-/// transactions that would fail due to state mutations from previously
-/// included transactions.
-pub struct StateAwareBestTransactions<I> {
-    inner: I,
-    /// Tracks decreased TIP20 balance slots: `(token_address, slot) -> new_balance`.
-    /// Updated after each executed transaction. Used to check if a candidate
-    /// transaction's fee payer can still cover its fee cost.
-    decreased_balances: HashMap<(Address, U256), U256>,
-}
-
-impl<I> StateAwareBestTransactions<I>
-where
-    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-{
-    /// Wraps an existing [`BestTransactions`] iterator.
-    pub fn new(inner: I) -> Self {
-        Self {
-            inner,
-            decreased_balances: HashMap::default(),
-        }
-    }
-
-    /// Processes a new transaction execution result and collects any relevant
-    /// state changes that might affect other transactions validity.
-    pub fn on_new_result(&mut self, result: &TempoTxResult) {
-        for (&address, account) in &result.result().state {
-            if !is_tip20_prefix(address) {
-                continue;
-            }
-
-            for (&slot, storage_slot) in &account.storage {
-                if storage_slot.present_value < storage_slot.original_value {
-                    self.decreased_balances
-                        .insert((address, slot), storage_slot.present_value);
-                }
-            }
-        }
-    }
-}
-
-impl<I> Iterator for StateAwareBestTransactions<I>
-where
-    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-{
-    type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
-
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            let tx = self.inner.next()?;
-
-            let Some(key) = tx.transaction.fee_balance_slot() else {
-                debug_assert!(false, "pool transaction must have cached fee_balance_slot");
-                continue;
-            };
-
-            if let Some(&balance) = self.decreased_balances.get(&key)
-                && balance < tx.transaction.fee_token_cost()
-            {
-                self.inner.mark_invalid(
-                    &tx,
-                    &InvalidPoolTransactionError::Consensus(
-                        InvalidTransactionError::InsufficientFunds(
-                            (balance, tx.transaction.fee_token_cost()).into(),
-                        ),
-                    ),
-                );
-                continue;
-            }
-
-            return Some(tx);
-        }
-    }
-}
-
-impl<I> BestTransactions for StateAwareBestTransactions<I>
-where
-    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
-{
-    fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
-        self.inner.mark_invalid(transaction, kind);
-    }
-
-    fn no_updates(&mut self) {
-        self.inner.no_updates();
-    }
-
-    fn set_skip_blobs(&mut self, skip_blobs: bool) {
-        self.inner.set_skip_blobs(skip_blobs);
-    }
 }
 
 #[cfg(test)]
