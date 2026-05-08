@@ -733,7 +733,7 @@ def upload-tracy-profile [profile_path: string, label: string, commit_sha: strin
     let short_sha = ($commit_sha | str substring 0..7)
     let remote_name = $"($label)-($short_sha)-($timestamp).tracy"
     let mc_alias = "r2"
-    let viewer_base = "https://tracy.tempoxyz.dev"
+    let viewer_base = "https://tracy.tempo.xyz"
 
     try {
         mc cp $profile_path $"($mc_alias)/tracy/profiles/($remote_name)"
