@@ -433,28 +433,21 @@ where
         let base_fee = builder.evm_mut().block().basefee;
         let validator_fee_token = resolve_validator_fee_token(&mut builder)?;
         let pool_fetch_start = Instant::now();
+        let best_txs = best_txs(BestTransactionsAttributes::new(
+            base_fee,
+            builder
+                .evm_mut()
+                .block()
+                .blob_gasprice()
+                .map(|gasprice| gasprice as u64),
+        ));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
         let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
-            Box::new(BestTransactionsPrewarming::new(best_txs(
-                BestTransactionsAttributes::new(
-                    base_fee,
-                    builder
-                        .evm_mut()
-                        .block()
-                        .blob_gasprice()
-                        .map(|gasprice| gasprice as u64),
-                ),
-            ))) as Box<dyn BestTransactions<Item = _>>
+            Box::new(BestTransactionsPrewarming::new(best_txs))
+                as Box<dyn BestTransactions<Item = _>>
         } else {
-            Box::new(best_txs(BestTransactionsAttributes::new(
-                base_fee,
-                builder
-                    .evm_mut()
-                    .block()
-                    .blob_gasprice()
-                    .map(|gasprice| gasprice as u64),
-            )))
+            Box::new(best_txs)
         });
         self.metrics
             .pool_fetch_duration_seconds
