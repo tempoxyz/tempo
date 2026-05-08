@@ -230,7 +230,7 @@ crate::sol! {
     }
 }
 
-/// TIP-1045 Maximum calldata length (in bytes) for payment-elegible calls with dynamic params.
+/// TIP-1045 Maximum calldata length (in bytes) for payment-eligible calls with dynamic params.
 pub const MAX_PAYMENT_CALLDATA_LEN: usize = 2048;
 
 impl ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls {
