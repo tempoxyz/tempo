@@ -1827,15 +1827,9 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         _invariantFeeConservation();
         _invariantPoolInitializationShape();
         // TIP-1033 (T5+): two-hop FeeAMM routing.
-        _invariantTwoHopFeeMath(); // TEMPO-AMM35, TEMPO-AMM37
-        _invariantTwoHopMathDivergesFromFused(); // TEMPO-AMM36
-        _invariantDirectPreferred(); // TEMPO-FEE7
-        _invariantSingleHopExactFeeMath(); // TIP-1033 inv. 2 (single-hop fee math, per-witness)
-        _invariantTwoHopGating(); // TEMPO-FEE8
-        _invariantIntermediateWellFormed(); // TEMPO-FEE9
-        _invariantQuoteTokenGraphWellFormed(); // TEMPO-FEE9
-        _invariantTwoHopReservationCovers(); // TEMPO-FEE11
-        _invariantTwoHopHopTokenConservation(); // TEMPO-FEE11
+        // Unified per-witness pass: TEMPO-AMM35/36/37, TEMPO-FEE7/8/9/11, TIP-1033 inv. 2.
+        _invariantTwoHopWitnessChecks();
+        _invariantQuoteTokenGraphWellFormed(); // TEMPO-FEE9 (state scan, not witness-driven)
         _invariantSingleHopUnchanged(); // TEMPO-FEE13
         _invariantTransientCleared(); // TEMPO-FEE14
     }
@@ -2190,26 +2184,30 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                     TIP-1033 INVARIANT ASSERTIONS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice TEMPO-AMM35 + TEMPO-AMM37: Two-hop fee math is sequential.
-    /// @dev For every fallback witness asserts:
-    ///   - `out1 == floor(actualSpending * M / SCALE)`
-    ///   - `out2 == floor(out1 * M / SCALE)` (matches the validator credit delta)
-    ///   - per-hop output `<=` per-hop input (cumulative across all witnesses).
-    function _invariantTwoHopFeeMath() internal view {
-        for (uint256 i = 0; i < _ghostTwoHopWitnesses.length; i++) {
+    /// @notice Unified TIP-1033 per-witness pass. Walks `_ghostTwoHopWitnesses` exactly once and
+    /// dispatches each witness to `_assertDirectWitness` or `_assertFallbackWitness`. Aggregate
+    /// checks (cumulative sums, regression-amount sanity, max-fallback) live outside the loop.
+    /// Replaces eight separate full-array iterations: with N witnesses up to
+    /// `MAX_TWO_HOP_WITNESSES = 256`, this saves ~25k storage slot reads per `invariantFeeAMM`.
+    /// Same pattern as `_invariantPoolStateChecks` for the AMM/FEE invariants.
+    /// Covers: TEMPO-AMM35/36/37, TEMPO-FEE7/8/9/11, and TIP-1033 inv. 2 (single-hop).
+    function _invariantTwoHopWitnessChecks() internal view {
+        uint256 len = _ghostTwoHopWitnesses.length;
+        for (uint256 i; i < len;) {
             TwoHopWitness memory w = _ghostTwoHopWitnesses[i];
-            if (!w.tookFallback) continue;
             uint256 expectedOut1 = (w.actualSpending * M) / SCALE;
-            uint256 expectedOut2 = (expectedOut1 * M) / SCALE;
-            assertEq(
-                w.out1,
-                expectedOut1,
-                "TEMPO-AMM37: hop1 output must equal floor(amountIn * M / SCALE)"
-            );
-            assertEq(
-                w.out2, expectedOut2, "TEMPO-AMM35: hop2 output must equal floor(out1 * M / SCALE)"
-            );
+            if (w.tookFallback) {
+                _assertFallbackWitness(w, expectedOut1);
+            } else {
+                _assertDirectWitness(w, expectedOut1);
+            }
+            unchecked {
+                ++i;
+            }
         }
+
+        // Aggregate checks (independent of any single witness).
+        // TEMPO-AMM37: cumulative per-hop output never exceeds input.
         assertTrue(
             _ghostHop1OutputSum <= _ghostHop1InputSum,
             "TEMPO-AMM37: cumulative hop1 output exceeds input"
@@ -2218,56 +2216,21 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             _ghostHop2OutputSum <= _ghostHop2InputSum,
             "TEMPO-AMM37: cumulative hop2 output exceeds input"
         );
-        // Validator credit equals expected sequential math, in aggregate.
+        // TEMPO-AMM35: aggregate validator credit equals sequential floor(...) math.
         assertEq(
             _ghostTwoHopValidatorCredited,
             _ghostTwoHopExpectedSequential,
             "TEMPO-AMM35: aggregate validator credit must equal sequential floor(...) math"
         );
-    }
-
-    /// @notice TEMPO-AMM36 (regression catcher): the protocol must apply the two M divisions
-    /// sequentially with intermediate floor, never as a fused `(M*M)/SCALE^2` step. We verify:
-    ///   1. the test infrastructure itself can distinguish the two formulas (hardcoded
-    ///      divergent amount: 12345 → sequential = 12270, fused = 12271), so a future change
-    ///      that quietly collapses them in the handler would be detected; and
-    ///   2. for every fallback witness, `out2 <= fused` (rounding direction) and `out2` equals
-    ///      the sequential value (already pinned by TEMPO-AMM35; reasserted here for clarity);
-    ///   3. the largest sampled fallback witness also used the sequential formula.
-    /// Note: divergence is not guaranteed for every amount — e.g. multiples of 1000 produce
-    /// sequential == fused. The brief acknowledges this; the test stays a regression catcher.
-    function _invariantTwoHopMathDivergesFromFused() internal view {
-        // Sanity that the formulas really differ on the regression amount.
+        // TEMPO-AMM36 sanity: the regression amount actually distinguishes sequential vs. fused.
         uint256 regressionAmount = 12_345;
-        uint256 sequential = (((regressionAmount * M) / SCALE) * M) / SCALE;
-        uint256 fused = (regressionAmount * M * M) / (SCALE * SCALE);
+        uint256 regSequential = (((regressionAmount * M) / SCALE) * M) / SCALE;
+        uint256 regFused = (regressionAmount * M * M) / (SCALE * SCALE);
         assertTrue(
-            sequential < fused,
+            regSequential < regFused,
             "TEMPO-AMM36: regression amount must distinguish sequential from fused"
         );
-
-        for (uint256 i = 0; i < _ghostTwoHopWitnesses.length; i++) {
-            TwoHopWitness memory w = _ghostTwoHopWitnesses[i];
-            if (!w.tookFallback) continue;
-            uint256 wFused = (w.actualSpending * M * M) / (SCALE * SCALE);
-            // Must never exceed fused (sequential floors more aggressively).
-            assertTrue(
-                w.out2 <= wFused, "TEMPO-AMM36: sequential math must never exceed fused math"
-            );
-            // Pin to the sequential value (redundant with TEMPO-AMM35 but documents intent).
-            uint256 wSequential = (((w.actualSpending * M) / SCALE) * M) / SCALE;
-            assertEq(
-                w.out2,
-                wSequential,
-                "TEMPO-AMM36: validator credit must match sequential math, not fused"
-            );
-            if (wSequential < wFused) {
-                assertTrue(
-                    w.out2 < wFused, "TEMPO-AMM36: divergent witness must not use fused math"
-                );
-            }
-        }
-
+        // TEMPO-AMM36: largest sampled fallback witness used sequential math.
         if (_ghostMaxFallbackAmount > 0) {
             uint256 maxSequential = (((_ghostMaxFallbackAmount * M) / SCALE) * M) / SCALE;
             assertEq(
@@ -2278,123 +2241,113 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         }
     }
 
-    /// @notice TEMPO-FEE7: Direct path is always preferred. When direct succeeds, neither
-    /// two-hop leg's reserves changed, and the validator was credited with the single-hop M rate.
-    function _invariantDirectPreferred() internal view {
-        for (uint256 i = 0; i < _ghostTwoHopWitnesses.length; i++) {
-            TwoHopWitness memory w = _ghostTwoHopWitnesses[i];
-            if (w.tookFallback) continue;
-            assertEq(
-                w.hop1ReserveValBefore,
-                w.hop1ReserveValAfter,
-                "TEMPO-FEE7: direct-preferred path must not touch hop1 reserve"
-            );
-            assertEq(
-                w.hop2ReserveValBefore,
-                w.hop2ReserveValAfter,
-                "TEMPO-FEE7: direct-preferred path must not touch hop2 reserve"
-            );
-            // Direct settled: out1 (single-hop credit) consumed from the direct pool.
-            assertEq(
-                uint256(w.directReserveAfter),
-                uint256(w.directReserveBefore) - w.out1,
-                "TEMPO-FEE7: direct-preferred path must consume out1 from the direct pool"
-            );
-        }
+    /// @dev Direct-path witness checks: TEMPO-FEE7 + TIP-1033 inv. 2 (single-hop fee math).
+    /// Both leg reserves must be untouched and the direct pool delta must equal the spec
+    /// formula `floor(actualSpending * M / SCALE)` (re-derived from `actualSpending`, not from
+    /// the value the handler stored).
+    function _assertDirectWitness(TwoHopWitness memory w, uint256 expectedOut1) internal pure {
+        // TEMPO-FEE7: legs untouched.
+        assertEq(
+            w.hop1ReserveValBefore,
+            w.hop1ReserveValAfter,
+            "TEMPO-FEE7: direct-preferred path must not touch hop1 reserve"
+        );
+        assertEq(
+            w.hop2ReserveValBefore,
+            w.hop2ReserveValAfter,
+            "TEMPO-FEE7: direct-preferred path must not touch hop2 reserve"
+        );
+        // TIP-1033 (inv. 2): single-hop credit and reserve delta both equal the spec formula.
+        // Note: the validator-credited `collectedFees` delta is NOT verified here (the witness
+        // does not snapshot it); see `_invariantFeeConservation` for the aggregate check.
+        assertEq(
+            w.out1,
+            expectedOut1,
+            "TIP-1033 (inv. 2): single-hop credit must equal floor(actualSpending * M / SCALE)"
+        );
+        assertEq(
+            uint256(w.directReserveBefore),
+            uint256(w.directReserveAfter) + expectedOut1,
+            "TIP-1033 (inv. 2): direct reserve delta must equal floor(actualSpending * M / SCALE)"
+        );
     }
 
-    /// @notice TIP-1033 inv. 2 (per-witness, single-hop): for every direct-path witness, both
-    /// the recorded `out1` and the direct-pool's validator-side reserve delta equal
-    /// `floor(actualSpending * M / SCALE)`, re-derived from the spec formula (not the value
-    /// the handler stored). Sibling of `_invariantTwoHopFeeMath`. Note: the validator-credited
-    /// `collectedFees` delta is NOT verified here (the witness does not snapshot it); see
-    /// `_invariantFeeConservation` and `_ghostTotalFeesCollected` for the aggregate check.
-    function _invariantSingleHopExactFeeMath() internal view {
-        for (uint256 i = 0; i < _ghostTwoHopWitnesses.length; i++) {
-            TwoHopWitness memory w = _ghostTwoHopWitnesses[i];
-            if (w.tookFallback) continue;
-            uint256 expectedOut1 = (w.actualSpending * M) / SCALE;
-            assertEq(
-                w.out1,
-                expectedOut1,
-                "TIP-1033 (inv. 2): single-hop credit must equal floor(actualSpending * M / SCALE)"
-            );
-            assertEq(
-                uint256(w.directReserveAfter),
-                uint256(w.directReserveBefore) - expectedOut1,
-                "TIP-1033 (inv. 2): direct reserve delta must equal floor(actualSpending * M / SCALE)"
-            );
-        }
-    }
+    /// @dev Fallback (two-hop) witness checks: TEMPO-AMM35/36/37, TEMPO-FEE8/9/11.
+    /// Re-derives `expectedOut2` from `expectedOut1` (sequential math) so a handler that
+    /// silently switched to fused math would fail the equality.
+    function _assertFallbackWitness(TwoHopWitness memory w, uint256 expectedOut1) internal view {
+        uint256 expectedOut2 = (expectedOut1 * M) / SCALE;
+        uint256 fusedOut2 = (w.actualSpending * M * M) / (SCALE * SCALE);
 
-    /// @notice TEMPO-FEE8: Two-hop is engaged iff direct insufficient AND both legs sufficient.
-    /// Verified per witness: every fallback witness was recorded with `directWasInsufficient = true`
-    /// and reserve snapshots that satisfy the leg-sufficiency predicate at planning time.
-    function _invariantTwoHopGating() internal view {
-        for (uint256 i = 0; i < _ghostTwoHopWitnesses.length; i++) {
-            TwoHopWitness memory w = _ghostTwoHopWitnesses[i];
-            if (!w.tookFallback) continue;
-            assertTrue(
-                w.directWasInsufficient,
-                "TEMPO-FEE8: fallback engaged only when direct was insufficient"
-            );
-            assertTrue(
-                uint256(w.hop1ReserveValBefore) >= w.out1,
-                "TEMPO-FEE8: fallback requires hop1 reserve >= out1 at planning time"
-            );
-            assertTrue(
-                uint256(w.hop2ReserveValBefore) >= w.out2,
-                "TEMPO-FEE8: fallback requires hop2 reserve >= out2 at planning time"
-            );
-            assertTrue(
-                uint256(w.directReserveBefore) < w.out1,
-                "TEMPO-FEE8: fallback engaged only when direct < out1"
-            );
+        // TEMPO-AMM37 / AMM35: per-hop outputs equal the spec formula.
+        assertEq(
+            w.out1, expectedOut1, "TEMPO-AMM37: hop1 output must equal floor(amountIn * M / SCALE)"
+        );
+        assertEq(
+            w.out2, expectedOut2, "TEMPO-AMM35: hop2 output must equal floor(out1 * M / SCALE)"
+        );
+        // TEMPO-AMM36: sequential floors more aggressively, so out2 must never exceed fused;
+        // when they actually diverge for this amount, out2 must be strictly less.
+        assertTrue(w.out2 <= fusedOut2, "TEMPO-AMM36: sequential math must never exceed fused math");
+        if (expectedOut2 < fusedOut2) {
+            assertTrue(w.out2 < fusedOut2, "TEMPO-AMM36: divergent witness must not use fused math");
         }
-    }
 
-    /// @notice TEMPO-FEE9: Intermediate token is well-formed for every fallback witness.
-    /// `hopToken != 0`, `hopToken != userToken`, `hopToken != validatorToken`, and
-    /// `hopToken == TIP20(userToken).quoteToken()` as observed at the current chain state
-    /// (mid-tx rotation via `completeQuoteTokenUpdate` is out of scope; see TEMPO-FEE15).
-    function _invariantIntermediateWellFormed() internal view {
-        for (uint256 i = 0; i < _ghostTwoHopWitnesses.length; i++) {
-            TwoHopWitness memory w = _ghostTwoHopWitnesses[i];
-            if (!w.tookFallback) continue;
-            assertTrue(w.hopToken != address(0), "TEMPO-FEE9: intermediate must be non-zero");
-            assertTrue(w.hopToken != w.userToken, "TEMPO-FEE9: intermediate != userToken");
-            assertTrue(w.hopToken != w.validatorToken, "TEMPO-FEE9: intermediate != validatorToken");
-            assertEq(
-                address(ITIP20(w.userToken).quoteToken()),
-                w.hopToken,
-                "TEMPO-FEE9: intermediate must equal userToken.quoteToken()"
-            );
-        }
-    }
+        // TEMPO-FEE8: fallback engaged iff direct insufficient AND both legs sufficient.
+        assertTrue(
+            w.directWasInsufficient,
+            "TEMPO-FEE8: fallback engaged only when direct was insufficient"
+        );
+        assertTrue(
+            uint256(w.hop1ReserveValBefore) >= w.out1,
+            "TEMPO-FEE8: fallback requires hop1 reserve >= out1 at planning time"
+        );
+        assertTrue(
+            uint256(w.hop2ReserveValBefore) >= w.out2,
+            "TEMPO-FEE8: fallback requires hop2 reserve >= out2 at planning time"
+        );
+        assertTrue(
+            uint256(w.directReserveBefore) < w.out1,
+            "TEMPO-FEE8: fallback engaged only when direct < out1"
+        );
 
-    /// @notice TEMPO-FEE11: Reservation covers settlement. For every fallback witness, the
-    /// hop1/hop2 reserve deltas equal exactly `(input, out1)` and `(out1, out2)` respectively,
-    /// and the direct pool's validator-side reserve is untouched.
-    function _invariantTwoHopReservationCovers() internal view {
-        for (uint256 i = 0; i < _ghostTwoHopWitnesses.length; i++) {
-            TwoHopWitness memory w = _ghostTwoHopWitnesses[i];
-            if (!w.tookFallback) continue;
-            assertEq(
-                uint256(w.hop1ReserveValAfter),
-                uint256(w.hop1ReserveValBefore) - w.out1,
-                "TEMPO-FEE11: hop1 must lose exactly out1 of validator-side reserve"
-            );
-            assertEq(
-                uint256(w.hop2ReserveValAfter),
-                uint256(w.hop2ReserveValBefore) - w.out2,
-                "TEMPO-FEE11: hop2 must lose exactly out2 of validator-side reserve"
-            );
-            assertEq(
-                w.directReserveAfter,
-                w.directReserveBefore,
-                "TEMPO-FEE11: direct pool must be untouched on the fallback path"
-            );
-        }
+        // TEMPO-FEE9: intermediate well-formedness (current-chain-state semantics).
+        assertTrue(w.hopToken != address(0), "TEMPO-FEE9: intermediate must be non-zero");
+        assertTrue(w.hopToken != w.userToken, "TEMPO-FEE9: intermediate != userToken");
+        assertTrue(w.hopToken != w.validatorToken, "TEMPO-FEE9: intermediate != validatorToken");
+        assertEq(
+            address(ITIP20(w.userToken).quoteToken()),
+            w.hopToken,
+            "TEMPO-FEE9: intermediate must equal userToken.quoteToken()"
+        );
+
+        // TEMPO-FEE11: reservation covers settlement (per-leg reserve deltas + direct untouched).
+        assertEq(
+            uint256(w.hop1ReserveValBefore),
+            uint256(w.hop1ReserveValAfter) + w.out1,
+            "TEMPO-FEE11: hop1 must lose exactly out1 of validator-side reserve"
+        );
+        assertEq(
+            uint256(w.hop2ReserveValBefore),
+            uint256(w.hop2ReserveValAfter) + w.out2,
+            "TEMPO-FEE11: hop2 must lose exactly out2 of validator-side reserve"
+        );
+        assertEq(
+            w.directReserveAfter,
+            w.directReserveBefore,
+            "TEMPO-FEE11: direct pool must be untouched on the fallback path"
+        );
+        // TEMPO-FEE11 (extended): hopToken conservation across the two-hop fallback.
+        assertEq(
+            w.ammHopBalanceAfter,
+            w.ammHopBalanceBefore,
+            "TEMPO-FEE11: AMM balanceOf(hopToken) must not change on the fallback path"
+        );
+        assertEq(
+            w.sumHopReservesAfter,
+            w.sumHopReservesBefore,
+            "TEMPO-FEE11: sum of hopToken reserves across pools must be conserved on fallback"
+        );
     }
 
     /// @notice TEMPO-FEE9 (extended): TIP-20 token graph well-formedness. Pins the spec edge
@@ -2409,31 +2362,6 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
             address q = address(ITIP20(address(t)).quoteToken());
             if (q == address(0)) continue;
             assertTrue(q != address(t), "TEMPO-FEE9: TIP-20 cannot self-quote (spec edge)");
-        }
-    }
-
-    /// @notice TEMPO-FEE11 (extended): hopToken conservation across the two-hop fallback. The
-    /// intra-AMM bookkeeping for the hop must net to zero — leg-1 deducts `out1` from
-    /// `reserveValidatorToken` while leg-2 adds the same `out1` to `reserveUserToken`, and no
-    /// real `ITIP20.transfer` of hopToken occurs. This compares two on-chain reads
-    /// (`amm.balanceOf(hopToken)` and Σ pool reserves of hopToken) captured around the leg
-    /// writes; the equality is non-trivial — a mock fixture that updates only one leg, gets the
-    /// user/validator side wrong, or omits one of the writes will fail this check. Strong:
-    /// independent of the formula the handler uses to derive `out1`/`out2`.
-    function _invariantTwoHopHopTokenConservation() internal view {
-        for (uint256 i = 0; i < _ghostTwoHopWitnesses.length; i++) {
-            TwoHopWitness memory w = _ghostTwoHopWitnesses[i];
-            if (!w.tookFallback) continue;
-            assertEq(
-                w.ammHopBalanceAfter,
-                w.ammHopBalanceBefore,
-                "TEMPO-FEE11: AMM balanceOf(hopToken) must not change on the fallback path"
-            );
-            assertEq(
-                w.sumHopReservesAfter,
-                w.sumHopReservesBefore,
-                "TEMPO-FEE11: sum of hopToken reserves across pools must be conserved on fallback"
-            );
         }
     }
 
