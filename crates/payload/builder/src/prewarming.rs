@@ -3,7 +3,9 @@ use std::{
     thread,
 };
 
-use reth_transaction_pool::{BestTransactions, error::InvalidPoolTransactionError};
+use reth_transaction_pool::{
+    BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
+};
 use tempo_transaction_pool::best::BestTransaction;
 
 /// Event returned by [`BestTransactionsStream`].
@@ -153,23 +155,19 @@ fn is_invalidated_buffered_transaction(
     invalid: &BestTransaction,
     candidate: &BestTransaction,
 ) -> bool {
+    // Skip invalidation for expiring nonce transactions - they are independent
+    // and should not block other expiring nonce txs from the same sender
     if invalid.transaction.is_expiring_nonce() {
         return false;
     }
 
     if invalid.transaction.is_aa_2d() {
-        let Some(invalid_id) = invalid.transaction.aa_transaction_id() else {
-            return false;
-        };
-        return candidate
+        candidate
             .transaction
             .aa_transaction_id()
-            .is_some_and(|candidate_id| {
-                candidate_id.seq_id == invalid_id.seq_id && candidate_id.nonce >= invalid_id.nonce
-            });
+            .zip(invalid.transaction.aa_transaction_id())
+            .is_some_and(|(candidate_id, invalid_id)| candidate_id.seq_id == invalid_id.seq_id)
+    } else {
+        candidate.transaction.sender() == invalid.transaction.sender()
     }
-
-    !candidate.transaction.is_aa_2d()
-        && candidate.sender() == invalid.sender()
-        && candidate.nonce() >= invalid.nonce()
 }
