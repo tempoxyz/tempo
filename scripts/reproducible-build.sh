@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Reproducible-build wrapper. Single source of truth for how the byte-deterministic
-# `tempo` binary on x86_64-unknown-linux-gnu is produced from this checkout.
+# `tempo` binary on x86_64/aarch64-unknown-linux-gnu is produced from this checkout.
 #
 # Called identically by:
 #   * .github/workflows/reproducible-build.yml (push-on-main canary +
@@ -27,7 +27,17 @@ cd "$(git rev-parse --show-toplevel)"
 
 VERSION="${VERSION:-dev}"
 OUT_DIR="${OUT_DIR:-./out}"
+TARGET="${TARGET:-x86_64-unknown-linux-gnu}"
 DEBIAN_SNAPSHOT="${DEBIAN_SNAPSHOT:-}"
+
+# Derive docker platform and jemalloc cross-compile arch from TARGET.
+if [[ "$TARGET" == *aarch64* ]]; then
+  DOCKER_PLATFORM="linux/arm64"
+  JEMALLOC_ARCH="aarch64-linux-gnu"
+else
+  DOCKER_PLATFORM="linux/amd64"
+  JEMALLOC_ARCH="x86_64-linux-gnu"
+fi
 
 SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
 COMMIT="$(git rev-parse HEAD)"
@@ -37,6 +47,7 @@ COMMIT="$(git rev-parse HEAD)"
 echo "::group::Reproducible build inputs"
 printf '  commit              = %s\n' "$COMMIT"
 printf '  version             = %s\n' "$VERSION"
+printf '  target              = %s\n' "$TARGET"
 printf '  SOURCE_DATE_EPOCH   = %s\n' "$SOURCE_DATE_EPOCH"
 printf '  Dockerfile          = Dockerfile.reproducible\n'
 printf '  out_dir             = %s\n' "$OUT_DIR"
@@ -48,13 +59,15 @@ mkdir -p "$OUT_DIR"
 build_args=(
   --build-arg "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH"
   --build-arg "VERSION=$VERSION"
+  --build-arg "TARGET=$TARGET"
+  --build-arg "JEMALLOC_ARCH=$JEMALLOC_ARCH"
 )
 if [[ -n "$DEBIAN_SNAPSHOT" ]]; then
   build_args+=( --build-arg "DEBIAN_SNAPSHOT=$DEBIAN_SNAPSHOT" )
 fi
 
 docker build \
-  --platform linux/amd64 \
+  --platform "$DOCKER_PLATFORM" \
   "${build_args[@]}" \
   -f Dockerfile.reproducible \
   --target artifacts \
