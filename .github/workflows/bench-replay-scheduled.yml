@@ -77,11 +77,26 @@ jobs:
           INPUT_BLOCKS: ${{ inputs.blocks || '5000' }}
           INPUT_WARMUP: ${{ inputs.warmup || '1000' }}
           INPUT_SAMPLY: ${{ inputs.samply || 'false' }}
+          MAINNET_RUNNER_LABEL: ${{ vars.BENCH_REPLAY_MAINNET_RUNNER_LABEL || 'bare-metal' }}
+          TESTNET_RUNNER_LABEL: ${{ vars.BENCH_REPLAY_TESTNET_RUNNER_LABEL || 'bare-metal' }}
         run: |
           case "$INPUT_CHAINS" in
-            both) CHAINS_JSON='["mainnet","testnet"]' ;;
-            mainnet) CHAINS_JSON='["mainnet"]' ;;
-            testnet) CHAINS_JSON='["testnet"]' ;;
+            both)
+              CHAINS_JSON=$(jq -cn \
+                --arg mainnet_runner "$MAINNET_RUNNER_LABEL" \
+                --arg testnet_runner "$TESTNET_RUNNER_LABEL" \
+                '[{"chain":"mainnet","runner_label":$mainnet_runner},{"chain":"testnet","runner_label":$testnet_runner}]')
+              ;;
+            mainnet)
+              CHAINS_JSON=$(jq -cn \
+                --arg mainnet_runner "$MAINNET_RUNNER_LABEL" \
+                '[{"chain":"mainnet","runner_label":$mainnet_runner}]')
+              ;;
+            testnet)
+              CHAINS_JSON=$(jq -cn \
+                --arg testnet_runner "$TESTNET_RUNNER_LABEL" \
+                '[{"chain":"testnet","runner_label":$testnet_runner}]')
+              ;;
             *)
               echo "::error::Unknown chains value: $INPUT_CHAINS"
               exit 1
@@ -194,7 +209,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        chain: ${{ fromJSON(needs.resolve-refs.outputs.chains-json) }}
+        include: ${{ fromJSON(needs.resolve-refs.outputs.chains-json) }}
     concurrency:
       group: bench-replay-scheduled-${{ matrix.chain }}
       cancel-in-progress: false
@@ -204,6 +219,7 @@ jobs:
       pull-requests: write
     with:
       chain: ${{ matrix.chain }}
+      runner-label: ${{ matrix.runner_label }}
       pr: ""
       actor: "replay-nightly"
       baseline: ${{ needs.resolve-refs.outputs.baseline-ref }}
