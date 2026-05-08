@@ -94,7 +94,7 @@ chain + timestamp -> TempoHardfork -> FeatureSet
 
 ## Repository boundaries
 
-Protocol execution code stays in `tempo`. Feature records, review metadata, and the review UI live in `tempo-protocol-features`.
+Protocol execution code stays in `tempo`. Feature records and review metadata live in `tempo-protocol-features`.
 
 ### `tempo`
 
@@ -107,7 +107,7 @@ Protocol execution code stays in `tempo`. Feature records, review metadata, and 
 - EVM, precompile, transaction-pool, RPC simulation, and observability integration
 - tests proving hardfork behavior is preserved
 
-`tempo` does not own reviewed feature records, approval metadata, or the feature review UI.
+`tempo` does not own reviewed feature records or approval metadata.
 
 ### `tempo-protocol-features`
 
@@ -122,11 +122,10 @@ Protocol execution code stays in `tempo`. Feature records, review metadata, and 
 - minimum `tempo` versions
 - activation metadata
 - manifest hashes
-- the `app/` feature review UI
 
 `tempo-protocol-features` does not own protocol execution logic.
 
-A feature manifest can say when behavior is ready to activate, but the behavior itself is implemented and reviewed in `tempo`. The UI can help review feature rollout, but it is not where protocol activation is decided.
+A feature manifest can say when behavior is ready to activate, but the behavior itself is implemented and reviewed in `tempo`.
 
 During the first rollout, `tempo` can define `ProtocolFeature` and the legacy mappings directly while `tempo-protocol-features` mirrors the same records as the feature catalog. Later, `tempo` should consume generated artifacts from `tempo-protocol-features` instead of hand-maintaining duplicated feature metadata.
 
@@ -226,7 +225,7 @@ Manifest validation should reject:
 The feature repository should define generated artifact targets for at least:
 
 - `tempo` Rust integration
-- machine-readable JSON for dashboards, release tooling, deployment automation, monitoring, and documentation generators
+- machine-readable JSON for release tooling, deployment automation, monitoring, and documentation generators
 
 Generated Rust artifacts should include:
 
@@ -322,40 +321,22 @@ tempo_featureSchedule
 tempo_featureStatus
 ```
 
-The first rollout should not expose a public RPC method yet. Internal types are fine so the node, UI, Grafana, release tooling, and runbooks can line up around the same data before we commit to a public API.
+The first rollout should not expose a public RPC method yet. Internal types are fine so the node, Grafana metrics, release tooling, and runbooks can line up around the same data before we commit to a public API.
 
-## Feature review UI
-
-The `tempo-protocol-features` repository should include a UI in `app/` for reviewing and operating the feature lifecycle.
-
-The UI should show:
-
-- feature status, owner, TIP links, dependencies, activation groups, manifest hash, and activation metadata
-- generated artifact status and validation results
-- open PRs that add, update, schedule, or activate features
-- review state
-- current and scheduled feature sets by network and zone where relevant
-- validator readiness for scheduled features that affect block validity or state transitions
-- blocked reasons that prevent scheduling or activation
-
-Validator readiness can start from the version and git SHA metrics `tempo` already exposes, such as the existing Grafana dashboards built from `reth_info`. A later phase can add stronger readiness proofs if the activation source needs them.
-
-The UI can help users draft manifest changes and open PRs against `tempo-protocol-features`.
-
-The UI is only an operational and review surface. It should not directly change activation state or define activation behavior separately from the source consumed by `tempo`.
+Validator readiness can start from the version and git SHA metrics `tempo` already exposes, such as the existing Grafana queries built from `reth_info`. A later phase can add stronger readiness proofs if the activation source needs them.
 
 ## Rollback and cancellation
 
 Rollback depends on whether the feature has activated.
 
-Before activation, rollback is cancellation. A feature can move from `scheduled` back to `approved`, or to `cancelled`, through a reviewed PR in `tempo-protocol-features`. The activation metadata should be removed or replaced, and the UI should show the feature as blocked or cancelled.
+Before activation, rollback is cancellation. A feature can move from `scheduled` back to `approved`, or to `cancelled`, through a reviewed PR in `tempo-protocol-features`. The activation metadata should be removed or replaced, and the feature record should show the feature as blocked or cancelled.
 
 After activation, rollback is a new protocol change. `tempo` should not silently turn off an active feature through local config or an unreviewed manifest edit, because that can split nodes on block validity or state transitions.
 
 This is enforced in a few ways:
 
 - production `tempo` does not expose a local config flag that changes the active protocol feature set
-- activation data is read and validated by `tempo`, not applied directly by the UI
+- activation data is read and validated by `tempo`, not applied directly by local operator tooling
 - activation data that marks an unsupported feature active causes `tempo` to error clearly instead of treating the feature as inactive
 
 If an active feature needs to be rolled back, the rollback should be handled as one of:
@@ -366,7 +347,7 @@ If an active feature needs to be rolled back, the rollback should be handled as 
 
 The old feature record should stay in history. If a later feature replaces it, the old feature can move to `superseded`, but it should still describe what was active and when. This keeps old block execution explainable.
 
-The feature review UI should make this distinction clear: cancelling a scheduled feature is safe review workflow, but rolling back an active feature needs a new reviewed rollout plan.
+The feature record should make this distinction clear: cancelling a scheduled feature is safe review workflow, but rolling back an active feature needs a new reviewed rollout plan.
 
 ## Activation beyond hardforks
 
@@ -390,7 +371,6 @@ Before any feature activates independently from a named hardfork, a future TIP o
 The suggested long-term approach is a hybrid multisig-approved checkpoint model:
 
 - feature records, review state, and readiness live in `tempo-protocol-features`
-- the UI helps review the feature and prepare activation
 - final activation is published as a multisig-approved checkpoint that `tempo` can verify
 - the checkpoint includes feature IDs, chain or zone ID, activation block or timestamp, manifest hash, minimum `tempo` version, readiness evidence, dependency and activation-group data, multisig approval data, and replay protection
 - `tempo` validates the checkpoint against the feature records before using it, so a signed but invalid checkpoint is still rejected
@@ -398,7 +378,7 @@ The suggested long-term approach is a hybrid multisig-approved checkpoint model:
 
 ### Zones
 
-Zones are a named requirement for Phase 6, not a follow-up after activation is designed.
+Zones are a named requirement for the activation source phase, not a follow-up after activation is designed.
 
 Zones should be treated as explicit activation scopes. A checkpoint for Tempo L1 should not accidentally activate behavior on a Zone unless that Zone is included in the checkpoint. A Zone checkpoint should also say which L1 network or anchor it depends on. The follow-up activation design should decide which features Zones inherit from Tempo automatically and which ones need their own Zone-scoped activation, but the records should make that choice explicit.
 
@@ -427,7 +407,7 @@ During the first rollout:
 
 Before activation, different `tempo` versions can run at the same time as long as they produce the same chain behavior. Once a feature activates, validators need to be running a `tempo` version that supports that feature.
 
-Tooling that currently displays or tracks hardfork names can keep doing so. Over time, dashboards, docs, release tooling, and monitoring should prefer feature IDs because they describe the active behavior more clearly than hardfork bundle names.
+Tooling that currently displays or tracks hardfork names can keep doing so. Over time, docs, release tooling, and monitoring should prefer feature IDs because they describe the active behavior more clearly than hardfork bundle names.
 
 The exact initial feature list lives in `tempo-protocol-features`.
 
@@ -446,7 +426,7 @@ Before hardfork-independent activation is used in production, the design needs a
 - activation data replayed across the wrong chain or zone
 - multisig approval of a checkpoint that does not match the feature records
 - validator readiness data that is missing, stale, or wrong
-- UI actions that bypass review
+- local tooling actions that bypass review
 - rollback and cancellation paths
 
 The feature repository needs review controls. At minimum, scheduled or active feature changes require owner approval and protocol approval.
@@ -509,15 +489,11 @@ Add `tempo` feature plumbing while preserving hardfork behavior:
 
 Expose read-only schedule and status data after internal types and tests are proven. This should include active and scheduled features, manifest hashes, activation source, minimum `tempo` version, validator readiness, dependency or activation-group blockers, and chain or zone scope.
 
-### Phase 4: Feature review UI
+### Phase 4: Security review and threat model
 
-Build the `tempo-protocol-features/app/` UI described above so feature review, readiness, and rollout state are easy to inspect from one place.
+Threat model the activation flow before using hardfork-independent activation in production. This should cover activation metadata, generated artifacts, validator readiness inputs, local tooling behavior, unknown feature handling, dependency and activation-group validation, chain or zone replay protection, multisig failure modes, and rollback paths.
 
-### Phase 5: Security review and threat model
-
-Threat model the activation flow before using hardfork-independent activation in production. This should cover activation metadata, generated artifacts, validator readiness inputs, UI permissions, unknown feature handling, dependency and activation-group validation, chain or zone replay protection, multisig failure modes, and rollback paths.
-
-### Phase 6: Activation source
+### Phase 5: Activation source
 
 Decide the activation source through a follow-up TIP or focused design review. The suggested path is the hybrid multisig-approved checkpoint model described above: feature records stay in `tempo-protocol-features`, final activation is a multisig-approved checkpoint, and `tempo` verifies the checkpoint against dependency rules, activation groups, manifest hashes, minimum versions, and chain or zone scope before using it.
 
