@@ -22,8 +22,7 @@ pub mod paused;
 pub mod tt_2d_pool;
 
 pub use best::{
-    BestTransactionsStream, BestTransactionsStreamEvent, StateAwareBestTransactions,
-    StateInvalidationTracker, StateTransactionCheck,
+    BestTransactionsPrewarming, BestTransactionsStreamEvent, StateAwareBestTransactions,
 };
 pub use maintain::TempoPoolUpdates;
 

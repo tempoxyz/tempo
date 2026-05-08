@@ -52,8 +52,7 @@ use tempo_primitives::{
     },
 };
 use tempo_transaction_pool::{
-    BestTransactionsStream, BestTransactionsStreamEvent, StateInvalidationTracker,
-    StateTransactionCheck, TempoTransactionPool,
+    BestTransactionsPrewarming, StateAwareBestTransactions, TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
@@ -426,7 +425,9 @@ where
         let base_fee = builder.evm_mut().block().basefee;
         let validator_fee_token = resolve_validator_fee_token(&mut builder)?;
         let pool_fetch_start = Instant::now();
-        let mut tx_stream = BestTransactionsStream::new(
+        // Wrap best transactions into state-aware wrapper to skip transactions that
+        // get invalidated by already-executed ones.
+        let mut best_txs = StateAwareBestTransactions::new(BestTransactionsPrewarming::new(
             best_txs(BestTransactionsAttributes::new(
                 base_fee,
                 builder
@@ -435,44 +436,26 @@ where
                     .blob_gasprice()
                     .map(|gasprice| gasprice as u64),
             )),
-            build_until_interrupt,
-        );
-        let mut state_invalidation = StateInvalidationTracker::default();
+        ));
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
-        'block_fill: loop {
+        loop {
             if attributes.is_interrupted() {
                 break;
             }
 
             check_cancel!();
 
-            let pool_tx = loop {
-                match tx_stream.next() {
-                    BestTransactionsStreamEvent::Transaction(pool_tx) => {
-                        match state_invalidation.check(&pool_tx) {
-                            StateTransactionCheck::Valid => break pool_tx,
-                            StateTransactionCheck::MissingFeeBalanceSlot => continue,
-                            StateTransactionCheck::Invalid(kind) => {
-                                tx_stream.mark_invalid(&pool_tx, kind);
-                                self.metrics.inc_pool_tx_skipped("state_invalidated");
-                                continue;
-                            }
-                        }
-                    }
-                    BestTransactionsStreamEvent::Empty => {
-                        if build_until_interrupt && cumulative_gas_used >= non_shared_gas_limit {
-                            break 'block_fill;
-                        }
-                        std::thread::sleep(Duration::from_millis(1));
-                        continue;
-                    }
-                    BestTransactionsStreamEvent::End => break 'block_fill,
+            let Some(pool_tx) = best_txs.next() else {
+                if build_until_interrupt && cumulative_gas_used < non_shared_gas_limit {
+                    std::thread::sleep(Duration::from_millis(1));
+                    continue;
                 }
+                break;
             };
             pool_transactions_yielded += 1;
 
@@ -487,9 +470,9 @@ where
             if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
-                tx_stream.mark_invalid(
+                best_txs.mark_invalid(
                     &pool_tx,
-                    InvalidPoolTransactionError::ExceedsGasLimit(
+                    &InvalidPoolTransactionError::ExceedsGasLimit(
                         pool_tx.gas_limit(),
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
@@ -504,9 +487,9 @@ where
             if !pool_tx.transaction.is_payment()
                 && non_payment_gas_used + max_regular_gas_used > general_gas_limit
             {
-                tx_stream.mark_invalid(
+                best_txs.mark_invalid(
                     &pool_tx,
-                    InvalidPoolTransactionError::Other(Box::new(
+                    &InvalidPoolTransactionError::Other(Box::new(
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
                 );
@@ -530,9 +513,9 @@ where
             let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                tx_stream.mark_invalid(
+                best_txs.mark_invalid(
                     &pool_tx,
-                    InvalidPoolTransactionError::OversizedData {
+                    &InvalidPoolTransactionError::OversizedData {
                         size: estimated_block_size_with_tx,
                         limit: MAX_RLP_BLOCK_SIZE,
                     },
@@ -580,7 +563,7 @@ where
                     }
 
                     // Notify transactions iterator about the new state.
-                    state_invalidation.on_new_result(result);
+                    best_txs.on_new_result(result);
                 })
             {
                 if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
@@ -596,9 +579,9 @@ where
                         // if the transaction is invalid, we can skip it and all of its
                         // descendants
                         trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
-                        tx_stream.mark_invalid(
+                        best_txs.mark_invalid(
                             &pool_tx,
-                            InvalidPoolTransactionError::Consensus(
+                            &InvalidPoolTransactionError::Consensus(
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),
                         );
