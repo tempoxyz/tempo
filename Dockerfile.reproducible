@@ -1,10 +1,10 @@
 # syntax=docker/dockerfile:1.7
 #
-# Reproducible build of the `tempo` binary for x86_64-unknown-linux-gnu.
+# Reproducible build of the `tempo` binary for x86_64/aarch64-unknown-linux-gnu.
 #
 # Goal: any party with this Dockerfile + the source tree at a given commit
 # can produce the *byte-identical* binary that this repo's release.yml
-# publishes, so the published `tempo-<version>-x86_64-unknown-linux-gnu.sha256`
+# publishes, so the published `tempo-<version>-<arch>-unknown-linux-gnu.sha256`
 # is verifiable end-to-end without trusting our CI infrastructure.
 #
 # Inputs:
@@ -33,6 +33,8 @@ FROM rust:${RUST_TOOLCHAIN}-bookworm@sha256:d0a4aa3ca2e1088ac0c81690914a0d810f2e
 
 ARG SOURCE_DATE_EPOCH
 ARG VERSION
+ARG TARGET=x86_64-unknown-linux-gnu
+ARG JEMALLOC_ARCH=x86_64-linux-gnu
 # Pinned snapshot of the Debian package archive. Bumping this is the *only*
 # legitimate reason for a Debian-side byte change between two builds of the
 # same source tree. Without it, an `apt-get install libjemalloc-dev` between
@@ -74,15 +76,16 @@ COPY . .
 ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
     LC_ALL=C \
     TZ=UTC \
-    JEMALLOC_OVERRIDE=/usr/lib/x86_64-linux-gnu/libjemalloc.a \
+    JEMALLOC_OVERRIDE=/usr/lib/${JEMALLOC_ARCH}/libjemalloc.a \
     RUSTFLAGS="-C symbol-mangling-version=v0 -C strip=none -C link-arg=-Wl,--build-id=none -C link-arg=-fuse-ld=mold -C metadata= --remap-path-prefix /app=. --remap-path-prefix /usr/local/cargo/registry=/registry --remap-path-prefix /usr/local/rustup=/rustup"
 
 RUN cargo build --locked --bin tempo \
         --features asm-keccak,jemalloc,otlp \
         --profile reproducible \
-        --target x86_64-unknown-linux-gnu
+        --target ${TARGET}
 
 # `--target artifacts` extracts just the binary; `--target builder` (the
 # default) keeps the full Rust environment for debugging.
 FROM scratch AS artifacts
-COPY --from=builder /app/target/x86_64-unknown-linux-gnu/reproducible/tempo /tempo
+ARG TARGET=x86_64-unknown-linux-gnu
+COPY --from=builder /app/target/${TARGET}/reproducible/tempo /tempo
