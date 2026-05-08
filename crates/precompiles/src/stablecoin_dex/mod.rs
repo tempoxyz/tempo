@@ -179,15 +179,23 @@ impl StablecoinDEX {
     }
 
     /// Transfer tokens from user, accounting for pathUSD
-    fn transfer_from(&mut self, token: Address, from: Address, amount: u128) -> Result<()> {
-        TIP20Token::from_address(token)?.transfer_from(
-            self.address,
-            ITIP20::transferFromCall {
-                from,
-                to: self.address,
-                amount: U256::from(amount),
-            },
-        )?;
+    fn transfer_from(&mut self, token: Address, sender: Address, amount: u128) -> Result<()> {
+        if self.storage.spec().is_t5() {
+            TIP20Token::from_address(token)?.system_transfer_from(
+                self.address,
+                sender,
+                U256::from(amount),
+            )?;
+        } else {
+            TIP20Token::from_address(token)?.transfer_from(
+                self.address,
+                ITIP20::transferFromCall {
+                    from: sender,
+                    to: self.address,
+                    amount: U256::from(amount),
+                },
+            )?;
+        }
         Ok(())
     }
 
@@ -199,30 +207,30 @@ impl StablecoinDEX {
     /// redundant SLOAD.
     fn decrement_balance_or_transfer_from(
         &mut self,
-        user: Address,
+        sender: Address,
         token: Address,
         amount: u128,
         check_pause: bool,
     ) -> Result<()> {
         // Ensure that the token can be transferred
         let tip20 = TIP20Token::from_address(token)?;
-        tip20.ensure_transfer_authorized(user, self.address)?;
+        tip20.ensure_transfer_authorized(sender, self.address)?;
 
-        let user_balance = self.balance_of(user, token)?;
+        let user_balance = self.balance_of(sender, token)?;
         if user_balance >= amount {
             // When fully covered by internal balance, TIP-20 transferFrom won't run,
             // so we must check the pause state ourselves (spec: T4+).
             if check_pause && self.storage.spec().is_t4() {
                 tip20.check_not_paused()?;
             }
-            self.sub_balance(user, token, amount)
+            self.sub_balance(sender, token, amount)
         } else {
             let remaining = amount
                 .checked_sub(user_balance)
                 .ok_or(TempoPrecompileError::under_overflow())?;
 
-            self.transfer_from(token, user, remaining)?;
-            self.set_balance(user, token, 0)
+            self.transfer_from(token, sender, remaining)?;
+            self.set_balance(sender, token, 0)
         }
     }
 
