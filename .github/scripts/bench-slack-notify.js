@@ -121,6 +121,10 @@ function refLink(commitUrl, sha, refName, fallbackLabel) {
   return sha ? `<${commitUrl}/${sha}|${label}>` : label;
 }
 
+function repoLink(repo) {
+  return `<https://github.com/${repo}|Tempo>`;
+}
+
 function fmtBlockCount(baselineBlocks, featureBlocks) {
   if (baselineBlocks == null && featureBlocks == null) return '-';
   if (baselineBlocks === featureBlocks) return `\`${baselineBlocks}\``;
@@ -166,6 +170,7 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
   const blockCount = fmtBlockCount(b.blocks, f.blocks);
 
   const sectionText = [
+    `*Repo:* ${repoLink(repo)}`,
     metaParts.join(' | '),
     '',
     `*Baseline:* ${baselineLink}`,
@@ -229,6 +234,7 @@ function buildFailureBlocks({ prNumber, actor, actorSlackId, jobUrl, repo, faile
   const prUrl = prNumber ? `https://github.com/${repo}/pull/${prNumber}` : '';
   const actorMention = actorSlackId ? `<@${actorSlackId}>` : `@${actor}`;
   const parts = [
+    `*Repo:* ${repoLink(repo)}`,
     prNumber ? `*<${prUrl}|PR #${prNumber}>*` : '',
     `by ${actorMention}`,
     `failed while *${failedStep}*`,

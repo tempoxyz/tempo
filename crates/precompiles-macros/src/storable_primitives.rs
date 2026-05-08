@@ -375,7 +375,7 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
             type Handler = crate::storage::types::array::ArrayHandler<#elem_type, #array_size>;
 
             fn handle(slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx, address: ::alloy::primitives::Address) -> Self::Handler {
-                debug_assert_eq!(ctx, crate::storage::LayoutCtx::FULL, "Arrays cannot be packed");
+                debug_assert!(ctx.is_full(), "Arrays can only use full-slot LayoutCtx (FULL or INIT)");
                 Self::Handler::new(slot, address)
             }
         }
@@ -384,9 +384,9 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
         impl crate::storage::Storable for [#elem_type; #array_size] {
             #[inline]
             fn load<S: crate::storage::StorageOps>(storage: &S, slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<Self> {
-                debug_assert_eq!(
-                    ctx, crate::storage::LayoutCtx::FULL,
-                    "Arrays can only be loaded with LayoutCtx::FULL"
+                debug_assert!(
+                    ctx.is_full(),
+                    "Arrays can only be loaded with a full-slot LayoutCtx (FULL or INIT)"
                 );
 
                 use crate::storage::packing::{calc_element_slot, calc_element_offset, extract_from_word};
@@ -396,9 +396,9 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
 
             #[inline]
             fn store<S: crate::storage::StorageOps>(&self, storage: &mut S, slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<()> {
-                debug_assert_eq!(
-                    ctx, crate::storage::LayoutCtx::FULL,
-                    "Arrays can only be stored with LayoutCtx::FULL"
+                debug_assert!(
+                    ctx.is_full(),
+                    "Arrays can only be stored with a full-slot LayoutCtx (FULL or INIT)"
                 );
 
                 use crate::storage::packing::{calc_element_slot, calc_element_offset, insert_into_word};
@@ -674,9 +674,9 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
         impl crate::storage::Storable for [#struct_type; #array_size] {
             #[inline]
             fn load<S: crate::storage::StorageOps>(storage: &S, slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<Self> {
-                debug_assert_eq!(
-                    ctx, crate::storage::LayoutCtx::FULL,
-                    "Struct arrays can only be loaded with LayoutCtx::FULL"
+                debug_assert!(
+                    ctx.is_full(),
+                    "Struct arrays can only be loaded with a full-slot LayoutCtx (FULL or INIT)"
                 );
                 let base_slot = slot;
                 #load_impl
@@ -684,9 +684,9 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
 
             #[inline]
             fn store<S: crate::storage::StorageOps>(&self, storage: &mut S, slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<()> {
-                debug_assert_eq!(
-                    ctx, crate::storage::LayoutCtx::FULL,
-                    "Struct arrays can only be stored with LayoutCtx::FULL"
+                debug_assert!(
+                    ctx.is_full(),
+                    "Struct arrays can only be stored with a full-slot LayoutCtx (FULL or INIT)"
                 );
                 let base_slot = slot;
                 #store_impl
