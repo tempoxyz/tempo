@@ -8,7 +8,14 @@ use reth_transaction_pool::{
     BestTransactions, CoinbaseTipOrdering, Priority, ValidPoolTransaction,
     error::InvalidPoolTransactionError, pool::BestTransactions as BestProtocolTransactions,
 };
-use std::sync::Arc;
+use std::{
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, Sender, TryRecvError},
+    },
+    thread::{self, JoinHandle},
+    time::Duration,
+};
 use tempo_evm::TempoTxResult;
 use tempo_precompiles::tip20::is_tip20_prefix;
 
@@ -38,9 +45,7 @@ impl MergeBestTransactions {
             next_aa_2d_pool: None,
         }
     }
-}
 
-impl MergeBestTransactions {
     /// Returns the next transaction from either pool with the higher priority.
     fn next_best(&mut self) -> Option<BestTransactionWithPriority> {
         if self.next_protocol_pool.is_none() {
@@ -92,8 +97,22 @@ impl BestTransactions for MergeBestTransactions {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
         if transaction.transaction.is_aa_2d() {
             self.aa_2d_pool.mark_invalid(transaction, kind);
+            if self
+                .next_aa_2d_pool
+                .as_ref()
+                .is_some_and(|(tx, _)| is_invalidated_buffered_transaction(transaction, tx))
+            {
+                self.next_aa_2d_pool = None;
+            }
         } else {
             self.protocol_pool.mark_invalid(transaction, kind);
+            if self
+                .next_protocol_pool
+                .as_ref()
+                .is_some_and(|(tx, _)| is_invalidated_buffered_transaction(transaction, tx))
+            {
+                self.next_protocol_pool = None;
+            }
         }
     }
 
@@ -108,29 +127,234 @@ impl BestTransactions for MergeBestTransactions {
     }
 }
 
+/// Pool transaction type streamed into the payload builder.
+pub type PoolTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+
+/// Event returned by [`BestTransactionsStream`].
+#[derive(Debug)]
+pub enum BestTransactionsStreamEvent {
+    /// A transaction is ready for sequential payload execution.
+    Transaction(PoolTx),
+    /// No transaction is currently buffered.
+    Empty,
+    /// The coordinator drained the finite iterator or disconnected.
+    End,
+}
+
+#[derive(Debug)]
+enum BestTransactionsStreamMessage {
+    Transaction(PoolTx),
+    End,
+}
+
+enum BestTransactionsStreamCommand {
+    Invalid(InvalidTransaction),
+    Stop,
+}
+
+struct InvalidTransaction {
+    tx: PoolTx,
+    kind: InvalidPoolTransactionError,
+    old_receiver: Receiver<BestTransactionsStreamMessage>,
+    new_sender: Sender<BestTransactionsStreamMessage>,
+}
+
+/// Drains a [`BestTransactions`] iterator into a channel while preserving delayed invalidation.
+pub struct BestTransactionsStream {
+    receiver: Receiver<BestTransactionsStreamMessage>,
+    commands: Sender<BestTransactionsStreamCommand>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl BestTransactionsStream {
+    /// Spawns a payload-scoped coordinator for `best_txs`.
+    pub fn new<Txs>(mut best_txs: Txs, live: bool) -> Self
+    where
+        Txs: BestTransactions<Item = PoolTx> + Send + 'static,
+    {
+        if !live {
+            best_txs.no_updates();
+        }
+
+        let (sender, receiver) = mpsc::channel();
+        let (commands, command_receiver) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            run_best_transactions_coordinator(best_txs, sender, command_receiver, live);
+        });
+
+        Self {
+            receiver,
+            commands,
+            handle: Some(handle),
+        }
+    }
+
+    /// Returns the next stream event without blocking.
+    pub fn next(&mut self) -> BestTransactionsStreamEvent {
+        match self.receiver.try_recv() {
+            Ok(BestTransactionsStreamMessage::Transaction(tx)) => {
+                BestTransactionsStreamEvent::Transaction(tx)
+            }
+            Ok(BestTransactionsStreamMessage::End) | Err(TryRecvError::Disconnected) => {
+                BestTransactionsStreamEvent::End
+            }
+            Err(TryRecvError::Empty) => BestTransactionsStreamEvent::Empty,
+        }
+    }
+
+    /// Marks a transaction invalid and refilters transactions already buffered for execution.
+    pub fn mark_invalid(&mut self, tx: &PoolTx, kind: InvalidPoolTransactionError) {
+        let (new_sender, new_receiver) = mpsc::channel();
+        let old_receiver = std::mem::replace(&mut self.receiver, new_receiver);
+        let invalid = InvalidTransaction {
+            tx: tx.clone(),
+            kind,
+            old_receiver,
+            new_sender,
+        };
+        let _ = self
+            .commands
+            .send(BestTransactionsStreamCommand::Invalid(invalid));
+    }
+}
+
+impl Drop for BestTransactionsStream {
+    fn drop(&mut self) {
+        let _ = self.commands.send(BestTransactionsStreamCommand::Stop);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+fn run_best_transactions_coordinator<Txs>(
+    mut best_txs: Txs,
+    mut sender: Sender<BestTransactionsStreamMessage>,
+    command_receiver: Receiver<BestTransactionsStreamCommand>,
+    live: bool,
+) where
+    Txs: BestTransactions<Item = PoolTx>,
+{
+    const IDLE_SLEEP: Duration = Duration::from_millis(1);
+    let mut ended = false;
+
+    loop {
+        if ended {
+            match command_receiver.recv() {
+                Ok(BestTransactionsStreamCommand::Invalid(invalid)) => {
+                    process_invalid_transaction(&mut best_txs, invalid, &mut sender);
+                }
+                Ok(BestTransactionsStreamCommand::Stop) | Err(_) => break,
+            }
+            continue;
+        }
+
+        while let Ok(command) = command_receiver.try_recv() {
+            match command {
+                BestTransactionsStreamCommand::Invalid(invalid) => {
+                    process_invalid_transaction(&mut best_txs, invalid, &mut sender);
+                }
+                BestTransactionsStreamCommand::Stop => return,
+            }
+        }
+
+        match best_txs.next() {
+            Some(tx) => {
+                if sender
+                    .send(BestTransactionsStreamMessage::Transaction(tx))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            None if live => thread::sleep(IDLE_SLEEP),
+            None => {
+                let _ = sender.send(BestTransactionsStreamMessage::End);
+                ended = true;
+            }
+        }
+    }
+}
+
+fn process_invalid_transaction<Txs>(
+    best_txs: &mut Txs,
+    invalid: InvalidTransaction,
+    sender: &mut Sender<BestTransactionsStreamMessage>,
+) where
+    Txs: BestTransactions<Item = PoolTx>,
+{
+    best_txs.mark_invalid(&invalid.tx, &invalid.kind);
+
+    let mut saw_end = false;
+    while let Ok(message) = invalid.old_receiver.try_recv() {
+        match message {
+            BestTransactionsStreamMessage::Transaction(tx) => {
+                if !is_invalidated_buffered_transaction(&invalid.tx, &tx) {
+                    let _ = invalid
+                        .new_sender
+                        .send(BestTransactionsStreamMessage::Transaction(tx));
+                }
+            }
+            BestTransactionsStreamMessage::End => saw_end = true,
+        }
+    }
+
+    if saw_end {
+        let _ = invalid.new_sender.send(BestTransactionsStreamMessage::End);
+    }
+
+    *sender = invalid.new_sender;
+}
+
+fn is_invalidated_buffered_transaction(invalid: &PoolTx, candidate: &PoolTx) -> bool {
+    if invalid.transaction.is_expiring_nonce() {
+        return false;
+    }
+
+    if invalid.transaction.is_aa_2d() {
+        let Some(invalid_id) = invalid.transaction.aa_transaction_id() else {
+            return false;
+        };
+        return candidate
+            .transaction
+            .aa_transaction_id()
+            .is_some_and(|candidate_id| {
+                candidate_id.seq_id == invalid_id.seq_id && candidate_id.nonce >= invalid_id.nonce
+            });
+    }
+
+    !candidate.transaction.is_aa_2d()
+        && candidate.sender() == invalid.sender()
+        && candidate.nonce() >= invalid.nonce()
+}
+
 /// A [`BestTransactions`] wrapper that tracks execution state changes and skips
 /// transactions that would fail due to state mutations from previously
 /// included transactions.
 pub struct StateAwareBestTransactions<I> {
     inner: I,
+    tracker: StateInvalidationTracker,
+}
+
+/// Tracks state changes that can invalidate later pool transactions.
+#[derive(Debug, Default)]
+pub struct StateInvalidationTracker {
     /// Tracks decreased TIP20 balance slots: `(token_address, slot) -> new_balance`.
-    /// Updated after each executed transaction. Used to check if a candidate
-    /// transaction's fee payer can still cover its fee cost.
     decreased_balances: HashMap<(Address, U256), U256>,
 }
 
-impl<I> StateAwareBestTransactions<I>
-where
-    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-{
-    /// Wraps an existing [`BestTransactions`] iterator.
-    pub fn new(inner: I) -> Self {
-        Self {
-            inner,
-            decreased_balances: HashMap::default(),
-        }
-    }
+/// Result of checking a transaction against [`StateInvalidationTracker`].
+#[derive(Debug)]
+pub enum StateTransactionCheck {
+    /// The transaction can be attempted.
+    Valid,
+    /// The transaction did not carry the cached state metadata expected by the builder.
+    MissingFeeBalanceSlot,
+    /// The transaction is invalidated by state changes from already-executed transactions.
+    Invalid(InvalidPoolTransactionError),
+}
 
+impl StateInvalidationTracker {
     /// Processes a new transaction execution result and collects any relevant
     /// state changes that might affect other transactions validity.
     pub fn on_new_result(&mut self, result: &TempoTxResult) {
@@ -147,6 +371,45 @@ where
             }
         }
     }
+
+    /// Checks whether `tx` is still valid under tracked state changes.
+    pub fn check(&self, tx: &PoolTx) -> StateTransactionCheck {
+        let Some(key) = tx.transaction.fee_balance_slot() else {
+            debug_assert!(false, "pool transaction must have cached fee_balance_slot");
+            return StateTransactionCheck::MissingFeeBalanceSlot;
+        };
+
+        if let Some(&balance) = self.decreased_balances.get(&key)
+            && balance < tx.transaction.fee_token_cost()
+        {
+            return StateTransactionCheck::Invalid(InvalidPoolTransactionError::Consensus(
+                InvalidTransactionError::InsufficientFunds(
+                    (balance, tx.transaction.fee_token_cost()).into(),
+                ),
+            ));
+        }
+
+        StateTransactionCheck::Valid
+    }
+}
+
+impl<I> StateAwareBestTransactions<I>
+where
+    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+{
+    /// Wraps an existing [`BestTransactions`] iterator.
+    pub fn new(inner: I) -> Self {
+        Self {
+            inner,
+            tracker: StateInvalidationTracker::default(),
+        }
+    }
+
+    /// Processes a new transaction execution result and collects any relevant
+    /// state changes that might affect other transactions validity.
+    pub fn on_new_result(&mut self, result: &TempoTxResult) {
+        self.tracker.on_new_result(result);
+    }
 }
 
 impl<I> Iterator for StateAwareBestTransactions<I>
@@ -158,27 +421,14 @@ where
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let tx = self.inner.next()?;
-
-            let Some(key) = tx.transaction.fee_balance_slot() else {
-                debug_assert!(false, "pool transaction must have cached fee_balance_slot");
-                continue;
-            };
-
-            if let Some(&balance) = self.decreased_balances.get(&key)
-                && balance < tx.transaction.fee_token_cost()
-            {
-                self.inner.mark_invalid(
-                    &tx,
-                    &InvalidPoolTransactionError::Consensus(
-                        InvalidTransactionError::InsufficientFunds(
-                            (balance, tx.transaction.fee_token_cost()).into(),
-                        ),
-                    ),
-                );
-                continue;
+            match self.tracker.check(&tx) {
+                StateTransactionCheck::Valid => return Some(tx),
+                StateTransactionCheck::MissingFeeBalanceSlot => continue,
+                StateTransactionCheck::Invalid(kind) => {
+                    self.inner.mark_invalid(&tx, &kind);
+                    continue;
+                }
             }
-
-            return Some(tx);
         }
     }
 }
@@ -207,7 +457,7 @@ mod tests {
         test_utils::{TxBuilder, wrap_valid_tx},
         tt_2d_pool::AA2dPool,
     };
-    use alloy_primitives::Address;
+    use alloy_primitives::{Address, U256};
     use futures::executor::block_on;
     use reth_primitives_traits::transaction::error::InvalidTransactionError;
     use reth_transaction_pool::{
