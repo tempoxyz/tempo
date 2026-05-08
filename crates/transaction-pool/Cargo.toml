@@ -37,8 +37,6 @@ alloy-primitives.workspace = true
 alloy-eips.workspace = true
 alloy-evm = { workspace = true, features = ["std"] }
 alloy-sol-types.workspace = true
-alloy-signer = { workspace = true, optional = true }
-alloy-signer-local = { workspace = true, optional = true }
 
 futures.workspace = true
 tracing.workspace = true
@@ -51,8 +49,6 @@ metrics.workspace = true
 [features]
 default = []
 test-utils = [
-	"dep:alloy-signer",
-	"dep:alloy-signer-local",
 	"reth-chainspec/test-utils",
 	"reth-ethereum-primitives/test-utils",
 	"reth-evm/test-utils",
@@ -68,6 +64,8 @@ reth-ethereum-primitives = { workspace = true, features = ["test-utils"] }
 reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
+alloy-eips.workspace = true
+alloy-consensus.workspace = true
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 tokio.workspace = true

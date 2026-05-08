@@ -42,8 +42,5 @@ alloy-rlp.workspace = true
 metrics.workspace = true
 tracing.workspace = true
 
-[dev-dependencies]
-tempo-transaction-pool = { workspace = true, features = ["test-utils"] }
-
 [features]
 trie-debug = ["reth-engine-tree/trie-debug"]
