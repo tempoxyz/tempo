@@ -18,7 +18,7 @@ const E2E_B_MEMORY = "60G"
 const E2E_GAS_LIMIT = "1000000000000"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
-const E2E_DEFAULT_BLOAT = "100g"
+const E2E_DEFAULT_BLOAT = 100
 const E2E_DEFAULT_BACKEND = "txgen"
 const TXGEN_DEFAULT_SEED = 99
 const TXGEN_SCRAPE_INTERVAL_MS = 500
@@ -134,13 +134,12 @@ def ensure-bloat-space [bloat: int] {
     }
 }
 
-def parse-e2e-bloat [bloat: string] {
-    let normalized = ($bloat | str downcase)
-    if $normalized == "1g" { return 1000 }
-    if $normalized == "10g" { return 10000 }
-    if $normalized == "100g" { return 100000 }
+def e2e-bloat-gib-to-mib [bloat: int] {
+    if $bloat in [1 10 100] {
+        return ($bloat * 1000)
+    }
 
-    print "Error: --bloat must be one of: 1g, 10g, 100g"
+    print "Error: --bloat must be one of: 1, 10, 100"
     exit 1
 }
 
@@ -920,7 +919,7 @@ def "main e2e" [
     --duration: int = 300                               # Duration in seconds
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 100                # Max concurrent requests
-    --bloat: string = $E2E_DEFAULT_BLOAT                # State bloat snapshot size: 1g, 10g, or 100g
+    --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 1, 10, or 100
     --backend: string = $E2E_DEFAULT_BACKEND            # Benchmark backend: txgen or tempo-bench
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
@@ -971,7 +970,7 @@ def "main e2e" [
         print "Error: --samply and --tracy are mutually exclusive. Choose one."
         exit 1
     }
-    let bloat_mib = (parse-e2e-bloat $bloat)
+    let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
     if $init_only and not $force_bloat {
         print "Error: --init-only requires --force-bloat"
         exit 1
