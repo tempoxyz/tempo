@@ -1,5 +1,5 @@
 use alloy_contract::Result as ContractResult;
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, Bytes, U256};
 use alloy_provider::{
     Identity, Provider, ProviderBuilder,
     fillers::{JoinFill, RecommendedFillers},
@@ -17,6 +17,34 @@ use crate::{
     TempoFillers, TempoNetwork,
     fillers::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller},
 };
+
+/// Request for `tempo_getExpiringNonceStatus`.
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ExpiringNonceStatusRequest {
+    signed_transaction: Bytes,
+}
+
+/// Response for `tempo_getExpiringNonceStatus`.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ExpiringNonceStatusResponse {
+    pub status: ExpiringNonceStatus,
+}
+
+/// Status values returned by `tempo_getExpiringNonceStatus`.
+#[derive(Clone, Copy, Debug, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum ExpiringNonceStatus {
+    /// No finalized canonical block at or after `validBefore` exists yet.
+    Pending,
+    /// Finalized canonical state proves the expiring nonce was seen before expiry.
+    Included,
+    /// Finalized canonical state at or after `validBefore` proves the expiring nonce was not seen.
+    Expired,
+    /// Historical state needed to classify the transaction is unavailable.
+    Unavailable,
+}
 
 /// Extension trait for [`Provider`] with Tempo-specific functionality.
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
@@ -156,6 +184,28 @@ pub trait TempoProviderExt: Provider<TempoNetwork> {
             .parse::<TempoHardfork>()
             .is_ok_and(|h| h >= hardfork))
     }
+
+    /// Returns the status of a signed expiring-nonce transaction.
+    ///
+    /// Clients should only replace the transaction when this returns
+    /// [`ExpiringNonceStatus::Expired`]. All other statuses mean replacement is not known to be
+    /// safe.
+    async fn get_expiring_nonce_status(
+        &self,
+        signed_transaction: Bytes,
+    ) -> Result<ExpiringNonceStatus, alloy_transport::TransportError>
+    where
+        Self: Sized,
+    {
+        let resp: ExpiringNonceStatusResponse = self
+            .raw_request(
+                "tempo_getExpiringNonceStatus".into(),
+                (ExpiringNonceStatusRequest { signed_transaction },),
+            )
+            .await?;
+
+        Ok(resp.status)
+    }
 }
 
 #[cfg_attr(target_family = "wasm", async_trait::async_trait(?Send))]
@@ -253,7 +303,10 @@ mod tests {
     use crate::{
         TempoFillers, TempoNetwork,
         fillers::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller},
-        provider::ext::{TempoProviderBuilderExt, TempoProviderExt},
+        provider::ext::{
+            ExpiringNonceStatus, ExpiringNonceStatusResponse, TempoProviderBuilderExt,
+            TempoProviderExt,
+        },
     };
 
     fn mock_provider(asserter: Asserter) -> impl alloy_provider::Provider<TempoNetwork> {
@@ -493,6 +546,43 @@ mod tests {
             .expect("transaction key call succeeds");
 
         assert_eq!(actual, expected);
+    }
+
+    #[tokio::test]
+    async fn test_get_expiring_nonce_status() {
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
+
+        for expected in [
+            ExpiringNonceStatus::Pending,
+            ExpiringNonceStatus::Included,
+            ExpiringNonceStatus::Expired,
+            ExpiringNonceStatus::Unavailable,
+        ] {
+            asserter.push_success(&ExpiringNonceStatusResponse { status: expected });
+
+            let actual = provider
+                .get_expiring_nonce_status(Bytes::from_static(&[0x76, 0x01]))
+                .await
+                .expect("expiring nonce status query succeeds");
+
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn test_get_expiring_nonce_status_propagates_errors() {
+        let asserter = Asserter::new();
+        let provider = mock_provider(asserter.clone());
+
+        asserter.push_failure_msg("boom");
+
+        let err = provider
+            .get_expiring_nonce_status(Bytes::from_static(&[0x76, 0x01]))
+            .await
+            .expect_err("errors should propagate");
+
+        assert!(err.to_string().contains("boom"));
     }
 
     #[tokio::test]

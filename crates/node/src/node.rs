@@ -3,9 +3,9 @@ use crate::{
     engine::TempoEngineValidator,
     rpc::{
         TempoAdminApi, TempoAdminApiServer, TempoEthApi, TempoEthApiBuilder, TempoEthExt,
-        TempoEthExtApiServer, TempoForkScheduleApiServer, TempoForkScheduleRpc,
-        TempoOperatorApiServer, TempoOperatorRpc, TempoSimulate, TempoSimulateApiServer,
-        TempoToken, TempoTokenApiServer,
+        TempoEthExtApiServer, TempoExpiringNonceStatus, TempoExpiringNonceStatusApiServer,
+        TempoForkScheduleApiServer, TempoForkScheduleRpc, TempoOperatorApiServer, TempoOperatorRpc,
+        TempoSimulate, TempoSimulateApiServer, TempoToken, TempoTokenApiServer,
     },
 };
 use alloy_primitives::B256;
@@ -209,7 +209,8 @@ where
                 let eth_api = registry.eth_api().clone();
                 let token = TempoToken::new(eth_api.clone());
                 let eth_ext = TempoEthExt::new(eth_api.clone());
-                let simulate = TempoSimulate::new(eth_api);
+                let simulate = TempoSimulate::new(eth_api.clone());
+                let expiring_nonce_status = TempoExpiringNonceStatus::new(eth_api);
                 let admin = TempoAdminApi::new(self.validator_key);
                 let operator = TempoOperatorRpc::new(registry.admin_api());
                 let fork_schedule =
@@ -218,6 +219,7 @@ where
                 modules.merge_configured(token.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, simulate.into_rpc())?;
+                modules.merge_configured(expiring_nonce_status.into_rpc())?;
                 modules.merge_configured(fork_schedule.into_rpc())?;
                 modules.merge_if_module_configured(
                     RethRpcModule::Other("operator".to_string()),
