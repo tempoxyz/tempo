@@ -536,7 +536,7 @@ where
         Ok(TempoTxResult {
             inner,
             next_section,
-            is_payment: recovered.tx().is_payment_v1(),
+            is_payment: self.is_payment(recovered.tx()),
             tx: matches!(next_section, BlockSection::SubBlock { .. })
                 .then(|| recovered.tx().clone()),
             block_gas_used,
