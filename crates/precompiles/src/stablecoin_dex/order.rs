@@ -258,7 +258,7 @@ impl Order {
     /// - New flip_tick = original tick
     /// - Amount is the same as original
     /// - Linked list pointers are reset to 0 (will be set by orderbook on insertion)
-    pub fn create_flipped_order(&self, new_order_id: u128) -> Self {
+    pub(crate) fn create_flipped_order(&self, new_order_id: u128) -> Self {
         debug_assert!(self.is_flip());
 
         // Create flipped order
