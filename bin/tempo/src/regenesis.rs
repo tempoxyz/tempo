@@ -64,13 +64,10 @@ where
             .with_metrics()
             .with_genesis_block_number(genesis_block_number)
             .build()?;
-        let mut rocksdb_builder = RocksDBProvider::builder(data_dir.rocksdb())
+        let rocksdb_provider = RocksDBProvider::builder(data_dir.rocksdb())
             .with_default_tables()
-            .with_database_log_level(self.env.db.log_level);
-        if let Some(cache_size) = self.env.db.rocksdb_block_cache_size {
-            rocksdb_builder = rocksdb_builder.with_block_cache_size(cache_size);
-        }
-        let rocksdb_provider = rocksdb_builder.build()?;
+            .with_database_log_level(self.env.db.log_level)
+            .build()?;
 
         let provider_factory = ProviderFactory::<NodeTypesWithDBAdapter<N, DatabaseEnv>>::new(
             db,
@@ -86,14 +83,6 @@ where
             last_block == 0,
             "regenesis only supports virgin block-0 databases, found block {last_block}"
         );
-
-        {
-            let static_file_provider = provider_rw.static_file_provider();
-            static_file_provider.delete_segment(StaticFileSegment::Headers)?;
-            let mut writer = static_file_provider
-                .get_writer(genesis_block_number, StaticFileSegment::Headers)?;
-            writer.append_header(genesis_header, &new_genesis_hash)?;
-        }
 
         let tx = provider_rw.tx_ref();
         let (stored_genesis_hash, stored_block_number) = {
@@ -121,6 +110,12 @@ where
             );
             return Ok(());
         }
+
+        let static_file_provider = provider_rw.static_file_provider();
+        static_file_provider.delete_segment(StaticFileSegment::Headers)?;
+        let mut writer =
+            static_file_provider.get_writer(genesis_block_number, StaticFileSegment::Headers)?;
+        writer.append_header(genesis_header, &new_genesis_hash)?;
 
         tx.delete::<tables::HeaderNumbers>(stored_genesis_hash, None)?;
         tx.put::<tables::HeaderNumbers>(new_genesis_hash, 0)?;
