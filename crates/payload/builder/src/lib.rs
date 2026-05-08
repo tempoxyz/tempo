@@ -4,8 +4,12 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod metrics;
+mod prewarming;
 
-use crate::metrics::{InstrumentedFinishProvider, TempoPayloadBuilderMetrics};
+use crate::{
+    metrics::{InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
+    prewarming::BestTransactionsPrewarming,
+};
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
@@ -52,7 +56,7 @@ use tempo_primitives::{
     },
 };
 use tempo_transaction_pool::{
-    BestTransactionsPrewarming, StateAwareBestTransactions, TempoTransactionPool,
+    StateAwareBestTransactions, TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};

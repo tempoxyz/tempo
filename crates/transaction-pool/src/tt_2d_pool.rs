@@ -1672,11 +1672,11 @@ impl AASequenceId {
 ///
 /// Identified by its sender, nonce key and nonce for that nonce key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub(crate) struct AA2dTransactionId {
+pub struct AA2dTransactionId {
     /// Uniquely identifies the accounts nonce key sequence
-    pub(crate) seq_id: AASequenceId,
+    pub seq_id: AASequenceId,
     /// The nonce in that sequence
-    pub(crate) nonce: u64,
+    pub nonce: u64,
 }
 
 impl AA2dTransactionId {
