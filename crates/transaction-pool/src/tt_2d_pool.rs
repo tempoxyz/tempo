@@ -1674,9 +1674,9 @@ impl AASequenceId {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
 pub struct AA2dTransactionId {
     /// Uniquely identifies the accounts nonce key sequence
-    pub seq_id: AASequenceId,
+    pub(crate) seq_id: AASequenceId,
     /// The nonce in that sequence
-    pub nonce: u64,
+    pub(crate) nonce: u64,
 }
 
 impl AA2dTransactionId {
@@ -1688,6 +1688,11 @@ impl AA2dTransactionId {
     /// Returns the next transaction in the sequence.
     pub(crate) fn unlocks(&self) -> Self {
         Self::new(self.seq_id, self.nonce.saturating_add(1))
+    }
+
+    /// Returns the nonce key sequence of this transaction.
+    pub fn seq_id(&self) -> &AASequenceId {
+        &self.seq_id
     }
 }
 

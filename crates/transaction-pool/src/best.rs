@@ -205,7 +205,7 @@ mod tests {
         test_utils::{TxBuilder, wrap_valid_tx},
         tt_2d_pool::AA2dPool,
     };
-    use alloy_primitives::{Address, U256};
+    use alloy_primitives::Address;
     use futures::executor::block_on;
     use reth_primitives_traits::transaction::error::InvalidTransactionError;
     use reth_transaction_pool::{
