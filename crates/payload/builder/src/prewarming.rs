@@ -10,7 +10,7 @@ use tempo_transaction_pool::best::BestTransaction;
 
 /// Event returned by [`BestTransactionsStream`].
 #[derive(Debug)]
-pub enum BestTransactionsStreamEvent {
+pub(crate) enum BestTransactionsStreamEvent {
     /// A transaction is ready for sequential payload execution.
     Transaction(BestTransaction),
     /// No transaction is currently buffered.
@@ -32,14 +32,14 @@ struct InvalidTransaction {
 }
 
 /// Drains a [`BestTransactions`] iterator into a channel while preserving delayed invalidation.
-pub struct BestTransactionsPrewarming {
+pub(crate) struct BestTransactionsPrewarming {
     rx: Receiver<BestTransactionsStreamEvent>,
     commands_tx: Sender<BestTransactionsStreamCommand>,
 }
 
 impl BestTransactionsPrewarming {
     /// Spawns a payload-scoped coordinator for `best_txs`.
-    pub fn new<Txs>(best_txs: Txs) -> Self
+    pub(crate) fn new<Txs>(best_txs: Txs) -> Self
     where
         Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
     {
@@ -124,14 +124,15 @@ impl Iterator for BestTransactionsPrewarming {
 }
 
 impl BestTransactions for BestTransactionsPrewarming {
-    fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
+    fn mark_invalid(&mut self, transaction: &Self::Item, _kind: &InvalidPoolTransactionError) {
         let (new_sender, new_receiver) = mpsc::channel();
         let old_receiver = std::mem::replace(&mut self.rx, new_receiver);
         let _ = self
             .commands_tx
             .send(BestTransactionsStreamCommand::Invalid(InvalidTransaction {
                 tx: transaction.clone(),
-                kind: kind.clone(),
+                // kind: kind.clone(),
+                kind: InvalidPoolTransactionError::Underpriced,
                 old_receiver,
                 new_sender,
             }));

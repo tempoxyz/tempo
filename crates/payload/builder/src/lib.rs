@@ -94,6 +94,8 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to disable state cache.
     disable_state_cache: bool,
+    /// Whether to enable prewarming of best transactions.
+    enable_prewarming: bool,
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
@@ -104,6 +106,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         is_dev: bool,
         state_provider_metrics: bool,
         disable_state_cache: bool,
+        enable_prewarming: bool,
     ) -> Self {
         Self {
             pool,
@@ -114,6 +117,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             is_dev,
             state_provider_metrics,
             disable_state_cache,
+            enable_prewarming,
         }
     }
 }
@@ -431,16 +435,27 @@ where
         let pool_fetch_start = Instant::now();
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
-        let mut best_txs = StateAwareBestTransactions::new(BestTransactionsPrewarming::new(
-            best_txs(BestTransactionsAttributes::new(
+        let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
+            Box::new(BestTransactionsPrewarming::new(best_txs(
+                BestTransactionsAttributes::new(
+                    base_fee,
+                    builder
+                        .evm_mut()
+                        .block()
+                        .blob_gasprice()
+                        .map(|gasprice| gasprice as u64),
+                ),
+            ))) as Box<dyn BestTransactions<Item = _>>
+        } else {
+            Box::new(best_txs(BestTransactionsAttributes::new(
                 base_fee,
                 builder
                     .evm_mut()
                     .block()
                     .blob_gasprice()
                     .map(|gasprice| gasprice as u64),
-            )),
-        ));
+            )))
+        });
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
