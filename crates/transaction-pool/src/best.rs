@@ -121,14 +121,11 @@ impl BestTransactions for MergeBestTransactions {
     }
 }
 
-/// Pool transaction type streamed into the payload builder.
-pub type PoolTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
-
 /// Event returned by [`BestTransactionsStream`].
 #[derive(Debug)]
 pub enum BestTransactionsStreamEvent {
     /// A transaction is ready for sequential payload execution.
-    Transaction(PoolTx),
+    Transaction(BestTransaction),
     /// No transaction is currently buffered.
     Empty,
 }
@@ -141,7 +138,7 @@ enum BestTransactionsStreamCommand {
 }
 
 struct InvalidTransaction {
-    tx: PoolTx,
+    tx: BestTransaction,
     kind: InvalidPoolTransactionError,
     old_receiver: Receiver<BestTransactionsStreamEvent>,
     new_sender: Sender<BestTransactionsStreamEvent>,
@@ -157,7 +154,7 @@ impl BestTransactionsPrewarming {
     /// Spawns a payload-scoped coordinator for `best_txs`.
     pub fn new<Txs>(best_txs: Txs) -> Self
     where
-        Txs: BestTransactions<Item = PoolTx> + Send + 'static,
+        Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
     {
         let (tx, rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
@@ -176,7 +173,7 @@ impl Drop for BestTransactionsPrewarming {
 }
 
 impl Iterator for BestTransactionsPrewarming {
-    type Item = PoolTx;
+    type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.rx.recv() {
@@ -218,7 +215,7 @@ fn run_best_transactions_coordinator<Txs>(
     mut sender: Sender<BestTransactionsStreamEvent>,
     command_receiver: Receiver<BestTransactionsStreamCommand>,
 ) where
-    Txs: BestTransactions<Item = PoolTx>,
+    Txs: BestTransactions<Item = BestTransaction>,
 {
     loop {
         if let Some(tx) = best_txs.next() {
@@ -254,7 +251,7 @@ fn process_invalid_transaction<Txs>(
     invalid: InvalidTransaction,
     sender: &mut Sender<BestTransactionsStreamEvent>,
 ) where
-    Txs: BestTransactions<Item = PoolTx>,
+    Txs: BestTransactions<Item = BestTransaction>,
 {
     best_txs.mark_invalid(&invalid.tx, &invalid.kind);
 
@@ -269,7 +266,10 @@ fn process_invalid_transaction<Txs>(
     *sender = invalid.new_sender;
 }
 
-fn is_invalidated_buffered_transaction(invalid: &PoolTx, candidate: &PoolTx) -> bool {
+fn is_invalidated_buffered_transaction(
+    invalid: &BestTransaction,
+    candidate: &BestTransaction,
+) -> bool {
     if invalid.transaction.is_expiring_nonce() {
         return false;
     }
