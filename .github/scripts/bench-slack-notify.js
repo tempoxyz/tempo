@@ -7,6 +7,7 @@
 //   BENCH_PR               – PR number (may be empty)
 //   BENCH_ACTOR            – GitHub user who triggered the bench
 //   BENCH_JOB_URL          – URL to the Actions job page
+//   BENCH_RUN_LABEL        – Replay Slack title label (for example, Replay Bench)
 //
 // Usage from actions/github-script:
 //   const notify = require('./.github/scripts/bench-slack-notify.js');
@@ -377,7 +378,11 @@ function buildReplayWaitRows(summary) {
   }));
 }
 
-function buildReplaySuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo, chain, blocks, warmup }) {
+function replayRunLabel() {
+  return (process.env.BENCH_RUN_LABEL || 'Replay Bench').trim() || 'Replay Bench';
+}
+
+function buildReplaySuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo, chain, blocks, warmup, runLabel }) {
   const { emoji, label } = verdictFromChanges(summary.changes || {});
   const prUrl = prNumber ? `https://github.com/${repo}/pull/${prNumber}` : '';
   const baseline = summary.baseline || {};
@@ -409,7 +414,7 @@ function buildReplaySuccessBlocks({ summary, prNumber, actor, actorSlackId, jobU
   const blocksPayload = [
     {
       type: 'header',
-      text: { type: 'plain_text', text: `${emoji} Tempo Replay Nightly: ${label}`, emoji: true },
+      text: { type: 'plain_text', text: `${emoji} Tempo ${runLabel}: ${label}`, emoji: true },
     },
     {
       type: 'section',
@@ -455,7 +460,7 @@ function buildReplaySuccessBlocks({ summary, prNumber, actor, actorSlackId, jobU
   return { blocks: blocksPayload, threadBlocks };
 }
 
-function buildReplayFailureBlocks({ prNumber, actor, actorSlackId, jobUrl, repo, chain, failedStep }) {
+function buildReplayFailureBlocks({ prNumber, actor, actorSlackId, jobUrl, repo, chain, failedStep, runLabel }) {
   const prUrl = prNumber ? `https://github.com/${repo}/pull/${prNumber}` : '';
   const actorMention = actorSlackId ? `<@${actorSlackId}>` : `@${actor}`;
   const parts = [
@@ -469,7 +474,7 @@ function buildReplayFailureBlocks({ prNumber, actor, actorSlackId, jobUrl, repo,
   return [
     {
       type: 'header',
-      text: { type: 'plain_text', text: ':rotating_light: Replay Bench Failed', emoji: true },
+      text: { type: 'plain_text', text: `:rotating_light: Tempo ${runLabel} Failed`, emoji: true },
     },
     {
       type: 'section',
@@ -510,6 +515,7 @@ async function replaySuccess({ core, context }) {
   const chain = process.env.BENCH_CHAIN || 'mainnet';
   const blocks = process.env.BENCH_BLOCKS || '5000';
   const warmup = process.env.BENCH_WARMUP_BLOCKS || '1000';
+  const runLabel = replayRunLabel();
 
   const slackUsers = loadSlackUsers(process.env.GITHUB_WORKSPACE || '.');
   const actorSlackId = slackUsers[actor];
@@ -523,8 +529,9 @@ async function replaySuccess({ core, context }) {
     chain,
     blocks,
     warmup,
+    runLabel,
   });
-  const text = `Tempo replay nightly: ${summary.baseline?.name || 'baseline'} vs ${summary.feature?.name || 'feature'} (${chain})`;
+  const text = `Tempo ${runLabel.toLowerCase()}: ${summary.baseline?.name || 'baseline'} vs ${summary.feature?.name || 'feature'} (${chain})`;
 
   async function sendWithThread(channel) {
     const res = await postToSlack(token, channel, slackBlocks, text, core);
@@ -576,11 +583,12 @@ async function replayFailure({ core, context, failedStep }) {
   const jobUrl = process.env.BENCH_JOB_URL ||
     `${context.serverUrl}/${repo}/actions/runs/${context.runId}`;
   const chain = process.env.BENCH_CHAIN || 'mainnet';
+  const runLabel = replayRunLabel();
 
   const slackUsers = loadSlackUsers(process.env.GITHUB_WORKSPACE || '.');
   const actorSlackId = slackUsers[actor];
-  const blocks = buildReplayFailureBlocks({ prNumber, actor, actorSlackId, jobUrl, repo, chain, failedStep });
-  const text = `Replay bench failed while ${failedStep}`;
+  const blocks = buildReplayFailureBlocks({ prNumber, actor, actorSlackId, jobUrl, repo, chain, failedStep, runLabel });
+  const text = `Tempo ${runLabel.toLowerCase()} failed while ${failedStep}`;
 
   if (actorSlackId) {
     await postToSlack(token, actorSlackId, blocks, text, core);

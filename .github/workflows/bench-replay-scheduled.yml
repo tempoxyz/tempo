@@ -230,6 +230,7 @@ jobs:
       warmup: ${{ needs.resolve-refs.outputs.warmup }}
       comment-id: ""
       slack: ${{ github.event_name == 'workflow_dispatch' && inputs.slack || 'always' }}
+      run-label: ${{ github.event_name == 'schedule' && 'Replay Nightly' || 'Replay Bench' }}
     secrets:
       DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}

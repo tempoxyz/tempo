@@ -99,6 +99,10 @@ on:
         type: string
         required: false
         default: "never"
+      run-label:
+        type: string
+        required: false
+        default: "Replay Bench"
     secrets:
       DEREK_BENCH_TOKEN:
         required: false
@@ -133,6 +137,7 @@ jobs:
       BENCH_WARMUP_BLOCKS: ${{ inputs.warmup }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_SLACK: ${{ inputs.slack || 'never' }}
+      BENCH_RUN_LABEL: ${{ inputs.run-label || 'Replay Bench' }}
       BENCH_WORK_DIR: bench-results/replay-${{ inputs.chain || 'mainnet' }}
     steps:
       - name: Resolve checkout ref
