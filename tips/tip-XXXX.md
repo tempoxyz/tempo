@@ -150,6 +150,7 @@ Each feature manifest entry should include:
 - `tips`: one or more TIP IDs
 - `dependencies`: feature IDs that must be active first, or active in the same checkpoint
 - `activation_group`: optional list of feature IDs that must activate together
+- `supersedes`: optional feature IDs whose behavior this feature replaces from its activation point onward
 - `legacy.hardfork`: historical hardfork mapping, if any
 - `activation`: chain- or zone-specific activation metadata
 - `min_tempo_version`: minimum `tempo` version that knows the feature
@@ -167,6 +168,7 @@ tips = ["TIP-1022"]
 min_tempo_version = "1.6.0"
 dependencies = []
 activation_group = []
+supersedes = []
 manifest_hash = "sha256:..."
 
 [feature.legacy]
@@ -215,10 +217,31 @@ The checkpoint should reference the reviewed manifest hash. It should not carry 
 Manifest validation should reject:
 
 - unknown dependencies
+- unknown supersedes references
 - dependency cycles
 - incomplete activation groups
 - activation metadata where a dependency activates later than its dependent on the same chain or zone
 - scheduled features whose minimum `tempo` version is not known by supported releases
+
+## Versioned behavior
+
+A feature ID should describe stable protocol behavior. Do not reuse the same feature ID for an incompatible behavior change.
+
+If a later TIP changes behavior that already shipped, create a new feature ID. The new feature can depend on or supersede the earlier feature, but the old feature remains in history so old blocks still execute with the old rules.
+
+`supersedes` means the new feature replaces the earlier feature's behavior only from the new feature's activation point onward. It does not delete or rewrite the older feature record.
+
+For example:
+
+```rust
+if features.is_active(ProtocolFeature::ExpiringNonceV2) {
+    // Later TIP / T3 behavior.
+} else if features.is_active(ProtocolFeature::ExpiringNonceV1) {
+    // Historical T1 behavior.
+}
+```
+
+This applies when the change affects block validity, transaction validity, gas accounting, state transitions, or historical replay. Pure implementation cleanup does not need a new feature ID.
 
 ## Generated artifacts
 
@@ -233,6 +256,7 @@ Generated Rust artifacts should include:
 - feature IDs
 - dependencies
 - activation groups
+- `supersedes` relationships
 - legacy hardfork mappings
 - manifest hashes
 
@@ -244,6 +268,7 @@ Generated JSON artifacts should include:
 - owners
 - dependencies
 - activation groups
+- `supersedes` relationships
 - activation metadata
 - legacy hardfork mappings
 - manifest hashes
