@@ -173,45 +173,23 @@ fn is_invalidated_buffered_transaction(
 mod tests {
     use super::*;
     use alloy_primitives::{Address, B256, U256};
-    use std::thread::{self, JoinHandle};
+    use std::thread::{self};
     use tempo_transaction_pool::test_utils::{
         MockBestTransactions, MockBestTransactionsSender, tx_with_nonce_key,
     };
 
-    fn mock_best_transactions() -> (
-        MockBestTransactions<BestTransaction>,
-        MockBestTransactionsSender<BestTransaction>,
-    ) {
-        MockBestTransactions::channel()
-    }
-
     fn start_prewarming_for_test() -> (
         BestTransactionsPrewarming,
         MockBestTransactionsSender<BestTransaction>,
-        JoinHandle<()>,
     ) {
-        let (best_txs, responses) = mock_best_transactions();
+        let (best_txs, responses) = MockBestTransactions::channel();
         let (tx, rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
-        let handle = thread::spawn(move || {
+        thread::spawn(move || {
             BestTransactionsPrewarming::start_prewarming(best_txs, tx, commands_rx);
         });
 
-        (
-            BestTransactionsPrewarming { rx, commands_tx },
-            responses,
-            handle,
-        )
-    }
-
-    fn shutdown_prewarming(
-        prewarming: BestTransactionsPrewarming,
-        responses: MockBestTransactionsSender<BestTransaction>,
-        handle: JoinHandle<()>,
-    ) {
-        drop(prewarming);
-        drop(responses);
-        handle.join().expect("prewarming thread should not panic");
+        (BestTransactionsPrewarming { rx, commands_tx }, responses)
     }
 
     fn test_tx(id: u8, nonce: u64) -> BestTransaction {
@@ -235,7 +213,7 @@ mod tests {
     }
 
     fn collect_direct(sequence: &[Option<BestTransaction>]) -> Vec<Option<B256>> {
-        let (mut best_txs, responses) = mock_best_transactions();
+        let (mut best_txs, responses) = MockBestTransactions::channel();
         let mut observed = Vec::with_capacity(sequence.len());
 
         for response in sequence.iter().cloned() {
@@ -247,7 +225,7 @@ mod tests {
     }
 
     fn collect_prewarmed(sequence: &[Option<BestTransaction>]) -> Vec<Option<B256>> {
-        let (mut prewarming, responses, handle) = start_prewarming_for_test();
+        let (mut prewarming, responses) = start_prewarming_for_test();
         let mut observed = Vec::with_capacity(sequence.len());
 
         for response in sequence.iter().cloned() {
@@ -255,7 +233,6 @@ mod tests {
             observed.push(observed_hash(prewarming.next()));
         }
 
-        shutdown_prewarming(prewarming, responses, handle);
         observed
     }
 
@@ -265,7 +242,7 @@ mod tests {
         let tx1 = test_tx(1, 1);
         let tx0_hash = *tx0.hash();
         let tx1_hash = *tx1.hash();
-        let (mut prewarming, responses, handle) = start_prewarming_for_test();
+        let (mut prewarming, responses) = start_prewarming_for_test();
 
         send_response(&responses, Some(tx0));
         assert_eq!(observed_hash(prewarming.next()), Some(tx0_hash));
@@ -281,15 +258,13 @@ mod tests {
 
         send_response(&responses, None);
         assert!(prewarming.next().is_none());
-
-        shutdown_prewarming(prewarming, responses, handle);
     }
 
     #[test]
     fn prewarming_matches_direct_best_transactions_none_sequence() {
         let tx0 = test_tx(0, 0);
         let tx1 = test_tx(1, 1);
-        let sequence = vec![Some(tx0.clone()), None, None, Some(tx1.clone()), None];
+        let sequence = vec![Some(tx0), None, None, Some(tx1), None];
 
         assert_eq!(collect_prewarmed(&sequence), collect_direct(&sequence));
     }
