@@ -819,7 +819,6 @@ impl StablecoinDEX {
                 amount: flipped.amount,
                 isBid: flipped.is_bid,
                 tick: flipped.tick,
-                isFlipOrder: true,
                 flipTick: flipped.flip_tick,
             },
         ))?;
