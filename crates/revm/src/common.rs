@@ -208,6 +208,28 @@ pub trait TempoStateAccess<M = ()> {
         })
     }
 
+    /// Reads the given TIP20 token's currency for error messages.
+    ///
+    /// IMPORTANT: Caller must ensure `fee_token` has a valid TIP20 prefix.
+    fn tip20_currency_for_error(
+        &mut self,
+        spec: TempoHardfork,
+        fee_token: Address,
+    ) -> TempoResult<String>
+    where
+        Self: Sized,
+    {
+        self.with_read_only_storage_ctx(spec, || {
+            // SAFETY: caller must ensure prefix is already checked
+            let token = TIP20Token::from_address_unchecked(fee_token);
+            let len = token.currency.len()?;
+            if len > 31 {
+                return Ok(format!("<{len} bytes>"));
+            }
+            token.currency.read()
+        })
+    }
+
     /// Checks if the given token can be used as a fee token.
     fn is_valid_fee_token(&mut self, spec: TempoHardfork, fee_token: Address) -> TempoResult<bool>
     where
@@ -723,6 +745,23 @@ mod tests {
             let is_usd = db.is_tip20_usd(TempoHardfork::Genesis, fee_token)?;
             assert_eq!(is_usd, *expected, "currency '{label}' failed");
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_tip20_currency_for_error_does_not_read_long_currency() -> eyre::Result<()> {
+        let fee_token = PATH_USD_ADDRESS;
+        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        let len = 1024usize;
+
+        db.insert_account_storage(fee_token, tip20_slots::CURRENCY, U256::from(len * 2 + 1))?;
+
+        assert!(!db.is_tip20_usd(TempoHardfork::Genesis, fee_token)?);
+        assert_eq!(
+            db.tip20_currency_for_error(TempoHardfork::Genesis, fee_token)?,
+            "<1024 bytes>"
+        );
 
         Ok(())
     }
