@@ -1,15 +1,15 @@
 # Scheduled replay regression benchmarks.
 #
-# Runs nightly after the Docker workflow's 09:05 UTC scheduled build. The
-# benchmark compares the latest successful nightly Docker commit against the
-# last commit that completed this scheduled replay workflow successfully for
-# each selected chain.
+# Runs nightly after the Docker workflow's 09:05 UTC scheduled build. Mainnet
+# and testnet are separate scheduled runs so each run dispatches one replay
+# benchmark against its own saved state.
 
 name: bench-replay-scheduled
 
 on:
   schedule:
-    - cron: "0 12 * * *"
+    - cron: "0 12 * * *" # mainnet
+    - cron: "5 12 * * *" # testnet
   workflow_dispatch:
     inputs:
       force:
@@ -18,12 +18,11 @@ on:
         default: false
         type: boolean
       chains:
-        description: "Chain replay set"
+        description: "Chain to replay"
         required: false
-        default: "both"
+        default: "mainnet"
         type: choice
         options:
-          - both
           - mainnet
           - testnet
       blocks:
@@ -76,13 +75,27 @@ jobs:
       - name: Resolve inputs
         id: config
         env:
-          INPUT_CHAINS: ${{ inputs.chains || 'both' }}
+          EVENT_NAME: ${{ github.event_name }}
+          EVENT_SCHEDULE: ${{ github.event.schedule }}
+          INPUT_CHAINS: ${{ inputs.chains || '' }}
           INPUT_BLOCKS: ${{ inputs.blocks || '5000' }}
           INPUT_WARMUP: ${{ inputs.warmup || '1000' }}
           INPUT_SAMPLY: ${{ inputs.samply || 'false' }}
         run: |
+          if [ "$EVENT_NAME" = "schedule" ]; then
+            case "$EVENT_SCHEDULE" in
+              "0 12 * * *") INPUT_CHAINS="mainnet" ;;
+              "5 12 * * *") INPUT_CHAINS="testnet" ;;
+              *)
+                echo "::error::Unknown replay schedule: $EVENT_SCHEDULE"
+                exit 1
+                ;;
+            esac
+          elif [ -z "$INPUT_CHAINS" ]; then
+            INPUT_CHAINS="mainnet"
+          fi
+
           case "$INPUT_CHAINS" in
-            both) CHAINS_JSON='["mainnet","testnet"]' ;;
             mainnet) CHAINS_JSON='["mainnet"]' ;;
             testnet) CHAINS_JSON='["testnet"]' ;;
             *)
