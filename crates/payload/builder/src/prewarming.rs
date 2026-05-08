@@ -24,22 +24,28 @@ enum BestTransactionsCommand {
     Stop,
 }
 
+/// Invalid transaction encountered during execution.
 #[derive(Debug)]
 struct InvalidTransaction {
     tx: BestTransaction,
     kind: InvalidPoolTransactionError,
+    /// Transactions sent from prewarming to executor that needs to be revalidated
+    /// against the invalid transaction.
     old_receiver: Receiver<BestTransactionsEvent>,
+    /// Sender for existing transactions from `old_receiver` and new transactions.
     new_sender: Sender<BestTransactionsEvent>,
 }
 
-/// Drains a [`BestTransactions`] iterator into a channel while preserving delayed invalidation.
+/// Prewarming orchestrator that consumes source [`BestTransactions`] ahead of time,
+/// prewarmes transactions in parallel, and produces a new [`BestTransactions`] iterator
+/// with the source order and invalidations triggered by [`Self::mark_invalid`] preserved.
 pub(crate) struct BestTransactionsPrewarming {
     rx: Receiver<BestTransactionsEvent>,
     commands_tx: Sender<BestTransactionsCommand>,
 }
 
 impl BestTransactionsPrewarming {
-    /// Spawns a payload-scoped coordinator for `best_txs`.
+    /// Spawns prewarming for `best_txs` and returns a new [`BestTransactions`] iterator.
     pub(crate) fn new<Txs>(executor: &TaskExecutor, best_txs: Txs) -> Self
     where
         Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
@@ -53,6 +59,9 @@ impl BestTransactionsPrewarming {
         Self { rx, commands_tx }
     }
 
+    /// Runs the producer side of prewarming for a payload build.
+    ///
+    /// See [`BestTransactionsPrewarming`] for details.
     fn start_prewarming<Txs>(
         mut best_txs: Txs,
         mut sender: Sender<BestTransactionsEvent>,
@@ -81,17 +90,16 @@ impl BestTransactionsPrewarming {
                     // transactions from the old receiver, filter out invalid ones,
                     // and redirect valid to the new sender.
                     BestTransactionsCommand::Invalid(invalid) => {
-                        best_txs.mark_invalid(&invalid.tx, &invalid.kind);
+                        sender = invalid.new_sender;
 
+                        best_txs.mark_invalid(&invalid.tx, &invalid.kind);
                         while let Ok(event) = invalid.old_receiver.try_recv() {
                             if let BestTransactionsEvent::Transaction(tx) = &event
                                 && !is_invalidated_buffered_transaction(&invalid.tx, tx)
                             {
-                                let _ = invalid.new_sender.send(event);
+                                let _ = sender.send(event);
                             }
                         }
-
-                        sender = invalid.new_sender;
                     }
                     BestTransactionsCommand::NoUpdates => best_txs.no_updates(),
                     BestTransactionsCommand::SkipBlobs(skip_blobs) => {
