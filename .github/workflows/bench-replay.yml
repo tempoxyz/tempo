@@ -85,10 +85,6 @@ on:
       comment-id:
         type: string
         required: false
-      runner-label:
-        type: string
-        required: false
-        default: "bare-metal"
     secrets:
       DEREK_BENCH_TOKEN:
         required: false
@@ -106,7 +102,7 @@ permissions:
 jobs:
   bench-replay:
     name: bench-replay
-    runs-on: [self-hosted, Linux, X64, "${{ inputs.runner-label || 'bare-metal' }}"]
+    runs-on: [self-hosted, Linux, X64, bare-metal]
     timeout-minutes: 300
     env:
       BENCH_CHAIN: ${{ inputs.chain || 'mainnet' }}
