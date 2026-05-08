@@ -12482,6 +12482,7 @@ dependencies = [
  "reth-cli-commands",
  "reth-cli-runner",
  "reth-cli-util",
+ "reth-db",
  "reth-db-api",
  "reth-discv5",
  "reth-eth-wire-types",
