@@ -117,6 +117,7 @@ Protocol execution code stays in `tempo`. Feature records, review metadata, and 
 - TIP links
 - owners and approvers
 - dependencies
+- activation groups
 - legacy hardfork mappings
 - minimum `tempo` versions
 - activation metadata
@@ -148,9 +149,10 @@ Each feature manifest entry should include:
 - `status`: lifecycle state
 - `owner`: accountable owner or team
 - `tips`: one or more TIP IDs
-- `dependencies`: feature IDs that must be active first
+- `dependencies`: feature IDs that must be active first, or active in the same checkpoint
+- `activation_group`: optional list of feature IDs that must activate together
 - `legacy.hardfork`: historical hardfork mapping, if any
-- `activation`: chain-specific activation metadata
+- `activation`: chain- or zone-specific activation metadata
 - `min_tempo_version`: minimum `tempo` version that knows the feature
 - `manifest_hash`: hash of the manifest entry
 
@@ -165,6 +167,7 @@ owner = "protocol"
 tips = ["TIP-1022"]
 min_tempo_version = "1.6.0"
 dependencies = []
+activation_group = []
 manifest_hash = "sha256:..."
 
 [feature.legacy]
@@ -200,15 +203,20 @@ Status changes should go through review. Moving a feature to `scheduled` or `act
 
 ## Dependency rules
 
-A feature can depend on other features.
+Feature records should hold the ordering rules. We should not rely on multisig signers or release owners remembering the right feature order by hand.
 
-If feature `B` depends on feature `A`, then `B` should not be active unless `A` is active for the same chain and block or simulation.
+If feature `B` depends on feature `A`, then `B` should not activate unless `A` is already active for the same chain or zone, or the same checkpoint activates both.
+
+Some changes may need to move together. Those features can list each other in `activation_group`. If a checkpoint activates one feature in the group, it needs to activate the full group for the same chain or zone and activation point.
+
+Multisig approval is necessary for the suggested checkpoint flow, but it is not the only guard. `tempo` should validate every activation checkpoint against the generated feature records before accepting it. If a signed checkpoint tries to activate feature `C` without its required features, or only activates half of an activation group, `tempo` rejects it.
 
 Manifest validation should reject:
 
 - unknown dependencies
 - dependency cycles
-- activation metadata where a dependency activates later than its dependent on the same chain
+- incomplete activation groups
+- activation metadata where a dependency activates later than its dependent on the same chain or zone
 - scheduled features whose minimum `tempo` version is not known by supported releases
 
 ## Generated artifacts
@@ -222,6 +230,8 @@ Generated Rust artifacts should include:
 
 - `ProtocolFeature`
 - feature IDs
+- dependencies
+- activation groups
 - legacy hardfork mappings
 - manifest hashes
 
@@ -232,6 +242,7 @@ Generated JSON artifacts should include:
 - TIP links
 - owners
 - dependencies
+- activation groups
 - activation metadata
 - legacy hardfork mappings
 - manifest hashes
@@ -291,6 +302,17 @@ Each surface derives the feature set from the same hardfork and timestamp source
 - feature schedule inspection
 - feature status inspection
 
+Those types should be able to answer:
+
+- which features are active for a chain or zone at a block or timestamp
+- which features are scheduled next
+- which activation source produced the answer
+- the manifest hash and generated artifact version being used
+- the minimum `tempo` version required for scheduled features
+- observed validator readiness, when that data is available
+- dependencies, activation groups, and blocked reasons
+- unsupported active features or invalid activation data
+
 These types should support future RPC methods such as:
 
 ```text
@@ -298,7 +320,7 @@ tempo_featureSchedule
 tempo_featureStatus
 ```
 
-The first rollout should not expose a public RPC method yet. Internal types are fine so we can design downstream call sites before committing to a public API.
+The first rollout should not expose a public RPC method yet. Internal types are fine so the node, UI, Grafana, release tooling, and runbooks can line up around the same data before we commit to a public API.
 
 ## Feature review UI
 
@@ -306,11 +328,11 @@ The `tempo-protocol-features` repository should include a UI in `app/` for revie
 
 The UI should show:
 
-- feature status, owner, TIP links, dependencies, manifest hash, and activation metadata
+- feature status, owner, TIP links, dependencies, activation groups, manifest hash, and activation metadata
 - generated artifact status and validation results
 - open PRs that add, update, schedule, or activate features
 - review state
-- current and scheduled feature sets by network
+- current and scheduled feature sets by network and zone where relevant
 - validator readiness for scheduled features that affect block validity or state transitions
 - blocked reasons that prevent scheduling or activation
 
@@ -353,7 +375,7 @@ Before any feature activates independently from a named hardfork, a future TIP o
 - activation source
 - validation rules
 - replay protection
-- chain-specific behavior
+- chain- and zone-specific behavior
 - `tempo` bootstrap behavior
 - failure behavior when activation metadata is unavailable
 - minimum supported `tempo` version and readiness requirements
@@ -366,13 +388,16 @@ The suggested long-term approach is a hybrid multisig-approved checkpoint model:
 - feature records, review state, and readiness live in `tempo-protocol-features`
 - the UI helps review the feature and prepare activation
 - final activation is published as a multisig-approved checkpoint that `tempo` can verify
-- the checkpoint includes the feature ID, chain ID, activation block or timestamp, manifest hash, minimum `tempo` version, dependencies, multisig approval data, and replay protection
+- the checkpoint includes feature IDs, chain or zone ID, activation block or timestamp, manifest hash, minimum `tempo` version, dependency and activation-group data, multisig approval data, and replay protection
+- `tempo` validates the checkpoint against the feature records before using it, so a signed but invalid checkpoint is still rejected
 - later, multisig-approved checkpoints can be anchored on-chain for auditability without making an on-chain registry the first dependency
+
+Zones should be treated as explicit activation scopes. A checkpoint for Tempo L1 should not accidentally activate behavior on a Zone unless that Zone is included in the checkpoint. A Zone checkpoint should also say which L1 network or anchor it depends on. The follow-up activation design should decide which features Zones inherit from Tempo automatically and which ones need their own Zone-scoped activation, but the records should make that choice explicit.
 
 Other activation source options are:
 
 - **Bundled manifest artifact**: `tempo` releases include a reviewed generated schedule from `tempo-protocol-features`. This is simple and keeps activation data tied to releases, but still requires a new `tempo` release to change the schedule.
-- **Multisig-approved checkpoint**: `tempo` reads an activation file and verifies approval from the configured multisig. This allows activation without a full release, but needs replay protection, multisig configuration, and a clear failure mode when approvals or files are missing.
+- **Multisig-approved checkpoint**: `tempo` reads an activation file and verifies approval from the configured multisig. This allows activation without a full release, but needs replay protection, multisig configuration, feature-record validation, and a clear failure mode when approvals or files are missing.
 - **On-chain registry**: `tempo` reads activation state from a chain contract or system registry. This gives a strong shared source, but it is the most complex option and needs bootstrap rules for how `tempo` validates the registry before the feature system itself is live.
 
 The implementation that reads, verifies, and applies the activation source lives in `tempo`. Source-controlled feature records and scheduled activation metadata should live in `tempo-protocol-features` unless a later TIP replaces them with another agreed protocol source.
@@ -408,6 +433,9 @@ Before hardfork-independent activation is used in production, the design needs a
 - generated artifacts that do not match manifests
 - unknown active features
 - dependency mistakes
+- incomplete activation groups
+- activation data replayed across the wrong chain or zone
+- multisig approval of a checkpoint that does not match the feature records
 - validator readiness data that is missing, stale, or wrong
 - UI actions that bypass review
 - rollback and cancellation paths
@@ -421,9 +449,11 @@ Generated artifacts should be reproducible from manifests. CI should fail if gen
 # Invariants
 
 - For the first rollout, feature queries behave the same as the existing hardfork checks.
-- For a fixed chain and timestamp, `tempo` nodes produce the same feature set.
+- For a fixed chain or zone and timestamp, `tempo` nodes produce the same feature set.
 - Legacy hardfork mappings are cumulative.
-- A feature cannot be active unless all of its dependencies are active.
+- A feature cannot become active unless all of its dependencies are already active, or become active in the same validated checkpoint.
+- Features in an activation group become active together, or not at all.
+- Activation data is scoped to a chain or zone and cannot replay across scopes.
 - Feature IDs are stable after publication.
 - Generated artifacts match the manifests.
 - Local node configuration cannot enable or disable production protocol features.
@@ -435,6 +465,9 @@ The test coverage should include:
 - representative equivalence between existing hardfork checks and feature queries
 - duplicate feature ID rejection
 - invalid dependency rejection
+- incomplete activation group rejection
+- invalid activation checkpoint rejection
+- chain or zone replay-scope validation
 - missing TIP link rejection
 - invalid legacy hardfork mapping rejection
 - unchanged precompile selector behavior
@@ -464,7 +497,7 @@ Add `tempo` feature plumbing while preserving hardfork behavior:
 
 ### Phase 3: Observability
 
-Expose read-only schedule and status data after internal types and tests are proven.
+Expose read-only schedule and status data after internal types and tests are proven. This should include active and scheduled features, manifest hashes, activation source, minimum `tempo` version, validator readiness, dependency or activation-group blockers, and chain or zone scope.
 
 ### Phase 4: Feature review UI
 
@@ -472,10 +505,10 @@ Build the `tempo-protocol-features/app/` UI described above so feature review, r
 
 ### Phase 5: Security review and threat model
 
-Threat model the activation flow before using hardfork-independent activation in production. This should cover activation metadata, generated artifacts, validator readiness inputs, UI permissions, unknown feature handling, and rollback paths.
+Threat model the activation flow before using hardfork-independent activation in production. This should cover activation metadata, generated artifacts, validator readiness inputs, UI permissions, unknown feature handling, dependency and activation-group validation, chain or zone replay protection, multisig failure modes, and rollback paths.
 
 ### Phase 6: Activation source
 
-Decide the activation source through a follow-up TIP or focused design review. The suggested path is the hybrid multisig-approved checkpoint model described above: feature records stay in `tempo-protocol-features`, and final activation is a multisig-approved checkpoint that `tempo` can verify.
+Decide the activation source through a follow-up TIP or focused design review. The suggested path is the hybrid multisig-approved checkpoint model described above: feature records stay in `tempo-protocol-features`, final activation is a multisig-approved checkpoint, and `tempo` verifies the checkpoint against dependency rules, activation groups, manifest hashes, minimum versions, and chain or zone scope before using it.
 
 This phase is out of scope until the preceding phases are complete.
