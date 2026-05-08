@@ -1113,7 +1113,6 @@ impl TIP20Token {
         let recovery = registry.receive_policy_recovery(to.target)?;
         let recipient = to.virtual_addr.unwrap_or(to.target);
 
-        let guard = self.storage.checkpoint();
         match kind {
             InboundKind::TRANSFER => {
                 self._transfer(originator, &Recipient::direct(ESCROW_ADDRESS), amount)?
@@ -1134,7 +1133,6 @@ impl TIP20Token {
             kind,
             memo,
         )?;
-        guard.commit();
         Ok(true)
     }
 
