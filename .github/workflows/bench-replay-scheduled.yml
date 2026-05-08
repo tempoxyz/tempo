@@ -184,44 +184,136 @@ jobs:
           echo "::error::Nightly Docker build is stale (>24h old). Aborting replay benchmark."
           exit 1
 
-  bench-replay:
+  dispatch-replays:
     needs: resolve-refs
     if: |
       needs.resolve-refs.outputs.should-skip != 'true' &&
       needs.resolve-refs.outputs.is-stale != 'true'
-    name: bench-replay (${{ matrix.chain }})
-    uses: ./.github/workflows/bench-replay.yml
-    strategy:
-      fail-fast: false
-      matrix:
-        chain: ${{ fromJSON(needs.resolve-refs.outputs.chains-json) }}
-    concurrency:
-      group: bench-replay-scheduled-${{ matrix.chain }}
-      cancel-in-progress: false
+    name: dispatch-replays
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
     permissions:
-      actions: read
+      actions: write
       contents: read
-      pull-requests: write
-    with:
-      chain: ${{ matrix.chain }}
-      pr: ""
-      actor: "replay-nightly"
-      baseline: ${{ needs.resolve-refs.outputs.baseline-ref }}
-      feature: ${{ needs.resolve-refs.outputs.feature-ref }}
-      baseline-name: ${{ needs.resolve-refs.outputs.baseline-name }}
-      feature-name: ${{ needs.resolve-refs.outputs.feature-name }}
-      samply: ${{ needs.resolve-refs.outputs.samply }}
-      baseline-args: ""
-      feature-args: ""
-      blocks: ${{ needs.resolve-refs.outputs.blocks }}
-      warmup: ${{ needs.resolve-refs.outputs.warmup }}
-      comment-id: ""
-    secrets:
-      DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
-      DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
+    steps:
+      - name: Dispatch replay workflows
+        uses: actions/github-script@v8
+        env:
+          CHAINS_JSON: ${{ needs.resolve-refs.outputs.chains-json }}
+          BASELINE_REF: ${{ needs.resolve-refs.outputs.baseline-ref }}
+          BASELINE_NAME: ${{ needs.resolve-refs.outputs.baseline-name }}
+          FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}
+          FEATURE_NAME: ${{ needs.resolve-refs.outputs.feature-name }}
+          BENCH_BLOCKS: ${{ needs.resolve-refs.outputs.blocks }}
+          BENCH_WARMUP: ${{ needs.resolve-refs.outputs.warmup }}
+          BENCH_SAMPLY: ${{ needs.resolve-refs.outputs.samply }}
+        with:
+          script: |
+            const owner = context.repo.owner;
+            const repo = context.repo.repo;
+            const workflow_id = 'bench-replay.yml';
+            const ref = context.ref.replace(/^refs\/(heads|tags)\//, '');
+            const chains = JSON.parse(process.env.CHAINS_JSON);
+            const dispatchKey = `scheduled-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT || '1'}`;
+            const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
+            const titleFor = (chain) => `bench-replay ${chain} ${dispatchKey}`;
+
+            core.info(`Dispatching ${workflow_id} on ${ref} for chains: ${chains.join(', ')}`);
+
+            for (const chain of chains) {
+              await github.rest.actions.createWorkflowDispatch({
+                owner,
+                repo,
+                workflow_id,
+                ref,
+                inputs: {
+                  chain,
+                  blocks: process.env.BENCH_BLOCKS,
+                  warmup: process.env.BENCH_WARMUP,
+                  samply: process.env.BENCH_SAMPLY,
+                  baseline: process.env.BASELINE_REF,
+                  feature: process.env.FEATURE_REF,
+                  'baseline-name': process.env.BASELINE_NAME,
+                  'feature-name': process.env.FEATURE_NAME,
+                  'baseline-args': '',
+                  'feature-args': '',
+                  'dispatch-key': dispatchKey,
+                },
+              });
+              core.info(`Dispatched ${chain} replay workflow`);
+            }
+
+            async function findRun(chain) {
+              const expectedTitle = titleFor(chain);
+              for (let attempt = 1; attempt <= 90; attempt++) {
+                const { data } = await github.rest.actions.listWorkflowRuns({
+                  owner,
+                  repo,
+                  workflow_id,
+                  event: 'workflow_dispatch',
+                  branch: ref,
+                  per_page: 100,
+                });
+                const run = data.workflow_runs.find(run => run.display_title === expectedTitle);
+                if (run) return run;
+
+                core.info(`Waiting for ${chain} replay workflow to appear (${attempt}/90)`);
+                await sleep(10_000);
+              }
+              throw new Error(`Could not find dispatched ${chain} replay workflow with title '${expectedTitle}'`);
+            }
+
+            const runs = new Map();
+            for (const chain of chains) {
+              const run = await findRun(chain);
+              runs.set(chain, run);
+              core.info(`${chain} replay workflow: ${run.html_url}`);
+            }
+
+            const pending = new Map(runs);
+            const results = [];
+
+            while (pending.size > 0) {
+              for (const [chain, run] of [...pending]) {
+                const { data: latest } = await github.rest.actions.getWorkflowRun({
+                  owner,
+                  repo,
+                  run_id: run.id,
+                });
+                if (latest.status !== 'completed') {
+                  core.info(`${chain} replay workflow is ${latest.status}`);
+                  continue;
+                }
+
+                pending.delete(chain);
+                results.push({
+                  chain,
+                  conclusion: latest.conclusion || 'unknown',
+                  url: latest.html_url,
+                });
+                core.info(`${chain} replay workflow completed with ${latest.conclusion}`);
+              }
+
+              if (pending.size > 0) {
+                await sleep(30_000);
+              }
+            }
+
+            let summary = '### Replay workflow runs\n\n';
+            summary += '| Chain | Run | Conclusion |\n';
+            summary += '| --- | --- | --- |\n';
+            for (const result of results) {
+              summary += `| ${result.chain} | [run](${result.url}) | ${result.conclusion} |\n`;
+            }
+            await core.summary.addRaw(summary).write();
+
+            const failed = results.filter(result => result.conclusion !== 'success');
+            if (failed.length > 0) {
+              throw new Error(`Replay workflow failed for: ${failed.map(result => `${result.chain}=${result.conclusion}`).join(', ')}`);
+            }
 
   save-state:
-    needs: [resolve-refs, bench-replay]
+    needs: [resolve-refs, dispatch-replays]
     if: success()
     name: save-state
     runs-on: ubuntu-latest

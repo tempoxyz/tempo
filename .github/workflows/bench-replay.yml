@@ -5,6 +5,8 @@
 
 name: bench-replay
 
+run-name: bench-replay ${{ inputs.chain || 'mainnet' }} ${{ inputs.dispatch-key || inputs.feature-name || github.ref_name }}
+
 on:
   workflow_dispatch:
     inputs:
@@ -31,8 +33,16 @@ on:
         description: "Baseline git ref (default: merge-base)"
         type: string
         default: ""
+      baseline-name:
+        description: "Display name for baseline ref"
+        type: string
+        default: ""
       feature:
         description: "Feature git ref (default: branch head)"
+        type: string
+        default: ""
+      feature-name:
+        description: "Display name for feature ref"
         type: string
         default: ""
       baseline-args:
@@ -41,6 +51,10 @@ on:
         default: ""
       feature-args:
         description: "Extra node args for feature"
+        type: string
+        default: ""
+      dispatch-key:
+        description: "Internal key used by workflow dispatch orchestrators"
         type: string
         default: ""
   workflow_call:
@@ -83,6 +97,9 @@ on:
         type: string
         required: true
       comment-id:
+        type: string
+        required: false
+      dispatch-key:
         type: string
         required: false
     secrets:
