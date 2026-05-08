@@ -193,9 +193,11 @@ jobs:
     uses: ./.github/workflows/bench-replay.yml
     strategy:
       fail-fast: false
-      max-parallel: 1
       matrix:
         chain: ${{ fromJSON(needs.resolve-refs.outputs.chains-json) }}
+    concurrency:
+      group: bench-replay-scheduled-${{ matrix.chain }}
+      cancel-in-progress: false
     permissions:
       actions: read
       contents: read
