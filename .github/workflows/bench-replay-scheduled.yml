@@ -1,0 +1,249 @@
+# Scheduled replay regression benchmarks.
+#
+# Runs nightly after the Docker workflow's 09:05 UTC scheduled build. The
+# benchmark compares the latest successful nightly Docker commit against the
+# last commit that completed this scheduled replay workflow successfully.
+
+name: bench-replay-scheduled
+
+on:
+  schedule:
+    - cron: "0 12 * * *"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force run even if no new nightly commit is available"
+        required: false
+        default: false
+        type: boolean
+      chains:
+        description: "Chain replay set"
+        required: false
+        default: "both"
+        type: choice
+        options:
+          - both
+          - mainnet
+          - testnet
+      blocks:
+        description: "Number of blocks to benchmark"
+        required: false
+        default: "5000"
+        type: string
+      warmup:
+        description: "Number of warmup blocks"
+        required: false
+        default: "1000"
+        type: string
+      samply:
+        description: "Enable samply profiling"
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
+
+jobs:
+  resolve-refs:
+    name: resolve-refs
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      baseline-ref: ${{ steps.refs.outputs.baseline-ref }}
+      baseline-name: ${{ steps.refs.outputs.baseline-name }}
+      feature-ref: ${{ steps.refs.outputs.feature-ref }}
+      feature-name: ${{ steps.refs.outputs.feature-name }}
+      should-skip: ${{ steps.refs.outputs.should-skip }}
+      is-stale: ${{ steps.refs.outputs.is-stale }}
+      stale-age-hours: ${{ steps.refs.outputs.stale-age-hours }}
+      nightly-created: ${{ steps.refs.outputs.nightly-created }}
+      chains-json: ${{ steps.config.outputs.chains-json }}
+      blocks: ${{ steps.config.outputs.blocks }}
+      warmup: ${{ steps.config.outputs.warmup }}
+      samply: ${{ steps.config.outputs.samply }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: true
+
+      - name: Resolve inputs
+        id: config
+        env:
+          INPUT_CHAINS: ${{ inputs.chains || 'both' }}
+          INPUT_BLOCKS: ${{ inputs.blocks || '5000' }}
+          INPUT_WARMUP: ${{ inputs.warmup || '1000' }}
+          INPUT_SAMPLY: ${{ inputs.samply || 'false' }}
+        run: |
+          case "$INPUT_CHAINS" in
+            both) CHAINS_JSON='["mainnet","testnet"]' ;;
+            mainnet) CHAINS_JSON='["mainnet"]' ;;
+            testnet) CHAINS_JSON='["testnet"]' ;;
+            *)
+              echo "::error::Unknown chains value: $INPUT_CHAINS"
+              exit 1
+              ;;
+          esac
+
+          if ! [[ "$INPUT_BLOCKS" =~ ^[0-9]+$ ]]; then
+            echo "::error::blocks must be a non-negative integer"
+            exit 1
+          fi
+          if ! [[ "$INPUT_WARMUP" =~ ^[0-9]+$ ]]; then
+            echo "::error::warmup must be a non-negative integer"
+            exit 1
+          fi
+
+          if [ "$INPUT_SAMPLY" = "true" ]; then
+            SAMPLY="true"
+          else
+            SAMPLY="false"
+          fi
+
+          {
+            echo "chains-json=$CHAINS_JSON"
+            echo "blocks=$INPUT_BLOCKS"
+            echo "warmup=$INPUT_WARMUP"
+            echo "samply=$SAMPLY"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Resolve refs
+        id: refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          INPUT_FORCE: ${{ inputs.force || 'false' }}
+        run: bash .github/scripts/bench-replay-scheduled-refs.sh "$INPUT_FORCE"
+
+      - name: Alert on stale nightly
+        if: steps.refs.outputs.is-stale == 'true'
+        uses: actions/github-script@v8
+        env:
+          SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+          SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+        with:
+          script: |
+            const token = process.env.SLACK_BENCH_BOT_TOKEN;
+            const channel = process.env.SLACK_BENCH_CHANNEL;
+            if (!token || !channel) {
+              core.warning('Slack credentials not set, skipping stale nightly alert');
+              return;
+            }
+
+            const repo = '${{ github.repository }}';
+            const runUrl = `${context.serverUrl}/${repo}/actions/runs/${context.runId}`;
+            const ageHours = '${{ steps.refs.outputs.stale-age-hours }}';
+            const created = '${{ steps.refs.outputs.nightly-created }}';
+            const featureRef = '${{ steps.refs.outputs.feature-ref }}';
+            const shortSha = featureRef.slice(0, 8);
+            const blocks = [
+              {
+                type: 'header',
+                text: { type: 'plain_text', text: ':rotating_light: Replay Nightly: Docker build is stale', emoji: true },
+              },
+              {
+                type: 'section',
+                text: {
+                  type: 'mrkdwn',
+                  text: [
+                    '*Scheduled replay benchmark did not run* because the latest nightly Docker build is stale.',
+                    '',
+                    `The latest nightly image was built from a commit that is *${ageHours}h old* (threshold: 24h).`,
+                    `Stale commit: \`${shortSha}\` (built at ${created})`,
+                    '',
+                    '*Action required:* Check the <https://github.com/' + repo + '/actions/workflows/docker.yml|docker.yml> workflow.',
+                  ].join('\n'),
+                },
+              },
+              {
+                type: 'actions',
+                elements: [{
+                  type: 'button',
+                  text: { type: 'plain_text', text: 'View Run :github:', emoji: true },
+                  url: runUrl,
+                  action_id: 'ci_button',
+                }],
+              },
+            ];
+
+            const resp = await fetch('https://slack.com/api/chat.postMessage', {
+              method: 'POST',
+              headers: { 'Authorization': `Bearer ${token}`, 'Content-Type': 'application/json' },
+              body: JSON.stringify({ channel, blocks, text: 'Replay nightly: Docker build is stale', unfurl_links: false }),
+            });
+            const data = await resp.json();
+            if (!data.ok) core.warning(`Slack API error: ${JSON.stringify(data)}`);
+
+      - name: Fail on stale nightly
+        if: steps.refs.outputs.is-stale == 'true'
+        run: |
+          echo "::error::Nightly Docker build is stale (>24h old). Aborting replay benchmark."
+          exit 1
+
+  bench-replay:
+    needs: resolve-refs
+    if: |
+      needs.resolve-refs.outputs.should-skip != 'true' &&
+      needs.resolve-refs.outputs.is-stale != 'true'
+    name: bench-replay (${{ matrix.chain }})
+    uses: ./.github/workflows/bench-replay.yml
+    strategy:
+      fail-fast: false
+      max-parallel: 1
+      matrix:
+        chain: ${{ fromJSON(needs.resolve-refs.outputs.chains-json) }}
+    permissions:
+      actions: read
+      contents: read
+      pull-requests: write
+    with:
+      chain: ${{ matrix.chain }}
+      pr: ""
+      actor: "replay-nightly"
+      baseline: ${{ needs.resolve-refs.outputs.baseline-ref }}
+      feature: ${{ needs.resolve-refs.outputs.feature-ref }}
+      baseline-name: ${{ needs.resolve-refs.outputs.baseline-name }}
+      feature-name: ${{ needs.resolve-refs.outputs.feature-name }}
+      samply: ${{ needs.resolve-refs.outputs.samply }}
+      baseline-args: ""
+      feature-args: ""
+      blocks: ${{ needs.resolve-refs.outputs.blocks }}
+      warmup: ${{ needs.resolve-refs.outputs.warmup }}
+      comment-id: ""
+    secrets:
+      DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
+      DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
+
+  save-state:
+    needs: [resolve-refs, bench-replay]
+    if: success()
+    name: save-state
+    runs-on: ubuntu-latest
+    steps:
+      - name: Push state to charts repo
+        env:
+          DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
+          FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}
+        run: |
+          CHARTS_REPO="https://x-access-token:${DEREK_TOKEN}@github.com/decofe/tempo-bench-charts.git"
+          TMP_DIR=$(mktemp -d)
+
+          if git clone --depth 1 --branch state "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then
+            true
+          else
+            git init "${TMP_DIR}"
+            git -C "${TMP_DIR}" remote add origin "${CHARTS_REPO}"
+          fi
+
+          mkdir -p "${TMP_DIR}/state"
+          echo "${FEATURE_REF}" > "${TMP_DIR}/state/replay-nightly-last-feature-ref"
+          git -C "${TMP_DIR}" add state/
+          git -C "${TMP_DIR}" diff --cached --quiet && echo "No state change" && exit 0
+          git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
+            commit -m "bench: update replay nightly state to ${FEATURE_REF}"
+          git -C "${TMP_DIR}" push origin HEAD:state
+          rm -rf "${TMP_DIR}"
