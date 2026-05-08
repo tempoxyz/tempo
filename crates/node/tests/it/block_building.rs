@@ -1,22 +1,25 @@
 use alloy::{
     consensus::{SignableTransaction, Transaction, TxEip1559, TxEnvelope},
     network::{EthereumWallet, NetworkTransactionBuilder},
-    primitives::{Address, B256, U256},
+    primitives::{Address, B256, U256, aliases::U96},
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
+    signers::local::{MnemonicBuilder, PrivateKeySigner},
     sol_types::SolEvent,
 };
+use crate::utils::{TestNodeBuilder, TEST_MNEMONIC};
 use alloy_eips::eip2718::Encodable2718;
 use alloy_network::{Ethereum, ReceiptResponse, TxSignerSync};
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
 use reth_node_api::BuiltPayload;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{IFeeManager, IRolesAuth, ITIP20, ITIP20Factory, ITIPFeeAMM};
+use tempo_contracts::precompiles::{
+    IFeeManager, IRolesAuth, ITIP20, ITIP20ChannelEscrow, ITIP20Factory, ITIPFeeAMM,
+};
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_FACTORY_ADDRESS,
-    tip_fee_manager::amm::compute_amount_out, tip20::ISSUER_ROLE,
+    PATH_USD_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP20_FACTORY_ADDRESS, tip_fee_manager::amm::compute_amount_out, tip20::ISSUER_ROLE,
 };
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 
@@ -688,6 +691,202 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         payload_fees <= collected_delta,
         "payload fee score ({payload_fees}) should not overstate actual validator revenue ({collected_delta})"
     );
+
+    Ok(())
+}
+
+/// Fund `user` with PATH_USD and approve the channel escrow precompile.
+async fn fund_and_approve_escrow(
+    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    funder: &PrivateKeySigner,
+    user: &PrivateKeySigner,
+    chain_id: u64,
+    funder_nonce: u64,
+    user_nonce: u64,
+) -> eyre::Result<()> {
+    let provider = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(funder.clone()))
+        .connect_http(node.rpc_url());
+    let token = ITIP20::new(PATH_USD_ADDRESS, provider);
+
+    sign_and_inject(
+        node, funder, chain_id,
+        token.transfer(user.address(), U256::from(20_000_000u64)).into_transaction_request(),
+        funder_nonce,
+    ).await?;
+    node.advance_block().await?;
+
+    let user_provider = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(user.clone()))
+        .connect_http(node.rpc_url());
+    let user_token = ITIP20::new(PATH_USD_ADDRESS, user_provider);
+
+    sign_and_inject(
+        node, user, chain_id,
+        user_token.approve(TIP20_CHANNEL_ESCROW_ADDRESS, U256::MAX).into_transaction_request(),
+        user_nonce,
+    ).await?;
+    node.advance_block().await?;
+
+    Ok(())
+}
+
+/// Decode the first `ChannelOpened` event from the latest block.
+async fn decode_channel_opened(
+    node: &reth_e2e_test_utils::NodeHelperType<TempoNode>,
+) -> eyre::Result<ITIP20ChannelEscrow::ChannelOpened> {
+    let provider = ProviderBuilder::new().connect_http(node.rpc_url());
+    let latest = provider.get_block_number().await?;
+    let receipts = provider.get_block_receipts(latest.into()).await?.unwrap();
+    receipts
+        .iter()
+        .flat_map(|r| r.inner.logs())
+        .find_map(|log| ITIP20ChannelEscrow::ChannelOpened::decode_log(&log.inner).ok())
+        .map(|log| log.data)
+        .ok_or_else(|| eyre::eyre!("ChannelOpened event not found"))
+}
+
+fn descriptor_from(e: &ITIP20ChannelEscrow::ChannelOpened) -> ITIP20ChannelEscrow::ChannelDescriptor {
+    ITIP20ChannelEscrow::ChannelDescriptor {
+        payer: e.payer, payee: e.payee, operator: e.operator,
+        token: e.token, salt: e.salt,
+        authorizedSigner: e.authorizedSigner, expiringNonceHash: e.expiringNonceHash,
+    }
+}
+
+/// Inject escrow txs: `open` (payment), `topUp` (payment), `requestClose` (non-payment).
+/// `open` is committed in its own block so subsequent calls find the channel.
+async fn inject_escrow_payment_txs(
+    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    sender: &PrivateKeySigner,
+    chain_id: u64,
+    start_nonce: u64,
+) -> eyre::Result<()> {
+    let provider = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(sender.clone()))
+        .connect_http(node.rpc_url());
+    let escrow = ITIP20ChannelEscrow::new(TIP20_CHANNEL_ESCROW_ADDRESS, provider);
+
+    // open (payment)
+    sign_and_inject(
+        node, sender, chain_id,
+        escrow.open(Address::random(), Address::ZERO, PATH_USD_ADDRESS, U96::from(1_000u64), B256::random(), Address::ZERO)
+            .into_transaction_request(),
+        start_nonce,
+    ).await?;
+    node.advance_block().await?;
+
+    let opened = decode_channel_opened(node).await?;
+    let desc = descriptor_from(&opened);
+
+    // topUp (payment)
+    sign_and_inject(
+        node, sender, chain_id,
+        escrow.topUp(desc.clone(), U96::from(500u64)).into_transaction_request(),
+        start_nonce + 1,
+    ).await?;
+
+    // requestClose (non-payment)
+    sign_and_inject(
+        node, sender, chain_id,
+        escrow.requestClose(desc).into_transaction_request(),
+        start_nonce + 2,
+    ).await?;
+
+    Ok(())
+}
+
+/// Escrow payment calls (open, topUp) are classified as payment_v2;
+/// non-payment calls (requestClose) are not.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_block_building_channel_escrow_payment_v2() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let funder = MnemonicBuilder::from_phrase(TEST_MNEMONIC).index(0)?.build()?;
+    let payer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).index(1)?.build()?;
+
+    let provider = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(payer.clone()))
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    fund_and_approve_escrow(&mut setup.node, &funder, &payer, chain_id, 0, 0).await?;
+
+    let payer_nonce = provider.get_transaction_count(payer.address()).await?;
+    inject_escrow_payment_txs(&mut setup.node, &payer, chain_id, payer_nonce).await?;
+
+    // Drain pool — topUp (payment) + requestClose (non-payment) may already
+    // have been consumed by the dev-mode block timer.
+    let mut all_user_txs = Vec::new();
+    loop {
+        let payload = setup.node.advance_block().await?;
+        let user = extract_user_txs(payload.block().body().transactions().cloned().collect());
+        if user.is_empty() { break; }
+        all_user_txs.extend(user);
+    }
+    let (payment, non_payment) = count_transaction_types(&all_user_txs);
+
+    assert!(payment >= 1, "topUp should be payment_v2, got {payment}");
+    assert!(non_payment >= 1, "requestClose should not be payment_v2, got {non_payment}");
+
+    Ok(())
+}
+
+/// Mixed TIP-20 transfers + channel escrow payments + plain txs are all
+/// correctly classified by `is_payment_v2`.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_block_building_mixed_tip20_and_escrow_payments() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
+    let funder = MnemonicBuilder::from_phrase(TEST_MNEMONIC).index(0)?.build()?;
+    let tip20_sender = MnemonicBuilder::from_phrase(TEST_MNEMONIC).index(1)?.build()?;
+    let escrow_sender = MnemonicBuilder::from_phrase(TEST_MNEMONIC).index(2)?.build()?;
+
+    let tip20_provider = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(tip20_sender.clone()))
+        .connect_http(setup.node.rpc_url());
+    let chain_id = tip20_provider.get_chain_id().await?;
+
+    let payment_token =
+        setup_token_manual(&mut setup.node, &tip20_provider, &tip20_sender, chain_id).await?;
+
+    let funder_nonce = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(funder.clone()))
+        .connect_http(setup.node.rpc_url())
+        .get_transaction_count(funder.address())
+        .await?;
+    fund_and_approve_escrow(&mut setup.node, &funder, &escrow_sender, chain_id, funder_nonce, 0).await?;
+
+    // open (payment, own block) + topUp (payment) + requestClose (non-payment)
+    let escrow_nonce = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(escrow_sender.clone()))
+        .connect_http(setup.node.rpc_url())
+        .get_transaction_count(escrow_sender.address())
+        .await?;
+    inject_escrow_payment_txs(&mut setup.node, &escrow_sender, chain_id, escrow_nonce).await?;
+
+    // Inject after escrow setup so they're still in the pool for the drain loop
+    // 3 TIP-20 transfers (payment)
+    inject_payment_txs_from_sender(&mut setup.node, &tip20_provider, &tip20_sender, &payment_token, chain_id, 3).await?;
+    // 3 self-sends (non-payment)
+    inject_non_payment_txs(&mut setup.node, chain_id, 3, 10).await?;
+
+    // Drain pool
+    let mut all_user_txs = Vec::new();
+    loop {
+        let payload = setup.node.advance_block().await?;
+        let user = extract_user_txs(payload.block().body().transactions().cloned().collect());
+        if user.is_empty() { break; }
+        all_user_txs.extend(user);
+    }
+
+    let (payment, non_payment) = count_transaction_types(&all_user_txs);
+    // 3 TIP-20 + 1 topUp = ≥4 payment_v2 (open is in its own setup block)
+    assert!(payment >= 4, "expected ≥4 payment_v2 txs, got {payment}");
+    // 3 self-sends + 1 requestClose = ≥4 non-payment
+    assert!(non_payment >= 4, "expected ≥4 non-payment txs, got {non_payment}");
 
     Ok(())
 }
