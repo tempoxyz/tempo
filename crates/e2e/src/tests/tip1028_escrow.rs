@@ -60,7 +60,7 @@ fn test_escrow_claim_no_recovery() {
             .connect_http(http_url.clone());
         let other_escrow = ITIP1028Escrow::new(ESCROW_ADDRESS, other_provider);
         let Err(result) = other_escrow
-            .claimBlocked(
+            .claim(
                 blocked.token,
                 Address::ZERO,
                 BLOCKED_RECEIPT_VERSION,
@@ -90,7 +90,7 @@ fn test_escrow_claim_no_recovery() {
             .connect_http(http_url.clone());
         let receiver_escrow = ITIP1028Escrow::new(ESCROW_ADDRESS, receiver_provider);
         let claim = receiver_escrow
-            .claimBlocked(
+            .claim(
                 blocked.token,
                 Address::ZERO,
                 BLOCKED_RECEIPT_VERSION,
@@ -134,7 +134,7 @@ fn test_escrow_claim_with_recovery() {
             .connect_http(http_url.clone());
         let recovery_escrow = ITIP1028Escrow::new(ESCROW_ADDRESS, recovery_provider);
         let claim = recovery_escrow
-            .claimBlocked(
+            .claim(
                 blocked.token,
                 recovery,
                 BLOCKED_RECEIPT_VERSION,
