@@ -400,9 +400,9 @@ impl TIP20Token {
     /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
-        let (to, total_supply) = self.preflight_mint(msg_sender, call.to)?;
+        let (to, total_supply) = self.validate_mint(msg_sender, call.to)?;
 
-        if self.validate_inbound_or_escrow(
+        if self.validate_or_escrow_funds(
             Address::ZERO,
             &to,
             call.amount,
@@ -430,9 +430,9 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
-        let (to, total_supply) = self.preflight_mint(msg_sender, call.to)?;
+        let (to, total_supply) = self.validate_mint(msg_sender, call.to)?;
 
-        if self.validate_inbound_or_escrow(
+        if self.validate_or_escrow_funds(
             Address::ZERO,
             &to,
             call.amount,
@@ -725,7 +725,7 @@ impl TIP20Token {
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        if self.validate_inbound_or_escrow(
+        if self.validate_or_escrow_funds(
             msg_sender,
             &to,
             call.amount,
@@ -761,7 +761,7 @@ impl TIP20Token {
         self.validate_transfer(call.from, &to)?;
         self.consume_allowance(call.from, msg_sender, call.amount)?;
 
-        if self.validate_inbound_or_escrow(
+        if self.validate_or_escrow_funds(
             call.from,
             &to,
             call.amount,
@@ -788,7 +788,7 @@ impl TIP20Token {
         self.validate_transfer(call.from, &to)?;
         self.consume_allowance(call.from, msg_sender, call.amount)?;
 
-        if self.validate_inbound_or_escrow(
+        if self.validate_or_escrow_funds(
             call.from,
             &to,
             call.amount,
@@ -831,7 +831,7 @@ impl TIP20Token {
         self.validate_transfer(from, &to)?;
         self.check_and_update_spending_limit(from, amount)?;
 
-        if self.validate_inbound_or_escrow(from, &to, amount, InboundKind::TRANSFER, B256::ZERO)? {
+        if self.validate_or_escrow_funds(from, &to, amount, InboundKind::TRANSFER, B256::ZERO)? {
             return Ok(true);
         }
 
@@ -869,7 +869,7 @@ impl TIP20Token {
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        if self.validate_inbound_or_escrow(
+        if self.validate_or_escrow_funds(
             msg_sender,
             &to,
             call.amount,
@@ -984,9 +984,25 @@ impl TIP20Token {
         self.ensure_transfer_authorized(from, to.target)
     }
 
-    /// Ensures that the recipient is authorized to receive mints.
-    /// Additionally (+T3) checks pause state, validates the effective recipient.
-    fn validate_mint(&self, to: &Recipient) -> Result<()> {
+    /// Resolves the effective recipient, checks that `msg_sender` has the issuer role, preserves
+    /// the pre-T6 `total_supply` read position, validates that the token is not paused, and the
+    /// recipient can receive mints. On T6+, the `total_supply` read is deferred to `_mint`.
+    ///
+    /// Returns the resolved recipient and, pre-T6, the total supply.
+    fn validate_mint(
+        &self,
+        msg_sender: Address,
+        to: Address,
+    ) -> Result<(Recipient, Option<U256>)> {
+        let to = Recipient::resolve(to)?;
+        self.check_role(msg_sender, *ISSUER_ROLE)?;
+
+        let total_supply = if self.storage.spec().is_t6() {
+            None
+        } else {
+            Some(self.total_supply()?)
+        };
+
         if self.storage.spec().is_t3() {
             self.check_not_paused()?;
             to.validate()?;
@@ -1001,29 +1017,6 @@ impl TIP20Token {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        Ok(())
-    }
-
-    /// Resolves the effective recipient, checks that `msg_sender` has the issuer role, preserves
-    /// the pre-T6 `total_supply` read position, validates that the token is not paused, and the
-    /// recipient can receive mints. On T6+, the `total_supply` read is deferred to `_mint`.
-    ///
-    /// Returns the resolved recipient and, pre-T6, the total supply.
-    fn preflight_mint(
-        &self,
-        msg_sender: Address,
-        to: Address,
-    ) -> Result<(Recipient, Option<U256>)> {
-        let to = Recipient::resolve(to)?;
-        self.check_role(msg_sender, *ISSUER_ROLE)?;
-
-        let total_supply = if self.storage.spec().is_t6() {
-            None
-        } else {
-            Some(self.total_supply()?)
-        };
-
-        self.validate_mint(&to)?;
         Ok((to, total_supply))
     }
 
@@ -1097,11 +1090,12 @@ impl TIP20Token {
         self.emit_event(to.build_transfer_event(from, amount))
     }
 
-    /// Validates inbound TIP-1028 receive policy for `to`.
+    /// Validates the TIP-1028 receive-policy check for the destination address. If the receive
+    /// policy prohibits the action, the funds are escrowed.
     ///
     /// Returns `true` when receive-policies block the inbound and this function escrows the funds.
     /// Callers must ONLY move funds when `false` is returned.
-    fn validate_inbound_or_escrow(
+    fn validate_or_escrow_funds(
         &mut self,
         originator: Address,
         to: &Recipient,
