@@ -81,11 +81,6 @@ on:
         type: string
         required: true
         default: "120"
-      node-args:
-        description: Extra args passed to all node runs.
-        type: string
-        required: false
-        default: ""
       baseline-args:
         description: Extra args passed only to the baseline node.
         type: string
@@ -192,9 +187,6 @@ on:
       tracy-offset:
         type: string
         required: true
-      node-args:
-        type: string
-        required: false
       baseline-args:
         type: string
         required: false
@@ -278,7 +270,6 @@ jobs:
       BENCH_TRACY: ${{ inputs.tracy }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
-      BENCH_NODE_ARGS: ${{ inputs.node-args }}
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
       BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '1000000000000' }}
@@ -385,10 +376,8 @@ jobs:
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
             const noCache = process.env.BENCH_NO_CACHE === 'true';
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
-            const nodeArgs = process.env.BENCH_NODE_ARGS || '';
-            const nodeArgsNote = nodeArgs ? `, node-args: \`${nodeArgs}\`` : '';
             const gasLimit = process.env.BENCH_GAS_LIMIT;
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${nodeArgsNote}${noCacheNote}`);
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${noCacheNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -558,7 +547,6 @@ jobs:
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
-          [ -n "$BENCH_NODE_ARGS" ] && cmd+=(--node-args="$BENCH_NODE_ARGS")
           [ -n "$BENCH_BASELINE_ARGS" ] && cmd+=(--baseline-args="$BENCH_BASELINE_ARGS")
           [ -n "$BENCH_FEATURE_ARGS" ] && cmd+=(--feature-args="$BENCH_FEATURE_ARGS")
           [ -n "$BENCH_BENCH_ARGS" ] && cmd+=(--bench-args="$BENCH_BENCH_ARGS")

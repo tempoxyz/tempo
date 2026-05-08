@@ -682,8 +682,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let run_type = if ($phase | str starts-with "baseline") { "baseline" } else { "feature" }
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
-    let effective_node_args = ([$ctx.node_args $side_args] | where { |a| $a != "" } | str join " ")
-    let extra_args = if $effective_node_args == "" { [] } else { $effective_node_args | split row " " }
+    let extra_args = if $side_args == "" { [] } else { $side_args | split row " " }
 
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
@@ -891,7 +890,6 @@ def "main e2e" [
     --tracy-seconds: int = 30                           # Tracy capture duration limit in seconds
     --tracy-offset: int = 120                           # Seconds to wait before starting tracy capture
     --tracing-otlp: string = ""                         # OTLP endpoint for tracing (auto-derived from GRAFANA_TEMPO/TEMPO_TELEMETRY_URL)
-    --node-args: string = ""                            # Additional node args for all phases
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
     --bench-args: string = ""                           # Additional txgen bench args
@@ -1120,7 +1118,6 @@ def "main e2e" [
         tracy_filter: $tracy_filter
         tracy_seconds: $tracy_seconds
         tracy_offset: $tracy_offset
-        node_args: $node_args
         baseline_args: $baseline_args
         feature_args: $feature_args
         bench_args: $bench_args

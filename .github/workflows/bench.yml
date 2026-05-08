@@ -43,7 +43,6 @@ jobs:
       tracy: ${{ steps.args.outputs.tracy }}
       tracy-seconds: ${{ steps.args.outputs.tracy-seconds }}
       tracy-offset: ${{ steps.args.outputs.tracy-offset }}
-      node-args: ${{ steps.args.outputs.node-args }}
       baseline-args: ${{ steps.args.outputs.baseline-args }}
       feature-args: ${{ steps.args.outputs.feature-args }}
       gas-limit: ${{ steps.args.outputs.gas-limit }}
@@ -87,7 +86,7 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
-            let pr, actor, mode, preset, duration, bloat, tps, accounts, maxConcurrentRequests, baseline, feature, txgenRef, samply, tracy, tracySeconds, tracyOffset, nodeArgs, baselineArgs, featureArgs, gasLimit, runType, forceBloat, noCache, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv, blocks, warmup;
+            let pr, actor, mode, preset, duration, bloat, tps, accounts, maxConcurrentRequests, baseline, feature, txgenRef, samply, tracy, tracySeconds, tracyOffset, baselineArgs, featureArgs, gasLimit, runType, forceBloat, noCache, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv, blocks, warmup;
 
             pr = String(context.issue.number);
             actor = context.payload.comment.user.login;
@@ -95,10 +94,10 @@ jobs:
             const body = context.payload.comment.body.trim();
             const intArgs = new Set(['duration', 'bloat', 'tps', 'accounts', 'max-concurrent-requests', 'gas-limit', 'tracy-seconds', 'tracy-offset', 'blocks', 'warmup']);
             const refArgs = new Set(['baseline', 'feature', 'txgen-ref']);
-            const stringArgs = new Set(['mode', 'preset', 'tracy', 'node-args', 'baseline-args', 'feature-args', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain']);
+            const stringArgs = new Set(['mode', 'preset', 'tracy', 'baseline-args', 'feature-args', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain']);
             const boolArgs = new Set(['samply', 'force-bloat', 'no-cache', 'no-slack', 'no-existing-recipients']);
             const bloatValues = new Set(['1', '10', '100']);
-            const defaults = { mode: 'e2e', preset: 'tip20', duration: '300', bloat: '100', tps: '10000', accounts: '1000', 'max-concurrent-requests': '100', baseline: '', feature: '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'node-args': '', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'no-existing-recipients': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '1000', chain: 'mainnet' };
+            const defaults = { mode: 'e2e', preset: 'tip20', duration: '300', bloat: '100', tps: '10000', accounts: '1000', 'max-concurrent-requests': '100', baseline: '', feature: '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'no-existing-recipients': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '1000', chain: 'mainnet' };
             const unknown = [];
             const invalid = [];
             const args = body.replace(/^(?:@decofe|derek) bench\s*/, '');
@@ -163,7 +162,7 @@ jobs:
             if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
             if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
             if (errors.length) {
-              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N] [baseline=REF] [feature=REF] [txgen-ref=REF] [samply] [force-bloat] [no-cache] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [node-args="ARGS"] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
+              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N] [baseline=REF] [feature=REF] [txgen-ref=REF] [samply] [force-bloat] [no-cache] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -187,7 +186,6 @@ jobs:
             tracy = defaults.tracy;
             tracySeconds = defaults['tracy-seconds'];
             tracyOffset = defaults['tracy-offset'];
-            nodeArgs = defaults['node-args'];
             baselineArgs = defaults['baseline-args'];
             featureArgs = defaults['feature-args'];
             gasLimit = defaults['gas-limit'];
@@ -207,7 +205,7 @@ jobs:
             const erFlag = `--existing-recipients=${existingRecipients}`;
             benchArgs = benchArgs ? `${benchArgs} ${erFlag}` : erFlag;
 
-            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N] [baseline=REF] [feature=REF] [txgen-ref=REF] [samply] [force-bloat] [no-cache] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [node-args="ARGS"] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
+            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N] [baseline=REF] [feature=REF] [txgen-ref=REF] [samply] [force-bloat] [no-cache] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
 
             // Validate chain value
             if (!['mainnet', 'testnet'].includes(chain)) {
@@ -301,7 +299,6 @@ jobs:
             core.setOutput('tracy', tracy);
             core.setOutput('tracy-seconds', tracySeconds);
             core.setOutput('tracy-offset', tracyOffset);
-            core.setOutput('node-args', nodeArgs || '');
             core.setOutput('baseline-args', baselineArgs || '');
             core.setOutput('feature-args', featureArgs || '');
             core.setOutput('gas-limit', gasLimit);
@@ -335,7 +332,6 @@ jobs:
           ACK_TXGEN_REF: ${{ steps.args.outputs.txgen-ref }}
           ACK_SAMPLY: ${{ steps.args.outputs.samply }}
           ACK_TRACY: ${{ steps.args.outputs.tracy }}
-          ACK_NODE_ARGS: ${{ steps.args.outputs.node-args }}
           ACK_BASELINE_ARGS: ${{ steps.args.outputs.baseline-args }}
           ACK_FEATURE_ARGS: ${{ steps.args.outputs.feature-args }}
           ACK_GAS_LIMIT: ${{ steps.args.outputs.gas-limit }}
@@ -372,15 +368,13 @@ jobs:
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = process.env.ACK_TRACY;
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
-            const nodeArgs = process.env.ACK_NODE_ARGS || '';
-            const nodeArgsNote = nodeArgs ? `, node-args: \`${nodeArgs}\`` : '';
             const bNa = process.env.ACK_BASELINE_ARGS || '';
             const fNa = process.env.ACK_FEATURE_ARGS || '';
             const naNote = (bNa || fNa) ? `${bNa ? `, baseline-args: \`${bNa}\`` : ''}${fNa ? `, feature-args: \`${fNa}\`` : ''}` : '';
             const gasLimit = process.env.ACK_GAS_LIMIT;
             const noCache = process.env.ACK_NO_CACHE === 'true';
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
-            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${nodeArgsNote}${naNote}${noCacheNote}`;
+            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${naNote}${noCacheNote}`;
 
             const { data: comment } = await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -413,7 +407,6 @@ jobs:
       tracy: ${{ needs.tempo-bench-ack.outputs.tracy }}
       tracy-seconds: ${{ needs.tempo-bench-ack.outputs.tracy-seconds }}
       tracy-offset: ${{ needs.tempo-bench-ack.outputs.tracy-offset }}
-      node-args: ${{ needs.tempo-bench-ack.outputs.node-args }}
       baseline-args: ${{ needs.tempo-bench-ack.outputs.baseline-args }}
       feature-args: ${{ needs.tempo-bench-ack.outputs.feature-args }}
       gas-limit: ${{ needs.tempo-bench-ack.outputs.gas-limit }}
