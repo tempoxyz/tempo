@@ -241,7 +241,6 @@ env:
   RUSTC_WRAPPER: "sccache"
 
 permissions:
-  actions: read
   contents: read
   pull-requests: write
 
