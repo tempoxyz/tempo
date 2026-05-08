@@ -706,7 +706,7 @@ jobs:
         with:
           script: |
             const notify = require('./.github/scripts/bench-slack-notify.js');
-            await notify.success({ core, context });
+            await notify.e2e.success({ core, context });
 
       - name: Send Slack notification (failure)
         if: failure() && env.BENCH_NO_SLACK != 'true'
@@ -714,7 +714,7 @@ jobs:
         with:
           script: |
             const notify = require('./.github/scripts/bench-slack-notify.js');
-            await notify.failure({ core, context, failedStep: 'running benchmark' });
+            await notify.e2e.failure({ core, context, failedStep: 'running benchmark' });
 
       - name: Update status (failed)
         if: failure() && env.BENCH_COMMENT_ID

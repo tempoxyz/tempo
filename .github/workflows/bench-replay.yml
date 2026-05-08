@@ -498,8 +498,8 @@ jobs:
           SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
         with:
           script: |
-            const notify = require('./.github/scripts/bench-replay-slack-notify.js');
-            await notify.success({ core, context });
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.replay.success({ core, context });
 
       - name: Update status (failed)
         if: failure() && env.BENCH_COMMENT_ID
@@ -535,8 +535,8 @@ jobs:
             ];
             const failed = stepsStatus.find(([, outcome]) => outcome === 'failure');
             const failedStep = failed ? failed[0] : 'unknown step';
-            const notify = require('./.github/scripts/bench-replay-slack-notify.js');
-            await notify.failure({ core, context, failedStep });
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.replay.failure({ core, context, failedStep });
 
       - name: Update status (cancelled)
         if: cancelled() && env.BENCH_COMMENT_ID
