@@ -145,6 +145,11 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     uint256 private _totalTwoHopFeeCollections;
     uint256 private _totalDirectPreferredCollections;
     uint256 private _totalDegenerateReverts;
+    /// @dev Counts the non-degenerate insufficient-route witnesses (Gap A): direct pool
+    /// insufficient AND at least one fallback leg insufficient (with `hopToken` non-zero
+    /// and != validatorToken). Distinct from `_totalDegenerateReverts`, which only fires
+    /// when `hopToken == validatorToken`.
+    uint256 private _totalInsufficientFallbackWitnesses;
 
     /// @dev Aggregates for fee math invariants (TEMPO-AMM35/AMM37).
     uint256 private _ghostHop1InputSum;
@@ -1262,10 +1267,65 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         } else if (legsSufficient) {
             _executeSimulatedTwoHopFeeCollection(ctx);
         } else {
-            // Neither path can settle. Real precompile would revert with InsufficientLiquidity.
-            // The mock simply skips: no state change, no witness.
-            vm.assume(false);
+            // Neither path can settle. Real precompile would revert with `InsufficientLiquidity`
+            // and (per TIP-1033 invariant 4 + 8) leave NO observable state change and NO transient
+            // leak. We model that revert directly here — the previous behaviour (`vm.assume(false)`)
+            // discarded the run silently and left this branch effectively untested. Without the
+            // explicit assertions, a future change to `plan_fee_route` could half-commit on the
+            // insufficient-leg case and the suite would not notice.
+            _assertInsufficientFallbackNoCommit(ctx);
         }
+    }
+
+    /// @dev Asserts the no-half-commit / no-transient-leak post-conditions of the
+    /// non-degenerate insufficient-fallback revert path. Sibling of `simulateDegenerateQuoteEqualsValidator`'s
+    /// TEMPO-FEE10 check, generalised to the case where `hopToken != validatorToken` but at
+    /// least one leg pool cannot cover its hop output. Covers Gap A from PR-3856 review.
+    function _assertInsufficientFallbackNoCommit(TwoHopContext memory ctx) internal {
+        IFeeAMM.Pool memory directAfter = amm.getPool(ctx.userToken, ctx.validatorToken);
+        IFeeAMM.Pool memory leg1After = amm.getPool(ctx.userToken, ctx.hopToken);
+        IFeeAMM.Pool memory leg2After = amm.getPool(ctx.hopToken, ctx.validatorToken);
+
+        assertEq(
+            directAfter.reserveUserToken,
+            ctx.directPool.reserveUserToken,
+            "TIP-1033 (inv. 4): insufficient-fallback revert must not change direct user reserve"
+        );
+        assertEq(
+            directAfter.reserveValidatorToken,
+            ctx.directPool.reserveValidatorToken,
+            "TIP-1033 (inv. 4): insufficient-fallback revert must not change direct validator reserve"
+        );
+        assertEq(
+            leg1After.reserveUserToken,
+            ctx.leg1Pool.reserveUserToken,
+            "TIP-1033 (inv. 4): insufficient-fallback revert must not change leg1 user reserve"
+        );
+        assertEq(
+            leg1After.reserveValidatorToken,
+            ctx.leg1Pool.reserveValidatorToken,
+            "TIP-1033 (inv. 4): insufficient-fallback revert must not change leg1 validator reserve"
+        );
+        assertEq(
+            leg2After.reserveUserToken,
+            ctx.leg2Pool.reserveUserToken,
+            "TIP-1033 (inv. 4): insufficient-fallback revert must not change leg2 user reserve"
+        );
+        assertEq(
+            leg2After.reserveValidatorToken,
+            ctx.leg2Pool.reserveValidatorToken,
+            "TIP-1033 (inv. 4): insufficient-fallback revert must not change leg2 validator reserve"
+        );
+
+        // No transient leak — see TWO_HOP_INTERMEDIATE_SLOT comment for `vm.load` semantics.
+        bytes32 stored = vm.load(address(amm), bytes32(TWO_HOP_INTERMEDIATE_SLOT));
+        assertEq(
+            stored,
+            bytes32(0),
+            "TIP-1033 (inv. 8): insufficient-fallback revert must not leak intermediate slot"
+        );
+
+        _totalInsufficientFallbackWitnesses++;
     }
 
     /// @dev Selects a validatorToken for the two-hop simulation. Must be a base USD token,
@@ -1514,6 +1574,47 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         );
 
         _totalDegenerateReverts++;
+    }
+
+    /// @notice Drains a two-hop leg pool via a real `amm.burn` from the bootstrapper LP so the
+    /// insufficient-fallback branch of `simulateTwoHopFeeCollection` is reachable. Leg pools
+    /// are bootstrapped at `TWO_HOP_BOOTSTRAP_AMOUNT = 1e11`, well above the [1k, 1M] fee
+    /// range, so without aggressive draining that branch never fires.
+    /// @dev Uses a real burn (not `vm.store`) to keep AMM accounting consistent.
+    /// @param legChoiceSeed 0 → drain leg1 `(_userTokenWithHop, _hopToken)`, else leg2
+    ///                      `(_hopToken, tokenN)`.
+    /// @param validatorSeed Picks `tokenN` for leg2.
+    /// @param burnPctSeed Fraction of bootstrapper LP to burn, biased to 99.99–100%.
+    function simulateLegDrainViaBurn(
+        uint256 legChoiceSeed,
+        uint256 validatorSeed,
+        uint256 burnPctSeed
+    )
+        external
+    {
+        address bootstrapper = _actors[0];
+        bool drainLeg1 = (legChoiceSeed % 2) == 0;
+        address tokenA = drainLeg1 ? address(_userTokenWithHop) : address(_hopToken);
+        address tokenB =
+            drainLeg1 ? address(_hopToken) : _pickTwoHopValidatorToken(validatorSeed);
+
+        bytes32 poolId = amm.getPoolId(tokenA, tokenB);
+        uint256 lpBalance = amm.liquidityBalances(poolId, bootstrapper);
+        if (lpBalance == 0) return;
+
+        // Bias hard toward >= 99.999% so validator-side reserve drops below ~1M (the fee
+        // amount upper bound). Anything less leaves the pool deep enough that the route
+        // predicate still picks the fallback path.
+        uint256 burnPct = bound(burnPctSeed, 99_990, 100_000);
+        uint256 toBurn = (lpBalance * burnPct) / 100_000;
+        if (toBurn == 0) return;
+
+        vm.startPrank(bootstrapper);
+        try amm.burn(tokenA, tokenB, toBurn, bootstrapper) { }
+        catch (bytes memory reason) {
+            _assertKnownError(reason);
+        }
+        vm.stopPrank();
     }
 
     /// @dev Stores pool reserves directly using vm.store
