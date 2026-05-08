@@ -140,11 +140,11 @@ use alloy::{
 };
 use alloy_primitives::B256;
 use alloy_rpc_types_engine::PayloadAttributes;
-use reth_e2e_test_utils::setup;
+use reth_e2e_test_utils::{E2ETestSetupBuilder, setup};
 use reth_ethereum::tasks::Runtime;
 use reth_node_api::FullNodeComponents;
 use reth_node_builder::{NodeBuilder, NodeConfig, NodeHandle, rpc::RethRpcAddOns};
-use reth_node_core::args::RpcServerArgs;
+use reth_node_core::args::{PruningArgs, RpcServerArgs};
 use reth_rpc_builder::RpcModuleSelection;
 use std::{sync::Arc, time::Duration};
 use tempo_chainspec::{
@@ -292,6 +292,7 @@ pub(crate) struct TestNodeBuilder {
     custom_validator: Option<Address>,
     dynamic_validator: Option<Arc<std::sync::Mutex<Address>>>,
     schedule: ForkSchedule,
+    pruning: Option<PruningArgs>,
 }
 
 impl TestNodeBuilder {
@@ -306,6 +307,7 @@ impl TestNodeBuilder {
             custom_validator: None,
             dynamic_validator: None,
             schedule: ForkSchedule::Devnet,
+            pruning: None,
         }
     }
 
@@ -348,6 +350,12 @@ impl TestNodeBuilder {
         self
     }
 
+    /// Set pruning configuration for direct-access test nodes.
+    pub(crate) fn with_pruning(mut self, pruning: PruningArgs) -> Self {
+        self.pruning = Some(pruning);
+        self
+    }
+
     /// Build a single node with direct access (NodeHelperType)
     pub(crate) async fn build_with_node_access(self) -> eyre::Result<SingleNodeSetup> {
         if self.node_count != 1 {
@@ -365,13 +373,17 @@ impl TestNodeBuilder {
         let chain_spec = self.build_chain_spec()?;
         let hardfork = chain_spec.tempo_hardfork_at(0);
 
-        let (mut nodes, _wallet) = setup::<TempoNode>(
-            1,
-            Arc::new(chain_spec),
-            self.is_dev,
-            default_attributes_generator,
-        )
-        .await?;
+        let chain_spec = Arc::new(chain_spec);
+        let (mut nodes, _wallet) = if let Some(pruning) = self.pruning {
+            E2ETestSetupBuilder::new(1, chain_spec, default_attributes_generator)
+                .with_node_config_modifier(move |config| {
+                    config.set_dev(self.is_dev).with_pruning(pruning.clone())
+                })
+                .build()
+                .await?
+        } else {
+            setup::<TempoNode>(1, chain_spec, self.is_dev, default_attributes_generator).await?
+        };
 
         let node = nodes.remove(0);
 
@@ -393,6 +405,10 @@ impl TestNodeBuilder {
         }
 
         let chain_spec = self.build_chain_spec()?;
+
+        if self.pruning.is_some() {
+            return Err(eyre::eyre!("build_multi_node does not support pruning"));
+        }
 
         let (nodes, _wallet) = setup::<TempoNode>(
             self.node_count,
@@ -440,6 +456,9 @@ impl TestNodeBuilder {
             );
         node_config.txpool.max_account_slots = usize::MAX;
         node_config.dev.block_time = Some(Duration::from_millis(100));
+        if self.pruning.is_some() {
+            return Err(eyre::eyre!("build_http_only does not support pruning"));
+        }
 
         let node_handle = NodeBuilder::new(node_config.clone())
             .testing_node(runtime.clone())

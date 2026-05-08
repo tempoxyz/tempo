@@ -1,19 +1,21 @@
 use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
 use alloy::{
-    consensus::{Signed, TxLegacy},
+    consensus::{Signed, TxLegacy, transaction::SignerRecoverable},
     hex,
     primitives::{Address, B256, Bytes, Signature, U256},
     providers::{Provider, ProviderBuilder},
     signers::{SignerSync, local::MnemonicBuilder},
 };
-use alloy_eips::Encodable2718;
+use alloy_eips::{Decodable2718, Encodable2718};
 use core::num::NonZeroU64;
+use reth_node_core::args::PruningArgs;
 use reth_primitives_traits::transaction::TxHashRef as _;
 use serde_json::json;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
 use tempo_node::rpc::expiring_nonce_status::{ExpiringNonceStatus, ExpiringNonceStatusResponse};
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
 use tempo_primitives::{
     TempoTransaction, TempoTxEnvelope,
     transaction::{TEMPO_EXPIRING_NONCE_KEY, tempo_transaction::Call},
@@ -59,6 +61,68 @@ async fn test_get_expiring_nonce_status() -> eyre::Result<()> {
     assert_eq!(
         get_expiring_nonce_status(&provider, &expired_at_boundary).await?,
         ExpiringNonceStatus::Expired,
+    );
+
+    Ok(())
+}
+
+#[tokio::test(flavor = "multi_thread")]
+async fn test_get_expiring_nonce_status_unavailable_after_pruned_replay_state() -> eyre::Result<()>
+{
+    reth_tracing::init_test_tracing();
+
+    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
+    let chain_id = 1337;
+    let valid_before = 5;
+    let (target, _) = signed_expiring_nonce_tx(&signer, chain_id, valid_before)?;
+    let target_expiring_nonce_hash = expiring_nonce_hash(&target)?;
+
+    // Seed the target as already seen at genesis so that later classification
+    // depends on historical pre-expiry replay state, not an unchanged zero slot.
+    let mut setup = TestNodeBuilder::new()
+        .with_genesis(genesis_with_seen_expiring_nonce(
+            target_expiring_nonce_hash,
+            valid_before,
+        )?)
+        .with_pruning(PruningArgs {
+            block_interval: Some(1),
+            storage_history_before: Some(20),
+            account_history_before: Some(20),
+            minimum_distance: Some(0),
+            ..Default::default()
+        })
+        .build_with_node_access()
+        .await?;
+    let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
+        .wallet(signer.clone())
+        .connect_http(setup.node.rpc_url());
+    setup.node.payload.timestamp = 0;
+
+    advance_until_finalized_after(&mut setup, &provider, valid_before).await?;
+
+    // The seeded ring pointer starts at zero, so this real expiring-nonce tx
+    // evicts the target hash and clears its latest replay-state entry.
+    let clearer_valid_before = setup.node.payload.timestamp + 30;
+    let (clearer, clearer_hash) =
+        signed_expiring_nonce_tx(&signer, chain_id, clearer_valid_before)?;
+    setup.node.rpc.inject_tx(clearer.into()).await?;
+    setup.node.advance_block().await?;
+    assert_receipt_status(&provider, clearer_hash, true).await?;
+
+    assert_eq!(
+        get_expiring_nonce_status(&provider, &target).await?,
+        ExpiringNonceStatus::Included,
+    );
+
+    for _ in 0..40 {
+        setup.node.advance_block().await?;
+    }
+
+    // After storage-history pruning, the node can no longer reconstruct the
+    // target's nonzero pre-expiry replay state, so classification is unavailable.
+    assert_eq!(
+        get_expiring_nonce_status(&provider, &target).await?,
+        ExpiringNonceStatus::Unavailable,
     );
 
     Ok(())
@@ -213,6 +277,44 @@ fn expiring_nonce_tx(chain_id: u64, valid_before: u64) -> TempoTransaction {
         valid_before: Some(NonZeroU64::new(valid_before).expect("valid_before must be non-zero")),
         ..Default::default()
     }
+}
+
+fn expiring_nonce_hash(signed_transaction: &[u8]) -> eyre::Result<B256> {
+    let mut encoded = signed_transaction;
+    let envelope = TempoTxEnvelope::decode_2718(&mut encoded)?;
+    let aa_tx = envelope
+        .as_aa()
+        .ok_or_else(|| eyre::eyre!("expected Tempo transaction"))?;
+    let sender = envelope.recover_signer()?;
+    Ok(aa_tx.expiring_nonce_hash(sender))
+}
+
+fn genesis_with_seen_expiring_nonce(
+    expiring_nonce_hash: B256,
+    valid_before: u64,
+) -> eyre::Result<String> {
+    let mut genesis: serde_json::Value =
+        serde_json::from_str(include_str!("../assets/test-genesis.json"))?;
+    let storage = &mut genesis["alloc"][format!("{NONCE_PRECOMPILE_ADDRESS:#x}")]["storage"];
+    if storage.is_null() {
+        *storage = serde_json::json!({});
+    }
+
+    let nonce_manager = NonceManager::new();
+    storage[storage_key(nonce_manager.expiring_nonce_seen[expiring_nonce_hash].slot())] =
+        serde_json::Value::String(storage_value(U256::from(valid_before)));
+    storage[storage_key(nonce_manager.expiring_nonce_ring[0].slot())] =
+        serde_json::Value::String(format!("{expiring_nonce_hash:#x}"));
+
+    Ok(serde_json::to_string(&genesis)?)
+}
+
+fn storage_key(slot: U256) -> String {
+    storage_value(slot)
+}
+
+fn storage_value(value: U256) -> String {
+    format!("0x{}", hex::encode(value.to_be_bytes::<32>()))
 }
 
 async fn get_expiring_nonce_status(
