@@ -16,6 +16,16 @@ on:
         required: false
         default: false
         type: boolean
+      slack:
+        description: "Slack notification policy"
+        required: false
+        default: "never"
+        type: choice
+        options:
+          - always
+          - on-win
+          - on-error
+          - never
       chains:
         description: "Chain replay set"
         required: false
@@ -120,7 +130,7 @@ jobs:
         run: bash .github/scripts/bench-replay-scheduled-refs.sh "$INPUT_FORCE"
 
       - name: Alert on stale nightly
-        if: steps.refs.outputs.is-stale == 'true'
+        if: steps.refs.outputs.is-stale == 'true' && !(github.event_name == 'workflow_dispatch' && inputs.slack == 'never')
         uses: actions/github-script@v8
         env:
           SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
@@ -214,9 +224,12 @@ jobs:
       blocks: ${{ needs.resolve-refs.outputs.blocks }}
       warmup: ${{ needs.resolve-refs.outputs.warmup }}
       comment-id: ""
+      slack: ${{ github.event_name == 'workflow_dispatch' && inputs.slack || 'always' }}
     secrets:
       DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
+      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
 
   save-state:
     needs: [resolve-refs, bench-replay]
