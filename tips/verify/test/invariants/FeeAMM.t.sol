@@ -150,6 +150,12 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// and != validatorToken). Distinct from `_totalDegenerateReverts`, which only fires
     /// when `hopToken == validatorToken`.
     uint256 private _totalInsufficientFallbackWitnesses;
+    /// @dev Quote-token rotations of non-userToken tokens (drives TEMPO-FEE9 dynamism).
+    uint256 private _totalQuoteRotations;
+    /// @dev Direct-pool drain burns (mirror of `simulateLegDrainViaBurn` for the direct pool).
+    uint256 private _totalDirectDrains;
+    /// @dev Fee-amount draws taken from the ±2 boundary band of direct sufficiency.
+    uint256 private _totalBoundaryFeeAmounts;
 
     /// @dev Aggregates for fee math invariants (TEMPO-AMM35/AMM37).
     uint256 private _ghostHop1InputSum;
@@ -1237,11 +1243,13 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         ctx.leg1Pool = amm.getPool(ctx.userToken, ctx.hopToken);
         ctx.leg2Pool = amm.getPool(ctx.hopToken, ctx.validatorToken);
 
-        // Fee amount selection. With ~70% probability bias toward amounts the fuzzer can
-        // route through fallback; otherwise pick small amounts that fit the (possibly
-        // shallow) direct pool, exercising the direct-preferred path (TEMPO-FEE7).
-        bool biasFallback = (forceFallbackBias % 100) < 70;
-        ctx.feeAmount = _pickTwoHopFeeAmount(feeAmountRaw, ctx.directPool, biasFallback);
+        // Three regimes: 10% boundary (±2 of threshold), 60% fallback-biased, 30% direct.
+        uint256 regime = forceFallbackBias % 100;
+        bool biasBoundary = regime < 10;
+        bool biasFallback = !biasBoundary && regime < 70;
+        ctx.feeAmount =
+            _pickTwoHopFeeAmount(feeAmountRaw, ctx.directPool, biasFallback, biasBoundary);
+        if (biasBoundary) _totalBoundaryFeeAmounts++;
         vm.assume(ctx.feeAmount >= 1000);
         // Cap so reserve adds never overflow uint128 in the legs.
         vm.assume(
@@ -1337,13 +1345,18 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         return candidates[seed % candidates.length];
     }
 
-    /// @dev Picks a fee amount. When `biasFallback` is true, ensure the chosen amount exceeds
-    /// `directReserve / M * SCALE` so that fallback is required. Otherwise stay below that
-    /// bound so the direct path can settle. Bounds match `simulateFeeCollection`'s [1k, 1M] range.
+    /// @dev Picks a fee amount in [1k, 1M]. Modes:
+    ///   - `biasBoundary`: a 5-wide window around `minInsufficient` (= first amount whose
+    ///     `out1` exceeds `directReserve`). Skewed slightly toward insufficient (~3 of 5
+    ///     samples land in the fallback regime, ~2 in direct), but every sample is within
+    ///     2 of the predicate flip.
+    ///   - `biasFallback`: above the threshold (forces fallback).
+    ///   - otherwise: below the threshold (direct path can settle).
     function _pickTwoHopFeeAmount(
         uint256 seed,
         IFeeAMM.Pool memory directPool,
-        bool biasFallback
+        bool biasFallback,
+        bool biasBoundary
     )
         internal
         pure
@@ -1355,6 +1368,16 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         // direct reserve. Equivalent to `directReserve * SCALE / M + 1` in real arithmetic.
         uint256 directReserve = uint256(directPool.reserveValidatorToken);
         uint256 minInsufficient = directReserve == 0 ? 1 : (directReserve * SCALE) / M + 2;
+
+        if (biasBoundary && directReserve > 0 && minInsufficient <= hi && minInsufficient + 2 >= lo)
+        {
+            // Centre the draw on the boundary: [minInsufficient - 2, minInsufficient + 2],
+            // clamped into the global [lo, hi] range. The outer guard ensures the band overlaps
+            // [lo, hi] non-trivially before clamping (otherwise bLo > bHi).
+            uint256 bLo = minInsufficient > lo + 2 ? minInsufficient - 2 : lo;
+            uint256 bHi = minInsufficient + 2 <= hi ? minInsufficient + 2 : hi;
+            return bound(seed, bLo, bHi);
+        }
 
         if (biasFallback && minInsufficient <= hi) {
             return bound(seed, minInsufficient > lo ? minInsufficient : lo, hi);
@@ -1595,8 +1618,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         address bootstrapper = _actors[0];
         bool drainLeg1 = (legChoiceSeed % 2) == 0;
         address tokenA = drainLeg1 ? address(_userTokenWithHop) : address(_hopToken);
-        address tokenB =
-            drainLeg1 ? address(_hopToken) : _pickTwoHopValidatorToken(validatorSeed);
+        address tokenB = drainLeg1 ? address(_hopToken) : _pickTwoHopValidatorToken(validatorSeed);
 
         bytes32 poolId = amm.getPoolId(tokenA, tokenB);
         uint256 lpBalance = amm.liquidityBalances(poolId, bootstrapper);
@@ -1614,6 +1636,124 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         catch (bytes memory reason) {
             _assertKnownError(reason);
         }
+        vm.stopPrank();
+    }
+
+    /// @notice Drains the direct pool `(_userTokenWithHop, tokenN)` via real `amm.burn` from any
+    /// LP holder, so a previously-deep direct pool can become shallow mid-run and the fallback
+    /// path fires more often.
+    /// @dev Real burn keeps AMM accounting consistent.
+    /// @param actorSeed Picks an LP holder of the direct pool.
+    /// @param validatorSeed Picks `tokenN`.
+    /// @param burnPctSeed Fraction of LP to burn, biased to 99.99–100%.
+    function simulateDirectDrainViaBurn(
+        uint256 actorSeed,
+        uint256 validatorSeed,
+        uint256 burnPctSeed
+    )
+        external
+    {
+        address userToken = address(_userTokenWithHop);
+        address validatorToken = _pickTwoHopValidatorToken(validatorSeed);
+        bytes32 poolId = amm.getPoolId(userToken, validatorToken);
+
+        // Find any LP holder for this pool (may be empty if no actor has minted yet).
+        address[] memory holders = new address[](_actors.length);
+        uint256[] memory balances = new uint256[](_actors.length);
+        uint256 count = 0;
+        for (uint256 i = 0; i < _actors.length; i++) {
+            uint256 bal = amm.liquidityBalances(poolId, _actors[i]);
+            if (bal > 0) {
+                holders[count] = _actors[i];
+                balances[count] = bal;
+                count++;
+            }
+        }
+        if (count == 0) return;
+
+        uint256 idx = bound(actorSeed, 0, count - 1);
+        address holder = holders[idx];
+        uint256 lpBalance = balances[idx];
+
+        uint256 burnPct = bound(burnPctSeed, 99_990, 100_000);
+        uint256 toBurn = (lpBalance * burnPct) / 100_000;
+        if (toBurn == 0) return;
+
+        vm.startPrank(holder);
+        try amm.burn(userToken, validatorToken, toBurn, holder) {
+            _totalDirectDrains++;
+        } catch (bytes memory reason) {
+            _assertKnownError(reason);
+        }
+        vm.stopPrank();
+    }
+
+    /// @notice Rotates a TIP-20's quote token to drive TEMPO-FEE9's "current chain state" check
+    /// and `_invariantQuoteTokenGraphWellFormed`. Without this both reduce to static setup
+    /// properties.
+    /// @dev Excludes `_userTokenWithHop` so existing two-hop fallback witnesses stay consistent
+    /// with the post-rotation graph, and excludes `_degenerateUserToken` because
+    /// `simulateDegenerateQuoteEqualsValidator` hardcodes its quote as `_hopToken` to engineer
+    /// the degenerate-revert state — rotating it would let the degenerate handler false-fail
+    /// in states where the real `plan_fee_route` would two-hop. Picks a new quote whose chain
+    /// reaches `pathUSD` without passing through the target (cycle pre-check). Validation
+    /// reverts are caught silently.
+    /// @param tokenSeed Picks the rotation target.
+    /// @param newQuoteSeed Picks the candidate new quote.
+    function rotateQuoteToken(uint256 tokenSeed, uint256 newQuoteSeed) external {
+        // Excludes `_userTokenWithHop` (pins two-hop topology) and `_degenerateUserToken`
+        // (pins the degenerate-revert handler). Everything else is fair game.
+        uint256 numTokens = _tokens.length;
+        ITIP20Token[] memory candidates = new ITIP20Token[](numTokens);
+        uint256 numCandidates = 0;
+        for (uint256 i = 0; i < numTokens; i++) {
+            address t = address(_tokens[i]);
+            if (t == address(_userTokenWithHop) || t == address(_degenerateUserToken)) continue;
+            candidates[numCandidates++] = ITIP20Token(t);
+        }
+        if (numCandidates == 0) return;
+
+        ITIP20Token target = candidates[tokenSeed % numCandidates];
+
+        // New quote: any other rotation candidate whose currency is USD AND that does not
+        // currently quote (directly or transitively) into `target` (avoids cycle).
+        ITIP20 newQuote;
+        uint256 startIdx = newQuoteSeed % numCandidates;
+        for (uint256 attempt = 0; attempt < numCandidates; attempt++) {
+            ITIP20Token c = candidates[(startIdx + attempt) % numCandidates];
+            if (address(c) == address(target)) continue;
+            // Walk c's quote chain: must reach pathUSD without passing through `target`.
+            address cur = address(ITIP20(address(c)).quoteToken());
+            bool ok = true;
+            uint256 walked = 0;
+            while (cur != address(0) && cur != address(pathUSD)) {
+                if (cur == address(target)) {
+                    ok = false;
+                    break;
+                }
+                if (++walked > 8) {
+                    ok = false;
+                    break;
+                }
+                cur = address(ITIP20(cur).quoteToken());
+            }
+            if (ok && cur == address(pathUSD)) {
+                newQuote = ITIP20(address(c));
+                break;
+            }
+        }
+        if (address(newQuote) == address(0)) return;
+
+        vm.startPrank(admin);
+        // Both calls SHOULD succeed: we prank as admin (role check passes) and pre-walk the
+        // candidate's chain (cycle check passes). The catches are a safety net so a future
+        // TIP-20 validation rule we haven't anticipated does NOT abort the whole fuzz campaign
+        // (`fail_on_revert = true`); a missed rotation just lowers coverage on that step.
+        try target.setNextQuoteToken(newQuote) {
+            try target.completeQuoteTokenUpdate() {
+                _totalQuoteRotations++;
+            } catch (bytes memory) { }
+        } catch (bytes memory) { }
         vm.stopPrank();
     }
 
@@ -1690,6 +1830,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
         _invariantTwoHopFeeMath(); // TEMPO-AMM35, TEMPO-AMM37
         _invariantTwoHopMathDivergesFromFused(); // TEMPO-AMM36
         _invariantDirectPreferred(); // TEMPO-FEE7
+        _invariantSingleHopExactFeeMath(); // TIP-1033 inv. 2 (single-hop fee math, per-witness)
         _invariantTwoHopGating(); // TEMPO-FEE8
         _invariantIntermediateWellFormed(); // TEMPO-FEE9
         _invariantQuoteTokenGraphWellFormed(); // TEMPO-FEE9
@@ -2158,6 +2299,30 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
                 uint256(w.directReserveAfter),
                 uint256(w.directReserveBefore) - w.out1,
                 "TEMPO-FEE7: direct-preferred path must consume out1 from the direct pool"
+            );
+        }
+    }
+
+    /// @notice TIP-1033 inv. 2 (per-witness, single-hop): for every direct-path witness, both
+    /// the recorded `out1` and the direct-pool's validator-side reserve delta equal
+    /// `floor(actualSpending * M / SCALE)`, re-derived from the spec formula (not the value
+    /// the handler stored). Sibling of `_invariantTwoHopFeeMath`. Note: the validator-credited
+    /// `collectedFees` delta is NOT verified here (the witness does not snapshot it); see
+    /// `_invariantFeeConservation` and `_ghostTotalFeesCollected` for the aggregate check.
+    function _invariantSingleHopExactFeeMath() internal view {
+        for (uint256 i = 0; i < _ghostTwoHopWitnesses.length; i++) {
+            TwoHopWitness memory w = _ghostTwoHopWitnesses[i];
+            if (w.tookFallback) continue;
+            uint256 expectedOut1 = (w.actualSpending * M) / SCALE;
+            assertEq(
+                w.out1,
+                expectedOut1,
+                "TIP-1033 (inv. 2): single-hop credit must equal floor(actualSpending * M / SCALE)"
+            );
+            assertEq(
+                uint256(w.directReserveAfter),
+                uint256(w.directReserveBefore) - expectedOut1,
+                "TIP-1033 (inv. 2): direct reserve delta must equal floor(actualSpending * M / SCALE)"
             );
         }
     }
