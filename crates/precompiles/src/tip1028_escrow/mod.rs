@@ -154,7 +154,6 @@ impl TIP1028Escrow {
             return Err(TIP1028EscrowError::invalid_receipt_claim().into());
         }
 
-        let guard = self.storage.checkpoint();
         self.blocked_receipt_amount[key].write(U256::ZERO)?;
 
         TIP20Token::from_address(call.token)?.release_from_escrow(
@@ -181,7 +180,6 @@ impl TIP1028Escrow {
             },
         ))?;
 
-        guard.commit();
         Ok(())
     }
 
