@@ -1079,11 +1079,11 @@ impl TIP20Token {
         self.ensure_transfer_authorized(from, to.target)
     }
 
-    /// Resolves the effective recipient, checks that `msg_sender` has the issuer role, preserves
-    /// the pre-T6 `total_supply` read position, validates that the token is not paused, and the
-    /// recipient can receive mints. On T6+, the `total_supply` read is deferred to `_mint`.
+    /// Resolves the effective recipient and verifies that ⁠`msg_sender` has the issuer role.
+    /// To preserve re-execution of old transactions (pre-T6), also reads ⁠total_supply.
+    /// Additionally (+T3) checks pause state and validates the effective recipient.
     ///
-    /// Returns the resolved recipient and, pre-T6, the total supply.
+    /// Returns the resolved [⁠`Recipient`] and, pre-T6, the ⁠total_supply.
     fn validate_mint(&self, msg_sender: Address, to: Address) -> Result<(Recipient, Option<U256>)> {
         let to = Recipient::resolve(to)?;
         self.check_role(msg_sender, *ISSUER_ROLE)?;
