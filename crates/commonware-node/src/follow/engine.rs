@@ -13,7 +13,10 @@
 use std::{sync::Arc, time::Duration};
 
 use commonware_broadcast::buffered;
-use commonware_consensus::{Reporters, marshal, types::FixedEpocher};
+use commonware_consensus::{
+    Reporters, marshal,
+    types::{FixedEpocher, Height},
+};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_parallel::Sequential;
 use commonware_runtime::{
@@ -63,6 +66,15 @@ pub struct Config<TUpstream> {
 
     /// Mailbox to an upstream actor running outside of the follower engine.
     pub upstream_mailbox: upstream::Mailbox,
+
+    /// Number of recently finalized blocks retained in the prunable archive
+    /// passed to the marshal actor. Older blocks are served from reth.
+    pub finalized_blocks_retention: u64,
+
+    /// Whether to skip dual-writing finalized blocks to the legacy immutable
+    /// archive. See [`crate::storage::init_hybrid_finalized_blocks`] for the
+    /// rollback-safety implications.
+    pub no_legacy_archive: bool,
 }
 
 impl<TUpstream> Config<TUpstream> {
@@ -100,17 +112,20 @@ impl<TUpstream> Config<TUpstream> {
         .await
         .wrap_err("failed to initialize finalizations by height archive")?;
 
-        let finalized_blocks = storage::init_finalized_blocks_archive(
+        let finalized_blocks = storage::init_hybrid_finalized_blocks(
             &context,
             &self.partition_prefix,
             page_cache_ref.clone(),
+            self.execution_node.provider.clone(),
+            self.finalized_blocks_retention,
+            !self.no_legacy_archive,
         )
         .await
-        .wrap_err("failed to initialize finalized blocks archive")?;
+        .wrap_err("failed to initialize hybrid finalized blocks store")?;
 
         let epoch_strategy = self.epoch_strategy.clone();
 
-        let (marshal_actor, marshal_mailbox, last_finalized_height): (
+        let (marshal_actor, marshal_mailbox, marshal_stored_height): (
             crate::alias::marshal::Actor<TContext>,
             crate::alias::marshal::Mailbox,
             _,
@@ -136,6 +151,28 @@ impl<TUpstream> Config<TUpstream> {
             },
         )
         .await;
+
+        // Floor the marshal at reth's last finalized block so we don't try to
+        // re-sync history that the execution layer already finalized. The
+        // mailbox message is buffered until the actor starts; `set_floor` only
+        // ever advances, so sending it unconditionally is safe.
+        let reth_finalized_height = self
+            .execution_node
+            .provider
+            .canonical_in_memory_state()
+            .get_finalized_num_hash()
+            .map(|nh| nh.number)
+            .unwrap_or(0);
+        let last_finalized_height =
+            marshal_stored_height.max(Height::new(reth_finalized_height));
+        if last_finalized_height > marshal_stored_height {
+            info!(
+                marshal_stored = %marshal_stored_height,
+                reth_finalized = reth_finalized_height,
+                "advancing marshal sync floor to reth's finalized block"
+            );
+            marshal_mailbox.set_floor(last_finalized_height).await;
+        }
 
         info_span!("follow_engine").in_scope(|| {
             info!(

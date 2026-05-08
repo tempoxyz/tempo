@@ -10,15 +10,25 @@ pub(crate) mod marshal {
     use commonware_parallel::Sequential;
     use commonware_storage::archive::immutable;
     use commonware_utils::acknowledgement::Exact;
+    use reth_ethereum::provider::db::DatabaseEnv;
+    use reth_node_builder::NodeTypesWithDBAdapter;
+    use reth_provider::providers::BlockchainProvider;
+    use tempo_node::node::TempoNode;
 
-    use crate::consensus::{Digest, block::Block};
+    use crate::{
+        consensus::{Digest, block::Block},
+        storage::Hybrid,
+    };
+
+    /// Concrete reth provider used by [`tempo_node::TempoFullNode`].
+    type TempoProvider = BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>;
 
     pub(crate) type Actor<TContext> = core::Actor<
         TContext,
         Standard<Block>,
         crate::epoch::SchemeProvider,
         immutable::Archive<TContext, Digest, Finalization<Scheme<PublicKey, MinSig>, Digest>>,
-        immutable::Archive<TContext, Digest, Block>,
+        Hybrid<TContext, TempoProvider>,
         FixedEpocher,
         Sequential,
         Exact,

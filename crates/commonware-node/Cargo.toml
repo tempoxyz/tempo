@@ -72,3 +72,10 @@ tracing.workspace = true
 
 [dev-dependencies]
 tempo-primitives = { workspace = true, features = ["arbitrary"] }
+
+# Storage tests pull in BlockReader's supertraits' associated types directly.
+alloy-eips.workspace = true
+reth-chainspec.workspace = true
+reth-db-api.workspace = true
+# `commonware_macros::test_traced` requires `tracing_subscriber` to be in scope.
+tracing-subscriber.workspace = true
