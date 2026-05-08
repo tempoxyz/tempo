@@ -33,7 +33,7 @@ async fn test_get_expiring_nonce_status() -> eyre::Result<()> {
     let current_timestamp = setup.node.payload.timestamp;
 
     let (included, included_hash) =
-        signed_expiring_nonce_tx(&signer, chain_id, current_timestamp + 30, 0)?;
+        signed_expiring_nonce_tx(&signer, chain_id, current_timestamp + 30)?;
     assert_eq!(
         get_expiring_nonce_status(&provider, &included).await?,
         ExpiringNonceStatus::Pending,
@@ -43,9 +43,9 @@ async fn test_get_expiring_nonce_status() -> eyre::Result<()> {
     setup.node.advance_block().await?;
     assert_receipt_status(&provider, included_hash, true).await?;
 
-    let (expired, _) = signed_expiring_nonce_tx(&signer, chain_id, current_timestamp + 29, 1)?;
+    let (expired, _) = signed_expiring_nonce_tx(&signer, chain_id, current_timestamp + 29)?;
     let (expired_at_boundary, _) =
-        signed_expiring_nonce_tx(&signer, chain_id, current_timestamp + 30, 2)?;
+        signed_expiring_nonce_tx(&signer, chain_id, current_timestamp + 30)?;
     advance_until_finalized_after(&mut setup, &provider, current_timestamp + 30).await?;
 
     assert_eq!(
@@ -75,7 +75,7 @@ async fn test_get_expiring_nonce_status_rejects_non_expiring_transaction() -> ey
         .connect_http(setup.http_url);
     let chain_id = provider.get_chain_id().await?;
 
-    let mut tx = expiring_nonce_tx(chain_id, 1, 0);
+    let mut tx = expiring_nonce_tx(chain_id, 1);
     tx.nonce_key = U256::from(1);
     tx.valid_before = None;
     let signature = signer.sign_hash_sync(&tx.signature_hash())?;
@@ -165,7 +165,7 @@ async fn test_get_expiring_nonce_status_rejects_missing_valid_before() -> eyre::
         .connect_http(setup.http_url);
     let chain_id = provider.get_chain_id().await?;
 
-    let mut tx = expiring_nonce_tx(chain_id, 1, 0);
+    let mut tx = expiring_nonce_tx(chain_id, 1);
     tx.valid_before = None;
     let signature = signer.sign_hash_sync(&tx.signature_hash())?;
     let envelope: TempoTxEnvelope = tx.into_signed(signature.into()).into();
@@ -188,15 +188,14 @@ fn signed_expiring_nonce_tx(
     signer: &impl SignerSync,
     chain_id: u64,
     valid_before: u64,
-    nonce: u64,
 ) -> eyre::Result<(Vec<u8>, B256)> {
-    let tx = expiring_nonce_tx(chain_id, valid_before, nonce);
+    let tx = expiring_nonce_tx(chain_id, valid_before);
     let signature = signer.sign_hash_sync(&tx.signature_hash())?;
     let envelope: TempoTxEnvelope = tx.into_signed(signature.into()).into();
     Ok((envelope.encoded_2718(), *envelope.tx_hash()))
 }
 
-fn expiring_nonce_tx(chain_id: u64, valid_before: u64, nonce: u64) -> TempoTransaction {
+fn expiring_nonce_tx(chain_id: u64, valid_before: u64) -> TempoTransaction {
     TempoTransaction {
         chain_id,
         max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
@@ -208,7 +207,7 @@ fn expiring_nonce_tx(chain_id: u64, valid_before: u64, nonce: u64) -> TempoTrans
             input: Bytes::new(),
         }],
         nonce_key: TEMPO_EXPIRING_NONCE_KEY,
-        nonce,
+        nonce: 0,
         fee_token: Some(DEFAULT_FEE_TOKEN),
         fee_payer_signature: None,
         valid_before: Some(NonZeroU64::new(valid_before).expect("valid_before must be non-zero")),
