@@ -1,7 +1,7 @@
 //! Patch a virgin block-0 database to use a new genesis header.
 //!
-//! This is intentionally narrow: it replaces the header static file segment and
-//! rewrites the hash-to-number index without touching state, hash, or trie tables.
+//! It replaces the header static file segment and rewrites the hash-to-number index
+//! without touching state, hash, or trie tables.
 
 use std::fs;
 
@@ -112,9 +112,17 @@ where
             "only HeaderNumbers entry maps to block {stored_block_number}, expected block 0"
         );
 
-        if stored_genesis_hash != new_genesis_hash {
-            tx.delete::<tables::HeaderNumbers>(stored_genesis_hash, None)?;
+        if stored_genesis_hash == new_genesis_hash {
+            info!(
+                target: "tempo::cli",
+                old_genesis_hash = %stored_genesis_hash,
+                %new_genesis_hash,
+                "Genesis hash already matches, skipping patch"
+            );
+            return Ok(());
         }
+
+        tx.delete::<tables::HeaderNumbers>(stored_genesis_hash, None)?;
         tx.put::<tables::HeaderNumbers>(new_genesis_hash, 0)?;
         tx.put::<tables::BlockBodyIndices>(0, Default::default())?;
         provider_rw.commit()?;
