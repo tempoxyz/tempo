@@ -2,7 +2,8 @@
 #
 # Runs nightly after the Docker workflow's 09:05 UTC scheduled build. The
 # benchmark compares the latest successful nightly Docker commit against the
-# last commit that completed this scheduled replay workflow successfully.
+# last commit that completed this scheduled replay workflow successfully for
+# each selected chain.
 
 name: bench-replay-scheduled
 
@@ -53,13 +54,15 @@ jobs:
     outputs:
       baseline-ref: ${{ steps.refs.outputs.baseline-ref }}
       baseline-name: ${{ steps.refs.outputs.baseline-name }}
+      baseline-refs-json: ${{ steps.refs.outputs.baseline-refs-json }}
+      baseline-names-json: ${{ steps.refs.outputs.baseline-names-json }}
       feature-ref: ${{ steps.refs.outputs.feature-ref }}
       feature-name: ${{ steps.refs.outputs.feature-name }}
       should-skip: ${{ steps.refs.outputs.should-skip }}
       is-stale: ${{ steps.refs.outputs.is-stale }}
       stale-age-hours: ${{ steps.refs.outputs.stale-age-hours }}
       nightly-created: ${{ steps.refs.outputs.nightly-created }}
-      chains-json: ${{ steps.config.outputs.chains-json }}
+      chains-json: ${{ steps.refs.outputs.chains-json }}
       blocks: ${{ steps.config.outputs.blocks }}
       warmup: ${{ steps.config.outputs.warmup }}
       samply: ${{ steps.config.outputs.samply }}
@@ -117,7 +120,8 @@ jobs:
           DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           INPUT_FORCE: ${{ inputs.force || 'false' }}
-        run: bash .github/scripts/bench-replay-scheduled-refs.sh "$INPUT_FORCE"
+          INPUT_CHAINS_JSON: ${{ steps.config.outputs.chains-json }}
+        run: bash .github/scripts/bench-replay-scheduled-refs.sh "$INPUT_FORCE" "$INPUT_CHAINS_JSON"
 
       - name: Alert on stale nightly
         if: steps.refs.outputs.is-stale == 'true'
@@ -200,8 +204,8 @@ jobs:
         uses: actions/github-script@v8
         env:
           CHAINS_JSON: ${{ needs.resolve-refs.outputs.chains-json }}
-          BASELINE_REF: ${{ needs.resolve-refs.outputs.baseline-ref }}
-          BASELINE_NAME: ${{ needs.resolve-refs.outputs.baseline-name }}
+          BASELINE_REFS_JSON: ${{ needs.resolve-refs.outputs.baseline-refs-json }}
+          BASELINE_NAMES_JSON: ${{ needs.resolve-refs.outputs.baseline-names-json }}
           FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}
           FEATURE_NAME: ${{ needs.resolve-refs.outputs.feature-name }}
           BENCH_BLOCKS: ${{ needs.resolve-refs.outputs.blocks }}
@@ -214,6 +218,8 @@ jobs:
             const workflow_id = 'bench-replay.yml';
             const ref = context.ref.replace(/^refs\/(heads|tags)\//, '');
             const chains = JSON.parse(process.env.CHAINS_JSON);
+            const baselineRefs = JSON.parse(process.env.BASELINE_REFS_JSON);
+            const baselineNames = JSON.parse(process.env.BASELINE_NAMES_JSON);
             const dispatchKey = `scheduled-${process.env.GITHUB_RUN_ID}-${process.env.GITHUB_RUN_ATTEMPT || '1'}`;
             const sleep = (ms) => new Promise(resolve => setTimeout(resolve, ms));
             const titleFor = (chain) => `bench-replay ${chain} ${dispatchKey}`;
@@ -221,6 +227,10 @@ jobs:
             core.info(`Dispatching ${workflow_id} on ${ref} for chains: ${chains.join(', ')}`);
 
             for (const chain of chains) {
+              if (!baselineRefs[chain] || !baselineNames[chain]) {
+                throw new Error(`Missing baseline for ${chain}`);
+              }
+
               await github.rest.actions.createWorkflowDispatch({
                 owner,
                 repo,
@@ -231,9 +241,9 @@ jobs:
                   blocks: process.env.BENCH_BLOCKS,
                   warmup: process.env.BENCH_WARMUP,
                   samply: process.env.BENCH_SAMPLY,
-                  baseline: process.env.BASELINE_REF,
+                  baseline: baselineRefs[chain],
                   feature: process.env.FEATURE_REF,
-                  'baseline-name': process.env.BASELINE_NAME,
+                  'baseline-name': baselineNames[chain],
                   'feature-name': process.env.FEATURE_NAME,
                   'baseline-args': '',
                   'feature-args': '',
@@ -322,6 +332,7 @@ jobs:
         env:
           DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
           FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}
+          CHAINS_JSON: ${{ needs.resolve-refs.outputs.chains-json }}
         run: |
           CHARTS_REPO="https://x-access-token:${DEREK_TOKEN}@github.com/decofe/tempo-bench-charts.git"
           TMP_DIR=$(mktemp -d)
@@ -334,10 +345,19 @@ jobs:
           fi
 
           mkdir -p "${TMP_DIR}/state"
-          echo "${FEATURE_REF}" > "${TMP_DIR}/state/replay-nightly-last-feature-ref"
-          git -C "${TMP_DIR}" add state/
+          mapfile -t CHAINS < <(echo "$CHAINS_JSON" | jq -r ".[]")
+          STATE_FILES=()
+
+          for CHAIN in "${CHAINS[@]}"; do
+            STATE_FILE="state/replay-nightly-${CHAIN}-last-feature-ref"
+            echo "${FEATURE_REF}" > "${TMP_DIR}/${STATE_FILE}"
+            STATE_FILES+=("${STATE_FILE}")
+          done
+
+          git -C "${TMP_DIR}" add "${STATE_FILES[@]}"
           git -C "${TMP_DIR}" diff --cached --quiet && echo "No state change" && exit 0
+          CHAINS_CSV=$(printf "%s\n" "${CHAINS[@]}" | paste -sd "," -)
           git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
-            commit -m "bench: update replay nightly state to ${FEATURE_REF}"
+            commit -m "bench: update replay nightly ${CHAINS_CSV} state to ${FEATURE_REF}"
           git -C "${TMP_DIR}" push origin HEAD:state
           rm -rf "${TMP_DIR}"
