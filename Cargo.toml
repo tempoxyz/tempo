@@ -96,6 +96,26 @@ inherits = "release"
 lto = "fat"
 codegen-units = 1
 
+# Used by Dockerfile.reproducible to produce a byte-deterministic Linux x86_64
+# binary that an external rebuilder can hash-compare against the one published
+# on the GitHub release. Diverges from `maxperf` (1) by disabling everything
+# that introduces nondeterminism (incremental, debug info) and (2) by switching
+# panics from unwind to abort. `panic = "abort"` is chosen for the reproducible
+# profile because it strips out unwinding tables and the associated codegen
+# paths, which are the most reliable source of byte-level drift between
+# toolchain versions and stdlib monomorphizations. The user-facing binary
+# (built with `maxperf`) keeps `panic = "unwind"` so production panics still
+# produce sane backtraces; this profile is only ever consumed by independent
+# rebuilders comparing hashes.
+[profile.reproducible]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = "none"
+debug = "none"
+panic = "abort"
+incremental = false
+
 [workspace.dependencies]
 tempo-alloy = { path = "crates/alloy" }
 tempo-node = { path = "crates/node" }

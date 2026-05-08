@@ -80,8 +80,12 @@ pub struct TIP20Token {
     name: String,
     symbol: String,
     currency: String,
-    // Unused slot, kept for storage layout compatibility
-    _domain_separator: B256,
+    // TIP-1026: Token Logo URI.
+    // Reuses the previously-unused `_domain_separator` slot (always 0 on
+    // pre-T5 tokens), which reads as the empty string under Solidity's
+    // short-string encoding — matching the spec's "default empty" semantics.
+    // Assumes the slot was never written; do not write to it from pre-T5 code.
+    logo_uri: String,
     quote_token: Address,
     next_quote_token: Address,
     transfer_policy_id: u64,
@@ -143,6 +147,13 @@ impl TIP20Token {
     /// Returns the token's currency denomination (e.g. `"USD"`).
     pub fn currency(&self) -> Result<String> {
         self.currency.read()
+    }
+
+    /// Returns the logo URI for this token (TIP-1026).
+    ///
+    /// Returns an empty string if not set.
+    pub fn logo_uri(&self) -> Result<String> {
+        self.logo_uri.read()
     }
 
     /// Returns the current total supply.
@@ -273,6 +284,90 @@ impl TIP20Token {
             newSupplyCap: call.newSupplyCap,
         }))
     }
+
+    // ========== TIP-1026: Logo URI ==========
+
+    /// Maximum byte length of a token logo URI (TIP-1026).
+    pub const MAX_LOGO_URI_BYTES: usize = 256;
+
+    /// Allowlist of ASCII-case-insensitive URI schemes accepted for [`Self::set_logo_uri`].
+    ///
+    /// TIP-1026 guarantees that the protocol validates the scheme prefix to make integration easier
+    /// and reject obviously dangerous values (e.g. `javascript:`). What the consumer does with the URI
+    /// afterwards (rendering, fetching, etc.) is out of scope and remains the consumer's responsibility.
+    pub const ALLOWED_LOGO_URI_SCHEMES: &'static [&'static str] =
+        &["https", "http", "ipfs", "data"];
+
+    /// Validates a logo URI against the TIP-1026 protocol rules:
+    /// - length ≤ [`Self::MAX_LOGO_URI_BYTES`]
+    /// - syntactically well-formed URI schemes in [`Self::ALLOWED_LOGO_URI_SCHEMES`].
+    ///
+    /// Empty strings are accepted unconditionally.
+    pub(crate) fn validate_logo_uri(uri: &str) -> Result<()> {
+        if uri.len() > Self::MAX_LOGO_URI_BYTES {
+            return Err(TIP20Error::logo_uri_too_long().into());
+        }
+        if !uri.is_empty() && !Self::is_allowed_logo_uri(uri) {
+            return Err(TIP20Error::invalid_logo_uri().into());
+        }
+        Ok(())
+    }
+
+    fn is_allowed_logo_uri(uri: &str) -> bool {
+        let Some((scheme, _rest)) = uri.split_once(':') else {
+            return false;
+        };
+
+        let mut bytes = scheme.bytes();
+        let Some(first) = bytes.next() else {
+            return false;
+        };
+        if !first.is_ascii_alphabetic() {
+            return false;
+        }
+        if !bytes.all(|b| b.is_ascii_alphanumeric() || matches!(b, b'+' | b'-' | b'.')) {
+            return false;
+        }
+
+        Self::ALLOWED_LOGO_URI_SCHEMES
+            .iter()
+            .any(|allowed| scheme.eq_ignore_ascii_case(allowed))
+    }
+
+    /// Sets the logo URI for this token (TIP-1026). Empty strings are valid
+    /// and clear the URI.
+    ///
+    /// # Errors
+    /// - `Unauthorized` — caller does not hold `DEFAULT_ADMIN_ROLE`
+    /// - `LogoURITooLong` — `bytes(newLogoURI).length > 256`
+    /// - `InvalidLogoURI` — `newLogoURI` is non-empty and either has no
+    ///   parseable scheme (RFC 3986 §3.1) or its scheme is not in
+    ///   [`Self::ALLOWED_LOGO_URI_SCHEMES`]
+    pub fn set_logo_uri(
+        &mut self,
+        msg_sender: Address,
+        call: ITIP20::setLogoURICall,
+    ) -> Result<()> {
+        self.check_role(msg_sender, DEFAULT_ADMIN_ROLE)?;
+        self.write_logo_uri(msg_sender, call.newLogoURI)
+    }
+
+    /// Internal helper: runs [`Self::validate_logo_uri`] (length cap + scheme allowlist), stores the
+    /// value, and emits `LogoURIUpdated`.
+    ///
+    /// **IMPORTANT:** this function performs NO role check. It is the caller's responsibility.
+    pub(crate) fn write_logo_uri(&mut self, updater: Address, new_logo_uri: String) -> Result<()> {
+        Self::validate_logo_uri(&new_logo_uri)?;
+
+        self.logo_uri.write(new_logo_uri.clone())?;
+
+        self.emit_event(TIP20Event::LogoURIUpdated(ITIP20::LogoURIUpdated {
+            updater,
+            newLogoURI: new_logo_uri,
+        }))
+    }
+
+    // ========== End TIP-1026 ==========
 
     /// Pauses all token transfers.
     ///
@@ -749,11 +844,20 @@ impl TIP20Token {
         Ok(true)
     }
 
-    /// Transfers `amount` from `from` to `to` without approval, for use
-    /// by other precompiles only (not exposed via ABI). Enforces
-    /// compliance via the [`TIP403Registry`] and [`AccountKeychain`].
+    /// Transfers `amount` from `from` to `to` without checking allowances. For use by precompiles
+    /// on the [`crate::address_registry::IMPLICIT_APPROVAL_LIST`] only — not exposed via ABI.
+    /// Enforces compliance via the [`TIP403Registry`] and [`AccountKeychain`].
+    ///
+    /// `caller` is the address of the precompile invoking this function. Starting at
+    /// `TempoHardfork::T5` (TIP-1035), the call returns `Unauthorized` unless `caller` is on the
+    /// Implicit Approval List. Pre-T5, `caller` is unchecked (preserves pre-TIP-1035 behavior of
+    /// the existing internal-only caller, `TipFeeManager`).
+    ///
+    /// Callers are also expected to pull only from the current `msg.sender`; this is a security
+    /// guideline of TIP-1035 enforced at the call site, not by this function.
     ///
     /// # Errors
+    /// - `Unauthorized` — `caller` is not on the Implicit Approval List (T5+)
     /// - `Paused` — token transfers are currently paused
     /// - `InvalidRecipient` — recipient address is zero
     /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
@@ -761,11 +865,17 @@ impl TIP20Token {
     /// - `InsufficientBalance` — `from` balance lower than transfer amount
     pub fn system_transfer_from(
         &mut self,
+        caller: Address,
         from: Address,
-        to: Address,
         amount: U256,
     ) -> Result<bool> {
-        let to = Recipient::resolve(to)?;
+        // [TIP-1035] List gating: at T5+, only listed precompiles may invoke this entrypoint.
+        let spec = self.storage.spec();
+        if spec.is_t5() && !crate::address_registry::is_implicitly_approved(caller, spec) {
+            return Err(TIP20Error::unauthorized().into());
+        }
+
+        let to = Recipient::resolve(caller)?;
         self.validate_transfer(from, &to)?;
         self.check_and_update_spending_limit(from, amount)?;
 
@@ -1317,7 +1427,7 @@ mod recipient_tests {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
-    use tempo_contracts::precompiles::ITIP20Factory;
+    use tempo_contracts::precompiles::createTokenCall;
 
     use super::*;
     use crate::{
@@ -1827,11 +1937,60 @@ pub(crate) mod tests {
                 .with_mint(from, amount)
                 .apply()?;
 
-            assert!(token.system_transfer_from(from, to, amount).is_ok());
+            // Pre-T5: caller is unchecked (preserves pre-TIP-1035 FeeAMM behavior).
+            assert!(token.system_transfer_from(to, from, amount).is_ok());
             assert_eq!(
                 token.emitted_events().last().unwrap(),
                 &TIP20Event::Transfer(ITIP20::Transfer { from, to, amount }).into_log_data()
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_system_transfer_from_t5_authorized() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let admin = Address::random();
+        let from = Address::random();
+        let amount = U256::random() % U256::from(u128::MAX);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(from, amount)
+                .apply()?;
+
+            // Listed precompile is allowed to invoke `system_transfer_from`.
+            assert!(
+                token
+                    .system_transfer_from(TIP_FEE_MANAGER_ADDRESS, from, amount)
+                    .is_ok()
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_system_transfer_from_t5_unauthorized_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let admin = Address::random();
+        let unlisted = Address::random();
+        let from = Address::random();
+        let amount = U256::random() % U256::from(u128::MAX);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(from, amount)
+                .apply()?;
+
+            // Unlisted callers are rejected with `Unauthorized` at T5+.
+            assert!(matches!(
+                token.system_transfer_from(unlisted, from, amount),
+                Err(TempoPrecompileError::TIP20(TIP20Error::Unauthorized(_)))
+            ));
 
             Ok(())
         })
@@ -2116,6 +2275,191 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_validate_logo_uri() {
+        const MAX: usize = TIP20Token::MAX_LOGO_URI_BYTES;
+
+        // Valid: empty, all allowlisted schemes (case-insensitive), and exactly at the 256-byte cap.
+        let prefix = "https://example.com/";
+        let at_cap = format!("{prefix}{}", "a".repeat(MAX - prefix.len()));
+        assert_eq!(at_cap.len(), MAX);
+        for ok in [
+            "",
+            "https://example.com/icon.svg",
+            "http://example.com/icon.png",
+            "ipfs://QmXfzKRvjZz3u5JRgC4v5mGVbm9ahrUiB4DgzHBsnWbTMM",
+            "data:image/svg+xml;base64,PHN2Zy8+",
+            "HTTPS://example.com/ICON.svg",
+            "IPFS://Qm123",
+            &at_cap,
+        ] {
+            assert!(
+                TIP20Token::validate_logo_uri(ok).is_ok(),
+                "expected Ok for {ok:?}"
+            );
+        }
+
+        // 257 bytes — one over the limit. Use a syntactically valid URI so
+        // we exercise the length check, not the URI/scheme check.
+        let too_long = format!("{prefix}{}", "a".repeat(MAX + 1 - prefix.len()));
+        assert_eq!(too_long.len(), MAX + 1);
+        assert!(matches!(
+            TIP20Token::validate_logo_uri(&too_long),
+            Err(TempoPrecompileError::TIP20(TIP20Error::LogoURITooLong(_))),
+        ));
+
+        // Disallowed schemes and malformed URIs
+        for bad in [
+            "javascript:alert(1)",
+            "file:///etc/passwd",
+            "ftp://x.test/icon.png",
+            "no-scheme-here",
+            "://missing-scheme.test",
+            "1https://digit-leading.test",
+            ":empty-scheme",
+            " https://leading-space.test",
+        ] {
+            assert!(
+                matches!(
+                    TIP20Token::validate_logo_uri(bad),
+                    Err(TempoPrecompileError::TIP20(TIP20Error::InvalidLogoURI(_))),
+                ),
+                "expected InvalidLogoURI for {bad:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_set_logo_uri_non_admin_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let non_admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+            let result = token.set_logo_uri(
+                non_admin,
+                ITIP20::setLogoURICall {
+                    newLogoURI: "https://example.com/icon.svg".to_string(),
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::RolesAuthError(
+                    RolesAuthError::Unauthorized(_)
+                ))
+            ));
+
+            // logoURI should remain unchanged (empty)
+            assert_eq!(token.logo_uri()?, "");
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_logo_uri_too_long_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+            // 257 bytes — one over the limit. Use a syntactically valid URI
+            // so we exercise the length check, not the URI/scheme check.
+            let prefix = "https://example.com/";
+            let too_long = format!("{prefix}{}", "a".repeat(257 - prefix.len()));
+            assert_eq!(too_long.len(), 257);
+            let result = token.set_logo_uri(
+                admin,
+                ITIP20::setLogoURICall {
+                    newLogoURI: too_long,
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::LogoURITooLong(_)))
+            ));
+
+            // 256 bytes — at the limit, should succeed
+            let at_limit = format!("{prefix}{}", "a".repeat(256 - prefix.len()));
+            assert_eq!(at_limit.len(), 256);
+            token.set_logo_uri(
+                admin,
+                ITIP20::setLogoURICall {
+                    newLogoURI: at_limit.clone(),
+                },
+            )?;
+            assert_eq!(token.logo_uri()?, at_limit);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_logo_uri_writes_and_emits() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .clear_events()
+                .apply()?;
+
+            // Default is empty for a freshly-created token.
+            assert_eq!(token.logo_uri()?, "");
+
+            let uri = "https://example.com/icon.svg".to_string();
+            token.set_logo_uri(
+                admin,
+                ITIP20::setLogoURICall {
+                    newLogoURI: uri.clone(),
+                },
+            )?;
+
+            assert_eq!(token.logo_uri()?, uri);
+
+            token.assert_emitted_events(vec![TIP20Event::LogoURIUpdated(ITIP20::LogoURIUpdated {
+                updater: admin,
+                newLogoURI: uri,
+            })]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_logo_uri_empty_clears() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+            token.set_logo_uri(
+                admin,
+                ITIP20::setLogoURICall {
+                    newLogoURI: "https://example.com/icon.svg".to_string(),
+                },
+            )?;
+            assert_eq!(token.logo_uri()?, "https://example.com/icon.svg");
+
+            // Empty string is still valid (clears the URI per spec).
+            token.set_logo_uri(
+                admin,
+                ITIP20::setLogoURICall {
+                    newLogoURI: String::new(),
+                },
+            )?;
+            assert_eq!(token.logo_uri()?, "");
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_from_address() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let admin = Address::random();
@@ -2256,7 +2600,7 @@ pub(crate) mod tests {
 
             let created_tip20 = TIP20Factory::new().create_token(
                 sender,
-                ITIP20Factory::createTokenCall {
+                createTokenCall {
                     name: "Test Token".to_string(),
                     symbol: "TEST".to_string(),
                     currency: "USD".to_string(),

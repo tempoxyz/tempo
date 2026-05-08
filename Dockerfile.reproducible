@@ -1,0 +1,88 @@
+# syntax=docker/dockerfile:1.7
+#
+# Reproducible build of the `tempo` binary for x86_64-unknown-linux-gnu.
+#
+# Goal: any party with this Dockerfile + the source tree at a given commit
+# can produce the *byte-identical* binary that this repo's release.yml
+# publishes, so the published `tempo-<version>-x86_64-unknown-linux-gnu.sha256`
+# is verifiable end-to-end without trusting our CI infrastructure.
+#
+# Inputs:
+#   --build-arg SOURCE_DATE_EPOCH=$(git log -1 --pretty=%ct)
+#   --build-arg VERSION=<git tag>            (informational only)
+#
+# Output (with `--target artifacts -o type=local,dest=./out`):
+#   ./out/tempo                              the reproducible binary
+#
+# Reproducibility-critical decisions:
+#   * Pinned base image digest (rust 1.93.0 on Debian Bookworm).
+#   * `cargo --locked` so registry deps cannot drift.
+#   * RUSTFLAGS strip every source of nondeterminism we know about:
+#     SOURCE_DATE_EPOCH for build timestamps, --remap-path-prefix for the
+#     workspace / cargo registry / rustup paths, --build-id=none to drop
+#     the linker's GNU build-id note, symbol-mangling-version=v0 for stable
+#     mangling, and -C metadata= to remove the per-build hash that influences
+#     symbol names.
+#   * JEMALLOC_OVERRIDE points jemalloc-sys at the system static archive so
+#     it doesn't recompile its bundled C with embedded timestamps.
+#   * `[profile.reproducible]` (defined in Cargo.toml) disables incremental,
+#     emits no debuginfo, and inherits `release`'s fat LTO + 1 codegen-unit.
+
+ARG RUST_TOOLCHAIN=1.93.0
+FROM rust:${RUST_TOOLCHAIN}-bookworm@sha256:d0a4aa3ca2e1088ac0c81690914a0d810f2eee188197034edf366ed010a2b382 AS builder
+
+ARG SOURCE_DATE_EPOCH
+ARG VERSION
+# Pinned snapshot of the Debian package archive. Bumping this is the *only*
+# legitimate reason for a Debian-side byte change between two builds of the
+# same source tree. Without it, an `apt-get install libjemalloc-dev` between
+# two Debian point releases will silently pull in different upstream bytes
+# and break byte-equality with the original release build.
+#
+# Pick a snapshot >= the date the release was built. The value is intentionally
+# defaulted here so an external rebuilder running `docker build` from a
+# checked-out tag with no extra args reproduces what CI did at that tag.
+ARG DEBIAN_SNAPSHOT=20260501T000000Z
+
+# Repoint apt at snapshot.debian.org and disable the validity check (snapshots
+# carry stale Release files by design). The base image's pinned-by-digest
+# `/etc/apt/sources.list` is overwritten wholesale so subsequent `apt-get`
+# calls in this stage are deterministic regardless of which sources-list
+# format the upstream image happened to ship with.
+RUN echo "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/ bookworm main" \
+        > /etc/apt/sources.list && \
+    echo "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian-security/${DEBIAN_SNAPSHOT}/ bookworm-security main" \
+        >> /etc/apt/sources.list && \
+    echo "deb [check-valid-until=no] http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT}/ bookworm-updates main" \
+        >> /etc/apt/sources.list && \
+    rm -f /etc/apt/sources.list.d/debian.sources
+
+# Build-time system dependencies, installed from the pinned snapshot above.
+RUN apt-get -o Acquire::Check-Valid-Until=false update && \
+    apt-get install -y --no-install-recommends \
+        libjemalloc-dev \
+        libclang-dev \
+        clang \
+        libssl-dev \
+        pkg-config \
+        mold && \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY . .
+
+ENV SOURCE_DATE_EPOCH=${SOURCE_DATE_EPOCH} \
+    LC_ALL=C \
+    TZ=UTC \
+    JEMALLOC_OVERRIDE=/usr/lib/x86_64-linux-gnu/libjemalloc.a \
+    RUSTFLAGS="-C symbol-mangling-version=v0 -C strip=none -C link-arg=-Wl,--build-id=none -C link-arg=-fuse-ld=mold -C metadata= --remap-path-prefix /app=. --remap-path-prefix /usr/local/cargo/registry=/registry --remap-path-prefix /usr/local/rustup=/rustup"
+
+RUN cargo build --locked --bin tempo \
+        --features asm-keccak,jemalloc,otlp \
+        --profile reproducible \
+        --target x86_64-unknown-linux-gnu
+
+# `--target artifacts` extracts just the binary; `--target builder` (the
+# default) keeps the full Rust environment for debugging.
+FROM scratch AS artifacts
+COPY --from=builder /app/target/x86_64-unknown-linux-gnu/reproducible/tempo /tempo

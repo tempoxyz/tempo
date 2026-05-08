@@ -25,6 +25,7 @@ crate::sol! {
         // Pure functions
         function isVirtualAddress(address addr) external pure returns (bool);
         function decodeVirtualAddress(address addr) external pure returns (bool isVirtual, bytes4 masterId, bytes6 userTag);
+        function isImplicitlyApproved(address addr) external view returns (bool);
 
         // Events
         event MasterRegistered(bytes4 indexed masterId, address indexed masterAddress);
