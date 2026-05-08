@@ -121,46 +121,17 @@ where
                     Err(_) => return Ok(ExpiringNonceStatus::Unavailable),
                 };
 
-                let Ok(Some(finalized_header)) = provider.header_by_number(finalized.number) else {
-                    return Ok(ExpiringNonceStatus::Unavailable);
-                };
-                if finalized_header.timestamp() < valid_before {
-                    return Ok(ExpiringNonceStatus::Pending);
-                }
-
-                let Ok(earliest_number) = provider.earliest_block_number() else {
-                    return Ok(ExpiringNonceStatus::Unavailable);
-                };
-                let Ok(Some(earliest_header)) = provider.header_by_number(earliest_number) else {
-                    return Ok(ExpiringNonceStatus::Unavailable);
-                };
-                if earliest_header.timestamp() >= valid_before {
-                    return Ok(ExpiringNonceStatus::Unavailable);
-                }
-
-                let mut low = earliest_number;
-                let mut high = finalized.number;
-                while low < high {
-                    let mid = low + (high - low) / 2;
-                    let Ok(Some(header)) = provider.header_by_number(mid) else {
-                        return Ok(ExpiringNonceStatus::Unavailable);
+                let proof_blocks =
+                    match find_expiry_proof_blocks(provider, finalized.number, valid_before) {
+                        Ok(Some(proof_blocks)) => proof_blocks,
+                        Ok(None) => return Ok(ExpiringNonceStatus::Pending),
+                        Err(()) => return Ok(ExpiringNonceStatus::Unavailable),
                     };
-                    if header.timestamp() < valid_before {
-                        low = mid + 1;
-                    } else {
-                        high = mid;
-                    }
-                }
+                debug_assert!(proof_blocks.first_expired_block > proof_blocks.live_block);
 
-                // The first finalized block at/after expiry proves the transaction can no
-                // longer be included, but expiring-nonce replay state is bounded and can be
-                // cleared after expiry. Read the latest retained pre-expiry state instead.
-                let Some(proof_block) = live_block_before_expiry(low, earliest_number) else {
-                    return Ok(ExpiringNonceStatus::Unavailable);
-                };
                 let Ok(state) = this
                     .state_at_block_id_or_latest(Some(BlockId::Number(BlockNumberOrTag::Number(
-                        proof_block,
+                        proof_blocks.live_block,
                     ))))
                     .await
                 else {
@@ -180,6 +151,61 @@ where
 
         Ok(ExpiringNonceStatusResponse { status })
     }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ExpiryProofBlocks {
+    /// First finalized block whose timestamp is at or after `validBefore`.
+    first_expired_block: u64,
+    /// Latest retained finalized block before `validBefore`; replay state is read here.
+    live_block: u64,
+}
+
+fn find_expiry_proof_blocks<P>(
+    provider: &P,
+    finalized_block: u64,
+    valid_before: u64,
+) -> Result<Option<ExpiryProofBlocks>, ()>
+where
+    P: BlockNumReader + HeaderProvider,
+{
+    let finalized_header = provider
+        .header_by_number(finalized_block)
+        .map_err(|_| ())?
+        .ok_or(())?;
+    if finalized_header.timestamp() < valid_before {
+        return Ok(None);
+    }
+
+    let earliest_block = provider.earliest_block_number().map_err(|_| ())?;
+    let earliest_header = provider
+        .header_by_number(earliest_block)
+        .map_err(|_| ())?
+        .ok_or(())?;
+    if earliest_header.timestamp() >= valid_before {
+        return Err(());
+    }
+
+    let mut low = earliest_block;
+    let mut high = finalized_block;
+    while low < high {
+        let mid = low + (high - low) / 2;
+        let header = provider.header_by_number(mid).map_err(|_| ())?.ok_or(())?;
+        if header.timestamp() < valid_before {
+            low = mid + 1;
+        } else {
+            high = mid;
+        }
+    }
+
+    // The first finalized block at/after expiry proves the transaction can no
+    // longer be included, but expiring-nonce replay state is bounded and can be
+    // cleared after expiry. Read the latest retained pre-expiry state instead.
+    let live_block = live_block_before_expiry(low, earliest_block).ok_or(())?;
+    Ok(Some(ExpiryProofBlocks {
+        first_expired_block: low,
+        live_block,
+    }))
 }
 
 fn live_block_before_expiry(first_expired_block: u64, earliest_retained_block: u64) -> Option<u64> {
