@@ -120,11 +120,7 @@ impl TIP1028Escrow {
     }
 
     /// Releases escrowed receipt funds to the authorized recipient.
-    pub fn claim(
-        &mut self,
-        msg_sender: Address,
-        call: ITIP1028Escrow::claimCall,
-    ) -> Result<()> {
+    pub fn claim(&mut self, msg_sender: Address, call: ITIP1028Escrow::claimCall) -> Result<()> {
         if !call.token.is_tip20() {
             return Err(TIP1028EscrowError::invalid_token().into());
         }

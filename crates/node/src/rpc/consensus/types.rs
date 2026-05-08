@@ -74,7 +74,7 @@ impl Display for Query {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match serde_json::to_string(self) {
             Ok(s) => f.write_str(&s),
-            Err(err) => write!(f, "<failed formatting query: {err}"),
+            Err(err) => write!(f, "<failed formatting query: {err}>"),
         }
     }
 }
@@ -175,9 +175,9 @@ where
 {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Success(obj) => write!(f, "success: {obj}`"),
+            Self::Success(obj) => write!(f, "success: {obj}"),
             Self::NotReady => write!(f, "service not ready"),
-            Self::Missing(msg) => write!(f, "missing: {msg}`"),
+            Self::Missing(msg) => write!(f, "missing: {msg}"),
         }
     }
 }

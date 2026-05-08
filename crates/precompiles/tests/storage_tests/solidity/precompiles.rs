@@ -155,8 +155,8 @@ fn test_tip20_layout() {
         name,
         symbol,
         currency,
-        // Unused slot, kept for storage layout compatibility
-        _domain_separator,
+        // TIP-1026: token logo URI (reuses the previously-unused _domain_separator slot)
+        logo_uri,
         quote_token,
         next_quote_token,
         transfer_policy_id,
@@ -342,8 +342,8 @@ fn export_all_storage_constants() {
             name,
             symbol,
             currency,
-            // Unused slot, kept for storage layout compatibility
-            _domain_separator,
+            // TIP-1026: token logo URI (reuses the previously-unused _domain_separator slot)
+            logo_uri,
             quote_token,
             next_quote_token,
             transfer_policy_id,
