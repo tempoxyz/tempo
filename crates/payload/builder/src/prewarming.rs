@@ -6,33 +6,36 @@ use reth_transaction_pool::{
 };
 use tempo_transaction_pool::best::BestTransaction;
 
-/// Event returned by [`BestTransactionsStream`].
+/// Event returned by [`BestTransactionsPrewarming`].
 #[derive(Debug)]
-pub(crate) enum BestTransactionsStreamEvent {
+enum BestTransactionsEvent {
     /// A transaction is ready for sequential payload execution.
     Transaction(BestTransaction),
     /// No transaction is currently buffered.
     Empty,
 }
 
-enum BestTransactionsStreamCommand {
+/// Command sent by [`BestTransactionsPrewarming`] consumer.
+#[derive(Debug)]
+enum BestTransactionsCommand {
     Invalid(InvalidTransaction),
     NoUpdates,
     SkipBlobs(bool),
     Stop,
 }
 
+#[derive(Debug)]
 struct InvalidTransaction {
     tx: BestTransaction,
     kind: InvalidPoolTransactionError,
-    old_receiver: Receiver<BestTransactionsStreamEvent>,
-    new_sender: Sender<BestTransactionsStreamEvent>,
+    old_receiver: Receiver<BestTransactionsEvent>,
+    new_sender: Sender<BestTransactionsEvent>,
 }
 
 /// Drains a [`BestTransactions`] iterator into a channel while preserving delayed invalidation.
 pub(crate) struct BestTransactionsPrewarming {
-    rx: Receiver<BestTransactionsStreamEvent>,
-    commands_tx: Sender<BestTransactionsStreamCommand>,
+    rx: Receiver<BestTransactionsEvent>,
+    commands_tx: Sender<BestTransactionsCommand>,
 }
 
 impl BestTransactionsPrewarming {
@@ -52,17 +55,14 @@ impl BestTransactionsPrewarming {
 
     fn start_prewarming<Txs>(
         mut best_txs: Txs,
-        mut sender: Sender<BestTransactionsStreamEvent>,
-        command_receiver: Receiver<BestTransactionsStreamCommand>,
+        mut sender: Sender<BestTransactionsEvent>,
+        command_receiver: Receiver<BestTransactionsCommand>,
     ) where
         Txs: BestTransactions<Item = BestTransaction>,
     {
         loop {
             if let Some(tx) = best_txs.next() {
-                if sender
-                    .send(BestTransactionsStreamEvent::Transaction(tx))
-                    .is_err()
-                {
+                if sender.send(BestTransactionsEvent::Transaction(tx)).is_err() {
                     break;
                 }
 
@@ -70,7 +70,7 @@ impl BestTransactionsPrewarming {
             } else {
                 // No more best transactions for now. We do not break the loop,
                 // because there may be more transactions later.
-                if sender.send(BestTransactionsStreamEvent::Empty).is_err() {
+                if sender.send(BestTransactionsEvent::Empty).is_err() {
                     break;
                 }
             }
@@ -80,11 +80,11 @@ impl BestTransactionsPrewarming {
                     // On invalid transaction, mark it as invalid, drain all pending
                     // transactions from the old receiver, filter out invalid ones,
                     // and redirect valid to the new sender.
-                    BestTransactionsStreamCommand::Invalid(invalid) => {
+                    BestTransactionsCommand::Invalid(invalid) => {
                         best_txs.mark_invalid(&invalid.tx, &invalid.kind);
 
                         while let Ok(event) = invalid.old_receiver.try_recv() {
-                            if let BestTransactionsStreamEvent::Transaction(tx) = &event
+                            if let BestTransactionsEvent::Transaction(tx) = &event
                                 && !is_invalidated_buffered_transaction(&invalid.tx, tx)
                             {
                                 let _ = invalid.new_sender.send(event);
@@ -93,11 +93,11 @@ impl BestTransactionsPrewarming {
 
                         sender = invalid.new_sender;
                     }
-                    BestTransactionsStreamCommand::NoUpdates => best_txs.no_updates(),
-                    BestTransactionsStreamCommand::SkipBlobs(skip_blobs) => {
+                    BestTransactionsCommand::NoUpdates => best_txs.no_updates(),
+                    BestTransactionsCommand::SkipBlobs(skip_blobs) => {
                         best_txs.set_skip_blobs(skip_blobs)
                     }
-                    BestTransactionsStreamCommand::Stop => break,
+                    BestTransactionsCommand::Stop => break,
                 }
             }
         }
@@ -106,7 +106,7 @@ impl BestTransactionsPrewarming {
 
 impl Drop for BestTransactionsPrewarming {
     fn drop(&mut self) {
-        let _ = self.commands_tx.send(BestTransactionsStreamCommand::Stop);
+        let _ = self.commands_tx.send(BestTransactionsCommand::Stop);
     }
 }
 
@@ -115,8 +115,8 @@ impl Iterator for BestTransactionsPrewarming {
 
     fn next(&mut self) -> Option<Self::Item> {
         match self.rx.recv() {
-            Ok(BestTransactionsStreamEvent::Transaction(tx)) => Some(tx),
-            Ok(BestTransactionsStreamEvent::Empty) | Err(_) => None,
+            Ok(BestTransactionsEvent::Transaction(tx)) => Some(tx),
+            Ok(BestTransactionsEvent::Empty) | Err(_) => None,
         }
     }
 }
@@ -127,7 +127,7 @@ impl BestTransactions for BestTransactionsPrewarming {
         let old_receiver = std::mem::replace(&mut self.rx, new_receiver);
         let _ = self
             .commands_tx
-            .send(BestTransactionsStreamCommand::Invalid(InvalidTransaction {
+            .send(BestTransactionsCommand::Invalid(InvalidTransaction {
                 tx: transaction.clone(),
                 // kind: kind.clone(),
                 kind: InvalidPoolTransactionError::Underpriced,
@@ -137,15 +137,13 @@ impl BestTransactions for BestTransactionsPrewarming {
     }
 
     fn no_updates(&mut self) {
-        let _ = self
-            .commands_tx
-            .send(BestTransactionsStreamCommand::NoUpdates);
+        let _ = self.commands_tx.send(BestTransactionsCommand::NoUpdates);
     }
 
     fn set_skip_blobs(&mut self, skip_blobs: bool) {
         let _ = self
             .commands_tx
-            .send(BestTransactionsStreamCommand::SkipBlobs(skip_blobs));
+            .send(BestTransactionsCommand::SkipBlobs(skip_blobs));
     }
 }
 
@@ -168,5 +166,131 @@ fn is_invalidated_buffered_transaction(
             .is_some_and(|(candidate_id, invalid_id)| candidate_id.seq_id() == invalid_id.seq_id())
     } else {
         candidate.transaction.sender() == invalid.transaction.sender()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_primitives::{Address, B256, U256};
+    use std::thread::{self, JoinHandle};
+    use tempo_transaction_pool::test_utils::{
+        MockBestTransactions, MockBestTransactionsSender, tx_with_nonce_key,
+    };
+
+    fn mock_best_transactions() -> (
+        MockBestTransactions<BestTransaction>,
+        MockBestTransactionsSender<BestTransaction>,
+    ) {
+        MockBestTransactions::channel()
+    }
+
+    fn start_prewarming_for_test() -> (
+        BestTransactionsPrewarming,
+        MockBestTransactionsSender<BestTransaction>,
+        JoinHandle<()>,
+    ) {
+        let (best_txs, responses) = mock_best_transactions();
+        let (tx, rx) = mpsc::channel();
+        let (commands_tx, commands_rx) = mpsc::channel();
+        let handle = thread::spawn(move || {
+            BestTransactionsPrewarming::start_prewarming(best_txs, tx, commands_rx);
+        });
+
+        (
+            BestTransactionsPrewarming { rx, commands_tx },
+            responses,
+            handle,
+        )
+    }
+
+    fn shutdown_prewarming(
+        prewarming: BestTransactionsPrewarming,
+        responses: MockBestTransactionsSender<BestTransaction>,
+        handle: JoinHandle<()>,
+    ) {
+        drop(prewarming);
+        drop(responses);
+        handle.join().expect("prewarming thread should not panic");
+    }
+
+    fn test_tx(id: u8, nonce: u64) -> BestTransaction {
+        tx_with_nonce_key(
+            U256::ZERO,
+            Address::with_last_byte(id.wrapping_add(32)),
+            nonce,
+            u128::from(id) + 1,
+        )
+    }
+
+    fn observed_hash(tx: Option<BestTransaction>) -> Option<B256> {
+        tx.map(|tx| *tx.hash())
+    }
+
+    fn send_response(
+        responses: &MockBestTransactionsSender<BestTransaction>,
+        response: Option<BestTransaction>,
+    ) {
+        MockBestTransactions::send_response(responses, response, 0);
+    }
+
+    fn collect_direct(sequence: &[Option<BestTransaction>]) -> Vec<Option<B256>> {
+        let (mut best_txs, responses) = mock_best_transactions();
+        let mut observed = Vec::with_capacity(sequence.len());
+
+        for response in sequence.iter().cloned() {
+            send_response(&responses, response);
+            observed.push(observed_hash(best_txs.next()));
+        }
+
+        observed
+    }
+
+    fn collect_prewarmed(sequence: &[Option<BestTransaction>]) -> Vec<Option<B256>> {
+        let (mut prewarming, responses, handle) = start_prewarming_for_test();
+        let mut observed = Vec::with_capacity(sequence.len());
+
+        for response in sequence.iter().cloned() {
+            send_response(&responses, response);
+            observed.push(observed_hash(prewarming.next()));
+        }
+
+        shutdown_prewarming(prewarming, responses, handle);
+        observed
+    }
+
+    #[test]
+    fn prewarming_returns_none_without_fusing_iterator() {
+        let tx0 = test_tx(0, 0);
+        let tx1 = test_tx(1, 1);
+        let tx0_hash = *tx0.hash();
+        let tx1_hash = *tx1.hash();
+        let (mut prewarming, responses, handle) = start_prewarming_for_test();
+
+        send_response(&responses, Some(tx0));
+        assert_eq!(observed_hash(prewarming.next()), Some(tx0_hash));
+
+        send_response(&responses, None);
+        assert!(prewarming.next().is_none());
+
+        send_response(&responses, None);
+        assert!(prewarming.next().is_none());
+
+        send_response(&responses, Some(tx1));
+        assert_eq!(observed_hash(prewarming.next()), Some(tx1_hash));
+
+        send_response(&responses, None);
+        assert!(prewarming.next().is_none());
+
+        shutdown_prewarming(prewarming, responses, handle);
+    }
+
+    #[test]
+    fn prewarming_matches_direct_best_transactions_none_sequence() {
+        let tx0 = test_tx(0, 0);
+        let tx1 = test_tx(1, 1);
+        let sequence = vec![Some(tx0.clone()), None, None, Some(tx1.clone()), None];
+
+        assert_eq!(collect_prewarmed(&sequence), collect_direct(&sequence));
     }
 }

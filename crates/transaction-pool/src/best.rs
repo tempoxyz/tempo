@@ -12,25 +12,57 @@ use std::sync::Arc;
 use tempo_evm::TempoTxResult;
 use tempo_precompiles::tip20::is_tip20_prefix;
 
-type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
+pub(crate) type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u128>);
 
+/// A [`BestTransactions`] iterator that can expose item priority with each yield.
+#[doc(hidden)]
+pub(crate) trait BestTransactionsWithPriority:
+    BestTransactions<Item = BestTransaction>
+{
+    /// Returns the next best transaction and its priority.
+    fn next_tx_and_priority(&mut self) -> Option<BestTransactionWithPriority>;
+}
+
+impl BestTransactionsWithPriority for BestProtocolTransactions<TxOrdering> {
+    fn next_tx_and_priority(&mut self) -> Option<BestTransactionWithPriority> {
+        Self::next_tx_and_priority(self)
+    }
+}
+
+impl BestTransactionsWithPriority for BestAA2dTransactions {
+    fn next_tx_and_priority(&mut self) -> Option<BestTransactionWithPriority> {
+        Self::next_tx_and_priority(self)
+    }
+}
+
+#[cfg(any(test, feature = "test-utils"))]
+impl BestTransactionsWithPriority for crate::test_utils::MockBestTransactions<BestTransaction> {
+    fn next_tx_and_priority(&mut self) -> Option<BestTransactionWithPriority> {
+        Self::next_tx_and_priority(self)
+    }
+}
+
 /// A best-transaction iterator that merges the protocol pool and the 2D nonces pool,
 /// always yielding the next best item from either iterator.
-pub struct MergeBestTransactions {
-    protocol_pool: BestProtocolTransactions<TxOrdering>,
-    aa_2d_pool: BestAA2dTransactions,
+pub(crate) struct MergeBestTransactions<
+    L = BestProtocolTransactions<TxOrdering>,
+    R = BestAA2dTransactions,
+> {
+    protocol_pool: L,
+    aa_2d_pool: R,
     next_protocol_pool: Option<BestTransactionWithPriority>,
     next_aa_2d_pool: Option<BestTransactionWithPriority>,
 }
 
-impl MergeBestTransactions {
+impl<L, R> MergeBestTransactions<L, R>
+where
+    L: BestTransactionsWithPriority,
+    R: BestTransactionsWithPriority,
+{
     /// Creates a new iterator over the given iterators.
-    pub(crate) fn new(
-        protocol_pool: BestProtocolTransactions<TxOrdering>,
-        aa_2d_pool: BestAA2dTransactions,
-    ) -> Self {
+    pub(crate) fn new(protocol_pool: L, aa_2d_pool: R) -> Self {
         Self {
             protocol_pool,
             aa_2d_pool,
@@ -78,7 +110,11 @@ impl MergeBestTransactions {
     }
 }
 
-impl Iterator for MergeBestTransactions {
+impl<L, R> Iterator for MergeBestTransactions<L, R>
+where
+    L: BestTransactionsWithPriority,
+    R: BestTransactionsWithPriority,
+{
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -86,7 +122,11 @@ impl Iterator for MergeBestTransactions {
     }
 }
 
-impl BestTransactions for MergeBestTransactions {
+impl<L, R> BestTransactions for MergeBestTransactions<L, R>
+where
+    L: BestTransactionsWithPriority,
+    R: BestTransactionsWithPriority,
+{
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
         if transaction.transaction.is_aa_2d() {
             self.aa_2d_pool.mark_invalid(transaction, kind);
@@ -202,7 +242,10 @@ where
 mod tests {
     use super::*;
     use crate::{
-        test_utils::{TxBuilder, wrap_valid_tx},
+        test_utils::{
+            MockBestTransactions, TestTx, aa_2d_tx, aa_2d_tx_for_sequence, protocol_tx,
+            protocol_tx_for_sender,
+        },
         tt_2d_pool::AA2dPool,
     };
     use alloy_primitives::Address;
@@ -212,38 +255,7 @@ mod tests {
         Pool, PoolConfig, TransactionOrigin, TransactionPool, blobstore::InMemoryBlobStore,
         test_utils::OkValidator,
     };
-    use std::sync::Arc;
     use tempo_chainspec::hardfork::TempoHardfork;
-
-    type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
-
-    fn tx_with_nonce_key(nonce_key: U256, sender: Address, nonce: u64, priority: u128) -> TestTx {
-        Arc::new(wrap_valid_tx(
-            TxBuilder::aa(sender)
-                .nonce_key(nonce_key)
-                .nonce(nonce)
-                .max_priority_fee(priority)
-                .max_fee(TempoHardfork::T1.base_fee() as u128 + priority)
-                .build(),
-            TransactionOrigin::External,
-        ))
-    }
-
-    fn protocol_tx(nonce: u64, priority: u128) -> TestTx {
-        protocol_tx_for_sender(Address::random(), nonce, priority)
-    }
-
-    fn protocol_tx_for_sender(sender: Address, nonce: u64, priority: u128) -> TestTx {
-        tx_with_nonce_key(U256::ZERO, sender, nonce, priority)
-    }
-
-    fn aa_2d_tx(nonce: u64, priority: u128) -> TestTx {
-        aa_2d_tx_for_sequence(Address::random(), nonce, priority)
-    }
-
-    fn aa_2d_tx_for_sequence(sender: Address, nonce: u64, priority: u128) -> TestTx {
-        tx_with_nonce_key(U256::from(1), sender, nonce, priority)
-    }
 
     fn protocol_best_transactions(txs: Vec<TestTx>) -> BestProtocolTransactions<TxOrdering> {
         let pool = Pool::new(
@@ -300,6 +312,16 @@ mod tests {
         )
     }
 
+    fn mock_merged_best_transactions(
+        protocol_txs: Vec<(TestTx, u128)>,
+        aa_2d_txs: Vec<(TestTx, u128)>,
+    ) -> MergeBestTransactions<MockBestTransactions<TestTx>, MockBestTransactions<TestTx>> {
+        MergeBestTransactions::new(
+            MockBestTransactions::new(protocol_txs),
+            MockBestTransactions::new(aa_2d_txs),
+        )
+    }
+
     #[test]
     fn test_merge_best_transactions_basic() {
         // Create two mock iterators with different priorities
@@ -312,9 +334,9 @@ mod tests {
         let tx_d = aa_2d_tx(3, 8);
         let tx_e = aa_2d_tx(4, 4);
         let tx_f = aa_2d_tx(5, 1);
-        let mut merged = merged_best_transactions(
-            vec![tx_a.clone(), tx_b.clone(), tx_c.clone()],
-            vec![tx_d.clone(), tx_e.clone(), tx_f.clone()],
+        let mut merged = mock_merged_best_transactions(
+            vec![(tx_a.clone(), 10), (tx_b.clone(), 5), (tx_c.clone(), 3)],
+            vec![(tx_d.clone(), 8), (tx_e.clone(), 4), (tx_f.clone(), 1)],
         );
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash())); // priority 10
@@ -331,7 +353,8 @@ mod tests {
         // Left iterator is empty
         let tx_a = aa_2d_tx(0, 10);
         let tx_b = aa_2d_tx(1, 5);
-        let mut merged = merged_best_transactions(vec![], vec![tx_a.clone(), tx_b.clone()]);
+        let mut merged =
+            mock_merged_best_transactions(vec![], vec![(tx_a.clone(), 10), (tx_b.clone(), 5)]);
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash()));
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_b.hash()));
@@ -343,7 +366,8 @@ mod tests {
         // Right iterator is empty
         let tx_a = protocol_tx(0, 10);
         let tx_b = protocol_tx(1, 5);
-        let mut merged = merged_best_transactions(vec![tx_a.clone(), tx_b.clone()], vec![]);
+        let mut merged =
+            mock_merged_best_transactions(vec![(tx_a.clone(), 10), (tx_b.clone(), 5)], vec![]);
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash()));
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_b.hash()));
@@ -352,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_merge_best_transactions_both_empty() {
-        let mut merged = merged_best_transactions(vec![], vec![]);
+        let mut merged = mock_merged_best_transactions(vec![], vec![]);
 
         assert!(merged.next().is_none());
     }
@@ -364,9 +388,9 @@ mod tests {
         let tx_b = protocol_tx(1, 5);
         let tx_c = aa_2d_tx(2, 10);
         let tx_d = aa_2d_tx(3, 5);
-        let mut merged = merged_best_transactions(
-            vec![tx_a.clone(), tx_b.clone()],
-            vec![tx_c.clone(), tx_d.clone()],
+        let mut merged = mock_merged_best_transactions(
+            vec![(tx_a.clone(), 10), (tx_b.clone(), 5)],
+            vec![(tx_c.clone(), 10), (tx_d.clone(), 5)],
         );
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash())); // equal priority, left preferred
@@ -383,7 +407,7 @@ mod tests {
     #[test]
     fn test_merge_best_transactions_single_left() {
         let tx_a = protocol_tx(0, 10);
-        let mut merged = merged_best_transactions(vec![tx_a.clone()], vec![]);
+        let mut merged = mock_merged_best_transactions(vec![(tx_a.clone(), 10)], vec![]);
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash()));
         assert!(merged.next().is_none());
@@ -392,7 +416,7 @@ mod tests {
     #[test]
     fn test_merge_best_transactions_single_right() {
         let tx_a = aa_2d_tx(0, 10);
-        let mut merged = merged_best_transactions(vec![], vec![tx_a.clone()]);
+        let mut merged = mock_merged_best_transactions(vec![], vec![(tx_a.clone(), 10)]);
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash()));
         assert!(merged.next().is_none());
@@ -411,9 +435,9 @@ mod tests {
         let r1 = aa_2d_tx(3, 10);
         let r2 = aa_2d_tx(4, 6);
         let r3 = aa_2d_tx(5, 4);
-        let mut merged = merged_best_transactions(
-            vec![l1.clone(), l2.clone(), l3.clone()],
-            vec![r1.clone(), r2.clone(), r3.clone()],
+        let mut merged = mock_merged_best_transactions(
+            vec![(l1.clone(), 9), (l2.clone(), 7), (l3.clone(), 5)],
+            vec![(r1.clone(), 10), (r2.clone(), 6), (r3.clone(), 4)],
         );
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*r1.hash())); // 10

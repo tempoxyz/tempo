@@ -10,8 +10,17 @@ use alloy_primitives::{Address, B256, Signature, TxKind, U256};
 use core::num::NonZeroU64;
 use reth_primitives_traits::Recovered;
 use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
-use reth_transaction_pool::{TransactionOrigin, ValidPoolTransaction};
-use std::time::Instant;
+use reth_transaction_pool::{
+    BestTransactions, Priority, TransactionOrigin, ValidPoolTransaction,
+    error::InvalidPoolTransactionError,
+};
+use std::{
+    sync::{
+        Arc,
+        mpsc::{self, Receiver, Sender},
+    },
+    time::Instant,
+};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::DEV};
 use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
 use tempo_primitives::{
@@ -44,7 +53,7 @@ use tempo_primitives::{
 /// let tx = TxBuilder::eip1559(to_address).build();
 /// ```
 #[derive(Debug, Clone)]
-pub(crate) struct TxBuilder {
+pub struct TxBuilder {
     kind: TxKind,
     sender: Address,
     nonce_key: U256,
@@ -89,7 +98,7 @@ impl Default for TxBuilder {
 
 impl TxBuilder {
     /// Create a builder for an AA transaction with the given sender.
-    pub(crate) fn aa(sender: Address) -> Self {
+    pub fn aa(sender: Address) -> Self {
         Self {
             sender,
             ..Default::default()
@@ -97,7 +106,7 @@ impl TxBuilder {
     }
 
     /// Create a builder for an EIP-1559 transaction to the given address.
-    pub(crate) fn eip1559(to: Address) -> Self {
+    pub fn eip1559(to: Address) -> Self {
         Self {
             kind: TxKind::Call(to),
             ..Default::default()
@@ -105,83 +114,80 @@ impl TxBuilder {
     }
 
     /// Set the nonce key (AA transactions only).
-    pub(crate) fn nonce_key(mut self, nonce_key: U256) -> Self {
+    pub fn nonce_key(mut self, nonce_key: U256) -> Self {
         self.nonce_key = nonce_key;
         self
     }
 
     /// Set the transaction nonce.
-    pub(crate) fn nonce(mut self, nonce: u64) -> Self {
+    pub fn nonce(mut self, nonce: u64) -> Self {
         self.nonce = nonce;
         self
     }
 
     /// Set the gas limit.
-    pub(crate) fn gas_limit(mut self, gas_limit: u64) -> Self {
+    pub fn gas_limit(mut self, gas_limit: u64) -> Self {
         self.gas_limit = gas_limit;
         self
     }
 
     /// Set the transaction value.
-    pub(crate) fn value(mut self, value: U256) -> Self {
+    pub fn value(mut self, value: U256) -> Self {
         self.value = value;
         self
     }
 
     /// Set the max priority fee per gas.
-    pub(crate) fn max_priority_fee(mut self, fee: u128) -> Self {
+    pub fn max_priority_fee(mut self, fee: u128) -> Self {
         self.max_priority_fee_per_gas = fee;
         self
     }
 
     /// Set the max fee per gas.
-    pub(crate) fn max_fee(mut self, fee: u128) -> Self {
+    pub fn max_fee(mut self, fee: u128) -> Self {
         self.max_fee_per_gas = fee;
         self
     }
 
     /// Set the fee token (AA transactions only).
-    pub(crate) fn fee_token(mut self, fee_token: Address) -> Self {
+    pub fn fee_token(mut self, fee_token: Address) -> Self {
         self.fee_token = Some(fee_token);
         self
     }
 
     /// Set the valid_after timestamp (AA transactions only).
-    pub(crate) fn valid_after(mut self, valid_after: u64) -> Self {
+    pub fn valid_after(mut self, valid_after: u64) -> Self {
         self.valid_after = NonZeroU64::new(valid_after);
         self
     }
 
     /// Set the valid_before timestamp (AA transactions only).
-    pub(crate) fn valid_before(mut self, valid_before: u64) -> Self {
+    pub fn valid_before(mut self, valid_before: u64) -> Self {
         self.valid_before = NonZeroU64::new(valid_before);
         self
     }
 
     /// Set custom calls for the AA transaction.
     /// If not set, a default call is created from `kind` and `value`.
-    pub(crate) fn calls(mut self, calls: Vec<Call>) -> Self {
+    pub fn calls(mut self, calls: Vec<Call>) -> Self {
         self.calls = Some(calls);
         self
     }
 
     /// Set the authorization list for the AA transaction.
-    pub(crate) fn authorization_list(
-        mut self,
-        authorization_list: Vec<TempoSignedAuthorization>,
-    ) -> Self {
+    pub fn authorization_list(mut self, authorization_list: Vec<TempoSignedAuthorization>) -> Self {
         self.authorization_list = Some(authorization_list);
         self
     }
 
     /// Set the access list for the AA transaction.
-    pub(crate) fn access_list(mut self, access_list: AccessList) -> Self {
+    pub fn access_list(mut self, access_list: AccessList) -> Self {
         self.access_list = access_list;
         self
     }
 
     /// Build an AA transaction.
-    pub(crate) fn build(self) -> TempoPooledTransaction {
+    pub fn build(self) -> TempoPooledTransaction {
         let calls = self.calls.unwrap_or_else(|| {
             vec![Call {
                 to: self.kind,
@@ -220,7 +226,7 @@ impl TxBuilder {
     ///
     /// The `user_address` is the account that owns the keychain key,
     /// and `access_key_signer` is the private key used to sign (whose address becomes key_id).
-    pub(crate) fn build_keychain(
+    pub fn build_keychain(
         self,
         user_address: Address,
         access_key_signer: &alloy_signer_local::PrivateKeySigner,
@@ -229,7 +235,7 @@ impl TxBuilder {
     }
 
     /// Build an AA transaction with a keychain signature of the specified version.
-    pub(crate) fn build_keychain_with_version(
+    pub fn build_keychain_with_version(
         self,
         user_address: Address,
         access_key_signer: &alloy_signer_local::PrivateKeySigner,
@@ -310,7 +316,7 @@ impl TxBuilder {
     }
 
     /// Build an EIP-1559 transaction.
-    pub(crate) fn build_eip1559(self) -> TempoPooledTransaction {
+    pub fn build_eip1559(self) -> TempoPooledTransaction {
         let tx = TxEip1559 {
             chain_id: self.chain_id,
             to: self.kind,
@@ -335,7 +341,7 @@ impl TxBuilder {
 /// Helper to wrap a transaction in ValidPoolTransaction.
 ///
 /// Note: Creates a dummy SenderId for testing since the AA2dPool doesn't use it.
-pub(crate) fn wrap_valid_tx(
+pub fn wrap_valid_tx(
     tx: TempoPooledTransaction,
     origin: TransactionOrigin,
 ) -> ValidPoolTransaction<TempoPooledTransaction> {
@@ -350,8 +356,90 @@ pub(crate) fn wrap_valid_tx(
     }
 }
 
+pub type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+
+pub fn tx_with_nonce_key(nonce_key: U256, sender: Address, nonce: u64, priority: u128) -> TestTx {
+    Arc::new(wrap_valid_tx(
+        TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .nonce(nonce)
+            .max_priority_fee(priority)
+            .max_fee(TempoHardfork::T1.base_fee() as u128 + priority)
+            .build(),
+        TransactionOrigin::External,
+    ))
+}
+
+pub fn protocol_tx(nonce: u64, priority: u128) -> TestTx {
+    protocol_tx_for_sender(Address::random(), nonce, priority)
+}
+
+pub fn protocol_tx_for_sender(sender: Address, nonce: u64, priority: u128) -> TestTx {
+    tx_with_nonce_key(U256::ZERO, sender, nonce, priority)
+}
+
+pub fn aa_2d_tx(nonce: u64, priority: u128) -> TestTx {
+    aa_2d_tx_for_sequence(Address::random(), nonce, priority)
+}
+
+pub fn aa_2d_tx_for_sequence(sender: Address, nonce: u64, priority: u128) -> TestTx {
+    tx_with_nonce_key(U256::from(1), sender, nonce, priority)
+}
+
+pub type MockBestTransactionsSender<T> = Sender<Option<(T, Priority<u128>)>>;
+
+/// A scriptable [`BestTransactions`] implementation for tests.
+pub struct MockBestTransactions<T> {
+    responses: Receiver<Option<(T, Priority<u128>)>>,
+}
+
+impl<T> MockBestTransactions<T> {
+    pub fn new(items: Vec<(T, u128)>) -> Self {
+        let (mock, sender) = Self::channel();
+        for (item, priority) in items {
+            Self::send_response(&sender, Some(item), priority);
+        }
+        mock
+    }
+
+    pub fn channel() -> (Self, MockBestTransactionsSender<T>) {
+        let (tx, rx) = mpsc::channel();
+        (Self { responses: rx }, tx)
+    }
+
+    pub fn send_response(
+        sender: &MockBestTransactionsSender<T>,
+        response: Option<T>,
+        priority: u128,
+    ) {
+        sender
+            .send(response.map(|item| (item, Priority::Value(priority))))
+            .expect("mock best transactions receiver should be alive");
+    }
+
+    pub fn next_tx_and_priority(&mut self) -> Option<(T, Priority<u128>)> {
+        self.responses.recv().ok().flatten()
+    }
+}
+
+impl<T> Iterator for MockBestTransactions<T> {
+    type Item = T;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.next_tx_and_priority().map(|(tx, _)| tx)
+    }
+}
+
+impl<T: Send> BestTransactions for MockBestTransactions<T> {
+    fn mark_invalid(&mut self, _transaction: &Self::Item, _kind: &InvalidPoolTransactionError) {}
+
+    fn no_updates(&mut self) {}
+
+    fn set_skip_blobs(&mut self, _skip_blobs: bool) {}
+}
+
 /// Creates a mock provider with the DEV chain spec (all hardforks active at genesis).
-pub(crate) fn create_mock_provider() -> MockEthProvider<TempoPrimitives, TempoChainSpec> {
+pub fn create_mock_provider() -> MockEthProvider<TempoPrimitives, TempoChainSpec> {
     MockEthProvider::new().with_chain_spec(std::sync::Arc::unwrap_or_clone(DEV.clone()))
 }
 
@@ -370,7 +458,7 @@ pub(crate) fn create_mock_provider() -> MockEthProvider<TempoPrimitives, TempoCh
 ///     })
 /// });
 /// ```
-pub(crate) trait MockProviderStorageExt {
+pub trait MockProviderStorageExt {
     fn setup_storage<R>(&self, spec: TempoHardfork, f: impl FnOnce() -> R) -> R;
 }
 
