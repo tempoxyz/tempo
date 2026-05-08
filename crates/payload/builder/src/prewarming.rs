@@ -44,10 +44,63 @@ impl BestTransactionsPrewarming {
         let (tx, rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
         thread::spawn(move || {
-            run_best_transactions_coordinator(best_txs, tx, commands_rx);
+            Self::start_prewarming(best_txs, tx, commands_rx);
         });
 
         Self { rx, commands_tx }
+    }
+
+    fn start_prewarming<Txs>(
+        mut best_txs: Txs,
+        mut sender: Sender<BestTransactionsStreamEvent>,
+        command_receiver: Receiver<BestTransactionsStreamCommand>,
+    ) where
+        Txs: BestTransactions<Item = BestTransaction>,
+    {
+        loop {
+            if let Some(tx) = best_txs.next() {
+                if sender
+                    .send(BestTransactionsStreamEvent::Transaction(tx))
+                    .is_err()
+                {
+                    break;
+                }
+
+                // TODO: prewarm state by executing the transaction `tx` on top of latest state
+            } else {
+                // No more best transactions for now. We do not break the loop,
+                // because there may be more transactions later.
+                if sender.send(BestTransactionsStreamEvent::Empty).is_err() {
+                    break;
+                }
+            }
+
+            while let Ok(command) = command_receiver.try_recv() {
+                match command {
+                    // On invalid transaction, mark it as invalid, drain all pending
+                    // transactions from the old receiver, filter out invalid ones,
+                    // and redirect valid to the new sender.
+                    BestTransactionsStreamCommand::Invalid(invalid) => {
+                        best_txs.mark_invalid(&invalid.tx, &invalid.kind);
+
+                        while let Ok(event) = invalid.old_receiver.try_recv() {
+                            if let BestTransactionsStreamEvent::Transaction(tx) = &event
+                                && !is_invalidated_buffered_transaction(&invalid.tx, tx)
+                            {
+                                let _ = invalid.new_sender.send(event);
+                            }
+                        }
+
+                        sender = invalid.new_sender;
+                    }
+                    BestTransactionsStreamCommand::NoUpdates => best_txs.no_updates(),
+                    BestTransactionsStreamCommand::SkipBlobs(skip_blobs) => {
+                        best_txs.set_skip_blobs(skip_blobs)
+                    }
+                    BestTransactionsStreamCommand::Stop => break,
+                }
+            }
+        }
     }
 }
 
@@ -95,52 +148,7 @@ impl BestTransactions for BestTransactionsPrewarming {
     }
 }
 
-fn run_best_transactions_coordinator<Txs>(
-    mut best_txs: Txs,
-    mut sender: Sender<BestTransactionsStreamEvent>,
-    command_receiver: Receiver<BestTransactionsStreamCommand>,
-) where
-    Txs: BestTransactions<Item = BestTransaction>,
-{
-    loop {
-        if let Some(tx) = best_txs.next() {
-            if sender
-                .send(BestTransactionsStreamEvent::Transaction(tx))
-                .is_err()
-            {
-                break;
-            }
-        } else {
-            if sender.send(BestTransactionsStreamEvent::Empty).is_err() {
-                break;
-            }
-        }
-
-        while let Ok(command) = command_receiver.try_recv() {
-            match command {
-                BestTransactionsStreamCommand::Invalid(invalid) => {
-                    best_txs.mark_invalid(&invalid.tx, &invalid.kind);
-
-                    while let Ok(event) = invalid.old_receiver.try_recv() {
-                        if let BestTransactionsStreamEvent::Transaction(tx) = &event
-                            && !is_invalidated_buffered_transaction(&invalid.tx, tx)
-                        {
-                            let _ = invalid.new_sender.send(event);
-                        }
-                    }
-
-                    sender = invalid.new_sender;
-                }
-                BestTransactionsStreamCommand::NoUpdates => best_txs.no_updates(),
-                BestTransactionsStreamCommand::SkipBlobs(skip_blobs) => {
-                    best_txs.set_skip_blobs(skip_blobs)
-                }
-                BestTransactionsStreamCommand::Stop => break,
-            }
-        }
-    }
-}
-
+/// Returns whether the candidate transaction is invalidated by the given invalid transaction.
 fn is_invalidated_buffered_transaction(
     invalid: &BestTransaction,
     candidate: &BestTransaction,
