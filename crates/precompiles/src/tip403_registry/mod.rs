@@ -248,7 +248,7 @@ impl TIP403Registry {
             senderPolicyType: self.receive_policy_type(config.sender_policy_id)?,
             tokenFilterId: config.token_filter_id,
             tokenFilterType: self.receive_policy_type(config.token_filter_id)?,
-            recoveryAddress: config.recovery_address,
+            recoveryAuthority: config.recovery_address,
         })
     }
 
@@ -336,19 +336,19 @@ impl TIP403Registry {
         call: ITIP403Registry::setReceivePolicyCall,
     ) -> Result<()> {
         if msg_sender == ESCROW_ADDRESS {
-            return Err(TIP403RegistryError::invalid_receive_policy_address().into());
+            return Err(TIP403RegistryError::invalid_recovery_authority().into());
         }
         if msg_sender.is_virtual() {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
 
-        let recovery_address = call.recoveryAddress;
+        let recovery_address = call.recoveryAuthority;
         if recovery_address == ESCROW_ADDRESS
             || recovery_address == msg_sender
             || recovery_address.is_tip20()
             || recovery_address.is_virtual()
         {
-            return Err(TIP403RegistryError::invalid_receive_policy_address().into());
+            return Err(TIP403RegistryError::invalid_recovery_authority().into());
         }
 
         self.validate_receive_policy_id(call.senderPolicyId)?;
@@ -366,7 +366,7 @@ impl TIP403Registry {
                 account: msg_sender,
                 senderPolicyId: call.senderPolicyId,
                 tokenFilterId: call.tokenFilterId,
-                recoveryAddress: recovery_address,
+                recoveryAuthority: recovery_address,
             },
         ))
     }
@@ -1068,7 +1068,7 @@ mod tests {
                 policy.tokenFilterType,
                 ITIP403Registry::PolicyType::WHITELIST
             );
-            assert_eq!(policy.recoveryAddress, Address::ZERO);
+            assert_eq!(policy.recoveryAuthority, Address::ZERO);
 
             assert_eq!(
                 registry.validate_receive_policy(Address::random(), Address::random(), account)?,
@@ -1093,7 +1093,7 @@ mod tests {
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: REJECT_ALL_POLICY_ID,
                     tokenFilterId: ALLOW_ALL_POLICY_ID,
-                    recoveryAddress: recovery,
+                    recoveryAuthority: recovery,
                 },
             )?;
 
@@ -1109,7 +1109,7 @@ mod tests {
                 policy.tokenFilterType,
                 ITIP403Registry::PolicyType::BLACKLIST
             );
-            assert_eq!(policy.recoveryAddress, recovery);
+            assert_eq!(policy.recoveryAuthority, recovery);
             assert_eq!(registry.receive_policy_recovery(account)?, recovery);
 
             registry.assert_emitted_events(vec![TIP403RegistryEvent::ReceivePolicyUpdated(
@@ -1117,7 +1117,7 @@ mod tests {
                     account,
                     senderPolicyId: REJECT_ALL_POLICY_ID,
                     tokenFilterId: ALLOW_ALL_POLICY_ID,
-                    recoveryAddress: recovery,
+                    recoveryAuthority: recovery,
                 },
             )]);
 
@@ -1136,13 +1136,13 @@ mod tests {
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: REJECT_ALL_POLICY_ID,
                     tokenFilterId: ALLOW_ALL_POLICY_ID,
-                    recoveryAddress: Address::ZERO,
+                    recoveryAuthority: Address::ZERO,
                 },
             );
             assert!(matches!(
                 escrow_result,
                 Err(TempoPrecompileError::TIP403RegistryError(
-                    TIP403RegistryError::InvalidReceivePolicyAddress(_)
+                    TIP403RegistryError::InvalidRecoveryAuthority(_)
                 ))
             ));
 
@@ -1151,7 +1151,7 @@ mod tests {
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: REJECT_ALL_POLICY_ID,
                     tokenFilterId: ALLOW_ALL_POLICY_ID,
-                    recoveryAddress: Address::ZERO,
+                    recoveryAuthority: Address::ZERO,
                 },
             );
             assert!(matches!(
@@ -1180,12 +1180,12 @@ mod tests {
                     ITIP403Registry::setReceivePolicyCall {
                         senderPolicyId: REJECT_ALL_POLICY_ID,
                         tokenFilterId: ALLOW_ALL_POLICY_ID,
-                        recoveryAddress: recovery_address,
+                        recoveryAuthority: recovery_address,
                     },
                 );
                 assert_eq!(
                     result.unwrap_err(),
-                    TIP403RegistryError::invalid_receive_policy_address().into()
+                    TIP403RegistryError::invalid_recovery_authority().into()
                 );
             }
 
@@ -1195,7 +1195,7 @@ mod tests {
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: REJECT_ALL_POLICY_ID,
                     tokenFilterId: ALLOW_ALL_POLICY_ID,
-                    recoveryAddress: Address::ZERO,
+                    recoveryAuthority: Address::ZERO,
                 },
             )?;
 
@@ -1216,7 +1216,7 @@ mod tests {
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: 99,
                     tokenFilterId: ALLOW_ALL_POLICY_ID,
-                    recoveryAddress: Address::ZERO,
+                    recoveryAuthority: Address::ZERO,
                 },
             );
             assert!(matches!(
@@ -1239,7 +1239,7 @@ mod tests {
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: compound_id,
                     tokenFilterId: ALLOW_ALL_POLICY_ID,
-                    recoveryAddress: Address::ZERO,
+                    recoveryAuthority: Address::ZERO,
                 },
             );
             assert!(matches!(
@@ -1264,7 +1264,7 @@ mod tests {
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: REJECT_ALL_POLICY_ID,
                     tokenFilterId: REJECT_ALL_POLICY_ID,
-                    recoveryAddress: Address::ZERO,
+                    recoveryAuthority: Address::ZERO,
                 },
             )?;
 
@@ -1288,7 +1288,7 @@ mod tests {
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: REJECT_ALL_POLICY_ID,
                     tokenFilterId: ALLOW_ALL_POLICY_ID,
-                    recoveryAddress: Address::ZERO,
+                    recoveryAuthority: Address::ZERO,
                 },
             )?;
 

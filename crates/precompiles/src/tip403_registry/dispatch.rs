@@ -591,7 +591,7 @@ mod tests {
         let set_receive_policy = ITIP403Registry::setReceivePolicyCall {
             senderPolicyId: 1,
             tokenFilterId: 1,
-            recoveryAddress: Address::ZERO,
+            recoveryAuthority: Address::ZERO,
         }
         .abi_encode();
 

@@ -250,7 +250,7 @@ async fn create_blocked_transfer(
     assert_eq!(blocked.from, sender);
     assert_eq!(blocked.receiver, receiver);
     assert_eq!(blocked.recipient, receiver);
-    assert_eq!(blocked.recoveryContract, recovery);
+    assert_eq!(blocked.recoveryAuthority, recovery);
     assert_eq!(blocked.amount, amount);
     assert_eq!(
         blocked.blockedReason,
