@@ -134,7 +134,7 @@ where
                 let Ok(Some(earliest_header)) = provider.header_by_number(earliest_number) else {
                     return Ok(ExpiringNonceStatus::Unavailable);
                 };
-                if earliest_header.timestamp() > valid_before {
+                if earliest_header.timestamp() >= valid_before {
                     return Ok(ExpiringNonceStatus::Unavailable);
                 }
 
@@ -152,7 +152,12 @@ where
                     }
                 }
 
-                let proof_block = low;
+                // The first finalized block at/after expiry proves the transaction can no
+                // longer be included, but expiring-nonce replay state is bounded and can be
+                // cleared after expiry. Read the latest retained pre-expiry state instead.
+                let Some(proof_block) = live_block_before_expiry(low, earliest_number) else {
+                    return Ok(ExpiringNonceStatus::Unavailable);
+                };
                 let Ok(state) = this
                     .state_at_block_id_or_latest(Some(BlockId::Number(BlockNumberOrTag::Number(
                         proof_block,
@@ -177,6 +182,11 @@ where
     }
 }
 
+fn live_block_before_expiry(first_expired_block: u64, earliest_retained_block: u64) -> Option<u64> {
+    let live_block = first_expired_block.checked_sub(1)?;
+    (live_block >= earliest_retained_block).then_some(live_block)
+}
+
 fn classify_seen_expiry(seen_expiry: u64, valid_before: u64) -> ExpiringNonceStatus {
     if seen_expiry == 0 {
         ExpiringNonceStatus::Expired
@@ -189,7 +199,19 @@ fn classify_seen_expiry(seen_expiry: u64, valid_before: u64) -> ExpiringNonceSta
 
 #[cfg(test)]
 mod tests {
-    use super::{ExpiringNonceStatus, classify_seen_expiry};
+    use super::{ExpiringNonceStatus, classify_seen_expiry, live_block_before_expiry};
+
+    #[test]
+    fn live_block_before_expiry_returns_latest_retained_pre_expiry_block() {
+        assert_eq!(live_block_before_expiry(10, 0), Some(9));
+        assert_eq!(live_block_before_expiry(10, 9), Some(9));
+    }
+
+    #[test]
+    fn live_block_before_expiry_returns_none_when_pre_expiry_state_is_unavailable() {
+        assert_eq!(live_block_before_expiry(0, 0), None);
+        assert_eq!(live_block_before_expiry(10, 10), None);
+    }
 
     #[test]
     fn classify_seen_expiry_returns_expired_for_zero_storage() {
