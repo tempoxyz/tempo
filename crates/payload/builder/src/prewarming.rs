@@ -1,8 +1,6 @@
-use std::{
-    sync::mpsc::{self, Receiver, Sender},
-    thread,
-};
+use std::sync::mpsc::{self, Receiver, Sender};
 
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -39,13 +37,13 @@ pub(crate) struct BestTransactionsPrewarming {
 
 impl BestTransactionsPrewarming {
     /// Spawns a payload-scoped coordinator for `best_txs`.
-    pub(crate) fn new<Txs>(best_txs: Txs) -> Self
+    pub(crate) fn new<Txs>(executor: &TaskExecutor, best_txs: Txs) -> Self
     where
         Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
     {
         let (tx, rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
-        thread::spawn(move || {
+        executor.spawn_blocking_named("builder-prewarm", move || {
             Self::start_prewarming(best_txs, tx, commands_rx);
         });
 

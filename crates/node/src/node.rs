@@ -520,6 +520,7 @@ where
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
+            ctx.task_executor().clone(),
             evm_config,
             ctx.is_dev(),
             self.state_provider_metrics,
