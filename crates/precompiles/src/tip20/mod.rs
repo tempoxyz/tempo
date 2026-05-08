@@ -124,6 +124,12 @@ pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_R
 pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
 /// Role hash that authorizes burning tokens from blocked accounts.
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
+/// System custody addresses protected from burn-blocked operations, to protect accounting invariants.
+pub const PROTECTED: &[Address] = &[
+    TIP_FEE_MANAGER_ADDRESS,
+    STABLECOIN_DEX_ADDRESS,
+    ESCROW_ADDRESS,
+];
 
 impl TIP20Token {
     /// Returns the token name.
@@ -394,11 +400,9 @@ impl TIP20Token {
     /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
-        let to = Recipient::resolve(call.to)?;
-        self.check_role(msg_sender, *ISSUER_ROLE)?;
-        self.validate_mint(&to)?;
+        let (to, total_supply) = self.validate_mint(msg_sender, call.to)?;
 
-        if self.validate_or_escrow_funds(
+        if self.validate_or_escrow(
             Address::ZERO,
             &to,
             call.amount,
@@ -408,7 +412,7 @@ impl TIP20Token {
             return Ok(());
         }
 
-        self._mint(&to, call.amount)?;
+        self._mint(&to, call.amount, total_supply)?;
         self.emit_event(TIP20Event::Mint(ITIP20::Mint {
             to: call.to,
             amount: call.amount,
@@ -426,11 +430,9 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
-        let to = Recipient::resolve(call.to)?;
-        self.check_role(msg_sender, *ISSUER_ROLE)?;
-        self.validate_mint(&to)?;
+        let (to, total_supply) = self.validate_mint(msg_sender, call.to)?;
 
-        if self.validate_or_escrow_funds(
+        if self.validate_or_escrow(
             Address::ZERO,
             &to,
             call.amount,
@@ -440,7 +442,7 @@ impl TIP20Token {
             return Ok(());
         }
 
-        self._mint(&to, call.amount)?;
+        self._mint(&to, call.amount, total_supply)?;
         self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
             from: Address::ZERO,
             to: call.to,
@@ -458,9 +460,13 @@ impl TIP20Token {
     }
 
     /// Internal helper to mint new tokens and update balances.
-    fn _mint(&mut self, to: &Recipient, amount: U256) -> Result<()> {
-        let total_supply = self.total_supply()?;
+    ///
+    /// Accepts an optional pre-fetched `total_supply` to preserve re-execution behavior (pre-T6).
+    /// If `None`, reads from storage.
+    fn _mint(&mut self, to: &Recipient, amount: U256, total_supply: Option<U256>) -> Result<()> {
         let new_supply = total_supply
+            .map(Ok)
+            .unwrap_or_else(|| self.total_supply())?
             .checked_add(amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
 
@@ -521,7 +527,7 @@ impl TIP20Token {
     /// - `ContractPaused` — (+T3) token is paused
     /// - `Unauthorized` — caller does not hold `BURN_BLOCKED_ROLE`
     /// - `PolicyForbids` — target address is not blocked by policy
-    /// - `ProtectedAddress` — cannot burn from fee manager or stablecoin DEX addresses
+    /// - `ProtectedAddress` — cannot burn from the system custody addresses
     pub fn burn_blocked(
         &mut self,
         msg_sender: Address,
@@ -533,8 +539,8 @@ impl TIP20Token {
         }
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
-        // Prevent burning from `FeeManager` and `StablecoinDEX` to protect accounting invariants
-        if matches!(call.from, TIP_FEE_MANAGER_ADDRESS | STABLECOIN_DEX_ADDRESS) {
+        // Prevent burning from system custody addresses to protect accounting invariants.
+        if PROTECTED.contains(&call.from) {
             return Err(TIP20Error::protected_address().into());
         }
 
@@ -719,7 +725,7 @@ impl TIP20Token {
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        if self.validate_or_escrow_funds(
+        if self.validate_or_escrow(
             msg_sender,
             &to,
             call.amount,
@@ -755,7 +761,7 @@ impl TIP20Token {
         self.validate_transfer(call.from, &to)?;
         self.consume_allowance(call.from, msg_sender, call.amount)?;
 
-        if self.validate_or_escrow_funds(
+        if self.validate_or_escrow(
             call.from,
             &to,
             call.amount,
@@ -782,7 +788,7 @@ impl TIP20Token {
         self.validate_transfer(call.from, &to)?;
         self.consume_allowance(call.from, msg_sender, call.amount)?;
 
-        if self.validate_or_escrow_funds(
+        if self.validate_or_escrow(
             call.from,
             &to,
             call.amount,
@@ -825,7 +831,7 @@ impl TIP20Token {
         self.validate_transfer(from, &to)?;
         self.check_and_update_spending_limit(from, amount)?;
 
-        if self.validate_or_escrow_funds(from, &to, amount, InboundKind::TRANSFER, B256::ZERO)? {
+        if self.validate_or_escrow(from, &to, amount, InboundKind::TRANSFER, B256::ZERO)? {
             return Ok(true);
         }
 
@@ -863,7 +869,7 @@ impl TIP20Token {
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        if self.validate_or_escrow_funds(
+        if self.validate_or_escrow(
             msg_sender,
             &to,
             call.amount,
@@ -978,9 +984,21 @@ impl TIP20Token {
         self.ensure_transfer_authorized(from, to.target)
     }
 
-    /// Ensures that the recipient is authorized to receive mints.
-    /// Additionally (+T3) checks pause state, validates the effective recipient.
-    fn validate_mint(&self, to: &Recipient) -> Result<()> {
+    /// Resolves the effective recipient, checks that `msg_sender` has the issuer role, preserves
+    /// the pre-T6 `total_supply` read position, validates that the token is not paused, and the
+    /// recipient can receive mints. On T6+, the `total_supply` read is deferred to `_mint`.
+    ///
+    /// Returns the resolved recipient and, pre-T6, the total supply.
+    fn validate_mint(&self, msg_sender: Address, to: Address) -> Result<(Recipient, Option<U256>)> {
+        let to = Recipient::resolve(to)?;
+        self.check_role(msg_sender, *ISSUER_ROLE)?;
+
+        let total_supply = if self.storage.spec().is_t6() {
+            None
+        } else {
+            Some(self.total_supply()?)
+        };
+
         if self.storage.spec().is_t3() {
             self.check_not_paused()?;
             to.validate()?;
@@ -995,7 +1013,7 @@ impl TIP20Token {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        Ok(())
+        Ok((to, total_supply))
     }
 
     /// Check whether a transfer is authorized by the token's [`TIP403Registry`] policy.
@@ -1070,7 +1088,10 @@ impl TIP20Token {
 
     /// Validates the TIP-1028 receive-policy check for the destination address. If the receive
     /// policy prohibits the action, the funds are escrowed.
-    fn validate_or_escrow_funds(
+    ///
+    /// Returns `true` when receive-policies block the inbound and this function escrows the funds.
+    /// Callers must ONLY move funds when `false` is returned.
+    fn validate_or_escrow(
         &mut self,
         originator: Address,
         to: &Recipient,
@@ -1097,7 +1118,7 @@ impl TIP20Token {
             InboundKind::TRANSFER => {
                 self._transfer(originator, &Recipient::direct(ESCROW_ADDRESS), amount)?
             }
-            InboundKind::MINT => self._mint(&Recipient::direct(ESCROW_ADDRESS), amount)?,
+            InboundKind::MINT => self._mint(&Recipient::direct(ESCROW_ADDRESS), amount, None)?,
             InboundKind::__Invalid => {
                 return Err(TIP1028EscrowError::invalid_receipt_claim().into());
             }
@@ -1127,6 +1148,8 @@ impl TIP20Token {
         amount: U256,
         meter_spending_limit: bool,
     ) -> Result<()> {
+        self.check_not_paused()?;
+
         if to == ESCROW_ADDRESS {
             return Err(TIP1028EscrowError::escrow_address_reserved().into());
         }
@@ -2912,47 +2935,26 @@ pub(crate) mod tests {
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
                 // Mint tokens to StablecoinDEX
                 .with_mint(STABLECOIN_DEX_ADDRESS, amount)
+                // Simulate funds backing blocked TIP-1028 receipts
+                .with_mint(ESCROW_ADDRESS, amount)
                 .apply()?;
 
-            // Attempt to burn from FeeManager
-            let result = token.burn_blocked(
-                burner,
-                ITIP20::burnBlockedCall {
-                    from: TIP_FEE_MANAGER_ADDRESS,
-                    amount: amount / U256::from(2),
-                },
-            );
+            for protected in PROTECTED {
+                let result = token.burn_blocked(
+                    burner,
+                    ITIP20::burnBlockedCall {
+                        from: *protected,
+                        amount: amount / U256::from(2),
+                    },
+                );
+                assert_eq!(result.unwrap_err(), TIP20Error::protected_address().into());
 
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
-            ));
-
-            // Verify FeeManager balance is unchanged
-            let balance = token.balance_of(ITIP20::balanceOfCall {
-                account: TIP_FEE_MANAGER_ADDRESS,
-            })?;
-            assert_eq!(balance, amount);
-
-            // Attempt to burn from StablecoinDEX
-            let result = token.burn_blocked(
-                burner,
-                ITIP20::burnBlockedCall {
-                    from: STABLECOIN_DEX_ADDRESS,
-                    amount: amount / U256::from(2),
-                },
-            );
-
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::ProtectedAddress(_)))
-            ));
-
-            // Verify StablecoinDEX balance is unchanged
-            let balance = token.balance_of(ITIP20::balanceOfCall {
-                account: STABLECOIN_DEX_ADDRESS,
-            })?;
-            assert_eq!(balance, amount);
+                // Verify balance is unchanged
+                let balance = token.balance_of(ITIP20::balanceOfCall {
+                    account: *protected,
+                })?;
+                assert_eq!(balance, amount);
+            }
 
             Ok(())
         })
@@ -4061,6 +4063,33 @@ pub(crate) mod tests {
 
             Ok(())
         }
+    }
+
+    #[test]
+    fn test_mint_paused_pre_t6_preserves_sload_count() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let (admin, amount) = (Address::random(), U256::random());
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_role(admin, *PAUSE_ROLE)
+                .apply()?;
+            token.pause(admin, ITIP20::pauseCall {})?;
+
+            token.storage.reset_counters();
+            let result = token.mint(admin, ITIP20::mintCall { to: admin, amount });
+
+            assert_eq!(
+                result,
+                Err(TempoPrecompileError::TIP20(TIP20Error::contract_paused()))
+            );
+            assert_eq!(token.storage.counter_sload(), 3);
+
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        Ok(())
     }
 
     #[test]

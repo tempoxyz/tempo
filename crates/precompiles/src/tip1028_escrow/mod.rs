@@ -406,6 +406,68 @@ mod tests {
     }
 
     #[test]
+    fn test_claim_blocked_rejects_when_token_paused() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let blocked_at = 1_728_000u64;
+        storage.set_timestamp(U256::from(blocked_at));
+
+        let admin = Address::random();
+        let originator = Address::random();
+        let receiver = Address::random();
+        let amount = U256::from(100u64);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("T", "T", admin)
+                .with_issuer(admin)
+                .with_role(admin, TIP20Token::pause_role())
+                .with_mint(originator, amount)
+                .apply()?;
+            block_all_senders(receiver, Address::ZERO)?;
+
+            token.transfer(
+                originator,
+                ITIP20::transferCall {
+                    to: receiver,
+                    amount,
+                },
+            )?;
+            token.pause(admin, ITIP20::pauseCall {})?;
+
+            let receipt = receipt_v1(
+                originator,
+                receiver,
+                blocked_at,
+                1,
+                BlockedReason::RECEIVE_POLICY,
+                InboundKind::TRANSFER,
+                B256::ZERO,
+            );
+            let mut escrow = TIP1028Escrow::new();
+            let result = escrow.claim_blocked(
+                receiver,
+                claim_call(token.address(), Address::ZERO, &receipt, receiver),
+            );
+            assert_eq!(result.unwrap_err(), TIP20Error::contract_paused().into());
+            assert_eq!(
+                receipt_balance(&escrow, token.address(), Address::ZERO, &receipt)?,
+                amount
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: ESCROW_ADDRESS
+                })?,
+                amount
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: receiver })?,
+                U256::ZERO
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_escrow_balance_matches_open_receipts() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_001u64));
