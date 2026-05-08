@@ -19,7 +19,6 @@ const E2E_GAS_LIMIT = "1000000000000"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
-const E2E_DEFAULT_BACKEND = "txgen"
 const TXGEN_DEFAULT_SEED = 99
 const TXGEN_SCRAPE_INTERVAL_MS = 500
 const TXGEN_DRAIN_TIMEOUT_SECS = 300
@@ -685,7 +684,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
     let effective_node_args = ([$ctx.node_args $side_args] | where { |a| $a != "" } | str join " ")
     let extra_args = if $effective_node_args == "" { [] } else { $effective_node_args | split row " " }
-    let weights = if $ctx.preset != "" { $PRESETS | get $ctx.preset } else { [0.0, 0.0, 0.0, 0.0] }
 
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
@@ -791,102 +789,63 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     if $phase_exit == 0 {
         let bench_env_export = if $ctx.bench_env != "" { $"export ($ctx.bench_env) && " } else { "" }
-        if $ctx.backend == "txgen" {
-            if $ctx.preset != "tip20" {
-                print $"Error: txgen e2e backend currently supports only preset=tip20 \(got ($ctx.preset)\)"
-                $phase_exit = 1
-            } else {
-                let ignored_bench_args = (sanitize-txgen-bench-args $ctx.bench_args)
-                if $ignored_bench_args != "" {
-                    print $"  Warning: txgen path is ignoring unsupported bench args: ($ignored_bench_args)"
-                }
-                let chain_id = (fetch-chain-id $a_rpc)
-                $env.TXGEN_ACCOUNTS = ($ctx.accounts | into string)
-                let spec_path = ($TXGEN_TIP20_TEMPLATE | path expand)
-                fund-txgen-accounts $ctx.txgen.txgen_tempo_bin $spec_path $a_rpc
-
-                let report_path = $"($ctx.results_dir)/report-($phase).json"
-                let tx_count = [($ctx.tps * $ctx.duration) 1] | math max
-                let txgen_cmd = [
-                    $ctx.txgen.txgen_tempo_bin
-                    "generate"
-                    "-s" $spec_path
-                    "-n" $tx_count
-                    "--seed" $TXGEN_DEFAULT_SEED
-                    "--rpc" $a_rpc
-                ]
-                let bench_cmd = [
-                    $ctx.txgen.txgen_bench_bin
-                    "send"
-                    "--rpc-url" $a_rpc
-                    "--tps" $ctx.tps
-                    "--max-concurrent" $ctx.max_concurrent_requests
-                    "--metrics-url" "http://127.0.0.1:9001/metrics"
-                    "--scrape-interval-ms" $TXGEN_SCRAPE_INTERVAL_MS
-                    "--drain-timeout" $TXGEN_DRAIN_TIMEOUT_SECS
-                    "--report" $"json:($report_path)"
-                    "-m" $"chain_id=($chain_id)"
-                    "-m" $"target_tps=($ctx.tps)"
-                    "-m" $"run_duration_secs=($ctx.duration)"
-                    "-m" $"accounts=($ctx.accounts)"
-                    "-m" $"total_connections=($ctx.max_concurrent_requests)"
-                    "-m" "tip20_weight=1.0"
-                    "-m" "place_order_weight=0.0"
-                    "-m" "swap_weight=0.0"
-                    "-m" "erc20_weight=0.0"
-                    "-m" $"node_commit_sha=($run.ref)"
-                    "-m" $"build_profile=($ctx.profile)"
-                    "-m" "mode=e2e"
-                ]
-                print $"Running local e2e txgen sender: ($txgen_cmd | str join ' ') | ($bench_cmd | str join ' ')"
-                let txgen_cmd_str = (shell-join $txgen_cmd)
-                let bench_cmd_str = (shell-join $bench_cmd)
-                let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
-                let bench_result = (bash -lc $pipeline | complete)
-                if $bench_result.stdout != "" { print $bench_result.stdout }
-                if $bench_result.stderr != "" { print $bench_result.stderr }
-                $phase_exit = $bench_result.exit_code
-
-                if not ($report_path | path exists) {
-                    print $"ERROR: txgen sender for ($phase) produced no ($report_path)"
-                    $phase_exit = 1
-                }
-            }
+        if $ctx.preset != "tip20" {
+            print $"Error: txgen e2e currently supports only preset=tip20 \(got ($ctx.preset)\)"
+            $phase_exit = 1
         } else {
-            let bench_cmd = [
-                $run.bench
-                "run-max-tps"
-                "--tps" $"($ctx.tps)"
-                "--duration" $"($ctx.duration)"
-                "--accounts" $"($ctx.accounts)"
-                "--max-concurrent-requests" $"($ctx.max_concurrent_requests)"
-                "--target-urls" $"($a_rpc),($b_rpc)"
-                "--faucet"
-                "--clear-txpool"
-            ]
-            | append (if $ctx.preset != "" {
-                [
-                    "--tip20-weight" $"($weights | get 0)"
-                    "--erc20-weight" $"($weights | get 1)"
-                    "--swap-weight" $"($weights | get 2)"
-                    "--place-order-weight" $"($weights | get 3)"
-                ]
-            } else { [] })
-            | append (if $ctx.bloat > 0 { ["--mnemonic" $"'($BLOAT_MNEMONIC)'"] } else { [] })
-            | append (if $ctx.bench_args != "" { $ctx.bench_args | split row " " } else { [] })
-            | append ["--node-commit-sha" $run.ref "--build-profile" $ctx.profile "--benchmark-mode" "e2e"]
+            let ignored_bench_args = (sanitize-txgen-bench-args $ctx.bench_args)
+            if $ignored_bench_args != "" {
+                print $"  Warning: txgen path is ignoring unsupported bench args: ($ignored_bench_args)"
+            }
+            let chain_id = (fetch-chain-id $a_rpc)
+            $env.TXGEN_ACCOUNTS = ($ctx.accounts | into string)
+            let spec_path = ($TXGEN_TIP20_TEMPLATE | path expand)
+            fund-txgen-accounts $ctx.txgen.txgen_tempo_bin $spec_path $a_rpc
 
-            print $"Running local e2e sender: ($bench_cmd | str join ' ')"
-            let bench_result = (bash -c $"($bench_env_export)ulimit -Sn unlimited && ($bench_cmd | str join ' ')" | complete)
+            let report_path = $"($ctx.results_dir)/report-($phase).json"
+            let tx_count = [($ctx.tps * $ctx.duration) 1] | math max
+            let txgen_cmd = [
+                $ctx.txgen.txgen_tempo_bin
+                "generate"
+                "-s" $spec_path
+                "-n" $tx_count
+                "--seed" $TXGEN_DEFAULT_SEED
+                "--rpc" $a_rpc
+            ]
+            let bench_cmd = [
+                $ctx.txgen.txgen_bench_bin
+                "send"
+                "--rpc-url" $a_rpc
+                "--tps" $ctx.tps
+                "--max-concurrent" $ctx.max_concurrent_requests
+                "--metrics-url" "http://127.0.0.1:9001/metrics"
+                "--scrape-interval-ms" $TXGEN_SCRAPE_INTERVAL_MS
+                "--drain-timeout" $TXGEN_DRAIN_TIMEOUT_SECS
+                "--report" $"json:($report_path)"
+                "-m" $"chain_id=($chain_id)"
+                "-m" $"target_tps=($ctx.tps)"
+                "-m" $"run_duration_secs=($ctx.duration)"
+                "-m" $"accounts=($ctx.accounts)"
+                "-m" $"total_connections=($ctx.max_concurrent_requests)"
+                "-m" "tip20_weight=1.0"
+                "-m" "place_order_weight=0.0"
+                "-m" "swap_weight=0.0"
+                "-m" "erc20_weight=0.0"
+                "-m" $"node_commit_sha=($run.ref)"
+                "-m" $"build_profile=($ctx.profile)"
+                "-m" "mode=e2e"
+            ]
+            print $"Running local e2e txgen sender: ($txgen_cmd | str join ' ') | ($bench_cmd | str join ' ')"
+            let txgen_cmd_str = (shell-join $txgen_cmd)
+            let bench_cmd_str = (shell-join $bench_cmd)
+            let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
+            let bench_result = (bash -lc $pipeline | complete)
             if $bench_result.stdout != "" { print $bench_result.stdout }
             if $bench_result.stderr != "" { print $bench_result.stderr }
             $phase_exit = $bench_result.exit_code
 
-            if ("report.json" | path exists) {
-                cp report.json $"($ctx.results_dir)/report-($phase).json"
-                rm report.json
-            } else {
-                print $"ERROR: sender for ($phase) produced no report.json"
+            if not ($report_path | path exists) {
+                print $"ERROR: txgen sender for ($phase) produced no ($report_path)"
                 $phase_exit = 1
             }
         }
@@ -920,7 +879,7 @@ def "main e2e" [
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 100                # Max concurrent requests
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 1, 10, or 100
-    --backend: string = $E2E_DEFAULT_BACKEND            # Benchmark backend: txgen or tempo-bench
+    --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
@@ -935,7 +894,7 @@ def "main e2e" [
     --node-args: string = ""                            # Additional node args for all phases
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
-    --bench-args: string = ""                           # Additional tempo-bench args
+    --bench-args: string = ""                           # Additional txgen bench args
     --baseline-env: string = ""                         # Environment vars for baseline node phases
     --feature-env: string = ""                          # Environment vars for feature node phases
     --bench-env: string = ""                            # Environment vars for the sender process
@@ -945,21 +904,16 @@ def "main e2e" [
     --loud                                              # Show node debug logs
     --no-cache                                           # Skip binary cache
 ] {
-    if $preset == "" and $bench_args == "" {
-        print "Error: either --preset or --bench-args must be provided"
-        print $"  Available presets: ($PRESETS | columns | str join ', ')"
+    if $preset == "" {
+        print "Error: --preset tip20 is required for e2e txgen"
         exit 1
     }
-    if $preset != "" and not ($preset in $PRESETS) {
+    if not ($preset in $PRESETS) {
         print $"Unknown preset: ($preset). Available: ($PRESETS | columns | str join ', ')"
         exit 1
     }
-    if $backend not-in ["txgen" "tempo-bench"] {
-        print $"Error: --backend must be one of: txgen, tempo-bench \(got '($backend)'\)"
-        exit 1
-    }
-    if $backend == "txgen" and $preset != "tip20" {
-        print $"Error: --backend txgen currently supports only --preset tip20 \(got '($preset)'\)"
+    if $preset != "tip20" {
+        print $"Error: e2e txgen currently supports only --preset tip20 \(got '($preset)'\)"
         exit 1
     }
     if $tracy not-in ["off" "on" "full"] {
@@ -1006,7 +960,7 @@ def "main e2e" [
     let timestamp = ($run_started_at | format date "%Y%m%d-%H%M%S-%3f")
     let benchmark_id = $"bench-e2e-local-($timestamp)"
     let reference_epoch = (($run_started_at | into int) / 1_000_000_000 | into int)
-    let gas_limit_args = if $E2E_GAS_LIMIT != "" { ["--gas-limit" $E2E_GAS_LIMIT] } else { [] }
+    let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
     let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
     if $tracing_otlp != "" {
         $env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = $tracing_otlp
@@ -1065,7 +1019,7 @@ def "main e2e" [
             accounts: $genesis_accounts
             validators: $E2E_VALIDATORS
             seed: $E2E_SEED
-            gas_limit: $E2E_GAS_LIMIT
+            gas_limit: $gas_limit
             dkg_in_genesis: true
             topology: "single-runner"
         }
@@ -1125,14 +1079,8 @@ def "main e2e" [
         build-in-worktree $feature_wt $feature $profile $effective_features $feature
     }
     let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
-    let baseline_bench = (worktree-bin $baseline_wt $profile "tempo-bench")
     let feature_tempo = (worktree-bin $feature_wt $profile "tempo")
-    let feature_bench = (worktree-bin $feature_wt $profile "tempo-bench")
-    let txgen = if $backend == "txgen" {
-        resolve-txgen-paths
-    } else {
-        { txgen_tempo_bin: "", txgen_bench_bin: "" }
-    }
+    let txgen = resolve-txgen-paths
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
     let ctx = {
         genesis: $genesis_path
@@ -1163,7 +1111,6 @@ def "main e2e" [
         accounts: $accounts
         max_concurrent_requests: $max_concurrent_requests
         bloat: $bloat_mib
-        backend: $backend
         txgen: $txgen
         results_dir: $results_dir
         profile: $profile
@@ -1184,14 +1131,14 @@ def "main e2e" [
         reference_epoch: $reference_epoch
         tune: $tune
         loud: $loud
-        gas_limit: $E2E_GAS_LIMIT
+        gas_limit: $gas_limit
     }
 
     let runs = [
-        { phase: "baseline-1", ref: $baseline, tempo: $baseline_tempo, bench: $baseline_bench }
-        { phase: "feature-1", ref: $feature, tempo: $feature_tempo, bench: $feature_bench }
-        { phase: "feature-2", ref: $feature, tempo: $feature_tempo, bench: $feature_bench }
-        { phase: "baseline-2", ref: $baseline, tempo: $baseline_tempo, bench: $baseline_bench }
+        { phase: "baseline-1", ref: $baseline, tempo: $baseline_tempo }
+        { phase: "feature-1", ref: $feature, tempo: $feature_tempo }
+        { phase: "feature-2", ref: $feature, tempo: $feature_tempo }
+        { phase: "baseline-2", ref: $baseline, tempo: $baseline_tempo }
     ]
     mut e2e_exit = 0
     for run in $runs {

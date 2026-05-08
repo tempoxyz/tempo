@@ -42,14 +42,16 @@ on:
         type: string
         required: true
         default: "10000"
-      backend:
-        description: Benchmark backend.
-        type: choice
+      accounts:
+        description: Number of benchmark accounts.
+        type: string
         required: true
-        default: txgen
-        options:
-          - txgen
-          - tempo-bench
+        default: "1000"
+      max-concurrent-requests:
+        description: Max concurrent sender requests.
+        type: string
+        required: true
+        default: "100"
       txgen-ref:
         description: Optional ref to pin in tempoxyz/txgen.
         type: string
@@ -79,6 +81,11 @@ on:
         type: string
         required: true
         default: "120"
+      node-args:
+        description: Extra args passed to all node runs.
+        type: string
+        required: false
+        default: ""
       baseline-args:
         description: Extra args passed only to the baseline node.
         type: string
@@ -89,18 +96,18 @@ on:
         type: string
         required: false
         default: ""
-      baseline-hardfork:
-        description: Optional baseline hardfork.
+      gas-limit:
+        description: Builder gas limit.
         type: string
-        required: false
-        default: ""
-      feature-hardfork:
-        description: Optional feature hardfork.
-        type: string
-        required: false
-        default: ""
+        required: true
+        default: "1000000000000"
       force-bloat:
         description: Force regeneration of local benchmark state.
+        type: boolean
+        required: true
+        default: false
+      no-cache:
+        description: Skip binary cache.
         type: boolean
         required: true
         default: false
@@ -152,13 +159,16 @@ on:
       tps:
         type: string
         required: true
+      accounts:
+        type: string
+        required: true
+      max-concurrent-requests:
+        type: string
+        required: true
       baseline:
         type: string
         required: true
       feature:
-        type: string
-        required: true
-      backend:
         type: string
         required: true
       txgen-ref:
@@ -182,22 +192,25 @@ on:
       tracy-offset:
         type: string
         required: true
+      node-args:
+        type: string
+        required: false
       baseline-args:
         type: string
         required: false
       feature-args:
         type: string
         required: false
-      baseline-hardfork:
+      gas-limit:
         type: string
-        required: false
-      feature-hardfork:
-        type: string
-        required: false
+        required: true
       run-type:
         type: string
         required: true
       force-bloat:
+        type: string
+        required: true
+      no-cache:
         type: string
         required: true
       no-slack:
@@ -258,18 +271,20 @@ jobs:
       BENCH_DURATION: ${{ inputs.duration }}
       BENCH_BLOAT: ${{ inputs.bloat }}
       BENCH_TPS: ${{ inputs.tps }}
-      BENCH_BACKEND: ${{ inputs.backend }}
+      BENCH_ACCOUNTS: ${{ inputs.accounts || '1000' }}
+      BENCH_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests || '100' }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
       BENCH_SAMPLY: ${{ inputs.samply }}
       BENCH_TRACY: ${{ inputs.tracy }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
+      BENCH_NODE_ARGS: ${{ inputs.node-args }}
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
-      BENCH_BASELINE_HARDFORK: ${{ inputs.baseline-hardfork }}
-      BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
+      BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '1000000000000' }}
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat }}
+      BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
       BENCH_NO_SLACK: ${{ inputs.no-slack }}
       BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
@@ -359,18 +374,21 @@ jobs:
             const duration = process.env.BENCH_DURATION;
             const bloat = process.env.BENCH_BLOAT;
             const tps = process.env.BENCH_TPS;
+            const accounts = process.env.BENCH_ACCOUNTS;
+            const maxConcurrentRequests = process.env.BENCH_MAX_CONCURRENT_REQUESTS;
             const baseline = process.env.INPUT_BASELINE_NAME;
             const feature = process.env.INPUT_FEATURE_NAME;
-            const backend = process.env.BENCH_BACKEND;
             const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
             const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = process.env.BENCH_TRACY;
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
-            const bHf2 = process.env.BENCH_BASELINE_HARDFORK || '';
-            const fHf2 = process.env.BENCH_FEATURE_HARDFORK || '';
-            const hfNote2 = bHf2 ? `, baseline-hardfork: \`${bHf2}\`, feature-hardfork: \`${fHf2}\`` : '';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat}\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, backend: \`${backend}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${hfNote2}`);
+            const noCache = process.env.BENCH_NO_CACHE === 'true';
+            const noCacheNote = noCache ? ', no-cache: `true`' : '';
+            const nodeArgs = process.env.BENCH_NODE_ARGS || '';
+            const nodeArgsNote = nodeArgs ? `, node-args: \`${nodeArgs}\`` : '';
+            const gasLimit = process.env.BENCH_GAS_LIMIT;
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${nodeArgsNote}${noCacheNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -384,15 +402,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
         continue-on-error: true
 
-      - name: Validate e2e options
-        run: |
-          if [ -n "$BENCH_BASELINE_HARDFORK" ] || [ -n "$BENCH_FEATURE_HARDFORK" ]; then
-            echo "::error::mode=e2e hardfork comparison is not wired for the single-runner local harness yet."
-            exit 1
-          fi
-
-      - name: Install txgen backend
-        if: env.BENCH_BACKEND == 'txgen'
+      - name: Install txgen
         env:
           TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: |
@@ -533,9 +543,11 @@ jobs:
           cmd+=(
             --preset "$BENCH_PRESET"
             --bloat "$BENCH_BLOAT"
-            --backend "$BENCH_BACKEND"
             --duration "$BENCH_DURATION"
             --tps "$BENCH_TPS"
+            --accounts "$BENCH_ACCOUNTS"
+            --max-concurrent-requests "$BENCH_MAX_CONCURRENT_REQUESTS"
+            --gas-limit "$BENCH_GAS_LIMIT"
             --baseline "$BASELINE_REF"
             --feature "$FEATURE_REF"
             --baseline-name "${{ steps.refs.outputs.baseline-name }}"
@@ -543,8 +555,10 @@ jobs:
             --tune
           )
           [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force-bloat)
+          [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
+          [ -n "$BENCH_NODE_ARGS" ] && cmd+=(--node-args="$BENCH_NODE_ARGS")
           [ -n "$BENCH_BASELINE_ARGS" ] && cmd+=(--baseline-args="$BENCH_BASELINE_ARGS")
           [ -n "$BENCH_FEATURE_ARGS" ] && cmd+=(--feature-args="$BENCH_FEATURE_ARGS")
           [ -n "$BENCH_BENCH_ARGS" ] && cmd+=(--bench-args="$BENCH_BENCH_ARGS")
@@ -580,12 +594,7 @@ jobs:
           BENCH_RUN_TYPE: ${{ env.BENCH_RUN_TYPE }}
           BENCH_JOB_URL: ${{ env.BENCH_JOB_URL }}
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
-        run: |
-          if [ "$BENCH_BACKEND" = "txgen" ]; then
-            bash contrib/bench/upload-clickhouse-txgen.sh "$BENCH_RESULTS_DIR"
-          else
-            bash contrib/bench/upload-clickhouse.sh "$BENCH_RESULTS_DIR"
-          fi
+        run: bash contrib/bench/upload-clickhouse-txgen.sh "$BENCH_RESULTS_DIR"
 
       - name: Post results to PR
         if: success()
