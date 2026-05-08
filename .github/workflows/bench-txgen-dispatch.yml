@@ -76,11 +76,6 @@ on:
         type: string
         required: true
         default: "30"
-      tracy-offset:
-        description: Tracy capture start offset in seconds.
-        type: string
-        required: true
-        default: "120"
       node-args:
         description: Extra args passed to both node runs.
         type: string
@@ -173,7 +168,7 @@ jobs:
       BENCH_SAMPLY: ${{ inputs.samply }}
       BENCH_TRACY: ${{ inputs.tracy }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds }}
-      BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
+      BENCH_TRACY_OFFSET: "120"
       BENCH_NODE_ARGS: ${{ inputs.node-args }}
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
