@@ -20,6 +20,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
     uint256 internal constant _DEPOSIT_OFFSET = 96;
     uint256 internal constant _CLOSE_REQUESTED_AT_OFFSET = 192;
+    bytes12 internal constant _TIP20_TOKEN_PREFIX = 0x20c000000000000000000000;
 
     bytes32 internal constant _EIP712_DOMAIN_TYPEHASH = keccak256(
         "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
@@ -61,7 +62,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         external
         returns (bytes32 channelId)
     {
-        if (payee == address(0)) revert InvalidPayee();
+        if (payee == address(0) || _isTip20Prefix(payee)) revert InvalidPayee();
         if (token == address(0)) revert InvalidToken();
         if (deposit == 0) revert ZeroDeposit();
 
@@ -420,6 +421,10 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         expiringNonceHash = _expiringNonceHashContext;
         if (expiringNonceHash == bytes32(0)) revert ExpiringNonceHashNotSet();
         delete _expiringNonceHashContext;
+    }
+
+    function _isTip20Prefix(address account) internal pure returns (bool) {
+        return bytes12(bytes20(account)) == _TIP20_TOKEN_PREFIX;
     }
 
 }

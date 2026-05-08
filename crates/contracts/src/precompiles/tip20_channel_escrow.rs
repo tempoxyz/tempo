@@ -3,16 +3,29 @@ pub use ITIP20ChannelEscrow::{
     ITIP20ChannelEscrowEvents as TIP20ChannelEscrowEvent,
 };
 use alloy_primitives::{Address, address};
+<<<<<<< rus/tip-1045
 use alloy_sol_types::{SolCall, SolType};
 
+=======
+
+/// Native TIP-1034 channel escrow precompile address.
+>>>>>>> tanishk/tip-1034-impl
 pub const TIP20_CHANNEL_ESCROW_ADDRESS: Address =
     address!("0x4D50500000000000000000000000000000000000");
 
 crate::sol! {
+<<<<<<< rus/tip-1045
+=======
+    /// TIP-20 channel escrow ABI.
+    ///
+    /// The escrow locks payer deposits, verifies EIP-712 cumulative vouchers, pays the payee
+    /// incrementally, and lets the payer withdraw the remaining balance after a close grace period.
+>>>>>>> tanishk/tip-1034-impl
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
     #[allow(clippy::too_many_arguments)]
     interface ITIP20ChannelEscrow {
+<<<<<<< rus/tip-1045
         struct ChannelDescriptor {
             address payer;
             address payee;
@@ -37,6 +50,50 @@ crate::sol! {
         function CLOSE_GRACE_PERIOD() external view returns (uint64);
         function VOUCHER_TYPEHASH() external view returns (bytes32);
 
+=======
+        /// Immutable channel identity supplied to all descriptor-based methods.
+        struct ChannelDescriptor {
+            /// Account that funded the channel and receives refunds.
+            address payer;
+            /// Account that receives settled voucher payments.
+            address payee;
+            /// Optional relayer allowed to submit `settle` for the payee.
+            address operator;
+            /// TIP-20 token address held by the channel.
+            address token;
+            /// User-supplied salt to distinguish otherwise identical channels.
+            bytes32 salt;
+            /// Optional signer for vouchers. Zero means `payer` signs.
+            address authorizedSigner;
+            /// Transaction-derived hash assigned when the channel was opened.
+            bytes32 expiringNonceHash;
+        }
+
+        /// Mutable channel state packed into one native storage slot.
+        struct ChannelState {
+            /// Cumulative amount already paid to the payee.
+            uint96 settled;
+            /// Total deposit currently locked by the channel.
+            uint96 deposit;
+            /// Payer close-request timestamp, or zero when no close is pending.
+            uint32 closeRequestedAt;
+        }
+
+        /// Full descriptor plus current state.
+        struct Channel {
+            /// Channel identity fields.
+            ChannelDescriptor descriptor;
+            /// Mutable channel accounting state.
+            ChannelState state;
+        }
+
+        /// Delay between payer `requestClose` and `withdraw`.
+        function CLOSE_GRACE_PERIOD() external view returns (uint64);
+        /// EIP-712 type hash for `Voucher(bytes32 channelId,uint96 cumulativeAmount)`.
+        function VOUCHER_TYPEHASH() external view returns (bytes32);
+
+        /// Opens a channel and pulls `deposit` TIP-20 units from `msg.sender`.
+>>>>>>> tanishk/tip-1034-impl
         function open(
             address payee,
             address operator,
@@ -48,6 +105,10 @@ crate::sol! {
             external
             returns (bytes32 channelId);
 
+<<<<<<< rus/tip-1045
+=======
+        /// Pays the unsettled delta up to `cumulativeAmount` using a valid voucher.
+>>>>>>> tanishk/tip-1034-impl
         function settle(
             ChannelDescriptor calldata descriptor,
             uint96 cumulativeAmount,
@@ -55,12 +116,20 @@ crate::sol! {
         )
             external;
 
+<<<<<<< rus/tip-1045
+=======
+        /// Adds deposit to a channel and cancels any pending close request.
+>>>>>>> tanishk/tip-1034-impl
         function topUp(
             ChannelDescriptor calldata descriptor,
             uint96 additionalDeposit
         )
             external;
 
+<<<<<<< rus/tip-1045
+=======
+        /// Closes the channel from the payee/operator side and refunds uncaptured deposit.
+>>>>>>> tanishk/tip-1034-impl
         function close(
             ChannelDescriptor calldata descriptor,
             uint96 cumulativeAmount,
@@ -69,22 +138,43 @@ crate::sol! {
         )
             external;
 
+<<<<<<< rus/tip-1045
         function requestClose(ChannelDescriptor calldata descriptor) external;
 
         function withdraw(ChannelDescriptor calldata descriptor) external;
 
+=======
+        /// Starts the payer withdrawal timer.
+        function requestClose(ChannelDescriptor calldata descriptor) external;
+
+        /// Withdraws the payer refund after the close grace period has elapsed.
+        function withdraw(ChannelDescriptor calldata descriptor) external;
+
+        /// Returns the descriptor and state for a channel.
+>>>>>>> tanishk/tip-1034-impl
         function getChannel(ChannelDescriptor calldata descriptor)
             external
             view
             returns (Channel memory);
 
+<<<<<<< rus/tip-1045
         function getChannelState(bytes32 channelId) external view returns (ChannelState memory);
 
+=======
+        /// Returns the state for `channelId`, or the zero state when absent.
+        function getChannelState(bytes32 channelId) external view returns (ChannelState memory);
+
+        /// Returns states for `channelIds` in order.
+>>>>>>> tanishk/tip-1034-impl
         function getChannelStatesBatch(bytes32[] calldata channelIds)
             external
             view
             returns (ChannelState[] memory);
 
+<<<<<<< rus/tip-1045
+=======
+        /// Computes the canonical channel id for a descriptor.
+>>>>>>> tanishk/tip-1034-impl
         function computeChannelId(
             address payer,
             address payee,
@@ -98,13 +188,24 @@ crate::sol! {
             view
             returns (bytes32);
 
+<<<<<<< rus/tip-1045
+=======
+        /// Computes the EIP-712 digest signed by the payer or authorized signer.
+>>>>>>> tanishk/tip-1034-impl
         function getVoucherDigest(bytes32 channelId, uint96 cumulativeAmount)
             external
             view
             returns (bytes32);
 
+<<<<<<< rus/tip-1045
         function domainSeparator() external view returns (bytes32);
 
+=======
+        /// Returns the EIP-712 domain separator for the current chain.
+        function domainSeparator() external view returns (bytes32);
+
+        /// Emitted after a channel is opened and funded.
+>>>>>>> tanishk/tip-1034-impl
         event ChannelOpened(
             bytes32 indexed channelId,
             address indexed payer,
@@ -117,6 +218,10 @@ crate::sol! {
             uint96 deposit
         );
 
+<<<<<<< rus/tip-1045
+=======
+        /// Emitted after voucher settlement pays a delta to the payee.
+>>>>>>> tanishk/tip-1034-impl
         event Settled(
             bytes32 indexed channelId,
             address indexed payer,
@@ -126,6 +231,10 @@ crate::sol! {
             uint96 newSettled
         );
 
+<<<<<<< rus/tip-1045
+=======
+        /// Emitted after channel deposit changes or a close request is cancelled by top-up.
+>>>>>>> tanishk/tip-1034-impl
         event TopUp(
             bytes32 indexed channelId,
             address indexed payer,
@@ -134,6 +243,10 @@ crate::sol! {
             uint96 newDeposit
         );
 
+<<<<<<< rus/tip-1045
+=======
+        /// Emitted when the payer starts the close grace timer.
+>>>>>>> tanishk/tip-1034-impl
         event CloseRequested(
             bytes32 indexed channelId,
             address indexed payer,
@@ -141,6 +254,10 @@ crate::sol! {
             uint256 closeGraceEnd
         );
 
+<<<<<<< rus/tip-1045
+=======
+        /// Emitted when a channel is deleted by payee close or payer withdraw.
+>>>>>>> tanishk/tip-1034-impl
         event ChannelClosed(
             bytes32 indexed channelId,
             address indexed payer,
@@ -149,12 +266,17 @@ crate::sol! {
             uint96 refundedToPayer
         );
 
+<<<<<<< rus/tip-1045
+=======
+        /// Emitted when top-up clears a pending close request.
+>>>>>>> tanishk/tip-1034-impl
         event CloseRequestCancelled(
             bytes32 indexed channelId,
             address indexed payer,
             address indexed payee
         );
 
+<<<<<<< rus/tip-1045
         error ChannelAlreadyExists();
         error ChannelNotFound();
         error NotPayer();
@@ -170,10 +292,44 @@ crate::sol! {
         error CaptureAmountInvalid();
         error CloseNotReady();
         error DepositOverflow();
+=======
+        /// Channel id already exists in persistent state or earlier in this transaction.
+        error ChannelAlreadyExists();
+        /// Descriptor resolves to an empty channel slot.
+        error ChannelNotFound();
+        /// Caller must be the descriptor payer.
+        error NotPayer();
+        /// Caller must be the descriptor payee.
+        error NotPayee();
+        /// Caller must be the descriptor payee or nonzero operator.
+        error NotPayeeOrOperator();
+        /// Payee is zero or a TIP-20-prefix address.
+        error InvalidPayee();
+        /// Token is not a TIP-20-prefix address.
+        error InvalidToken();
+        /// Initial deposit cannot be zero.
+        error ZeroDeposit();
+        /// Handler did not seed the transaction-scoped open context hash.
+        error ExpiringNonceHashNotSet();
+        /// Voucher signature did not recover to the expected signer.
+        error InvalidSignature();
+        /// Voucher or capture amount exceeds the channel deposit.
+        error AmountExceedsDeposit();
+        /// Settlement amount must be greater than the current settled amount.
+        error AmountNotIncreasing();
+        /// Close capture is below settled amount or above voucher amount.
+        error CaptureAmountInvalid();
+        /// Payer withdraw was attempted before the close grace period elapsed.
+        error CloseNotReady();
+        /// Top-up would overflow the packed deposit.
+        error DepositOverflow();
+        /// TIP-20 system transfer failed.
+>>>>>>> tanishk/tip-1034-impl
         error TransferFailed();
     }
 }
 
+<<<<<<< rus/tip-1045
 impl ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls {
     /// Returns `true` if `input` matches one of the recognized [TIP-20 channel escrow payment]
     /// selectors: `open`, `topUp`, `settle`, `close`
@@ -204,6 +360,8 @@ impl ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls {
     }
 }
 
+=======
+>>>>>>> tanishk/tip-1034-impl
 impl TIP20ChannelEscrowError {
     pub const fn channel_already_exists() -> Self {
         Self::ChannelAlreadyExists(ITIP20ChannelEscrow::ChannelAlreadyExists {})
@@ -269,6 +427,7 @@ impl TIP20ChannelEscrowError {
         Self::TransferFailed(ITIP20ChannelEscrow::TransferFailed {})
     }
 }
+<<<<<<< rus/tip-1045
 
 #[cfg(test)]
 mod tests {
@@ -352,3 +511,5 @@ mod tests {
         ));
     }
 }
+=======
+>>>>>>> tanishk/tip-1034-impl
