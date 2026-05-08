@@ -30,7 +30,7 @@ pub const CLOSE_GRACE_PERIOD: u64 = 15 * 60;
 /// EIP-712 type hash for signed cumulative payment vouchers.
 static VOUCHER_TYPEHASH: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"Voucher(bytes32 channelId,uint96 cumulativeAmount)"));
-/// EIP-712 domain type hash used by [`domain_separator_inner`].
+/// EIP-712 domain type hash used by [`TIP20ChannelEscrow::domain_separator_inner`].
 static EIP712_DOMAIN_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
 });
@@ -212,8 +212,8 @@ impl TIP20ChannelEscrow {
                 payer: call.descriptor.payer,
                 payee: call.descriptor.payee,
                 cumulativeAmount: call.cumulativeAmount,
-                deltaPaid: delta.into(),
-                newSettled: cumulative.into(),
+                deltaPaid: delta,
+                newSettled: cumulative,
             },
         ))?;
 
@@ -368,8 +368,8 @@ impl TIP20ChannelEscrow {
                 channelId: channel_id,
                 payer: call.descriptor.payer,
                 payee: call.descriptor.payee,
-                settledToPayee: capture.into(),
-                refundedToPayer: refund.into(),
+                settledToPayee: capture,
+                refundedToPayer: refund,
             },
         ))?;
 
@@ -415,7 +415,7 @@ impl TIP20ChannelEscrow {
                 payer: call.descriptor.payer,
                 payee: call.descriptor.payee,
                 settledToPayee: state.settled,
-                refundedToPayer: refund.into(),
+                refundedToPayer: refund,
             },
         ))?;
 
@@ -532,6 +532,7 @@ impl TIP20ChannelEscrow {
     }
 
     /// Computes the channel id including chain and precompile domain separation.
+    #[allow(clippy::too_many_arguments)]
     fn compute_channel_id_inner(
         &self,
         payer: Address,
