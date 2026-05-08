@@ -1605,7 +1605,7 @@ mod recipient_tests {
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
     use tempo_contracts::precompiles::{
-        ITIP20Factory, ITIP1028Escrow, TIP1028EscrowEvent, createTokenCall,
+        ITIP1028Escrow, TIP1028EscrowEvent, createTokenCall,
     };
 
     use super::*;
