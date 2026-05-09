@@ -86,7 +86,7 @@ async fn download_consensus(
     manifest: SnapshotManifest,
     archive_source: ArchiveSource,
 ) -> Result<()> {
-    fs::create_dir_all(&consensus_dir).wrap_err("failed to create consensus dir")?;
+    fs::create_dir_all(consensus_dir).wrap_err("failed to create consensus dir")?;
     for &key in CL_COMPONENT_KEYS {
         let comp = manifest
             .components
@@ -136,7 +136,7 @@ impl ArchiveSource {
         match self {
             Self::Local(dir) => {
                 let path = dir.join(file_name);
-                fs::read(&path).wrap_err_with(|| format!("failed to read {}", path.display()))
+                fs::read(&path).wrap_err_with(|| format!("failed to read {path:?}"))
             }
             Self::Remote { base_url, client } => {
                 let url = if base_url.ends_with('/') {
@@ -249,7 +249,7 @@ fn resolve_archive_source(
     if let Some(path) = manifest_path {
         let parent = path
             .parent()
-            .ok_or_else(|| eyre!("manifest path has no parent: {}", path.display()))?;
+            .ok_or_else(|| eyre!("manifest path has no parent: {path:?}"))?;
 
         return Ok(ArchiveSource::Local(parent.to_path_buf()));
     }

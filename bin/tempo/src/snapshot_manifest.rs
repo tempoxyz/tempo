@@ -70,7 +70,7 @@ pub(crate) fn run(matches: &ArgMatches) -> Result<()> {
 impl Args {
     fn execute(self, source_datadir: &Path, output_dir: &Path) -> Result<()> {
         fs::create_dir_all(output_dir)
-            .wrap_err_with(|| format!("failed to create output dir: {}", output_dir.display()))?;
+            .wrap_err_with(|| format!("failed to create output dir: {output_dir:?}"))?;
 
         let consensus_dir = self
             .consensus_source_dir
@@ -78,7 +78,7 @@ impl Args {
             .unwrap_or_else(|| source_datadir.join("consensus"));
 
         if !consensus_dir.is_dir() {
-            bail!("consensus dir does not exist: {}", consensus_dir.display());
+            bail!("consensus dir does not exist: {consensus_dir:?}");
         }
 
         let groups = collect_cl_partitions(&consensus_dir)?;
@@ -129,7 +129,7 @@ impl Args {
             .wrap_err("failed to serialize merged manifest.json")?;
 
         fs::write(&manifest_path, &json)
-            .wrap_err_with(|| format!("failed to write {}", manifest_path.display()))?;
+            .wrap_err_with(|| format!("failed to write {manifest_path:?}"))?;
 
         eprintln!("snapshot manifest: {manifest_path:?}");
 
@@ -220,7 +220,7 @@ fn pack_partitions(
     partitions: &[PathBuf],
 ) -> Result<Vec<OutputFileChecksum>> {
     let file = File::create(archive_path)
-        .wrap_err_with(|| format!("failed to create archive {}", archive_path.display()))?;
+        .wrap_err_with(|| format!("failed to create archive {archive_path:?}"))?;
 
     let mut encoder = ZstdEncoder::new(file, 0).wrap_err("failed to initialize zstd encoder")?;
 
@@ -236,7 +236,7 @@ fn pack_partitions(
             .sort_by_file_name()
             .into_iter()
             .collect::<std::result::Result<Vec<_>, _>>()
-            .wrap_err_with(|| format!("failed walking partition dir {}", partition.display()))?
+            .wrap_err_with(|| format!("failed walking partition dir {partition:?}"))?
             .into_iter()
             .filter(|e| e.file_type().is_file())
             .map(|e| e.into_path())
@@ -249,7 +249,7 @@ fn pack_partitions(
                 .to_path_buf();
 
             let metadata = fs::metadata(&path)
-                .wrap_err_with(|| format!("failed to stat {}", path.display()))?;
+                .wrap_err_with(|| format!("failed to stat {path:?}"))?;
 
             let blake3 = blake3_hash(&path)?;
 
@@ -260,9 +260,9 @@ fn pack_partitions(
             header.set_cksum();
 
             let source =
-                File::open(&path).wrap_err_with(|| format!("failed to open {}", path.display()))?;
+                File::open(&path).wrap_err_with(|| format!("failed to open {path:?}"))?;
             tar.append_data(&mut header, &rel, source)
-                .wrap_err_with(|| format!("failed to append {} to tar", path.display()))?;
+                .wrap_err_with(|| format!("failed to append {path:?} to tar"))?;
 
             outputs.push(OutputFileChecksum {
                 path: rel.to_string_lossy().into_owned(),
@@ -283,7 +283,7 @@ fn pack_partitions(
 /// BLAKE3-hash a file's contents and return the hex digest.
 pub(crate) fn blake3_hash(path: &Path) -> Result<String> {
     let mut file =
-        File::open(path).wrap_err_with(|| format!("failed to open {}", path.display()))?;
+        File::open(path).wrap_err_with(|| format!("failed to open {path:?}"))?;
     let mut hasher = Hasher::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
