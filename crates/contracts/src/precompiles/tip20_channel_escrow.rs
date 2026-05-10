@@ -230,14 +230,17 @@ crate::sol! {
     }
 }
 
+/// TIP-1045 Maximum calldata length (in bytes) for payment-eligible calls with dynamic params.
+pub const MAX_PAYMENT_CALLDATA_LEN: usize = 2048;
+
 impl ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls {
     /// Returns `true` if `input` matches one of the recognized [TIP-20 channel escrow payment]
-    /// selectors: `open`, `topUp`, `settle`, `close`
+    /// selectors: `open`, `topUp`, `settle`, `close`, `requestClose`, `withdraw`.
     ///
     /// # NOTES
     /// - Only validates calldata; caller must check the that `to == TIP20_CHANNEL_ESCROW_ADDRESS`.
     /// - Static-only calls require exact ABI-encoded length.
-    /// - Dynamic calls require ABI decoding and total calldata length <= 2048 bytes.
+    /// - Dynamic calls require valid ABI decoding + calldata length <= [`MAX_PAYMENT_CALLDATA_LEN`]
     ///
     /// [TIP-20 channel escrow payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment(input: &[u8]) -> bool {
@@ -249,7 +252,7 @@ impl ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls {
             if let Some(canonical_size) = <C::Parameters<'_> as SolType>::ENCODED_SIZE {
                 input.len() == 4 + canonical_size
             } else {
-                input.len() <= 2048 && C::abi_decode_validate(input).is_ok()
+                input.len() <= MAX_PAYMENT_CALLDATA_LEN && C::abi_decode_validate(input).is_ok()
             }
         }
 
@@ -257,6 +260,8 @@ impl ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls {
             || is_call::<ITIP20ChannelEscrow::topUpCall>(input)
             || is_call::<ITIP20ChannelEscrow::closeCall>(input)
             || is_call::<ITIP20ChannelEscrow::settleCall>(input)
+            || is_call::<ITIP20ChannelEscrow::requestCloseCall>(input)
+            || is_call::<ITIP20ChannelEscrow::withdrawCall>(input)
     }
 }
 
@@ -345,13 +350,15 @@ mod tests {
     }
 
     #[rustfmt::skip]
-    fn payment_calldatas() -> [Vec<u8>; 4] {
+    fn payment_calldatas() -> [Vec<u8>; 6] {
         let descriptor = descriptor();
         [
             ITIP20ChannelEscrow::openCall { payee: Address::random(), operator: Address::random(), token: Address::random(), deposit: U96::from(1), salt: B256::random(), authorizedSigner: Address::random() }.abi_encode(),
-            ITIP20ChannelEscrow::topUpCall { descriptor: descriptor.clone(), additionalDeposit: U96::from(1) }.abi_encode(),
-            ITIP20ChannelEscrow::settleCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), signature: vec![1, 2, 3].into() }.abi_encode(),
-            ITIP20ChannelEscrow::closeCall { descriptor, cumulativeAmount: U96::from(1), captureAmount: U96::from(1), signature: vec![1, 2, 3].into() }.abi_encode(),
+            ITIP20ChannelEscrow::topUpCall { descriptor: descriptor.clone(), additionalDeposit: U96::ONE }.abi_encode(),
+            ITIP20ChannelEscrow::settleCall { descriptor: descriptor.clone(), cumulativeAmount: U96::ONE, signature: vec![1, 2, 3].into() }.abi_encode(),
+            ITIP20ChannelEscrow::closeCall { descriptor: descriptor.clone(), cumulativeAmount: U96::ONE, captureAmount: U96::ONE, signature: vec![1, 2, 3].into() }.abi_encode(),
+            ITIP20ChannelEscrow::requestCloseCall { descriptor: descriptor.clone() }.abi_encode(),
+            ITIP20ChannelEscrow::withdrawCall { descriptor }.abi_encode(),
         ]
     }
 
@@ -362,13 +369,6 @@ mod tests {
                 &calldata
             ));
         }
-
-        assert!(!ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
-            &ITIP20ChannelEscrow::requestCloseCall {
-                descriptor: descriptor()
-            }
-            .abi_encode(),
-        ));
 
         let mut unknown = payment_calldatas()[0].clone();
         unknown[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
