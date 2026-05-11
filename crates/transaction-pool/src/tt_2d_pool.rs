@@ -1163,6 +1163,11 @@ impl AA2dPool {
                     }
                 }
             }
+
+            if !self.txs_by_sender.contains_key(account) {
+                continue;
+            }
+
             let nonce = state
                 .account_info()
                 .map(|info| info.nonce)
