@@ -31,6 +31,10 @@ use thiserror::Error;
 #[derive(Debug, Clone)]
 pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
+    /// Cached nonce for hot transaction-pool ordering and maintenance paths.
+    nonce: u64,
+    /// Cached max fee per gas for hot transaction-pool ordering paths.
+    max_fee_per_gas: u128,
     /// Cached payment classification for efficient block building
     is_payment: bool,
     /// Cached expiring nonce classification
@@ -61,6 +65,8 @@ pub struct TempoPooledTransaction {
 impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
     pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
+        let nonce = transaction.nonce();
+        let max_fee_per_gas = transaction.max_fee_per_gas();
         let is_payment = transaction.is_payment_v2();
         let is_expiring_nonce = transaction
             .as_aa()
@@ -68,15 +74,14 @@ impl TempoPooledTransaction {
             .unwrap_or(false);
         Self {
             inner: EthPooledTransaction {
-                cost: calc_gas_balance_spending(
-                    transaction.gas_limit(),
-                    transaction.max_fee_per_gas(),
-                )
+                cost: calc_gas_balance_spending(transaction.gas_limit(), max_fee_per_gas)
                 .saturating_add(transaction.value()),
                 encoded_length: transaction.encode_2718_len(),
                 blob_sidecar: EthBlobTransactionSidecar::None,
                 transaction,
             },
+            nonce,
+            max_fee_per_gas,
             is_payment,
             is_expiring_nonce,
             nonce_key_slot: OnceLock::new(),
@@ -560,7 +565,7 @@ impl alloy_consensus::Transaction for TempoPooledTransaction {
     }
 
     fn nonce(&self) -> u64 {
-        self.inner.nonce()
+        self.nonce
     }
 
     fn gas_limit(&self) -> u64 {
@@ -572,7 +577,7 @@ impl alloy_consensus::Transaction for TempoPooledTransaction {
     }
 
     fn max_fee_per_gas(&self) -> u128 {
-        self.inner.max_fee_per_gas()
+        self.max_fee_per_gas
     }
 
     fn max_priority_fee_per_gas(&self) -> Option<u128> {
