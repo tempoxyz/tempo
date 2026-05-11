@@ -352,7 +352,7 @@ fn calculate_key_authorization_gas(
             num_limits
         };
 
-        let has_t5_nonce = spec.is_t5() && key_auth.has_nonce();
+        let has_t5_nonce = key_auth.has_nonce();
         let mut num_sstores = 1 + limit_slots;
 
         if spec.is_t3() {

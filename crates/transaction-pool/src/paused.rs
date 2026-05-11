@@ -220,28 +220,38 @@ impl PausedFeeTokenPool {
         for meta in self.by_token.values_mut() {
             let before = meta.entries.len();
             meta.entries.retain(|entry| {
-                if let Some(subject) = entry.tx.transaction.keychain_subject() {
-                    let matches_limit_update =
-                        subject.matches_spending_limit_update(spending_limit_updates);
-                    let matches_limit_spend =
-                        subject.matches_spending_limit_update(spending_limit_spends);
-                    let sender_paid = if matches_limit_update || matches_limit_spend {
-                        let sender = *entry.tx.transaction.sender_ref();
-                        entry
-                            .tx
-                            .transaction
-                            .inner()
-                            .fee_payer(sender)
-                            .map_or(true, |fee_payer| fee_payer == sender)
-                    } else {
-                        false
+                let Some(subject) = entry.tx.transaction.keychain_subject() else {
+                    let Some(nonce_subject) =
+                        entry.tx.transaction.key_authorization_nonce_subject()
+                    else {
+                        return true;
                     };
 
-                    if subject.matches_revoked(revoked_keys)
-                        || (sender_paid && (matches_limit_update || matches_limit_spend))
-                    {
-                        return false;
-                    }
+                    return !key_authorization_nonce_consumptions
+                        .get(&nonce_subject.account)
+                        .is_some_and(|nonces| nonces.contains(&nonce_subject.nonce));
+                };
+
+                let matches_limit_update =
+                    subject.matches_spending_limit_update(spending_limit_updates);
+                let matches_limit_spend =
+                    subject.matches_spending_limit_update(spending_limit_spends);
+                let sender_paid = if matches_limit_update || matches_limit_spend {
+                    let sender = *entry.tx.transaction.sender_ref();
+                    entry
+                        .tx
+                        .transaction
+                        .inner()
+                        .fee_payer(sender)
+                        .map_or(true, |fee_payer| fee_payer == sender)
+                } else {
+                    false
+                };
+
+                if subject.matches_revoked(revoked_keys)
+                    || (sender_paid && (matches_limit_update || matches_limit_spend))
+                {
+                    return false;
                 }
 
                 let Some(nonce_subject) = entry.tx.transaction.key_authorization_nonce_subject()
