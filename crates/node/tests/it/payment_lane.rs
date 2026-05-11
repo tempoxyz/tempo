@@ -660,17 +660,19 @@ async fn test_payment_lane_gas_limits_channel_escrow() -> eyre::Result<()> {
 
     let escrow = ITIP20ChannelEscrow::new(TIP20_CHANNEL_ESCROW_ADDRESS, payer_provider.clone());
 
-    // open (payment)
+    // open (payment) — set operator=payer so payer can call settle
     let open_r = escrow
         .open(
             Address::random(),
-            Address::ZERO,
+            payer.address(),
             PATH_USD_ADDRESS,
             U96::from(1_000u64),
             B256::random(),
             Address::ZERO,
         )
         .gas(5_000_000)
+        .max_fee_per_gas(TEMPO_T1_BASE_FEE as u128)
+        .max_priority_fee_per_gas(0)
         .send()
         .await?
         .get_receipt()
@@ -697,6 +699,8 @@ async fn test_payment_lane_gas_limits_channel_escrow() -> eyre::Result<()> {
     let topup_r = escrow
         .topUp(desc.clone(), U96::from(500u64))
         .gas(5_000_000)
+        .max_fee_per_gas(TEMPO_T1_BASE_FEE as u128)
+        .max_priority_fee_per_gas(0)
         .send()
         .await?
         .get_receipt()
@@ -713,6 +717,8 @@ async fn test_payment_lane_gas_limits_channel_escrow() -> eyre::Result<()> {
     let settle_r = escrow
         .settle(desc, settle_amount, Bytes::copy_from_slice(&sig.as_bytes()))
         .gas(5_000_000)
+        .max_fee_per_gas(TEMPO_T1_BASE_FEE as u128)
+        .max_priority_fee_per_gas(0)
         .send()
         .await?
         .get_receipt()
