@@ -846,10 +846,10 @@ where
         let mut transactions = self.protocol_pool.all_transactions();
         {
             let aa_2d_pool = self.aa_2d_pool.read();
-            transactions
-                .pending
-                .extend(aa_2d_pool.pending_transactions());
-            transactions.queued.extend(aa_2d_pool.queued_transactions());
+            aa_2d_pool.append_all_transactions(
+                &mut transactions.pending,
+                &mut transactions.queued,
+            );
         }
         transactions
     }
