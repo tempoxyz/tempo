@@ -1163,11 +1163,13 @@ impl AA2dPool {
                     }
                 }
             }
-            let nonce = state
-                .account_info()
-                .map(|info| info.nonce)
-                .unwrap_or_default();
-            changes.insert(AASequenceId::new(*account, U256::ZERO), nonce);
+            if self.txs_by_sender.contains_key(account) {
+                let nonce = state
+                    .account_info()
+                    .map(|info| info.nonce)
+                    .unwrap_or_default();
+                changes.insert(AASequenceId::new(*account, U256::ZERO), nonce);
+            }
         }
 
         let (promoted, mut mined) = self.on_nonce_changes(changes);
