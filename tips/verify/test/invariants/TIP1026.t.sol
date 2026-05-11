@@ -58,6 +58,15 @@ contract TIP1026InvariantTest is InvariantBaseTest {
         _setupInvariantBase();
         (_actors,) = _buildActors(NUM_ACTORS);
 
+        // Make the token admin one of the fuzz actors so the success path of
+        // `setLogoURI` (and the LogoURITooLong / InvalidLogoURI validation
+        // branches that only fire when `msg.sender == admin`) is reachable.
+        // Without this, `_selectActor` only ever returns one of the
+        // `_buildActors`-generated EOAs and every `setLogoURI` call goes down
+        // the `Unauthorized` path, leaving the admin-side invariants
+        // unexercised.
+        _actors.push(admin);
+
         // TEMPO-1026-2: assert constants up-front. These are immutable after
         // deployment, so a one-shot check in setUp is sufficient — any
         // regression (e.g. the legacy selector being rewritten or the event
