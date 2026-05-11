@@ -252,7 +252,7 @@ base64 = { version = "0.22", features = ["alloc"], default-features = false }
 bytes = "1.11.1"
 clap = { version = "4.5.57", features = ["derive", "env"] }
 coins-bip32 = "0.12"
-const-hex = { version = "1.17.0" }
+const-hex = { version = "1.19.0" }
 criterion = "0.8.2"
 dashmap = "6"
 dirs-next = "2.0.0"
@@ -270,7 +270,7 @@ insta = { version = "1", features = ["yaml"] }
 itertools = "0.14.0"
 jiff = { version = "0.2.18", default-features = false }
 jsonrpsee = { version = "0.26.0", features = ["server", "client", "macros"] }
-metrics = "0.24.3"
+metrics = "0.24.5"
 minisign = "0.8"
 minisign-verify = "0.2"
 once_cell = { version = "1.19", default-features = false, features = ["critical-section"] }

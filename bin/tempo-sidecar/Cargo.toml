@@ -36,8 +36,8 @@ reqwest = { version = "0.13", default-features = false, features = [
     "rustls",
 ] }
 rustls.workspace = true
-metrics-exporter-prometheus = { version = "0.18.1", default-features = false }
-metrics = "0.24.3"
+metrics-exporter-prometheus = { version = "0.18.3", default-features = false }
+metrics = "0.24.5"
 poem = "3.1.12"
 rand_distr = "0.5.1"
 tempo-telemetry-util.workspace = true
