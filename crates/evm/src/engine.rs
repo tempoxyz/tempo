@@ -70,7 +70,12 @@ impl RecoveredInBlock {
     fn new(
         (block, index, expiring_nonce_idx): (Arc<SealedBlock<Block>>, usize, Option<usize>),
     ) -> Result<Self, RecoveryError> {
-        let sender = block.body().transactions[index].try_recover()?;
+        let tx = &block.body().transactions[index];
+        let sender = if tx.is_system_tx() {
+            Address::ZERO
+        } else {
+            tx.try_recover()?
+        };
         Ok(Self {
             block,
             index,
