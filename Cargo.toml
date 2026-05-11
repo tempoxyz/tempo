@@ -140,65 +140,65 @@ tempo-telemetry-util = { path = "crates/telemetry-util", default-features = fals
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
 
-reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc", default-features = false }
-reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
+reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value", default-features = false }
+reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-cli-util = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
 reth-codecs = { version = "0.3.0", default-features = false }
-reth-config = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-discv5 = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-downloaders = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-engine-local = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-errors = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc", default-features = false }
-reth-etl = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-network-api = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-network-peers = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc", default-features = false }
-reth-node-api = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-node-core = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
+reth-config = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-db = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-db-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-discv5 = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-downloaders = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-engine-local = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-errors = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value", default-features = false }
+reth-etl = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-network-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-network-peers = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value", default-features = false }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-node-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-node-core = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
 reth-primitives-traits = { version = "0.3.1", default-features = false }
-reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-prune-types = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-rpc = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-stages = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-static-file = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-trie-common = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
-reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc" }
+reth-provider = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-prune-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-rpc = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-stages = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-static-file = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-storage-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-tasks = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-tracing = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-trie = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-trie-common = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
+reth-trie-db = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value" }
 
-reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "f9c39fc", features = [
+reth-revm = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/mark-invalid-error-value", features = [
   "std",
   "optional-checks",
 ] }

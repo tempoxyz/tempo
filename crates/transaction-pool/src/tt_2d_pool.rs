@@ -1621,7 +1621,7 @@ impl Iterator for BestAA2dTransactions {
 }
 
 impl BestTransactions for BestAA2dTransactions {
-    fn mark_invalid(&mut self, transaction: &Self::Item, _kind: &InvalidPoolTransactionError) {
+    fn mark_invalid(&mut self, transaction: &Self::Item, _kind: InvalidPoolTransactionError) {
         // Skip invalidation for expiring nonce transactions - they are independent
         // and should not block other expiring nonce txs from the same sender
         if transaction.transaction.is_expiring_nonce() {
@@ -3624,7 +3624,7 @@ mod tests {
         let error = reth_transaction_pool::error::InvalidPoolTransactionError::Consensus(
             InvalidTransactionError::TxTypeNotSupported,
         );
-        best.mark_invalid(&first, &error);
+        best.mark_invalid(&first, error);
 
         // The sequence should be in the invalid set, so next tx from same sender should be skipped
         // But since we already consumed tx0, we'd get tx1 next - but the sequence is now invalid
@@ -4651,7 +4651,7 @@ mod tests {
 
         let error =
             InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
-        best.mark_invalid(&first, &error);
+        best.mark_invalid(&first, error);
 
         let mut remaining_hashes = HashSet::new();
         for tx in best {

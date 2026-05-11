@@ -92,7 +92,7 @@ impl BestTransactionsPrewarming {
                     BestTransactionsCommand::Invalid(invalid) => {
                         sender = invalid.new_sender;
 
-                        best_txs.mark_invalid(&invalid.tx, &invalid.kind);
+                        best_txs.mark_invalid(&invalid.tx, invalid.kind);
                         while let Ok(event) = invalid.old_receiver.try_recv() {
                             if let BestTransactionsEvent::Transaction(tx) = &event
                                 && !is_invalidated_buffered_transaction(&invalid.tx, tx)
@@ -130,15 +130,14 @@ impl Iterator for BestTransactionsPrewarming {
 }
 
 impl BestTransactions for BestTransactionsPrewarming {
-    fn mark_invalid(&mut self, transaction: &Self::Item, _kind: &InvalidPoolTransactionError) {
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
         let (new_sender, new_receiver) = mpsc::channel();
         let old_receiver = std::mem::replace(&mut self.rx, new_receiver);
         let _ = self
             .commands_tx
             .send(BestTransactionsCommand::Invalid(InvalidTransaction {
                 tx: transaction.clone(),
-                // kind: kind.clone(),
-                kind: InvalidPoolTransactionError::Underpriced,
+                kind,
                 old_receiver,
                 new_sender,
             }));
