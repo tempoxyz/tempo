@@ -15,8 +15,16 @@
 #   BENCH_SAMPLY                  – "true" to enable samply profiling (optional)
 set -euxo pipefail
 
-SCHELK_STATE_PATH="/var/lib/schelk/a.json"
-SCHELK_MOUNT="/reth-bench-a"
+if [ -f /var/lib/schelk/state.json ]; then
+  SCHELK_STATE_PATH="/var/lib/schelk/state.json"
+  SCHELK_MOUNT="/reth-bench"
+elif [ -f /var/lib/schelk/a.json ]; then
+  SCHELK_STATE_PATH="/var/lib/schelk/a.json"
+  SCHELK_MOUNT="/reth-bench-a"
+else
+  echo "::error::No supported schelk state file found"
+  exit 1
+fi
 BENCH_WORK_DIR="${BENCH_WORK_DIR:-bench-results/replay}"
 SNAPSHOT_BUCKET="r2-tempo-snapshots/tempo-node-snapshots"
 TEMPO_SCOPE="tempo-replay.scope"
