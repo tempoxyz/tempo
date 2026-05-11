@@ -165,7 +165,7 @@ struct InvalidTransaction {
     /// Transactions sent from prewarming to executor that needs to be revalidated
     /// against the invalid transaction.
     old_events_rx: Receiver<BestTransactionsEvent>,
-    /// Sender for existing transactions from `old_receiver` and new transactions.
+    /// Sender for existing transactions from `old_events_rx` and new transactions.
     new_events_tx: Sender<BestTransactionsEvent>,
 }
 

@@ -444,10 +444,9 @@ mod tests {
         assert_eq!(*first.hash(), *r1.hash());
 
         // Simulate payload builder marking R1 as invalid
-        merged.mark_invalid(
-            &first,
-            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
-        );
+        let kind =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        merged.mark_invalid(&first, kind);
 
         // The AA2D descendant must be skipped, while protocol txs still yield.
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*l1.hash()));
@@ -469,10 +468,9 @@ mod tests {
         assert_eq!(*first.hash(), *r1.hash());
         assert_eq!(*second.hash(), *l1.hash());
 
-        merged.mark_invalid(
-            &first,
-            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
-        );
+        let kind =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        merged.mark_invalid(&first, kind);
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*l2.hash()));
         assert!(merged.next().is_none());
@@ -495,10 +493,9 @@ mod tests {
         let first = merged.next().unwrap();
         assert_eq!(*first.hash(), *left_tx.hash());
 
-        merged.mark_invalid(
-            &first,
-            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
-        );
+        let kind =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        merged.mark_invalid(&first, kind);
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*right_tx.hash()));
         assert!(merged.next().is_none());
