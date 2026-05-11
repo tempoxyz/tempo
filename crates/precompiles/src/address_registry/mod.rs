@@ -19,7 +19,7 @@ use alloy::{
 use tempo_chainspec::hardfork::TempoHardfork;
 pub use tempo_contracts::precompiles::{
     AddrRegistryError, AddrRegistryEvent, IAddressRegistry, STABLECOIN_DEX_ADDRESS,
-    TIP20_CHANNEL_ESCROW_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS,
 };
 use tempo_precompiles_macros::{Storable, contract};
 pub use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
