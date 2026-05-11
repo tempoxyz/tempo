@@ -1246,16 +1246,8 @@ impl TIP20Token {
         Ok(true)
     }
 
-    /// Releases escrowed funds to `to`. Resumes skip policy checks. Reroutes
-    /// revalidate the transfer and receive policies and meter the spending limit.
-    pub(crate) fn release_from_escrow(
-        &mut self,
-        originator: Address,
-        receiver: Address,
-        to: Address,
-        amount: U256,
-        reroute: bool,
-    ) -> Result<()> {
+    /// Releases escrowed funds to the authorized claim target.
+    pub(crate) fn release_from_escrow(&mut self, to: Address, amount: U256) -> Result<()> {
         self.check_not_paused()?;
 
         if to == ESCROW_ADDRESS {
@@ -1264,21 +1256,6 @@ impl TIP20Token {
 
         let destination = Recipient::resolve(to)?;
         destination.validate()?;
-
-        if reroute {
-            let registry = TIP403Registry::new();
-            let policy_id = self.transfer_policy_id()?;
-            if !registry.is_authorized_as(policy_id, destination.target, AuthRole::recipient())? {
-                return Err(TIP20Error::policy_forbids().into());
-            }
-            if registry
-                .validate_receive_policy(self.address, originator, destination.target)?
-                .is_some()
-            {
-                return Err(TIP20Error::policy_forbids().into());
-            }
-            self.check_and_update_spending_limit(receiver, amount)?;
-        }
 
         let escrow_balance = self.get_balance(ESCROW_ADDRESS)?;
         if amount > escrow_balance {

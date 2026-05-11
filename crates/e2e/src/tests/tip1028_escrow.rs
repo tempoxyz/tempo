@@ -54,7 +54,6 @@ fn test_escrow_claim_no_recovery() {
         .await?;
 
         let other_wallet = wallet(12)?;
-        let other = other_wallet.address();
         let other_provider = ProviderBuilder::new()
             .wallet(other_wallet)
             .connect_http(http_url.clone());
@@ -65,7 +64,6 @@ fn test_escrow_claim_no_recovery() {
                 Address::ZERO,
                 BLOCKED_RECEIPT_VERSION,
                 blocked.receipt.clone(),
-                other,
             )
             .call()
             .await
@@ -95,7 +93,6 @@ fn test_escrow_claim_no_recovery() {
                 Address::ZERO,
                 BLOCKED_RECEIPT_VERSION,
                 blocked.receipt.clone(),
-                blocked.receiver,
             )
             .gas(GAS)
             .gas_price(GAS_PRICE)
@@ -118,7 +115,6 @@ fn test_escrow_claim_with_recovery() {
     run_escrow_test(1029, |http_url| async move {
         let amount = U256::from(400);
         let recovery = wallet(22)?.address();
-        let destination = wallet(23)?.address();
         let blocked = create_blocked_transfer(
             http_url.clone(),
             20,
@@ -139,7 +135,6 @@ fn test_escrow_claim_with_recovery() {
                 recovery,
                 BLOCKED_RECEIPT_VERSION,
                 blocked.receipt,
-                destination,
             )
             .gas(GAS)
             .gas_price(GAS_PRICE)
@@ -151,7 +146,7 @@ fn test_escrow_claim_with_recovery() {
 
         let token = token_view(http_url, blocked.token);
         assert_eq!(token.balanceOf(blocked.receiver).call().await?, U256::ZERO);
-        assert_eq!(token.balanceOf(destination).call().await?, amount);
+        assert_eq!(token.balanceOf(recovery).call().await?, amount);
         assert_eq!(token.balanceOf(ESCROW_ADDRESS).call().await?, U256::ZERO);
 
         Ok(())
