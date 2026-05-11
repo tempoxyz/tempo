@@ -223,6 +223,16 @@ on:
       comment-id:
         type: string
         required: false
+      pr-head-sha:
+        description: Pinned PR head SHA from the ack job.
+        type: string
+        required: false
+        default: ""
+      pr-head-ref:
+        description: Pinned PR head branch from the ack job.
+        type: string
+        required: false
+        default: ""
     secrets:
       DEREK_BENCH_TOKEN:
         required: false
@@ -281,6 +291,8 @@ jobs:
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
+      BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
+      BENCH_PR_HEAD_REF: ${{ inputs.pr-head-ref }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
@@ -318,22 +330,18 @@ jobs:
               core.setOutput('ref', process.env.INPUT_GITHUB_REF);
               return;
             }
-            // issue_comment: use PR merge ref (with head SHA fallback)
+            // issue_comment: use pinned SHA from ack job
             if (!process.env.BENCH_PR) {
               core.setOutput('ref', process.env.INPUT_GITHUB_REF);
               return;
             }
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: parseInt(process.env.BENCH_PR),
-            });
-            if (pr.state !== 'open' || !pr.mergeable) {
-              core.info(`PR #${process.env.BENCH_PR}: state=${pr.state}, mergeable=${pr.mergeable}, using head SHA ${pr.head.sha}`);
-              core.setOutput('ref', pr.head.sha);
-            } else {
-              core.setOutput('ref', `refs/pull/${process.env.BENCH_PR}/merge`);
+            const sha = process.env.BENCH_PR_HEAD_SHA;
+            if (!sha) {
+              core.setFailed('BENCH_PR_HEAD_SHA is not set — ack job must pin the PR head SHA');
+              return;
             }
+            core.info(`PR #${process.env.BENCH_PR}, using pinned head SHA ${sha}`);
+            core.setOutput('ref', sha);
 
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -420,13 +428,10 @@ jobs:
         with:
           script: |
             if (process.env.BENCH_PR) {
-              const { data: pr } = await github.rest.pulls.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: parseInt(process.env.BENCH_PR),
-              });
-              core.setOutput('head-ref', pr.head.ref);
-              core.setOutput('head-sha', pr.head.sha);
+              const ref = process.env.BENCH_PR_HEAD_REF || process.env.INPUT_REF_NAME;
+              const sha = process.env.BENCH_PR_HEAD_SHA || process.env.INPUT_SHA;
+              core.setOutput('head-ref', ref);
+              core.setOutput('head-sha', sha);
             } else {
               core.setOutput('head-ref', process.env.INPUT_REF_NAME);
               core.setOutput('head-sha', process.env.INPUT_SHA);
