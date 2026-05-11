@@ -12,7 +12,6 @@ const BENCH_WORKTREES_DIR = ".bench-worktrees"
 const BENCH_RESULTS_DIR = "bench-results"
 const BLOAT_MNEMONIC = "test test test test test test test test test test test junk"
 const METRICS_PROXY_SCRIPT = "contrib/bench/bench-metrics-proxy.py"
-const METRICS_LABELS_FILE = "/tmp/bench-metrics-labels.json"
 const MINIO_BUCKET = "minio/tempo-binaries"
 const BENCH_META_SUBDIR = ".bench-meta"
 
@@ -503,11 +502,12 @@ def run-bench-single [
         run_start_epoch: $"($run_start_epoch)"
         reference_epoch: $"($reference_epoch)"
     }
-    $labels | to json | save -f $METRICS_LABELS_FILE
+    let labels_file = $"($results_dir)/metrics-labels-($run_label).json"
+    $labels | to json | save -f $labels_file
 
     let proxy_pid = if ($METRICS_PROXY_SCRIPT | path exists) {
         let proxy_job = (job spawn {
-            python3 $METRICS_PROXY_SCRIPT --upstream "http://127.0.0.1:9001/" --port 9090
+            python3 $METRICS_PROXY_SCRIPT --upstream "http://127.0.0.1:9001/" --port 9090 --labels $labels_file
         })
         sleep 500ms
         $proxy_job
@@ -793,7 +793,28 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             continue
         }
         let report = (open $report_path)
-        let blocks = ($report | get blocks)
+        let blocks = ($report | get blocks | each { |b|
+            let tx_count = ($b | get tx_count)
+            let timestamp = if (($b | get -o timestamp | default null) != null) {
+                $b | get timestamp
+            } else {
+                $b | get timestamp_ms
+            }
+            let latency_ms = if (($b | get -o latency_ms | default null) != null) {
+                $b | get latency_ms
+            } else {
+                $b | get -o block_time_ms | default null
+            }
+            {
+                number: ($b | get number)
+                timestamp: $timestamp
+                tx_count: $tx_count
+                ok_count: ($b | get -o ok_count | default $tx_count)
+                err_count: ($b | get -o err_count | default 0)
+                gas_used: ($b | get gas_used)
+                latency_ms: $latency_ms
+            }
+        })
         if ($blocks | length) == 0 {
             print $"Warning: ($label) report has no blocks, skipping"
             continue

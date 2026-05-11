@@ -304,7 +304,7 @@ impl TIP20Setup {
                 let salt = self.salt.unwrap_or_else(B256::random);
                 let token_address = factory.create_token(
                     admin,
-                    tip20_factory::ITIP20Factory::createTokenCall {
+                    tip20_factory::createTokenCall {
                         name: name.to_string(),
                         symbol: symbol.to_string(),
                         currency,

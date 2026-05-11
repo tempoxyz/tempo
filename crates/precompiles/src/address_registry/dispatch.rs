@@ -1,9 +1,9 @@
 use crate::{
     Precompile, address_registry::AddressRegistry, charge_input_cost, dispatch, mutate, view,
 };
-use alloy::{primitives::Address, sol_types::SolInterface};
+use alloy::{primitives::Address, sol_types::{SolCall, SolInterface}};
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::IAddressRegistry::IAddressRegistryCalls;
+use tempo_contracts::precompiles::IAddressRegistry::{self, IAddressRegistryCalls};
 use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
 impl Precompile for AddressRegistry {
@@ -35,6 +35,10 @@ impl Precompile for AddressRegistry {
                 };
                 Ok((is_virtual, master_id, user_tag).into())
             }),
+            #[since = T5]
+            IAddressRegistry::isImplicitlyApproved(call) => {
+                view(call, |c| Ok(self.is_implicitly_approved(c.addr)))
+            },
         })
     }
 }
@@ -47,12 +51,12 @@ mod tests {
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
-    use alloy::sol_types::{SolCall, SolValue};
+    use alloy::sol_types::{SolCall, SolError, SolValue};
     use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
     fn test_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         StorageCtx::enter(&mut storage, || {
             let mut registry = AddressRegistry::new();
 
@@ -64,6 +68,51 @@ mod tests {
             );
 
             assert_full_coverage([unsupported]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_implicitly_approved_selector_gated_pre_t5() -> eyre::Result<()> {
+        // Pre-T5: the isImplicitlyApproved selector must be treated as unknown.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = AddressRegistry::new();
+            let call = IAddressRegistry::isImplicitlyApprovedCall {
+                addr: Address::ZERO,
+            };
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(result.is_revert());
+            assert!(
+                tempo_contracts::precompiles::UnknownFunctionSelector::abi_decode(&result.bytes)
+                    .is_ok()
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_implicitly_approved_precompile_t5() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = AddressRegistry::new();
+
+            // Listed precompile returns true.
+            let call = IAddressRegistry::isImplicitlyApprovedCall {
+                addr: tempo_contracts::precompiles::TIP_FEE_MANAGER_ADDRESS,
+            };
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(!result.is_revert());
+            assert!(bool::abi_decode(&result.bytes).unwrap());
+
+            // Unlisted address returns false.
+            let call = IAddressRegistry::isImplicitlyApprovedCall {
+                addr: Address::random(),
+            };
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(!result.is_revert());
+            assert!(!bool::abi_decode(&result.bytes).unwrap());
 
             Ok(())
         })

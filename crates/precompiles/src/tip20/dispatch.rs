@@ -13,6 +13,7 @@ use alloy::{
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error};
 
+
 /// Decoded call variant — either a TIP-20 token call or a role-management call.
 enum TIP20Call {
     ITIP20(ITIP20Calls),
@@ -59,6 +60,8 @@ impl Precompile for TIP20Token {
                 self.transfer_policy_id()
             }),
             ITIP20::paused(_) => metadata::<ITIP20::pausedCall>(|| self.paused()),
+            #[since = T5]
+            ITIP20::logoURI(_) => metadata::<ITIP20::logoURICall>(|| self.logo_uri()),
             ITIP20::balanceOf(call) => view(call, |c| self.balance_of(c)),
             ITIP20::allowance(call) => view(call, |c| self.allowance(c)),
             ITIP20::quoteToken(call) => view(call, |_| self.quote_token()),
@@ -75,6 +78,10 @@ impl Precompile for TIP20Token {
             }),
             ITIP20::setSupplyCap(call) => mutate_void(call, msg_sender, |s, c| {
                 self.set_supply_cap(s, c)
+            }),
+            #[since = T5]
+            ITIP20::setLogoURI(call) => mutate_void(call, msg_sender, |s, c| {
+                self.set_logo_uri(s, c)
             }),
             ITIP20::pause(call) => mutate_void(call, msg_sender, |s, c| self.pause(s, c)),
             ITIP20::unpause(call) => mutate_void(call, msg_sender, |s, c| self.unpause(s, c)),
@@ -679,8 +686,8 @@ mod tests {
         use crate::test_util::{assert_full_coverage, check_selector_coverage};
         use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
 
-        // Use T2 hardfork so T2-gated selectors (permit, nonces, DOMAIN_SEPARATOR) are active
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        // Use T5 hardfork so all selectors are active.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -699,6 +706,63 @@ mod tests {
             );
 
             assert_full_coverage([itip20_unsupported, roles_unsupported]);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_logo_uri_selectors_gated_behind_t5() -> eyre::Result<()> {
+        // Pre-T5: logoURI/setLogoURI should return unknown selector.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        let admin = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin).apply()?;
+
+            // logoURI selector is gated
+            let logo_uri_calldata = ITIP20::logoURICall {}.abi_encode();
+            let result = token.call(&logo_uri_calldata, admin)?;
+            assert!(result.is_revert());
+            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+
+            // setLogoURI selector is gated
+            let set_logo_uri_calldata = ITIP20::setLogoURICall {
+                newLogoURI: "https://example.com/icon.svg".to_string(),
+            }
+            .abi_encode();
+            let result = token.call(&set_logo_uri_calldata, admin)?;
+            assert!(result.is_revert());
+            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_logo_uri_pre_t5_deploy_post_t5_read_returns_empty() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        let admin = Address::random();
+        let token_address = StorageCtx::enter(&mut storage, || -> eyre::Result<Address> {
+            let token = TIP20Setup::create("Test", "TST", admin).apply()?;
+            Ok(token.address())
+        })?;
+
+        // Activate T5; the token deployed under T4 is now read under T5.
+        storage.set_spec(TempoHardfork::T5);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Token::from_address(token_address)?;
+
+            // Direct accessor: empty by default for pre-T5-deployed tokens.
+            assert_eq!(token.logo_uri()?, "");
+
+            // ABI-level: the previously-gated selector now dispatches and returns "".
+            let calldata = ITIP20::logoURICall {}.abi_encode();
+            let result = token.call(&calldata, admin)?;
+            assert!(!result.is_revert(), "logoURI() must succeed post-T5");
+            let decoded = ITIP20::logoURICall::abi_decode_returns(&result.bytes)?;
+            assert_eq!(decoded, "");
+
             Ok(())
         })
     }

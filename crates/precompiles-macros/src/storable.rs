@@ -127,7 +127,7 @@ fn derive_struct_impl(input: &DeriveInput, data_struct: &DataStruct) -> syn::Res
                 ctx: crate::storage::LayoutCtx
             ) -> crate::error::Result<Self> {
                 use crate::storage::Storable;
-                debug_assert_eq!(ctx, crate::storage::LayoutCtx::FULL, "Struct types can only be loaded with LayoutCtx::FULL");
+                debug_assert!(ctx.is_full(), "Struct types can only be loaded with a full-slot LayoutCtx (FULL or INIT)");
 
                 #load_impl
 
@@ -144,7 +144,7 @@ fn derive_struct_impl(input: &DeriveInput, data_struct: &DataStruct) -> syn::Res
                 ctx: crate::storage::LayoutCtx
             ) -> crate::error::Result<()> {
                 use crate::storage::Storable;
-                debug_assert_eq!(ctx, crate::storage::LayoutCtx::FULL, "Struct types can only be stored with LayoutCtx::FULL");
+                debug_assert!(ctx.is_full(), "Struct types can only be stored with a full-slot LayoutCtx (FULL or INIT)");
 
                 #store_impl
 
@@ -157,7 +157,7 @@ fn derive_struct_impl(input: &DeriveInput, data_struct: &DataStruct) -> syn::Res
                 ctx: crate::storage::LayoutCtx
             ) -> crate::error::Result<()> {
                 use crate::storage::Storable;
-                debug_assert_eq!(ctx, crate::storage::LayoutCtx::FULL, "Struct types can only be deleted with LayoutCtx::FULL");
+                debug_assert!(ctx.is_full(), "Struct types can only be deleted with a full-slot LayoutCtx (FULL or INIT)");
 
                 #delete_impl
 
@@ -487,6 +487,12 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
 ///
 /// For consecutive packable fields sharing a slot, accumulates changes in memory
 /// and writes once, avoiding redundant SLOAD + SSTORE pairs.
+///
+/// # Zero-init behaviour (T4+)
+///
+/// Each packed slot group starts from `U256::ZERO` instead of a previous SLOAD, so any byte not
+/// written by a declared packed field is zeroed on every store. If a struct later on removes a
+/// trailing field, those formerly-occupied bytes will be cleared on the next write.
 fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
     if fields.is_empty() {
         return quote! {};
@@ -547,7 +553,11 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                         storage.store(base_slot + ::alloy::primitives::U256::from(offset), pending_val)?;
                         pending_offset = None;
                     }
-                    <#ty as crate::storage::Storable>::store(&self.#name, storage, #slot_addr, crate::storage::LayoutCtx::FULL)?;
+                    // Dynamic fields need INIT to skip stale-tail cleanup on virgin storage.
+                    // Static fields ignore INIT, so we always use FULL for them.
+                    let ctx = if <#ty as crate::storage::StorableType>::IS_DYNAMIC { ctx } else { crate::storage::LayoutCtx::FULL };
+                    debug_assert!(ctx.is_full(), "Struct types can only use full-slot LayoutCtx (FULL or INIT)");
+                    <#ty as crate::storage::Storable>::store(&self.#name, storage, #slot_addr, ctx)?;
                 }
 
                 // Store if this is the last field in the current slot group
@@ -579,7 +589,11 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                         pending_offset = None;
                     }
                 } else {
-                    <#ty as crate::storage::Storable>::store(&self.#name, storage, #slot_addr, crate::storage::LayoutCtx::FULL)?;
+                    // Dynamic fields need INIT to skip stale-tail cleanup on virgin storage.
+                    // Static fields ignore INIT, so we always use FULL for them.
+                    let ctx = if <#ty as crate::storage::StorableType>::IS_DYNAMIC { ctx } else { crate::storage::LayoutCtx::FULL };
+                    debug_assert!(ctx.is_full(), "Struct types can only use full-slot LayoutCtx (FULL or INIT)");
+                    <#ty as crate::storage::Storable>::store(&self.#name, storage, #slot_addr, ctx)?;
                 }
             }}
         }

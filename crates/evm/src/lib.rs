@@ -5,7 +5,6 @@
 
 mod assemble;
 use alloy_consensus::{BlockHeader as _, Transaction};
-use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
 mod block;
@@ -225,7 +224,7 @@ impl ConfigureEvm for TempoEvmConfig {
             .transactions
             .iter()
             .rev()
-            .filter(|tx| (*tx).to() == Some(Address::ZERO))
+            .filter(|tx| tx.is_system_tx())
             .find_map(|tx| Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref()).ok())
             .unwrap_or_default()
             .into_iter()
@@ -253,8 +252,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 slot_number: block.slot_number(),
             },
             general_gas_limit: block.header().general_gas_limit,
-            shared_gas_limit: block.header().gas_limit()
-                / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
+            shared_gas_limit: block.header().shared_gas_limit,
             // Not available when we only have a block body.
             validator_set: None,
             consensus_context: block.header().consensus_context,
@@ -281,8 +279,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 tx_count_hint: None,
             },
             general_gas_limit: attributes.general_gas_limit,
-            shared_gas_limit: attributes.inner.gas_limit
-                / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
+            shared_gas_limit: attributes.shared_gas_limit,
             // Fine to not validate during block building.
             validator_set: None,
             consensus_context: attributes.consensus_context,
@@ -296,7 +293,7 @@ mod tests {
     use super::*;
     use crate::test_utils::test_chainspec;
     use alloy_consensus::{BlockHeader, Signed, TxLegacy};
-    use alloy_primitives::{B256, Bytes, TxKind, U256};
+    use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use std::collections::HashMap;
@@ -567,7 +564,7 @@ mod tests {
             },
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 0,
-            shared_gas_limit: 3_000_000,
+            shared_gas_limit: 0,
             ..Default::default()
         };
         let parent = SealedHeader::seal_slow(parent_header);
@@ -602,7 +599,7 @@ mod tests {
 
         // Verify context fields from attributes
         assert_eq!(context.general_gas_limit, 12_000_000);
-        assert_eq!(context.shared_gas_limit, 3_000_000);
+        assert_eq!(context.shared_gas_limit, 4_000_000);
         assert!(context.validator_set.is_none());
         assert_eq!(context.inner.parent_hash, parent.hash());
         assert_eq!(
