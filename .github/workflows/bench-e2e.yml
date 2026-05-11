@@ -1,7 +1,7 @@
 # E2E benchmark job.
 #
-# Called by bench.yml when mode=e2e. Runs `nu tempo.nu bench` for an
-# interleaved B-F-F-B comparison using synthetic transactions.
+# Called by bench.yml when mode=e2e. Runs `nu bench-e2e.nu e2e`
+# for an interleaved baseline-feature-feature-baseline comparison using two local validators.
 
 name: bench-e2e
 
@@ -29,23 +29,29 @@ on:
         required: true
         default: "300"
       bloat:
-        description: State bloat size in MiB.
-        type: string
+        description: State bloat size in GiB.
+        type: choice
         required: true
-        default: "100000"
+        default: "100"
+        options:
+          - "1"
+          - "10"
+          - "100"
       tps:
         description: Target transactions per second.
         type: string
         required: true
         default: "10000"
-      backend:
-        description: Benchmark backend.
-        type: choice
+      accounts:
+        description: Number of benchmark accounts.
+        type: string
         required: true
-        default: tempo-bench
-        options:
-          - tempo-bench
-          - txgen
+        default: "1000"
+      max-concurrent-requests:
+        description: Max concurrent sender requests.
+        type: string
+        required: true
+        default: "100"
       txgen-ref:
         description: Optional ref to pin in tempoxyz/txgen.
         type: string
@@ -85,18 +91,18 @@ on:
         type: string
         required: false
         default: ""
-      baseline-hardfork:
-        description: Optional baseline hardfork.
+      gas-limit:
+        description: Builder gas limit.
         type: string
-        required: false
-        default: ""
-      feature-hardfork:
-        description: Optional feature hardfork.
-        type: string
-        required: false
-        default: ""
+        required: true
+        default: "1000000000000"
       force-bloat:
         description: Force regeneration of local benchmark state.
+        type: boolean
+        required: true
+        default: false
+      no-cache:
+        description: Skip binary cache.
         type: boolean
         required: true
         default: false
@@ -148,13 +154,16 @@ on:
       tps:
         type: string
         required: true
+      accounts:
+        type: string
+        required: true
+      max-concurrent-requests:
+        type: string
+        required: true
       baseline:
         type: string
         required: true
       feature:
-        type: string
-        required: true
-      backend:
         type: string
         required: true
       txgen-ref:
@@ -184,16 +193,16 @@ on:
       feature-args:
         type: string
         required: false
-      baseline-hardfork:
+      gas-limit:
         type: string
-        required: false
-      feature-hardfork:
-        type: string
-        required: false
+        required: true
       run-type:
         type: string
         required: true
       force-bloat:
+        type: string
+        required: true
+      no-cache:
         type: string
         required: true
       no-slack:
@@ -243,16 +252,18 @@ permissions:
 jobs:
   bench-e2e:
     name: bench-e2e
-    runs-on: [self-hosted, Linux, X64, bare-metal]
+    runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
     timeout-minutes: 300
     env:
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor || github.actor }}
+      BENCH_MODE: ${{ inputs.mode || 'e2e' }}
       BENCH_PRESET: ${{ inputs.preset }}
       BENCH_DURATION: ${{ inputs.duration }}
       BENCH_BLOAT: ${{ inputs.bloat }}
       BENCH_TPS: ${{ inputs.tps }}
-      BENCH_BACKEND: ${{ inputs.backend }}
+      BENCH_ACCOUNTS: ${{ inputs.accounts || '1000' }}
+      BENCH_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests || '100' }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
       BENCH_SAMPLY: ${{ inputs.samply }}
       BENCH_TRACY: ${{ inputs.tracy }}
@@ -260,10 +271,10 @@ jobs:
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
-      BENCH_BASELINE_HARDFORK: ${{ inputs.baseline-hardfork }}
-      BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
+      BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '1000000000000' }}
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat }}
+      BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
       BENCH_NO_SLACK: ${{ inputs.no-slack }}
       BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
@@ -353,18 +364,19 @@ jobs:
             const duration = process.env.BENCH_DURATION;
             const bloat = process.env.BENCH_BLOAT;
             const tps = process.env.BENCH_TPS;
+            const accounts = process.env.BENCH_ACCOUNTS;
+            const maxConcurrentRequests = process.env.BENCH_MAX_CONCURRENT_REQUESTS;
             const baseline = process.env.INPUT_BASELINE_NAME;
             const feature = process.env.INPUT_FEATURE_NAME;
-            const backend = process.env.BENCH_BACKEND;
             const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
             const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = process.env.BENCH_TRACY;
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
-            const bHf2 = process.env.BENCH_BASELINE_HARDFORK || '';
-            const fHf2 = process.env.BENCH_FEATURE_HARDFORK || '';
-            const hfNote2 = bHf2 ? `, baseline-hardfork: \`${bHf2}\`, feature-hardfork: \`${fHf2}\`` : '';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, backend: \`${backend}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${hfNote2}`);
+            const noCache = process.env.BENCH_NO_CACHE === 'true';
+            const noCacheNote = noCache ? ', no-cache: `true`' : '';
+            const gasLimit = process.env.BENCH_GAS_LIMIT;
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${noCacheNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -378,8 +390,7 @@ jobs:
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
         continue-on-error: true
 
-      - name: Install txgen backend
-        if: env.BENCH_BACKEND == 'txgen'
+      - name: Install txgen
         env:
           TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
         run: |
@@ -510,36 +521,33 @@ jobs:
             const s = require('./.github/scripts/bench-update-status.js');
             await s({github, context, status: 'Running benchmark...'});
 
-      - name: Run benchmark
+      - name: Run e2e benchmark
         id: bench
         env:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
         run: |
-          if [ "$BENCH_BACKEND" = "txgen" ]; then
-            cmd=(nu contrib/bench/bench-txgen.nu run)
-          else
-            cmd=(nu tempo.nu bench)
-          fi
+          cmd=(nu bench-e2e.nu e2e)
           cmd+=(
             --preset "$BENCH_PRESET"
-            --mode dev
             --bloat "$BENCH_BLOAT"
             --duration "$BENCH_DURATION"
             --tps "$BENCH_TPS"
-            --no-infra
+            --accounts "$BENCH_ACCOUNTS"
+            --max-concurrent-requests "$BENCH_MAX_CONCURRENT_REQUESTS"
+            --gas-limit "$BENCH_GAS_LIMIT"
             --baseline "$BASELINE_REF"
             --feature "$FEATURE_REF"
-            --bench-datadir "/reth-bench/tempo_${BENCH_BLOAT}mb"
+            --baseline-name "${{ steps.refs.outputs.baseline-name }}"
+            --feature-name "${{ steps.refs.outputs.feature-name }}"
             --tune
-            --gas-limit 1000000000000
           )
+          [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force-bloat)
+          [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
           [ -n "$BENCH_BASELINE_ARGS" ] && cmd+=(--baseline-args="$BENCH_BASELINE_ARGS")
           [ -n "$BENCH_FEATURE_ARGS" ] && cmd+=(--feature-args="$BENCH_FEATURE_ARGS")
-          [ -n "$BENCH_BASELINE_HARDFORK" ] && cmd+=(--baseline-hardfork "$BENCH_BASELINE_HARDFORK" --feature-hardfork "$BENCH_FEATURE_HARDFORK")
-          [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force)
           [ -n "$BENCH_BENCH_ARGS" ] && cmd+=(--bench-args="$BENCH_BENCH_ARGS")
           [ -n "$BENCH_BENCH_ENV" ] && cmd+=(--bench-env="$BENCH_BENCH_ENV")
           [ -n "$BENCH_BASELINE_ENV" ] && cmd+=(--baseline-env="$BENCH_BASELINE_ENV")
@@ -559,7 +567,7 @@ jobs:
           echo "Results directory: $RESULTS_DIR"
 
       - name: Upload results
-        if: "!cancelled()"
+        if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tempo-bench-results
@@ -573,12 +581,7 @@ jobs:
           BENCH_RUN_TYPE: ${{ env.BENCH_RUN_TYPE }}
           BENCH_JOB_URL: ${{ env.BENCH_JOB_URL }}
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
-        run: |
-          if [ "$BENCH_BACKEND" = "txgen" ]; then
-            bash contrib/bench/upload-clickhouse-txgen.sh "$BENCH_RESULTS_DIR"
-          else
-            bash contrib/bench/upload-clickhouse.sh "$BENCH_RESULTS_DIR"
-          fi
+        run: bash contrib/bench/upload-clickhouse-txgen.sh "$BENCH_RESULTS_DIR"
 
       - name: Post results to PR
         if: success()
@@ -649,31 +652,34 @@ jobs:
               }
             } catch (e) {}
 
+            const runs = ['baseline-1', 'feature-1', 'feature-2', 'baseline-2'];
+
             // Samply profile links (URLs produced by tempo.nu upload-samply-profile)
             let samplySection = '';
             if (process.env.BENCH_SAMPLY === 'true') {
-              const runs = ['baseline-1', 'feature-1', 'feature-2', 'baseline-2'];
               const links = [];
               for (const run of runs) {
-                try {
-                  const url = fs.readFileSync(`${resultsDir}/profile-${run}-url.txt`, 'utf8').trim();
-                  if (url) links.push(`- **${run}**: [Firefox Profiler](${url})`);
-                } catch (e) {}
+                for (const role of ['a', 'b']) {
+                  try {
+                    const url = fs.readFileSync(`${resultsDir}/profile-${run}-${role}-url.txt`, 'utf8').trim();
+                    if (url) links.push(`- **${run} / ${role}**: [Firefox Profiler](${url})`);
+                  } catch (e) {}
+                }
               }
               if (links.length > 0) {
                 samplySection = `\n\n### Samply Profiles\n\n${links.join('\n')}\n`;
               }
             }
 
-            // Tracy profile links (URLs produced by tempo.nu upload-tracy-profile)
+            // Tracy profile links (URLs produced by tempo.nu upload-tracy-profile).
+            // Single-runner e2e captures both local validators in one phase-level file.
             let tracySection = '';
             if (process.env.BENCH_TRACY && process.env.BENCH_TRACY !== 'off') {
-              const runs = ['baseline-1', 'feature-1', 'feature-2', 'baseline-2'];
               const links = [];
               for (const run of runs) {
                 try {
                   const url = fs.readFileSync(`${resultsDir}/tracy-${run}-url.txt`, 'utf8').trim();
-                  if (url) links.push(`- **${run}**: [Tracy Viewer](${url})`);
+                  if (url) links.push(`- **${run} / local validators**: [Tracy Viewer](${url})`);
                 } catch (e) {}
               }
               if (links.length > 0) {
@@ -706,7 +712,7 @@ jobs:
         with:
           script: |
             const notify = require('./.github/scripts/bench-slack-notify.js');
-            await notify.success({ core, context });
+            await notify.e2e.success({ core, context });
 
       - name: Send Slack notification (failure)
         if: failure() && env.BENCH_NO_SLACK != 'true'
@@ -714,7 +720,7 @@ jobs:
         with:
           script: |
             const notify = require('./.github/scripts/bench-slack-notify.js');
-            await notify.failure({ core, context, failedStep: 'running benchmark' });
+            await notify.e2e.failure({ core, context, failedStep: 'running benchmark' });
 
       - name: Update status (failed)
         if: failure() && env.BENCH_COMMENT_ID
