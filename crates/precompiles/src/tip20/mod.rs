@@ -1142,7 +1142,7 @@ impl TIP20Token {
         self.check_and_update_spending_limit(from, amount)?;
 
         // Update rewards for the sender and get their reward recipient
-        let from_reward_recipient = self.update_rewards(from)?;
+        let from_reward_recipient = self.update_rewards_if_accrued(from)?;
 
         // If user is opted into rewards, decrease opted-in supply
         if from_reward_recipient != Address::ZERO {
@@ -1200,7 +1200,7 @@ impl TIP20Token {
         }
 
         // Update rewards for the recipient and get their reward recipient
-        let to_reward_recipient = self.update_rewards(to)?;
+        let to_reward_recipient = self.update_rewards_if_accrued(to)?;
 
         // If user is opted into rewards, increase opted-in supply by refund amount
         if to_reward_recipient != Address::ZERO {

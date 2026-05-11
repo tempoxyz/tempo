@@ -8,8 +8,8 @@
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::Handler,
-    tip20::{Recipient, TIP20Token},
+    storage::{Handler, Slot, StorageKey},
+    tip20::{Recipient, TIP20Token, tip20_slots},
 };
 use alloy::primitives::{Address, U256, uint};
 use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
@@ -20,6 +20,21 @@ use tempo_primitives::TempoAddressExt;
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
 
 impl TIP20Token {
+    /// Returns the holder's reward recipient without loading the whole reward-info struct.
+    pub(crate) fn reward_recipient(&self, holder: Address) -> Result<Address> {
+        let slot = holder.mapping_slot(tip20_slots::USER_REWARD_INFO);
+        Slot::<Address>::new(slot, self.address).read()
+    }
+
+    /// Updates rewards when needed and returns the holder's reward recipient.
+    pub(crate) fn update_rewards_if_accrued(&mut self, holder: Address) -> Result<Address> {
+        if self.get_global_reward_per_token()?.is_zero() {
+            self.reward_recipient(holder)
+        } else {
+            self.update_rewards(holder)
+        }
+    }
+
     /// Distributes `amount` of reward tokens from the caller into the opted-in reward pool.
     /// Transfers tokens to the contract and increases the global reward-per-token accumulator
     /// proportionally to the opted-in supply.
