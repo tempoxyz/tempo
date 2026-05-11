@@ -525,8 +525,7 @@ where
                         .get_canonical_block_number();
 
                     // Allow a syncing if only behind by 1 block
-                    let min_allowed = height.previous().unwrap_or_default().get();
-                    if canonical_block_number < min_allowed {
+                    if canonical_block_number < height.get() {
                         Some(Err(eyre::eyre!(
                             "build request on height {height} too far ahead of canonical height {canonical_block_number}"
                         )))
