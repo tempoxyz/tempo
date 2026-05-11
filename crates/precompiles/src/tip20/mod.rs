@@ -1079,11 +1079,11 @@ impl TIP20Token {
         self.ensure_transfer_authorized(from, to.target)
     }
 
-    /// Resolves the effective recipient and verifies that ⁠`msg_sender` has the issuer role.
-    /// To preserve re-execution of old transactions (pre-T6), also reads ⁠total_supply.
+    /// Resolves the effective recipient and verifies that `msg_sender` has the issuer role.
+    /// To preserve re-execution of old transactions (pre-T6), also reads total_supply.
     /// Additionally (+T3) checks pause state and validates the effective recipient.
     ///
-    /// Returns the resolved [⁠`Recipient`] and, pre-T6, the ⁠total_supply.
+    /// Returns the resolved [`Recipient`] and, pre-T6, the total_supply.
     fn validate_mint(&self, msg_sender: Address, to: Address) -> Result<(Recipient, Option<U256>)> {
         let to = Recipient::resolve(to)?;
         self.check_role(msg_sender, *ISSUER_ROLE)?;
@@ -1605,9 +1605,7 @@ mod recipient_tests {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
-    use tempo_contracts::precompiles::{
-        ITIP1028Escrow, TIP1028EscrowEvent, createTokenCall,
-    };
+    use tempo_contracts::precompiles::{ITIP1028Escrow, TIP1028EscrowEvent, createTokenCall};
 
     use super::*;
     use crate::{
