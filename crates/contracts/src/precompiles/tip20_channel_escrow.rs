@@ -3,6 +3,7 @@ pub use ITIP20ChannelEscrow::{
     ITIP20ChannelEscrowEvents as TIP20ChannelEscrowEvent,
 };
 use alloy_primitives::{Address, address};
+use alloy_sol_types::{SolCall, SolType};
 
 /// Native TIP-1034 channel escrow precompile address.
 pub const TIP20_CHANNEL_ESCROW_ADDRESS: Address =
@@ -229,6 +230,41 @@ crate::sol! {
     }
 }
 
+/// TIP-1045 Maximum calldata length (in bytes) for payment-eligible calls with dynamic params.
+pub const MAX_PAYMENT_CALLDATA_LEN: usize = 2048;
+
+impl ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls {
+    /// Returns `true` if `input` matches one of the recognized [TIP-20 channel escrow payment]
+    /// selectors: `open`, `topUp`, `settle`, `close`, `requestClose`, `withdraw`.
+    ///
+    /// # NOTES
+    /// - Only validates calldata; caller must check the that `to == TIP20_CHANNEL_ESCROW_ADDRESS`.
+    /// - Static-only calls require exact ABI-encoded length.
+    /// - Dynamic calls require valid ABI decoding + calldata length <= [`MAX_PAYMENT_CALLDATA_LEN`]
+    ///
+    /// [TIP-20 channel escrow payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
+    pub fn is_payment(input: &[u8]) -> bool {
+        fn is_call<C: SolCall>(input: &[u8]) -> bool {
+            if input.first_chunk::<4>() != Some(&C::SELECTOR) {
+                return false;
+            }
+
+            if let Some(canonical_size) = <C::Parameters<'_> as SolType>::ENCODED_SIZE {
+                input.len() == 4 + canonical_size
+            } else {
+                input.len() <= MAX_PAYMENT_CALLDATA_LEN && C::abi_decode_validate(input).is_ok()
+            }
+        }
+
+        is_call::<ITIP20ChannelEscrow::openCall>(input)
+            || is_call::<ITIP20ChannelEscrow::topUpCall>(input)
+            || is_call::<ITIP20ChannelEscrow::closeCall>(input)
+            || is_call::<ITIP20ChannelEscrow::settleCall>(input)
+            || is_call::<ITIP20ChannelEscrow::requestCloseCall>(input)
+            || is_call::<ITIP20ChannelEscrow::withdrawCall>(input)
+    }
+}
+
 impl TIP20ChannelEscrowError {
     pub const fn channel_already_exists() -> Self {
         Self::ChannelAlreadyExists(ITIP20ChannelEscrow::ChannelAlreadyExists {})
@@ -292,5 +328,83 @@ impl TIP20ChannelEscrowError {
 
     pub const fn transfer_failed() -> Self {
         Self::TransferFailed(ITIP20ChannelEscrow::TransferFailed {})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::{vec, vec::Vec};
+    use alloy_primitives::{B256, aliases::U96};
+
+    fn descriptor() -> ITIP20ChannelEscrow::ChannelDescriptor {
+        ITIP20ChannelEscrow::ChannelDescriptor {
+            payer: Address::random(),
+            payee: Address::random(),
+            operator: Address::random(),
+            token: Address::random(),
+            salt: B256::random(),
+            authorizedSigner: Address::random(),
+            expiringNonceHash: B256::random(),
+        }
+    }
+
+    #[rustfmt::skip]
+    fn payment_calldatas() -> [Vec<u8>; 6] {
+        let descriptor = descriptor();
+        [
+            ITIP20ChannelEscrow::openCall { payee: Address::random(), operator: Address::random(), token: Address::random(), deposit: U96::from(1), salt: B256::random(), authorizedSigner: Address::random() }.abi_encode(),
+            ITIP20ChannelEscrow::topUpCall { descriptor: descriptor.clone(), additionalDeposit: U96::ONE }.abi_encode(),
+            ITIP20ChannelEscrow::settleCall { descriptor: descriptor.clone(), cumulativeAmount: U96::ONE, signature: vec![1, 2, 3].into() }.abi_encode(),
+            ITIP20ChannelEscrow::closeCall { descriptor: descriptor.clone(), cumulativeAmount: U96::ONE, captureAmount: U96::ONE, signature: vec![1, 2, 3].into() }.abi_encode(),
+            ITIP20ChannelEscrow::requestCloseCall { descriptor: descriptor.clone() }.abi_encode(),
+            ITIP20ChannelEscrow::withdrawCall { descriptor }.abi_encode(),
+        ]
+    }
+
+    #[test]
+    fn test_is_payment() {
+        for calldata in payment_calldatas() {
+            assert!(ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
+                &calldata
+            ));
+        }
+
+        let mut unknown = payment_calldatas()[0].clone();
+        unknown[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        assert!(!ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
+            &unknown
+        ));
+    }
+
+    #[test]
+    fn test_is_payment_rejects_malformed_dynamic_calldata() {
+        let mut calldata = ITIP20ChannelEscrow::settleCall {
+            descriptor: descriptor(),
+            cumulativeAmount: U96::from(1),
+            signature: vec![1, 2, 3].into(),
+        }
+        .abi_encode();
+        // Corrupt the dynamic `signature` offset word.
+        calldata[4 + 8 * 32 + 31] = 0;
+        assert!(!ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
+            &calldata
+        ));
+
+        let mut oversized = ITIP20ChannelEscrow::settleCall {
+            descriptor: descriptor(),
+            cumulativeAmount: U96::from(1),
+            signature: vec![0; 2048].into(),
+        }
+        .abi_encode();
+        assert!(oversized.len() > 2048);
+        assert!(!ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
+            &oversized
+        ));
+
+        oversized.truncate(4);
+        assert!(!ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
+            &oversized
+        ));
     }
 }

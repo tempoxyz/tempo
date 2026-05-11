@@ -12,8 +12,9 @@ pub use tt_signature::{
     derive_p256_address,
 };
 
+pub use crate::address::TIP20_TOKEN_PREFIX as TIP20_PAYMENT_PREFIX;
 pub use alloy_eips::eip7702::Authorization;
-pub use envelope::{TIP20_PAYMENT_PREFIX, TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
+pub use envelope::{TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
 pub use key_authorization::{
     CallScope, KeyAuthorization, KeyAuthorizationChainIdError, SelectorRule,
     SignedKeyAuthorization, TokenLimit,
