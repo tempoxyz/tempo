@@ -884,6 +884,7 @@ def "main e2e" [
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
     --features: string = $DEFAULT_FEATURES              # Cargo features
+    --no-default-features                               # Disable Cargo default features
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
     --tracy: string = "off"                             # Tracy profiling: off, on, full
@@ -996,7 +997,7 @@ def "main e2e" [
         if ($E2E_BLOAT_TMP_DIR | path exists) { rm -rf $E2E_BLOAT_TMP_DIR }
         mkdir $E2E_BLOAT_TMP_DIR
 
-        build-tempo ["tempo"] $profile $features
+        build-tempo --no-default-features=$no_default_features ["tempo"] $profile $features
         let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
         let genesis_accounts = ([$accounts 3] | math max) + 1
         print $"Generating local e2e localnet config for validators: ($E2E_VALIDATORS)"
@@ -1073,11 +1074,11 @@ def "main e2e" [
     let effective_extra_rustflags = $tbc.extra_rustflags
     let effective_no_cache = $no_cache or ($tracy != "off")
     if $effective_no_cache {
-        build-in-worktree --no-cache --extra-rustflags $effective_extra_rustflags --bench-features $features $baseline_wt $baseline $profile $effective_features $baseline
-        build-in-worktree --no-cache --extra-rustflags $effective_extra_rustflags --bench-features $features $feature_wt $feature $profile $effective_features $feature
+        build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $effective_extra_rustflags --bench-features $features $baseline_wt $baseline $profile $effective_features $baseline
+        build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $effective_extra_rustflags --bench-features $features $feature_wt $feature $profile $effective_features $feature
     } else {
-        build-in-worktree $baseline_wt $baseline $profile $effective_features $baseline
-        build-in-worktree $feature_wt $feature $profile $effective_features $feature
+        build-in-worktree --no-default-features=$no_default_features $baseline_wt $baseline $profile $effective_features $baseline
+        build-in-worktree --no-default-features=$no_default_features $feature_wt $feature $profile $effective_features $feature
     }
     let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
     let feature_tempo = (worktree-bin $feature_wt $profile "tempo")
