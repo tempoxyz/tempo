@@ -13,7 +13,6 @@ use alloy::{
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls, TIP20Error};
 
-
 /// Decoded call variant — either a TIP-20 token call or a role-management call.
 enum TIP20Call {
     ITIP20(ITIP20Calls),
