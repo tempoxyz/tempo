@@ -146,7 +146,7 @@ permissions:
 jobs:
   bench-replay:
     name: bench-replay
-    runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
+    runs-on: [self-hosted, Linux, X64, bare-metal]
     timeout-minutes: 300
     env:
       BENCH_CHAIN: ${{ inputs.chain || 'mainnet' }}
