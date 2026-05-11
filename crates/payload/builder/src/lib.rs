@@ -22,7 +22,7 @@ use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
-    ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
+    ConfigureEvm, Database, Evm, EvmEnv, NextBlockEnvAttributes,
     block::{BlockExecutionError, BlockExecutor, BlockValidationError, TxResult},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
@@ -224,7 +224,8 @@ where
 
 impl<Provider> TempoPayloadBuilder<Provider>
 where
-    Provider: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec>,
+    Provider:
+        StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
 {
     #[instrument(
         target = "payload_builder",
@@ -378,29 +379,26 @@ where
             })
             .collect();
 
+        let next_block_env_attributes = TempoNextBlockEnvAttributes {
+            inner: NextBlockEnvAttributes {
+                timestamp: attributes.timestamp,
+                suggested_fee_recipient: attributes.suggested_fee_recipient,
+                prev_randao: attributes.prev_randao,
+                gas_limit: block_gas_limit,
+                parent_beacon_block_root: attributes.parent_beacon_block_root,
+                withdrawals: attributes.withdrawals.clone().map(Into::into),
+                extra_data: attributes.extra_data().clone(),
+                slot_number: attributes.slot_number,
+            },
+            general_gas_limit,
+            shared_gas_limit,
+            timestamp_millis_part: attributes.timestamp_millis_part(),
+            consensus_context: attributes.consensus_context(),
+            subblock_fee_recipients,
+        };
         let mut builder = self
             .evm_config
-            .builder_for_next_block(
-                &mut db,
-                &parent_header,
-                TempoNextBlockEnvAttributes {
-                    inner: NextBlockEnvAttributes {
-                        timestamp: attributes.timestamp,
-                        suggested_fee_recipient: attributes.suggested_fee_recipient,
-                        prev_randao: attributes.prev_randao,
-                        gas_limit: block_gas_limit,
-                        parent_beacon_block_root: attributes.parent_beacon_block_root,
-                        withdrawals: attributes.withdrawals.clone().map(Into::into),
-                        extra_data: attributes.extra_data().clone(),
-                        slot_number: attributes.slot_number,
-                    },
-                    general_gas_limit,
-                    shared_gas_limit,
-                    timestamp_millis_part: attributes.timestamp_millis_part(),
-                    consensus_context: attributes.consensus_context(),
-                    subblock_fee_recipients,
-                },
-            )
+            .builder_for_next_block(&mut db, &parent_header, next_block_env_attributes)
             .map_err(PayloadBuilderError::other)?;
 
         check_cancel!();
@@ -408,6 +406,10 @@ where
         // Override the fee recipient with the on-chain value from the V2
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut builder, &attributes);
+        let prewarm_evm_env = self.enable_prewarming.then(|| EvmEnv {
+            cfg_env: builder.evm().cfg_env().clone(),
+            block_env: builder.evm().block().clone(),
+        });
 
         if let Some(ref handle) = trie_handle {
             builder
@@ -449,8 +451,14 @@ where
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
         let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
-            Box::new(BestTransactionsPrewarming::new(&self.executor, best_txs))
-                as Box<dyn BestTransactions<Item = _>>
+            Box::new(BestTransactionsPrewarming::new(
+                self.executor.clone(),
+                self.evm_config.clone(),
+                self.provider.clone(),
+                parent_header.hash(),
+                prewarm_evm_env.expect("prewarm EVM env must be set when prewarming is enabled"),
+                best_txs,
+            )) as Box<dyn BestTransactions<Item = _>>
         } else {
             Box::new(best_txs)
         });
