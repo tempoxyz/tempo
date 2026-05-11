@@ -20,9 +20,9 @@ on:
         type: string
         default: "5000"
       warmup:
-        description: "Number of warmup blocks"
+        description: "Number of warmup blocks (default: one-quarter of blocks)"
         type: string
-        default: "1000"
+        default: ""
       samply:
         description: "Enable samply profiling"
         type: string
@@ -157,7 +157,7 @@ jobs:
       BENCH_FEATURES: ${{ (inputs.otlp == true || inputs.otlp == 'true') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_ARGS: "--dev.block-time 999999s ${{ inputs.baseline-args }}"
       BENCH_FEATURE_ARGS: "--dev.block-time 999999s ${{ inputs.feature-args }}"
-      BENCH_BLOCKS: ${{ inputs.blocks }}
+      BENCH_BLOCKS: ${{ inputs.blocks || '5000' }}
       BENCH_WARMUP_BLOCKS: ${{ inputs.warmup }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
@@ -166,6 +166,28 @@ jobs:
       BENCH_RUN_LABEL: ${{ inputs.run-label || 'Replay Bench' }}
       BENCH_WORK_DIR: bench-results/replay-${{ inputs.chain || 'mainnet' }}
     steps:
+      - name: Resolve benchmark config
+        env:
+          INPUT_BLOCKS: ${{ inputs.blocks || '5000' }}
+          INPUT_WARMUP: ${{ inputs.warmup || '' }}
+        run: |
+          if ! [[ "$INPUT_BLOCKS" =~ ^[0-9]+$ ]]; then
+            echo "::error::blocks must be a non-negative integer"
+            exit 1
+          fi
+          if [ -n "$INPUT_WARMUP" ] && ! [[ "$INPUT_WARMUP" =~ ^[0-9]+$ ]]; then
+            echo "::error::warmup must be a non-negative integer"
+            exit 1
+          fi
+          if [ -z "$INPUT_WARMUP" ]; then
+            INPUT_WARMUP=$(( INPUT_BLOCKS / 4 ))
+          fi
+
+          {
+            echo "BENCH_BLOCKS=$INPUT_BLOCKS"
+            echo "BENCH_WARMUP_BLOCKS=$INPUT_WARMUP"
+          } >> "$GITHUB_ENV"
+
       - name: Configure OTLP telemetry
         if: env.BENCH_OTLP == 'true'
         env:
@@ -207,7 +229,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: pr.number,
-                  body: `cc @${'${{ github.actor }}'}\n\n🚀 Replay benchmark started! [View run](${runUrl})\n\n⏳ **Status:** Running...\n\n**Config:** chain: \`${'${{ inputs.chain || 'mainnet' }}'}\`, blocks: \`${'${{ inputs.blocks || '5000' }}'}\`, warmup: \`${'${{ inputs.warmup || '1000' }}'}\``,
+                  body: `cc @${'${{ github.actor }}'}\n\n🚀 Replay benchmark started! [View run](${runUrl})\n\n⏳ **Status:** Running...\n\n**Config:** chain: \`${'${{ inputs.chain || 'mainnet' }}'}\`, blocks: \`${process.env.BENCH_BLOCKS}\`, warmup: \`${process.env.BENCH_WARMUP_BLOCKS}\``,
                 });
                 core.exportVariable('BENCH_COMMENT_ID', String(comment.id));
                 if (pr.mergeable) {
@@ -488,7 +510,7 @@ jobs:
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const chain = process.env.BENCH_CHAIN || 'mainnet';
             const blocks = process.env.BENCH_BLOCKS || '5000';
-            const warmup = process.env.BENCH_WARMUP_BLOCKS || '1000';
+            const warmup = process.env.BENCH_WARMUP_BLOCKS || String(Math.floor(Number(blocks) / 4));
             const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Replay benchmark complete! [View job](${jobUrl})\n\nChain: \`${chain}\`\nWarmup: \`${warmup}\`\nBlocks: \`${blocks}\`\n\n${comment}`;
 
             await github.rest.issues.updateComment({
