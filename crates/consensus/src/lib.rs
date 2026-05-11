@@ -33,10 +33,6 @@ use tempo_primitives::{
 /// to be in the future even assuming 50-100ms clock drift.
 pub const ALLOWED_FUTURE_BLOCK_TIME_MILLIS: u64 = 0;
 
-/// Divisor for calculating shared gas limit (payment lane capacity).
-/// shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR
-pub const TEMPO_SHARED_GAS_DIVISOR: u64 = 10;
-
 /// Maximum extra data size for Tempo blocks.
 pub const TEMPO_MAXIMUM_EXTRA_DATA_SIZE: usize = 10 * 1_024; // 10KiB
 
@@ -79,7 +75,10 @@ impl TempoConsensus {
             });
         }
 
-        let expected_shared = header.gas_limit() / TEMPO_SHARED_GAS_DIVISOR;
+        let expected_shared = self
+            .inner
+            .chain_spec()
+            .shared_gas_limit_at(header.timestamp(), header.gas_limit());
         if header.shared_gas_limit != expected_shared {
             return Err(TempoConsensusError::SharedGasLimitMismatch {
                 expected: expected_shared,
@@ -326,9 +325,7 @@ mod tests {
         }
 
         fn build(self) -> TempoHeader {
-            let shared_gas_limit = self
-                .shared_gas_limit
-                .unwrap_or(self.gas_limit / TEMPO_SHARED_GAS_DIVISOR);
+            let shared_gas_limit = self.shared_gas_limit.unwrap_or(0);
             // Default to T1 fixed general gas limit
             let general_gas_limit = self
                 .general_gas_limit
@@ -404,9 +401,11 @@ mod tests {
     #[test]
     fn test_validate_header() {
         let consensus = TempoConsensus::new(MODERATO.clone());
+        let timestamp = current_timestamp_millis();
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
-            .timestamp_millis(current_timestamp_millis())
+            .timestamp_millis(timestamp)
+            .shared_gas_limit(MODERATO.shared_gas_limit_at(timestamp / 1000, 30_000_000))
             .build();
         let sealed = SealedHeader::seal_slow(header);
 
@@ -437,12 +436,13 @@ mod tests {
         // Pre-T1 chainspec uses the divisor-based calculation
         let consensus = TempoConsensus::new(create_pre_t1_chainspec());
         let gas_limit = 500_000_000u64;
-        let shared_gas_limit = gas_limit / TEMPO_SHARED_GAS_DIVISOR;
+        let shared_gas_limit = gas_limit / 10;
         // Pre-T1: expected = (gas_limit - shared_gas_limit) / 2
         let header = TestHeaderBuilder::default()
             .gas_limit(gas_limit)
             .timestamp_millis(current_timestamp_millis())
             .general_gas_limit(999)
+            .shared_gas_limit(shared_gas_limit)
             .build();
         let sealed = SealedHeader::seal_slow(header);
 
@@ -460,6 +460,7 @@ mod tests {
             .gas_limit(gas_limit)
             .timestamp_millis(current_timestamp_millis())
             .general_gas_limit(expected_general_gas_limit)
+            .shared_gas_limit(shared_gas_limit)
             .build();
         let sealed = SealedHeader::seal_slow(header);
         assert!(consensus.validate_header(&sealed).is_ok());
@@ -557,6 +558,7 @@ mod tests {
             .gas_limit(gas_limit)
             .timestamp_millis(current_timestamp_millis())
             .general_gas_limit(999)
+            .shared_gas_limit(50_000_000)
             .build();
         let sealed = SealedHeader::seal_slow(header);
 
@@ -573,6 +575,7 @@ mod tests {
             .gas_limit(gas_limit)
             .timestamp_millis(current_timestamp_millis())
             .general_gas_limit(TempoHardfork::T1.general_gas_limit().unwrap())
+            .shared_gas_limit(50_000_000)
             .build();
         let sealed = SealedHeader::seal_slow(header);
         consensus.validate_header(&sealed).expect("should be valid");
@@ -941,6 +944,7 @@ mod tests {
         let header = TestHeaderBuilder::default()
             .gas_limit(30_000_000)
             .timestamp_millis(boundary_timestamp)
+            .shared_gas_limit(MODERATO.shared_gas_limit_at(boundary_timestamp / 1000, 30_000_000))
             .build();
         let sealed = SealedHeader::seal_slow(header);
 

@@ -180,8 +180,8 @@ impl TipFeeManager {
         let amount_in = U256::from(amount_in);
         let amount_out = U256::from(amount_out);
         TIP20Token::from_address(validator_token)?.system_transfer_from(
-            msg_sender,
             self.address,
+            msg_sender,
             amount_in,
         )?;
 
@@ -291,8 +291,8 @@ impl TipFeeManager {
 
         // Transfer validator tokens from user
         let _ = TIP20Token::from_address(validator_token)?.system_transfer_from(
-            msg_sender,
             self.address,
+            msg_sender,
             amount_validator_token,
         )?;
 

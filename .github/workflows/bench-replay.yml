@@ -1,7 +1,7 @@
 # Replay benchmark job.
 #
-# Called by bench.yml when mode=replay. Replays real Tempo moderato blocks
-# through the Engine API for an interleaved B-F-F-B comparison.
+# Called by bench.yml when mode=replay. Replays real Tempo blocks through the
+# Engine API for an interleaved B-F-F-B comparison.
 
 name: bench-replay
 
@@ -43,6 +43,16 @@ on:
         description: "Extra node args for feature"
         type: string
         default: ""
+      slack:
+        description: "Slack notification policy"
+        required: false
+        default: "never"
+        type: choice
+        options:
+          - always
+          - on-win
+          - on-error
+          - never
   workflow_call:
     inputs:
       chain:
@@ -85,10 +95,22 @@ on:
       comment-id:
         type: string
         required: false
+      slack:
+        type: string
+        required: false
+        default: "never"
+      run-label:
+        type: string
+        required: false
+        default: "Replay Bench"
     secrets:
       DEREK_BENCH_TOKEN:
         required: false
       DEREK_TOKEN:
+        required: false
+      SLACK_BENCH_BOT_TOKEN:
+        required: false
+      SLACK_BENCH_CHANNEL:
         required: false
 
 env:
@@ -114,7 +136,9 @@ jobs:
       BENCH_BLOCKS: ${{ inputs.blocks }}
       BENCH_WARMUP_BLOCKS: ${{ inputs.warmup }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
-      BENCH_WORK_DIR: bench-results/replay
+      BENCH_SLACK: ${{ inputs.slack || 'never' }}
+      BENCH_RUN_LABEL: ${{ inputs.run-label || 'Replay Bench' }}
+      BENCH_WORK_DIR: bench-results/replay-${{ inputs.chain || 'mainnet' }}
     steps:
       - name: Resolve checkout ref
         id: checkout-ref
@@ -172,10 +196,11 @@ jobs:
             }
 
       - name: Clean up root-owned files from previous runs
-        run: sudo rm -rf bench-results/
+        run: sudo rm -rf "$BENCH_WORK_DIR"
 
       - uses: actions/checkout@v6
         with:
+          persist-credentials: false
           fetch-depth: 0
           ref: ${{ steps.checkout-ref.outputs.ref }}
 
@@ -239,13 +264,23 @@ jobs:
       - name: Resolve baseline and feature refs
         id: refs
         uses: actions/github-script@v8
+        env:
+          INPUT_BASELINE: ${{ inputs.baseline }}
+          INPUT_FEATURE: ${{ inputs.feature }}
+          INPUT_BASELINE_NAME: ${{ inputs.baseline-name }}
+          INPUT_FEATURE_NAME: ${{ inputs.feature-name }}
+          INPUT_SHA: ${{ github.sha }}
+          INPUT_PR_HEAD_SHA: ${{ steps.pr-info.outputs.head-sha }}
+          INPUT_PR_HEAD_REF: ${{ steps.pr-info.outputs.head-ref }}
         with:
           script: |
             const { execSync } = require('child_process');
             const run = (cmd) => execSync(cmd, { encoding: 'utf8' }).trim();
 
-            const baselineArg = '${{ inputs.baseline }}';
-            const featureArg = '${{ inputs.feature }}';
+            const baselineArg = process.env.INPUT_BASELINE;
+            const featureArg = process.env.INPUT_FEATURE;
+            const baselineNameArg = process.env.INPUT_BASELINE_NAME;
+            const featureNameArg = process.env.INPUT_FEATURE_NAME;
 
             let baselineRef, baselineName, featureRef, featureName;
 
@@ -256,14 +291,14 @@ jobs:
               } catch {
                 baselineRef = run(`git rev-parse "origin/${baselineArg}"`);
               }
-              baselineName = baselineArg;
+              baselineName = baselineNameArg || baselineArg;
             } else {
               try {
                 baselineRef = run('git merge-base HEAD origin/main');
               } catch {
-                baselineRef = '${{ github.sha }}';
+                baselineRef = process.env.INPUT_SHA;
               }
-              baselineName = 'main';
+              baselineName = baselineNameArg || 'main';
             }
 
             if (featureArg) {
@@ -273,10 +308,10 @@ jobs:
               } catch {
                 featureRef = run(`git rev-parse "origin/${featureArg}"`);
               }
-              featureName = featureArg;
+              featureName = featureNameArg || featureArg;
             } else {
-              featureRef = '${{ steps.pr-info.outputs.head-sha }}';
-              featureName = '${{ steps.pr-info.outputs.head-ref }}';
+              featureRef = process.env.INPUT_PR_HEAD_SHA;
+              featureName = featureNameArg || process.env.INPUT_PR_HEAD_REF;
             }
 
             core.setOutput('baseline-ref', baselineRef);
@@ -325,6 +360,7 @@ jobs:
           python3 .github/scripts/bench-replay-summary.py $SUMMARY_ARGS
 
       - name: Generate charts
+        id: charts
         if: success()
         env:
           BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
@@ -341,19 +377,23 @@ jobs:
           uv run --with matplotlib python3 .github/scripts/bench-replay-charts.py $CHART_ARGS
 
       - name: Upload results
+        id: upload-results
         if: "!cancelled()"
         uses: actions/upload-artifact@v4
         with:
-          name: tempo-bench-replay-results
-          path: bench-results/
+          name: tempo-bench-replay-${{ inputs.chain || 'mainnet' }}-results
+          path: ${{ env.BENCH_WORK_DIR }}/
 
       - name: Push charts
         id: push-charts
         if: success()
         run: |
-          PR_NUMBER="${BENCH_PR:-0}"
           RUN_ID=${{ github.run_id }}
-          CHART_DIR="pr/${PR_NUMBER}/${RUN_ID}"
+          if [ -n "${BENCH_PR:-}" ]; then
+            CHART_DIR="pr/${BENCH_PR}/${RUN_ID}/${BENCH_CHAIN}"
+          else
+            CHART_DIR="replay/${BENCH_CHAIN}/${RUN_ID}"
+          fi
           CHARTS_REPO="https://x-access-token:${{ secrets.DEREK_TOKEN }}@github.com/decofe/tempo-bench-charts.git"
 
           TMP_DIR=$(mktemp -d)
@@ -368,9 +408,10 @@ jobs:
           cp "$BENCH_WORK_DIR"/charts/*.png "${TMP_DIR}/${CHART_DIR}/"
           git -C "${TMP_DIR}" add "${CHART_DIR}"
           git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
-            commit -m "bench charts for PR #${PR_NUMBER} run ${RUN_ID}"
+            commit -m "bench replay charts for ${BENCH_CHAIN} run ${RUN_ID}"
           git -C "${TMP_DIR}" push origin HEAD:main
           echo "sha=$(git -C "${TMP_DIR}" rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "path=${CHART_DIR}" >> "$GITHUB_OUTPUT"
           rm -rf "${TMP_DIR}"
 
       - name: Compare & comment
@@ -389,11 +430,10 @@ jobs:
             }
 
             const sha = '${{ steps.push-charts.outputs.sha }}';
-            const prNumber = process.env.BENCH_PR || '0';
-            const runId = '${{ github.run_id }}';
+            const chartPath = '${{ steps.push-charts.outputs.path }}';
 
-            if (sha) {
-              const baseUrl = `https://raw.githubusercontent.com/decofe/tempo-bench-charts/${sha}/pr/${prNumber}/${runId}`;
+            if (sha && chartPath) {
+              const baseUrl = `https://raw.githubusercontent.com/decofe/tempo-bench-charts/${sha}/${chartPath}`;
               const charts = [
                 { file: 'latency_throughput.png', label: 'Latency, Throughput & Diff' },
                 { file: 'wait_breakdown.png', label: 'Wait Time Breakdown' },
@@ -427,6 +467,44 @@ jobs:
           if [ -f "$BENCH_WORK_DIR/comment.md" ]; then
             cat "$BENCH_WORK_DIR/comment.md" >> "$GITHUB_STEP_SUMMARY"
           fi
+          CHART_SHA="${{ steps.push-charts.outputs.sha }}"
+          CHART_PATH="${{ steps.push-charts.outputs.path }}"
+          if [ -n "$CHART_SHA" ] && [ -n "$CHART_PATH" ]; then
+            BASE_URL="https://raw.githubusercontent.com/decofe/tempo-bench-charts/${CHART_SHA}/${CHART_PATH}"
+            {
+              echo
+              echo "### Charts"
+              echo
+              echo "<details><summary>Latency, Throughput & Diff</summary>"
+              echo
+              echo "![Latency, Throughput & Diff](${BASE_URL}/latency_throughput.png)"
+              echo
+              echo "</details>"
+              echo
+              echo "<details><summary>Wait Time Breakdown</summary>"
+              echo
+              echo "![Wait Time Breakdown](${BASE_URL}/wait_breakdown.png)"
+              echo
+              echo "</details>"
+              echo
+              echo "<details><summary>Gas vs Latency</summary>"
+              echo
+              echo "![Gas vs Latency](${BASE_URL}/gas_vs_latency.png)"
+              echo
+              echo "</details>"
+            } >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Send Slack notification (success)
+        if: success() && (env.BENCH_SLACK == 'always' || env.BENCH_SLACK == 'on-win')
+        uses: actions/github-script@v8
+        env:
+          SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+          SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+        with:
+          script: |
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.replay.success({ core, context });
 
       - name: Update status (failed)
         if: failure() && env.BENCH_COMMENT_ID
@@ -441,6 +519,29 @@ jobs:
               comment_id: parseInt(process.env.BENCH_COMMENT_ID),
               body: `cc @${process.env.BENCH_ACTOR}\n\n❌ Replay benchmark failed. [View logs](${jobUrl})`,
             });
+
+      - name: Send Slack notification (failure)
+        if: failure() && env.BENCH_SLACK != 'never' && env.BENCH_SLACK != 'on-win'
+        uses: actions/github-script@v8
+        env:
+          SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+          SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+        with:
+          script: |
+            const stepsStatus = [
+              ['resolving checkout ref', '${{ steps.checkout-ref.outcome }}'],
+              ['resolving PR info', '${{ steps.pr-info.outcome }}'],
+              ['resolving refs', '${{ steps.refs.outcome }}'],
+              ['running replay benchmark', '${{ steps.bench.outcome }}'],
+              ['parsing results', '${{ steps.results.outcome }}'],
+              ['generating charts', '${{ steps.charts.outcome }}'],
+              ['uploading results', '${{ steps.upload-results.outcome }}'],
+              ['pushing charts', '${{ steps.push-charts.outcome }}'],
+            ];
+            const failed = stepsStatus.find(([, outcome]) => outcome === 'failure');
+            const failedStep = failed ? failed[0] : 'unknown step';
+            const notify = require('./.github/scripts/bench-slack-notify.js');
+            await notify.replay.failure({ core, context, failedStep });
 
       - name: Update status (cancelled)
         if: cancelled() && env.BENCH_COMMENT_ID
