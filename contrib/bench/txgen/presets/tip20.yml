@@ -39,3 +39,4 @@ templates:
 mix:
   - template: tip20_transfer
     weight: 100
+

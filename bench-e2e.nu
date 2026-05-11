@@ -666,11 +666,10 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     if $phase_exit == 0 {
         let sender_exit = (try {
-            txgen-require-tip20-preset $ctx.preset
-            txgen-validate-tip20-bench-args $ctx.bench_args
-            let bench_result = (txgen-run-tip20-pipeline
+            let bench_result = (txgen-run-preset-pipeline
                 --txgen-tempo-bin $ctx.txgen.txgen_tempo_bin
                 --txgen-bench-bin $ctx.txgen.txgen_bench_bin
+                --preset-path $ctx.preset_path
                 --generate-rpc-url $a_rpc
                 --submit-rpc-url $a_rpc
                 --metrics-url "http://127.0.0.1:9001/metrics"
@@ -717,7 +716,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
-    --preset: string = ""                               # Preset: tip20
+    --preset: string = ""                               # Txgen preset name
     --tps: int = 10000                                  # Target TPS
     --duration: int = 300                               # Duration in seconds
     --accounts: int = 1000                              # Number of accounts
@@ -748,12 +747,8 @@ def "main e2e" [
     --loud                                              # Show node debug logs
     --no-cache                                           # Skip binary cache
 ] {
-    if $preset == "" {
-        print "Error: --preset tip20 is required for e2e txgen"
-        exit 1
-    }
-    txgen-require-tip20-preset $preset
-    txgen-validate-tip20-bench-args $bench_args
+    let preset_path = (txgen-preset-path $preset)
+    txgen-validate-bench-args $bench_args
     if $tracy not-in ["off" "on" "full"] {
         print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
         exit 1
@@ -946,6 +941,7 @@ def "main e2e" [
             memory: $E2E_B_MEMORY
         }
         preset: $preset
+        preset_path: $preset_path
         tps: $tps
         duration: $duration
         accounts: $accounts

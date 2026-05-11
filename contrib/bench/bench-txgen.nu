@@ -36,7 +36,7 @@ def run-txgen-bench-single [
     --duration: int
     --accounts: int
     --max-concurrent-requests: int
-    --preset: string = ""
+    --preset-path: string
     --bench-args: string = ""
     --loud
     --node-args: string = ""
@@ -56,9 +56,6 @@ def run-txgen-bench-single [
     --tracy-offset: int = 0
     --tracing-otlp: string = ""
 ] {
-    txgen-require-tip20-preset $preset
-    txgen-validate-tip20-bench-args $bench_args
-
     print $"=== Starting txgen run: ($run_label) ==="
 
     let log_dir = $"($LOCALNET_DIR)/logs-($run_label)"
@@ -135,9 +132,10 @@ def run-txgen-bench-single [
     } else { false }
 
     let report_path = $"($results_dir)/report-($run_label).json"
-    let bench_result = (txgen-run-tip20-pipeline
+    let bench_result = (txgen-run-preset-pipeline
         --txgen-tempo-bin $txgen_tempo_bin
         --txgen-bench-bin $txgen_bench_bin
+        --preset-path $preset_path
         --generate-rpc-url "http://localhost:8545"
         --submit-rpc-url "http://localhost:8545"
         --metrics-url "http://127.0.0.1:9090/metrics"
@@ -260,8 +258,8 @@ def "main run" [
     if $runtime_mode != "dev" {
         error make { msg: $"txgen benchmark path currently supports only dev/e2e mode \(got ($mode)\)" }
     }
-    txgen-require-tip20-preset $preset
-    txgen-validate-tip20-bench-args $bench_args
+    let preset_path = (txgen-preset-path $preset)
+    txgen-validate-bench-args $bench_args
     if ($baseline != "" and $feature == "") or ($baseline == "" and $feature != "") {
         error make { msg: "--baseline and --feature must both be provided for txgen comparison mode" }
     }
@@ -560,7 +558,7 @@ def "main run" [
             --duration $duration
             --accounts $accounts
             --max-concurrent-requests $max_concurrent_requests
-            --preset $preset
+            --preset-path $preset_path
             --bench-args $bench_args
             --loud=$loud
             --node-args $effective_node_args

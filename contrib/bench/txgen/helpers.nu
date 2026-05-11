@@ -3,7 +3,7 @@ const TXGEN_HELPER_DEFAULT_SEED = 99
 const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 500
 const TXGEN_HELPER_DRAIN_TIMEOUT_SECS = 300
 const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
-const TXGEN_HELPER_TIP20_TEMPLATE = "contrib/bench/txgen/templates/tip20.yaml"
+const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
 
 def txgen-shell-quote [value: any] {
     let s = ($value | into string)
@@ -54,11 +54,45 @@ def txgen-repo-root [] {
     "." | path expand
 }
 
-def txgen-tip20-template-path [] {
-    let spec_path = ([ (txgen-repo-root) $TXGEN_HELPER_TIP20_TEMPLATE ] | path join)
-    if not ($spec_path | path exists) {
-        error make { msg: $"txgen TIP20 template not found: ($spec_path)" }
+def txgen-presets-dir [] {
+    [ (txgen-repo-root) $TXGEN_HELPER_PRESETS_DIR ] | path join
+}
+
+def txgen-available-presets [] {
+    let presets_dir = (txgen-presets-dir)
+    if not ($presets_dir | path exists) {
+        return []
     }
+
+    glob ([ $presets_dir "*.yml" ] | path join)
+        | each { |preset_path| $preset_path | path basename | str replace --regex '\.yml$' '' }
+        | sort
+}
+
+def txgen-available-presets-message [] {
+    let presets = (txgen-available-presets)
+    if ($presets | is-empty) {
+        "none"
+    } else {
+        $presets | str join ", "
+    }
+}
+
+def txgen-preset-path [preset: string] {
+    let preset_name = ($preset | str trim)
+    if $preset_name == "" {
+        error make { msg: $"--preset is required; available txgen presets: (txgen-available-presets-message)" }
+    }
+
+    if not ($preset_name =~ '^[A-Za-z0-9][A-Za-z0-9_-]*$') {
+        error make { msg: $"invalid txgen preset name '($preset_name)'; use a preset basename like 'tip20'" }
+    }
+
+    let spec_path = ([ (txgen-presets-dir) $"($preset_name).yml" ] | path join)
+    if not ($spec_path | path exists) {
+        error make { msg: $"txgen preset not found: ($preset_name); available txgen presets: (txgen-available-presets-message)" }
+    }
+
     $spec_path
 }
 
@@ -66,13 +100,7 @@ def txgen-account-mnemonic [] {
     $TXGEN_HELPER_ACCOUNT_MNEMONIC
 }
 
-def txgen-require-tip20-preset [preset: string] {
-    if $preset != "tip20" {
-        error make { msg: $"txgen benchmark path currently supports only --preset tip20 \(got '($preset)'\)" }
-    }
-}
-
-def txgen-validate-tip20-bench-args [bench_args: string] {
+def txgen-validate-bench-args [bench_args: string] {
     if $bench_args == "" {
         return
     }
@@ -81,7 +109,7 @@ def txgen-validate-tip20-bench-args [bench_args: string] {
         | str replace --all --regex '--existing-recipients(=(true|false))?' ''
         | str trim)
     if $unsupported != "" {
-        error make { msg: $"txgen TIP20 path does not support custom --bench-args yet: ($unsupported)" }
+        error make { msg: $"txgen path does not support custom --bench-args yet: ($unsupported)" }
     }
 }
 
@@ -147,9 +175,10 @@ def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] 
     txgen-wait-for-txpool-drain $rpc_url $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS
 }
 
-def txgen-run-tip20-pipeline [
+def txgen-run-preset-pipeline [
     --txgen-tempo-bin: string
     --txgen-bench-bin: string
+    --preset-path: string
     --generate-rpc-url: string
     --submit-rpc-url: string
     --metrics-url: string
@@ -165,7 +194,10 @@ def txgen-run-tip20-pipeline [
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
     $env.TXGEN_ACCOUNTS = ($accounts | into string)
-    let spec_path = (txgen-tip20-template-path)
+    let spec_path = ($preset_path | path expand)
+    if not ($spec_path | path exists) {
+        error make { msg: $"txgen preset file not found: ($spec_path)" }
+    }
     txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
 
     let tx_count = [($tps * $duration) 1] | math max

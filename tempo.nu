@@ -16,15 +16,6 @@ const METRICS_PROXY_SCRIPT = "contrib/bench/bench-metrics-proxy.py"
 const MINIO_BUCKET = "minio/tempo-binaries"
 const BENCH_META_SUBDIR = ".bench-meta"
 
-# Preset weight configurations: [tip20, erc20, swap, order]
-const PRESETS = {
-    tip20: [1.0, 0.0, 0.0, 0.0],
-    erc20: [0.0, 1.0, 0.0, 0.0],
-    swap: [0.0, 0.0, 1.0, 0.0],
-    order: [0.0, 0.0, 0.0, 1.0],
-    "tempo-mix": [0.8, 0, 0.19, 0.01]
-}
-
 # TIP20 token IDs created by localnet genesis (pathUSD, AlphaUSD, BetaUSD, ThetaUSD)
 const TIP20_TOKEN_IDS = [0, 1, 2, 3]
 
@@ -485,7 +476,7 @@ def run-bench-single [
     --duration: int
     --accounts: int
     --max-concurrent-requests: int
-    --preset: string = ""
+    --preset-path: string
     --bench-args: string = ""
     --loud
     --node-args: string = ""
@@ -591,9 +582,10 @@ def run-bench-single [
     print $"  Running txgen benchmark..."
     let report_path = $"($results_dir)/report-($run_label).json"
     let bench_result = (try {
-        let result = (txgen-run-tip20-pipeline
+        let result = (txgen-run-preset-pipeline
             --txgen-tempo-bin $txgen_tempo_bin
             --txgen-bench-bin $txgen_bench_bin
+            --preset-path $preset_path
             --generate-rpc-url "http://localhost:8545"
             --submit-rpc-url $rpc_urls
             --metrics-url $metrics_url
@@ -1667,7 +1659,7 @@ def "main bench-init" [
 # Run a full benchmark: start infra, localnet, and txgen traffic
 def "main bench" [
     --mode: string = "consensus"                    # Mode: "dev" or "consensus"
-    --preset: string = ""                           # Preset: tip20 (txgen path currently supports tip20 only)
+    --preset: string = ""                           # Txgen preset name
     --tps: int = 10000                              # Target TPS
     --duration: int = 30                            # Duration in seconds
     --accounts: int = 1000                          # Number of accounts
@@ -1711,8 +1703,8 @@ def "main bench" [
         exit 1
     }
 
-    txgen-require-tip20-preset $preset
-    txgen-validate-tip20-bench-args $bench_args
+    let preset_path = (txgen-preset-path $preset)
+    txgen-validate-bench-args $bench_args
     let txgen = (txgen-resolve-binaries)
 
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
@@ -2133,7 +2125,7 @@ def "main bench" [
                 --run-label $run.label --results-dir $results_dir
                 --tps $tps --duration $duration --accounts $accounts
                 --max-concurrent-requests $max_concurrent_requests
-                --preset $preset --bench-args $bench_args
+                --preset-path $preset_path --bench-args $bench_args
                 --loud=$loud --node-args $effective_node_args --bloat $bloat
                 --extra-env $side_env --bench-env $bench_env
                 --git-ref $run.git_ref --build-profile $profile --benchmark-mode $mode
@@ -2247,9 +2239,10 @@ def "main bench" [
     let primary_rpc_url = ($rpc_urls | first)
     let current_sha = (git rev-parse HEAD | str trim)
     let bench_result = (try {
-        let result = (txgen-run-tip20-pipeline
+        let result = (txgen-run-preset-pipeline
             --txgen-tempo-bin $txgen.txgen_tempo_bin
             --txgen-bench-bin $txgen.txgen_bench_bin
+            --preset-path $preset_path
             --generate-rpc-url $primary_rpc_url
             --submit-rpc-url $submit_rpc_url
             --metrics-url "http://127.0.0.1:9001/metrics"
@@ -2378,7 +2371,7 @@ def "main coverage" [
     --invariant-profile: string = "ci"     # Foundry profile for invariants (ci, fuzz500, default)
     --invariant-contract: string = ""      # Run only a specific invariant contract (e.g. TempoTransactionInvariantTest)
     --live                                 # Include live node coverage (runs localnet + traffic)
-    --preset: string = ""                  # Bench preset for live mode (tip20)
+    --preset: string = ""                  # Txgen preset name for live mode
     --script: string = ""                  # External script to run against live node (instead of bench)
     --tps: int = 1000                      # Target TPS for live bench (ignored with --script)
     --duration: int = 10                   # Bench duration in seconds (ignored with --script)
@@ -2399,13 +2392,15 @@ def "main coverage" [
     }
 
     if $live and $script == "" and $preset == "" {
-        print "Error: --live requires --preset tip20 or --script"
-        print "  Available txgen presets: tip20"
+        print "Error: --live requires --preset or --script"
+        print $"  Available txgen presets: (txgen-available-presets-message)"
         exit 1
     }
 
-    if $live and $script == "" {
-        txgen-require-tip20-preset $preset
+    let live_preset_path = if $live and $script == "" {
+        txgen-preset-path $preset
+    } else {
+        ""
     }
 
     if $script != "" and not ($script | path exists) {
@@ -2658,9 +2653,10 @@ tempo-precompiles = { path = '($tempo_root)/crates/precompiles' }
                 let txgen = (txgen-resolve-binaries)
                 print "Running txgen bench..."
                 try {
-                    let bench_result = (txgen-run-tip20-pipeline
+                    let bench_result = (txgen-run-preset-pipeline
                         --txgen-tempo-bin $txgen.txgen_tempo_bin
                         --txgen-bench-bin $txgen.txgen_bench_bin
+                        --preset-path $live_preset_path
                         --generate-rpc-url "http://localhost:8545"
                         --submit-rpc-url "http://localhost:8545"
                         --metrics-url "http://127.0.0.1:9001/metrics"
@@ -2738,9 +2734,9 @@ def main [] {
     print "  nu tempo.nu infra down               Stop the observability stack"
     print "  nu tempo.nu kill                     Kill any running tempo processes"
     print ""
-    print "Bench flags (--preset tip20 required for txgen path):"
+    print "Bench flags (--preset resolves under contrib/bench/txgen/presets):"
     print "  --mode <M>               Mode: dev or consensus (default: consensus)"
-    print "  --preset <P>             Preset: tip20"
+    print "  --preset <P>             Txgen preset name (e.g. tip20)"
     print "  --tps <N>                Target TPS (default: 10000)"
     print "  --duration <N>           Duration in seconds (default: 30)"
     print "  --accounts <N>           Number of accounts (default: 1000)"
@@ -2783,7 +2779,7 @@ def main [] {
     print "  --invariant-profile <P>  Foundry profile for invariants (ci, fuzz500, default; default: ci)"
     print "  --invariant-contract <C> Run only a specific invariant contract"
     print "  --live                   Include live node coverage (runs localnet + traffic)"
-    print "  --preset <P>             Bench preset for live mode (tip20)"
+    print "  --preset <P>             Txgen preset name for live mode"
     print "  --script <PATH>          External script to run against live node (instead of bench)"
     print "  --tps <N>                Target TPS for live bench (default: 1000)"
     print "  --duration <N>           Bench duration in seconds (default: 10)"
