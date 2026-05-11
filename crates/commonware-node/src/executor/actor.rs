@@ -517,11 +517,31 @@ where
                 let _ = response.send(Ok(()));
             }
             JustCanonicalizeOrAlsoBuild::AlsoBuild { response, .. } => {
-                if let Some(payload_id) = fcu_response.payload_id {
-                    let _ = response.send(Ok(payload_id));
+                let result = if fcu_response.is_syncing() {
+                    let canonical_block_number = self
+                        .execution_node
+                        .provider()
+                        .canonical_in_memory_state()
+                        .get_canonical_block_number();
+
+                    // Allow a syncing if only behind by 1 block
+                    let min_allowed = height.previous().unwrap_or_default().get();
+                    if canonical_block_number < min_allowed {
+                        Some(Err(eyre::eyre!(
+                            "build request on height {height} too far ahead of canonical height {canonical_block_number}"
+                        )))
+                    } else {
+                        fcu_response.payload_id.map(Ok)
+                    }
+                } else {
+                    fcu_response.payload_id.map(Ok)
+                };
+                if let Some(result) = result {
+                    let _ = response.send(result);
                 }
             }
         }
+
         self.last_canonicalized = new_canonicalized;
         self.reset_fcu_heartbeat_timer();
     }
