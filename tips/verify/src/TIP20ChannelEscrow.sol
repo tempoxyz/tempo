@@ -8,6 +8,7 @@ import { ITIP20ChannelEscrow } from "./interfaces/ITIP20ChannelEscrow.sol";
 /// @title TIP20ChannelEscrow
 /// @notice Reference contract for the TIP-1034 channel model.
 contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
+
     error TransferFailed();
 
     address public constant TIP20_CHANNEL_ESCROW = 0x4d50500000000000000000000000000000000000;

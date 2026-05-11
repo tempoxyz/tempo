@@ -317,7 +317,6 @@ impl TIP20ChannelEscrowError {
     pub const fn deposit_overflow() -> Self {
         Self::DepositOverflow(ITIP20ChannelEscrow::DepositOverflow {})
     }
-
 }
 
 #[cfg(test)]
