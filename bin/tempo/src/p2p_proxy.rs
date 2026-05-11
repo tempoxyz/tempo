@@ -441,6 +441,9 @@ async fn run_p2p_network(
             IncomingEthRequest::GetBlockAccessLists { response, .. } => {
                 let _ = response.send(Ok(Default::default()));
             }
+            IncomingEthRequest::GetCells { response, .. } => {
+                let _ = response.send(Ok(Default::default()));
+            }
         }
     }
 

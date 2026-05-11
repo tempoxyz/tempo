@@ -23,17 +23,6 @@ pub enum OrderError {
         flip_tick: i16,
     },
 
-    /// Attempted to create a flipped order from a non-flip order
-    #[error("cannot create flipped order from a non-flip order")]
-    NotAFlipOrder,
-
-    /// Attempted to create a flipped order from an order that is not fully filled
-    #[error("order must be fully filled to flip, but {remaining} amount remains")]
-    OrderNotFullyFilled {
-        /// Remaining amount that needs to be filled
-        remaining: u128,
-    },
-
     /// Attempted to fill more than the remaining amount
     #[error("cannot fill {requested} when only {available} is available")]
     FillAmountExceedsRemaining {
@@ -83,23 +72,6 @@ mod tests {
         assert!(msg.contains("<= tick"));
         assert!(msg.contains("5"));
         assert!(msg.contains("7"));
-    }
-
-    #[test]
-    fn test_not_a_flip_order() {
-        let err = OrderError::NotAFlipOrder;
-        assert_eq!(
-            err.to_string(),
-            "cannot create flipped order from a non-flip order"
-        );
-    }
-
-    #[test]
-    fn test_order_not_fully_filled() {
-        let err = OrderError::OrderNotFullyFilled { remaining: 500 };
-        let msg = err.to_string();
-        assert!(msg.contains("500"));
-        assert!(msg.contains("must be fully filled"));
     }
 
     #[test]

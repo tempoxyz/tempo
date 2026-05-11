@@ -40,7 +40,6 @@ use std::{
     time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_consensus::TEMPO_SHARED_GAS_DIVISOR;
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_precompiles::{tip_fee_manager::TipFeeManager, validator_config_v2::ValidatorConfigV2};
@@ -299,7 +298,8 @@ where
             .is_osaka_active_at_timestamp(attributes.timestamp);
 
         let block_gas_limit: u64 = parent_header.gas_limit();
-        let shared_gas_limit = block_gas_limit / TEMPO_SHARED_GAS_DIVISOR;
+        let shared_gas_limit =
+            chain_spec.shared_gas_limit_at(attributes.timestamp, block_gas_limit);
         // Non-shared gas limit is the maximum gas available for proposer's pool transactions.
         // The remaining `shared_gas_limit` is reserved for validator subblocks.
         let non_shared_gas_limit = block_gas_limit - shared_gas_limit;
@@ -714,6 +714,7 @@ where
             block,
             hashed_state,
             trie_updates,
+            ..
         } = if let Some(mut handle) = trie_handle {
             // Dropping the hook signals that execution is complete and the sparse trie task can
             // finalize the state root it has been updating incrementally.
