@@ -26,6 +26,7 @@ pub use tempo_transaction::{
 };
 pub use tt_signed::AASigned;
 
+use alloc::vec::Vec;
 use alloy_consensus::SignableTransaction;
 use alloy_primitives::{Address, B256, Signature, U256, uint};
 

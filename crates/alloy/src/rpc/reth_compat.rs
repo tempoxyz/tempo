@@ -17,6 +17,13 @@ use tempo_primitives::{
 };
 use tempo_revm::{TempoBatchCallEnv, TempoTxEnv};
 
+/// Non-zero transaction identifier used only for RPC simulations.
+///
+/// RPC requests are not final signed transactions, so gas filling and other request normalization
+/// can make a simulated signing payload differ from the eventual submitted transaction. Use a
+/// fixed sentinel instead of deriving a misleading future channel id from the simulated payload.
+const RPC_SIMULATION_UNIQUE_TX_IDENTIFIER: B256 = B256::new(*b"TEMPO_RPC_SIMULATION_MPP_CONTEXT");
+
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
         match self.output_tx_type() {
@@ -99,7 +106,6 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
         evm_env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
     ) -> Result<TempoTxEnv, Self::Err> {
         let caller_addr = self.inner.from.unwrap_or_default();
-        let channel_open_context_hash = simulation_channel_open_context_hash(&self, caller_addr);
 
         let fee_payer = if self.fee_payer_signature.is_some() {
             // Try to recover the fee payer address from the signature.
@@ -133,7 +139,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
         Ok(TempoTxEnv {
             fee_token,
             is_system_tx: false,
-            unique_tx_identifier: Some(channel_open_context_hash),
+            unique_tx_identifier: Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER),
             fee_payer,
             tempo_tx_env: if !calls.is_empty()
                 || !tempo_authorization_list.is_empty()
@@ -191,12 +197,6 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
             inner: inner.try_into_tx_env(evm_env)?,
         })
     }
-}
-
-fn simulation_channel_open_context_hash(req: &TempoTransactionRequest, sender: Address) -> B256 {
-    <TempoTransactionRequest as TryIntoSimTx<TempoTxEnvelope>>::try_into_sim_tx(req.clone())
-        .map(|tx| tx.unique_tx_identifier(sender))
-        .unwrap_or_else(|_| B256::repeat_byte(0x01))
 }
 
 /// Creates a mock AA signature for gas estimation based on key type hints
@@ -410,16 +410,12 @@ mod tests {
         };
 
         let evm_env = EvmEnv::default();
-        let tx_env = req
-            .clone()
-            .try_into_tx_env(&evm_env)
-            .expect("try_into_tx_env");
-        let expected =
-            <TempoTransactionRequest as TryIntoSimTx<TempoTxEnvelope>>::try_into_sim_tx(req)
-                .expect("try_into_sim_tx")
-                .unique_tx_identifier(sender);
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
 
-        assert_eq!(tx_env.channel_open_context_hash(), Some(expected));
+        assert_eq!(
+            tx_env.channel_open_context_hash(),
+            Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER)
+        );
         assert_ne!(
             tx_env.channel_open_context_hash(),
             Some(B256::ZERO),
