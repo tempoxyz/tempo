@@ -201,8 +201,6 @@ crate::sol! {
         error ChannelNotFound();
         /// Caller must be the descriptor payer.
         error NotPayer();
-        /// Caller must be the descriptor payee.
-        error NotPayee();
         /// Caller must be the descriptor payee or nonzero operator.
         error NotPayeeOrOperator();
         /// Payee is zero or a TIP-20-prefix address.
@@ -225,8 +223,6 @@ crate::sol! {
         error CloseNotReady();
         /// Top-up would overflow the packed deposit.
         error DepositOverflow();
-        /// TIP-20 system transfer failed.
-        error TransferFailed();
     }
 }
 
@@ -278,10 +274,6 @@ impl TIP20ChannelEscrowError {
         Self::NotPayer(ITIP20ChannelEscrow::NotPayer {})
     }
 
-    pub const fn not_payee() -> Self {
-        Self::NotPayee(ITIP20ChannelEscrow::NotPayee {})
-    }
-
     pub const fn not_payee_or_operator() -> Self {
         Self::NotPayeeOrOperator(ITIP20ChannelEscrow::NotPayeeOrOperator {})
     }
@@ -326,9 +318,6 @@ impl TIP20ChannelEscrowError {
         Self::DepositOverflow(ITIP20ChannelEscrow::DepositOverflow {})
     }
 
-    pub const fn transfer_failed() -> Self {
-        Self::TransferFailed(ITIP20ChannelEscrow::TransferFailed {})
-    }
 }
 
 #[cfg(test)]

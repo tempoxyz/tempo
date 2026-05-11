@@ -8,6 +8,7 @@ import { ITIP20ChannelEscrow } from "./interfaces/ITIP20ChannelEscrow.sol";
 /// @title TIP20ChannelEscrow
 /// @notice Reference contract for the TIP-1034 channel model.
 contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
+    error TransferFailed();
 
     address public constant TIP20_CHANNEL_ESCROW = 0x4d50500000000000000000000000000000000000;
     address public constant SIGNATURE_VERIFIER_PRECOMPILE =
@@ -199,7 +200,12 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         bytes32 channelId = _channelId(descriptor);
         ChannelState memory channel = _loadChannelState(channelId);
 
-        if (msg.sender != descriptor.payee) revert NotPayee();
+        if (
+            msg.sender != descriptor.payee
+                && (descriptor.operator == address(0) || msg.sender != descriptor.operator)
+        ) {
+            revert NotPayeeOrOperator();
+        }
 
         uint96 previousSettled = channel.settled;
         if (captureAmount < previousSettled || captureAmount > cumulativeAmount) {
