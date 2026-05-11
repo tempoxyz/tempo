@@ -25,6 +25,12 @@ use tempo_primitives::TempoAddressExt;
 /// Version tag for the v1 [`ITIP1028Escrow::ClaimReceiptV1`] layout.
 pub const BLOCKED_RECEIPT_VERSION: u8 = 1;
 
+/// Recovery-authority sentinel: receiver is authorized to claim (`address(0)`).
+pub const RECOVERY_RECEIVER: Address = Address::ZERO;
+
+/// Recovery-authority sentinel: originator/sender is authorized to claim (`address(1)`).
+pub const RECOVERY_SENDER: Address = Address::with_last_byte(1);
+
 /// TIP-1028 escrow holding blocked inbound transfers and mints until claimed.
 #[contract(addr = ESCROW_ADDRESS)]
 pub struct TIP1028Escrow {
@@ -135,10 +141,9 @@ impl TIP1028Escrow {
             .map_err(|_| TIP1028EscrowError::invalid_claim_address())?;
 
         let recovery_address = call.recoveryAuthority;
-        let originator_sentinel = Address::with_last_byte(1);
-        let authorized = if recovery_address == Address::ZERO {
+        let authorized = if recovery_address == RECOVERY_RECEIVER {
             msg_sender == receiver
-        } else if recovery_address == originator_sentinel {
+        } else if recovery_address == RECOVERY_SENDER {
             msg_sender == receipt.originator
         } else {
             msg_sender == recovery_address
@@ -156,7 +161,7 @@ impl TIP1028Escrow {
         let guard = self.storage.checkpoint();
         self.blocked_receipt_amount[key].write(U256::ZERO)?;
 
-        let is_resume = recovery_address != originator_sentinel && call.to == receiver;
+        let is_resume = recovery_address != RECOVERY_SENDER && call.to == receiver;
         TIP20Token::from_address(call.token)?.release_from_escrow(
             receipt.originator,
             receiver,
