@@ -535,6 +535,7 @@ where
                 } else {
                     fcu_response.payload_id.map(Ok)
                 };
+
                 if let Some(result) = result {
                     let _ = response.send(result);
                 }
