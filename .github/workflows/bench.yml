@@ -58,6 +58,8 @@ jobs:
       warmup: ${{ steps.args.outputs.warmup }}
       chain: ${{ steps.args.outputs.chain }}
       comment-id: ${{ steps.ack.outputs.comment-id }}
+      pr-head-sha: ${{ steps.args.outputs.pr-head-sha }}
+      pr-head-ref: ${{ steps.args.outputs.pr-head-ref }}
     steps:
       - name: Check org membership
         if: github.event_name == 'issue_comment'
@@ -65,17 +67,30 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const user = context.payload.comment.user.login;
-            try {
-              const { status } = await github.rest.orgs.checkMembershipForUser({
-                org: 'tempoxyz',
-                username: user,
-              });
-              if (status !== 204 && status !== 302) {
-                core.setFailed(`@${user} is not a member of tempoxyz`);
+            const org = 'tempoxyz';
+            const checkMembership = async (username) => {
+              try {
+                const { status } = await github.rest.orgs.checkMembershipForUser({ org, username });
+                return status === 204 || status === 302;
+              } catch {
+                return false;
               }
-            } catch (e) {
-              core.setFailed(`@${user} is not a member of tempoxyz`);
+            };
+
+            const commenter = context.payload.comment.user.login;
+            if (!await checkMembership(commenter)) {
+              core.setFailed(`@${commenter} is not a member of ${org}`);
+              return;
+            }
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const prAuthor = pr.user.login;
+            if (!await checkMembership(prAuthor)) {
+              core.setFailed(`PR author @${prAuthor} is not a member of ${org}`);
             }
 
       - name: Parse arguments
@@ -268,17 +283,17 @@ jobs:
             // Resolve display names for baseline/feature
             let baselineName = baseline || 'main';
             let featureName = feature;
-            if (!featureName) {
-              if (pr) {
-                const { data: prData } = await github.rest.pulls.get({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  pull_number: parseInt(pr),
-                });
-                featureName = prData.head.ref;
-              } else {
-                featureName = process.env.INPUT_REF_NAME;
-              }
+            if (pr) {
+              const { data: prData } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: parseInt(pr),
+              });
+              core.setOutput('pr-head-sha', prData.head.sha);
+              core.setOutput('pr-head-ref', prData.head.ref);
+              if (!featureName) featureName = prData.head.ref;
+            } else {
+              if (!featureName) featureName = process.env.INPUT_REF_NAME;
             }
 
             core.setOutput('pr', pr || '');
@@ -419,6 +434,8 @@ jobs:
       baseline-env: ${{ needs.tempo-bench-ack.outputs.baseline-env }}
       feature-env: ${{ needs.tempo-bench-ack.outputs.feature-env }}
       comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
+      pr-head-sha: ${{ needs.tempo-bench-ack.outputs.pr-head-sha }}
+      pr-head-ref: ${{ needs.tempo-bench-ack.outputs.pr-head-ref }}
     secrets:
       DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
@@ -447,6 +464,8 @@ jobs:
       blocks: ${{ needs.tempo-bench-ack.outputs.blocks }}
       warmup: ${{ needs.tempo-bench-ack.outputs.warmup }}
       comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
+      pr-head-sha: ${{ needs.tempo-bench-ack.outputs.pr-head-sha }}
+      pr-head-ref: ${{ needs.tempo-bench-ack.outputs.pr-head-ref }}
     secrets:
       DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}

@@ -42,6 +42,7 @@ static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true,lg_prof_sample:19\0";
 mod defaults;
 mod init_state;
 mod p2p_proxy;
+mod regenesis;
 mod tempo_cmd;
 
 use clap::{CommandFactory, FromArgMatches};

@@ -72,6 +72,10 @@ pub struct TempoPoolUpdates {
     /// Pending transactions using these tokens as fee tokens need to be re-validated
     /// because the new policy may forbid the fee payer or fee manager.
     pub transfer_policy_updates: HashSet<Address>,
+    /// Tokens whose `quoteToken` was updated via `completeQuoteTokenUpdate()`.
+    /// Pending transactions paying in these tokens need to be re-validated because the new
+    /// quote token may invalidate the old route.
+    pub quote_token_updates: HashSet<Address>,
     /// Fee token balance changes keyed by token.
     ///
     /// We only track the debited `from` account from TIP20 `Transfer` logs because credits to the
@@ -104,6 +108,7 @@ impl TempoPoolUpdates {
             && self.whitelist_removals.is_empty()
             && self.pause_events.is_empty()
             && self.transfer_policy_updates.is_empty()
+            && self.quote_token_updates.is_empty()
             && self.fee_balance_changes.is_empty()
             && self.spending_limit_spends.is_empty()
     }
@@ -173,6 +178,8 @@ impl TempoPoolUpdates {
                     updates.pause_events.push((log.address, event.isPaused));
                 } else if ITIP20::TransferPolicyUpdate::decode_log(log).is_ok() {
                     updates.transfer_policy_updates.insert(log.address);
+                } else if ITIP20::QuoteTokenUpdate::decode_log(log).is_ok() {
+                    updates.quote_token_updates.insert(log.address);
                 } else if let Ok(event) = ITIP20::Transfer::decode_log(log) {
                     updates
                         .fee_balance_changes
@@ -569,11 +576,26 @@ where
                 }
                 metrics.pause_events_duration_seconds.record(pause_start.elapsed());
 
-                // 5b. Handle transfer policy updates
-                // When a token's transfer policy changes, pending transactions using that
-                // token may become invalid under the new policy. We remove them and re-add
-                // so they go through full validation against the updated policy.
-                if !updates.transfer_policy_updates.is_empty() {
+                // 5b. Handle potentially invalidating updates
+                // When a cached value changes of a token (transfer policy, or quote token) changes,
+                // pending transactions using that token may become invalid. We need to remove them
+                // and re-add so they go through full validation against the updated state.
+                for (updated, counter, reason) in [
+                    (
+                        &updates.transfer_policy_updates,
+                        &metrics.transfer_policy_revalidated,
+                        "transfer policy update",
+                    ),
+                    (
+                        &updates.quote_token_updates,
+                        &metrics.quote_token_revalidated,
+                        "quote token update",
+                    ),
+                ] {
+                    if updated.is_empty() {
+                        continue;
+                    }
+
                     let all_txs = pool.all_transactions();
                     let hashes: Vec<TxHash> = all_txs
                         .pending
@@ -582,11 +604,10 @@ where
                         .filter(|tx| {
                             tx.transaction
                                 .resolved_fee_token()
-                                .is_some_and(|t| updates.transfer_policy_updates.contains(&t))
+                                .is_some_and(|t| updated.contains(&t))
                         })
                         .map(|tx| *tx.hash())
                         .collect();
-
                     if !hashes.is_empty() {
                         let removed_txs = pool.remove_transactions(hashes);
                         let count = removed_txs.len();
@@ -595,9 +616,7 @@ where
                             state.untrack(tx.hash());
                         }
 
-                        metrics
-                            .transfer_policy_revalidated
-                            .increment(count as u64);
+                        counter.increment(count as u64);
 
                         let pool_clone = pool.clone();
                         tokio::spawn(async move {
@@ -606,16 +625,14 @@ where
                                 .map(|tx| (tx.origin, tx.transaction.clone()))
                                 .collect();
 
-                            let results =
-                                pool_clone.add_transactions_with_origins(txs).await;
-
-                            let success =
-                                results.iter().filter(|r| r.is_ok()).count();
+                            let results = pool_clone.add_transactions_with_origins(txs).await;
+                            let success = results.iter().filter(|r| r.is_ok()).count();
                             debug!(
                                 target: "txpool",
                                 total = count,
                                 success,
-                                "Re-validated transactions after transfer policy update"
+                                reason,
+                                "Re-validated transactions"
                             );
                         });
                     }

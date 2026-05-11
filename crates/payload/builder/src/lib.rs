@@ -732,6 +732,7 @@ where
             block,
             hashed_state,
             trie_updates,
+            ..
         } = if let Some(mut handle) = trie_handle {
             // Dropping the hook signals that execution is complete and the sparse trie task can
             // finalize the state root it has been updating incrementally.
