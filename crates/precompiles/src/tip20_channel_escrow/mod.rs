@@ -11,7 +11,7 @@ use crate::{
     error::Result,
     signature_verifier::SignatureVerifier,
     storage::{Handler, Mapping},
-    tip20::{TIP20Token, is_tip20_prefix},
+    tip20::{ITIP20, TIP20Token, is_tip20_prefix},
 };
 use alloy::{
     primitives::{Address, B256, U256, aliases::U96, keccak256},
@@ -144,8 +144,8 @@ impl TIP20ChannelEscrow {
             close_requested_at: 0,
         })?;
         TIP20Token::from_address(call.token)?.system_transfer_from(
-            msg_sender,
             self.address,
+            msg_sender,
             U256::from(call.deposit),
         )?;
         self.opened_this_tx[channel_id].t_write(true)?;
@@ -201,10 +201,12 @@ impl TIP20ChannelEscrow {
 
         state.settled = cumulative;
         self.channel_states[channel_id].write(state)?;
-        TIP20Token::from_address(call.descriptor.token)?.system_transfer_from(
+        TIP20Token::from_address(call.descriptor.token)?.transfer(
             self.address,
-            call.descriptor.payee,
-            U256::from(delta),
+            ITIP20::transferCall {
+                to: call.descriptor.payee,
+                amount: U256::from(delta),
+            },
         )?;
         self.emit_event(TIP20ChannelEscrowEvent::Settled(
             ITIP20ChannelEscrow::Settled {
@@ -246,8 +248,8 @@ impl TIP20ChannelEscrow {
         if !additional.is_zero() {
             state.deposit = next_deposit;
             TIP20Token::from_address(call.descriptor.token)?.system_transfer_from(
-                msg_sender,
                 self.address,
+                msg_sender,
                 U256::from(call.additionalDeposit),
             )?;
         }
@@ -357,10 +359,22 @@ impl TIP20ChannelEscrow {
 
         let mut token = TIP20Token::from_address(call.descriptor.token)?;
         if !delta.is_zero() {
-            token.system_transfer_from(self.address, call.descriptor.payee, U256::from(delta))?;
+            token.transfer(
+                self.address,
+                ITIP20::transferCall {
+                    to: call.descriptor.payee,
+                    amount: U256::from(delta),
+                },
+            )?;
         }
         if !refund.is_zero() {
-            token.system_transfer_from(self.address, call.descriptor.payer, U256::from(refund))?;
+            token.transfer(
+                self.address,
+                ITIP20::transferCall {
+                    to: call.descriptor.payer,
+                    amount: U256::from(refund),
+                },
+            )?;
         }
 
         self.emit_event(TIP20ChannelEscrowEvent::ChannelClosed(
@@ -403,10 +417,12 @@ impl TIP20ChannelEscrow {
 
         self.channel_states[channel_id].delete()?;
         if !refund.is_zero() {
-            TIP20Token::from_address(call.descriptor.token)?.system_transfer_from(
+            TIP20Token::from_address(call.descriptor.token)?.transfer(
                 self.address,
-                call.descriptor.payer,
-                U256::from(refund),
+                ITIP20::transferCall {
+                    to: call.descriptor.payer,
+                    amount: U256::from(refund),
+                },
             )?;
         }
         self.emit_event(TIP20ChannelEscrowEvent::ChannelClosed(
