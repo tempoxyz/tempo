@@ -42,6 +42,7 @@ reth-rpc-builder.workspace = true
 reth-node-api.workspace = true
 reth-rpc-eth-types.workspace = true
 reth-node-ethereum.workspace = true
+reth-engine-tree.workspace = true
 
 alloy-serde.workspace = true
 alloy-eips.workspace = true
@@ -64,6 +65,8 @@ serde_json.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+alloy-genesis.workspace = true
+reth-trie.workspace = true
 tempo-e2e.workspace = true
 tempo-transaction-pool = { workspace = true, features = ["test-utils"] }
 alloy-network.workspace = true

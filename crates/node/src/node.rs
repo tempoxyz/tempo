@@ -9,6 +9,7 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
+use reth_engine_tree::tree::payload_validator::CustomStateRoot;
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
@@ -20,8 +21,9 @@ use reth_node_builder::{
         PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
-        BasicEngineValidatorBuilder, EngineValidatorAddOn, NoopEngineApiBuilder,
-        PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle, RpcHooks,
+        BasicEngineValidatorBuilder, EngineValidatorAddOn, EngineValidatorBuilder,
+        NoopEngineApiBuilder, PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle,
+        RpcHooks,
     },
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
@@ -89,7 +91,7 @@ impl TempoNodeArgs {
 }
 
 /// Type configuration for a regular Ethereum node.
-#[derive(Debug, Default, Clone)]
+#[derive(Clone)]
 #[non_exhaustive]
 pub struct TempoNode {
     /// Transaction pool builder.
@@ -98,6 +100,30 @@ pub struct TempoNode {
     payload_builder_builder: TempoPayloadBuilderBuilder,
     /// Validator public key for `admin_validatorKey` RPC method.
     validator_key: Option<B256>,
+    /// Optional custom state root computation handler.
+    custom_state_root: Option<CustomStateRoot<TempoPrimitives>>,
+}
+
+impl Default for TempoNode {
+    fn default() -> Self {
+        Self {
+            pool_builder: TempoPoolBuilder::default(),
+            payload_builder_builder: TempoPayloadBuilderBuilder::default(),
+            validator_key: None,
+            custom_state_root: None,
+        }
+    }
+}
+
+impl std::fmt::Debug for TempoNode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TempoNode")
+            .field("pool_builder", &self.pool_builder)
+            .field("payload_builder_builder", &self.payload_builder_builder)
+            .field("validator_key", &self.validator_key)
+            .field("custom_state_root", &self.custom_state_root.as_ref().map(|_| ".."))
+            .finish()
+    }
 }
 
 impl TempoNode {
@@ -107,7 +133,21 @@ impl TempoNode {
             pool_builder: args.pool_builder(),
             payload_builder_builder: args.payload_builder_builder(),
             validator_key,
+            custom_state_root: None,
         }
+    }
+
+    /// Sets a custom state root computation handler.
+    ///
+    /// When set, the engine validator will use this handler instead of
+    /// computing the state root via the trie. See [`CustomStateRoot`] for
+    /// details.
+    pub fn with_custom_state_root(
+        mut self,
+        custom_state_root: CustomStateRoot<TempoPrimitives>,
+    ) -> Self {
+        self.custom_state_root = Some(custom_state_root);
+        self
     }
 
     /// Returns a [`ComponentsBuilder`] configured for a regular Tempo node.
@@ -152,6 +192,53 @@ impl NodeTypes for TempoNode {
     type Payload = TempoPayloadTypes;
 }
 
+/// An [`EngineValidatorBuilder`] that wraps [`BasicEngineValidatorBuilder`] and
+/// optionally installs a [`CustomStateRoot`] handler on the resulting validator.
+#[derive(Clone)]
+pub struct TempoEngineValidatorBuilderWithCustomRoot {
+    inner: BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
+    custom_state_root: Option<CustomStateRoot<TempoPrimitives>>,
+}
+
+impl std::fmt::Debug for TempoEngineValidatorBuilderWithCustomRoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TempoEngineValidatorBuilderWithCustomRoot")
+            .field("inner", &self.inner)
+            .field("custom_state_root", &self.custom_state_root.as_ref().map(|_| ".."))
+            .finish()
+    }
+}
+
+impl<Node> EngineValidatorBuilder<Node> for TempoEngineValidatorBuilderWithCustomRoot
+where
+    Node: FullNodeComponents<
+        Types = TempoNode,
+        Evm: reth_node_builder::ConfigureEngineEvm<TempoExecutionData>,
+    >,
+{
+    type EngineValidator =
+        <BasicEngineValidatorBuilder<TempoEngineValidatorBuilder> as EngineValidatorBuilder<
+            Node,
+        >>::EngineValidator;
+
+    async fn build_tree_validator(
+        self,
+        ctx: &AddOnsContext<'_, Node>,
+        tree_config: reth_node_api::TreeConfig,
+        changeset_cache: reth_node_builder::rpc::ChangesetCache,
+    ) -> eyre::Result<Self::EngineValidator> {
+        let validator = self
+            .inner
+            .build_tree_validator(ctx, tree_config, changeset_cache)
+            .await?;
+        if let Some(custom_state_root) = self.custom_state_root {
+            Ok(validator.with_custom_state_root(custom_state_root))
+        } else {
+            Ok(validator)
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
     inner: RpcAddOns<
@@ -159,7 +246,7 @@ pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
         TempoEthApiBuilder,
         TempoEngineValidatorBuilder,
         NoopEngineApiBuilder,
-        BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
+        TempoEngineValidatorBuilderWithCustomRoot,
         Identity,
     >,
     validator_key: Option<B256>,
@@ -170,13 +257,19 @@ where
     N: FullNodeTypes<Types = TempoNode>,
 {
     /// Creates a new instance from the inner `RpcAddOns`.
-    pub fn new(validator_key: Option<B256>) -> Self {
+    pub fn new(
+        validator_key: Option<B256>,
+        custom_state_root: Option<CustomStateRoot<TempoPrimitives>>,
+    ) -> Self {
         Self {
             inner: RpcAddOns::new(
                 TempoEthApiBuilder::new(validator_key),
                 TempoEngineValidatorBuilder,
                 NoopEngineApiBuilder::default(),
-                BasicEngineValidatorBuilder::default(),
+                TempoEngineValidatorBuilderWithCustomRoot {
+                    inner: BasicEngineValidatorBuilder::default(),
+                    custom_state_root,
+                },
                 Identity::default(),
                 Default::default(),
             ),
@@ -247,7 +340,7 @@ impl<N> EngineValidatorAddOn<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type ValidatorBuilder = BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>;
+    type ValidatorBuilder = TempoEngineValidatorBuilderWithCustomRoot;
 
     fn engine_validator_builder(&self) -> Self::ValidatorBuilder {
         self.inner.engine_validator_builder()
@@ -274,7 +367,7 @@ where
     }
 
     fn add_ons(&self) -> Self::AddOns {
-        TempoAddOns::new(self.validator_key)
+        TempoAddOns::new(self.validator_key, self.custom_state_root.clone())
     }
 }
 

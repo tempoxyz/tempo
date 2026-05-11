@@ -16,6 +16,7 @@ pub mod engine;
 pub mod node;
 pub mod rpc;
 pub mod telemetry;
+pub use reth_engine_tree::tree::payload_validator::{CustomStateRoot, CustomStateRootInput};
 pub use tempo_consensus as consensus;
 pub use tempo_evm as evm;
 pub use tempo_primitives as primitives;
