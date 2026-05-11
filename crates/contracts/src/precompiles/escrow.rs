@@ -25,7 +25,7 @@ crate::sol! {
         function claim(address token, address recoveryAuthority, uint8 receiptVersion, bytes calldata receipt) external;
 
         event TransferBlocked(address indexed token, address indexed from, address indexed receiver, uint8 receiptVersion, uint64 blockedNonce, uint64 blockedAt, address recipient, uint256 amount, uint8 blockedReason, address recoveryAuthority, bytes32 memo);
-        event BlockedReceiptClaimed(address indexed token, address indexed receiver, uint8 receiptVersion, uint64 indexed blockedNonce, uint64 blockedAt, address originator, address recipient, address recoveryAuthority, address caller, address to, uint256 amount);
+        event BlockedReceiptClaimed(address indexed token, address indexed receiver, uint8 receiptVersion, uint64 indexed blockedNonce, uint64 blockedAt, address originator, address recipient, address recoveryAuthority, address caller, uint256 amount);
 
         error UnauthorizedClaimer();
         error InvalidReceiptClaim();

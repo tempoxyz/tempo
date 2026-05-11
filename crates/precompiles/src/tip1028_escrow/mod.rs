@@ -164,7 +164,6 @@ impl TIP1028Escrow {
                 recipient: receipt.recipient,
                 recoveryAuthority: recovery_address,
                 caller: msg_sender,
-                to: claim_target,
                 amount,
             },
         ))?;
@@ -1103,7 +1102,6 @@ mod tests {
                     recipient: receiver,
                     recoveryAuthority: Address::ZERO,
                     caller: receiver,
-                    to: receiver,
                     amount,
                 },
             )]);
@@ -1175,7 +1173,6 @@ mod tests {
                     recipient: receiver,
                     recoveryAuthority: recovery,
                     caller: recovery,
-                    to: recovery,
                     amount,
                 },
             )]);
@@ -1249,7 +1246,6 @@ mod tests {
                     recipient: receiver,
                     recoveryAuthority: RECOVERY_SENDER,
                     caller: originator,
-                    to: originator,
                     amount,
                 },
             )]);
@@ -1459,7 +1455,6 @@ mod tests {
                     recipient: virtual_addr,
                     recoveryAuthority: Address::ZERO,
                     caller: VIRTUAL_MASTER,
-                    to: VIRTUAL_MASTER,
                     amount,
                 },
             )]);
