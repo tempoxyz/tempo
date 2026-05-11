@@ -476,6 +476,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
     env: &mut E,
 ) -> eyre::Result<std::collections::BTreeMap<String, u64>> {
     let is_t3 = env.hardfork().is_t3();
+    let is_t5 = env.hardfork().is_t5();
     let supports_scoped_key_auth_rpc = env.supports_scoped_key_auth_rpc();
 
     // Fixed signer and recipient so calldata/storage costs are deterministic.
@@ -503,12 +504,16 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
                         if !matches!(allowed_calls, AllowedCallsMode::None)
                 )
         })
+        .filter(|case| is_t5 || !matches!(&case.auth, AuthKind::KeyAuthNonce { .. }))
         .collect();
     let provider = env.provider();
 
     println!("\n=== eth_estimateGas matrix ===\n");
     if !supports_scoped_key_auth_rpc {
         println!("Skipping scoped estimateGas cases on this pre-T3 RPC environment");
+    }
+    if !is_t5 {
+        println!("Skipping key authorization nonce estimateGas cases on this pre-T5 environment");
     }
     println!("Running {} gas estimation cases...\n", cases.len());
 
