@@ -36,6 +36,7 @@ use alloy::{
     sol_types::SolValue,
 };
 use std::sync::LazyLock;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
 pub use tempo_primitives::is_tip20_prefix;
@@ -128,11 +129,12 @@ pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_R
 pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
 /// Role hash that authorizes burning tokens from blocked accounts.
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
-/// System custody addresses protected from burn-blocked operations, to protect accounting invariants.
-pub const PROTECTED: &[Address] = &[
-    TIP_FEE_MANAGER_ADDRESS,
-    STABLECOIN_DEX_ADDRESS,
-    ESCROW_ADDRESS,
+
+#[rustfmt::skip]
+/// System custody addresses added to burn-blocked protection at each hardfork.
+pub const PROTECTED: &[(TempoHardfork, &[Address])] = &[
+    (TempoHardfork::Genesis, &[TIP_FEE_MANAGER_ADDRESS, STABLECOIN_DEX_ADDRESS]),
+    (TempoHardfork::T6, &[ESCROW_ADDRESS]),
 ];
 
 impl TIP20Token {
@@ -628,14 +630,19 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::burnBlockedCall,
     ) -> Result<()> {
+        let hardfork = self.storage.spec();
+
         // Validate burner role and (+T3) ensure token is not paused
-        if self.storage.spec().is_t3() {
+        if hardfork.is_t3() {
             self.check_not_paused()?;
         }
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
         // Prevent burning from system custody addresses to protect accounting invariants.
-        if PROTECTED.contains(&call.from) {
+        if PROTECTED
+            .iter()
+            .any(|(fork, addrs)| hardfork >= *fork && addrs.contains(&call.from))
+        {
             return Err(TIP20Error::protected_address().into());
         }
 
@@ -3261,43 +3268,79 @@ pub(crate) mod tests {
 
     #[test]
     fn test_unable_to_burn_blocked_from_protected_address() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        use crate::tip403_registry::REJECT_ALL_POLICY_ID;
+
         let admin = Address::random();
         let burner = Address::random();
         let amount = (U256::random() % U256::from(u128::MAX)) / U256::from(2);
+        let burn_amount = amount / U256::from(2);
 
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
-                // Grant BURN_BLOCKED_ROLE to burner
                 .with_role(burner, *BURN_BLOCKED_ROLE)
-                // Simulate collected fees
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
-                // Mint tokens to StablecoinDEX
                 .with_mint(STABLECOIN_DEX_ADDRESS, amount)
-                // Simulate funds backing blocked TIP-1028 receipts
-                .with_mint(ESCROW_ADDRESS, amount)
                 .apply()?;
 
-            for protected in PROTECTED {
+            for protected in [
+                TIP_FEE_MANAGER_ADDRESS,
+                STABLECOIN_DEX_ADDRESS,
+                ESCROW_ADDRESS,
+            ] {
                 let result = token.burn_blocked(
                     burner,
                     ITIP20::burnBlockedCall {
-                        from: *protected,
-                        amount: amount / U256::from(2),
+                        from: protected,
+                        amount: burn_amount,
                     },
                 );
                 assert_eq!(result.unwrap_err(), TIP20Error::protected_address().into());
+            }
 
-                // Verify balance is unchanged
-                let balance = token.balance_of(ITIP20::balanceOfCall {
-                    account: *protected,
-                })?;
+            for minted in [TIP_FEE_MANAGER_ADDRESS, STABLECOIN_DEX_ADDRESS] {
+                let balance = token.balance_of(ITIP20::balanceOfCall { account: minted })?;
                 assert_eq!(balance, amount);
             }
 
-            Ok(())
-        })
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        // Pre-T6: ESCROW_ADDRESS is not yet in PROTECTED, so burn_blocked
+        // actually burns from it (REJECT_ALL satisfies the sender-policy gate).
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_BLOCKED_ROLE)
+                .with_mint(ESCROW_ADDRESS, amount)
+                .apply()?;
+
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: REJECT_ALL_POLICY_ID,
+                },
+            )?;
+
+            token.burn_blocked(
+                burner,
+                ITIP20::burnBlockedCall {
+                    from: ESCROW_ADDRESS,
+                    amount: burn_amount,
+                },
+            )?;
+
+            let balance = token.balance_of(ITIP20::balanceOfCall {
+                account: ESCROW_ADDRESS,
+            })?;
+            assert_eq!(balance, amount - burn_amount);
+
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        Ok(())
     }
 
     #[test]
