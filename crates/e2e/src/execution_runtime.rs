@@ -843,6 +843,16 @@ pub fn genesis() -> Genesis {
     serde_json::from_str(include_str!("../../node/tests/assets/test-genesis.json")).unwrap()
 }
 
+/// Returns MDBX DB args sized for tests (64 MB max with 4 MB growth step).
+///
+/// The default 8 TB geometry with 4 GB growth step both exhausts process
+/// virtual-address space when many databases are open concurrently across
+/// parallel test threads, and pre-allocates multi-GB files on disk that
+/// can fill the CI runner's disk.
+pub fn test_db_args() -> reth_db::mdbx::DatabaseArguments {
+    reth_db::mdbx::DatabaseArguments::test()
+}
+
 /// Launches a tempo execution node.
 ///
 /// Difference compared to starting the node through the binary:
@@ -888,6 +898,8 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             c.network.discovery.disable_discovery = true;
             c.network = c.network.with_unused_ports();
             c.network.p2p_secret_key_hex = Some(secret_key);
+            // Match Tempo's engine default for nodes launched by tests.
+            c.engine.suppress_persistence_during_build = true;
             c.engine.share_sparse_trie_with_payload_builder =
                 share_sparse_trie_with_payload_builder;
             c

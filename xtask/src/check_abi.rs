@@ -81,7 +81,7 @@ impl CheckAbi {
     pub(crate) fn run(self) -> eyre::Result<()> {
         let tempo_std_root = match self.tempo_std {
             Some(p) => p,
-            None => find_workspace_root()?.join("tips/ref-impls/lib/tempo-std"),
+            None => find_workspace_root()?.join("tips/verify/lib/tempo-std"),
         };
         let artifacts_dir = tempo_std_root.join("out");
 

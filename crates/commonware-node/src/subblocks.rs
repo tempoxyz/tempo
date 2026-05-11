@@ -38,7 +38,8 @@ use std::{
     sync::{Arc, mpsc::RecvError},
     time::{Duration, Instant},
 };
-use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR, evm::evm::TempoEvm};
+use tempo_chainspec::hardfork::TempoHardforks;
+use tempo_node::{TempoFullNode, evm::evm::TempoEvm};
 use tempo_primitives::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
 };
@@ -55,7 +56,7 @@ pub(crate) struct Config<TContext> {
     pub(crate) context: TContext,
     pub(crate) signer: PrivateKey,
     pub(crate) scheme_provider: SchemeProvider,
-    pub(crate) node: TempoFullNode,
+    pub(crate) node: Arc<TempoFullNode>,
     pub(crate) fee_recipient: Address,
     pub(crate) time_to_build_subblock: Duration,
     pub(crate) subblock_broadcast_interval: Duration,
@@ -89,7 +90,7 @@ pub(crate) struct Actor<TContext> {
     /// ed25519 private key used for consensus.
     signer: PrivateKey,
     /// Execution layer node.
-    node: TempoFullNode,
+    node: Arc<TempoFullNode>,
     /// Fee recipient address to set for subblocks.
     fee_recipient: Address,
     /// Timeout for building a subblock.
@@ -692,7 +693,7 @@ fn evm_at_block(
 #[instrument(skip_all, fields(parent_hash = %parent_hash))]
 async fn build_subblock(
     transactions: Arc<Mutex<IndexMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>>>,
-    node: TempoFullNode,
+    node: Arc<TempoFullNode>,
     parent_hash: BlockHash,
     num_validators: usize,
     signer: PrivateKey,
@@ -704,7 +705,11 @@ async fn build_subblock(
     let (transactions, senders) = match evm_at_block(&node, parent_hash) {
         Ok(mut evm) => {
             let (mut selected, mut senders, mut to_remove) = (Vec::new(), Vec::new(), Vec::new());
-            let gas_budget = (evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR)
+            let shared_gas_limit = node
+                .config
+                .chain
+                .shared_gas_limit_at(evm.block().timestamp.saturating_to(), evm.block().gas_limit);
+            let gas_budget = shared_gas_limit
                 .checked_div(num_validators as u64)
                 .expect("validator set must not be empty");
 
@@ -795,7 +800,7 @@ async fn build_subblock(
 #[instrument(skip_all, err(level = Level::WARN), fields(sender = %sender))]
 async fn validate_subblock(
     sender: PublicKey,
-    node: TempoFullNode,
+    node: Arc<TempoFullNode>,
     subblock: SignedSubBlock,
     actions_tx: mpsc::UnboundedSender<Message>,
     scheme_provider: SchemeProvider,
@@ -840,10 +845,17 @@ async fn validate_subblock(
         "sender is not a validator"
     );
 
-    // Bound subblock size at a value proportional to `TEMPO_SHARED_GAS_DIVISOR`.
+    let shared_gas_limit = node
+        .config
+        .chain
+        .shared_gas_limit_at(evm.block().timestamp.saturating_to(), evm.block().gas_limit);
+
+    // Bound subblock size at a value proportional to shared_gas_limit.
     //
     // This ensures we never collect too many subblocks to fit into a new proposal.
-    let max_size = MAX_RLP_BLOCK_SIZE / TEMPO_SHARED_GAS_DIVISOR as usize / participants;
+    let max_size = (MAX_RLP_BLOCK_SIZE as u128 * shared_gas_limit as u128
+        / evm.block().gas_limit as u128
+        / participants as u128) as usize;
     if subblock.total_tx_size() > max_size {
         warn!(
             size = subblock.total_tx_size(),
@@ -853,7 +865,7 @@ async fn validate_subblock(
     }
 
     // Bound subblock gas at the per-validator allocation.
-    let gas_budget = evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / participants as u64;
+    let gas_budget = shared_gas_limit / participants as u64;
     let mut total_gas = 0u64;
     for tx in subblock.transactions_recovered() {
         let max_regular_gas =
