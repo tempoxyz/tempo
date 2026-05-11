@@ -13,12 +13,8 @@
 use std::{sync::Arc, time::Duration};
 
 use commonware_broadcast::buffered;
-use commonware_consensus::{
-    Reporters, marshal,
-    types::{FixedEpocher, Height},
-};
+use commonware_consensus::{Reporters, types::FixedEpocher};
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_parallel::Sequential;
 use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Pacer, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
@@ -32,6 +28,7 @@ use tracing::{info, info_span};
 
 use super::{driver, resolver, resolver::Resolver, stubs};
 use crate::{
+    alias,
     consensus::{Digest, block::Block},
     epoch::SchemeProvider,
     executor,
@@ -104,75 +101,29 @@ impl<TUpstream> Config<TUpstream> {
             storage::BUFFER_POOL_CAPACITY,
         );
 
-        let finalizations_by_height = storage::init_finalizations_archive(
-            &context,
-            &self.partition_prefix,
-            page_cache_ref.clone(),
-        )
-        .await
-        .wrap_err("failed to initialize finalizations by height archive")?;
-
-        let finalized_blocks = storage::init_hybrid_finalized_blocks(
-            &context,
-            &self.partition_prefix,
-            page_cache_ref.clone(),
-            self.execution_node.provider.clone(),
-            self.finalized_blocks_retention,
-            !self.no_legacy_archive,
-        )
-        .await
-        .wrap_err("failed to initialize hybrid finalized blocks store")?;
-
         let epoch_strategy = self.epoch_strategy.clone();
 
-        let (marshal_actor, marshal_mailbox, marshal_stored_height): (
-            crate::alias::marshal::Actor<TContext>,
-            crate::alias::marshal::Mailbox,
-            _,
-        ) = marshal::core::Actor::init(
-            context.with_label("marshal"),
-            finalizations_by_height,
-            finalized_blocks,
-            marshal::Config {
-                provider: scheme_provider.clone(),
-                epocher: epoch_strategy.clone(),
+        let alias::marshal::Initialized {
+            actor: marshal_actor,
+            mailbox: marshal_mailbox,
+            last_finalized_height,
+        } = alias::marshal::init(
+            context.clone(),
+            page_cache_ref,
+            self.execution_node.clone(),
+            alias::marshal::Config {
                 partition_prefix: self.partition_prefix.clone(),
                 mailbox_size: self.mailbox_size,
                 view_retention_timeout: commonware_consensus::types::ViewDelta::new(1),
-                prunable_items_per_section: storage::PRUNABLE_ITEMS_PER_SECTION,
-                page_cache: page_cache_ref,
-                replay_buffer: storage::REPLAY_BUFFER,
-                key_write_buffer: storage::WRITE_BUFFER,
-                value_write_buffer: storage::WRITE_BUFFER,
-                max_repair: storage::MAX_REPAIR,
                 max_pending_acks: NZUsize!(1),
-                block_codec_config: (),
-                strategy: Sequential,
+                finalized_blocks_retention: self.finalized_blocks_retention,
+                no_legacy_archive: self.no_legacy_archive,
+                epoch_strategy: epoch_strategy.clone(),
+                scheme_provider: scheme_provider.clone(),
             },
         )
-        .await;
-
-        // Floor the marshal at reth's last finalized block so we don't try to
-        // re-sync history that the execution layer already finalized. The
-        // mailbox message is buffered until the actor starts; `set_floor` only
-        // ever advances, so sending it unconditionally is safe.
-        let reth_finalized_height = self
-            .execution_node
-            .provider
-            .canonical_in_memory_state()
-            .get_finalized_num_hash()
-            .map(|nh| nh.number)
-            .unwrap_or(0);
-        let last_finalized_height =
-            marshal_stored_height.max(Height::new(reth_finalized_height));
-        if last_finalized_height > marshal_stored_height {
-            info!(
-                marshal_stored = %marshal_stored_height,
-                reth_finalized = reth_finalized_height,
-                "advancing marshal sync floor to reth's finalized block"
-            );
-            marshal_mailbox.set_floor(last_finalized_height).await;
-        }
+        .await
+        .wrap_err("failed to initialize marshal")?;
 
         info_span!("follow_engine").in_scope(|| {
             info!(
