@@ -1,9 +1,7 @@
 use crate::TempoInvalidTransaction;
-use alloy_consensus::{
-    EthereumTxEnvelope, SignableTransaction, TxEip4844, Typed2718, crypto::secp256k1,
-};
+use alloy_consensus::{Typed2718, crypto::secp256k1};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnvMut};
-use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256, keccak256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use core::num::NonZeroU64;
 use revm::context::{
     Transaction, TxEnv,
@@ -56,12 +54,6 @@ pub struct TempoBatchCallEnv {
     /// Transaction hash
     pub tx_hash: B256,
 
-    /// Expiring nonce hash for replay protection.
-    /// Computed as `keccak256(encode_for_signing || sender)`, which is invariant to fee
-    /// payer changes but unique per sender. Used instead of `tx_hash` for expiring nonce replay
-    /// protection to prevent replay via different fee payer signatures.
-    pub expiring_nonce_hash: Option<B256>,
-
     /// Optional access key ID override for gas estimation.
     /// When provided in eth_call/eth_estimateGas, enables spending limits simulation
     /// This is not used in actual transaction execution - the key_id is recovered from the signature.
@@ -86,10 +78,10 @@ pub struct TempoTxEnv {
     /// Whether the transaction is a system transaction.
     pub is_system_tx: bool,
 
-    /// Replay-protected context hash used to derive channel escrow IDs for `open`.
+    /// Sender-scoped transaction identifier used for replay-sensitive features.
     ///
     /// Synthetic transaction environments used by tests and simulations may leave this unset.
-    pub channel_open_context_hash: Option<B256>,
+    pub unique_tx_identifier: Option<B256>,
 
     /// Optional fee payer specified for the transaction.
     ///
@@ -124,12 +116,17 @@ impl TempoTxEnv {
             .is_some_and(|aa| aa.subblock_transaction)
     }
 
-    /// Returns the replay-protected hash used to derive channel escrow IDs for `open`.
+    /// Returns the sender-scoped transaction identifier.
     ///
     /// This is `keccak256(encode_for_signing || sender)` for every real transaction type. For
     /// Tempo AA transactions, this matches the existing expiring nonce hash helper.
+    pub fn unique_tx_identifier(&self) -> Option<B256> {
+        self.unique_tx_identifier
+    }
+
+    /// Returns the replay-protected hash used to derive channel escrow IDs for `open`.
     pub fn channel_open_context_hash(&self) -> Option<B256> {
-        self.channel_open_context_hash
+        self.unique_tx_identifier()
     }
 
     /// Returns the first top-level call in the transaction.
@@ -170,16 +167,6 @@ impl From<TxEnv> for TempoTxEnv {
             ..Default::default()
         }
     }
-}
-
-fn channel_open_context_hash<T>(tx: &T, sender: Address) -> B256
-where
-    T: SignableTransaction<Signature>,
-{
-    let mut buf = Vec::with_capacity(tx.payload_len_for_signature() + sender.as_slice().len());
-    tx.encode_for_signing(&mut buf);
-    buf.extend_from_slice(sender.as_slice());
-    keccak256(buf)
 }
 
 impl Transaction for TempoTxEnv {
@@ -287,24 +274,6 @@ impl IntoTxEnv<Self> for TempoTxEnv {
     }
 }
 
-impl FromRecoveredTx<EthereumTxEnvelope<TxEip4844>> for TempoTxEnv {
-    fn from_recovered_tx(tx: &EthereumTxEnvelope<TxEip4844>, sender: Address) -> Self {
-        let channel_open_context_hash = match tx {
-            EthereumTxEnvelope::Legacy(tx) => channel_open_context_hash(tx.tx(), sender),
-            EthereumTxEnvelope::Eip2930(tx) => channel_open_context_hash(tx.tx(), sender),
-            EthereumTxEnvelope::Eip1559(tx) => channel_open_context_hash(tx.tx(), sender),
-            EthereumTxEnvelope::Eip4844(tx) => channel_open_context_hash(tx.tx(), sender),
-            EthereumTxEnvelope::Eip7702(tx) => channel_open_context_hash(tx.tx(), sender),
-        };
-
-        Self {
-            inner: TxEnv::from_recovered_tx(tx, sender),
-            channel_open_context_hash: Some(channel_open_context_hash),
-            ..Default::default()
-        }
-    }
-}
-
 impl FromRecoveredTx<AASigned> for TempoTxEnv {
     fn from_recovered_tx(aa_signed: &AASigned, caller: Address) -> Self {
         let tx = aa_signed.tx();
@@ -374,7 +343,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             },
             fee_token: *fee_token,
             is_system_tx: false,
-            channel_open_context_hash: Some(aa_signed.expiring_nonce_hash(caller)),
+            unique_tx_identifier: Some(aa_signed.expiring_nonce_hash(caller)),
             fee_payer: fee_payer_signature.map(|sig| {
                 secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
             }),
@@ -394,10 +363,6 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 key_authorization: key_authorization.clone(),
                 signature_hash: aa_signed.signature_hash(),
                 tx_hash: *aa_signed.hash(),
-                expiring_nonce_hash: aa_signed
-                    .tx()
-                    .is_expiring_nonce_tx()
-                    .then(|| aa_signed.expiring_nonce_hash(caller)),
                 // override_key_id is only used for gas estimation, not actual execution
                 override_key_id: None,
                 // can only be derived when given an entire block
@@ -409,42 +374,34 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
 
 impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
     fn from_recovered_tx(tx: &TempoTxEnvelope, sender: Address) -> Self {
+        let unique_tx_identifier = Some(tx.unique_tx_identifier(sender));
+
         match tx {
             tx @ TempoTxEnvelope::Legacy(inner) => Self {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
                 fee_token: None,
                 is_system_tx: tx.is_system_tx(),
-                channel_open_context_hash: Some(channel_open_context_hash(inner.tx(), sender)),
+                unique_tx_identifier,
                 fee_payer: None,
                 tempo_tx_env: None, // Non-AA transaction
             },
-            TempoTxEnvelope::Eip2930(tx) => Self {
-                inner: TxEnv::from_recovered_tx(tx.tx(), sender),
-                channel_open_context_hash: Some(channel_open_context_hash(tx.tx(), sender)),
+            TempoTxEnvelope::Eip2930(inner) => Self {
+                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                unique_tx_identifier,
                 ..Default::default()
             },
-            TempoTxEnvelope::Eip1559(tx) => Self {
-                inner: TxEnv::from_recovered_tx(tx.tx(), sender),
-                channel_open_context_hash: Some(channel_open_context_hash(tx.tx(), sender)),
+            TempoTxEnvelope::Eip1559(inner) => Self {
+                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                unique_tx_identifier,
                 ..Default::default()
             },
-            TempoTxEnvelope::Eip7702(tx) => Self {
-                inner: TxEnv::from_recovered_tx(tx.tx(), sender),
-                channel_open_context_hash: Some(channel_open_context_hash(tx.tx(), sender)),
+            TempoTxEnvelope::Eip7702(inner) => Self {
+                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                unique_tx_identifier,
                 ..Default::default()
             },
             TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx, sender),
         }
-    }
-}
-
-impl FromTxWithEncoded<EthereumTxEnvelope<TxEip4844>> for TempoTxEnv {
-    fn from_encoded_tx(
-        tx: &EthereumTxEnvelope<TxEip4844>,
-        sender: Address,
-        _encoded: Bytes,
-    ) -> Self {
-        Self::from_recovered_tx(tx, sender)
     }
 }
 
@@ -583,32 +540,19 @@ mod tests {
             AASigned::new_unhashed(tx, sig)
         };
 
-        // Expiring nonce tx: expiring_nonce_hash should be Some and match direct computation.
-        // Channel opens reuse the same encode_for_signing||sender hash.
+        // Expiring nonce txs and channel opens share the same encode_for_signing||sender hash.
         let expiring_signed = make_aa_signed(TEMPO_EXPIRING_NONCE_KEY);
         let expiring_env = TempoTxEnv::from_recovered_tx(&expiring_signed, caller);
-        let tempo_env = expiring_env.tempo_tx_env.as_ref().unwrap();
-        let expected_expiring_nonce_hash = expiring_signed.expiring_nonce_hash(caller);
-        assert_eq!(
-            tempo_env.expiring_nonce_hash,
-            Some(expected_expiring_nonce_hash),
-            "expiring nonce tx must have expiring_nonce_hash set"
-        );
+        let expected_identifier = expiring_signed.expiring_nonce_hash(caller);
         assert_eq!(
             expiring_env.channel_open_context_hash(),
-            Some(expected_expiring_nonce_hash),
-            "expiring nonce channel opens must reuse expiring_nonce_hash"
+            Some(expected_identifier),
+            "expiring nonce channel opens must use the sender-scoped transaction identifier"
         );
 
-        // Regular 2D nonce tx: expiring_nonce_hash should be None and channel opens still use
-        // the same encode_for_signing||sender construction.
+        // Regular 2D nonce txs still use the same encode_for_signing||sender construction.
         let regular_signed = make_aa_signed(U256::from(42));
         let regular_env = super::TempoTxEnv::from_recovered_tx(&regular_signed, caller);
-        let regular_tempo_env = regular_env.tempo_tx_env.as_ref().unwrap();
-        assert_eq!(
-            regular_tempo_env.expiring_nonce_hash, None,
-            "regular 2D nonce tx must NOT have expiring_nonce_hash"
-        );
         assert_eq!(
             regular_env.channel_open_context_hash(),
             Some(regular_signed.expiring_nonce_hash(caller)),
@@ -646,7 +590,7 @@ mod tests {
         signature_hash_and_sender[..32].copy_from_slice(signature_hash.as_slice());
         signature_hash_and_sender[32..].copy_from_slice(caller.as_slice());
         let signature_hash_context = keccak256(signature_hash_and_sender);
-        let encoded_payload_context = super::channel_open_context_hash(signed.tx(), caller);
+        let encoded_payload_context = envelope.unique_tx_identifier(caller);
         assert_ne!(
             encoded_payload_context, signature_hash_context,
             "channel opens must use the encoded signing payload, not signature_hash||sender"

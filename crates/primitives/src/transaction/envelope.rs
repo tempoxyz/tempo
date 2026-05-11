@@ -1,4 +1,4 @@
-use super::tt_signed::AASigned;
+use super::{tt_signed::AASigned, unique_tx_identifier_from_signable};
 use crate::{TempoAddressExt, TempoTransaction, subblock::PartialValidatorKey};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
@@ -113,6 +113,17 @@ impl TempoTxEnvelope {
         match self {
             Self::AA(tx) => tx.tx().recover_fee_payer(sender),
             _ => Ok(sender),
+        }
+    }
+
+    /// Returns the sender-scoped transaction identifier used for replay-sensitive features.
+    pub fn unique_tx_identifier(&self, sender: Address) -> B256 {
+        match self {
+            Self::Legacy(tx) => unique_tx_identifier_from_signable(tx.tx(), sender),
+            Self::Eip2930(tx) => unique_tx_identifier_from_signable(tx.tx(), sender),
+            Self::Eip1559(tx) => unique_tx_identifier_from_signable(tx.tx(), sender),
+            Self::Eip7702(tx) => unique_tx_identifier_from_signable(tx.tx(), sender),
+            Self::AA(tx) => unique_tx_identifier_from_signable(tx.tx(), sender),
         }
     }
 

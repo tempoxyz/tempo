@@ -1,7 +1,7 @@
 use crate::rpc::{TempoHeaderResponse, TempoTransactionRequest};
-use alloy_consensus::{EthereumTxEnvelope, SignableTransaction, TxEip4844, error::ValueError};
+use alloy_consensus::{EthereumTxEnvelope, TxEip4844, error::ValueError};
 use alloy_network::{NetworkTransactionBuilder, TxSigner};
-use alloy_primitives::{Address, B256, Bytes, Signature, keccak256};
+use alloy_primitives::{Address, B256, Bytes};
 use core::num::NonZeroU64;
 use reth_evm::EvmEnv;
 use reth_primitives_traits::SealedHeader;
@@ -133,7 +133,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
         Ok(TempoTxEnv {
             fee_token,
             is_system_tx: false,
-            channel_open_context_hash: Some(channel_open_context_hash),
+            unique_tx_identifier: Some(channel_open_context_hash),
             fee_payer,
             tempo_tx_env: if !calls.is_empty()
                 || !tempo_authorization_list.is_empty()
@@ -179,13 +179,6 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                     key_authorization,
                     signature_hash: B256::ZERO,
                     tx_hash: B256::ZERO,
-                    // Use a zero sentinel for expiring nonce hash during simulation.
-                    // The real hash is keccak256(encode_for_signing || sender), but we
-                    // don't have a signed transaction here. B256::ZERO lets the handler's
-                    // replay check proceed (it runs against ephemeral simulation state
-                    // that is discarded). Gas accuracy is unaffected — the 13k
-                    // EXPIRING_NONCE_GAS is charged based on nonce_key, not the hash value.
-                    expiring_nonce_hash: Some(B256::ZERO),
                     valid_before: valid_before.map(NonZeroU64::get),
                     valid_after: valid_after.map(NonZeroU64::get),
                     subblock_transaction: false,
@@ -202,28 +195,8 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
 
 fn simulation_channel_open_context_hash(req: &TempoTransactionRequest, sender: Address) -> B256 {
     <TempoTransactionRequest as TryIntoSimTx<TempoTxEnvelope>>::try_into_sim_tx(req.clone())
-        .map(|tx| channel_open_context_hash_from_sim_tx(&tx, sender))
+        .map(|tx| tx.unique_tx_identifier(sender))
         .unwrap_or_else(|_| B256::repeat_byte(0x01))
-}
-
-fn channel_open_context_hash_from_signable<T>(tx: &T, sender: Address) -> B256
-where
-    T: SignableTransaction<Signature>,
-{
-    let mut buf = Vec::with_capacity(tx.payload_len_for_signature() + sender.as_slice().len());
-    tx.encode_for_signing(&mut buf);
-    buf.extend_from_slice(sender.as_slice());
-    keccak256(buf)
-}
-
-fn channel_open_context_hash_from_sim_tx(tx: &TempoTxEnvelope, sender: Address) -> B256 {
-    match tx {
-        TempoTxEnvelope::Legacy(tx) => channel_open_context_hash_from_signable(tx.tx(), sender),
-        TempoTxEnvelope::Eip2930(tx) => channel_open_context_hash_from_signable(tx.tx(), sender),
-        TempoTxEnvelope::Eip1559(tx) => channel_open_context_hash_from_signable(tx.tx(), sender),
-        TempoTxEnvelope::Eip7702(tx) => channel_open_context_hash_from_signable(tx.tx(), sender),
-        TempoTxEnvelope::AA(tx) => tx.expiring_nonce_hash(sender),
-    }
 }
 
 /// Creates a mock AA signature for gas estimation based on key type hints
@@ -441,11 +414,10 @@ mod tests {
             .clone()
             .try_into_tx_env(&evm_env)
             .expect("try_into_tx_env");
-        let expected = channel_open_context_hash_from_sim_tx(
-            &<TempoTransactionRequest as TryIntoSimTx<TempoTxEnvelope>>::try_into_sim_tx(req)
-                .expect("try_into_sim_tx"),
-            sender,
-        );
+        let expected =
+            <TempoTransactionRequest as TryIntoSimTx<TempoTxEnvelope>>::try_into_sim_tx(req)
+                .expect("try_into_sim_tx")
+                .unique_tx_identifier(sender);
 
         assert_eq!(tx_env.channel_open_context_hash(), Some(expected));
         assert_ne!(
