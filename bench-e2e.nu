@@ -820,6 +820,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 "--metrics-url" "http://127.0.0.1:9001/metrics"
                 "--scrape-interval-ms" $TXGEN_SCRAPE_INTERVAL_MS
                 "--drain-timeout" $TXGEN_DRAIN_TIMEOUT_SECS
+                "--duration" $ctx.duration
                 "--report" $"json:($report_path)"
                 "-m" $"chain_id=($chain_id)"
                 "-m" $"target_tps=($ctx.tps)"
