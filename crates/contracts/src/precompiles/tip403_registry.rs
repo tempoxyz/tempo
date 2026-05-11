@@ -28,7 +28,7 @@ crate::sol! {
         function isAuthorizedRecipient(uint64 policyId, address user) external view returns (bool);
         function isAuthorizedMintRecipient(uint64 policyId, address user) external view returns (bool);
         function compoundPolicyData(uint64 policyId) external view returns (uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId);
-        function receivePolicy(address account) external view returns (bool hasReceivePolicy, uint64 senderPolicyId, PolicyType senderPolicyType, uint64 tokenFilterId, PolicyType tokenFilterType, address recoveryAddress);
+        function receivePolicy(address account) external view returns (bool hasReceivePolicy, uint64 senderPolicyId, PolicyType senderPolicyType, uint64 tokenFilterId, PolicyType tokenFilterType, address recoveryAuthority);
         function validateReceivePolicy(address token, address sender, address receiver) external view returns (bool authorized, BlockedReason blockedReason);
 
         // State-Changing Functions
@@ -38,7 +38,7 @@ crate::sol! {
         function modifyPolicyWhitelist(uint64 policyId, address account, bool allowed) external;
         function modifyPolicyBlacklist(uint64 policyId, address account, bool restricted) external;
         function createCompoundPolicy(uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId) external returns (uint64);
-        function setReceivePolicy(uint64 senderPolicyId, uint64 tokenFilterId, address recoveryAddress) external;
+        function setReceivePolicy(uint64 senderPolicyId, uint64 tokenFilterId, address recoveryAuthority) external;
 
         // Events
         event PolicyAdminUpdated(uint64 indexed policyId, address indexed updater, address indexed admin);
@@ -46,7 +46,7 @@ crate::sol! {
         event WhitelistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool allowed);
         event BlacklistUpdated(uint64 indexed policyId, address indexed updater, address indexed account, bool restricted);
         event CompoundPolicyCreated(uint64 indexed policyId, address indexed creator, uint64 senderPolicyId, uint64 recipientPolicyId, uint64 mintRecipientPolicyId);
-        event ReceivePolicyUpdated(address indexed account, uint64 senderPolicyId, uint64 tokenFilterId, address recoveryAddress);
+        event ReceivePolicyUpdated(address indexed account, uint64 senderPolicyId, uint64 tokenFilterId, address recoveryAuthority);
 
         // Errors
         error Unauthorized();
@@ -56,7 +56,7 @@ crate::sol! {
         error IncompatiblePolicyType();
         error VirtualAddressNotAllowed();
         error InvalidReceivePolicyType();
-        error InvalidReceivePolicyAddress();
+        error InvalidRecoveryAuthority();
     }
 }
 
@@ -111,7 +111,7 @@ impl TIP403RegistryError {
         Self::InvalidReceivePolicyType(ITIP403Registry::InvalidReceivePolicyType {})
     }
 
-    pub const fn invalid_receive_policy_address() -> Self {
-        Self::InvalidReceivePolicyAddress(ITIP403Registry::InvalidReceivePolicyAddress {})
+    pub const fn invalid_recovery_authority() -> Self {
+        Self::InvalidRecoveryAuthority(ITIP403Registry::InvalidRecoveryAuthority {})
     }
 }

@@ -1079,11 +1079,11 @@ impl TIP20Token {
         self.ensure_transfer_authorized(from, to.target)
     }
 
-    /// Resolves the effective recipient and verifies that ⁠`msg_sender` has the issuer role.
-    /// To preserve re-execution of old transactions (pre-T6), also reads ⁠total_supply.
+    /// Resolves the effective recipient and verifies that `msg_sender` has the issuer role.
+    /// To preserve re-execution of old transactions (pre-T6), also reads total_supply.
     /// Additionally (+T3) checks pause state and validates the effective recipient.
     ///
-    /// Returns the resolved [⁠`Recipient`] and, pre-T6, the ⁠total_supply.
+    /// Returns the resolved [`Recipient`] and, pre-T6, the total_supply.
     fn validate_mint(&self, msg_sender: Address, to: Address) -> Result<(Recipient, Option<U256>)> {
         let to = Recipient::resolve(to)?;
         self.check_role(msg_sender, *ISSUER_ROLE)?;
@@ -1231,15 +1231,15 @@ impl TIP20Token {
         Ok(true)
     }
 
-    /// Releases escrowed funds to `to`. Self-recovery skips policy checks. Redirects
-    /// revalidate the transfer and receive policies and meter the spending limit when set.
+    /// Releases escrowed funds to `to`. Resumes skip policy checks. Reroutes
+    /// revalidate the transfer and receive policies and meter the spending limit.
     pub(crate) fn release_from_escrow(
         &mut self,
         originator: Address,
         receiver: Address,
         to: Address,
         amount: U256,
-        meter_spending_limit: bool,
+        reroute: bool,
     ) -> Result<()> {
         self.check_not_paused()?;
 
@@ -1250,7 +1250,7 @@ impl TIP20Token {
         let destination = Recipient::resolve(to)?;
         destination.validate()?;
 
-        if destination.target != receiver {
+        if reroute {
             let registry = TIP403Registry::new();
             let policy_id = self.transfer_policy_id()?;
             if !registry.is_authorized_as(policy_id, destination.target, AuthRole::recipient())? {
@@ -1262,9 +1262,7 @@ impl TIP20Token {
             {
                 return Err(TIP20Error::policy_forbids().into());
             }
-            if meter_spending_limit {
-                self.check_and_update_spending_limit(receiver, amount)?;
-            }
+            self.check_and_update_spending_limit(receiver, amount)?;
         }
 
         let escrow_balance = self.get_balance(ESCROW_ADDRESS)?;
@@ -1604,9 +1602,7 @@ mod recipient_tests {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
-    use tempo_contracts::precompiles::{
-        ITIP1028Escrow, TIP1028EscrowEvent, createTokenCall,
-    };
+    use tempo_contracts::precompiles::{ITIP1028Escrow, TIP1028EscrowEvent, createTokenCall};
 
     use super::*;
     use crate::{
@@ -1703,7 +1699,7 @@ pub(crate) mod tests {
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: sender_policy_id,
                     tokenFilterId: token_filter_id,
-                    recoveryAddress: recovery_address,
+                    recoveryAuthority: recovery_address,
                 },
             )
         }
@@ -1735,7 +1731,7 @@ pub(crate) mod tests {
             TIP1028Escrow::new().blocked_receipt_balance(
                 ITIP1028Escrow::blockedReceiptBalanceCall {
                     token,
-                    recoveryContract: recovery_contract,
+                    recoveryAuthority: recovery_contract,
                     receiptVersion: BLOCKED_RECEIPT_VERSION,
                     receipt: receipt.abi_encode().into(),
                 },
@@ -1804,7 +1800,7 @@ pub(crate) mod tests {
                         recipient: receiver,
                         amount,
                         blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
-                        recoveryContract: Address::ZERO,
+                        recoveryAuthority: Address::ZERO,
                         memo: B256::ZERO,
                     }),
                 ]);
@@ -1865,7 +1861,7 @@ pub(crate) mod tests {
                         recipient: receiver,
                         amount,
                         blockedReason: ITIP403Registry::BlockedReason::TOKEN_FILTER as u8,
-                        recoveryContract: Address::ZERO,
+                        recoveryAuthority: Address::ZERO,
                         memo: B256::ZERO,
                     }),
                 ]);
