@@ -9,6 +9,7 @@ const E2E_A_STATE_PATH = "/var/lib/schelk/a.json"
 const E2E_B_STATE_PATH = "/var/lib/schelk/b.json"
 const E2E_A_MOUNT = "/reth-bench-a"
 const E2E_B_MOUNT = "/reth-bench-b"
+const BENCH_SCHELK_SCRIPT = "bench-schelk.nu"
 const E2E_VALIDATORS = "127.0.0.2:8000,127.0.0.3:8100"
 const E2E_SEED = 42
 const E2E_A_CPUS = "0-7,16-23"
@@ -31,12 +32,23 @@ const E2E_LOCAL_RETH_ARGS = [
     "--tempo.bootnodes-endpoint" "none"
 ]
 
-def schelk [state_path: string, subcommand: string, ...args: string] {
-    sudo schelk --state-path $state_path $subcommand ...$args
+def run-bench-schelk [...args: string] {
+    let result = (nu $BENCH_SCHELK_SCRIPT ...$args | complete)
+    if $result.stdout != "" { print $result.stdout }
+    if $result.stderr != "" { print $result.stderr }
+    if $result.exit_code != 0 {
+        error make { msg: $"bench-schelk failed: ($args | str join ' ')" }
+    }
 }
 
 def schelk-state [state_path: string] {
     sudo cat $state_path | from json
+}
+
+def mark-schelk-dirty-at [state_path: string] {
+    if (has-schelk) {
+        run-bench-schelk "mark-dirty" $state_path
+    }
 }
 
 def validate-schelk-state [a_state_path: string, b_state_path: string] {
@@ -80,21 +92,7 @@ def validate-schelk-state [a_state_path: string, b_state_path: string] {
 
 def bench-restore-at [state_path: string, mount_point: string, datadir: string] {
     if (has-schelk) {
-        print $"Restoring schelk snapshot ($mount_point)..."
-        let state = (schelk-state $state_path)
-        let state_mounted = ($state | get --optional is_mounted) == true
-        let actual_mounted = (mountpoint -q $mount_point | complete).exit_code == 0
-        try {
-            if $state_mounted or $actual_mounted {
-                schelk $state_path recover "-y" "--kill"
-            }
-            schelk $state_path mount
-        } catch {
-            print $"Schelk restore failed for ($mount_point), falling back to full-recover..."
-            schelk $state_path full-recover "-y"
-            schelk $state_path mount
-        }
-        sudo chown -R (whoami | str trim) $mount_point
+        run-bench-schelk "restore" $state_path $mount_point
     } else {
         print $"Restoring snapshot from ($datadir).virgin..."
         rm -rf $datadir
@@ -106,7 +104,7 @@ def bench-restore-at [state_path: string, mount_point: string, datadir: string] 
 def bench-promote-at [state_path: string, datadir: string] {
     if (has-schelk) {
         print $"Promoting schelk scratch to virgin ($state_path)..."
-        schelk $state_path promote "-y" "--kill"
+        run-bench-schelk "promote" $state_path
     } else {
         print $"Saving snapshot to ($datadir).virgin..."
         rm -rf $"($datadir).virgin"
@@ -753,6 +751,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
 
+    mark-schelk-dirty-at $ctx.a.state_path
+    mark-schelk-dirty-at $ctx.b.state_path
+
     start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
     start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
 
@@ -988,6 +989,8 @@ def "main e2e" [
         let init_dir = $"($LOCALNET_DIR)/e2e-local-init"
         let generated_genesis = $"($init_dir)/genesis.json"
         let bloat_file = $"($E2E_BLOAT_TMP_DIR)/state_bloat.bin"
+        mark-schelk-dirty-at $E2E_A_STATE_PATH
+        mark-schelk-dirty-at $E2E_B_STATE_PATH
         if ($init_dir | path exists) { rm -rf $init_dir }
         mkdir $init_dir
         if ($E2E_BLOAT_TMP_DIR | path exists) { rm -rf $E2E_BLOAT_TMP_DIR }
