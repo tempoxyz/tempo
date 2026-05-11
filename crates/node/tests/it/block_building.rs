@@ -695,14 +695,13 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Fund `user` with PATH_USD and approve the channel escrow precompile.
-async fn fund_and_approve_escrow(
+/// Fund `user` with PATH_USD.
+async fn fund_path_usd(
     node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
     funder: &PrivateKeySigner,
     user: &PrivateKeySigner,
     chain_id: u64,
     funder_nonce: u64,
-    user_nonce: u64,
 ) -> eyre::Result<()> {
     let provider = ProviderBuilder::new()
         .wallet(EthereumWallet::from(funder.clone()))
@@ -717,23 +716,6 @@ async fn fund_and_approve_escrow(
             .transfer(user.address(), U256::from(20_000_000u64))
             .into_transaction_request(),
         funder_nonce,
-    )
-    .await?;
-    node.advance_block().await?;
-
-    let user_provider = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(user.clone()))
-        .connect_http(node.rpc_url());
-    let user_token = ITIP20::new(PATH_USD_ADDRESS, user_provider);
-
-    sign_and_inject(
-        node,
-        user,
-        chain_id,
-        user_token
-            .approve(TIP20_CHANNEL_ESCROW_ADDRESS, U256::MAX)
-            .into_transaction_request(),
-        user_nonce,
     )
     .await?;
     node.advance_block().await?;
@@ -770,8 +752,9 @@ fn descriptor_from(
     }
 }
 
-/// Inject escrow txs: `open` (payment), `topUp` (payment), `requestClose` (non-payment).
-/// `open` is committed in its own block so subsequent calls find the channel.
+/// Inject escrow txs: `open` (payment), `topUp` (payment), `requestClose` (payment).
+/// `open` is committed in its own block so subsequent calls find the channel; only `topUp` and
+/// `requestClose` remain in the pool for the caller to drain/count.
 async fn inject_escrow_payment_txs(
     node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
     sender: &PrivateKeySigner,
@@ -831,7 +814,8 @@ async fn inject_escrow_payment_txs(
     Ok(())
 }
 
-/// Escrow payment calls (open, topUp, requestClose) are all classified as payment_v2.
+/// Queued escrow payment calls (`topUp`, `requestClose`) are classified as payment_v2 after an
+/// already-committed `open` creates the channel.
 #[tokio::test(flavor = "multi_thread")]
 async fn test_block_building_channel_escrow_payment_v2() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
@@ -849,7 +833,7 @@ async fn test_block_building_channel_escrow_payment_v2() -> eyre::Result<()> {
         .connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
-    fund_and_approve_escrow(&mut setup.node, &funder, &payer, chain_id, 0, 0).await?;
+    fund_path_usd(&mut setup.node, &funder, &payer, chain_id, 0).await?;
 
     let payer_nonce = provider.get_transaction_count(payer.address()).await?;
     inject_escrow_payment_txs(&mut setup.node, &payer, chain_id, payer_nonce).await?;
@@ -900,17 +884,16 @@ async fn test_block_building_mixed_tip20_and_escrow_payments() -> eyre::Result<(
         .connect_http(setup.node.rpc_url())
         .get_transaction_count(funder.address())
         .await?;
-    fund_and_approve_escrow(
+    fund_path_usd(
         &mut setup.node,
         &funder,
         &escrow_sender,
         chain_id,
         funder_nonce,
-        0,
     )
     .await?;
 
-    // open (payment, own block) + topUp (payment) + requestClose (payment)
+    // open is committed in its own setup block; topUp + requestClose are queued as payment txs.
     let escrow_nonce = ProviderBuilder::new()
         .wallet(EthereumWallet::from(escrow_sender.clone()))
         .connect_http(setup.node.rpc_url())

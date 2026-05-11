@@ -25,11 +25,7 @@ struct OpenedChannel {
     gas_used: u64,
 }
 
-async fn fund_and_approve<P: Provider + Clone>(
-    funder_provider: P,
-    user_provider: P,
-    user: Address,
-) -> eyre::Result<()> {
+async fn fund_user<P: Provider + Clone>(funder_provider: P, user: Address) -> eyre::Result<()> {
     let token = ITIP20::new(PATH_USD_ADDRESS, funder_provider);
     let transfer_receipt = token
         .transfer(user, U256::from(FUNDING))
@@ -39,16 +35,6 @@ async fn fund_and_approve<P: Provider + Clone>(
         .get_receipt()
         .await?;
     assert!(transfer_receipt.status(), "funding transfer failed");
-
-    let user_token = ITIP20::new(PATH_USD_ADDRESS, user_provider);
-    let approve_receipt = user_token
-        .approve(TIP20_CHANNEL_ESCROW_ADDRESS, U256::MAX)
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-    assert!(approve_receipt.status(), "escrow approval failed");
 
     Ok(())
 }
@@ -138,24 +124,9 @@ async fn test_tip20_channel_escrow_gas_snapshots() -> eyre::Result<()> {
         .wallet(operator.clone())
         .connect_http(http_url);
 
-    fund_and_approve(
-        funder_provider.clone(),
-        payer_provider.clone(),
-        payer.address(),
-    )
-    .await?;
-    fund_and_approve(
-        funder_provider.clone(),
-        payee_provider.clone(),
-        payee.address(),
-    )
-    .await?;
-    fund_and_approve(
-        funder_provider,
-        operator_provider.clone(),
-        operator.address(),
-    )
-    .await?;
+    fund_user(funder_provider.clone(), payer.address()).await?;
+    fund_user(funder_provider.clone(), payee.address()).await?;
+    fund_user(funder_provider, operator.address()).await?;
 
     let payer_channel =
         ITIP20ChannelEscrow::new(TIP20_CHANNEL_ESCROW_ADDRESS, payer_provider.clone());

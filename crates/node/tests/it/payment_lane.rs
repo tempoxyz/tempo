@@ -623,19 +623,10 @@ async fn test_payment_lane_gas_limits_channel_escrow() -> eyre::Result<()> {
         .wallet(payer.clone())
         .connect_http(url.clone());
 
-    // Fund payer and approve escrow
+    // Fund payer. Escrow open/topUp use native system movement and must not require allowance.
     let token = ITIP20::new(PATH_USD_ADDRESS, funder_provider.clone());
     token
         .transfer(payer.address(), U256::from(20_000_000u64))
-        .gas(1_000_000)
-        .send()
-        .await?
-        .get_receipt()
-        .await?;
-
-    let payer_token = ITIP20::new(PATH_USD_ADDRESS, payer_provider.clone());
-    payer_token
-        .approve(TIP20_CHANNEL_ESCROW_ADDRESS, U256::MAX)
         .gas(1_000_000)
         .send()
         .await?

@@ -588,13 +588,15 @@ mod tests {
     }
 
     #[rustfmt::skip]
-    fn channel_escrow_payment_calldatas() -> [Bytes; 4] {
+    fn channel_escrow_payment_calldatas() -> [Bytes; 6] {
         let descriptor = channel_descriptor();
         [
             ITIP20ChannelEscrow::openCall { payee: Address::random(), operator: Address::random(), token: PAYMENT_TKN, deposit: U96::from(1), salt: B256::random(), authorizedSigner: Address::random() }.abi_encode().into(),
             ITIP20ChannelEscrow::topUpCall { descriptor: descriptor.clone(), additionalDeposit: U96::from(1) }.abi_encode().into(),
             ITIP20ChannelEscrow::settleCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), signature: vec![1, 2, 3].into() }.abi_encode().into(),
-            ITIP20ChannelEscrow::closeCall { descriptor, cumulativeAmount: U96::from(1), captureAmount: U96::from(1), signature: vec![1, 2, 3].into() }.abi_encode().into(),
+            ITIP20ChannelEscrow::closeCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), captureAmount: U96::from(1), signature: vec![1, 2, 3].into() }.abi_encode().into(),
+            ITIP20ChannelEscrow::requestCloseCall { descriptor: descriptor.clone() }.abi_encode().into(),
+            ITIP20ChannelEscrow::withdrawCall { descriptor }.abi_encode().into(),
         ]
     }
 
