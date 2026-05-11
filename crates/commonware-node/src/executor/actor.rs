@@ -524,8 +524,8 @@ where
                         .canonical_in_memory_state()
                         .get_canonical_block_number();
 
-                    // Allow a syncing if only behind by 1 block
-                    if canonical_block_number < height.get() {
+                    // Allow syncing only for the parent block. Anything deeper would most likely trigger the proposer timeout
+                    if canonical_block_number < height.previous().unwrap_or_default().get() {
                         Some(Err(eyre::eyre!(
                             "build request on height {height} too far ahead of canonical height {canonical_block_number}"
                         )))
