@@ -238,10 +238,6 @@ impl AccountKeychain {
         self.ensure_admin_caller(msg_sender)?;
         let is_t3 = self.storage.spec().is_t3();
 
-        if nonce.is_some() && !self.storage.spec().is_t5() {
-            return Err(AccountKeychainError::invalid_key_authorization_nonce().into());
-        }
-
         // Validate inputs
         if key_id == Address::ZERO {
             return Err(AccountKeychainError::zero_public_key().into());
@@ -302,11 +298,6 @@ impl AccountKeychain {
             None
         };
 
-        // Nonce-bearing authorizations must commit atomically: if any later key,
-        // restriction, or event write fails, the TIP-1053 nonce must remain reusable.
-        // No-nonce authorizations keep the legacy mutation/error ordering unchanged.
-        let checkpoint = nonce.map(|_| self.storage.checkpoint());
-
         if let Some(nonce) = nonce {
             self.consume_key_authorization_nonce(msg_sender, nonce)?;
         }
@@ -344,10 +335,6 @@ impl AccountKeychain {
             },
         ))?;
 
-        if let Some(checkpoint) = checkpoint {
-            checkpoint.commit();
-        }
-
         Ok(())
     }
 
@@ -357,11 +344,7 @@ impl AccountKeychain {
         msg_sender: Address,
         call: burnKeyAuthorizationNonceCall,
     ) -> Result<()> {
-        if !self.storage.spec().is_t5() {
-            return Err(AccountKeychainError::invalid_key_authorization_nonce().into());
-        }
-
-        self.ensure_nonce_burn_caller(msg_sender)?;
+        self.ensure_account_caller(msg_sender, true)?;
         self.consume_key_authorization_nonce(msg_sender, call.nonce)
     }
 
@@ -1039,8 +1022,18 @@ impl AccountKeychain {
     /// `tx_origin` is seeded by the handler before validation/execution.
     /// If origin is not seeded (zero), admin ops are rejected.
     fn ensure_admin_caller(&self, msg_sender: Address) -> Result<()> {
-        if !self.transaction_key.t_read()?.is_zero() {
-            return Err(AccountKeychainError::unauthorized_caller().into());
+        self.ensure_account_caller(msg_sender, false)
+    }
+
+    fn ensure_account_caller(&self, msg_sender: Address, allow_active_key: bool) -> Result<()> {
+        let transaction_key = self.transaction_key.t_read()?;
+        if !transaction_key.is_zero() {
+            if allow_active_key {
+                let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+                self.load_active_key(msg_sender, transaction_key, current_timestamp)?;
+            } else {
+                return Err(AccountKeychainError::unauthorized_caller().into());
+            }
         }
 
         if self.storage.spec().is_t2() {
@@ -1048,21 +1041,6 @@ impl AccountKeychain {
             if tx_origin.is_zero() || tx_origin != msg_sender {
                 return Err(AccountKeychainError::unauthorized_caller().into());
             }
-        }
-
-        Ok(())
-    }
-
-    fn ensure_nonce_burn_caller(&self, msg_sender: Address) -> Result<()> {
-        let tx_origin = self.tx_origin.t_read()?;
-        if tx_origin.is_zero() || tx_origin != msg_sender {
-            return Err(AccountKeychainError::unauthorized_caller().into());
-        }
-
-        let transaction_key = self.transaction_key.t_read()?;
-        if !transaction_key.is_zero() {
-            let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-            self.load_active_key(msg_sender, transaction_key, current_timestamp)?;
         }
 
         Ok(())
@@ -1481,26 +1459,8 @@ mod tests {
         }
     }
 
-    fn assert_nonce_already_used(error: TempoPrecompileError) {
-        match error {
-            TempoPrecompileError::AccountKeychainError(e) => {
-                assert!(
-                    matches!(e, AccountKeychainError::KeyAuthorizationNonceAlreadyUsed(_)),
-                    "Expected KeyAuthorizationNonceAlreadyUsed error, got: {e:?}"
-                );
-            }
-            _ => panic!("Expected AccountKeychainError, got: {error:?}"),
-        }
-    }
-
     fn unrestricted_restrictions() -> KeyRestrictions {
-        KeyRestrictions {
-            expiry: u64::MAX,
-            enforceLimits: false,
-            limits: vec![],
-            allowAnyCalls: true,
-            allowedCalls: vec![],
-        }
+        tempo_alloy::provider::keychain::KeyRestrictions::default().into()
     }
 
     #[test]
@@ -1542,85 +1502,12 @@ mod tests {
                     nonce,
                 },
             );
-            assert_nonce_already_used(replay.expect_err("nonce replay must fail"));
+            assert_eq!(
+                replay.expect_err("nonce replay must fail"),
+                AccountKeychainError::key_authorization_nonce_already_used().into()
+            );
 
             assert_eq!(keychain.keys[account][second_key].read()?.expiry, 0);
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_t5_authorize_key_with_nonce_reverts_partial_restriction_writes() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
-        let account = Address::random();
-        let key_id = Address::random();
-        let nonce = B256::repeat_byte(0x77);
-        let valid_token = Address::random();
-        let invalid_token = Address::random();
-
-        StorageCtx::enter(&mut storage, || {
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
-
-            let result = keychain.authorize_key_with_nonce(
-                account,
-                authorizeKeyWithNonceCall {
-                    keyId: key_id,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![
-                            TokenLimit {
-                                token: valid_token,
-                                amount: U256::from(100),
-                                period: 0,
-                            },
-                            TokenLimit {
-                                token: invalid_token,
-                                amount: U256::from(u128::MAX) + U256::from(1),
-                                period: 0,
-                            },
-                        ],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
-                    nonce,
-                },
-            );
-
-            assert!(
-                matches!(
-                    result,
-                    Err(TempoPrecompileError::AccountKeychainError(
-                        AccountKeychainError::InvalidSpendingLimit(_)
-                    ))
-                ),
-                "expected InvalidSpendingLimit, got {result:?}"
-            );
-            assert!(
-                !keychain.is_key_authorization_nonce_used(isKeyAuthorizationNonceUsedCall {
-                    account,
-                    nonce,
-                })?,
-                "failed nonce-bearing authorization must not consume nonce"
-            );
-            assert_eq!(
-                keychain.keys[account][key_id].read()?.expiry,
-                0,
-                "failed nonce-bearing authorization must not create key"
-            );
-
-            let limit_key = AccountKeychain::spending_limit_key(account, key_id);
-            assert_eq!(
-                keychain.spending_limits[limit_key][valid_token]
-                    .read()?
-                    .remaining,
-                U256::ZERO,
-                "failed nonce-bearing authorization must revert earlier limit writes"
-            );
-
             Ok(())
         })
     }
@@ -1655,7 +1542,10 @@ mod tests {
                     nonce,
                 },
             );
-            assert_nonce_already_used(result.expect_err("burned nonce must not authorize"));
+            assert_eq!(
+                result.expect_err("burned nonce must not authorize"),
+                AccountKeychainError::key_authorization_nonce_already_used().into()
+            );
 
             Ok(())
         })

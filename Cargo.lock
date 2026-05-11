@@ -12988,6 +12988,7 @@ dependencies = [
  "scoped-tls",
  "serde",
  "serde_json",
+ "tempo-alloy",
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-evm",
