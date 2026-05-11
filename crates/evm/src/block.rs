@@ -164,7 +164,7 @@ where
             hardfork: chain_spec.tempo_hardfork_at(evm.block().timestamp.to::<u64>()),
             validator_set: ctx.validator_set,
             non_payment_gas_left: ctx.general_gas_limit,
-            non_shared_gas_left: evm.block().gas_limit - ctx.shared_gas_limit,
+            non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
             shared_gas_limit: ctx.shared_gas_limit,
             inner: EthBlockExecutor::new(
                 evm,
