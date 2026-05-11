@@ -238,7 +238,7 @@ impl ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls {
     /// selectors: `open`, `topUp`, `settle`, `close`, `requestClose`, `withdraw`.
     ///
     /// # NOTES
-    /// - Only validates calldata; caller must check the that `to == TIP20_CHANNEL_ESCROW_ADDRESS`.
+    /// - Only validates calldata; caller must check that `to == TIP20_CHANNEL_ESCROW_ADDRESS`.
     /// - Static-only calls require exact ABI-encoded length.
     /// - Dynamic calls require valid ABI decoding + calldata length <= [`MAX_PAYMENT_CALLDATA_LEN`]
     ///
