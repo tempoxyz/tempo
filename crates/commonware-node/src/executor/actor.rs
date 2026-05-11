@@ -473,6 +473,22 @@ where
             return;
         }
 
+        let canonical_block_number = self
+            .execution_node
+            .provider()
+            .canonical_in_memory_state()
+            .get_canonical_block_number();
+
+        // Allow syncing the parent block. Anything deeper will likely timeout
+        if canonical_block_number < height.previous().unwrap_or_default().get()
+            && let JustCanonicalizeOrAlsoBuild::AlsoBuild { response, .. } = maybe_build
+        {
+            let _ = response.send(Err(eyre::eyre!(
+                "build request on height {height} too far ahead of canonical height {canonical_block_number}"
+            )));
+            return;
+        }
+
         info!(
             head_block_hash = %new_canonicalized.forkchoice.head_block_hash,
             head_block_height = %new_canonicalized.head_height,
@@ -517,27 +533,8 @@ where
                 let _ = response.send(Ok(()));
             }
             JustCanonicalizeOrAlsoBuild::AlsoBuild { response, .. } => {
-                let result = if fcu_response.is_syncing() {
-                    let canonical_block_number = self
-                        .execution_node
-                        .provider()
-                        .canonical_in_memory_state()
-                        .get_canonical_block_number();
-
-                    // Allow syncing only for the parent block. Anything deeper would most likely trigger the proposer timeout
-                    if canonical_block_number < height.previous().unwrap_or_default().get() {
-                        Some(Err(eyre::eyre!(
-                            "build request on height {height} too far ahead of canonical height {canonical_block_number}"
-                        )))
-                    } else {
-                        fcu_response.payload_id.map(Ok)
-                    }
-                } else {
-                    fcu_response.payload_id.map(Ok)
-                };
-
-                if let Some(result) = result {
-                    let _ = response.send(result);
+                if let Some(payload_id) = fcu_response.payload_id {
+                    let _ = response.send(Ok(payload_id));
                 }
             }
         }
