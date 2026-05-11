@@ -40,8 +40,7 @@ use tempo_precompiles::{
     ECRECOVER_GAS,
     account_keychain::{
         AccountKeychain, CallScope as PrecompileCallScope, KeyRestrictions,
-        SelectorRule as PrecompileSelectorRule, TokenLimit, authorizeKeyCall,
-        authorizeKeyWithNonceCall,
+        SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
     nonce::{
@@ -1365,26 +1364,13 @@ where
                 };
 
                 // Call precompile to authorize the key (same phase as nonce increment)
-                let result = if let Some(nonce) = key_auth.nonce() {
-                    keychain.authorize_key_with_nonce(
-                        tx.caller,
-                        authorizeKeyWithNonceCall {
-                            keyId: access_key_addr,
-                            signatureType: signature_type,
-                            config,
-                            nonce,
-                        },
-                    )
-                } else {
-                    keychain.authorize_key(
-                        tx.caller,
-                        authorizeKeyCall {
-                            keyId: access_key_addr,
-                            signatureType: signature_type,
-                            config,
-                        },
-                    )
-                };
+                let result = keychain.authorize_key(
+                    tx.caller,
+                    access_key_addr,
+                    signature_type,
+                    config,
+                    key_auth.nonce(),
+                );
 
                 match result {
                     // all is good, we can do execution.
@@ -2251,6 +2237,7 @@ mod tests {
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
+    use tempo_precompiles::account_keychain::authorizeKeyCall;
     use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, test_util::TIP20Setup};
     use tempo_primitives::transaction::{
         Call, RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
