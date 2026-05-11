@@ -72,14 +72,24 @@ impl Precompile for AccountKeychain {
                         },
                     };
 
-                    mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
+                    mutate_void(call, msg_sender, |sender, c| {
+                        self.authorize_key(sender, c.keyId, c.signatureType, c.config, None)
+                    })
                 }
                 IAccountKeychainCalls::authorizeKey_1(call) => {
-                    mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
+                    mutate_void(call, msg_sender, |sender, c| {
+                        self.authorize_key(sender, c.keyId, c.signatureType, c.config, None)
+                    })
                 }
                 IAccountKeychainCalls::authorizeKey_2(call) => {
                     mutate_void(call, msg_sender, |sender, c| {
-                        self.authorize_key_with_nonce(sender, c)
+                        self.authorize_key(
+                            sender,
+                            c.keyId,
+                            c.signatureType,
+                            c.config,
+                            Some(c.nonce),
+                        )
                     })
                 }
                 IAccountKeychainCalls::burnKeyAuthorizationNonce(call) => {
