@@ -1017,9 +1017,12 @@ mod tests {
     }
 
     /// Builds the standard 3-token environment used by all TIP-1033 tests.
+    ///
+    /// The closure receives the fee manager, the three tokens, and the `user` / `validator` /
+    /// `admin` addresses (admin holds `DEFAULT_ADMIN_ROLE` and `ISSUER_ROLE` on every token).
     fn with_two_hop_env<F>(spec: TempoHardfork, hop_quote_is_val: bool, f: F) -> eyre::Result<()>
     where
-        F: FnOnce(&mut TipFeeManager, &TwoHopTokens, Address, Address) -> eyre::Result<()>,
+        F: FnOnce(&mut TipFeeManager, &TwoHopTokens, Address, Address, Address) -> eyre::Result<()>,
     {
         let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
         let admin = Address::random();
@@ -1061,7 +1064,7 @@ mod tests {
                 hop: hop_token,
                 validator: validator_token,
             };
-            f(&mut fee_manager, &tokens, user, validator)
+            f(&mut fee_manager, &tokens, user, validator, admin)
         })
     }
 
@@ -1090,36 +1093,44 @@ mod tests {
         };
 
         // Pre-T5: fallback disabled — must revert.
-        with_two_hop_env(TempoHardfork::T4, false, |fm, t, user, validator| {
-            setup_pools(fm, t)?;
-            let res = fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, false);
-            assert_eq!(
-                res.unwrap_err(),
-                TIPFeeAMMError::insufficient_liquidity().into(),
-                "T4: expected InsufficientLiquidity",
-            );
-            Ok(())
-        })?;
+        with_two_hop_env(
+            TempoHardfork::T4,
+            false,
+            |fm, t, user, validator, _admin| {
+                setup_pools(fm, t)?;
+                let res = fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, false);
+                assert_eq!(
+                    res.unwrap_err(),
+                    TIPFeeAMMError::insufficient_liquidity().into(),
+                    "T4: expected InsufficientLiquidity",
+                );
+                Ok(())
+            },
+        )?;
 
         // T5: same setup — fallback engages successfully.
-        with_two_hop_env(TempoHardfork::T5, false, |fm, t, user, validator| {
-            setup_pools(fm, t)?;
+        with_two_hop_env(
+            TempoHardfork::T5,
+            false,
+            |fm, t, user, validator, _admin| {
+                setup_pools(fm, t)?;
 
-            fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, false)?;
-            assert_eq!(
-                fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.hop)].t_read()?,
-                997 // 1st hop: floor(1000 * 9970/10000) = 997
-            );
-            assert_eq!(
-                fm.pending_fee_swap_reservation[fm.pool_id(t.hop, t.validator)].t_read()?,
-                994 // 2nd hop: floor(997 * 9970/10000) = 994
-            );
-            assert_eq!(
-                fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.validator)].t_read()?,
-                0 // direct pool is NOT reserved
-            );
-            Ok(())
-        })
+                fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, false)?;
+                assert_eq!(
+                    fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.hop)].t_read()?,
+                    997 // 1st hop: floor(1000 * 9970/10000) = 997
+                );
+                assert_eq!(
+                    fm.pending_fee_swap_reservation[fm.pool_id(t.hop, t.validator)].t_read()?,
+                    994 // 2nd hop: floor(997 * 9970/10000) = 994
+                );
+                assert_eq!(
+                    fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.validator)].t_read()?,
+                    0 // direct pool is NOT reserved
+                );
+                Ok(())
+            },
+        )
     }
 
     #[test]
@@ -1138,7 +1149,7 @@ mod tests {
             with_two_hop_env(
                 TempoHardfork::T5,
                 hop_quote_is_val,
-                |fm, t, user, validator| {
+                |fm, t, user, validator, _admin| {
                     write_pool(fm, t.user, t.validator, direct)?;
                     write_pool(fm, t.user, t.hop, r1)?;
                     write_pool(fm, t.hop, t.validator, r2)?;
@@ -1196,41 +1207,247 @@ mod tests {
         for &(amount, expected_out1, expected_out2) in cases {
             assert_sequential_diverges_from_combined(U256::from(amount));
 
-            with_two_hop_env(TempoHardfork::T5, false, |fm, t, user, validator| {
-                // Reserves are deep enough that liquidity never bounds the result;
-                // any deviation in `collected_fees` is purely a fee-math bug.
-                let reserve = 10 * amount;
+            with_two_hop_env(
+                TempoHardfork::T5,
+                false,
+                |fm, t, user, validator, _admin| {
+                    // Reserves are deep enough that liquidity never bounds the result;
+                    // any deviation in `collected_fees` is purely a fee-math bug.
+                    let reserve = 10 * amount;
+                    write_pool(fm, t.user, t.validator, 0)?;
+                    write_pool(fm, t.user, t.hop, reserve)?;
+                    write_pool(fm, t.hop, t.validator, reserve)?;
+
+                    let amount_u = U256::from(amount);
+                    fm.collect_fee_pre_tx(user, t.user, amount_u, validator, false)?;
+                    fm.collect_fee_post_tx(user, amount_u, U256::ZERO, t.user, validator)?;
+
+                    assert_eq!(
+                        fm.collected_fees[validator][t.validator].read()?,
+                        U256::from(expected_out2),
+                        "amount={amount}: post-tx MUST accumulate sequential floor(floor(N*M)*M)",
+                    );
+
+                    // pool1 (user, hop): user-side gained `amount`, hop-side lost `out1`.
+                    let p1 = fm.pools[fm.pool_id(t.user, t.hop)].read()?;
+                    assert_eq!(
+                        (p1.reserve_user_token, p1.reserve_validator_token),
+                        (reserve + amount, reserve - expected_out1),
+                        "amount={amount}: pool1 reserves must move by (amount, out1)",
+                    );
+                    // pool2 (hop, validator): hop-side gained `out1`, validator-side lost `out2`.
+                    let p2 = fm.pools[fm.pool_id(t.hop, t.validator)].read()?;
+                    assert_eq!(
+                        (p2.reserve_user_token, p2.reserve_validator_token),
+                        (reserve + expected_out1, reserve - expected_out2),
+                        "amount={amount}: pool2 reserves must move by (out1, out2)",
+                    );
+                    Ok(())
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    /// TIP-1033 FEE15 (route immutability): once `collect_fee_pre_tx` caches the two-hop
+    /// intermediate, `collect_fee_post_tx` MUST settle through that cached path even if
+    /// `userToken.quoteToken()` is rotated mid-transaction. The freshly rotated quote token
+    /// must NOT reroute the post-tx swap.
+    #[test]
+    fn test_collect_fee_two_hop_route_immutable_under_quote_rotation() -> eyre::Result<()> {
+        with_two_hop_env(TempoHardfork::T5, false, |fm, t, user, validator, admin| {
+            // Direct pool empty + deep hop pools ⇒ pre_tx selects two-hop via `hop`.
+            let reserve: u128 = 1_000_000;
+            write_pool(fm, t.user, t.validator, 0)?;
+            write_pool(fm, t.user, t.hop, reserve)?;
+            write_pool(fm, t.hop, t.validator, reserve)?;
+
+            let amount = U256::from(1_000);
+            fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
+            assert_eq!(fm.two_hop_intermediate.t_read()?, t.hop);
+
+            // Mid-tx: rotate user.quoteToken from hop → validator. After this rotation,
+            // a freshly re-resolved route would degenerate (intermediate == validator),
+            // so any post_tx that re-resolves would silently break (or revert).
+            let mut user_token = TIP20Token::from_address(t.user)?;
+            user_token.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: t.validator,
+                },
+            )?;
+            user_token
+                .complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {})?;
+            assert_eq!(
+                user_token.quote_token()?,
+                t.validator,
+                "rotation took effect"
+            );
+
+            // Post-tx MUST use the cached two_hop_intermediate (hop), not the new quote token.
+            fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+
+            let out1: u128 = compute_amount_out(amount)?.try_into().unwrap();
+            let out2: u128 = compute_amount_out(U256::from(out1))?.try_into().unwrap();
+            assert_eq!(
+                fm.collected_fees[validator][t.validator].read()?,
+                U256::from(out2),
+                "post-tx must apply two-hop sequential fee math via cached intermediate",
+            );
+
+            // Both hop pool reserves must have moved (proves two-hop swap actually executed).
+            let p1 = fm.pools[fm.pool_id(t.user, t.hop)].read()?;
+            assert_eq!(
+                (p1.reserve_user_token, p1.reserve_validator_token),
+                (reserve + 1_000, reserve - out1),
+                "pool1 (user, hop) reserves must reflect 1st-hop swap",
+            );
+            let p2 = fm.pools[fm.pool_id(t.hop, t.validator)].read()?;
+            assert_eq!(
+                (p2.reserve_user_token, p2.reserve_validator_token),
+                (reserve + out1, reserve - out2),
+                "pool2 (hop, validator) reserves must reflect 2nd-hop swap",
+            );
+            // Direct pool was seeded empty (`write_pool` clamps user-side to 1) and must
+            // remain untouched — settlement went through the cached two-hop route.
+            let direct = fm.pools[fm.pool_id(t.user, t.validator)].read()?;
+            assert_eq!(
+                (direct.reserve_user_token, direct.reserve_validator_token),
+                (1, 0),
+                "direct (user, validator) pool must NOT be used for settlement",
+            );
+
+            Ok(())
+        })
+    }
+
+    /// TIP-1033 FEE14 (transient hygiene): `two_hop_intermediate` is transient — it MUST
+    /// NOT survive across transaction boundaries. A subsequent transaction whose direct pool
+    /// has liquidity must take the single-hop path with `two_hop_intermediate == 0`.
+    #[test]
+    fn test_two_hop_intermediate_does_not_survive_across_tx() -> eyre::Result<()> {
+        with_two_hop_env(
+            TempoHardfork::T5,
+            false,
+            |fm, t, user, validator, _admin| {
+                // tx1: two-hop only — sets the transient intermediate.
+                let reserve: u128 = 1_000_000;
                 write_pool(fm, t.user, t.validator, 0)?;
                 write_pool(fm, t.user, t.hop, reserve)?;
                 write_pool(fm, t.hop, t.validator, reserve)?;
 
-                let amount_u = U256::from(amount);
-                fm.collect_fee_pre_tx(user, t.user, amount_u, validator, false)?;
-                fm.collect_fee_post_tx(user, amount_u, U256::ZERO, t.user, validator)?;
+                let amount = U256::from(1_000);
+                fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
+                assert_eq!(fm.two_hop_intermediate.t_read()?, t.hop, "tx1: cached");
+                fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+                // Note: post_tx leaves the slot non-zero in-tx; EVM clears it at tx boundary.
+                assert_eq!(
+                    fm.two_hop_intermediate.t_read()?,
+                    t.hop,
+                    "tx1: intermediate persists in-tx until EOT",
+                );
 
+                // Simulate tx boundary (EVM clears all transient storage).
+                fm.storage_mut().clear_transient();
+                assert!(
+                    fm.two_hop_intermediate.t_read()?.is_zero(),
+                    "post-EOT: intermediate must be cleared",
+                );
+
+                // tx2: direct pool now has liquidity — single-hop path; intermediate must stay zero.
+                write_pool(fm, t.user, t.validator, reserve)?;
+                // Drain hop pools so a stale intermediate would route through dry pools and revert,
+                // making any FEE14 violation observable rather than silently consistent.
+                write_pool(fm, t.user, t.hop, 0)?;
+                write_pool(fm, t.hop, t.validator, 0)?;
+
+                fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
+                assert!(
+                    fm.two_hop_intermediate.t_read()?.is_zero(),
+                    "tx2: pre_tx took direct route, must not set intermediate",
+                );
+                fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+
+                // tx2 settled via direct pool: validator received single-hop fee.
+                let out_single: U256 = compute_amount_out(amount)?;
+                let out1: u128 = compute_amount_out(amount)?.try_into().unwrap();
+                let out2: u128 = compute_amount_out(U256::from(out1))?.try_into().unwrap();
+                // tx1 collected two-hop out2; tx2 added single-hop out_single.
                 assert_eq!(
                     fm.collected_fees[validator][t.validator].read()?,
-                    U256::from(expected_out2),
-                    "amount={amount}: post-tx MUST accumulate sequential floor(floor(N*M)*M)",
+                    U256::from(out2) + out_single,
+                    "tx2 settled via single-hop direct pool",
                 );
 
-                // pool1 (user, hop): user-side gained `amount`, hop-side lost `out1`.
-                let p1 = fm.pools[fm.pool_id(t.user, t.hop)].read()?;
-                assert_eq!(
-                    (p1.reserve_user_token, p1.reserve_validator_token),
-                    (reserve + amount, reserve - expected_out1),
-                    "amount={amount}: pool1 reserves must move by (amount, out1)",
-                );
-                // pool2 (hop, validator): hop-side gained `out1`, validator-side lost `out2`.
-                let p2 = fm.pools[fm.pool_id(t.hop, t.validator)].read()?;
-                assert_eq!(
-                    (p2.reserve_user_token, p2.reserve_validator_token),
-                    (reserve + expected_out1, reserve - expected_out2),
-                    "amount={amount}: pool2 reserves must move by (out1, out2)",
-                );
                 Ok(())
-            })?;
-        }
-        Ok(())
+            },
+        )
+    }
+
+    /// TIP-1033 FEE12 (reservation enforcement, two-hop): a pending two-hop fee swap reserves
+    /// liquidity on BOTH hop pools. Burns or rebalance swaps that would deplete either pool
+    /// past its reservation MUST revert with `InsufficientLiquidity`.
+    #[test]
+    fn test_two_hop_reservation_blocks_mid_tx_burn_on_both_hops() -> eyre::Result<()> {
+        with_two_hop_env(TempoHardfork::T5, false, |fm, t, user, validator, admin| {
+            // Tight hop pools — full burn would dip below the pending reservation.
+            let reserve: u128 = 100_000;
+            write_pool(fm, t.user, t.validator, 0)?;
+            write_pool(fm, t.user, t.hop, reserve)?;
+            write_pool(fm, t.hop, t.validator, reserve)?;
+
+            // Seed admin LP balance + total supply for both hop pools so `burn` reaches
+            // the reservation check (not gated by LP-balance check). The reservation check
+            // fires before any token transfer, so we don't need real AMM-held balances.
+            let supply = U256::from(reserve);
+            for (a, b) in [(t.user, t.hop), (t.hop, t.validator)] {
+                let pid = fm.pool_id(a, b);
+                fm.total_supply[pid].write(supply)?;
+                fm.liquidity_balances[pid][admin].write(supply)?;
+            }
+
+            // pre_tx reserves: hop1 = 997, hop2 = 994 (computed from 1_000 input).
+            let amount = U256::from(1_000);
+            fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
+            let r1 = fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.hop)].t_read()?;
+            let r2 = fm.pending_fee_swap_reservation[fm.pool_id(t.hop, t.validator)].t_read()?;
+            assert!(r1 > 0 && r2 > 0, "both hop pools must be reserved");
+
+            // Full-supply burn on hop1 would zero the reserve → must trip reservation.
+            let res1 = fm.burn(admin, t.user, t.hop, supply, admin);
+            assert!(
+                matches!(
+                    res1,
+                    Err(TempoPrecompileError::TIPFeeAMMError(
+                        TIPFeeAMMError::InsufficientLiquidity(_)
+                    ))
+                ),
+                "hop1 full burn must revert: got {res1:?}",
+            );
+
+            // Same for hop2.
+            let res2 = fm.burn(admin, t.hop, t.validator, supply, admin);
+            assert!(
+                matches!(
+                    res2,
+                    Err(TempoPrecompileError::TIPFeeAMMError(
+                        TIPFeeAMMError::InsufficientLiquidity(_)
+                    ))
+                ),
+                "hop2 full burn must revert: got {res2:?}",
+            );
+
+            // Sanity: reservations are unchanged by the failed burns.
+            assert_eq!(
+                fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.hop)].t_read()?,
+                r1,
+            );
+            assert_eq!(
+                fm.pending_fee_swap_reservation[fm.pool_id(t.hop, t.validator)].t_read()?,
+                r2,
+            );
+
+            Ok(())
+        })
     }
 }
