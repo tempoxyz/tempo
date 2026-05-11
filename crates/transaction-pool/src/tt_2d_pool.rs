@@ -501,6 +501,29 @@ impl AA2dPool {
         regular_pending.chain(expiring_pending)
     }
 
+    /// Appends all transactions from this pool to the provided pending and queued buffers.
+    pub(crate) fn append_all_transactions(
+        &self,
+        pending: &mut Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+        queued: &mut Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    ) {
+        pending.reserve(self.by_id.len() + self.expiring_nonce_txs.len());
+        queued.reserve(self.by_id.len());
+
+        for tx in self.by_id.values() {
+            if tx.is_pending() {
+                pending.push(tx.inner.transaction.clone());
+            } else {
+                queued.push(tx.inner.transaction.clone());
+            }
+        }
+        pending.extend(
+            self.expiring_nonce_txs
+                .values()
+                .map(|tx| tx.transaction.clone()),
+        );
+    }
+
     /// Returns the best, executable transactions for this sub-pool
     #[allow(clippy::mutable_key_type)]
     pub(crate) fn best_transactions(&self) -> BestAA2dTransactions {
