@@ -3268,66 +3268,77 @@ pub(crate) mod tests {
 
     #[test]
     fn test_unable_to_burn_blocked_from_protected_address() -> eyre::Result<()> {
+        use crate::tip403_registry::REJECT_ALL_POLICY_ID;
+
+        let admin = Address::random();
+        let burner = Address::random();
         let amount = (U256::random() % U256::from(u128::MAX)) / U256::from(2);
+        let burn_amount = amount / U256::from(2);
 
-        for hardfork in [TempoHardfork::T5, TempoHardfork::T6] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
-            let admin = Address::random();
-            let burner = Address::random();
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_BLOCKED_ROLE)
+                .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
+                .with_mint(STABLECOIN_DEX_ADDRESS, amount)
+                .apply()?;
 
-            StorageCtx::enter(&mut storage, || {
-                let mut token = TIP20Setup::create("Token", "TKN", admin)
-                    .with_issuer(admin)
-                    .with_role(burner, *BURN_BLOCKED_ROLE)
-                    .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
-                    .with_mint(STABLECOIN_DEX_ADDRESS, amount)
-                    .apply()?;
+            for protected in [
+                TIP_FEE_MANAGER_ADDRESS,
+                STABLECOIN_DEX_ADDRESS,
+                ESCROW_ADDRESS,
+            ] {
+                let result = token.burn_blocked(
+                    burner,
+                    ITIP20::burnBlockedCall {
+                        from: protected,
+                        amount: burn_amount,
+                    },
+                );
+                assert_eq!(result.unwrap_err(), TIP20Error::protected_address().into());
+            }
 
-                let protected = if hardfork.is_t6() {
-                    &[
-                        TIP_FEE_MANAGER_ADDRESS,
-                        STABLECOIN_DEX_ADDRESS,
-                        ESCROW_ADDRESS,
-                    ][..]
-                } else {
-                    &[TIP_FEE_MANAGER_ADDRESS, STABLECOIN_DEX_ADDRESS][..]
-                };
+            for minted in [TIP_FEE_MANAGER_ADDRESS, STABLECOIN_DEX_ADDRESS] {
+                let balance = token.balance_of(ITIP20::balanceOfCall { account: minted })?;
+                assert_eq!(balance, amount);
+            }
 
-                for protected in protected {
-                    let result = token.burn_blocked(
-                        burner,
-                        ITIP20::burnBlockedCall {
-                            from: *protected,
-                            amount: amount / U256::from(2),
-                        },
-                    );
-                    assert_eq!(result.unwrap_err(), TIP20Error::protected_address().into());
+            Ok::<_, TempoPrecompileError>(())
+        })?;
 
-                    let balance = token.balance_of(ITIP20::balanceOfCall {
-                        account: *protected,
-                    })?;
-                    let expected = if *protected == ESCROW_ADDRESS {
-                        U256::ZERO
-                    } else {
-                        amount
-                    };
-                    assert_eq!(balance, expected);
-                }
+        // Pre-T6: ESCROW_ADDRESS is not yet in PROTECTED, so burn_blocked
+        // actually burns from it (REJECT_ALL satisfies the sender-policy gate).
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_BLOCKED_ROLE)
+                .with_mint(ESCROW_ADDRESS, amount)
+                .apply()?;
 
-                if !hardfork.is_t6() {
-                    let result = token.burn_blocked(
-                        burner,
-                        ITIP20::burnBlockedCall {
-                            from: ESCROW_ADDRESS,
-                            amount: amount / U256::from(2),
-                        },
-                    );
-                    assert_ne!(result.unwrap_err(), TIP20Error::protected_address().into());
-                }
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: REJECT_ALL_POLICY_ID,
+                },
+            )?;
 
-                Ok::<_, TempoPrecompileError>(())
+            token.burn_blocked(
+                burner,
+                ITIP20::burnBlockedCall {
+                    from: ESCROW_ADDRESS,
+                    amount: burn_amount,
+                },
+            )?;
+
+            let balance = token.balance_of(ITIP20::balanceOfCall {
+                account: ESCROW_ADDRESS,
             })?;
-        }
+            assert_eq!(balance, amount - burn_amount);
+
+            Ok::<_, TempoPrecompileError>(())
+        })?;
 
         Ok(())
     }
