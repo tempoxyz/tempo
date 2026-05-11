@@ -1233,16 +1233,13 @@ impl TIP20Token {
 
     /// Releases escrowed funds to `to`. Resumes skip policy checks. Reroutes
     /// revalidate the transfer and receive policies and meter the spending limit.
-    ///
-    /// `is_resume` is `true` when the claim resumes the original inbound (non-originator
-    /// authority claiming back to the receiver). All other claims are reroutes.
     pub(crate) fn release_from_escrow(
         &mut self,
         originator: Address,
         receiver: Address,
         to: Address,
         amount: U256,
-        is_resume: bool,
+        reroute: bool,
     ) -> Result<()> {
         self.check_not_paused()?;
 
@@ -1253,7 +1250,7 @@ impl TIP20Token {
         let destination = Recipient::resolve(to)?;
         destination.validate()?;
 
-        if !is_resume {
+        if reroute {
             let registry = TIP403Registry::new();
             let policy_id = self.transfer_policy_id()?;
             if !registry.is_authorized_as(policy_id, destination.target, AuthRole::recipient())? {

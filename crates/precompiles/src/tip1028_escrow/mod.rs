@@ -31,6 +31,37 @@ pub const RECOVERY_RECEIVER: Address = Address::ZERO;
 /// Recovery-authority sentinel: originator/sender is authorized to claim (`address(1)`).
 pub const RECOVERY_SENDER: Address = Address::with_last_byte(1);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecoveryAuthority {
+    Receiver(Address),
+    Originator(Address),
+    Contract(Address),
+}
+
+impl RecoveryAuthority {
+    fn from_address(address: Address, receiver: Address, originator: Address) -> Self {
+        if address == RECOVERY_RECEIVER {
+            Self::Receiver(receiver)
+        } else if address == RECOVERY_SENDER {
+            Self::Originator(originator)
+        } else {
+            Self::Contract(address)
+        }
+    }
+
+    fn validate_auth(self, msg_sender: Address) -> Result<()> {
+        let authorized_claimer = match self {
+            Self::Receiver(claimer) | Self::Originator(claimer) | Self::Contract(claimer) => {
+                claimer
+            }
+        };
+        if msg_sender != authorized_claimer {
+            return Err(TIP1028EscrowError::unauthorized_claimer().into());
+        }
+        Ok(())
+    }
+}
+
 /// TIP-1028 escrow holding blocked inbound transfers and mints until claimed.
 #[contract(addr = ESCROW_ADDRESS)]
 pub struct TIP1028Escrow {
@@ -141,16 +172,9 @@ impl TIP1028Escrow {
             .map_err(|_| TIP1028EscrowError::invalid_claim_address())?;
 
         let recovery_address = call.recoveryAuthority;
-        let authorized = if recovery_address == RECOVERY_RECEIVER {
-            msg_sender == receiver
-        } else if recovery_address == RECOVERY_SENDER {
-            msg_sender == receipt.originator
-        } else {
-            msg_sender == recovery_address
-        };
-        if !authorized {
-            return Err(TIP1028EscrowError::unauthorized_claimer().into());
-        }
+        let recovery_authority =
+            RecoveryAuthority::from_address(recovery_address, receiver, receipt.originator);
+        recovery_authority.validate_auth(msg_sender)?;
 
         let key = self.receipt_key(call.receiptVersion, call.token, recovery_address, &receipt)?;
         let amount = self.blocked_receipt_amount[key].read()?;
@@ -161,13 +185,16 @@ impl TIP1028Escrow {
         let guard = self.storage.checkpoint();
         self.blocked_receipt_amount[key].write(U256::ZERO)?;
 
-        let is_resume = recovery_address != RECOVERY_SENDER && call.to == receiver;
+        let reroute = match recovery_authority {
+            RecoveryAuthority::Originator(_) => true,
+            RecoveryAuthority::Receiver(_) | RecoveryAuthority::Contract(_) => call.to != receiver,
+        };
         TIP20Token::from_address(call.token)?.release_from_escrow(
             receipt.originator,
             receiver,
             call.to,
             amount,
-            is_resume,
+            reroute,
         )?;
 
         self.emit_event(TIP1028EscrowEvent::BlockedReceiptClaimed(
