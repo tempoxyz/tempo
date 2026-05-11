@@ -67,7 +67,7 @@ use eyre::{ensure, eyre};
 use futures::{StreamExt as _, channel::mpsc};
 use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_08::{CryptoRng, Rng};
-use tracing::{Level, Span, debug, error, error_span, info, instrument, warn, warn_span};
+use tracing::{Level, Span, debug, error, error_span, info, info_span, instrument, warn, warn_span};
 
 use crate::{
     consensus::Digest,
@@ -78,6 +78,10 @@ use super::ingress::{Content, Message};
 
 const REPLAY_BUFFER: NonZeroUsize = NonZeroUsize::new(8 * 1024 * 1024).expect("value is not zero"); // 8MB
 const WRITE_BUFFER: NonZeroUsize = NonZeroUsize::new(1024 * 1024).expect("value is not zero"); // 1MB
+
+fn simplex_engine_partition(prefix: &str, epoch: Epoch) -> String {
+    format!("{prefix}_consensus_epoch_{epoch}")
+}
 
 pub(crate) struct Actor<TContext, TBlocker> {
     active_epochs: BTreeMap<Epoch, (Handle<()>, ContextCell<TContext>)>,
@@ -340,10 +344,7 @@ where
                     self.config.subblocks.clone(),
                     Reporters::from((self.config.marshal.clone(), self.config.feed.clone())),
                 )),
-                partition: format!(
-                    "{partition_prefix}_consensus_epoch_{epoch}",
-                    partition_prefix = self.config.partition_prefix
-                ),
+                partition: simplex_engine_partition(&self.config.partition_prefix, epoch),
                 mailbox_size: self.config.mailbox_size,
                 epoch,
 
@@ -427,6 +428,17 @@ where
                 registered"
             );
         }
+
+        let partition = simplex_engine_partition(&self.config.partition_prefix, epoch);
+        self.context
+            .with_label("partition_cleanup")
+            .spawn(move |context| async move {
+                let span = info_span!("remove_simplex_engine_partition", %partition);
+                match context.remove(&partition, None).await {
+                    Ok(()) => span.in_scope(|| info!("removed simplex engine partition")),
+                    Err(error) => span.in_scope(|| warn!(error = %eyre::Report::new(error), "encountered a problem while removing simplex engine partition")),
+                }
+            });
     }
 
     #[instrument(
