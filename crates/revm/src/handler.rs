@@ -2237,7 +2237,6 @@ mod tests {
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
-    use tempo_precompiles::account_keychain::authorizeKeyCall;
     use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, test_util::TIP20Setup};
     use tempo_primitives::transaction::{
         Call, RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
@@ -3588,23 +3587,22 @@ mod tests {
             keychain
                 .authorize_key(
                     caller,
-                    authorizeKeyCall {
-                        keyId: access_key,
-                        signatureType: PrecompileSignatureType::Secp256k1,
-                        config: KeyRestrictions {
-                            expiry: u64::MAX,
-                            enforceLimits: false,
-                            limits: vec![],
-                            allowAnyCalls: false,
-                            allowedCalls: vec![PrecompileCallScope {
-                                target,
-                                selectorRules: vec![PrecompileSelectorRule {
-                                    selector: CALL_SCOPE_SELECTOR.into(),
-                                    recipients: vec![],
-                                }],
+                    access_key,
+                    PrecompileSignatureType::Secp256k1,
+                    KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        allowAnyCalls: false,
+                        allowedCalls: vec![PrecompileCallScope {
+                            target,
+                            selectorRules: vec![PrecompileSelectorRule {
+                                selector: CALL_SCOPE_SELECTOR.into(),
+                                recipients: vec![],
                             }],
-                        },
+                        }],
                     },
+                    None,
                 )
                 .expect("access key authorization succeeds");
         });
@@ -3711,23 +3709,22 @@ mod tests {
             keychain
                 .authorize_key(
                     caller,
-                    authorizeKeyCall {
-                        keyId: access_key,
-                        signatureType: PrecompileSignatureType::Secp256k1,
-                        config: KeyRestrictions {
-                            expiry: u64::MAX,
-                            enforceLimits: false,
-                            limits: vec![],
-                            allowAnyCalls: false,
-                            allowedCalls: vec![PrecompileCallScope {
-                                target,
-                                selectorRules: vec![PrecompileSelectorRule {
-                                    selector: ALLOWED_SELECTOR.into(),
-                                    recipients: vec![],
-                                }],
+                    access_key,
+                    PrecompileSignatureType::Secp256k1,
+                    KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        allowAnyCalls: false,
+                        allowedCalls: vec![PrecompileCallScope {
+                            target,
+                            selectorRules: vec![PrecompileSelectorRule {
+                                selector: ALLOWED_SELECTOR.into(),
+                                recipients: vec![],
                             }],
-                        },
+                        }],
                     },
+                    None,
                 )
                 .expect("access key authorization succeeds");
         });
@@ -4611,17 +4608,16 @@ mod tests {
                 if seed_key {
                     kc.authorize_key(
                         user,
-                        authorizeKeyCall {
-                            keyId: access_key,
-                            signatureType: PrecompileSignatureType::Secp256k1,
-                            config: KeyRestrictions {
-                                expiry: u64::MAX,
-                                enforceLimits: false,
-                                limits: vec![],
-                                allowAnyCalls: true,
-                                allowedCalls: vec![],
-                            },
+                        access_key,
+                        PrecompileSignatureType::Secp256k1,
+                        KeyRestrictions {
+                            expiry: u64::MAX,
+                            enforceLimits: false,
+                            limits: vec![],
+                            allowAnyCalls: true,
+                            allowedCalls: vec![],
                         },
+                        None,
                     )
                     .unwrap();
                 }
