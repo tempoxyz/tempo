@@ -1193,7 +1193,7 @@ mod tests {
         );
 
         let mut t5 = CfgEnv::<TempoHardfork>::default();
-        t5.set_spec(TempoHardfork::T5);
+        t5.set_spec_and_mainnet_gas_params(TempoHardfork::T5);
         assert!(
             tempo_precompiles(&t5)
                 .get(&TIP20_CHANNEL_ESCROW_ADDRESS)

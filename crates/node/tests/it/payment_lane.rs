@@ -1,16 +1,19 @@
-use crate::utils::{TestNodeBuilder, TEST_MNEMONIC};
+use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
 use alloy::{
     network::ReceiptResponse,
     primitives::{Address, B256, U256, aliases::U96},
     providers::{Provider, ProviderBuilder},
-    signers::{SignerSync, local::{MnemonicBuilder, PrivateKeySigner}},
+    signers::{
+        SignerSync,
+        local::{MnemonicBuilder, PrivateKeySigner},
+    },
     sol_types::SolEvent,
 };
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{IFeeManager, ITIP20, ITIP20ChannelEscrow};
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS, TIP_FEE_MANAGER_ADDRESS};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
@@ -611,25 +614,47 @@ async fn test_payment_lane_gas_limits_channel_escrow() -> eyre::Result<()> {
     let url = setup.http_url;
 
     let funder = MnemonicBuilder::from_phrase(TEST_MNEMONIC).build()?;
-    let funder_provider = ProviderBuilder::new().wallet(funder.clone()).connect_http(url.clone());
+    let funder_provider = ProviderBuilder::new()
+        .wallet(funder.clone())
+        .connect_http(url.clone());
 
     let payer = PrivateKeySigner::from_bytes(&B256::with_last_byte(0x21)).unwrap();
-    let payer_provider = ProviderBuilder::new().wallet(payer.clone()).connect_http(url.clone());
+    let payer_provider = ProviderBuilder::new()
+        .wallet(payer.clone())
+        .connect_http(url.clone());
 
     // Fund payer and approve escrow
     let token = ITIP20::new(PATH_USD_ADDRESS, funder_provider.clone());
-    token.transfer(payer.address(), U256::from(20_000_000u64)).gas(1_000_000).send().await?.get_receipt().await?;
+    token
+        .transfer(payer.address(), U256::from(20_000_000u64))
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
     let payer_token = ITIP20::new(PATH_USD_ADDRESS, payer_provider.clone());
-    payer_token.approve(TIP20_CHANNEL_ESCROW_ADDRESS, U256::MAX).gas(1_000_000).send().await?.get_receipt().await?;
+    payer_token
+        .approve(TIP20_CHANNEL_ESCROW_ADDRESS, U256::MAX)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
 
     // Apply non-payment gas pressure
     for _ in 0..3 {
         let tx = TransactionRequest::default()
-            .from(funder.address()).to(funder.address())
-            .gas_price(TEMPO_T1_BASE_FEE as u128).gas_limit(2_000_000)
+            .from(funder.address())
+            .to(funder.address())
+            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas_limit(2_000_000)
             .value(U256::ZERO);
-        let r = funder_provider.send_transaction(tx).await?.get_receipt().await?;
+        let r = funder_provider
+            .send_transaction(tx)
+            .await?
+            .get_receipt()
+            .await?;
         assert!(r.status());
     }
 
@@ -637,36 +662,74 @@ async fn test_payment_lane_gas_limits_channel_escrow() -> eyre::Result<()> {
 
     // open (payment)
     let open_r = escrow
-        .open(Address::random(), Address::ZERO, PATH_USD_ADDRESS, U96::from(1_000u64), B256::random(), Address::ZERO)
-        .gas(5_000_000).send().await?.get_receipt().await?;
+        .open(
+            Address::random(),
+            Address::ZERO,
+            PATH_USD_ADDRESS,
+            U96::from(1_000u64),
+            B256::random(),
+            Address::ZERO,
+        )
+        .gas(5_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
     assert!(open_r.status(), "escrow open should succeed");
 
-    let opened = open_r.inner.logs().iter()
+    let opened = open_r
+        .inner
+        .logs()
+        .iter()
         .find_map(|log| ITIP20ChannelEscrow::ChannelOpened::decode_log(&log.inner).ok())
         .ok_or_else(|| eyre::eyre!("ChannelOpened not found"))?;
     let desc = ITIP20ChannelEscrow::ChannelDescriptor {
-        payer: opened.payer, payee: opened.payee, operator: opened.operator,
-        token: opened.token, salt: opened.salt,
-        authorizedSigner: opened.authorizedSigner, expiringNonceHash: opened.expiringNonceHash,
+        payer: opened.payer,
+        payee: opened.payee,
+        operator: opened.operator,
+        token: opened.token,
+        salt: opened.salt,
+        authorizedSigner: opened.authorizedSigner,
+        expiringNonceHash: opened.expiringNonceHash,
     };
 
     // topUp (payment)
-    let topup_r = escrow.topUp(desc.clone(), U96::from(500u64))
-        .gas(5_000_000).send().await?.get_receipt().await?;
+    let topup_r = escrow
+        .topUp(desc.clone(), U96::from(500u64))
+        .gas(5_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
     assert!(topup_r.status(), "escrow topUp should succeed");
 
     // settle (payment, requires voucher signature)
     let settle_amount = U96::from(200u64);
-    let digest = escrow.getVoucherDigest(opened.channelId, settle_amount).call().await?;
+    let digest = escrow
+        .getVoucherDigest(opened.channelId, settle_amount)
+        .call()
+        .await?;
     let sig = payer.sign_hash_sync(&digest)?;
     let settle_r = escrow
         .settle(desc, settle_amount, Bytes::copy_from_slice(&sig.as_bytes()))
-        .gas(5_000_000).send().await?.get_receipt().await?;
+        .gas(5_000_000)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
     assert!(settle_r.status(), "escrow settle should succeed");
 
     // All payment calls should pay base fee, not elevated prices
-    for (name, r) in [("open", &open_r), ("topUp", &topup_r), ("settle", &settle_r)] {
-        assert_eq!(r.effective_gas_price(), TEMPO_T1_BASE_FEE as u128, "{name} should pay base fee");
+    for (name, r) in [
+        ("open", &open_r),
+        ("topUp", &topup_r),
+        ("settle", &settle_r),
+    ] {
+        assert_eq!(
+            r.effective_gas_price(),
+            TEMPO_T1_BASE_FEE as u128,
+            "{name} should pay base fee"
+        );
     }
 
     Ok(())

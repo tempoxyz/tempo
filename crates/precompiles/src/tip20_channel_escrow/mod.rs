@@ -823,7 +823,7 @@ mod tests {
                 ITIP20ChannelEscrow::settleCall {
                     descriptor: channel_descriptor.clone(),
                     cumulativeAmount: abi_u96(120),
-                    signature: signature.clone(),
+                    signature,
                 },
             )?;
 
@@ -837,7 +837,7 @@ mod tests {
             escrow.close(
                 payee,
                 ITIP20ChannelEscrow::closeCall {
-                    descriptor: channel_descriptor.clone(),
+                    descriptor: channel_descriptor,
                     cumulativeAmount: abi_u96(500),
                     captureAmount: abi_u96(200),
                     signature: close_signature,
@@ -1356,7 +1356,7 @@ mod tests {
                 ),
             )?;
 
-            let mut keychain_signature = Vec::with_capacity(1 + 20 + 65);
+            let mut keychain_signature = Vec::new();
             keychain_signature.push(0x03);
             keychain_signature.extend_from_slice(Address::random().as_slice());
             keychain_signature.extend_from_slice(Signature::test_signature().as_bytes().as_slice());
