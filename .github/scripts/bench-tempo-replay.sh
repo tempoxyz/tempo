@@ -56,6 +56,22 @@ CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
 export PATH="$CARGO_BIN_DIR:$PATH"
 TXGEN_TEMPO_BIN="${TXGEN_TEMPO_BIN:-txgen-tempo}"
 TXGEN_BENCH_BIN="${TXGEN_BENCH_BIN:-bench}"
+BENCH_FEATURES="${BENCH_FEATURES:-jemalloc,asm-keccak,keccak-cache-global}"
+
+if [ "${BENCH_OTLP:-false}" = "true" ]; then
+  if [ -z "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" ] && [ -n "${GRAFANA_TEMPO:-}" ]; then
+    export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="${GRAFANA_TEMPO%/}/v1/traces"
+  elif [ -z "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" ] && [ -n "${TEMPO_TELEMETRY_URL:-}" ]; then
+    export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="${TEMPO_TELEMETRY_URL%/}/opentelemetry/v1/traces"
+  fi
+  export OTEL_BSP_MAX_QUEUE_SIZE="${OTEL_BSP_MAX_QUEUE_SIZE:-65536}"
+  export OTEL_BLRP_MAX_QUEUE_SIZE="${OTEL_BLRP_MAX_QUEUE_SIZE:-65536}"
+else
+  unset TEMPO_TELEMETRY_URL
+  unset GRAFANA_TEMPO
+  unset OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+  unset OTEL_EXPORTER_OTLP_HEADERS
+fi
 
 # ============================================================================
 # Install txgen-tempo and bench-cli
@@ -83,7 +99,7 @@ build_tempo() {
   echo "Building $label tempo ($ref)..."
   cd "$src_dir"
   RUSTFLAGS="-C target-cpu=native" \
-    cargo build --profile profiling --bin tempo
+    cargo build --profile profiling --bin tempo --no-default-features --features "$BENCH_FEATURES"
   cd -
 }
 
@@ -218,13 +234,22 @@ run_single() {
   total_mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
   local mem_limit=$(( total_mem_kb * 95 / 100 * 1024 ))
 
+  local scope_env=(env)
+  local env_name env_value
+  for env_name in TEMPO_TELEMETRY_URL OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OTEL_RESOURCE_ATTRIBUTES OTEL_BSP_MAX_QUEUE_SIZE OTEL_BLRP_MAX_QUEUE_SIZE; do
+    env_value="${!env_name:-}"
+    if [ -n "$env_value" ]; then
+      scope_env+=("${env_name}=${env_value}")
+    fi
+  done
+
   # Start tempo node
   if [ "${BENCH_SAMPLY:-false}" = "true" ]; then
     local samply_bin
     samply_bin="$(which samply)"
     sudo systemd-run --quiet --scope --collect --unit="$TEMPO_SCOPE" \
       -p MemoryMax="$mem_limit" \
-      nice -n -20 \
+      "${scope_env[@]}" nice -n -20 \
       "$samply_bin" record --save-only --presymbolicate --rate 10000 \
       --output "$output_dir/samply-profile.json.gz" \
       -- "$binary" "${NODE_ARGS[@]}" \
@@ -232,7 +257,7 @@ run_single() {
   else
     sudo systemd-run --quiet --scope --collect --unit="$TEMPO_SCOPE" \
       -p MemoryMax="$mem_limit" \
-      nice -n -20 "$binary" "${NODE_ARGS[@]}" \
+      "${scope_env[@]}" nice -n -20 "$binary" "${NODE_ARGS[@]}" \
       > "$log" 2>&1 &
   fi
   stdbuf -oL tail -f "$log" | sed -u "s/^/[$label] /" &
