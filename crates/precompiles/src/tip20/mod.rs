@@ -128,12 +128,8 @@ pub static UNPAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"UNPAUSE_R
 pub static ISSUER_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"ISSUER_ROLE"));
 /// Role hash that authorizes burning tokens from blocked accounts.
 pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN_BLOCKED_ROLE"));
-/// System custody addresses protected from burn-blocked operations, to protect accounting invariants.
-pub const PROTECTED: &[Address] = &[
-    TIP_FEE_MANAGER_ADDRESS,
-    STABLECOIN_DEX_ADDRESS,
-    ESCROW_ADDRESS,
-];
+/// System custody addresses always protected from burn-blocked operations.
+pub const PROTECTED: &[Address] = &[TIP_FEE_MANAGER_ADDRESS, STABLECOIN_DEX_ADDRESS];
 
 impl TIP20Token {
     /// Returns the token name.
@@ -635,7 +631,10 @@ impl TIP20Token {
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
         // Prevent burning from system custody addresses to protect accounting invariants.
-        if PROTECTED.contains(&call.from) {
+        // ESCROW_ADDRESS is only protected from T6 onward (when TIP-1028 escrow semantics activate).
+        if PROTECTED.contains(&call.from)
+            || (self.storage.spec().is_t6() && call.from == ESCROW_ADDRESS)
+        {
             return Err(TIP20Error::protected_address().into());
         }
 
@@ -3261,7 +3260,7 @@ pub(crate) mod tests {
 
     #[test]
     fn test_unable_to_burn_blocked_from_protected_address() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         let admin = Address::random();
         let burner = Address::random();
         let amount = (U256::random() % U256::from(u128::MAX)) / U256::from(2);
@@ -3275,10 +3274,9 @@ pub(crate) mod tests {
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
                 // Mint tokens to StablecoinDEX
                 .with_mint(STABLECOIN_DEX_ADDRESS, amount)
-                // Simulate funds backing blocked TIP-1028 receipts
-                .with_mint(ESCROW_ADDRESS, amount)
                 .apply()?;
 
+            // Always-protected addresses (FeeManager, StablecoinDEX)
             for protected in PROTECTED {
                 let result = token.burn_blocked(
                     burner,
@@ -3289,12 +3287,51 @@ pub(crate) mod tests {
                 );
                 assert_eq!(result.unwrap_err(), TIP20Error::protected_address().into());
 
-                // Verify balance is unchanged
                 let balance = token.balance_of(ITIP20::balanceOfCall {
                     account: *protected,
                 })?;
                 assert_eq!(balance, amount);
             }
+
+            // ESCROW_ADDRESS is also protected on T6
+            let result = token.burn_blocked(
+                burner,
+                ITIP20::burnBlockedCall {
+                    from: ESCROW_ADDRESS,
+                    amount: amount / U256::from(2),
+                },
+            );
+            assert_eq!(result.unwrap_err(), TIP20Error::protected_address().into());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_escrow_not_protected_pre_t6() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let admin = Address::random();
+        let burner = Address::random();
+        let amount = (U256::random() % U256::from(u128::MAX)) / U256::from(2);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_BLOCKED_ROLE)
+                .with_mint(ESCROW_ADDRESS, amount)
+                .apply()?;
+
+            // Pre-T6: ESCROW_ADDRESS is NOT protected — burn_blocked should not
+            // return ProtectedAddress (it will fail with PolicyForbids instead
+            // because the address is not blocked by policy).
+            let result = token.burn_blocked(
+                burner,
+                ITIP20::burnBlockedCall {
+                    from: ESCROW_ADDRESS,
+                    amount: amount / U256::from(2),
+                },
+            );
+            assert_ne!(result.unwrap_err(), TIP20Error::protected_address().into());
 
             Ok(())
         })
