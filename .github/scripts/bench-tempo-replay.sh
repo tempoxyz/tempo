@@ -15,7 +15,8 @@
 #   BENCH_SAMPLY                  – "true" to enable samply profiling (optional)
 set -euxo pipefail
 
-SCHELK_MOUNT="/reth-bench"
+SCHELK_STATE_PATH="/var/lib/schelk/a.json"
+SCHELK_MOUNT="/reth-bench-a"
 BENCH_WORK_DIR="${BENCH_WORK_DIR:-bench-results/replay}"
 SNAPSHOT_BUCKET="r2-tempo-snapshots/tempo-node-snapshots"
 TEMPO_SCOPE="tempo-replay.scope"
@@ -127,8 +128,8 @@ LOCAL_HASH=""
 [ -f "$SNAPSHOT_HASH_FILE" ] && LOCAL_HASH=$(cat "$SNAPSHOT_HASH_FILE")
 
 # Mount schelk before checking $DATADIR/db existence
-sudo schelk recover -y --kill 2>/dev/null || true
-sudo schelk mount -y
+sudo schelk --state-path "$SCHELK_STATE_PATH" recover -y --kill 2>/dev/null || true
+sudo schelk --state-path "$SCHELK_STATE_PATH" mount -y
 
 if [ "$REMOTE_HASH" != "$LOCAL_HASH" ] || [ ! -d "$DATADIR/db" ]; then
   if [ -n "$LOCAL_HASH" ]; then
@@ -158,7 +159,7 @@ if [ "$REMOTE_HASH" != "$LOCAL_HASH" ] || [ ! -d "$DATADIR/db" ]; then
   fi
 
   sync
-  sudo schelk promote -y
+  sudo schelk --state-path "$SCHELK_STATE_PATH" promote -y
   echo "$REMOTE_HASH" > "$SNAPSHOT_HASH_FILE"
   echo "Snapshot promoted to schelk baseline"
 else
@@ -179,8 +180,8 @@ run_single() {
   # Recover snapshot
   sudo systemctl stop "$TEMPO_SCOPE" 2>/dev/null || true
   sudo systemctl reset-failed "$TEMPO_SCOPE" 2>/dev/null || true
-  sudo schelk recover -y --kill || sudo schelk full-recover -y || true
-  sudo schelk mount -y
+  sudo schelk --state-path "$SCHELK_STATE_PATH" recover -y --kill || sudo schelk --state-path "$SCHELK_STATE_PATH" full-recover -y || true
+  sudo schelk --state-path "$SCHELK_STATE_PATH" mount -y
   sudo chown -R "$(id -u):$(id -g)" "$SCHELK_MOUNT"
 
   sync
@@ -291,7 +292,7 @@ run_single() {
   sudo systemctl stop "$TEMPO_SCOPE" 2>/dev/null || true
   sudo systemctl reset-failed "$TEMPO_SCOPE" 2>/dev/null || true
   sudo chown -R "$(id -un):$(id -gn)" "$output_dir" 2>/dev/null || true
-  sudo schelk recover -y --kill || true
+  sudo schelk --state-path "$SCHELK_STATE_PATH" recover -y --kill || true
   echo "=== Finished run: $label ==="
 }
 
