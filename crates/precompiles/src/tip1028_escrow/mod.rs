@@ -31,37 +31,6 @@ pub const RECOVERY_RECEIVER: Address = Address::ZERO;
 /// Recovery-authority sentinel: originator/sender is authorized to claim (`address(1)`).
 pub const RECOVERY_SENDER: Address = Address::with_last_byte(1);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RecoveryAuthority {
-    Receiver(Address),
-    Originator(Address),
-    Contract(Address),
-}
-
-impl RecoveryAuthority {
-    fn from_address(address: Address, receiver: Address, originator: Address) -> Self {
-        if address == RECOVERY_RECEIVER {
-            Self::Receiver(receiver)
-        } else if address == RECOVERY_SENDER {
-            Self::Originator(originator)
-        } else {
-            Self::Contract(address)
-        }
-    }
-
-    fn validate_auth(self, msg_sender: Address) -> Result<()> {
-        let authorized_claimer = match self {
-            Self::Receiver(claimer) | Self::Originator(claimer) | Self::Contract(claimer) => {
-                claimer
-            }
-        };
-        if msg_sender != authorized_claimer {
-            return Err(TIP1028EscrowError::unauthorized_claimer().into());
-        }
-        Ok(())
-    }
-}
-
 /// TIP-1028 escrow holding blocked inbound transfers and mints until claimed.
 #[contract(addr = ESCROW_ADDRESS)]
 pub struct TIP1028Escrow {
@@ -261,6 +230,37 @@ impl TIP1028Escrow {
                 .abi_encode()
                 .as_ref(),
         )
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RecoveryAuthority {
+    Receiver(Address),
+    Originator(Address),
+    Contract(Address),
+}
+
+impl RecoveryAuthority {
+    fn from_address(address: Address, receiver: Address, originator: Address) -> Self {
+        if address == RECOVERY_RECEIVER {
+            Self::Receiver(receiver)
+        } else if address == RECOVERY_SENDER {
+            Self::Originator(originator)
+        } else {
+            Self::Contract(address)
+        }
+    }
+
+    fn validate_auth(self, msg_sender: Address) -> Result<()> {
+        let authorized_claimer = match self {
+            Self::Receiver(claimer) | Self::Originator(claimer) | Self::Contract(claimer) => {
+                claimer
+            }
+        };
+        if msg_sender != authorized_claimer {
+            return Err(TIP1028EscrowError::unauthorized_claimer().into());
+        }
+        Ok(())
     }
 }
 
