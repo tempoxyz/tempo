@@ -220,6 +220,7 @@ run_single() {
     --metrics 9001
     --disable-discovery
     --no-persist-peers
+    --debug.startup-sync-state-idle
   )
 
   # Per-label extra node args
@@ -267,6 +268,23 @@ run_single() {
   stdbuf -oL tail -f "$log" | sed -u "s/^/[$label] /" &
   local tail_pid=$!
 
+  # Ensure node and tail are cleaned up on any exit from run_single
+  cleanup_run() {
+    kill "$tail_pid" 2>/dev/null || true
+    if [ "${BENCH_SAMPLY:-false}" = "true" ]; then
+      sudo pkill -INT -x tempo 2>/dev/null || true
+      for _i in $(seq 1 60); do
+        sudo pgrep -x samply > /dev/null 2>&1 || break
+        sleep 1
+      done
+    fi
+    sudo systemctl stop "$TEMPO_SCOPE" 2>/dev/null || true
+    sudo systemctl reset-failed "$TEMPO_SCOPE" 2>/dev/null || true
+    sudo chown -R "$(id -un):$(id -gn)" "$output_dir" 2>/dev/null || true
+    bench_schelk cleanup "$SCHELK_STATE_PATH" || true
+  }
+  trap cleanup_run EXIT
+
   # Wait for RPC
   for i in $(seq 1 120); do
     if curl -sf http://127.0.0.1:8545 -X POST \
@@ -279,7 +297,23 @@ run_single() {
     if [ "$i" -eq 120 ]; then
       echo "::error::tempo ($label) failed to start within 120s"
       cat "$log"
-      kill "$tail_pid" 2>/dev/null || true
+      exit 1
+    fi
+    sleep 1
+  done
+
+  # Wait for pipeline to finish (engine transitions to idle)
+  for i in $(seq 1 300); do
+    SYNC_RESULT=$(curl -sf http://127.0.0.1:8545 -X POST \
+      -H 'Content-Type: application/json' \
+      -d '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}' 2>/dev/null || true)
+    if [ -n "$SYNC_RESULT" ] && jq -e '.result == false' <<< "$SYNC_RESULT" > /dev/null 2>&1; then
+      echo "tempo ($label) pipeline finished after ${i}s, engine is live"
+      break
+    fi
+    if [ "$i" -eq 300 ]; then
+      echo "::error::tempo ($label) pipeline did not finish within 300s"
+      cat "$log"
       exit 1
     fi
     sleep 1
@@ -308,19 +342,9 @@ run_single() {
       --metrics-url http://localhost:9001 \
       --report "json:$output_dir/report.json" 2>&1 | sed -u "s/^/[bench] /"
 
-  # Cleanup
-  kill "$tail_pid" 2>/dev/null || true
-  if [ "${BENCH_SAMPLY:-false}" = "true" ]; then
-    sudo pkill -INT -x tempo 2>/dev/null || true
-    for i in $(seq 1 60); do
-      sudo pgrep -x samply > /dev/null 2>&1 || break
-      sleep 1
-    done
-  fi
-  sudo systemctl stop "$TEMPO_SCOPE" 2>/dev/null || true
-  sudo systemctl reset-failed "$TEMPO_SCOPE" 2>/dev/null || true
-  sudo chown -R "$(id -un):$(id -gn)" "$output_dir" 2>/dev/null || true
-  bench_schelk cleanup "$SCHELK_STATE_PATH" || true
+  # Cleanup (runs via EXIT trap; call explicitly for the success log line)
+  cleanup_run
+  trap - EXIT
   echo "=== Finished run: $label ==="
 }
 
