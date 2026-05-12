@@ -1,0 +1,160 @@
+# TIP20 + MPP mixed workload template for benchmarking.
+#
+# 80% standalone TIP-20 transfers, 20% MPP channel approve+open+close sequences.
+# The MPP channel contract must already be deployed (e.g. predeploy at MPP_CONTRACT_ADDRESS).
+#
+# Environment variables:
+#   TXGEN_ACCOUNTS        - number of accounts (default range: [0, N])
+#   MPP_CONTRACT_ADDRESS  - deployed TempoStreamChannel address
+
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+
+artifacts:
+  ERC20: erc20.abi.json
+  MPPChannel: mpp-channel.json
+
+templates:
+  tip20_transfer:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 300000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+
+  mpp_approve:
+    type: tempo
+    gas_limit: 2000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000001"
+      abi: ERC20
+      function: approve
+      args: []
+
+  mpp_open:
+    type: tempo
+    gas_limit: 2000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      abi: MPPChannel
+      function: open
+      args: []
+
+  mpp_close:
+    type: tempo
+    gas_limit: 2000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      abi: MPPChannel
+      function: close
+      args: []
+
+sequences:
+  mpp_approve_open_close:
+    bindings:
+      payer:
+        account:
+          pool: users
+          select: random
+      token:
+        address:
+          const: "0x20c0000000000000000000000000000000000001"
+      authorized_signer:
+        address:
+          const: "0x0000000000000000000000000000000000000000"
+      salt:
+        bytes32:
+          random_bytes: 32
+      channel_id:
+        abi_hash:
+          types: [address, address, address, bytes32, address, address, uint256]
+          values:
+            - { var: payer.address }
+            - { var: payer.address }
+            - { var: token }
+            - { var: salt }
+            - { var: authorized_signer }
+            - { const: "${MPP_CONTRACT_ADDRESS}" }
+            - { var: chain_id }
+      channel_key:
+        abi_encode_packed:
+          types: [bytes32, address, address, bytes32]
+          values:
+            - { var: channel_id }
+            - { var: token }
+            - { var: authorized_signer }
+            - { var: salt }
+    steps:
+      - name: approve
+        template: mpp_approve
+        with:
+          from: { var: payer.ref }
+          call:
+            args:
+              - { const: "${MPP_CONTRACT_ADDRESS}" }
+              - 1
+      - name: open
+        template: mpp_open
+        with:
+          from: { var: payer.ref }
+          call:
+            to: { const: "${MPP_CONTRACT_ADDRESS}" }
+            args:
+              - { var: payer.address }
+              - { var: token }
+              - 1
+              - { var: salt }
+              - { var: authorized_signer }
+      - name: close
+        template: mpp_close
+        with:
+          from: { var: payer.ref }
+          call:
+            to: { const: "${MPP_CONTRACT_ADDRESS}" }
+            args:
+              - { var: channel_key }
+              - 0
+              - "0x"
+
+mix:
+  - template: tip20_transfer
+    weight: 80
+  - sequence: mpp_approve_open_close
+    weight: 20

@@ -1,0 +1,260 @@
+# Nightly performance benchmarks for perf.tempo.xyz.
+#
+# Runs all perf dashboard scenarios (tip20 + mix/MPP) against main,
+# reports results to ClickHouse for the perf dashboard to pick up.
+
+name: bench-perf-nightly
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Git ref to benchmark (default: main)"
+        type: string
+        required: false
+        default: "main"
+      scenarios:
+        description: "Comma-separated scenario list (default: all)"
+        type: string
+        required: false
+        default: "tip20-10k,tip20-20k,tip20-40k,mix-10k,mix-20k,mix-40k"
+
+env:
+  CARGO_TERM_COLOR: always
+  RUSTC_WRAPPER: "sccache"
+
+permissions:
+  contents: read
+
+jobs:
+  run-scenarios:
+    name: perf-${{ matrix.scenario }}
+    runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - scenario: tip20-10k
+            spec: contrib/bench/txgen/tip20-template.yaml
+            tps: 10000
+            count: 500000
+            duration: 60
+            accounts: 1000
+          - scenario: tip20-20k
+            spec: contrib/bench/txgen/tip20-template.yaml
+            tps: 20000
+            count: 1000000
+            duration: 60
+            accounts: 2000
+          - scenario: tip20-40k
+            spec: contrib/bench/txgen/tip20-template.yaml
+            tps: 40000
+            count: 2000000
+            duration: 60
+            accounts: 4000
+          - scenario: mix-10k
+            spec: contrib/bench/txgen/mix-template.yaml
+            tps: 10000
+            count: 500000
+            duration: 60
+            accounts: 1000
+          - scenario: mix-20k
+            spec: contrib/bench/txgen/mix-template.yaml
+            tps: 20000
+            count: 1000000
+            duration: 60
+            accounts: 2000
+          - scenario: mix-40k
+            spec: contrib/bench/txgen/mix-template.yaml
+            tps: 40000
+            count: 2000000
+            duration: 60
+            accounts: 4000
+    env:
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      CLICKHOUSE_DATABASE: ${{ secrets.CLICKHOUSE_DATABASE || 'default' }}
+      MPP_CONTRACT_ADDRESS: "0x33b901018174ddabe4841042ab76ba85d4e24f25"
+    steps:
+      - name: Filter scenarios
+        id: filter
+        if: github.event_name == 'workflow_dispatch'
+        run: |
+          SCENARIOS="${{ inputs.scenarios }}"
+          CURRENT="${{ matrix.scenario }}"
+          if echo "$SCENARIOS" | grep -qw "$CURRENT"; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Skip check
+        if: steps.filter.outputs.skip == 'true'
+        run: |
+          echo "Scenario ${{ matrix.scenario }} not in requested list, skipping."
+          exit 0
+
+      - name: Mask credentials
+        if: steps.filter.outputs.skip != 'true'
+        run: |
+          if [ -n "$CLICKHOUSE_URL" ]; then echo "::add-mask::$CLICKHOUSE_URL"; fi
+          if [ -n "$CLICKHOUSE_PASSWORD" ]; then echo "::add-mask::$CLICKHOUSE_PASSWORD"; fi
+
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        if: steps.filter.outputs.skip != 'true'
+        with:
+          persist-credentials: false
+          ref: ${{ inputs.ref || 'main' }}
+
+      - uses: dtolnay/rust-toolchain@stable
+        if: steps.filter.outputs.skip != 'true'
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+        if: steps.filter.outputs.skip != 'true'
+        continue-on-error: true
+
+      - name: Build tempo (maxperf)
+        if: steps.filter.outputs.skip != 'true'
+        run: |
+          cargo build --profile maxperf --bin tempo \
+            --features jemalloc,asm-keccak,keccak-cache-global
+
+      - name: Install txgen
+        if: steps.filter.outputs.skip != 'true'
+        env:
+          TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+        run: |
+          CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
+          echo "$CARGO_BIN_DIR" >> "$GITHUB_PATH"
+          export PATH="$CARGO_BIN_DIR:$PATH"
+
+          TXGEN_GIT_URL="https://x-access-token:${TXGEN_GIT_TOKEN}@github.com/tempoxyz/txgen"
+          cargo install --git "$TXGEN_GIT_URL" --locked txgen-tempo bench-cli
+          command -v txgen-tempo
+          command -v bench
+
+      - name: Resolve git metadata
+        if: steps.filter.outputs.skip != 'true'
+        id: meta
+        run: |
+          echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+          echo "short-sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          REF=$(git describe --tags --exact-match 2>/dev/null || git rev-parse --abbrev-ref HEAD)
+          echo "ref=$REF" >> "$GITHUB_OUTPUT"
+
+      - name: Run benchmark
+        if: steps.filter.outputs.skip != 'true'
+        env:
+          TXGEN_ACCOUNTS: ${{ matrix.accounts }}
+          SCENARIO: ${{ matrix.scenario }}
+          SPEC: ${{ matrix.spec }}
+          TPS: ${{ matrix.tps }}
+          COUNT: ${{ matrix.count }}
+          DURATION: ${{ matrix.duration }}
+          GIT_SHA: ${{ steps.meta.outputs.sha }}
+          GIT_REF: ${{ steps.meta.outputs.ref }}
+        run: |
+          set -euo pipefail
+
+          TEMPO_BIN="./target/maxperf/tempo"
+          TXGEN_BIN="$(command -v txgen-tempo)"
+          BENCH_BIN="$(command -v bench)"
+          DATADIR=$(mktemp -d "/tmp/perf-bench.XXXXXX")
+          GENESIS="$DATADIR/genesis.json"
+          RESULTS_DIR="bench-results/$SCENARIO"
+          mkdir -p "$RESULTS_DIR"
+
+          echo "=== Perf bench: $SCENARIO (tps=$TPS, count=$COUNT) ==="
+
+          # Initialize a local devnet
+          "$TEMPO_BIN" init \
+            --datadir "$DATADIR" \
+            --chain dev \
+            --dev.block-time 500ms 2>&1 || true
+
+          # Start tempo node in background
+          "$TEMPO_BIN" node \
+            --datadir "$DATADIR" \
+            --chain dev \
+            --dev.block-time 500ms \
+            --http \
+            --http.addr 0.0.0.0 \
+            --http.port 8545 \
+            --http.api "eth,net,web3,txpool,debug,admin,tempo" \
+            --metrics 127.0.0.1:9001 \
+            --builder.gas-limit 1000000000000 \
+            --builder.max-tasks 32 \
+            --txpool.max-account-slots 500000 \
+            --txpool.max-pending-txs 500000 \
+            --txpool.pending-max-size 20 \
+            --ipcdisable \
+            --log.stdout.filter info &
+          TEMPO_PID=$!
+          echo "Tempo PID: $TEMPO_PID"
+
+          # Wait for RPC
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8545 -X POST -H "Content-Type: application/json" \
+              -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' > /dev/null 2>&1; then
+              echo "RPC ready after ${i}s"
+              break
+            fi
+            sleep 1
+          done
+
+          # Fund accounts
+          "$TXGEN_BIN" addresses -s "$SPEC" -f shell \
+            | while read -r addr; do
+                curl -sf http://localhost:8545 -X POST -H "Content-Type: application/json" \
+                  -d "{\"jsonrpc\":\"2.0\",\"method\":\"tempo_fundAddress\",\"params\":[\"$addr\"],\"id\":1}" > /dev/null 2>&1 || true
+              done
+          echo "Accounts funded"
+
+          # Build report flags
+          REPORT_FLAGS=(
+            --report console
+            --report "json:$RESULTS_DIR/report.json"
+          )
+          if [ -n "${CLICKHOUSE_URL:-}" ]; then
+            REPORT_FLAGS+=(--report "clickhouse://$CLICKHOUSE_URL")
+          fi
+
+          # Run benchmark
+          "$TXGEN_BIN" generate \
+            -s "$SPEC" \
+            -n "$COUNT" \
+            --seed 99 \
+            --rpc http://localhost:8545 \
+          | "$BENCH_BIN" send \
+              --rpc-url http://localhost:8545 \
+              --tps "$TPS" \
+              --max-concurrent 500 \
+              --metrics-url http://127.0.0.1:9001/metrics \
+              --scrape-interval-ms 500 \
+              --drain-timeout 300 \
+              --duration "$DURATION" \
+              -m "scenario=$SCENARIO" \
+              -m "platform=tempo" \
+              -m "git-sha=$GIT_SHA" \
+              -m "git-ref=$GIT_REF" \
+              -m "tps=$TPS" \
+              -m "max_concurrent=500" \
+              "${REPORT_FLAGS[@]}" 2>&1
+
+          # Cleanup
+          kill "$TEMPO_PID" 2>/dev/null || true
+          wait "$TEMPO_PID" 2>/dev/null || true
+          rm -rf "$DATADIR"
+
+          echo "=== $SCENARIO complete ==="
+
+      - name: Upload results
+        if: steps.filter.outputs.skip != 'true' && !cancelled()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: perf-${{ matrix.scenario }}
+          path: bench-results/
+          if-no-files-found: ignore
