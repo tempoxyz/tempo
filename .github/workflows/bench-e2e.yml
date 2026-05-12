@@ -89,30 +89,16 @@ on:
         type: string
         required: false
         default: ""
-      samply:
-        description: Capture samply profiles.
-        type: boolean
-        required: true
-        default: false
-      tracy:
-        description: Tracy mode.
+      profiling:
+        description: Profiling.
         type: choice
         required: true
-        default: "off"
+        default: "Off"
         options:
-          - "off"
-          - "on"
-          - full
-      tracy-seconds:
-        description: Tracy capture duration in seconds.
-        type: string
-        required: true
-        default: "30"
-      tracy-offset:
-        description: Tracy capture start offset in seconds.
-        type: string
-        required: true
-        default: "120"
+          - "Off"
+          - Samply
+          - Tracy
+          - Both
       otlp:
         description: Export OTLP traces and logs.
         type: boolean
@@ -326,10 +312,10 @@ jobs:
       BENCH_BASELINE_HARDFORK: ${{ inputs.baseline-hardfork }}
       BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
-      BENCH_SAMPLY: ${{ inputs.samply }}
-      BENCH_TRACY: ${{ inputs.tracy }}
-      BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds }}
-      BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
+      BENCH_SAMPLY: ${{ inputs.profiling == 'Samply' || inputs.profiling == 'Both' || inputs.samply == true || inputs.samply == 'true' }}
+      BENCH_TRACY: ${{ (inputs.profiling == 'Tracy' || inputs.profiling == 'Both') && 'on' || ((inputs.profiling == 'Off' || inputs.profiling == 'Samply') && 'off' || inputs.tracy) }}
+      BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '30' }}
+      BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset || '120' }}
       BENCH_OTLP: ${{ inputs.otlp == true || inputs.otlp == 'true' }}
       BENCH_FEATURES: ${{ (inputs.otlp == true || inputs.otlp == 'true') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}

@@ -982,10 +982,6 @@ def "main e2e" [
         print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
         exit 1
     }
-    if $samply and $tracy != "off" {
-        print "Error: --samply and --tracy are mutually exclusive. Choose one."
-        exit 1
-    }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
     if $init_only and not $force_bloat {
         print "Error: --init-only requires --force-bloat"

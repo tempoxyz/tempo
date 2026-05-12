@@ -319,19 +319,6 @@ jobs:
               return;
             }
 
-            // Mutual exclusivity: samply and tracy cannot be used together
-            if (samply === 'true' && tracy !== 'off') {
-              const msg = '❌ **Invalid bench command**\n\n`samply` and `tracy` are mutually exclusive. Choose one.';
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: msg,
-              });
-              core.setFailed(msg);
-              return;
-            }
-
             if (!['manual', 'nightly'].includes(runType)) {
               const msg = `❌ **Invalid benchmark type**\n\n\`run-type=${runType}\` is not valid. Must be \`manual\` or \`nightly\`.`;
               core.setFailed(msg);
