@@ -36,8 +36,7 @@ templates:
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
     fee_token: "0x20c0000000000000000000000000000000000000"
-    expiring_nonce: true
-    valid_for_secs: 25
+    nonce_key: { var: nonce_key }
     call:
       to: "0x20c0000000000000000000000000000000000001"
       abi: ERC20
@@ -50,8 +49,7 @@ templates:
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
     fee_token: "0x20c0000000000000000000000000000000000000"
-    expiring_nonce: true
-    valid_for_secs: 25
+    nonce_key: { var: nonce_key }
     call:
       abi: MPPChannel
       function: open
@@ -63,8 +61,7 @@ templates:
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
     fee_token: "0x20c0000000000000000000000000000000000000"
-    expiring_nonce: true
-    valid_for_secs: 25
+    nonce_key: { var: nonce_key }
     call:
       abi: MPPChannel
       function: close
@@ -86,6 +83,9 @@ sequences:
       salt:
         bytes32:
           random_bytes: 32
+      nonce_key:
+        u256:
+          uniform: [1, 1000000000]
       channel_id:
         abi_hash:
           types: [address, address, address, bytes32, address, address, uint256]
