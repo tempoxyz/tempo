@@ -580,6 +580,7 @@ jobs:
         env:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
+          BENCH_GH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
         run: |
           if [ "$BENCH_OTLP" != "true" ]; then
             unset TEMPO_TELEMETRY_URL
