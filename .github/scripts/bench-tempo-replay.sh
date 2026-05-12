@@ -18,7 +18,8 @@ set -euxo pipefail
 eval "$(nu bench-schelk.nu detect)"
 
 BENCH_WORK_DIR="${BENCH_WORK_DIR:-bench-results/replay}"
-SNAPSHOT_BUCKET="r2-tempo-snapshots/tempo-node-snapshots"
+MINIO_BASE_URL="${MINIO_BASE_URL:-http://10.10.0.50:9000}"
+MINIO_BUCKET="tempo-snapshots"
 TEMPO_SCOPE="tempo-replay.scope"
 
 # Chain-specific configuration
@@ -41,11 +42,9 @@ case "$CHAIN" in
 esac
 
 DATADIR="$SCHELK_MOUNT/tempo-replay-${CHAIN_NAME}"
-SNAPSHOT_PREFIX="tempo-${CHAIN_ID}-"
 SNAPSHOT_HASH_FILE="$HOME/.tempo-replay-snapshot-hash-${CHAIN_NAME}"
 echo "Chain: $CHAIN_NAME (id=$CHAIN_ID, rpc=$REPLAY_RPC_URL)"
 
-MC="mc"
 BLOCKS="${BENCH_BLOCKS:-5000}"
 WARMUP="${BENCH_WARMUP_BLOCKS:-1000}"
 
@@ -125,25 +124,24 @@ BASELINE_BIN="$(cd ../tempo-baseline && pwd)/target/profiling/tempo"
 FEATURE_BIN="$(cd ../tempo-feature && pwd)/target/profiling/tempo"
 
 # ============================================================================
-# Snapshot management
+# Snapshot management (MinIO — colocated with bench runners)
 # ============================================================================
 
-# Pick second-to-latest snapshot directory (filter out .json/.tar.lz4 files)
-SNAPSHOTS=$($MC ls "$SNAPSHOT_BUCKET/" | awk '{print $NF}' | sed 's:/$::' | grep "^${SNAPSHOT_PREFIX}" | grep -v '\.' | sort)
-SNAPSHOT_COUNT=$(echo "$SNAPSHOTS" | wc -l)
-if [ "$SNAPSHOT_COUNT" -lt 2 ]; then
-  echo "::error::Need at least 2 snapshots matching ${SNAPSHOT_PREFIX}*, found $SNAPSHOT_COUNT"
+# Fetch the second-to-latest snapshot manifest URL from MinIO's previous.txt
+PREVIOUS_URL="${MINIO_BASE_URL}/${MINIO_BUCKET}/${CHAIN_ID}/previous.txt"
+MANIFEST_URL=$(curl -sf "$PREVIOUS_URL" | tr -d '[:space:]')
+if [ -z "$MANIFEST_URL" ]; then
+  echo "::error::Failed to fetch previous snapshot URL from $PREVIOUS_URL"
   exit 1
 fi
-SNAPSHOT_NAME=$(echo "$SNAPSHOTS" | tail -2 | head -1)
-echo "Selected snapshot: $SNAPSHOT_NAME"
+echo "Selected snapshot manifest: $MANIFEST_URL"
 
-# Extract snapshot block number from name: tempo-{chain_id}-{block_number}-{timestamp}
+# Extract snapshot name from URL: .../tempo-{chain_id}-{block}-{timestamp}/manifest.json
+SNAPSHOT_NAME=$(echo "$MANIFEST_URL" | sed 's|.*/\(tempo-[^/]*\)/manifest.json|\1|')
 SNAPSHOT_BLOCK=$(echo "$SNAPSHOT_NAME" | awk -F- '{print $3}')
-echo "Snapshot block: $SNAPSHOT_BLOCK"
+echo "Snapshot: $SNAPSHOT_NAME (block: $SNAPSHOT_BLOCK)"
 
-MANIFEST_REMOTE="${SNAPSHOT_BUCKET}/${SNAPSHOT_NAME}/manifest.json"
-REMOTE_HASH=$($MC cat "$MANIFEST_REMOTE" 2>/dev/null | sha256sum | awk '{print $1}')
+REMOTE_HASH=$(curl -sf "$MANIFEST_URL" 2>/dev/null | sha256sum | awk '{print $1}')
 LOCAL_HASH=""
 [ -f "$SNAPSHOT_HASH_FILE" ] && LOCAL_HASH=$(cat "$SNAPSHOT_HASH_FILE")
 
@@ -157,15 +155,13 @@ if [ "$REMOTE_HASH" != "$LOCAL_HASH" ] || [ ! -d "$DATADIR/db" ]; then
     echo "Snapshot needs update (local: <none>, remote: ${REMOTE_HASH:0:16}…)"
   fi
 
-  MANIFEST_URL="https://tempo-node-snapshots.tempoxyz.dev/${SNAPSHOT_NAME}/manifest.json"
-
   # Prepare schelk volume for fresh download
   bench_schelk mark-dirty "$SCHELK_STATE_PATH"
   sudo rm -rf "$DATADIR"
   sudo mkdir -p "$DATADIR"
   sudo chown -R "$(id -u):$(id -g)" "$DATADIR"
 
-  # Download snapshot using the feature binary
+  # Download snapshot from MinIO using the feature binary
   "$FEATURE_BIN" download \
     --manifest-url "$MANIFEST_URL" \
     -y \
