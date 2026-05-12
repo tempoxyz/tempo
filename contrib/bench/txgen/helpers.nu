@@ -201,6 +201,7 @@ def txgen-run-preset-pipeline [
     txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
 
     let tx_count = [($tps * $duration) 1] | math max
+    let bench_duration = $"($duration)s"
     let txgen_cmd = [
         $txgen_tempo_bin
         "generate"
@@ -218,7 +219,7 @@ def txgen-run-preset-pipeline [
         "--metrics-url" $metrics_url
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
         "--drain-timeout" $TXGEN_HELPER_DRAIN_TIMEOUT_SECS
-        "--duration" $duration
+        "--duration" $bench_duration
         "--report" $"json:($report_path)"
         "-m" $"chain_id=($chain_id)"
         "-m" $"target_tps=($tps)"
