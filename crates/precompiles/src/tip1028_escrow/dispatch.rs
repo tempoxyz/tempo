@@ -21,8 +21,8 @@ impl Precompile for TIP1028Escrow {
                 ITIP1028EscrowCalls::blockedReceiptBalance(call) => {
                     view(call, |c| self.blocked_receipt_balance(c))
                 }
-                ITIP1028EscrowCalls::claimBlocked(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.claim_blocked(s, c))
+                ITIP1028EscrowCalls::claim(call) => {
+                    mutate_void(call, msg_sender, |s, c| self.claim(s, c))
                 }
             },
         )

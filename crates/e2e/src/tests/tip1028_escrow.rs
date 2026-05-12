@@ -60,7 +60,7 @@ fn test_escrow_claim_no_recovery() {
             .connect_http(http_url.clone());
         let other_escrow = ITIP1028Escrow::new(ESCROW_ADDRESS, other_provider);
         let Err(result) = other_escrow
-            .claimBlocked(
+            .claim(
                 blocked.token,
                 Address::ZERO,
                 BLOCKED_RECEIPT_VERSION,
@@ -90,7 +90,7 @@ fn test_escrow_claim_no_recovery() {
             .connect_http(http_url.clone());
         let receiver_escrow = ITIP1028Escrow::new(ESCROW_ADDRESS, receiver_provider);
         let claim = receiver_escrow
-            .claimBlocked(
+            .claim(
                 blocked.token,
                 Address::ZERO,
                 BLOCKED_RECEIPT_VERSION,
@@ -134,7 +134,7 @@ fn test_escrow_claim_with_recovery() {
             .connect_http(http_url.clone());
         let recovery_escrow = ITIP1028Escrow::new(ESCROW_ADDRESS, recovery_provider);
         let claim = recovery_escrow
-            .claimBlocked(
+            .claim(
                 blocked.token,
                 recovery,
                 BLOCKED_RECEIPT_VERSION,
@@ -250,7 +250,7 @@ async fn create_blocked_transfer(
     assert_eq!(blocked.from, sender);
     assert_eq!(blocked.receiver, receiver);
     assert_eq!(blocked.recipient, receiver);
-    assert_eq!(blocked.recoveryContract, recovery);
+    assert_eq!(blocked.recoveryAuthority, recovery);
     assert_eq!(blocked.amount, amount);
     assert_eq!(
         blocked.blockedReason,
@@ -302,7 +302,7 @@ where
 {
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
     let receipt = factory
-        .createToken(
+        .createToken_0(
             "Escrow Test".to_string(),
             "ETEST".to_string(),
             "USD".to_string(),

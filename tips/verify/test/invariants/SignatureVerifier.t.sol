@@ -218,50 +218,116 @@ contract SignatureVerifierInvariantTest is TempoTest {
                      SV2: MALLEABILITY RESISTANCE
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice SV2 (secp256k1): high-s must be rejected
-    function handler_sv2_secpHighS(uint256 actorSeed, bytes32 hash) external {
-        uint256 idx = actorSeed % _secpKeys.length;
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(_secpKeys[idx], hash);
-
-        uint256 sVal = uint256(s);
-        uint8 highV = v;
-        if (sVal <= _SECP256K1_N_HALF) {
-            sVal = _SECP256K1_N - sVal;
-            highV = v == 27 ? uint8(28) : uint8(27);
-        }
-        bytes memory highSSig = abi.encodePacked(r, bytes32(sVal), highV);
-
-        if (_callBothRevert(hash, highSSig, _secpAddrs[idx])) {
+    /// @dev Common SV2 dispatch for secp256k1 — exercised by the variants below.
+    function _sv2SecpCheck(
+        bytes32 hash,
+        bytes32 r,
+        uint256 highS,
+        uint8 v,
+        address signer
+    )
+        internal
+    {
+        bytes memory sig = abi.encodePacked(r, bytes32(highS), v);
+        if (_callBothRevert(hash, sig, signer)) {
             ghost_sv2_highSAllowed++;
         } else {
             ghost_sv2_secpHighSRejected++;
         }
     }
 
-    /// @notice SV2 (P256): high-s must be rejected
-    function handler_sv2_p256HighS(uint256 actorSeed, bytes32 hash) external {
-        uint256 idx = actorSeed % _p256Keys.length;
-        (bytes32 r, bytes32 s) = vm.signP256(_p256Keys[idx], hash);
-
-        uint256 sVal = uint256(s);
-        if (sVal > P256N_HALF) sVal = P256_ORDER - sVal;
-        uint256 highS = P256_ORDER - sVal;
-
-        bytes memory highSSig = abi.encodePacked(
+    /// @dev Common SV2 dispatch for P256 — exercised by the variants below.
+    function _sv2P256Check(bytes32 hash, uint256 idx, bytes32 r, uint256 highS) internal {
+        bytes memory sig = abi.encodePacked(
             TYPE_P256, r, bytes32(highS), _p256PubX[idx], _p256PubY[idx], uint8(0)
         );
-
-        if (_callBothRevert(hash, highSSig, _p256Addrs[idx])) {
+        if (_callBothRevert(hash, sig, _p256Addrs[idx])) {
             ghost_sv2_highSAllowed++;
         } else {
             ghost_sv2_p256HighSRejected++;
         }
     }
 
-    /// @notice SV2 (WebAuthn): high-s on inner P256 sig must be rejected
-    function handler_sv2_webauthnHighS(uint256 actorSeed, bytes32 hash) external {
-        uint256 idx = actorSeed % _p256Keys.length;
+    /// @dev Common SV2 dispatch for WebAuthn — exercised by the variants below.
+    function _sv2WebAuthnCheck(
+        bytes32 hash,
+        uint256 idx,
+        bytes memory webauthnData,
+        bytes32 r,
+        uint256 highS
+    )
+        internal
+    {
+        bytes memory sig = abi.encodePacked(
+            TYPE_WEBAUTHN, webauthnData, r, bytes32(highS), _p256PubX[idx], _p256PubY[idx]
+        );
+        if (_callBothRevert(hash, sig, _p256Addrs[idx])) {
+            ghost_sv2_highSAllowed++;
+        } else {
+            ghost_sv2_webauthnHighSRejected++;
+        }
+    }
 
+    // -------- secp256k1 high-s variants --------
+
+    /// @notice SV2 (secp256k1): flipped high-s from a real signature must be rejected.
+    function handler_sv2_secpHighS_flipped(uint256 actorSeed, bytes32 hash) external {
+        uint256 idx = actorSeed % _secpKeys.length;
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(_secpKeys[idx], hash);
+        uint256 sVal = uint256(s);
+        uint8 highV = v;
+        if (sVal <= _SECP256K1_N_HALF) {
+            sVal = _SECP256K1_N - sVal;
+            highV = v == 27 ? uint8(28) : uint8(27);
+        }
+        _sv2SecpCheck(hash, r, sVal, highV, _secpAddrs[idx]);
+    }
+
+    /// @notice SV2 (secp256k1): boundary high-s (s = N - 1 or s = N/2 + 1) must be rejected.
+    function handler_sv2_secpHighS_boundary(
+        uint256 actorSeed,
+        bytes32 hash,
+        bytes32 r,
+        uint8 sel
+    )
+        external
+    {
+        uint256 idx = actorSeed % _secpKeys.length;
+        uint8 v = (sel % 2 == 0) ? 27 : 28;
+        uint256 highS = (sel & 0x02) == 0 ? _SECP256K1_N - 1 : _SECP256K1_N_HALF + 1;
+        _sv2SecpCheck(hash, r, highS, v, _secpAddrs[idx]);
+    }
+
+    // -------- P256 high-s variants --------
+
+    /// @notice SV2 (P256): flipped high-s from a real signature must be rejected.
+    function handler_sv2_p256HighS_flipped(uint256 actorSeed, bytes32 hash) external {
+        uint256 idx = actorSeed % _p256Keys.length;
+        (bytes32 r, bytes32 s) = vm.signP256(_p256Keys[idx], hash);
+        uint256 sVal = uint256(s);
+        if (sVal > P256N_HALF) sVal = P256_ORDER - sVal;
+        _sv2P256Check(hash, idx, r, P256_ORDER - sVal);
+    }
+
+    /// @notice SV2 (P256): boundary high-s (s = N - 1 or s = N/2 + 1) must be rejected.
+    function handler_sv2_p256HighS_boundary(
+        uint256 actorSeed,
+        bytes32 hash,
+        bytes32 r,
+        uint8 sel
+    )
+        external
+    {
+        uint256 idx = actorSeed % _p256Keys.length;
+        uint256 highS = (sel & 0x01) == 0 ? P256_ORDER - 1 : P256N_HALF + 1;
+        _sv2P256Check(hash, idx, r, highS);
+    }
+
+    // -------- WebAuthn high-s variants --------
+
+    /// @notice SV2 (WebAuthn): flipped high-s on inner P256 sig must be rejected.
+    function handler_sv2_webauthnHighS_flipped(uint256 actorSeed, bytes32 hash) external {
+        uint256 idx = actorSeed % _p256Keys.length;
         bytes memory webauthnData = _buildWebAuthnData(hash);
         bytes memory authData = _slice(webauthnData, 0, 37);
         bytes memory clientDataJSON = _slice(webauthnData, 37, webauthnData.length - 37);
@@ -270,17 +336,23 @@ contract SignatureVerifierInvariantTest is TempoTest {
         (bytes32 r, bytes32 s) = vm.signP256(_p256Keys[idx], messageHash);
         uint256 sVal = uint256(s);
         if (sVal > P256N_HALF) sVal = P256_ORDER - sVal;
-        uint256 highS = P256_ORDER - sVal;
+        _sv2WebAuthnCheck(hash, idx, webauthnData, r, P256_ORDER - sVal);
+    }
 
-        bytes memory highSSig = abi.encodePacked(
-            TYPE_WEBAUTHN, webauthnData, r, bytes32(highS), _p256PubX[idx], _p256PubY[idx]
-        );
-
-        if (_callBothRevert(hash, highSSig, _p256Addrs[idx])) {
-            ghost_sv2_highSAllowed++;
-        } else {
-            ghost_sv2_webauthnHighSRejected++;
-        }
+    /// @notice SV2 (WebAuthn): boundary high-s (s = N - 1 or s = N/2 + 1) on inner P256 sig must
+    /// be rejected.
+    function handler_sv2_webauthnHighS_boundary(
+        uint256 actorSeed,
+        bytes32 hash,
+        bytes32 r,
+        uint8 sel
+    )
+        external
+    {
+        uint256 idx = actorSeed % _p256Keys.length;
+        bytes memory webauthnData = _buildWebAuthnData(hash);
+        uint256 highS = (sel & 0x01) == 0 ? P256_ORDER - 1 : P256N_HALF + 1;
+        _sv2WebAuthnCheck(hash, idx, webauthnData, r, highS);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -515,22 +587,47 @@ contract SignatureVerifierInvariantTest is TempoTest {
                      SV7: KEYCHAIN REJECTION
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice SV7: 0x03 prefix (Keychain secp256k1) rejected with valid-looking envelope
-    function handler_sv7_keychainSecp(uint256 actorSeed, bytes32 hash) external {
-        uint256 idx = actorSeed % _secpKeys.length;
-        address user = _secpAddrs[idx];
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(_secpKeys[idx], hash);
-        bytes memory sig = abi.encodePacked(TYPE_KEYCHAIN_SECP, user, r, s, v);
-
-        if (_callBothRevert(hash, sig, user)) {
+    /// @dev Common SV7 dispatch — exercised by the variants below.
+    function _sv7Check(bytes32 hash, bytes memory sig, address signer) internal {
+        if (_callBothRevert(hash, sig, signer)) {
             ghost_sv7_keychainAllowed++;
         } else {
             ghost_sv7_keychainRejected++;
         }
     }
 
-    /// @notice SV7: 0x04 prefix (Keychain P256) rejected with valid-looking envelope
-    function handler_sv7_keychainP256(uint256 actorSeed, bytes32 hash) external {
+    // -------- 0x03 (Keychain secp256k1) variants --------
+
+    /// @notice SV7: 0x03 prefix with valid signature must be rejected.
+    function handler_sv7_keychainSecp_validSig(uint256 actorSeed, bytes32 hash) external {
+        uint256 idx = actorSeed % _secpKeys.length;
+        address user = _secpAddrs[idx];
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(_secpKeys[idx], hash);
+        bytes memory sig = abi.encodePacked(TYPE_KEYCHAIN_SECP, user, r, s, v);
+        _sv7Check(hash, sig, user);
+    }
+
+    /// @notice SV7: 0x03 prefix with garbage r/s must be rejected.
+    function handler_sv7_keychainSecp_garbageSig(
+        uint256 actorSeed,
+        bytes32 hash,
+        bytes32 r,
+        bytes32 s,
+        uint8 vSeed
+    )
+        external
+    {
+        uint256 idx = actorSeed % _secpKeys.length;
+        address user = _secpAddrs[idx];
+        uint8 v = (vSeed % 2 == 0) ? 27 : 28;
+        bytes memory sig = abi.encodePacked(TYPE_KEYCHAIN_SECP, user, r, s, v);
+        _sv7Check(hash, sig, user);
+    }
+
+    // -------- 0x04 (Keychain P256) variants --------
+
+    /// @notice SV7: 0x04 prefix with valid signature must be rejected.
+    function handler_sv7_keychainP256_validSig(uint256 actorSeed, bytes32 hash) external {
         uint256 idx = actorSeed % _p256Keys.length;
         (bytes32 r, bytes32 s) = vm.signP256(_p256Keys[idx], hash);
         s = _normalizeP256S(s);
@@ -544,12 +641,30 @@ contract SignatureVerifierInvariantTest is TempoTest {
             _p256PubY[idx],
             uint8(0)
         );
+        _sv7Check(hash, sig, _p256Addrs[idx]);
+    }
 
-        if (_callBothRevert(hash, sig, _p256Addrs[idx])) {
-            ghost_sv7_keychainAllowed++;
-        } else {
-            ghost_sv7_keychainRejected++;
-        }
+    /// @notice SV7: 0x04 prefix with garbage r/s must be rejected.
+    function handler_sv7_keychainP256_garbageSig(
+        uint256 actorSeed,
+        bytes32 hash,
+        bytes32 r,
+        bytes32 s
+    )
+        external
+    {
+        uint256 idx = actorSeed % _p256Keys.length;
+        bytes memory sig = abi.encodePacked(
+            TYPE_KEYCHAIN_P256,
+            _p256Addrs[idx],
+            TYPE_P256,
+            r,
+            s,
+            _p256PubX[idx],
+            _p256PubY[idx],
+            uint8(0)
+        );
+        _sv7Check(hash, sig, _p256Addrs[idx]);
     }
 
     /*//////////////////////////////////////////////////////////////

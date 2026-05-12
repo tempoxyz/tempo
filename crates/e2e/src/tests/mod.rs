@@ -1,7 +1,10 @@
 use commonware_macros::test_traced;
 use reth_ethereum::{rpc::types::engine::ForkchoiceState, storage::BlockReader as _};
 
-use crate::{ExecutionRuntime, execution_runtime::chainspec};
+use crate::{
+    ExecutionRuntime,
+    execution_runtime::{chainspec, test_db_args},
+};
 
 mod backfill;
 mod consensus_rpc;
@@ -47,7 +50,7 @@ fn spawning_execution_node_works() {
         let config = crate::ExecutionNodeConfig::generate();
         let db_path = handle.nodes_dir().join("node-1").join("db");
         std::fs::create_dir_all(&db_path).expect("failed to create database directory");
-        let database = reth_db::init_db(db_path, reth_db::mdbx::DatabaseArguments::default())
+        let database = reth_db::init_db(db_path, test_db_args())
             .expect("failed to init database")
             .with_metrics();
         let node = handle

@@ -29,6 +29,18 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) payment_transactions: Histogram,
     /// Number of payment transactions in the payload.
     pub(crate) payment_transactions_last: Gauge,
+    /// Number of pool transactions yielded by the best transactions iterator.
+    pub(crate) pool_transactions_yielded: Histogram,
+    /// Number of pool transactions yielded by the best transactions iterator for the last payload.
+    pub(crate) pool_transactions_yielded_last: Gauge,
+    /// Number of yielded pool transactions included in the payload.
+    pub(crate) pool_transactions_included: Histogram,
+    /// Number of yielded pool transactions included in the last payload.
+    pub(crate) pool_transactions_included_last: Gauge,
+    /// Ratio of yielded pool transactions that were included in the payload.
+    pub(crate) pool_transactions_inclusion_ratio: Histogram,
+    /// Ratio of yielded pool transactions that were included in the last payload.
+    pub(crate) pool_transactions_inclusion_ratio_last: Gauge,
     /// Number of subblocks in the payload.
     pub(crate) subblocks: Histogram,
     /// Number of subblocks in the payload.

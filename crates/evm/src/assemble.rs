@@ -47,6 +47,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
             bundle_state,
             state_provider,
             state_root,
+            block_access_list_hash,
             ..
         } = input;
 
@@ -66,6 +67,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
             bundle_state,
             state_provider,
             state_root,
+            block_access_list_hash,
         ))?;
 
         Ok(block.map_header(|inner| TempoHeader {
@@ -200,6 +202,7 @@ mod tests {
             &bundle_state,
             &state_provider,
             state_root,
+            None,
         );
 
         let block = assembler
@@ -306,6 +309,7 @@ mod tests {
             &bundle_state,
             &state_provider,
             B256::ZERO,
+            None,
         );
 
         let block = assembler
