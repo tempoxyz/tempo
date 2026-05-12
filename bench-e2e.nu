@@ -358,22 +358,33 @@ def ensure-e2e-snapshot-supports-hardfork [datadir: string, requested_hardfork: 
 
 def e2e-synthesize-hardfork-genesis [source_genesis: string, target_genesis: string, hardfork: string] {
     let fork = (normalize-hardfork $hardfork)
-    mut config = (open $source_genesis | get config)
+    let source = (open $source_genesis)
+    mut config = ($source | get config)
     for field in (hardfork-genesis-config-fields $fork) {
         $config = ($config | upsert $field.name $field.value)
     }
-    let genesis = (
-        open $source_genesis
-        | upsert config $config
-        | upsert baseFeePerGas (hardfork-base-fee-per-gas $fork)
-    )
+    let genesis = ($source | upsert config $config)
     let target_dir = ($target_genesis | path dirname)
     mkdir $target_dir
     $genesis | to json | save -f $target_genesis
     print $"Synthesized ($fork) genesis at ($target_genesis)"
 }
 
-def e2e-regenesis [tempo_bin: string, genesis: string, datadir: string] {
+def e2e-hardfork-config-matches [genesis: string, hardfork: string] {
+    let fork = (normalize-hardfork $hardfork)
+    let config = (open $genesis | get config)
+    hardfork-genesis-config-fields $fork | all { |field|
+        ($config | get -o $field.name) == $field.value
+    }
+}
+
+def e2e-regenesis [tempo_bin: string, genesis: string, datadir: string, hardfork: string] {
+    let current_genesis = $"($datadir)/($BENCH_META_SUBDIR)/genesis.json"
+    if (e2e-hardfork-config-matches $current_genesis $hardfork) {
+        print $"Skipping tempo regenesis for ($datadir); hardfork config already matches ($hardfork)"
+        return
+    }
+
     print $"Running tempo regenesis for ($datadir) with ($genesis)..."
     let result = (run-external $tempo_bin "regenesis" "--chain" $genesis "--datadir" $datadir | complete)
     if $result.stdout != "" { print $result.stdout }
@@ -730,6 +741,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let run_type = if ($phase | str starts-with "baseline") { "baseline" } else { "feature" }
     let genesis = ($run | get -o genesis | default $ctx.genesis)
     let regenesis = ($run | get -o regenesis | default false)
+    let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
     let extra_args = if $side_args == "" { [] } else { $side_args | split row " " }
@@ -745,8 +757,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
         }
     }
     if $regenesis {
-        e2e-regenesis $run.tempo $genesis $ctx.a.datadir
-        e2e-regenesis $run.tempo $genesis $ctx.b.datadir
+        e2e-regenesis $run.tempo $genesis $ctx.a.datadir $hardfork
+        e2e-regenesis $run.tempo $genesis $ctx.b.datadir $hardfork
     }
     for role_info in [
         { role: "a", node_dir: $ctx.a.node_dir }
@@ -1220,10 +1232,10 @@ def "main e2e" [
     }
 
     let runs = [
-        { phase: "baseline-1", ref: $baseline, tempo: $baseline_tempo, genesis: $baseline_genesis_path, regenesis: $hardfork_mode }
-        { phase: "feature-1", ref: $feature, tempo: $feature_tempo, genesis: $feature_genesis_path, regenesis: $hardfork_mode }
-        { phase: "feature-2", ref: $feature, tempo: $feature_tempo, genesis: $feature_genesis_path, regenesis: $hardfork_mode }
-        { phase: "baseline-2", ref: $baseline, tempo: $baseline_tempo, genesis: $baseline_genesis_path, regenesis: $hardfork_mode }
+        { phase: "baseline-1", ref: $baseline, tempo: $baseline_tempo, genesis: $baseline_genesis_path, regenesis: $hardfork_mode, hardfork: $baseline_hardfork_name }
+        { phase: "feature-1", ref: $feature, tempo: $feature_tempo, genesis: $feature_genesis_path, regenesis: $hardfork_mode, hardfork: $feature_hardfork_name }
+        { phase: "feature-2", ref: $feature, tempo: $feature_tempo, genesis: $feature_genesis_path, regenesis: $hardfork_mode, hardfork: $feature_hardfork_name }
+        { phase: "baseline-2", ref: $baseline, tempo: $baseline_tempo, genesis: $baseline_genesis_path, regenesis: $hardfork_mode, hardfork: $baseline_hardfork_name }
     ]
     mut e2e_exit = 0
     for run in $runs {

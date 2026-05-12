@@ -289,8 +289,6 @@ def read-bench-marker [datadir: string] {
 # Ordered list of all Tempo hardforks (must match TempoHardfork enum in crates/chainspec)
 const TEMPO_HARDFORKS = ["T0" "T1" "T1A" "T1B" "T1C" "T2" "T3" "T4" "T5" "T6"]
 const TEMPO_DISABLED_HARDFORK_TIME = 9223372036854775807
-const TEMPO_T0_BASE_FEE_PER_GAS = "0x2540be400"
-const TEMPO_T1_BASE_FEE_PER_GAS = "0x4a817c800"
 
 def normalize-hardfork [fork: string] {
     let fork_upper = ($fork | str upcase)
@@ -323,14 +321,6 @@ def highest-hardfork [forks: list<string>] {
         }
     }
     $highest
-}
-
-def hardfork-base-fee-per-gas [fork: string] {
-    if (hardfork-index $fork) >= (hardfork-index "T1") {
-        $TEMPO_T1_BASE_FEE_PER_GAS
-    } else {
-        $TEMPO_T0_BASE_FEE_PER_GAS
-    }
 }
 
 def hardfork-genesis-config-fields [fork: string] {
