@@ -80,6 +80,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let provider_factory = environment.provider_factory;
 
         let provider_rw = provider_factory.database_provider_rw()?;
+        let use_hashed_state = provider_rw.cached_storage_settings().use_hashed_state();
 
         // Verify we're at genesis (block 0)
         let last_block = provider_rw.last_block_number()?;
@@ -89,6 +90,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
              but found block {last_block}"
         );
 
+        info!(target: "tempo::cli", use_hashed_state, "Storage settings loaded");
         info!(target: "tempo::cli", path = %self.state.display(), "Loading binary state dump");
 
         let file = File::open(&self.state)
@@ -102,8 +104,8 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut accounts_seen: AddressMap<Account> = AddressMap::default();
 
         // ETL collectors: accumulate entries sorted, spill to disk when full
-        let mut plain_collector: Collector<Vec<u8>, CompactU256> =
-            Collector::new(ETL_FILE_SIZE, None);
+        let mut plain_collector: Option<Collector<Vec<u8>, CompactU256>> =
+            (!use_hashed_state).then(|| Collector::new(ETL_FILE_SIZE, None));
         let mut hash_chunk: Vec<(alloy_primitives::Address, B256, CompactU256)> =
             Vec::with_capacity(WORKER_CHUNK_SIZE);
 
@@ -175,7 +177,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 "Processing token storage block"
             );
 
-            // Ensure account exists in plain state (only on first encounter).
+            // Ensure the account exists in the canonical state table (only on first encounter).
             // The binary dump is chunked: generate-state-bloat writes one block per token
             // per chunk, so the same token address appears in multiple blocks. This entry
             // is Vacant on the first chunk and Occupied on subsequent ones.
@@ -184,13 +186,18 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             // code hash, making the token appear uninitialized.
             if let Entry::Vacant(e) = accounts_seen.entry(address) {
                 let tx = provider_rw.tx_ref();
-                let mut account_cursor = tx.cursor_write::<tables::PlainAccountState>()?;
-                let account = match account_cursor.seek_exact(address)? {
-                    Some((_, account)) => account,
-                    None => {
-                        let account = Account::default();
-                        account_cursor.upsert(address, &account)?;
-                        account
+                let account = if use_hashed_state {
+                    tx.get::<tables::HashedAccounts>(keccak256(address))?
+                        .unwrap_or_default()
+                } else {
+                    let mut account_cursor = tx.cursor_write::<tables::PlainAccountState>()?;
+                    match account_cursor.seek_exact(address)? {
+                        Some((_, account)) => account,
+                        None => {
+                            let account = Account::default();
+                            account_cursor.upsert(address, &account)?;
+                            account
+                        }
                     }
                 };
                 e.insert(account);
@@ -216,13 +223,15 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
                 let compact_value = CompactU256::from(value);
 
-                // Collect plain entry: key = address ++ slot
-                let mut plain_key = Vec::with_capacity(52);
-                plain_key.extend_from_slice(address.as_slice());
-                plain_key.extend_from_slice(slot.as_slice());
-                plain_collector
-                    .insert(plain_key, compact_value.clone())
-                    .wrap_err("ETL insert failed")?;
+                if let Some(plain_collector) = &mut plain_collector {
+                    // Collect plain entry: key = address ++ slot
+                    let mut plain_key = Vec::with_capacity(52);
+                    plain_key.extend_from_slice(address.as_slice());
+                    plain_key.extend_from_slice(slot.as_slice());
+                    plain_collector
+                        .insert(plain_key, compact_value.clone())
+                        .wrap_err("ETL insert failed")?;
+                }
 
                 // Queue raw data for parallel hashing
                 hash_chunk.push((address, slot, compact_value));
@@ -261,8 +270,9 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         );
 
         // Merge existing genesis plain storage into the collector so it survives
-        // the clear + append_dup bulk load.
-        {
+        // the clear + append_dup bulk load. In hashed-state mode, plain tables are
+        // intentionally empty and must stay that way.
+        if let Some(plain_collector) = &mut plain_collector {
             let tx = provider_rw.tx_ref();
             let mut cursor = tx.cursor_read::<tables::PlainStorageState>()?;
             let mut genesis_count = 0usize;
@@ -311,16 +321,13 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         // Strategy: iterate the sorted collector, deduplicate consecutive entries with
         // the same composite key, and bulk-insert via append_dup.
         // The table is cleared first so append_dup ordering is guaranteed.
-        let total_plain = plain_collector.len();
-        provider_rw.tx_ref().clear::<tables::PlainStorageState>()?;
-        let mut plain_cursor = provider_rw
-            .tx_ref()
-            .cursor_dup_write::<tables::PlainStorageState>()?;
-        load_etl_to_cursor(
-            &mut plain_collector,
-            total_plain,
-            "plain storage",
-            |k, v| {
+        let total_plain = if let Some(plain_collector) = &mut plain_collector {
+            let total_plain = plain_collector.len();
+            provider_rw.tx_ref().clear::<tables::PlainStorageState>()?;
+            let mut plain_cursor = provider_rw
+                .tx_ref()
+                .cursor_dup_write::<tables::PlainStorageState>()?;
+            load_etl_to_cursor(plain_collector, total_plain, "plain storage", |k, v| {
                 plain_cursor.append_dup(
                     alloy_primitives::Address::from_slice(&k[..20]),
                     StorageEntry {
@@ -328,15 +335,22 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                         value: v,
                     },
                 )
-            },
-        )?;
-        drop(plain_cursor);
+            })?;
+            drop(plain_cursor);
 
-        info!(
-            target: "tempo::cli",
-            total_plain,
-            "Plain storage written, loading hashed storage from ETL..."
-        );
+            info!(
+                target: "tempo::cli",
+                total_plain,
+                "Plain storage written, loading hashed storage from ETL..."
+            );
+            total_plain
+        } else {
+            info!(
+                target: "tempo::cli",
+                "Hashed-state storage active, skipping plain storage write"
+            );
+            0
+        };
 
         let total_hashes = hashed_collector.len();
         provider_rw.tx_ref().clear::<tables::HashedStorages>()?;
