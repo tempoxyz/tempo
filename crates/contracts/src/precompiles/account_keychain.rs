@@ -3,7 +3,7 @@
 pub use IAccountKeychain::{
     IAccountKeychainErrors as AccountKeychainError, IAccountKeychainEvents as AccountKeychainEvent,
     authorizeKey_0Call as legacyAuthorizeKeyCall, authorizeKey_1Call as authorizeKeyCall,
-    authorizeKey_2Call as authorizeKeyWithNonceCall, getAllowedCallsReturn,
+    authorizeKey_2Call as authorizeKeyWithWitnessCall, getAllowedCallsReturn,
     getRemainingLimitWithPeriodCall, getRemainingLimitWithPeriodReturn as getRemainingLimitReturn,
 };
 
@@ -92,8 +92,11 @@ crate::sol! {
             uint256 remainingLimit
         );
 
-        /// Emitted when a TIP-1053 key-authorization nonce is consumed.
-        event KeyAuthorizationNonceConsumed(address indexed account, bytes32 indexed nonce);
+        /// Emitted when a key authorization carries a TIP-1053 witness.
+        event KeyAuthorizationWitness(address indexed account, bytes32 indexed witness);
+
+        /// Emitted when a TIP-1053 key-authorization witness is manually burned.
+        event KeyAuthorizationWitnessBurned(address indexed account, bytes32 indexed witness);
 
         /// Legacy authorize-key entrypoint used before T3.
         function authorizeKey(
@@ -114,18 +117,18 @@ crate::sol! {
             KeyRestrictions calldata config
         ) external;
 
-        /// Authorize a new key with a TIP-1053 replay nonce.
-        /// @dev The nonce must be unused for the caller's account. bytes32(0) is a valid nonce.
+        /// Authorize a new key with a TIP-1053 witness.
+        /// @dev The witness must not be burned for the caller's account. bytes32(0) is valid.
         function authorizeKey(
             address keyId,
             SignatureType signatureType,
             KeyRestrictions calldata config,
-            bytes32 nonce
+            bytes32 witness
         ) external;
 
-        /// Burn a TIP-1053 key-authorization nonce without authorizing a key.
+        /// Burn a TIP-1053 key-authorization witness without authorizing a key.
         /// @dev Callable by the account root key or an active access key.
-        function burnKeyAuthorizationNonce(bytes32 nonce) external;
+        function burnKeyAuthorizationWitness(bytes32 witness) external;
 
         /// Revoke an authorized key
         /// @param publicKey The public key to revoke
@@ -192,8 +195,8 @@ crate::sol! {
             address keyId
         ) external view returns (bool isScoped, CallScope[] memory scopes);
 
-        /// Returns whether a TIP-1053 key-authorization nonce has been consumed.
-        function isKeyAuthorizationNonceUsed(address account, bytes32 nonce) external view returns (bool);
+        /// Returns whether a TIP-1053 key-authorization witness has been manually burned.
+        function isKeyAuthorizationWitnessBurned(address account, bytes32 witness) external view returns (bool);
 
         /// Get the key used in the current transaction
         /// @return The keyId used in the current transaction
@@ -213,8 +216,8 @@ crate::sol! {
         error SignatureTypeMismatch(uint8 expected, uint8 actual);
         error CallNotAllowed();
         error InvalidCallScope();
-        error InvalidKeyAuthorizationNonce();
-        error KeyAuthorizationNonceAlreadyUsed();
+        error InvalidKeyAuthorizationWitness();
+        error KeyAuthorizationWitnessAlreadyBurned();
         error LegacyAuthorizeKeySelectorChanged(bytes4 newSelector);
     }
 }
@@ -287,15 +290,15 @@ impl AccountKeychainError {
         Self::InvalidCallScope(IAccountKeychain::InvalidCallScope {})
     }
 
-    /// Creates an error for a TIP-1053 nonce path that is unavailable for the current hardfork.
-    pub const fn invalid_key_authorization_nonce() -> Self {
-        Self::InvalidKeyAuthorizationNonce(IAccountKeychain::InvalidKeyAuthorizationNonce {})
+    /// Creates an error for a TIP-1053 witness path that is unavailable for the current hardfork.
+    pub const fn invalid_key_authorization_witness() -> Self {
+        Self::InvalidKeyAuthorizationWitness(IAccountKeychain::InvalidKeyAuthorizationWitness {})
     }
 
-    /// Creates an error for a TIP-1053 nonce that has already been consumed.
-    pub const fn key_authorization_nonce_already_used() -> Self {
-        Self::KeyAuthorizationNonceAlreadyUsed(
-            IAccountKeychain::KeyAuthorizationNonceAlreadyUsed {},
+    /// Creates an error for a TIP-1053 witness that has already been burned.
+    pub const fn key_authorization_witness_already_burned() -> Self {
+        Self::KeyAuthorizationWitnessAlreadyBurned(
+            IAccountKeychain::KeyAuthorizationWitnessAlreadyBurned {},
         )
     }
 

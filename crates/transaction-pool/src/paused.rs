@@ -206,12 +206,12 @@ impl PausedFeeTokenPool {
         revoked_keys: &RevokedKeys,
         spending_limit_updates: &SpendingLimitUpdates,
         spending_limit_spends: &SpendingLimitUpdates,
-        key_authorization_nonce_consumptions: &AddressMap<HashSet<B256>>,
+        key_authorization_witness_burns: &AddressMap<HashSet<B256>>,
     ) -> usize {
         if revoked_keys.is_empty()
             && spending_limit_updates.is_empty()
             && spending_limit_spends.is_empty()
-            && key_authorization_nonce_consumptions.is_empty()
+            && key_authorization_witness_burns.is_empty()
         {
             return 0;
         }
@@ -221,15 +221,15 @@ impl PausedFeeTokenPool {
             let before = meta.entries.len();
             meta.entries.retain(|entry| {
                 let Some(subject) = entry.tx.transaction.keychain_subject() else {
-                    let Some(nonce_subject) =
-                        entry.tx.transaction.key_authorization_nonce_subject()
+                    let Some(witness_subject) =
+                        entry.tx.transaction.key_authorization_witness_subject()
                     else {
                         return true;
                     };
 
-                    return !key_authorization_nonce_consumptions
-                        .get(&nonce_subject.account)
-                        .is_some_and(|nonces| nonces.contains(&nonce_subject.nonce));
+                    return !key_authorization_witness_burns
+                        .get(&witness_subject.account)
+                        .is_some_and(|witnesses| witnesses.contains(&witness_subject.witness));
                 };
 
                 let matches_limit_update =
@@ -254,14 +254,15 @@ impl PausedFeeTokenPool {
                     return false;
                 }
 
-                let Some(nonce_subject) = entry.tx.transaction.key_authorization_nonce_subject()
+                let Some(witness_subject) =
+                    entry.tx.transaction.key_authorization_witness_subject()
                 else {
                     return true;
                 };
 
-                !key_authorization_nonce_consumptions
-                    .get(&nonce_subject.account)
-                    .is_some_and(|nonces| nonces.contains(&nonce_subject.nonce))
+                !key_authorization_witness_burns
+                    .get(&witness_subject.account)
+                    .is_some_and(|witnesses| witnesses.contains(&witness_subject.witness))
             });
             count += before - meta.entries.len();
         }
@@ -557,27 +558,27 @@ mod tests {
     }
 
     #[test]
-    fn test_evict_invalidated_with_key_authorization_nonce_consumption() {
+    fn test_evict_invalidated_with_key_authorization_witness_burn() {
         let mut pool = PausedFeeTokenPool::new();
         let user_address = Address::random();
         let fee_token = Address::random();
-        let consumed_nonce = B256::random();
-        let other_nonce = B256::random();
+        let burned_witness = B256::random();
+        let other_witness = B256::random();
 
-        let key_authorization = |nonce| SignedKeyAuthorization {
+        let key_authorization = |witness| SignedKeyAuthorization {
             authorization: KeyAuthorization::unrestricted(
                 42431,
                 SignatureType::Secp256k1,
                 Address::random(),
             )
-            .with_nonce(nonce),
+            .with_witness(witness),
             signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
         };
 
         let matching = Arc::new(wrap_valid_tx(
             TxBuilder::aa(user_address)
                 .fee_token(fee_token)
-                .key_authorization(key_authorization(consumed_nonce))
+                .key_authorization(key_authorization(burned_witness))
                 .build(),
             TransactionOrigin::External,
         ));
@@ -585,7 +586,7 @@ mod tests {
             TxBuilder::aa(user_address)
                 .nonce(1)
                 .fee_token(fee_token)
-                .key_authorization(key_authorization(other_nonce))
+                .key_authorization(key_authorization(other_witness))
                 .build(),
             TransactionOrigin::External,
         ));
@@ -604,17 +605,17 @@ mod tests {
             ],
         );
 
-        let mut consumed = AddressMap::default();
-        consumed
+        let mut burned = AddressMap::default();
+        burned
             .entry(user_address)
             .or_insert_with(HashSet::default)
-            .insert(consumed_nonce);
+            .insert(burned_witness);
 
         let evicted = pool.evict_invalidated(
             &RevokedKeys::new(),
             &SpendingLimitUpdates::new(),
             &SpendingLimitUpdates::new(),
-            &consumed,
+            &burned,
         );
 
         assert_eq!(evicted, 1);
@@ -622,9 +623,9 @@ mod tests {
         assert_eq!(
             pool.all_entries()
                 .next()
-                .and_then(|entry| entry.tx.transaction.key_authorization_nonce_subject())
-                .map(|subject| subject.nonce),
-            Some(other_nonce)
+                .and_then(|entry| entry.tx.transaction.key_authorization_witness_subject())
+                .map(|subject| subject.witness),
+            Some(other_witness)
         );
     }
 

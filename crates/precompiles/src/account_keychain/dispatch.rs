@@ -23,8 +23,8 @@ const T3_ADDED: &[[u8; 4]] = &[
 const T3_DROPPED: &[[u8; 4]] = &[IAccountKeychain::getRemainingLimitCall::SELECTOR];
 const T5_ADDED: &[[u8; 4]] = &[
     IAccountKeychain::authorizeKey_2Call::SELECTOR,
-    IAccountKeychain::burnKeyAuthorizationNonceCall::SELECTOR,
-    IAccountKeychain::isKeyAuthorizationNonceUsedCall::SELECTOR,
+    IAccountKeychain::burnKeyAuthorizationWitnessCall::SELECTOR,
+    IAccountKeychain::isKeyAuthorizationWitnessBurnedCall::SELECTOR,
 ];
 
 impl Precompile for AccountKeychain {
@@ -88,13 +88,13 @@ impl Precompile for AccountKeychain {
                             c.keyId,
                             c.signatureType,
                             c.config,
-                            Some(c.nonce),
+                            Some(c.witness),
                         )
                     })
                 }
-                IAccountKeychainCalls::burnKeyAuthorizationNonce(call) => {
+                IAccountKeychainCalls::burnKeyAuthorizationWitness(call) => {
                     mutate_void(call, msg_sender, |sender, c| {
-                        self.burn_key_authorization_nonce(sender, c)
+                        self.burn_key_authorization_witness(sender, c)
                     })
                 }
                 IAccountKeychainCalls::revokeKey(call) => {
@@ -125,8 +125,8 @@ impl Precompile for AccountKeychain {
                 IAccountKeychainCalls::getAllowedCalls(call) => {
                     view(call, |c| self.get_allowed_calls(c))
                 }
-                IAccountKeychainCalls::isKeyAuthorizationNonceUsed(call) => {
-                    view(call, |c| self.is_key_authorization_nonce_used(c))
+                IAccountKeychainCalls::isKeyAuthorizationWitnessBurned(call) => {
+                    view(call, |c| self.is_key_authorization_witness_burned(c))
                 }
                 IAccountKeychainCalls::getTransactionKey(call) => {
                     view(call, |c| self.get_transaction_key(c, msg_sender))
@@ -380,9 +380,9 @@ mod tests {
     }
 
     #[test]
-    fn test_t5_nonce_selectors_rejected_pre_t5() -> eyre::Result<()> {
+    fn test_t5_witness_selectors_rejected_pre_t5() -> eyre::Result<()> {
         let account = Address::random();
-        let nonce = B256::repeat_byte(0x53);
+        let witness = B256::repeat_byte(0x53);
 
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
         StorageCtx::enter(&mut storage, || {
@@ -402,17 +402,17 @@ mod tests {
                             allowAnyCalls: true,
                             allowedCalls: vec![],
                         },
-                        nonce,
+                        witness,
                     }
                     .abi_encode(),
                 ),
                 (
-                    IAccountKeychain::burnKeyAuthorizationNonceCall::SELECTOR,
-                    IAccountKeychain::burnKeyAuthorizationNonceCall { nonce }.abi_encode(),
+                    IAccountKeychain::burnKeyAuthorizationWitnessCall::SELECTOR,
+                    IAccountKeychain::burnKeyAuthorizationWitnessCall { witness }.abi_encode(),
                 ),
                 (
-                    IAccountKeychain::isKeyAuthorizationNonceUsedCall::SELECTOR,
-                    IAccountKeychain::isKeyAuthorizationNonceUsedCall { account, nonce }
+                    IAccountKeychain::isKeyAuthorizationWitnessBurnedCall::SELECTOR,
+                    IAccountKeychain::isKeyAuthorizationWitnessBurnedCall { account, witness }
                         .abi_encode(),
                 ),
             ] {

@@ -28,7 +28,7 @@ use tempo_chainspec::{hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN,
     account_keychain::IAccountKeychain::{
-        IAccountKeychainInstance, burnKeyAuthorizationNonceCall, revokeKeyCall,
+        IAccountKeychainInstance, burnKeyAuthorizationWitnessCall, revokeKeyCall,
     },
 };
 use tempo_precompiles::{
@@ -1345,7 +1345,8 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
 }
 
 #[tokio::test]
-async fn test_key_authorization_nonce_mines_and_blocks_replay() -> eyre::Result<()> {
+async fn test_key_authorization_witness_mines_without_burning_and_allows_reuse() -> eyre::Result<()>
+{
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
@@ -1355,17 +1356,17 @@ async fn test_key_authorization_nonce_mines_and_blocks_replay() -> eyre::Result<
         .wallet(root_signer.clone())
         .connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
-    let nonce = B256::with_last_byte(0x53);
+    let witness = B256::with_last_byte(0x53);
 
     let access_key = PrivateKeySigner::random().address();
-    let key_auth = create_key_authorization_with_nonce(
+    let key_auth = create_key_authorization_with_witness(
         &root_signer,
         access_key,
         test_secp256k1_access_key_signature(),
         chain_id,
         None,
         None,
-        nonce,
+        witness,
     )?;
 
     let tx_nonce = provider.get_transaction_count(root_addr).await?;
@@ -1381,20 +1382,20 @@ async fn test_key_authorization_nonce_mines_and_blocks_replay() -> eyre::Result<
 
     let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
     assert!(
-        keychain
-            .isKeyAuthorizationNonceUsed(root_addr, nonce)
+        !keychain
+            .isKeyAuthorizationWitnessBurned(root_addr, witness)
             .call()
             .await?
     );
 
-    let replay_auth = create_key_authorization_with_nonce(
+    let replay_auth = create_key_authorization_with_witness(
         &root_signer,
         PrivateKeySigner::random().address(),
         test_secp256k1_access_key_signature(),
         chain_id,
         None,
         None,
-        nonce,
+        witness,
     )?;
     let mut replay_tx = create_basic_aa_tx(
         chain_id,
@@ -1404,23 +1405,13 @@ async fn test_key_authorization_nonce_mines_and_blocks_replay() -> eyre::Result<
     );
     replay_tx.key_authorization = Some(replay_auth);
     let replay_sig = sign_aa_tx_secp256k1(&replay_tx, &root_signer)?;
-    let replay_envelope: TempoTxEnvelope = replay_tx.into_signed(replay_sig).into();
-
-    assert!(
-        setup
-            .node
-            .rpc
-            .inject_tx(replay_envelope.encoded_2718().into())
-            .await
-            .is_err(),
-        "reusing a consumed key-authorization nonce must be rejected"
-    );
+    submit_and_mine_aa_tx(&mut setup, replay_tx, replay_sig).await?;
 
     Ok(())
 }
 
 #[tokio::test]
-async fn test_key_authorization_nonce_consumption_evicts_pending_replay() -> eyre::Result<()> {
+async fn test_key_authorization_witness_burn_evicts_pending_replay() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
@@ -1430,7 +1421,7 @@ async fn test_key_authorization_nonce_consumption_evicts_pending_replay() -> eyr
         .wallet(root_signer.clone())
         .connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
-    let nonce = B256::with_last_byte(0x54);
+    let witness = B256::with_last_byte(0x54);
 
     for _ in 0..2 {
         setup.node.advance_block().await?;
@@ -1442,14 +1433,14 @@ async fn test_key_authorization_nonce_consumption_evicts_pending_replay() -> eyr
         .header
         .timestamp();
 
-    let key_auth = create_key_authorization_with_nonce(
+    let key_auth = create_key_authorization_with_witness(
         &root_signer,
         PrivateKeySigner::random().address(),
         test_secp256k1_access_key_signature(),
         chain_id,
         None,
         None,
-        nonce,
+        witness,
     )?;
     let mut delayed_tx = create_basic_aa_tx(
         chain_id,
@@ -1476,7 +1467,9 @@ async fn test_key_authorization_nonce_consumption_evicts_pending_replay() -> eyr
         vec![Call {
             to: ACCOUNT_KEYCHAIN_ADDRESS.into(),
             value: U256::ZERO,
-            input: burnKeyAuthorizationNonceCall { nonce }.abi_encode().into(),
+            input: burnKeyAuthorizationWitnessCall { witness }
+                .abi_encode()
+                .into(),
         }],
         2_000_000,
     );
@@ -1487,7 +1480,7 @@ async fn test_key_authorization_nonce_consumption_evicts_pending_replay() -> eyr
     let keychain = IAccountKeychainInstance::new(ACCOUNT_KEYCHAIN_ADDRESS, &provider);
     assert!(
         keychain
-            .isKeyAuthorizationNonceUsed(root_addr, nonce)
+            .isKeyAuthorizationWitnessBurned(root_addr, witness)
             .call()
             .await?
     );

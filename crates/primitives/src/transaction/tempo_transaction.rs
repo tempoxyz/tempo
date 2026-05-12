@@ -2089,7 +2089,7 @@ mod compact_tests {
                         period: 86400,
                     }]),
                     allowed_calls: None,
-                    nonce: None,
+                    witness: None,
                 },
                 signature: PrimitiveSignature::P256(P256SignatureWithPreHash {
                     r: b256!("0x1111111111111111111111111111111111111111111111111111111111111111"),

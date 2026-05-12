@@ -328,20 +328,20 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_p256_0_limits::noop".into()),
         },
         AuthDef {
-            name: "key_auth_secp256k1_nonce",
-            auth: AuthKind::KeyAuthNonce {
+            name: "key_auth_secp256k1_witness",
+            auth: AuthKind::KeyAuthWitness {
                 key_type: SignatureType::Secp256k1,
                 num_limits: 0,
             },
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_secp256k1_0_limits::noop".into()),
         },
         AuthDef {
-            name: "key_auth_secp256k1_nonce_1_limit",
-            auth: AuthKind::KeyAuthNonce {
+            name: "key_auth_secp256k1_witness_1_limit",
+            auth: AuthKind::KeyAuthWitness {
                 key_type: SignatureType::Secp256k1,
                 num_limits: 1,
             },
-            noop_expected: ExpectedGasDiff::GreaterThan("key_auth_secp256k1_nonce::noop".into()),
+            noop_expected: ExpectedGasDiff::GreaterThan("key_auth_secp256k1_witness::noop".into()),
         },
     ];
 
@@ -364,7 +364,7 @@ fn gas_estimation_cases() -> Vec<GasCase> {
                     &auth_def.auth,
                     AuthKind::Keychain { .. }
                         | AuthKind::KeyAuth { .. }
-                        | AuthKind::KeyAuthNonce { .. }
+                        | AuthKind::KeyAuthWitness { .. }
                 )
             {
                 continue;
@@ -504,7 +504,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
                         if !matches!(allowed_calls, AllowedCallsMode::None)
                 )
         })
-        .filter(|case| is_t5 || !matches!(&case.auth, AuthKind::KeyAuthNonce { .. }))
+        .filter(|case| is_t5 || !matches!(&case.auth, AuthKind::KeyAuthWitness { .. }))
         .collect();
     let provider = env.provider();
 
@@ -593,7 +593,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
                 );
                 request.key_authorization = Some(auth);
             }
-            AuthKind::KeyAuthNonce {
+            AuthKind::KeyAuthWitness {
                 key_type,
                 num_limits,
             } => {
@@ -607,7 +607,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
                 );
                 auth.authorization = auth
                     .authorization
-                    .with_nonce(B256::with_last_byte((i + 1) as u8));
+                    .with_witness(B256::with_last_byte((i + 1) as u8));
                 auth.signature = PrimitiveSignature::Secp256k1(
                     signer
                         .sign_hash_sync(&auth.authorization.signature_hash())

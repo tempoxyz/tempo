@@ -105,8 +105,8 @@ where
     ///    changed for a token matching the transaction's fee token
     ///    2b. **Spending limit spends**: AA transactions whose remaining spending limit (re-read
     ///    from state) is now insufficient after included keychain txs decremented it
-    ///    2c. **Key-authorization nonce consumptions**: AA transactions with a nonce-bearing
-    ///    inline key authorization whose `(account, nonce)` has already been consumed
+    ///    2c. **Key-authorization witness burns**: AA transactions with a witness-bearing
+    ///    inline key authorization whose `(account, witness)` has been manually burned
     /// 3. **Validator token changes**: Transactions that would fail due to insufficient
     ///    liquidity in the new (user_token, validator_token) AMM pool
     /// 4. **Fee payer balance changes**: Transactions whose fee payer no longer has enough
@@ -188,7 +188,7 @@ where
         let mut revoked_count = 0;
         let mut spending_limit_count = 0;
         let mut spending_limit_spend_count = 0;
-        let mut key_authorization_nonce_count = 0;
+        let mut key_authorization_witness_count = 0;
         let mut liquidity_count = 0;
         let mut user_token_count = 0;
         let mut blacklisted_count = 0;
@@ -244,16 +244,16 @@ where
                 continue;
             }
 
-            // Check 2c: TIP-1053 key-authorization nonce consumptions
-            if !updates.key_authorization_nonce_consumptions.is_empty()
-                && let Some(subject) = tx.transaction.key_authorization_nonce_subject()
+            // Check 2c: TIP-1053 key-authorization witness burns
+            if !updates.key_authorization_witness_burns.is_empty()
+                && let Some(subject) = tx.transaction.key_authorization_witness_subject()
                 && updates
-                    .key_authorization_nonce_consumptions
+                    .key_authorization_witness_burns
                     .get(&subject.account)
-                    .is_some_and(|nonces| nonces.contains(&subject.nonce))
+                    .is_some_and(|witnesses| witnesses.contains(&subject.witness))
             {
                 to_remove.push(*tx.hash());
-                key_authorization_nonce_count += 1;
+                key_authorization_witness_count += 1;
                 continue;
             }
 
@@ -436,7 +436,7 @@ where
                 revoked_count,
                 spending_limit_count,
                 spending_limit_spend_count,
-                key_authorization_nonce_count,
+                key_authorization_witness_count,
                 liquidity_count,
                 user_token_count,
                 blacklisted_count,
@@ -1501,28 +1501,28 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn evicts_transactions_with_consumed_key_authorization_nonce() {
+    async fn evicts_transactions_with_burned_key_authorization_witness() {
         let sender = Address::random();
-        let consumed_nonce = B256::random();
-        let other_nonce = B256::random();
+        let burned_witness = B256::random();
+        let other_witness = B256::random();
 
-        let key_authorization = |nonce| SignedKeyAuthorization {
+        let key_authorization = |witness| SignedKeyAuthorization {
             authorization: KeyAuthorization::unrestricted(
                 42431,
                 SignatureType::Secp256k1,
                 Address::random(),
             )
-            .with_nonce(nonce),
+            .with_witness(witness),
             signature: PrimitiveSignature::Secp256k1(Signature::test_signature()),
         };
 
         let matching = crate::test_utils::TxBuilder::aa(sender)
             .nonce(0)
-            .key_authorization(key_authorization(consumed_nonce))
+            .key_authorization(key_authorization(burned_witness))
             .build();
         let untouched = crate::test_utils::TxBuilder::aa(sender)
             .nonce(1)
-            .key_authorization(key_authorization(other_nonce))
+            .key_authorization(key_authorization(other_witness))
             .build();
 
         let provider = MockEthProvider::<TempoPrimitives>::new()
@@ -1579,10 +1579,10 @@ mod tests {
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
         updates
-            .key_authorization_nonce_consumptions
+            .key_authorization_witness_burns
             .entry(sender)
             .or_default()
-            .insert(consumed_nonce);
+            .insert(burned_witness);
 
         let evicted = pool.evict_invalidated_transactions(&updates);
         assert_eq!(evicted, vec![*matching.hash()]);

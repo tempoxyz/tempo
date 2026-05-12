@@ -164,18 +164,18 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Extracts the TIP-1053 key-authorization nonce consumed by this transaction, if any.
-    pub fn key_authorization_nonce_subject(&self) -> Option<KeyAuthorizationNonceSubject> {
+    /// Extracts the TIP-1053 key-authorization witness carried by this transaction, if any.
+    pub fn key_authorization_witness_subject(&self) -> Option<KeyAuthorizationWitnessSubject> {
         let aa_tx = self.inner().as_aa()?;
-        let nonce = aa_tx
+        let witness = aa_tx
             .tx()
             .key_authorization
             .as_ref()?
             .authorization
-            .nonce()?;
-        Some(KeyAuthorizationNonceSubject {
+            .witness()?;
+        Some(KeyAuthorizationWitnessSubject {
             account: *self.sender_ref(),
-            nonce,
+            witness,
         })
     }
 
@@ -1175,13 +1175,13 @@ pub struct KeychainSubject {
     pub fee_token: Address,
 }
 
-/// Key-authorization nonce identity extracted from an AA transaction.
+/// Key-authorization witness identity extracted from an AA transaction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyAuthorizationNonceSubject {
-    /// The account whose key-authorization nonce is consumed.
+pub struct KeyAuthorizationWitnessSubject {
+    /// The account whose key-authorization witness is carried or burned.
     pub account: Address,
-    /// The consumed TIP-1053 nonce.
-    pub nonce: B256,
+    /// The TIP-1053 witness.
+    pub witness: B256,
 }
 
 impl KeychainSubject {
