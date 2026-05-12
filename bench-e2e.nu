@@ -20,11 +20,6 @@ const E2E_GAS_LIMIT = "1000000000000"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
-const TXGEN_DEFAULT_SEED = 99
-const TXGEN_SCRAPE_INTERVAL_MS = 500
-const TXGEN_DRAIN_TIMEOUT_SECS = 300
-const TXGEN_FUND_DRAIN_TIMEOUT_SECS = 120
-const TXGEN_TIP20_TEMPLATE = "contrib/bench/txgen/tip20-template.yaml"
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
     "--disable-discovery"
@@ -138,124 +133,6 @@ def e2e-bloat-gib-to-mib [bloat: int] {
 
     print "Error: --bloat must be one of: 1, 10, 100"
     exit 1
-}
-
-def shell-quote [value: any] {
-    let s = ($value | into string)
-    let escaped = ($s | str replace -a "'" "'\"'\"'")
-    $"'($escaped)'"
-}
-
-def shell-join [args: list<any>] {
-    $args | each { |arg| shell-quote $arg } | str join " "
-}
-
-def resolve-command-path [name: string] {
-    let path = (which $name | get -o 0.path | default "")
-    if $path == "" {
-        error make { msg: $"($name) not found in PATH" }
-    }
-    $path
-}
-
-def resolve-bench-binary [repo_dir: string] {
-    for candidate in [$"($repo_dir)/target/release/bench" $"($repo_dir)/target/release/bench-cli"] {
-        if ($candidate | path exists) {
-            return $candidate
-        }
-    }
-    error make { msg: $"txgen bench binary not found under ($repo_dir)/target/release/" }
-}
-
-def resolve-txgen-paths [] {
-    let repo_dir = ($env.TXGEN_REPO_DIR? | default "")
-    let repo = if $repo_dir != "" { $repo_dir | path expand } else { "" }
-    let generator = if ($env.TXGEN_TEMPO_BIN? | default "") != "" {
-        $env.TXGEN_TEMPO_BIN | path expand
-    } else if $repo != "" and ($"($repo)/target/release/txgen-tempo" | path exists) {
-        $"($repo)/target/release/txgen-tempo"
-    } else {
-        resolve-command-path "txgen-tempo"
-    }
-    let bench = if ($env.TXGEN_BENCH_BIN? | default "") != "" {
-        $env.TXGEN_BENCH_BIN | path expand
-    } else if $repo != "" {
-        resolve-bench-binary $repo
-    } else {
-        resolve-command-path "bench"
-    }
-    if not ($generator | path exists) {
-        error make { msg: $"txgen-tempo binary not found: ($generator)" }
-    }
-    if not ($bench | path exists) {
-        error make { msg: $"txgen bench binary not found: ($bench)" }
-    }
-    { txgen_tempo_bin: $generator, txgen_bench_bin: $bench }
-}
-
-def rpc-call [rpc_url: string, payload: string] {
-    let result = (^curl -sf -X POST -H "Content-Type: application/json" -d $payload $rpc_url | complete)
-    if $result.exit_code != 0 {
-        error make { msg: $"RPC call failed: ($payload)" }
-    }
-    let response = ($result.stdout | from json)
-    if (($response | get -o error) != null) {
-        let rpc_error = ($response | get error)
-        error make { msg: $"RPC error: ($rpc_error | to json -r)" }
-    }
-    $response
-}
-
-def fetch-chain-id [rpc_url: string] {
-    let response = (rpc-call $rpc_url '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}')
-    $response.result | into int
-}
-
-def wait-for-txpool-drain [rpc_url: string, timeout_secs: int] {
-    mut zero_count = 0
-    mut waited = 0
-    while $waited < $timeout_secs {
-        let response = (rpc-call $rpc_url '{"jsonrpc":"2.0","method":"txpool_status","params":[],"id":1}')
-        let pending = ($response.result.pending | into int)
-        if $pending == 0 {
-            $zero_count = $zero_count + 1
-            if $zero_count >= 3 { return }
-        } else {
-            $zero_count = 0
-        }
-        sleep 1sec
-        $waited = $waited + 1
-    }
-    print $"  Warning: txpool drain timeout reached after ($timeout_secs)s"
-}
-
-def fund-txgen-accounts [txgen_bin: string, spec_path: string, rpc_url: string] {
-    let result = (^$txgen_bin addresses -s $spec_path -f shell | complete)
-    if $result.exit_code != 0 {
-        error make { msg: $"failed to list txgen addresses for ($spec_path)" }
-    }
-
-    let addresses = ($result.stdout | str trim | split row " " | where { |addr| $addr != "" })
-    if ($addresses | is-empty) {
-        error make { msg: $"txgen spec produced no addresses: ($spec_path)" }
-    }
-
-    print $"  Funding (($addresses | length)) txgen account\(s\)..."
-    $addresses | par-each { |address|
-        rpc-call $rpc_url $"{\"jsonrpc\":\"2.0\",\"method\":\"tempo_fundAddress\",\"params\":[\"($address)\"],\"id\":1}" | ignore
-    } | ignore
-
-    print "  Waiting for faucet transactions to drain..."
-    wait-for-txpool-drain $rpc_url $TXGEN_FUND_DRAIN_TIMEOUT_SECS
-}
-
-def sanitize-txgen-bench-args [bench_args: string] {
-    if $bench_args == "" {
-        return ""
-    }
-    $bench_args
-        | str replace --all --regex '--existing-recipients=(true|false)' ''
-        | str trim
 }
 
 def validator-dirs-in-localnet [localnet_dir: string] {
@@ -788,68 +665,33 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
 
     if $phase_exit == 0 {
-        let bench_env_export = if $ctx.bench_env != "" { $"export ($ctx.bench_env) && " } else { "" }
-        if $ctx.preset != "tip20" {
-            print $"Error: txgen e2e currently supports only preset=tip20 \(got ($ctx.preset)\)"
-            $phase_exit = 1
-        } else {
-            let ignored_bench_args = (sanitize-txgen-bench-args $ctx.bench_args)
-            if $ignored_bench_args != "" {
-                print $"  Warning: txgen path is ignoring unsupported bench args: ($ignored_bench_args)"
+        let sender_exit = (try {
+            let bench_result = (txgen-run-preset-pipeline
+                --txgen-tempo-bin $ctx.txgen.txgen_tempo_bin
+                --txgen-bench-bin $ctx.txgen.txgen_bench_bin
+                --preset-path $ctx.preset_path
+                --generate-rpc-url $a_rpc
+                --submit-rpc-url $a_rpc
+                --metrics-url "http://127.0.0.1:9001/metrics"
+                --report-path $"($ctx.results_dir)/report-($phase).json"
+                --tps $ctx.tps
+                --duration $ctx.duration
+                --accounts $ctx.accounts
+                --max-concurrent-requests $ctx.max_concurrent_requests
+                --bench-env $ctx.bench_env
+                --git-ref $run.ref
+                --build-profile $ctx.profile
+                --benchmark-mode "e2e")
+            if not $bench_result.ok {
+                $bench_result.exit_code
+            } else {
+                0
             }
-            let chain_id = (fetch-chain-id $a_rpc)
-            $env.TXGEN_ACCOUNTS = ($ctx.accounts | into string)
-            let spec_path = ($TXGEN_TIP20_TEMPLATE | path expand)
-            fund-txgen-accounts $ctx.txgen.txgen_tempo_bin $spec_path $a_rpc
-
-            let report_path = $"($ctx.results_dir)/report-($phase).json"
-            let tx_count = [($ctx.tps * $ctx.duration) 1] | math max
-            let txgen_cmd = [
-                $ctx.txgen.txgen_tempo_bin
-                "generate"
-                "-s" $spec_path
-                "-n" $tx_count
-                "--seed" $TXGEN_DEFAULT_SEED
-                "--rpc" $a_rpc
-            ]
-            let bench_cmd = [
-                $ctx.txgen.txgen_bench_bin
-                "send"
-                "--rpc-url" $a_rpc
-                "--tps" $ctx.tps
-                "--max-concurrent" $ctx.max_concurrent_requests
-                "--metrics-url" "http://127.0.0.1:9001/metrics"
-                "--scrape-interval-ms" $TXGEN_SCRAPE_INTERVAL_MS
-                "--drain-timeout" $TXGEN_DRAIN_TIMEOUT_SECS
-                "--duration" $ctx.duration
-                "--report" $"json:($report_path)"
-                "-m" $"chain_id=($chain_id)"
-                "-m" $"target_tps=($ctx.tps)"
-                "-m" $"run_duration_secs=($ctx.duration)"
-                "-m" $"accounts=($ctx.accounts)"
-                "-m" $"total_connections=($ctx.max_concurrent_requests)"
-                "-m" "tip20_weight=1.0"
-                "-m" "place_order_weight=0.0"
-                "-m" "swap_weight=0.0"
-                "-m" "erc20_weight=0.0"
-                "-m" $"node_commit_sha=($run.ref)"
-                "-m" $"build_profile=($ctx.profile)"
-                "-m" "mode=e2e"
-            ]
-            print $"Running local e2e txgen sender: ($txgen_cmd | str join ' ') | ($bench_cmd | str join ' ')"
-            let txgen_cmd_str = (shell-join $txgen_cmd)
-            let bench_cmd_str = (shell-join $bench_cmd)
-            let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
-            let bench_result = (bash -lc $pipeline | complete)
-            if $bench_result.stdout != "" { print $bench_result.stdout }
-            if $bench_result.stderr != "" { print $bench_result.stderr }
-            $phase_exit = $bench_result.exit_code
-
-            if not ($report_path | path exists) {
-                print $"ERROR: txgen sender for ($phase) produced no ($report_path)"
-                $phase_exit = 1
-            }
-        }
+        } catch { |e|
+            print $"Error: local e2e txgen sender failed for ($phase): ($e.msg)"
+            1
+        })
+        $phase_exit = $sender_exit
     } else {
         print $"Skipping local e2e sender for ($phase) because readiness checks failed"
     }
@@ -874,7 +716,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
-    --preset: string = ""                               # Preset: tip20, erc20, swap, order, tempo-mix
+    --preset: string = ""                               # Txgen preset name
     --tps: int = 10000                                  # Target TPS
     --duration: int = 300                               # Duration in seconds
     --accounts: int = 1000                              # Number of accounts
@@ -905,18 +747,8 @@ def "main e2e" [
     --loud                                              # Show node debug logs
     --no-cache                                           # Skip binary cache
 ] {
-    if $preset == "" {
-        print "Error: --preset tip20 is required for e2e txgen"
-        exit 1
-    }
-    if not ($preset in $PRESETS) {
-        print $"Unknown preset: ($preset). Available: ($PRESETS | columns | str join ', ')"
-        exit 1
-    }
-    if $preset != "tip20" {
-        print $"Error: e2e txgen currently supports only --preset tip20 \(got '($preset)'\)"
-        exit 1
-    }
+    let preset_path = (txgen-preset-path $preset)
+    txgen-validate-bench-args $bench_args
     if $tracy not-in ["off" "on" "full"] {
         print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
         exit 1
@@ -1083,7 +915,7 @@ def "main e2e" [
     }
     let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
     let feature_tempo = (worktree-bin $feature_wt $profile "tempo")
-    let txgen = resolve-txgen-paths
+    let txgen = txgen-resolve-binaries
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
     let ctx = {
         genesis: $genesis_path
@@ -1109,6 +941,7 @@ def "main e2e" [
             memory: $E2E_B_MEMORY
         }
         preset: $preset
+        preset_path: $preset_path
         tps: $tps
         duration: $duration
         accounts: $accounts

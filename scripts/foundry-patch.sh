@@ -69,11 +69,41 @@ fi
 while IFS=$'\t' read -r crate path; do
   [[ -n "$crate" ]] || continue
   local_path="${TEMPO_ROOT}/${path}"
-  if sed -n '/^\[patch\.crates-io\]/,/^\[/{/^'"${crate}"' = /p}' "$FOUNDRY_CARGO" | grep -q .; then
-    sed -i'' '/^\[patch\.crates-io\]/,/^\[/{s|^'"${crate}"' = .*|'"${crate}"' = { path = "'"${local_path}"'" }|}' "$FOUNDRY_CARGO"
-  else
-    sed -i'' "/^\[patch\.crates-io\]/a ${crate} = { path = \"${local_path}\" }" "$FOUNDRY_CARGO"
-  fi
+  replacement="${crate} = { path = \"${local_path}\" }"
+  tmp_cargo="$(mktemp "${FOUNDRY_CARGO}.XXXXXX")"
+  awk -v crate="$crate" -v replacement="$replacement" '
+    /^\[patch\.crates-io\]/ {
+      seen = 1
+      in_section = 1
+      print
+      next
+    }
+    in_section && /^\[/ {
+      if (!done) {
+        print replacement
+        done = 1
+      }
+      in_section = 0
+    }
+    in_section && index($0, crate " = ") == 1 {
+      if (!done) {
+        print replacement
+        done = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!seen) {
+        print ""
+        print "[patch.crates-io]"
+        print replacement
+      } else if (in_section && !done) {
+        print replacement
+      }
+    }
+  ' "$FOUNDRY_CARGO" > "$tmp_cargo"
+  mv "$tmp_cargo" "$FOUNDRY_CARGO"
 done <<< "$PATCHES"
 
 echo "Updated Cargo.toml patch sections:"
@@ -105,6 +135,35 @@ while true; do
   cargo update -p "$conflict_pkg" >/dev/null
   prev_conflict_pkg="$conflict_pkg"
 done
+
+stale_tempo_pkgs="$(
+  awk '
+    /^\[\[package\]\]/ {
+      name = ""
+      next
+    }
+    /^name = / {
+      name = $3
+      gsub(/"/, "", name)
+      next
+    }
+    /^source = "git\+https:\/\/github.com\/tempoxyz\/tempo\?rev=/ {
+      if (name != "") {
+        print name
+      }
+    }
+  ' Cargo.lock | sort -u
+)"
+if [[ -n "$stale_tempo_pkgs" ]]; then
+  update_args=()
+  while IFS= read -r pkg; do
+    [[ -n "$pkg" ]] || continue
+    update_args+=("-p" "$pkg")
+  done <<< "$stale_tempo_pkgs"
+  echo "Cargo.lock still contains stale Tempo git packages; running 'cargo update ${update_args[*]}'"
+  cargo update "${update_args[@]}" >/dev/null
+  cargo metadata --format-version=1 --no-default-features >/dev/null
+fi
 popd >/dev/null
 
 if grep -q '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock"; then

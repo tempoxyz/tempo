@@ -4,7 +4,7 @@ use jiff::SignedDuration;
 use reth_cli_commands::download::DownloadDefaults;
 use reth_ethereum::node::core::args::{
     DefaultDiscoveryArgs, DefaultEngineValues, DefaultNetworkArgs, DefaultPayloadBuilderValues,
-    DefaultTxPoolValues,
+    DefaultTraceValues, DefaultTxPoolValues,
 };
 use std::{borrow::Cow, str::FromStr, time::Duration};
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -215,6 +215,14 @@ fn init_engine_defaults() {
         .expect("failed to initialize engine defaults");
 }
 
+fn init_trace_defaults() {
+    DefaultTraceValues::default()
+        .with_service_name("tempo")
+        .with_service_version(env!("CARGO_PKG_VERSION"))
+        .try_init()
+        .expect("failed to initialize trace defaults");
+}
+
 fn init_otlp_defaults() {
     // Override the default OTLP max queue size (2048) to prevent trace/log dropping under load.
     // See also reth-bench-compare which uses the same approach via env vars.
@@ -253,6 +261,7 @@ pub(crate) fn init_defaults() {
     init_payload_builder_defaults();
     init_txpool_defaults();
     init_engine_defaults();
+    init_trace_defaults();
     init_otlp_defaults();
     init_network_defaults();
     init_discovery_defaults();
