@@ -279,8 +279,13 @@ where
                             warn_span!("backfill_on_start", %height)
                             .in_scope(|| warn!(
                                 "marshal actor did not have block even though \
-                                it must have finalized it previously",
+                                it must have finalized it previously; \
+                                falling back to EL sync",
                             ));
+                            self.finalized_heights_to_backfill = RangeInclusive::new(1, 0);
+                            if let Some(block) = self.marshal.get_block(self.last_consensus_finalized_height).await {
+                                self.canonicalize_finalized(block.height(), block.digest()).await;
+                            }
                         }
                     }
                 }
@@ -306,15 +311,7 @@ where
                 , if finalized_tip_has_moved
                 && self.pending_backfill.is_none()
                 => {
-                    let (response, _rx) = oneshot::channel();
-                    self.canonicalize(
-                        Span::current(),
-                        HeadOrFinalized::Finalized,
-                        height,
-                        digest,
-                        JustCanonicalizeOrAlsoBuild::JustCanonicalize { response },
-                    )
-                    .await;
+                    self.canonicalize_finalized(height, digest).await;
                 }
 
                 // Serve requests lasts.
@@ -342,6 +339,18 @@ where
                 },
             }
         }
+    }
+
+    async fn canonicalize_finalized(&mut self, height: Height, digest: Digest) {
+        let (response, _rx) = oneshot::channel();
+        self.canonicalize(
+            Span::current(),
+            HeadOrFinalized::Finalized,
+            height,
+            digest,
+            JustCanonicalizeOrAlsoBuild::JustCanonicalize { response },
+        )
+        .await;
     }
 
     fn reset_fcu_heartbeat_timer(&mut self) {
