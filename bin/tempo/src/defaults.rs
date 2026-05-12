@@ -4,7 +4,7 @@ use jiff::SignedDuration;
 use reth_cli_commands::download::DownloadDefaults;
 use reth_ethereum::node::core::args::{
     DefaultDiscoveryArgs, DefaultEngineValues, DefaultNetworkArgs, DefaultPayloadBuilderValues,
-    DefaultStorageValues, DefaultTxPoolValues,
+    DefaultTxPoolValues,
 };
 use std::{borrow::Cow, str::FromStr, time::Duration};
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -198,14 +198,6 @@ fn init_txpool_defaults() {
         .expect("failed to initialize txpool defaults");
 }
 
-fn init_storage_defaults() {
-    DefaultStorageValues::default()
-        // NOTE: when changing, don't forget to change in `e2e::launch_execution_node`
-        .with_v2(false)
-        .try_init()
-        .expect("failed to initialize storage defaults");
-}
-
 fn init_engine_defaults() {
     DefaultEngineValues::default()
         // In Commonware consensus, it might happen that a head is notarized (causing it to become a canonical tip for reth),
@@ -257,7 +249,6 @@ fn init_discovery_defaults() {
 }
 
 pub(crate) fn init_defaults() {
-    init_storage_defaults();
     init_download_urls();
     init_payload_builder_defaults();
     init_txpool_defaults();
