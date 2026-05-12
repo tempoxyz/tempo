@@ -211,6 +211,59 @@ def e2e-snapshots-ready [a_db: string, b_db: string] {
     (e2e-snapshot-ready $a_db) and (e2e-snapshot-ready $b_db)
 }
 
+def e2e-snapshot-state-hardfork [datadir: string] {
+    let marker = (read-bench-marker $datadir)
+    if $marker == null {
+        return (latest-tempo-hardfork)
+    }
+    let state_hardfork = ($marker | get -o state_hardfork | default "")
+    if $state_hardfork == "" {
+        return (latest-tempo-hardfork)
+    }
+    normalize-hardfork $state_hardfork
+}
+
+def e2e-update-snapshot-hardfork-marker [datadir: string, hardfork: string] {
+    let fork = (normalize-hardfork $hardfork)
+    let marker_path = $"($datadir)/($BENCH_META_SUBDIR)/marker.json"
+    let marker = (open $marker_path)
+    $marker | upsert state_hardfork $fork | to json | save -f $marker_path
+}
+
+def e2e-synthesize-hardfork-genesis [source_genesis: string, target_genesis: string, hardfork: string] {
+    let fork = (normalize-hardfork $hardfork)
+    let source = (open $source_genesis)
+    mut config = ($source | get config)
+    for field in (hardfork-genesis-config-fields $fork) {
+        $config = ($config | upsert $field.name $field.value)
+    }
+    let genesis = ($source | upsert config $config)
+    let target_dir = ($target_genesis | path dirname)
+    mkdir $target_dir
+    $genesis | to json | save -f $target_genesis
+    print $"Synthesized ($fork) genesis at ($target_genesis)"
+}
+
+def e2e-regenesis [tempo_bin: string, genesis: string, datadir: string, hardfork: string] {
+    let fork = (normalize-hardfork $hardfork)
+    let current_hardfork = (e2e-snapshot-state-hardfork $datadir)
+    if $current_hardfork == $fork {
+        print $"Skipping tempo regenesis for ($datadir); marker state_hardfork already matches ($fork)"
+        return
+    }
+
+    print $"Running tempo regenesis for ($datadir): state_hardfork=($current_hardfork) -> ($fork) with ($genesis)..."
+    let result = (run-external $tempo_bin "regenesis" "--chain" $genesis "--datadir" $datadir | complete)
+    if $result.stdout != "" { print $result.stdout }
+    if $result.stderr != "" { print $result.stderr }
+    if $result.exit_code != 0 {
+        print $"Error: tempo regenesis failed for ($datadir) with exit code ($result.exit_code)"
+        exit $result.exit_code
+    }
+    e2e-synthesize-hardfork-genesis $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $fork
+    e2e-update-snapshot-hardfork-marker $datadir $fork
+}
+
 def derive-tracing-otlp [tracing_otlp: string] {
     if $tracing_otlp == "" and ($env.GRAFANA_TEMPO? | default "" | str length) > 0 {
         let base = ($env.GRAFANA_TEMPO | str trim --right --char '/')
@@ -551,10 +604,32 @@ def init-local-e2e-side [
     bench-save-e2e-meta $datadir $meta_dir ($marker | insert validator_role $role) [[$generated_genesis "genesis.json"] [$generated_trusted_peers "trusted-peers.txt"]]
 }
 
+# Update the PR comment with current benchmark phase status.
+# Requires BENCH_GH_TOKEN, BENCH_COMMENT_ID, BENCH_ACTOR, BENCH_JOB_URL,
+# BENCH_CONFIG, and GITHUB_REPOSITORY environment variables.
+def bench-update-pr-status [status: string] {
+    let comment_id = ($env | get -o BENCH_COMMENT_ID | default "")
+    let token = ($env | get -o BENCH_GH_TOKEN | default "")
+    if $comment_id == "" or $token == "" { return }
+    let repo = $env.GITHUB_REPOSITORY
+    let actor = ($env | get -o BENCH_ACTOR | default "")
+    let job_url = ($env | get -o BENCH_JOB_URL | default "")
+    let config = ($env | get -o BENCH_CONFIG | default "")
+    let body = $"cc @($actor)\n\n🚀 Benchmark started! [View job]\(($job_url)\)\n\n⏳ **Status:** ($status)\n\n($config)"
+    let payload = { body: $body } | to json
+    try {
+        ^curl -sS -X PATCH $"https://api.github.com/repos/($repo)/issues/comments/($comment_id)" -H $"Authorization: token ($token)" -H "Accept: application/vnd.github+json" -d $payload | ignore
+    } catch {
+        print $"Warning: failed to update PR comment status"
+    }
+}
+
 def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
     print $"=== Starting local e2e phase: ($phase) ==="
     let run_type = if ($phase | str starts-with "baseline") { "baseline" } else { "feature" }
+    let genesis = ($run | get -o genesis | default $ctx.genesis)
+    let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
     let extra_args = if $side_args == "" { [] } else { $side_args | split row " " }
@@ -563,11 +638,15 @@ def run-local-e2e-phase [run: record, ctx: record] {
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
     bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
 
-    for path in [$ctx.genesis $ctx.a.node_dir $ctx.b.node_dir] {
+    for path in [$genesis $ctx.a.node_dir $ctx.b.node_dir] {
         if not ($path | path exists) {
             print $"Error: required e2e path does not exist after snapshot recovery: ($path)"
             exit 1
         }
+    }
+    if $hardfork != "" {
+        e2e-regenesis $run.tempo $genesis $ctx.a.datadir $hardfork
+        e2e-regenesis $run.tempo $genesis $ctx.b.datadir $hardfork
     }
     for role_info in [
         { role: "a", node_dir: $ctx.a.node_dir }
@@ -604,13 +683,13 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
-    let a_base_args = (build-base-args $ctx.genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
+    let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
         | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
         | append $E2E_LOCAL_RETH_ARGS
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
-    let b_base_args = (build-base-args $ctx.genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
+    let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
         | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
         | append $E2E_LOCAL_RETH_ARGS
         | append (log-filter-args $ctx.loud)
@@ -743,6 +822,8 @@ def "main e2e" [
     --bench-env: string = ""                            # Environment vars for the sender process
     --baseline-name: string = ""                         # Baseline display name for summary
     --feature-name: string = ""                          # Feature display name for summary
+    --baseline-hardfork: string = ""                     # Latest active hardfork for baseline phases
+    --feature-hardfork: string = ""                      # Latest active hardfork for feature phases
     --tune                                              # Apply system tuning
     --loud                                              # Show node debug logs
     --no-cache                                           # Skip binary cache
@@ -751,10 +832,6 @@ def "main e2e" [
     txgen-validate-bench-args $bench_args
     if $tracy not-in ["off" "on" "full"] {
         print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
-        exit 1
-    }
-    if $samply and $tracy != "off" {
-        print "Error: --samply and --tracy are mutually exclusive. Choose one."
         exit 1
     }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
@@ -766,6 +843,19 @@ def "main e2e" [
         print "Error: tracy-capture not found. Install tracy and ensure tracy-capture is in PATH."
         exit 1
     }
+    let hardfork_mode = $baseline_hardfork != "" or $feature_hardfork != ""
+    if $hardfork_mode and ($baseline_hardfork == "" or $feature_hardfork == "") {
+        print "Error: --baseline-hardfork and --feature-hardfork must both be provided"
+        exit 1
+    }
+    let baseline_hardfork_name = if $hardfork_mode { normalize-hardfork $baseline_hardfork } else { "" }
+    let feature_hardfork_name = if $hardfork_mode { normalize-hardfork $feature_hardfork } else { "" }
+    let snapshot_state_hardfork = if $hardfork_mode {
+        highest-hardfork [$baseline_hardfork_name $feature_hardfork_name]
+    } else {
+        latest-tempo-hardfork
+    }
+    let snapshot_hardfork_args = (hardfork-to-genesis-args $snapshot_state_hardfork)
 
     let validator_list = (
         $E2E_VALIDATORS
@@ -834,7 +924,7 @@ def "main e2e" [
         let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
         let genesis_accounts = ([$accounts 3] | math max) + 1
         print $"Generating local e2e localnet config for validators: ($E2E_VALIDATORS)"
-        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args
+        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args ...$snapshot_hardfork_args
 
         let trusted_peers = (trusted-peers-from-localnet $init_dir)
         if $trusted_peers == "" {
@@ -857,6 +947,7 @@ def "main e2e" [
             gas_limit: $gas_limit
             dkg_in_genesis: true
             topology: "single-runner"
+            state_hardfork: $snapshot_state_hardfork
         }
         init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
         init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
@@ -872,6 +963,15 @@ def "main e2e" [
     if $init_only {
         cleanup-local-e2e-processes
         return
+    }
+    let hardfork_genesis_dir = $"($LOCALNET_DIR)/e2e-hardfork-genesis"
+    let baseline_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-baseline.json" } else { $genesis_path }
+    let feature_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-feature.json" } else { $genesis_path }
+    if $hardfork_mode {
+        if ($hardfork_genesis_dir | path exists) { rm -rf $hardfork_genesis_dir }
+        mkdir $hardfork_genesis_dir
+        e2e-synthesize-hardfork-genesis $genesis_path $baseline_genesis_path $baseline_hardfork_name
+        e2e-synthesize-hardfork-genesis $genesis_path $feature_genesis_path $feature_hardfork_name
     }
     let trusted_peers = if ($a_trusted_peers_path | path exists) {
         open $a_trusted_peers_path | str trim
@@ -970,13 +1070,16 @@ def "main e2e" [
     }
 
     let runs = [
-        { phase: "baseline-1", ref: $baseline, tempo: $baseline_tempo }
-        { phase: "feature-1", ref: $feature, tempo: $feature_tempo }
-        { phase: "feature-2", ref: $feature, tempo: $feature_tempo }
-        { phase: "baseline-2", ref: $baseline, tempo: $baseline_tempo }
+        { phase: "baseline-1", ref: $baseline, tempo: $baseline_tempo, genesis: $baseline_genesis_path, hardfork: $baseline_hardfork_name }
+        { phase: "feature-1", ref: $feature, tempo: $feature_tempo, genesis: $feature_genesis_path, hardfork: $feature_hardfork_name }
+        { phase: "feature-2", ref: $feature, tempo: $feature_tempo, genesis: $feature_genesis_path, hardfork: $feature_hardfork_name }
+        { phase: "baseline-2", ref: $baseline, tempo: $baseline_tempo, genesis: $baseline_genesis_path, hardfork: $baseline_hardfork_name }
     ]
+    let num_phases = ($runs | length)
     mut e2e_exit = 0
-    for run in $runs {
+    for idx in 0..<$num_phases {
+        let run = ($runs | get $idx)
+        bench-update-pr-status $"Running benchmark phase ($run.phase) \(($idx + 1)/($num_phases)\)..."
         let phase_exit = (run-local-e2e-phase $run $ctx)
         if $phase_exit != 0 {
             $e2e_exit = $phase_exit
@@ -1008,8 +1111,10 @@ def "main e2e" [
         }
     }
 
-    let baseline_label = if $baseline_name != "" { $baseline_name } else { $baseline }
-    let feature_label = if $feature_name != "" { $feature_name } else { $feature }
+    let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
+    let feature_base_label = if $feature_name != "" { $feature_name } else { $feature }
+    let baseline_label = if $hardfork_mode { $"($baseline_base_label) \(($baseline_hardfork_name)\)" } else { $baseline_base_label }
+    let feature_label = if $hardfork_mode { $"($feature_base_label) \(($feature_hardfork_name)\)" } else { $feature_base_label }
     if $e2e_exit == 0 {
         generate-summary $results_dir $baseline_label $feature_label $bloat_mib $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch
     }

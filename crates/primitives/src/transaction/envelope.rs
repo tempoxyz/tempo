@@ -989,6 +989,7 @@ mod tests {
                     expiry: None,
                     limits,
                     allowed_calls: None,
+                    witness: None,
                 },
                 signature: PrimitiveSignature::Secp256k1(Signature::test_signature()),
             }),

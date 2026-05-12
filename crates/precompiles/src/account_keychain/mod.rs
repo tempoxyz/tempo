@@ -16,11 +16,12 @@ pub use tempo_contracts::precompiles::{
     IAccountKeychain,
     IAccountKeychain::{
         CallScope, KeyInfo, KeyRestrictions, SelectorRule, SignatureType, TokenLimit,
-        getAllowedCallsCall, getKeyCall, getRemainingLimitCall, getRemainingLimitWithPeriodCall,
-        getTransactionKeyCall, removeAllowedCallsCall, revokeKeyCall, setAllowedCallsCall,
-        updateSpendingLimitCall,
+        burnKeyAuthorizationWitnessCall, getAllowedCallsCall, getKeyCall, getRemainingLimitCall,
+        getRemainingLimitWithPeriodCall, getTransactionKeyCall,
+        isKeyAuthorizationWitnessBurnedCall, removeAllowedCallsCall, revokeKeyCall,
+        setAllowedCallsCall, updateSpendingLimitCall,
     },
-    authorizeKeyCall, getAllowedCallsReturn, getRemainingLimitReturn,
+    authorizeKeyCall, authorizeKeyWithWitnessCall, getAllowedCallsReturn, getRemainingLimitReturn,
 };
 use tempo_primitives::TempoAddressExt;
 
@@ -80,6 +81,9 @@ pub struct AccountKeychain {
 
     // key_scopes[(account, keyId)] -> call scoping configuration.
     key_scopes: Mapping<B256, KeyScope>,
+
+    // key_authorization_witnesses[account][witness] -> true once manually burned.
+    key_authorization_witnesses: Mapping<Address, Mapping<B256, bool>>,
 
     // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
     // macro is refactored and has 2 independent layouts (persistent and transient).
@@ -197,14 +201,20 @@ impl AccountKeychain {
     /// - `KeyAlreadyExists` — a key with this ID is already registered
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
     /// - `InvalidSignatureType` — must be Secp256k1, P256, or WebAuthn
-    pub fn authorize_key(&mut self, msg_sender: Address, call: authorizeKeyCall) -> Result<()> {
-        let config = &call.config;
-
+    pub fn authorize_key(
+        &mut self,
+        msg_sender: Address,
+        key_id: Address,
+        signature_type: SignatureType,
+        config: KeyRestrictions,
+        witness: Option<B256>,
+    ) -> Result<()> {
+        let config = &config;
         self.ensure_admin_caller(msg_sender)?;
         let is_t3 = self.storage.spec().is_t3();
 
         // Validate inputs
-        if call.keyId == Address::ZERO {
+        if key_id == Address::ZERO {
             return Err(AccountKeychainError::zero_public_key().into());
         }
 
@@ -217,7 +227,7 @@ impl AccountKeychain {
         }
 
         // Check if key already exists (key exists if expiry > 0)
-        let existing_key = self.keys[msg_sender][call.keyId].read()?;
+        let existing_key = self.keys[msg_sender][key_id].read()?;
         if existing_key.expiry > 0 {
             return Err(AccountKeychainError::key_already_exists().into());
         }
@@ -228,7 +238,7 @@ impl AccountKeychain {
         }
 
         // Convert SignatureType enum to u8 for storage
-        let signature_type = match call.signatureType {
+        let signature_type = match signature_type {
             SignatureType::Secp256k1 => 0,
             SignatureType::P256 => 1,
             SignatureType::WebAuthn => 2,
@@ -263,6 +273,10 @@ impl AccountKeychain {
             None
         };
 
+        if let Some(witness) = witness {
+            self.ensure_key_authorization_witness_not_burned(msg_sender, witness)?;
+        }
+
         // Create and store the new key
         let new_key = AuthorizedKey {
             signature_type,
@@ -271,7 +285,7 @@ impl AccountKeychain {
             is_revoked: false,
         };
 
-        self.keys[msg_sender][call.keyId].write(new_key)?;
+        self.keys[msg_sender][key_id].write(new_key)?;
 
         let limits = config
             .enforceLimits
@@ -281,20 +295,41 @@ impl AccountKeychain {
 
         self.apply_key_authorization_restrictions(
             msg_sender,
-            call.keyId,
+            key_id,
             limits,
             allowed_call_configs,
         )?;
+
+        if let Some(witness) = witness {
+            self.emit_event(AccountKeychainEvent::KeyAuthorizationWitness(
+                IAccountKeychain::KeyAuthorizationWitness {
+                    account: msg_sender,
+                    witness,
+                },
+            ))?;
+        }
 
         // Emit event
         self.emit_event(AccountKeychainEvent::KeyAuthorized(
             IAccountKeychain::KeyAuthorized {
                 account: msg_sender,
-                publicKey: call.keyId,
+                publicKey: key_id,
                 signatureType: signature_type,
                 expiry: config.expiry,
             },
-        ))
+        ))?;
+
+        Ok(())
+    }
+
+    /// Burns a TIP-1053 witness without authorizing a key.
+    pub fn burn_key_authorization_witness(
+        &mut self,
+        msg_sender: Address,
+        call: burnKeyAuthorizationWitnessCall,
+    ) -> Result<()> {
+        self.ensure_account_caller(msg_sender, true)?;
+        self.burn_key_authorization_witness_value(msg_sender, call.witness)
     }
 
     /// Permanently revokes an access key. Once revoked, a key ID can never be re-authorized for
@@ -581,6 +616,14 @@ impl AccountKeychain {
             isScoped: true,
             scopes,
         })
+    }
+
+    /// Returns whether a TIP-1053 key-authorization witness has been manually burned.
+    pub fn is_key_authorization_witness_burned(
+        &self,
+        call: isKeyAuthorizationWitnessBurnedCall,
+    ) -> Result<bool> {
+        self.key_authorization_witnesses[call.account][call.witness].read()
     }
 
     /// Returns the access key used to authorize the current transaction (`Address::ZERO` = root key).
@@ -963,8 +1006,18 @@ impl AccountKeychain {
     /// `tx_origin` is seeded by the handler before validation/execution.
     /// If origin is not seeded (zero), admin ops are rejected.
     fn ensure_admin_caller(&self, msg_sender: Address) -> Result<()> {
-        if !self.transaction_key.t_read()?.is_zero() {
-            return Err(AccountKeychainError::unauthorized_caller().into());
+        self.ensure_account_caller(msg_sender, false)
+    }
+
+    fn ensure_account_caller(&self, msg_sender: Address, allow_active_key: bool) -> Result<()> {
+        let transaction_key = self.transaction_key.t_read()?;
+        if !transaction_key.is_zero() {
+            if allow_active_key {
+                let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+                self.load_active_key(msg_sender, transaction_key, current_timestamp)?;
+            } else {
+                return Err(AccountKeychainError::unauthorized_caller().into());
+            }
         }
 
         if self.storage.spec().is_t2() {
@@ -975,6 +1028,31 @@ impl AccountKeychain {
         }
 
         Ok(())
+    }
+
+    fn ensure_key_authorization_witness_not_burned(
+        &self,
+        account: Address,
+        witness: B256,
+    ) -> Result<()> {
+        if self.key_authorization_witnesses[account][witness].read()? {
+            return Err(AccountKeychainError::key_authorization_witness_already_burned().into());
+        }
+
+        Ok(())
+    }
+
+    fn burn_key_authorization_witness_value(
+        &mut self,
+        account: Address,
+        witness: B256,
+    ) -> Result<()> {
+        self.ensure_key_authorization_witness_not_burned(account, witness)?;
+
+        self.key_authorization_witnesses[account][witness].write(true)?;
+        self.emit_event(AccountKeychainEvent::KeyAuthorizationWitnessBurned(
+            IAccountKeychain::KeyAuthorizationWitnessBurned { account, witness },
+        ))
     }
 
     /// Load and validate a key exists, is not revoked, and is not expired.
@@ -1342,6 +1420,36 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
 
+    fn authorize_key(
+        keychain: &mut AccountKeychain,
+        msg_sender: Address,
+        call: authorizeKeyCall,
+    ) -> Result<()> {
+        AccountKeychain::authorize_key(
+            keychain,
+            msg_sender,
+            call.keyId,
+            call.signatureType,
+            call.config,
+            None,
+        )
+    }
+
+    fn authorize_key_with_witness(
+        keychain: &mut AccountKeychain,
+        msg_sender: Address,
+        call: authorizeKeyWithWitnessCall,
+    ) -> Result<()> {
+        AccountKeychain::authorize_key(
+            keychain,
+            msg_sender,
+            call.keyId,
+            call.signatureType,
+            call.config,
+            Some(call.witness),
+        )
+    }
+
     // Helper function to assert unauthorized error
     fn assert_unauthorized_error(error: TempoPrecompileError) {
         match error {
@@ -1377,6 +1485,129 @@ mod tests {
             }
             _ => panic!("Expected AccountKeychainError, got: {error:?}"),
         }
+    }
+
+    fn unrestricted_restrictions() -> KeyRestrictions {
+        tempo_alloy::provider::keychain::KeyRestrictions::default().into()
+    }
+
+    #[test]
+    fn test_t5_authorize_key_with_witness_does_not_burn_and_allows_reuse() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let account = Address::random();
+        let first_key = Address::random();
+        let second_key = Address::random();
+        let witness = B256::ZERO;
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+
+            authorize_key_with_witness(
+                &mut keychain,
+                account,
+                authorizeKeyWithWitnessCall {
+                    keyId: first_key,
+                    signatureType: SignatureType::Secp256k1,
+                    config: unrestricted_restrictions(),
+                    witness,
+                },
+            )?;
+
+            assert!(!keychain.is_key_authorization_witness_burned(
+                isKeyAuthorizationWitnessBurnedCall { account, witness }
+            )?);
+
+            authorize_key_with_witness(
+                &mut keychain,
+                account,
+                authorizeKeyWithWitnessCall {
+                    keyId: second_key,
+                    signatureType: SignatureType::Secp256k1,
+                    config: unrestricted_restrictions(),
+                    witness,
+                },
+            )?;
+
+            assert!(keychain.keys[account][second_key].read()?.expiry > 0);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t5_burn_key_authorization_witness_blocks_later_auth() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let account = Address::random();
+        let witness = B256::repeat_byte(0x54);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+
+            keychain.burn_key_authorization_witness(
+                account,
+                burnKeyAuthorizationWitnessCall { witness },
+            )?;
+
+            assert!(keychain.is_key_authorization_witness_burned(
+                isKeyAuthorizationWitnessBurnedCall { account, witness }
+            )?);
+
+            let result = authorize_key_with_witness(
+                &mut keychain,
+                account,
+                authorizeKeyWithWitnessCall {
+                    keyId: Address::random(),
+                    signatureType: SignatureType::Secp256k1,
+                    config: unrestricted_restrictions(),
+                    witness,
+                },
+            );
+            assert_eq!(
+                result.expect_err("burned witness must not authorize"),
+                AccountKeychainError::key_authorization_witness_already_burned().into()
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t5_access_key_can_burn_key_authorization_witness() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let account = Address::random();
+        let access_key = Address::random();
+        let witness = B256::repeat_byte(0x55);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+
+            authorize_key(
+                &mut keychain,
+                account,
+                authorizeKeyCall {
+                    keyId: access_key,
+                    signatureType: SignatureType::Secp256k1,
+                    config: unrestricted_restrictions(),
+                },
+            )?;
+
+            keychain.set_transaction_key(access_key)?;
+            keychain.burn_key_authorization_witness(
+                account,
+                burnKeyAuthorizationWitnessCall { witness },
+            )?;
+
+            assert!(keychain.is_key_authorization_witness_burned(
+                isKeyAuthorizationWitnessBurnedCall { account, witness }
+            )?);
+
+            Ok(())
+        })
     }
 
     #[test]
@@ -1448,7 +1679,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(msg_sender, setup_call)?;
+            authorize_key(&mut keychain, msg_sender, setup_call)?;
 
             // Now set transaction key to non-zero (simulating access key usage)
             keychain.set_transaction_key(access_key)?;
@@ -1465,7 +1696,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            let auth_result = keychain.authorize_key(msg_sender, auth_call);
+            let auth_result = authorize_key(&mut keychain, msg_sender, auth_call);
             assert!(
                 auth_result.is_err(),
                 "authorize_key should fail when using access key"
@@ -1521,7 +1752,8 @@ mod tests {
             // Setup a key for delegated_sender under a direct-root call.
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(delegated_sender)?;
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 delegated_sender,
                 authorizeKeyCall {
                     keyId: existing_key,
@@ -1539,7 +1771,8 @@ mod tests {
             // Simulate a contract-mediated call where tx.origin != msg.sender.
             keychain.set_tx_origin(tx_origin)?;
 
-            let auth_result = keychain.authorize_key(
+            let auth_result = authorize_key(
+                &mut keychain,
                 delegated_sender,
                 authorizeKeyCall {
                     keyId: other,
@@ -1600,7 +1833,8 @@ mod tests {
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(contract_sender)?;
 
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 contract_sender,
                 authorizeKeyCall {
                     keyId: key_id,
@@ -1665,7 +1899,8 @@ mod tests {
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(other_origin)?;
 
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 msg_sender,
                 authorizeKeyCall {
                     keyId: key_id,
@@ -1720,7 +1955,8 @@ mod tests {
             // Setup under matching tx.origin first.
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_id,
@@ -1774,7 +2010,8 @@ mod tests {
             // Bootstrap: seed origin so we can authorize a key for later revoke/update tests.
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_id,
@@ -1798,7 +2035,8 @@ mod tests {
             keychain.set_tx_origin(Address::ZERO)?;
 
             // authorize_key must reject
-            let auth_result = keychain.authorize_key(
+            let auth_result = authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: other_key,
@@ -1875,7 +2113,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(account, auth_call.clone())?;
+            authorize_key(&mut keychain, account, auth_call.clone())?;
 
             // Verify key exists and limit is set
             let key_info = keychain.get_key(getKeyCall {
@@ -1915,7 +2153,7 @@ mod tests {
 
             // Step 3: Try to re-authorize the same key (replay attack)
             // This should fail because the key was revoked
-            let replay_result = keychain.authorize_key(account, auth_call);
+            let replay_result = authorize_key(&mut keychain, account, auth_call);
             assert!(
                 replay_result.is_err(),
                 "Re-authorizing a revoked key should fail"
@@ -1960,7 +2198,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            let result = keychain.authorize_key(account, auth_call);
+            let result = authorize_key(&mut keychain, account, auth_call);
             assert!(
                 result.is_err(),
                 "Authorizing with expiry in past should fail"
@@ -1989,7 +2227,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            let result_past = keychain.authorize_key(account, auth_call_past);
+            let result_past = authorize_key(&mut keychain, account, auth_call_past);
             assert!(
                 matches!(
                     result_past,
@@ -2016,7 +2254,8 @@ mod tests {
             keychain.initialize()?;
             keychain.set_transaction_key(Address::ZERO)?;
 
-            let result = keychain.authorize_key(
+            let result = authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_id,
@@ -2087,7 +2326,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(account, auth_call_1)?;
+            authorize_key(&mut keychain, account, auth_call_1)?;
 
             // Revoke key 1
             keychain.revoke_key(account, revokeKeyCall { keyId: key_id_1 })?;
@@ -2104,7 +2343,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(account, auth_call_2)?;
+            authorize_key(&mut keychain, account, auth_call_2)?;
 
             // Verify key 2 is authorized
             let key_info = keychain.get_key(getKeyCall {
@@ -2150,7 +2389,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(eoa, auth_call)?;
+            authorize_key(&mut keychain, eoa, auth_call)?;
 
             let initial_limit = keychain.get_remaining_limit(getRemainingLimitCall {
                 account: eoa,
@@ -2267,7 +2506,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(eoa_alice, auth_call)?;
+            authorize_key(&mut keychain, eoa_alice, auth_call)?;
 
             // Verify spending limit is set
             let limit = keychain.get_remaining_limit(getRemainingLimitCall {
@@ -2371,7 +2610,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(account, auth_call.clone())?;
+            authorize_key(&mut keychain, account, auth_call.clone())?;
 
             // Verify key exists with expiry = 1
             let key_info = keychain.get_key(getKeyCall {
@@ -2381,7 +2620,7 @@ mod tests {
             assert_eq!(key_info.expiry, 1, "Key should have expiry = 1");
 
             // Try to re-authorize - should fail because expiry > 0
-            let result = keychain.authorize_key(account, auth_call);
+            let result = authorize_key(&mut keychain, account, auth_call);
             assert!(result.is_err(), "Should reject when key.expiry > 0");
             match result.unwrap_err() {
                 TempoPrecompileError::AccountKeychainError(e) => {
@@ -2461,7 +2700,7 @@ mod tests {
                 },
             };
             // This would fail if initialize didn't set up storage properly
-            keychain.authorize_key(account, auth_call)?;
+            authorize_key(&mut keychain, account, auth_call)?;
 
             // Verify key was stored
             let key_info = keychain.get_key(getKeyCall {
@@ -2496,7 +2735,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(account, auth_call)?;
+            authorize_key(&mut keychain, account, auth_call)?;
 
             // Verify key was stored with WebAuthn type (value = 2)
             let key_info = keychain.get_key(getKeyCall {
@@ -2551,7 +2790,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(account, auth_call)?;
+            authorize_key(&mut keychain, account, auth_call)?;
 
             // Update should work when key is not expired
             let update_call = updateSpendingLimitCall {
@@ -2600,7 +2839,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(account, auth_call)?;
+            authorize_key(&mut keychain, account, auth_call)?;
 
             // Verify key has enforce_limits = false
             let key_before = keychain.get_key(getKeyCall {
@@ -2666,7 +2905,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(account, auth_call)?;
+            authorize_key(&mut keychain, account, auth_call)?;
             keychain.revoke_key(
                 account,
                 revokeKeyCall {
@@ -2686,7 +2925,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(account, auth_valid)?;
+            authorize_key(&mut keychain, account, auth_valid)?;
 
             // Test 1: Revoked key (expiry=0, is_revoked=true) - should return empty with isRevoked=true
             let revoked_info = keychain.get_key(getKeyCall {
@@ -2751,7 +2990,8 @@ mod tests {
             keychain.set_transaction_key(Address::ZERO)?;
 
             // Create keys with each signature type
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_secp,
@@ -2766,7 +3006,8 @@ mod tests {
                 },
             )?;
 
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_p256,
@@ -2781,7 +3022,8 @@ mod tests {
                 },
             )?;
 
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_webauthn,
@@ -2860,7 +3102,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(account, auth_call)?;
+            authorize_key(&mut keychain, account, auth_call)?;
 
             // Test 1: Validation should succeed with matching signature type (P256 = 1)
             let result = keychain.validate_keychain_authorization(account, key_id, 0, Some(1));
@@ -2933,7 +3175,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(eoa, auth_call)?;
+            authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
             keychain.set_tx_origin(eoa)?;
@@ -3008,7 +3250,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(eoa, auth_call)?;
+            authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
             keychain.set_tx_origin(eoa)?;
@@ -3074,7 +3316,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(eoa, auth_call)?;
+            authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
             keychain.set_tx_origin(eoa)?;
@@ -3135,7 +3377,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(eoa, auth_call)?;
+            authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
             keychain.set_tx_origin(eoa)?;
@@ -3190,7 +3432,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(eoa, auth_call)?;
+            authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
             keychain.set_tx_origin(eoa)?;
@@ -3251,7 +3493,7 @@ mod tests {
                     allowedCalls: vec![],
                 },
             };
-            keychain.authorize_key(eoa, auth_call)?;
+            authorize_key(&mut keychain, eoa, auth_call)?;
 
             keychain.set_transaction_key(access_key)?;
             keychain.set_tx_origin(eoa)?;
@@ -3343,7 +3585,8 @@ mod tests {
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_id,
@@ -3396,7 +3639,8 @@ mod tests {
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
-            let authorize_result = keychain.authorize_key(
+            let authorize_result = authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: invalid_key_id,
@@ -3425,7 +3669,8 @@ mod tests {
                 "expected InvalidSpendingLimit, got {authorize_result:?}"
             );
 
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: valid_key_id,
@@ -3480,7 +3725,8 @@ mod tests {
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
-            let result = keychain.authorize_key(
+            let result = authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_id,
@@ -3574,7 +3820,8 @@ mod tests {
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_id,
@@ -3631,7 +3878,8 @@ mod tests {
             keychain.set_tx_origin(account)?;
             TIP20Setup::path_usd(account).apply()?;
 
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_id,
@@ -3704,7 +3952,8 @@ mod tests {
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_id,
@@ -3755,7 +4004,8 @@ mod tests {
             keychain.set_tx_origin(account)?;
 
             for (key_id, expiry) in [(revoked_key, u64::MAX), (expiring_key, 1_005)] {
-                keychain.authorize_key(
+                authorize_key(
+                    &mut keychain,
                     account,
                     authorizeKeyCall {
                         keyId: key_id,
@@ -3823,7 +4073,8 @@ mod tests {
                 keychain.set_transaction_key(Address::ZERO)?;
                 keychain.set_tx_origin(account)?;
 
-                keychain.authorize_key(
+                authorize_key(
+                    &mut keychain,
                     account,
                     authorizeKeyCall {
                         keyId: key_id,
@@ -3901,7 +4152,8 @@ mod tests {
                 keychain.set_transaction_key(Address::ZERO)?;
                 keychain.set_tx_origin(account)?;
 
-                keychain.authorize_key(
+                authorize_key(
+                    &mut keychain,
                     account,
                     authorizeKeyCall {
                         keyId: key_id,
@@ -4003,7 +4255,8 @@ mod tests {
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_id,
@@ -4048,7 +4301,8 @@ mod tests {
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_id,
@@ -4098,7 +4352,8 @@ mod tests {
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_id,
@@ -4191,7 +4446,8 @@ mod tests {
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_id,
@@ -4258,7 +4514,8 @@ mod tests {
                 keychain.set_transaction_key(Address::ZERO)?;
                 keychain.set_tx_origin(account)?;
 
-                keychain.authorize_key(
+                authorize_key(
+                    &mut keychain,
                     account,
                     authorizeKeyCall {
                         keyId: key_id,
@@ -4326,7 +4583,8 @@ mod tests {
             keychain.set_tx_origin(account)?;
             TIP20Setup::path_usd(account).apply()?;
 
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_id,
@@ -4407,7 +4665,8 @@ mod tests {
             keychain.set_transaction_key(Address::ZERO)?;
             keychain.set_tx_origin(account)?;
 
-            keychain.authorize_key(
+            authorize_key(
+                &mut keychain,
                 account,
                 authorizeKeyCall {
                     keyId: key_id,

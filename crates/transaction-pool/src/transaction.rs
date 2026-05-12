@@ -162,6 +162,21 @@ impl TempoPooledTransaction {
         })
     }
 
+    /// Extracts the TIP-1053 key-authorization witness carried by this transaction, if any.
+    pub fn key_authorization_witness_subject(&self) -> Option<KeyAuthorizationWitnessSubject> {
+        let aa_tx = self.inner().as_aa()?;
+        let witness = aa_tx
+            .tx()
+            .key_authorization
+            .as_ref()?
+            .authorization
+            .witness()?;
+        Some(KeyAuthorizationWitnessSubject {
+            account: *self.sender_ref(),
+            witness,
+        })
+    }
+
     /// Returns the unique identifier for this AA transaction.
     pub(crate) fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
         let nonce_key = self.nonce_key()?;
@@ -1156,6 +1171,15 @@ pub struct KeychainSubject {
     pub key_id: Address,
     /// The fee token used by this transaction.
     pub fee_token: Address,
+}
+
+/// Key-authorization witness identity extracted from an AA transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyAuthorizationWitnessSubject {
+    /// The account whose key-authorization witness is carried or burned.
+    pub account: Address,
+    /// The TIP-1053 witness.
+    pub witness: B256,
 }
 
 impl KeychainSubject {

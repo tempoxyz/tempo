@@ -278,23 +278,61 @@ def read-bench-marker [datadir: string] {
 # ============================================================================
 
 # Ordered list of all Tempo hardforks (must match TempoHardfork enum in crates/chainspec)
-const TEMPO_HARDFORKS = ["T0" "T1" "T1A" "T1B" "T1C" "T2" "T3" "T4"]
+const TEMPO_HARDFORKS = ["T0" "T1" "T1A" "T1B" "T1C" "T2" "T3" "T4" "T5" "T6"]
+const TEMPO_DISABLED_HARDFORK_TIME = 9223372036854775807
 
-# Map a hardfork name to generate-genesis CLI args.
-# Forks up to and including the given fork are active at genesis (time=0).
-# Forks after are disabled (time=max u64).
-# Returns a list of CLI flag strings, e.g. ["--t0-time" "0" "--t1-time" "0" "--t1a-time" "9223372036854775807" ...]
-def hardfork-to-genesis-args [fork: string] {
+def normalize-hardfork [fork: string] {
     let fork_upper = ($fork | str upcase)
     let idx = ($TEMPO_HARDFORKS | enumerate | where item == $fork_upper)
     if ($idx | length) == 0 {
         print $"Error: unknown hardfork '($fork)'. Valid: ($TEMPO_HARDFORKS | str join ', ')"
         exit 1
     }
-    let cutoff = ($idx | get 0.index)
+    $fork_upper
+}
+
+def hardfork-index [fork: string] {
+    let fork_upper = (normalize-hardfork $fork)
+    ($TEMPO_HARDFORKS | enumerate | where item == $fork_upper | get 0.index)
+}
+
+def latest-tempo-hardfork [] {
+    $TEMPO_HARDFORKS | last
+}
+
+def highest-hardfork [forks: list<string>] {
+    if ($forks | length) == 0 {
+        return (latest-tempo-hardfork)
+    }
+    mut highest = (normalize-hardfork ($forks | first))
+    for fork in ($forks | skip 1) {
+        let current = (normalize-hardfork $fork)
+        if (hardfork-index $current) > (hardfork-index $highest) {
+            $highest = $current
+        }
+    }
+    $highest
+}
+
+def hardfork-genesis-config-fields [fork: string] {
+    let cutoff = (hardfork-index $fork)
     $TEMPO_HARDFORKS | enumerate | each { |it|
-        let flag = $"--($it.item | str downcase)-time"
-        let time = if $it.index <= $cutoff { "0" } else { "9223372036854775807" }
+        {
+            fork: $it.item
+            name: $"($it.item | str downcase)Time"
+            value: (if $it.index <= $cutoff { 0 } else { $TEMPO_DISABLED_HARDFORK_TIME })
+        }
+    }
+}
+
+# Map a hardfork name to generate-genesis CLI args.
+# Forks up to and including the given fork are active at genesis (time=0).
+# Forks after are disabled (time=max u64).
+# Returns a list of CLI flag strings, e.g. ["--t0-time" "0" "--t1-time" "0" "--t1a-time" "9223372036854775807" ...]
+def hardfork-to-genesis-args [fork: string] {
+    hardfork-genesis-config-fields $fork | each { |it|
+        let flag = $"--($it.fork | str downcase)-time"
+        let time = ($it.value | into string)
         [$flag $time]
     } | flatten
 }
