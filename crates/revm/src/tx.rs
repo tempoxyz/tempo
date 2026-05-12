@@ -8,7 +8,7 @@ use revm::context::{
     either::Either,
     result::InvalidTransaction,
     transaction::{
-        AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
+        AccessList, AccessListItem, RecoveredAuthorization, SignedAuthorization,
     },
 };
 use tempo_primitives::{
@@ -313,6 +313,12 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             )
         };
 
+        let recovered_authorizations: Vec<_> = tempo_authorization_list
+            .iter()
+            .cloned()
+            .map(RecoveredTempoAuthorization::recover)
+            .collect();
+
         Self {
             inner: TxEnv {
                 tx_type: tx.ty(),
@@ -327,15 +333,12 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 gas_priority_fee: Some(*max_priority_fee_per_gas),
                 access_list: access_list.clone(),
                 // Convert Tempo authorization list to RecoveredAuthorization upfront
-                authorization_list: tempo_authorization_list
+                authorization_list: recovered_authorizations
                     .iter()
                     .map(|auth| {
-                        let authority = auth
-                            .recover_authority()
-                            .map_or(RecoveredAuthority::Invalid, RecoveredAuthority::Valid);
                         Either::Right(RecoveredAuthorization::new_unchecked(
                             auth.inner().clone(),
-                            authority,
+                            auth.authority_status().clone(),
                         ))
                     })
                     .collect(),
@@ -354,10 +357,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 valid_after: valid_after.map(NonZeroU64::get),
                 aa_calls: calls.clone(),
                 // Recover authorizations upfront to avoid recovery during execution
-                tempo_authorization_list: tempo_authorization_list
-                    .iter()
-                    .map(|auth| RecoveredTempoAuthorization::recover(auth.clone()))
-                    .collect(),
+                tempo_authorization_list: recovered_authorizations,
                 nonce_key: *nonce_key,
                 subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
                 key_authorization: key_authorization.clone(),
