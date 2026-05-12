@@ -448,6 +448,16 @@ where
     type Result = TempoTxResult;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
+        if self
+            .inner
+            .ctx
+            .withdrawals
+            .as_ref()
+            .is_some_and(|withdrawals| !withdrawals.is_empty())
+        {
+            return Err(BlockValidationError::msg("withdrawals are not permitted").into());
+        }
+
         self.inner.apply_pre_execution_changes()?;
 
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.

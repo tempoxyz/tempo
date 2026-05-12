@@ -1630,8 +1630,7 @@ pub(crate) mod tests {
     use crate::{
         PATH_USD_ADDRESS,
         account_keychain::{
-            AccountKeychain, KeyRestrictions, SignatureType, TokenLimit, authorizeKeyCall,
-            getRemainingLimitCall,
+            AccountKeychain, KeyRestrictions, SignatureType, TokenLimit, getRemainingLimitCall,
         },
         address_registry::{AddressRegistry, MasterId, UserTag},
         error::TempoPrecompileError,
@@ -2428,21 +2427,20 @@ pub(crate) mod tests {
 
             keychain.authorize_key(
                 user,
-                authorizeKeyCall {
-                    keyId: access_key,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token: token_address,
-                            amount: spending_limit,
-                            period: 0,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                access_key,
+                SignatureType::Secp256k1,
+                KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token: token_address,
+                        amount: spending_limit,
+                        period: 0,
+                    }],
+                    allowAnyCalls: true,
+                    allowedCalls: vec![],
                 },
+                None,
             )?;
 
             // Simulate pre-tx: access key deducts max fee from spending limit
@@ -2501,21 +2499,20 @@ pub(crate) mod tests {
 
             keychain.authorize_key(
                 user,
-                authorizeKeyCall {
-                    keyId: access_key,
-                    signatureType: SignatureType::Secp256k1,
-                    config: KeyRestrictions {
-                        expiry: u64::MAX,
-                        enforceLimits: true,
-                        limits: vec![TokenLimit {
-                            token: token_address,
-                            amount: spending_limit,
-                            period: 0,
-                        }],
-                        allowAnyCalls: true,
-                        allowedCalls: vec![],
-                    },
+                access_key,
+                SignatureType::Secp256k1,
+                KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: true,
+                    limits: vec![TokenLimit {
+                        token: token_address,
+                        amount: spending_limit,
+                        period: 0,
+                    }],
+                    allowAnyCalls: true,
+                    allowedCalls: vec![],
                 },
+                None,
             )?;
 
             keychain.set_transaction_key(access_key)?;

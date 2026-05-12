@@ -9,6 +9,7 @@ const E2E_A_STATE_PATH = "/var/lib/schelk/a.json"
 const E2E_B_STATE_PATH = "/var/lib/schelk/b.json"
 const E2E_A_MOUNT = "/reth-bench-a"
 const E2E_B_MOUNT = "/reth-bench-b"
+const BENCH_SCHELK_SCRIPT = "bench-schelk.nu"
 const E2E_VALIDATORS = "127.0.0.2:8000,127.0.0.3:8100"
 const E2E_SEED = 42
 const E2E_A_CPUS = "0-7,16-23"
@@ -19,11 +20,6 @@ const E2E_GAS_LIMIT = "1000000000000"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
-const TXGEN_DEFAULT_SEED = 99
-const TXGEN_SCRAPE_INTERVAL_MS = 500
-const TXGEN_DRAIN_TIMEOUT_SECS = 300
-const TXGEN_FUND_DRAIN_TIMEOUT_SECS = 120
-const TXGEN_TIP20_TEMPLATE = "contrib/bench/txgen/tip20-template.yaml"
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
     "--disable-discovery"
@@ -31,12 +27,23 @@ const E2E_LOCAL_RETH_ARGS = [
     "--tempo.bootnodes-endpoint" "none"
 ]
 
-def schelk [state_path: string, subcommand: string, ...args: string] {
-    sudo schelk --state-path $state_path $subcommand ...$args
+def run-bench-schelk [...args: string] {
+    let result = (nu $BENCH_SCHELK_SCRIPT ...$args | complete)
+    if $result.stdout != "" { print $result.stdout }
+    if $result.stderr != "" { print $result.stderr }
+    if $result.exit_code != 0 {
+        error make { msg: $"bench-schelk failed: ($args | str join ' ')" }
+    }
 }
 
 def schelk-state [state_path: string] {
     sudo cat $state_path | from json
+}
+
+def mark-schelk-dirty-at [state_path: string] {
+    if (has-schelk) {
+        run-bench-schelk "mark-dirty" $state_path
+    }
 }
 
 def validate-schelk-state [a_state_path: string, b_state_path: string] {
@@ -80,21 +87,7 @@ def validate-schelk-state [a_state_path: string, b_state_path: string] {
 
 def bench-restore-at [state_path: string, mount_point: string, datadir: string] {
     if (has-schelk) {
-        print $"Restoring schelk snapshot ($mount_point)..."
-        let state = (schelk-state $state_path)
-        let state_mounted = ($state | get --optional is_mounted) == true
-        let actual_mounted = (mountpoint -q $mount_point | complete).exit_code == 0
-        try {
-            if $state_mounted or $actual_mounted {
-                schelk $state_path recover "-y" "--kill"
-            }
-            schelk $state_path mount
-        } catch {
-            print $"Schelk restore failed for ($mount_point), falling back to full-recover..."
-            schelk $state_path full-recover "-y"
-            schelk $state_path mount
-        }
-        sudo chown -R (whoami | str trim) $mount_point
+        run-bench-schelk "restore" $state_path $mount_point
     } else {
         print $"Restoring snapshot from ($datadir).virgin..."
         rm -rf $datadir
@@ -106,7 +99,7 @@ def bench-restore-at [state_path: string, mount_point: string, datadir: string] 
 def bench-promote-at [state_path: string, datadir: string] {
     if (has-schelk) {
         print $"Promoting schelk scratch to virgin ($state_path)..."
-        schelk $state_path promote "-y" "--kill"
+        run-bench-schelk "promote" $state_path
     } else {
         print $"Saving snapshot to ($datadir).virgin..."
         rm -rf $"($datadir).virgin"
@@ -140,124 +133,6 @@ def e2e-bloat-gib-to-mib [bloat: int] {
 
     print "Error: --bloat must be one of: 1, 10, 100"
     exit 1
-}
-
-def shell-quote [value: any] {
-    let s = ($value | into string)
-    let escaped = ($s | str replace -a "'" "'\"'\"'")
-    $"'($escaped)'"
-}
-
-def shell-join [args: list<any>] {
-    $args | each { |arg| shell-quote $arg } | str join " "
-}
-
-def resolve-command-path [name: string] {
-    let path = (which $name | get -o 0.path | default "")
-    if $path == "" {
-        error make { msg: $"($name) not found in PATH" }
-    }
-    $path
-}
-
-def resolve-bench-binary [repo_dir: string] {
-    for candidate in [$"($repo_dir)/target/release/bench" $"($repo_dir)/target/release/bench-cli"] {
-        if ($candidate | path exists) {
-            return $candidate
-        }
-    }
-    error make { msg: $"txgen bench binary not found under ($repo_dir)/target/release/" }
-}
-
-def resolve-txgen-paths [] {
-    let repo_dir = ($env.TXGEN_REPO_DIR? | default "")
-    let repo = if $repo_dir != "" { $repo_dir | path expand } else { "" }
-    let generator = if ($env.TXGEN_TEMPO_BIN? | default "") != "" {
-        $env.TXGEN_TEMPO_BIN | path expand
-    } else if $repo != "" and ($"($repo)/target/release/txgen-tempo" | path exists) {
-        $"($repo)/target/release/txgen-tempo"
-    } else {
-        resolve-command-path "txgen-tempo"
-    }
-    let bench = if ($env.TXGEN_BENCH_BIN? | default "") != "" {
-        $env.TXGEN_BENCH_BIN | path expand
-    } else if $repo != "" {
-        resolve-bench-binary $repo
-    } else {
-        resolve-command-path "bench"
-    }
-    if not ($generator | path exists) {
-        error make { msg: $"txgen-tempo binary not found: ($generator)" }
-    }
-    if not ($bench | path exists) {
-        error make { msg: $"txgen bench binary not found: ($bench)" }
-    }
-    { txgen_tempo_bin: $generator, txgen_bench_bin: $bench }
-}
-
-def rpc-call [rpc_url: string, payload: string] {
-    let result = (^curl -sf -X POST -H "Content-Type: application/json" -d $payload $rpc_url | complete)
-    if $result.exit_code != 0 {
-        error make { msg: $"RPC call failed: ($payload)" }
-    }
-    let response = ($result.stdout | from json)
-    if (($response | get -o error) != null) {
-        let rpc_error = ($response | get error)
-        error make { msg: $"RPC error: ($rpc_error | to json -r)" }
-    }
-    $response
-}
-
-def fetch-chain-id [rpc_url: string] {
-    let response = (rpc-call $rpc_url '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}')
-    $response.result | into int
-}
-
-def wait-for-txpool-drain [rpc_url: string, timeout_secs: int] {
-    mut zero_count = 0
-    mut waited = 0
-    while $waited < $timeout_secs {
-        let response = (rpc-call $rpc_url '{"jsonrpc":"2.0","method":"txpool_status","params":[],"id":1}')
-        let pending = ($response.result.pending | into int)
-        if $pending == 0 {
-            $zero_count = $zero_count + 1
-            if $zero_count >= 3 { return }
-        } else {
-            $zero_count = 0
-        }
-        sleep 1sec
-        $waited = $waited + 1
-    }
-    print $"  Warning: txpool drain timeout reached after ($timeout_secs)s"
-}
-
-def fund-txgen-accounts [txgen_bin: string, spec_path: string, rpc_url: string] {
-    let result = (^$txgen_bin addresses -s $spec_path -f shell | complete)
-    if $result.exit_code != 0 {
-        error make { msg: $"failed to list txgen addresses for ($spec_path)" }
-    }
-
-    let addresses = ($result.stdout | str trim | split row " " | where { |addr| $addr != "" })
-    if ($addresses | is-empty) {
-        error make { msg: $"txgen spec produced no addresses: ($spec_path)" }
-    }
-
-    print $"  Funding (($addresses | length)) txgen account\(s\)..."
-    $addresses | par-each { |address|
-        rpc-call $rpc_url $"{\"jsonrpc\":\"2.0\",\"method\":\"tempo_fundAddress\",\"params\":[\"($address)\"],\"id\":1}" | ignore
-    } | ignore
-
-    print "  Waiting for faucet transactions to drain..."
-    wait-for-txpool-drain $rpc_url $TXGEN_FUND_DRAIN_TIMEOUT_SECS
-}
-
-def sanitize-txgen-bench-args [bench_args: string] {
-    if $bench_args == "" {
-        return ""
-    }
-    $bench_args
-        | str replace --all --regex '--existing-recipients=(true|false)' ''
-        | str trim
 }
 
 def validator-dirs-in-localnet [localnet_dir: string] {
@@ -334,6 +209,59 @@ def e2e-snapshot-ready [datadir: string] {
 
 def e2e-snapshots-ready [a_db: string, b_db: string] {
     (e2e-snapshot-ready $a_db) and (e2e-snapshot-ready $b_db)
+}
+
+def e2e-snapshot-state-hardfork [datadir: string] {
+    let marker = (read-bench-marker $datadir)
+    if $marker == null {
+        return (latest-tempo-hardfork)
+    }
+    let state_hardfork = ($marker | get -o state_hardfork | default "")
+    if $state_hardfork == "" {
+        return (latest-tempo-hardfork)
+    }
+    normalize-hardfork $state_hardfork
+}
+
+def e2e-update-snapshot-hardfork-marker [datadir: string, hardfork: string] {
+    let fork = (normalize-hardfork $hardfork)
+    let marker_path = $"($datadir)/($BENCH_META_SUBDIR)/marker.json"
+    let marker = (open $marker_path)
+    $marker | upsert state_hardfork $fork | to json | save -f $marker_path
+}
+
+def e2e-synthesize-hardfork-genesis [source_genesis: string, target_genesis: string, hardfork: string] {
+    let fork = (normalize-hardfork $hardfork)
+    let source = (open $source_genesis)
+    mut config = ($source | get config)
+    for field in (hardfork-genesis-config-fields $fork) {
+        $config = ($config | upsert $field.name $field.value)
+    }
+    let genesis = ($source | upsert config $config)
+    let target_dir = ($target_genesis | path dirname)
+    mkdir $target_dir
+    $genesis | to json | save -f $target_genesis
+    print $"Synthesized ($fork) genesis at ($target_genesis)"
+}
+
+def e2e-regenesis [tempo_bin: string, genesis: string, datadir: string, hardfork: string] {
+    let fork = (normalize-hardfork $hardfork)
+    let current_hardfork = (e2e-snapshot-state-hardfork $datadir)
+    if $current_hardfork == $fork {
+        print $"Skipping tempo regenesis for ($datadir); marker state_hardfork already matches ($fork)"
+        return
+    }
+
+    print $"Running tempo regenesis for ($datadir): state_hardfork=($current_hardfork) -> ($fork) with ($genesis)..."
+    let result = (run-external $tempo_bin "regenesis" "--chain" $genesis "--datadir" $datadir | complete)
+    if $result.stdout != "" { print $result.stdout }
+    if $result.stderr != "" { print $result.stderr }
+    if $result.exit_code != 0 {
+        print $"Error: tempo regenesis failed for ($datadir) with exit code ($result.exit_code)"
+        exit $result.exit_code
+    }
+    e2e-synthesize-hardfork-genesis $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $fork
+    e2e-update-snapshot-hardfork-marker $datadir $fork
 }
 
 def derive-tracing-otlp [tracing_otlp: string] {
@@ -676,10 +604,32 @@ def init-local-e2e-side [
     bench-save-e2e-meta $datadir $meta_dir ($marker | insert validator_role $role) [[$generated_genesis "genesis.json"] [$generated_trusted_peers "trusted-peers.txt"]]
 }
 
+# Update the PR comment with current benchmark phase status.
+# Requires BENCH_GH_TOKEN, BENCH_COMMENT_ID, BENCH_ACTOR, BENCH_JOB_URL,
+# BENCH_CONFIG, and GITHUB_REPOSITORY environment variables.
+def bench-update-pr-status [status: string] {
+    let comment_id = ($env | get -o BENCH_COMMENT_ID | default "")
+    let token = ($env | get -o BENCH_GH_TOKEN | default "")
+    if $comment_id == "" or $token == "" { return }
+    let repo = $env.GITHUB_REPOSITORY
+    let actor = ($env | get -o BENCH_ACTOR | default "")
+    let job_url = ($env | get -o BENCH_JOB_URL | default "")
+    let config = ($env | get -o BENCH_CONFIG | default "")
+    let body = $"cc @($actor)\n\n🚀 Benchmark started! [View job]\(($job_url)\)\n\n⏳ **Status:** ($status)\n\n($config)"
+    let payload = { body: $body } | to json
+    try {
+        ^curl -sS -X PATCH $"https://api.github.com/repos/($repo)/issues/comments/($comment_id)" -H $"Authorization: token ($token)" -H "Accept: application/vnd.github+json" -d $payload | ignore
+    } catch {
+        print $"Warning: failed to update PR comment status"
+    }
+}
+
 def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
     print $"=== Starting local e2e phase: ($phase) ==="
     let run_type = if ($phase | str starts-with "baseline") { "baseline" } else { "feature" }
+    let genesis = ($run | get -o genesis | default $ctx.genesis)
+    let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
     let extra_args = if $side_args == "" { [] } else { $side_args | split row " " }
@@ -688,11 +638,15 @@ def run-local-e2e-phase [run: record, ctx: record] {
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
     bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
 
-    for path in [$ctx.genesis $ctx.a.node_dir $ctx.b.node_dir] {
+    for path in [$genesis $ctx.a.node_dir $ctx.b.node_dir] {
         if not ($path | path exists) {
             print $"Error: required e2e path does not exist after snapshot recovery: ($path)"
             exit 1
         }
+    }
+    if $hardfork != "" {
+        e2e-regenesis $run.tempo $genesis $ctx.a.datadir $hardfork
+        e2e-regenesis $run.tempo $genesis $ctx.b.datadir $hardfork
     }
     for role_info in [
         { role: "a", node_dir: $ctx.a.node_dir }
@@ -729,13 +683,13 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
-    let a_base_args = (build-base-args $ctx.genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
+    let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
         | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
         | append $E2E_LOCAL_RETH_ARGS
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
-    let b_base_args = (build-base-args $ctx.genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
+    let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
         | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
         | append $E2E_LOCAL_RETH_ARGS
         | append (log-filter-args $ctx.loud)
@@ -752,6 +706,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let env_prefix = if $side_env != "" { $"($side_env) " } else { "" }
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
+
+    mark-schelk-dirty-at $ctx.a.state_path
+    mark-schelk-dirty-at $ctx.b.state_path
 
     start-e2e-local-node a $phase $run.tempo $a_args $env_prefix $a_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.a.cpus $ctx.a.memory
     start-e2e-local-node b $phase $run.tempo $b_args $env_prefix $b_otel $tracy_env_prefix $ctx.samply $ctx.samply_args $ctx.results_dir $ctx.b.cpus $ctx.b.memory
@@ -787,67 +744,33 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
 
     if $phase_exit == 0 {
-        let bench_env_export = if $ctx.bench_env != "" { $"export ($ctx.bench_env) && " } else { "" }
-        if $ctx.preset != "tip20" {
-            print $"Error: txgen e2e currently supports only preset=tip20 \(got ($ctx.preset)\)"
-            $phase_exit = 1
-        } else {
-            let ignored_bench_args = (sanitize-txgen-bench-args $ctx.bench_args)
-            if $ignored_bench_args != "" {
-                print $"  Warning: txgen path is ignoring unsupported bench args: ($ignored_bench_args)"
+        let sender_exit = (try {
+            let bench_result = (txgen-run-preset-pipeline
+                --txgen-tempo-bin $ctx.txgen.txgen_tempo_bin
+                --txgen-bench-bin $ctx.txgen.txgen_bench_bin
+                --preset-path $ctx.preset_path
+                --generate-rpc-url $a_rpc
+                --submit-rpc-url $a_rpc
+                --metrics-url "http://127.0.0.1:9001/metrics"
+                --report-path $"($ctx.results_dir)/report-($phase).json"
+                --tps $ctx.tps
+                --duration $ctx.duration
+                --accounts $ctx.accounts
+                --max-concurrent-requests $ctx.max_concurrent_requests
+                --bench-env $ctx.bench_env
+                --git-ref $run.ref
+                --build-profile $ctx.profile
+                --benchmark-mode "e2e")
+            if not $bench_result.ok {
+                $bench_result.exit_code
+            } else {
+                0
             }
-            let chain_id = (fetch-chain-id $a_rpc)
-            $env.TXGEN_ACCOUNTS = ($ctx.accounts | into string)
-            let spec_path = ($TXGEN_TIP20_TEMPLATE | path expand)
-            fund-txgen-accounts $ctx.txgen.txgen_tempo_bin $spec_path $a_rpc
-
-            let report_path = $"($ctx.results_dir)/report-($phase).json"
-            let tx_count = [($ctx.tps * $ctx.duration) 1] | math max
-            let txgen_cmd = [
-                $ctx.txgen.txgen_tempo_bin
-                "generate"
-                "-s" $spec_path
-                "-n" $tx_count
-                "--seed" $TXGEN_DEFAULT_SEED
-                "--rpc" $a_rpc
-            ]
-            let bench_cmd = [
-                $ctx.txgen.txgen_bench_bin
-                "send"
-                "--rpc-url" $a_rpc
-                "--tps" $ctx.tps
-                "--max-concurrent" $ctx.max_concurrent_requests
-                "--metrics-url" "http://127.0.0.1:9001/metrics"
-                "--scrape-interval-ms" $TXGEN_SCRAPE_INTERVAL_MS
-                "--drain-timeout" $TXGEN_DRAIN_TIMEOUT_SECS
-                "--report" $"json:($report_path)"
-                "-m" $"chain_id=($chain_id)"
-                "-m" $"target_tps=($ctx.tps)"
-                "-m" $"run_duration_secs=($ctx.duration)"
-                "-m" $"accounts=($ctx.accounts)"
-                "-m" $"total_connections=($ctx.max_concurrent_requests)"
-                "-m" "tip20_weight=1.0"
-                "-m" "place_order_weight=0.0"
-                "-m" "swap_weight=0.0"
-                "-m" "erc20_weight=0.0"
-                "-m" $"node_commit_sha=($run.ref)"
-                "-m" $"build_profile=($ctx.profile)"
-                "-m" "mode=e2e"
-            ]
-            print $"Running local e2e txgen sender: ($txgen_cmd | str join ' ') | ($bench_cmd | str join ' ')"
-            let txgen_cmd_str = (shell-join $txgen_cmd)
-            let bench_cmd_str = (shell-join $bench_cmd)
-            let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
-            let bench_result = (bash -lc $pipeline | complete)
-            if $bench_result.stdout != "" { print $bench_result.stdout }
-            if $bench_result.stderr != "" { print $bench_result.stderr }
-            $phase_exit = $bench_result.exit_code
-
-            if not ($report_path | path exists) {
-                print $"ERROR: txgen sender for ($phase) produced no ($report_path)"
-                $phase_exit = 1
-            }
-        }
+        } catch { |e|
+            print $"Error: local e2e txgen sender failed for ($phase): ($e.msg)"
+            1
+        })
+        $phase_exit = $sender_exit
     } else {
         print $"Skipping local e2e sender for ($phase) because readiness checks failed"
     }
@@ -872,7 +795,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
-    --preset: string = ""                               # Preset: tip20, erc20, swap, order, tempo-mix
+    --preset: string = ""                               # Txgen preset name
     --tps: int = 10000                                  # Target TPS
     --duration: int = 300                               # Duration in seconds
     --accounts: int = 1000                              # Number of accounts
@@ -883,6 +806,7 @@ def "main e2e" [
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
     --features: string = $DEFAULT_FEATURES              # Cargo features
+    --no-default-features                               # Disable Cargo default features
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
     --tracy: string = "off"                             # Tracy profiling: off, on, full
@@ -898,28 +822,16 @@ def "main e2e" [
     --bench-env: string = ""                            # Environment vars for the sender process
     --baseline-name: string = ""                         # Baseline display name for summary
     --feature-name: string = ""                          # Feature display name for summary
+    --baseline-hardfork: string = ""                     # Latest active hardfork for baseline phases
+    --feature-hardfork: string = ""                      # Latest active hardfork for feature phases
     --tune                                              # Apply system tuning
     --loud                                              # Show node debug logs
     --no-cache                                           # Skip binary cache
 ] {
-    if $preset == "" {
-        print "Error: --preset tip20 is required for e2e txgen"
-        exit 1
-    }
-    if not ($preset in $PRESETS) {
-        print $"Unknown preset: ($preset). Available: ($PRESETS | columns | str join ', ')"
-        exit 1
-    }
-    if $preset != "tip20" {
-        print $"Error: e2e txgen currently supports only --preset tip20 \(got '($preset)'\)"
-        exit 1
-    }
+    let preset_path = (txgen-preset-path $preset)
+    txgen-validate-bench-args $bench_args
     if $tracy not-in ["off" "on" "full"] {
         print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
-        exit 1
-    }
-    if $samply and $tracy != "off" {
-        print "Error: --samply and --tracy are mutually exclusive. Choose one."
         exit 1
     }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
@@ -931,6 +843,19 @@ def "main e2e" [
         print "Error: tracy-capture not found. Install tracy and ensure tracy-capture is in PATH."
         exit 1
     }
+    let hardfork_mode = $baseline_hardfork != "" or $feature_hardfork != ""
+    if $hardfork_mode and ($baseline_hardfork == "" or $feature_hardfork == "") {
+        print "Error: --baseline-hardfork and --feature-hardfork must both be provided"
+        exit 1
+    }
+    let baseline_hardfork_name = if $hardfork_mode { normalize-hardfork $baseline_hardfork } else { "" }
+    let feature_hardfork_name = if $hardfork_mode { normalize-hardfork $feature_hardfork } else { "" }
+    let snapshot_state_hardfork = if $hardfork_mode {
+        highest-hardfork [$baseline_hardfork_name $feature_hardfork_name]
+    } else {
+        latest-tempo-hardfork
+    }
+    let snapshot_hardfork_args = (hardfork-to-genesis-args $snapshot_state_hardfork)
 
     let validator_list = (
         $E2E_VALIDATORS
@@ -988,16 +913,18 @@ def "main e2e" [
         let init_dir = $"($LOCALNET_DIR)/e2e-local-init"
         let generated_genesis = $"($init_dir)/genesis.json"
         let bloat_file = $"($E2E_BLOAT_TMP_DIR)/state_bloat.bin"
+        mark-schelk-dirty-at $E2E_A_STATE_PATH
+        mark-schelk-dirty-at $E2E_B_STATE_PATH
         if ($init_dir | path exists) { rm -rf $init_dir }
         mkdir $init_dir
         if ($E2E_BLOAT_TMP_DIR | path exists) { rm -rf $E2E_BLOAT_TMP_DIR }
         mkdir $E2E_BLOAT_TMP_DIR
 
-        build-tempo ["tempo"] $profile $features
+        build-tempo --no-default-features=$no_default_features ["tempo"] $profile $features
         let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
         let genesis_accounts = ([$accounts 3] | math max) + 1
         print $"Generating local e2e localnet config for validators: ($E2E_VALIDATORS)"
-        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args
+        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args ...$snapshot_hardfork_args
 
         let trusted_peers = (trusted-peers-from-localnet $init_dir)
         if $trusted_peers == "" {
@@ -1020,6 +947,7 @@ def "main e2e" [
             gas_limit: $gas_limit
             dkg_in_genesis: true
             topology: "single-runner"
+            state_hardfork: $snapshot_state_hardfork
         }
         init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
         init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
@@ -1035,6 +963,15 @@ def "main e2e" [
     if $init_only {
         cleanup-local-e2e-processes
         return
+    }
+    let hardfork_genesis_dir = $"($LOCALNET_DIR)/e2e-hardfork-genesis"
+    let baseline_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-baseline.json" } else { $genesis_path }
+    let feature_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-feature.json" } else { $genesis_path }
+    if $hardfork_mode {
+        if ($hardfork_genesis_dir | path exists) { rm -rf $hardfork_genesis_dir }
+        mkdir $hardfork_genesis_dir
+        e2e-synthesize-hardfork-genesis $genesis_path $baseline_genesis_path $baseline_hardfork_name
+        e2e-synthesize-hardfork-genesis $genesis_path $feature_genesis_path $feature_hardfork_name
     }
     let trusted_peers = if ($a_trusted_peers_path | path exists) {
         open $a_trusted_peers_path | str trim
@@ -1070,15 +1007,15 @@ def "main e2e" [
     let effective_extra_rustflags = $tbc.extra_rustflags
     let effective_no_cache = $no_cache or ($tracy != "off")
     if $effective_no_cache {
-        build-in-worktree --no-cache --extra-rustflags $effective_extra_rustflags --bench-features $features $baseline_wt $baseline $profile $effective_features $baseline
-        build-in-worktree --no-cache --extra-rustflags $effective_extra_rustflags --bench-features $features $feature_wt $feature $profile $effective_features $feature
+        build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $effective_extra_rustflags --bench-features $features $baseline_wt $baseline $profile $effective_features $baseline
+        build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $effective_extra_rustflags --bench-features $features $feature_wt $feature $profile $effective_features $feature
     } else {
-        build-in-worktree $baseline_wt $baseline $profile $effective_features $baseline
-        build-in-worktree $feature_wt $feature $profile $effective_features $feature
+        build-in-worktree --no-default-features=$no_default_features $baseline_wt $baseline $profile $effective_features $baseline
+        build-in-worktree --no-default-features=$no_default_features $feature_wt $feature $profile $effective_features $feature
     }
     let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
     let feature_tempo = (worktree-bin $feature_wt $profile "tempo")
-    let txgen = resolve-txgen-paths
+    let txgen = txgen-resolve-binaries
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
     let ctx = {
         genesis: $genesis_path
@@ -1104,6 +1041,7 @@ def "main e2e" [
             memory: $E2E_B_MEMORY
         }
         preset: $preset
+        preset_path: $preset_path
         tps: $tps
         duration: $duration
         accounts: $accounts
@@ -1132,13 +1070,16 @@ def "main e2e" [
     }
 
     let runs = [
-        { phase: "baseline-1", ref: $baseline, tempo: $baseline_tempo }
-        { phase: "feature-1", ref: $feature, tempo: $feature_tempo }
-        { phase: "feature-2", ref: $feature, tempo: $feature_tempo }
-        { phase: "baseline-2", ref: $baseline, tempo: $baseline_tempo }
+        { phase: "baseline-1", ref: $baseline, tempo: $baseline_tempo, genesis: $baseline_genesis_path, hardfork: $baseline_hardfork_name }
+        { phase: "feature-1", ref: $feature, tempo: $feature_tempo, genesis: $feature_genesis_path, hardfork: $feature_hardfork_name }
+        { phase: "feature-2", ref: $feature, tempo: $feature_tempo, genesis: $feature_genesis_path, hardfork: $feature_hardfork_name }
+        { phase: "baseline-2", ref: $baseline, tempo: $baseline_tempo, genesis: $baseline_genesis_path, hardfork: $baseline_hardfork_name }
     ]
+    let num_phases = ($runs | length)
     mut e2e_exit = 0
-    for run in $runs {
+    for idx in 0..<$num_phases {
+        let run = ($runs | get $idx)
+        bench-update-pr-status $"Running benchmark phase ($run.phase) \(($idx + 1)/($num_phases)\)..."
         let phase_exit = (run-local-e2e-phase $run $ctx)
         if $phase_exit != 0 {
             $e2e_exit = $phase_exit
@@ -1170,8 +1111,10 @@ def "main e2e" [
         }
     }
 
-    let baseline_label = if $baseline_name != "" { $baseline_name } else { $baseline }
-    let feature_label = if $feature_name != "" { $feature_name } else { $feature }
+    let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
+    let feature_base_label = if $feature_name != "" { $feature_name } else { $feature }
+    let baseline_label = if $hardfork_mode { $"($baseline_base_label) \(($baseline_hardfork_name)\)" } else { $baseline_base_label }
+    let feature_label = if $hardfork_mode { $"($feature_base_label) \(($feature_hardfork_name)\)" } else { $feature_base_label }
     if $e2e_exit == 0 {
         generate-summary $results_dir $baseline_label $feature_label $bloat_mib $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch
     }

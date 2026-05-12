@@ -327,6 +327,22 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             },
             noop_expected: ExpectedGasDiff::GreaterThan("key_auth_p256_0_limits::noop".into()),
         },
+        AuthDef {
+            name: "key_auth_secp256k1_witness",
+            auth: AuthKind::KeyAuthWitness {
+                key_type: SignatureType::Secp256k1,
+                num_limits: 0,
+            },
+            noop_expected: ExpectedGasDiff::GreaterThan("key_auth_secp256k1_0_limits::noop".into()),
+        },
+        AuthDef {
+            name: "key_auth_secp256k1_witness_1_limit",
+            auth: AuthKind::KeyAuthWitness {
+                key_type: SignatureType::Secp256k1,
+                num_limits: 1,
+            },
+            noop_expected: ExpectedGasDiff::GreaterThan("key_auth_secp256k1_witness::noop".into()),
+        },
     ];
 
     let payloads: &[(&str, GasPayload)] = &[
@@ -346,7 +362,9 @@ fn gas_estimation_cases() -> Vec<GasCase> {
             if matches!(payload, GasPayload::ContractCreation)
                 && matches!(
                     &auth_def.auth,
-                    AuthKind::Keychain { .. } | AuthKind::KeyAuth { .. }
+                    AuthKind::Keychain { .. }
+                        | AuthKind::KeyAuth { .. }
+                        | AuthKind::KeyAuthWitness { .. }
                 )
             {
                 continue;
@@ -458,6 +476,7 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
     env: &mut E,
 ) -> eyre::Result<std::collections::BTreeMap<String, u64>> {
     let is_t3 = env.hardfork().is_t3();
+    let is_t5 = env.hardfork().is_t5();
     let supports_scoped_key_auth_rpc = env.supports_scoped_key_auth_rpc();
 
     // Fixed signer and recipient so calldata/storage costs are deterministic.
@@ -485,12 +504,16 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
                         if !matches!(allowed_calls, AllowedCallsMode::None)
                 )
         })
+        .filter(|case| is_t5 || !matches!(&case.auth, AuthKind::KeyAuthWitness { .. }))
         .collect();
     let provider = env.provider();
 
     println!("\n=== eth_estimateGas matrix ===\n");
     if !supports_scoped_key_auth_rpc {
         println!("Skipping scoped estimateGas cases on this pre-T3 RPC environment");
+    }
+    if !is_t5 {
+        println!("Skipping key authorization nonce estimateGas cases on this pre-T5 environment");
     }
     println!("Running {} gas estimation cases...\n", cases.len());
 
@@ -567,6 +590,28 @@ pub(super) async fn run_estimate_gas_matrix<E: TestEnv>(
                     env.chain_id(),
                     *allowed_calls,
                     recipient,
+                );
+                request.key_authorization = Some(auth);
+            }
+            AuthKind::KeyAuthWitness {
+                key_type,
+                num_limits,
+            } => {
+                let mut auth = create_signed_key_authorization(
+                    &signer,
+                    *key_type,
+                    *num_limits,
+                    env.chain_id(),
+                    AllowedCallsMode::None,
+                    recipient,
+                );
+                auth.authorization = auth
+                    .authorization
+                    .with_witness(B256::with_last_byte((i + 1) as u8));
+                auth.signature = PrimitiveSignature::Secp256k1(
+                    signer
+                        .sign_hash_sync(&auth.authorization.signature_hash())
+                        .expect("signing should succeed"),
                 );
                 request.key_authorization = Some(auth);
             }
