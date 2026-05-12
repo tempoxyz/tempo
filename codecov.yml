@@ -1,0 +1,43 @@
+codecov:
+  require_ci_to_pass: false
+
+coverage:
+  precision: 2
+  round: down
+  range: "0...100"
+
+  status:
+    project:
+      default:
+        target: auto
+        threshold: 1%
+        informational: true
+    patch:
+      default:
+        target: 50%
+        threshold: 5%
+        informational: true
+
+comment:
+  layout: "reach,diff,flags,files"
+  behavior: default
+  require_changes: true
+  require_base: false
+  require_head: true
+
+ignore:
+  - "tips/verify/lib/**"
+  - "tips/verify/script/**"
+  - "**/tests/**"
+  - "**/test/**"
+  - "**/benches/**"
+  - "crates/xtask/**"
+  - "bin/tempo/src/main.rs"
+
+flags:
+  cargo-test-1:
+    carryforward: true
+  cargo-test-2:
+    carryforward: true
+  forge-test:
+    carryforward: true

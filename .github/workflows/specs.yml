@@ -182,45 +182,48 @@ jobs:
           workspaces: foundry
 
       - name: Install llvm-tools
-        if: needs.check-precompiles.outputs.coverage == 'true'
         run: rustup component add llvm-tools-preview
 
       - name: Patch foundry to use checked-out tempo crates
         run: tempo/scripts/foundry-patch.sh "$GITHUB_WORKSPACE/tempo" "$GITHUB_WORKSPACE/foundry"
 
-      # Build and run WITH coverage (only on PR when precompiles changed)
       - name: Build foundry forge with coverage instrumentation
-        if: needs.check-precompiles.outputs.coverage == 'true'
         working-directory: foundry
         run: RUSTFLAGS="-C instrument-coverage" cargo build -p forge --profile release --no-default-features
 
       - name: Run Forge tests with Rust precompiles (with coverage)
-        if: needs.check-precompiles.outputs.coverage == 'true'
         working-directory: tempo/tips/verify
         run: |
           echo "Running forge test with Rust precompiles"
           LLVM_PROFILE_FILE="$(pwd)/forge-coverage-%p.profraw" ../../../foundry/target/release/forge test -vvv
 
-      # Build and run WITHOUT coverage (main/merge_group or no precompiles changes)
-      - name: Build foundry forge
-        if: needs.check-precompiles.outputs.coverage != 'true'
-        working-directory: foundry
-        run: cargo build -p forge --profile release --no-default-features
-
-      - name: Run Forge tests with Rust precompiles
-        if: needs.check-precompiles.outputs.coverage != 'true'
-        working-directory: tempo/tips/verify
-        run: |
-          echo "Running forge test with Rust precompiles"
-          ../../../foundry/target/release/forge test -vvv
-
-      - name: Generate coverage profdata
-        if: needs.check-precompiles.outputs.coverage == 'true'
+      - name: Generate coverage data
         run: |
           LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin"
           mkdir -p coverage
           "$LLVM_BIN/llvm-profdata" merge -sparse tempo/tips/verify/*.profraw -o coverage/forge-test.profdata
 
+          # Generate lcov for Codecov
+          chmod +x foundry/target/release/forge
+          "$LLVM_BIN/llvm-cov" export \
+            --format=lcov \
+            --instr-profile=coverage/forge-test.profdata \
+            --object=foundry/target/release/forge \
+            --ignore-filename-regex='/rustc/' \
+            --ignore-filename-regex='\.cargo/' \
+            --ignore-filename-regex='\.rustup/' \
+            --ignore-filename-regex='foundry/' \
+            > coverage/forge-lcov.info 2>/dev/null || true
+
+      - name: Upload coverage to Codecov
+        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+        uses: codecov/codecov-action@3f20e214133d0983f9a10f3d63b0faf9241a3daa # v6.0.0
+        with:
+          files: coverage/forge-lcov.info
+          flags: forge-test
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
       - name: Upload forge coverage artifacts
         if: needs.check-precompiles.outputs.coverage == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
