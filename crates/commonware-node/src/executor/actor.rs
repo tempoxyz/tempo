@@ -11,7 +11,7 @@ use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, ContextCell, FutureExt, Handle, Pacer, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
-use eyre::{Report, WrapErr as _, ensure};
+use eyre::{Report, WrapErr as _, ensure, eyre};
 use futures::{
     FutureExt as _, StreamExt as _,
     channel::{
@@ -473,20 +473,17 @@ where
             return;
         }
 
-        let canonical_block_number = self
+        let canonical_block_height = self
             .execution_node
             .provider()
             .canonical_in_memory_state()
             .get_canonical_block_number();
 
-        // Allow syncing the parent block. Anything deeper will likely timeout
-        if canonical_block_number < height.previous().unwrap_or_default().get()
-            && let JustCanonicalizeOrAlsoBuild::AlsoBuild { response, .. } = maybe_build
-        {
-            let _ = response.send(Err(eyre::eyre!(
-                "build request on height {height} too far ahead of canonical height {canonical_block_number}"
-            )));
-            return;
+        // Reject build requests when syncing beyond the parent block
+        let mut attrs = maybe_build.attributes().cloned();
+        if attrs.is_some() && canonical_block_height < height.previous().unwrap_or_default().get() {
+            info!(%canonical_block_height, %height, "build request too far ahead of canonical height");
+            attrs = None;
         }
 
         info!(
@@ -496,14 +493,12 @@ where
             finalized_block_height = %new_canonicalized.finalized_height,
             "sending forkchoice-update",
         );
+
         let fcu_response = match self
             .execution_node
             .add_ons_handle
             .beacon_engine_handle
-            .fork_choice_updated(
-                new_canonicalized.forkchoice,
-                maybe_build.attributes().cloned(),
-            )
+            .fork_choice_updated(new_canonicalized.forkchoice, attrs)
             .pace(&self.context, Duration::from_millis(20))
             .await
             .wrap_err("failed requesting execution layer to update forkchoice state")
@@ -535,6 +530,8 @@ where
             JustCanonicalizeOrAlsoBuild::AlsoBuild { response, .. } => {
                 if let Some(payload_id) = fcu_response.payload_id {
                     let _ = response.send(Ok(payload_id));
+                } else {
+                    let _ = response.send(Err(eyre!("no payload id for the build request")));
                 }
             }
         }
