@@ -407,6 +407,15 @@ fn main() -> eyre::Result<()> {
         telemetry_config.replace(config);
     }
 
+    // Mute tracing output for `tempo consensus` CLI commands so that only
+    // the command's own stdout (e.g. JSON) is emitted without interleaved log lines.
+    if matches!(
+        cli.command,
+        Commands::Ext(tempo_cmd::TempoSubcommand::Consensus(_))
+    ) {
+        cli.logs.log_stdout_filter = "off".to_string();
+    }
+
     let is_node = matches!(cli.command, Commands::Node(_));
 
     let (args_and_node_handle_tx, args_and_node_handle_rx) =
