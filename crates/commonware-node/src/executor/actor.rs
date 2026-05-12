@@ -473,19 +473,6 @@ where
             return;
         }
 
-        let canonical_block_height = self
-            .execution_node
-            .provider()
-            .canonical_in_memory_state()
-            .get_canonical_block_number();
-
-        // Reject build requests when syncing beyond the parent block
-        let mut attrs = maybe_build.attributes().cloned();
-        if attrs.is_some() && canonical_block_height < height.previous().unwrap_or_default().get() {
-            info!(%canonical_block_height, %height, "build request too far ahead of canonical height");
-            attrs = None;
-        }
-
         info!(
             head_block_hash = %new_canonicalized.forkchoice.head_block_hash,
             head_block_height = %new_canonicalized.head_height,
@@ -494,6 +481,7 @@ where
             "sending forkchoice-update",
         );
 
+        let attrs = maybe_build.attributes().cloned();
         let fcu_response = match self
             .execution_node
             .add_ons_handle
