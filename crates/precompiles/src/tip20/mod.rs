@@ -1981,7 +1981,21 @@ pub(crate) mod tests {
                     to: ESCROW_ADDRESS,
                     amount,
                 })]);
-                TIP1028Escrow::new().assert_emitted_events(Vec::<TIP1028EscrowEvent>::new());
+                TIP1028Escrow::new().assert_emitted_events(vec![
+                    TIP1028EscrowEvent::TransferBlocked(ITIP1028Escrow::TransferBlocked {
+                        token: token.address,
+                        from: Address::ZERO,
+                        receiver,
+                        receiptVersion: BLOCKED_RECEIPT_VERSION,
+                        blockedNonce: 1,
+                        blockedAt: BLOCKED_AT,
+                        recipient: receiver,
+                        amount,
+                        blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
+                        recoveryContract: Address::ZERO,
+                        memo: B256::ZERO,
+                    }),
+                ]);
 
                 let receipt = receipt_v1(
                     Address::ZERO,

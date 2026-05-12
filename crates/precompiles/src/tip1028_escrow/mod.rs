@@ -98,23 +98,21 @@ impl TIP1028Escrow {
         let key = self.receipt_key(BLOCKED_RECEIPT_VERSION, token, recovery_address, &receipt)?;
         self.blocked_receipt_amount[key].write(amount)?;
 
-        if kind == ITIP1028Escrow::InboundKind::TRANSFER {
-            self.emit_event(TIP1028EscrowEvent::TransferBlocked(
-                ITIP1028Escrow::TransferBlocked {
-                    token,
-                    from: originator,
-                    receiver,
-                    receiptVersion: BLOCKED_RECEIPT_VERSION,
-                    blockedNonce: blocked_nonce,
-                    blockedAt: blocked_at,
-                    recipient,
-                    amount,
-                    blockedReason: blocked_reason as u8,
-                    recoveryContract: recovery_address,
-                    memo,
-                },
-            ))?;
-        }
+        self.emit_event(TIP1028EscrowEvent::TransferBlocked(
+            ITIP1028Escrow::TransferBlocked {
+                token,
+                from: originator,
+                receiver,
+                receiptVersion: BLOCKED_RECEIPT_VERSION,
+                blockedNonce: blocked_nonce,
+                blockedAt: blocked_at,
+                recipient,
+                amount,
+                blockedReason: blocked_reason as u8,
+                recoveryContract: recovery_address,
+                memo,
+            },
+        ))?;
 
         Ok((blocked_nonce, blocked_at))
     }
@@ -605,69 +603,6 @@ mod tests {
                     Err(e) if e == TIP1028EscrowError::invalid_receipt_claim().into()
                 ));
             }
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_store_emits_transfer_blocked_for_transfers() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-        storage.set_timestamp(U256::from(1_728_001u64));
-
-        let admin = Address::random();
-        let originator = Address::random();
-        let receiver = Address::random();
-        let recipient = Address::random();
-        let recovery = Address::random();
-        let amount = U256::from(42u64);
-        let memo = B256::repeat_byte(0x42);
-
-        StorageCtx::enter(&mut storage, || {
-            let token = TIP20Setup::create("T", "T", admin).apply()?;
-            let mut escrow = TIP1028Escrow::new();
-
-            let (nonce, blocked_at) = escrow.store_blocked(
-                token.address(),
-                originator,
-                receiver,
-                recipient,
-                recovery,
-                amount,
-                BlockedReason::RECEIVE_POLICY,
-                InboundKind::TRANSFER,
-                memo,
-            )?;
-
-            escrow.assert_emitted_events(vec![TIP1028EscrowEvent::TransferBlocked(
-                ITIP1028Escrow::TransferBlocked {
-                    token: token.address(),
-                    from: originator,
-                    receiver,
-                    receiptVersion: BLOCKED_RECEIPT_VERSION,
-                    blockedNonce: nonce,
-                    blockedAt: blocked_at,
-                    recipient,
-                    amount,
-                    blockedReason: BlockedReason::RECEIVE_POLICY as u8,
-                    recoveryContract: recovery,
-                    memo,
-                },
-            )]);
-
-            escrow.clear_emitted_events();
-            escrow.store_blocked(
-                token.address(),
-                Address::ZERO,
-                receiver,
-                recipient,
-                recovery,
-                amount,
-                BlockedReason::RECEIVE_POLICY,
-                InboundKind::MINT,
-                memo,
-            )?;
-            escrow.assert_emitted_events(Vec::<TIP1028EscrowEvent>::new());
 
             Ok(())
         })
@@ -1362,7 +1297,21 @@ mod tests {
                     amount,
                 },
             )?;
-            escrow.assert_emitted_events(Vec::<TIP1028EscrowEvent>::new());
+            escrow.assert_emitted_events(vec![TIP1028EscrowEvent::TransferBlocked(
+                ITIP1028Escrow::TransferBlocked {
+                    token: token.address(),
+                    from: Address::ZERO,
+                    receiver,
+                    receiptVersion: BLOCKED_RECEIPT_VERSION,
+                    blockedNonce: 1,
+                    blockedAt: 1_728_010,
+                    recipient: receiver,
+                    amount,
+                    blockedReason: BlockedReason::RECEIVE_POLICY as u8,
+                    recoveryContract: Address::ZERO,
+                    memo: B256::ZERO,
+                },
+            )]);
             assert_eq!(token.total_supply()?, amount);
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall {
