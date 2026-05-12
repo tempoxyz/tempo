@@ -83,7 +83,29 @@ sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
 # `cargo update` can pull newer upstream deps from Foundry's workspace, which is non-deterministic.
 # A normal resolver pass is enough to rewrite the lockfile entries for the tempo path overrides.
 # Keep this aligned with the CI Forge build so Optimism-only dependencies do not re-enter resolution.
-(cd "$FOUNDRY_ROOT" && cargo metadata --format-version=1 --no-default-features >/dev/null)
+#
+# When tempo's reth bump introduces a stricter constraint on a transitive crate
+# already pinned in foundry's lockfile (e.g. reth bumps `alloy-eip7928` to ^0.3.6
+# while foundry's lock has 0.3.5), cargo cannot resolve it without an update.
+# On such failures, parse the conflicting package out of the error and run a
+# targeted `cargo update -p <pkg>` for it, then retry. Loop while there are
+# pending conflicts so several distinct crates can be resolved in one run
+# without falling back to a blanket `cargo update`. Bail out if the same crate
+# conflicts twice in a row (i.e. `cargo update` made no progress).
+pushd "$FOUNDRY_ROOT" >/dev/null
+prev_conflict_pkg=""
+while true; do
+  err="$(cargo metadata --format-version=1 --no-default-features 2>&1 >/dev/null)" && break
+  conflict_pkg="$(printf '%s\n' "$err" | sed -nE "s/^error: failed to select a version for \`([^']+)\`.*/\1/p" | head -n1)"
+  if [[ -z "$conflict_pkg" || "$conflict_pkg" == "$prev_conflict_pkg" ]]; then
+    printf '%s\n' "$err" >&2
+    exit 1
+  fi
+  echo "cargo metadata failed on '$conflict_pkg' constraint; running 'cargo update -p $conflict_pkg' and retrying"
+  cargo update -p "$conflict_pkg" >/dev/null
+  prev_conflict_pkg="$conflict_pkg"
+done
+popd >/dev/null
 
 if grep -q '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock"; then
   echo "ERROR: Tempo git sources still present in Cargo.lock after patching:" >&2

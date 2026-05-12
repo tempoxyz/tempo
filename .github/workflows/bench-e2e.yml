@@ -81,6 +81,11 @@ on:
         type: string
         required: true
         default: "120"
+      otlp:
+        description: Export OTLP traces and logs.
+        type: boolean
+        required: true
+        default: false
       baseline-args:
         description: Extra args passed only to the baseline node.
         type: string
@@ -187,6 +192,10 @@ on:
       tracy-offset:
         type: string
         required: true
+      otlp:
+        type: string
+        required: false
+        default: "false"
       baseline-args:
         type: string
         required: false
@@ -279,6 +288,8 @@ jobs:
       BENCH_TRACY: ${{ inputs.tracy }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
+      BENCH_OTLP: ${{ inputs.otlp == true || inputs.otlp == 'true' }}
+      BENCH_FEATURES: ${{ (inputs.otlp == true || inputs.otlp == 'true') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
       BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '1000000000000' }}
@@ -293,21 +304,26 @@ jobs:
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
       BENCH_PR_HEAD_REF: ${{ inputs.pr-head-ref }}
-      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
-      GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
-      - name: Mask telemetry URL
-        if: env.TEMPO_TELEMETRY_URL
-        run: echo "::add-mask::$TEMPO_TELEMETRY_URL"
-
-      - name: Mask Grafana Tempo URL
-        if: env.GRAFANA_TEMPO
-        run: echo "::add-mask::$GRAFANA_TEMPO"
+      - name: Configure OTLP telemetry
+        if: env.BENCH_OTLP == 'true'
+        env:
+          TEMPO_TELEMETRY_URL_SECRET: ${{ secrets.TEMPO_TELEMETRY_URL }}
+          GRAFANA_TEMPO_SECRET: ${{ secrets.GRAFANA_TEMPO }}
+        run: |
+          if [ -n "$TEMPO_TELEMETRY_URL_SECRET" ]; then
+            echo "::add-mask::$TEMPO_TELEMETRY_URL_SECRET"
+            printf 'TEMPO_TELEMETRY_URL=%s\n' "$TEMPO_TELEMETRY_URL_SECRET" >> "$GITHUB_ENV"
+          fi
+          if [ -n "$GRAFANA_TEMPO_SECRET" ]; then
+            echo "::add-mask::$GRAFANA_TEMPO_SECRET"
+            printf 'GRAFANA_TEMPO=%s\n' "$GRAFANA_TEMPO_SECRET" >> "$GITHUB_ENV"
+          fi
 
       - name: Mask ClickHouse credentials
         if: env.CLICKHOUSE_URL
@@ -381,10 +397,12 @@ jobs:
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = process.env.BENCH_TRACY;
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
+            const otlp = process.env.BENCH_OTLP === 'true';
+            const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
             const noCache = process.env.BENCH_NO_CACHE === 'true';
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
             const gasLimit = process.env.BENCH_GAS_LIMIT;
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${noCacheNote}`);
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -532,6 +550,12 @@ jobs:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
         run: |
+          if [ "$BENCH_OTLP" != "true" ]; then
+            unset TEMPO_TELEMETRY_URL
+            unset GRAFANA_TEMPO
+            unset OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+            unset OTEL_EXPORTER_OTLP_HEADERS
+          fi
           cmd=(nu bench-e2e.nu e2e)
           cmd+=(
             --preset "$BENCH_PRESET"
@@ -546,6 +570,8 @@ jobs:
             --baseline-name "${{ steps.refs.outputs.baseline-name }}"
             --feature-name "${{ steps.refs.outputs.feature-name }}"
             --tune
+            --no-default-features
+            --features "$BENCH_FEATURES"
           )
           [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force-bloat)
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)

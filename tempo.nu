@@ -63,6 +63,12 @@ def tracy-build-config [features: string, tracy: string] {
     }
 }
 
+def cargo-feature-args [features: string, no_default_features: bool] {
+    let no_default_args = if $no_default_features { ["--no-default-features"] } else { [] }
+    let feature_args = if $features == "" { [] } else { ["--features" $features] }
+    $no_default_args | append $feature_args
+}
+
 # Validate mode is either "dev" or "consensus"
 def validate-mode [mode: string] {
     if $mode != "dev" and $mode != "consensus" {
@@ -72,9 +78,11 @@ def validate-mode [mode: string] {
 }
 
 # Build tempo binary with cargo
-def build-tempo [bins: list<string>, profile: string, features: string, --extra-rustflags: string = ""] {
+def build-tempo [bins: list<string>, profile: string, features: string, --no-default-features, --extra-rustflags: string = ""] {
     let bin_args = ($bins | each { |bin| ["--bin" $bin] } | flatten)
-    let build_cmd = ["cargo" "build" "--profile" $profile "--features" $features]
+    let feature_args = (cargo-feature-args $features $no_default_features)
+    let build_cmd = ["cargo" "build" "--profile" $profile]
+        | append $feature_args
         | append $bin_args
     let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
     print $"Building ($bins | str join ', '): `($build_cmd | str join ' ')`..."
@@ -305,15 +313,32 @@ def resolve-git-ref [ref: string] {
     git rev-parse $ref | str trim
 }
 
+def bench-cache-key [commit_sha: string, features: string, no_default_features: bool] {
+    if not $no_default_features {
+        return $commit_sha
+    }
+
+    let feature_key = if $features == "" {
+        "none"
+    } else {
+        $features
+        | str replace -a "," "_"
+        | str replace -a "/" "_"
+        | str replace -a " " "_"
+    }
+
+    $"($commit_sha)-no-default-($feature_key)"
+}
+
 # Try to download cached binaries from MinIO for a given commit SHA.
 # Returns true on cache hit, false on miss or any failure.
-def try-cache-download [worktree_dir: string, profile: string, commit_sha: string] {
+def try-cache-download [worktree_dir: string, profile: string, commit_sha: string, cache_key: string] {
     if not (has-mc) { return false }
 
     let bins = ["tempo" "tempo-bench"]
     # Check that all binaries exist in the cache
     for bin in $bins {
-        let remote = $"($MINIO_BUCKET)/($commit_sha)/($bin)"
+        let remote = $"($MINIO_BUCKET)/($cache_key)/($bin)"
         try {
             mc stat $remote | ignore
         } catch {
@@ -331,7 +356,7 @@ def try-cache-download [worktree_dir: string, profile: string, commit_sha: strin
     mkdir $target_dir
 
     for bin in $bins {
-        let remote = $"($MINIO_BUCKET)/($commit_sha)/($bin)"
+        let remote = $"($MINIO_BUCKET)/($cache_key)/($bin)"
         let local = $"($target_dir)/($bin)"
         print $"Downloading cached ($bin) for ($commit_sha | str substring 0..8)..."
         try {
@@ -359,7 +384,7 @@ def try-cache-download [worktree_dir: string, profile: string, commit_sha: strin
 }
 
 # Upload built binaries to MinIO cache. Failures are non-fatal.
-def cache-upload [worktree_dir: string, profile: string, commit_sha: string] {
+def cache-upload [worktree_dir: string, profile: string, commit_sha: string, cache_key: string] {
     if not (has-mc) { return }
 
     let target_dir = if $profile == "dev" {
@@ -370,7 +395,7 @@ def cache-upload [worktree_dir: string, profile: string, commit_sha: string] {
 
     for bin in ["tempo" "tempo-bench"] {
         let local = $"($target_dir)/($bin)"
-        let remote = $"($MINIO_BUCKET)/($commit_sha)/($bin)"
+        let remote = $"($MINIO_BUCKET)/($cache_key)/($bin)"
         print $"Uploading ($bin) to cache for ($commit_sha | str substring 0..8)..."
         try {
             mc cp $local $remote
@@ -381,9 +406,11 @@ def cache-upload [worktree_dir: string, profile: string, commit_sha: string] {
 }
 
 # Build tempo binaries in a git worktree (with optional MinIO cache)
-def build-in-worktree [worktree_dir: string, ref: string, profile: string, features: string, commit_sha: string, --no-cache, --extra-rustflags: string = "", --bench-features: string = ""] {
+def build-in-worktree [worktree_dir: string, ref: string, profile: string, features: string, commit_sha: string, --no-cache, --no-default-features, --extra-rustflags: string = "", --bench-features: string = ""] {
+    let cache_key = (bench-cache-key $commit_sha $features $no_default_features)
+
     # Try cache first
-    if not $no_cache and (try-cache-download $worktree_dir $profile $commit_sha) {
+    if not $no_cache and (try-cache-download $worktree_dir $profile $commit_sha $cache_key) {
         return
     }
 
@@ -392,15 +419,23 @@ def build-in-worktree [worktree_dir: string, ref: string, profile: string, featu
     let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
     if $bench_features != "" and $bench_features != $features {
         # Build tempo (with tracy features) and tempo-bench (without) separately
-        let tempo_cmd = ["cargo" "build" "--profile" $profile "--features" $features "--bin" "tempo"]
-        let bench_cmd = ["cargo" "build" "--profile" $profile "--features" $bench_features "--bin" "tempo-bench"]
+        let tempo_feature_args = (cargo-feature-args $features $no_default_features)
+        let bench_feature_args = (cargo-feature-args $bench_features $no_default_features)
+        let tempo_cmd = ["cargo" "build" "--profile" $profile]
+            | append $tempo_feature_args
+            | append ["--bin" "tempo"]
+        let bench_cmd = ["cargo" "build" "--profile" $profile]
+            | append $bench_feature_args
+            | append ["--bin" "tempo-bench"]
         with-env { RUSTFLAGS: $rustflags } {
             do { cd $worktree_dir; run-external ($tempo_cmd | first) ...($tempo_cmd | skip 1) }
             do { cd $worktree_dir; run-external ($bench_cmd | first) ...($bench_cmd | skip 1) }
         }
     } else {
         let bin_args = ["--bin" "tempo" "--bin" "tempo-bench"]
-        let build_cmd = ["cargo" "build" "--profile" $profile "--features" $features]
+        let feature_args = (cargo-feature-args $features $no_default_features)
+        let build_cmd = ["cargo" "build" "--profile" $profile]
+            | append $feature_args
             | append $bin_args
         with-env { RUSTFLAGS: $rustflags } {
             do { cd $worktree_dir; run-external ($build_cmd | first) ...($build_cmd | skip 1) }
@@ -408,7 +443,7 @@ def build-in-worktree [worktree_dir: string, ref: string, profile: string, featu
     }
 
     # Upload to cache
-    cache-upload $worktree_dir $profile $commit_sha
+    cache-upload $worktree_dir $profile $commit_sha $cache_key
 }
 
 # Get the path to a built binary in a worktree
