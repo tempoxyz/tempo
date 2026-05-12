@@ -863,7 +863,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
             let report_path = $"($ctx.results_dir)/report-($phase).json"
             let tx_count = [($ctx.tps * $ctx.duration) 1] | math max
-            let bench_duration = $"($ctx.duration)sec"
             let txgen_cmd = [
                 $ctx.txgen.txgen_tempo_bin
                 "generate"
@@ -881,7 +880,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 "--metrics-url" "http://127.0.0.1:9001/metrics"
                 "--scrape-interval-ms" $TXGEN_SCRAPE_INTERVAL_MS
                 "--drain-timeout" $TXGEN_DRAIN_TIMEOUT_SECS
-                "--duration" $bench_duration
+                "--duration" $ctx.duration
                 "--report" $"json:($report_path)"
                 "-m" $"chain_id=($chain_id)"
                 "-m" $"target_tps=($ctx.tps)"
