@@ -423,8 +423,8 @@ def "main run" [
             cp $"($feature_genesis_dir)/genesis.json" $feature_genesis_path
             rm -rf $feature_genesis_dir
 
-            if $bloat > 0 and not ($bloat_file | path exists) {
-                let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
+            if $bloat > 0 and not ((tempo-supports-init-state-bloat $baseline_tempo) and (tempo-supports-init-state-bloat $feature_tempo)) and not ($bloat_file | path exists) {
+                let token_args = (bloat-token-args)
                 if $baseline == "local" {
                     cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
                 } else {
@@ -484,8 +484,8 @@ def "main run" [
                 }
             }
 
-            if $bloat > 0 and not ($bloat_file | path exists) {
-                let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
+            if $bloat > 0 and not (tempo-supports-init-state-bloat $baseline_tempo) and not ($bloat_file | path exists) {
+                let token_args = (bloat-token-args)
                 if $baseline == "local" {
                     cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
                 } else {

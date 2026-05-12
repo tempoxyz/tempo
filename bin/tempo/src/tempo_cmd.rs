@@ -76,6 +76,9 @@ pub(crate) enum TempoSubcommand {
     /// and applies them to the genesis state.
     InitFromBinaryDump(Box<init_state::InitFromBinaryDump<TempoChainSpecParser>>),
 
+    /// Generate TIP20 state bloat and load it directly into a freshly initialized database.
+    InitStateBloat(Box<init_state::InitStateBloat<TempoChainSpecParser>>),
+
     /// Patch a virgin block-0 database to use a new genesis header.
     Regenesis(Box<regenesis::Regenesis<TempoChainSpecParser>>),
 
@@ -114,6 +117,13 @@ impl ExtendedCommand for TempoSubcommand {
             }
             Self::P2pProxy(cmd) => runner.run_command_until_exit(|_| cmd.run()),
             Self::InitFromBinaryDump(cmd) => {
+                let runtime = runner.runtime();
+                runner.run_blocking_until_ctrl_c(
+                    cmd.execute::<tempo_node::node::TempoNode>(runtime),
+                )?;
+                Ok(())
+            }
+            Self::InitStateBloat(cmd) => {
                 let runtime = runner.runtime();
                 runner.run_blocking_until_ctrl_c(
                     cmd.execute::<tempo_node::node::TempoNode>(runtime),

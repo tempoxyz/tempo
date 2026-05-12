@@ -163,8 +163,9 @@ def init-e2e-db [tempo_bin: string, genesis: string, datadir: string, bloat: int
     }
 
     if $bloat > 0 {
-        print $"Loading state bloat into ($datadir)..."
-        let bloat_result = (run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file | complete)
+        print $"Generating and loading state bloat into ($datadir)..."
+        let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
+        let bloat_result = (run-external $tempo_bin "init-state-bloat" "--chain" $genesis "--datadir" $datadir "--size" $bloat ...$token_args | complete)
         if $bloat_result.stdout != "" { print $bloat_result.stdout }
         if $bloat_result.stderr != "" { print $bloat_result.stderr }
         if $bloat_result.exit_code != 0 {
@@ -931,12 +932,7 @@ def "main e2e" [
             print "Error: generated localnet did not produce trusted peers"
             exit 1
         }
-        if $bloat_mib > 0 {
-            ensure-bloat-space $bloat_mib
-            print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
-            let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
-        }
+        if $bloat_mib > 0 { ensure-bloat-space $bloat_mib }
 
         let marker = {
             bloat_mib: $bloat_mib
