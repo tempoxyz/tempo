@@ -118,9 +118,7 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns whether this is a payment transaction.
-    ///
-    /// Uses strict classification: TIP-20 prefix AND recognized calldata.
+    /// Returns whether this is a payment transaction according to the builder criteria.
     pub fn is_payment(&self) -> bool {
         self.is_payment
     }
