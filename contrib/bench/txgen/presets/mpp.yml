@@ -145,7 +145,5 @@ sequences:
               - "0x"
 
 mix:
-  - template: tip20_transfer
-    weight: 80
   - sequence: mpp_approve_open_close
-    weight: 20
+    weight: 100
