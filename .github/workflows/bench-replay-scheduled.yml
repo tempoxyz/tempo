@@ -43,7 +43,6 @@ on:
       warmup:
         description: "Number of warmup blocks (default: one-quarter of blocks)"
         required: false
-        default: ""
         type: string
       samply:
         description: "Enable samply profiling"
