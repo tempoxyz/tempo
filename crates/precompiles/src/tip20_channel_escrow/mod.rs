@@ -548,7 +548,7 @@ impl TIP20ChannelEscrow {
     }
 
     /// Computes the channel id including chain and precompile domain separation.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(clippy::too_many_arguments)]
     fn compute_channel_id_inner(
         &self,
         payer: Address,
