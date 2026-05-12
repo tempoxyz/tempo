@@ -25,7 +25,7 @@ use commonware_utils::ordered;
 use eyre::{OptionExt as _, WrapErr as _};
 use futures::{StreamExt, future::BoxFuture};
 use reth_chainspec::EthChainSpec;
-use reth_db::mdbx::{DatabaseEnv, GIGABYTE};
+use reth_db::mdbx::DatabaseEnv;
 use reth_ethereum::{
     evm::{
         primitives::EvmEnv,
@@ -40,7 +40,7 @@ use reth_ethereum::{
 };
 use reth_node_builder::{NodeBuilder, NodeConfig};
 use reth_node_core::{
-    args::{DatadirArgs, PayloadBuilderArgs, RpcServerArgs, StorageArgs},
+    args::{DatadirArgs, PayloadBuilderArgs, RpcServerArgs},
     exit::NodeExitFuture,
 };
 use reth_rpc_builder::RpcModuleSelection;
@@ -843,12 +843,14 @@ pub fn genesis() -> Genesis {
     serde_json::from_str(include_str!("../../node/tests/assets/test-genesis.json")).unwrap()
 }
 
-/// Returns MDBX DB args sized for tests (1 GB max instead of 8 TB).
+/// Returns MDBX DB args sized for tests (64 MB max with 4 MB growth step).
 ///
-/// The default 8 TB geometry exhausts process virtual-address space when
-/// many databases are open concurrently across parallel test threads.
+/// The default 8 TB geometry with 4 GB growth step both exhausts process
+/// virtual-address space when many databases are open concurrently across
+/// parallel test threads, and pre-allocates multi-GB files on disk that
+/// can fill the CI runner's disk.
 pub fn test_db_args() -> reth_db::mdbx::DatabaseArguments {
-    reth_db::mdbx::DatabaseArguments::default().with_geometry_max_size(Some(GIGABYTE))
+    reth_db::mdbx::DatabaseArguments::test()
 }
 
 /// Launches a tempo execution node.
@@ -891,7 +893,6 @@ pub async fn launch_execution_node<P: AsRef<Path>>(
             interval: Duration::from_millis(100),
             ..Default::default()
         })
-        .with_storage(StorageArgs { v2: false })
         .apply(|mut c| {
             c.network.discovery.disable_discovery = true;
             c.network = c.network.with_unused_ports();
