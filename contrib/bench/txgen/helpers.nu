@@ -113,17 +113,47 @@ def txgen-validate-bench-args [bench_args: string] {
     }
 }
 
-def txgen-rpc-call [rpc_url: string, payload: string] {
-    let result = (^curl -sf -X POST -H "Content-Type: application/json" -d $payload $rpc_url | complete)
+def txgen-rpc-method [payload: string] {
+    try { $payload | from json | get -o method | default "unknown" } catch { "unknown" }
+}
+
+def txgen-rpc-call-result [rpc_url: string, payload: string] {
+    let method = (txgen-rpc-method $payload)
+    let result = (^curl --fail-with-body -sS -X POST -H "Content-Type: application/json" -d $payload $rpc_url | complete)
     if $result.exit_code != 0 {
-        error make { msg: $"RPC call failed: ($payload)" }
+        let stderr = ($result.stderr | str trim)
+        let stdout = ($result.stdout | str trim)
+        let body = if $stdout == "" { "" } else { $"; stdout: ($stdout)" }
+        return {
+            ok: false
+            error: $"RPC transport error calling ($method) at ($rpc_url): curl exit ($result.exit_code); stderr: ($stderr)($body)"
+        }
     }
-    let response = ($result.stdout | from json)
+
+    let response = (try { $result.stdout | from json } catch { |e|
+        return {
+            ok: false
+            error: $"RPC response parse error calling ($method) at ($rpc_url): ($e.msg); stdout: ($result.stdout | str trim)"
+        }
+    })
+
     if (($response | get -o error) != null) {
         let rpc_error = ($response | get error)
-        error make { msg: $"RPC error: ($rpc_error | to json -r)" }
+        return {
+            ok: false
+            error: $"RPC error calling ($method) at ($rpc_url): ($rpc_error | to json -r)"
+        }
     }
-    $response
+
+    { ok: true, response: $response }
+}
+
+def txgen-rpc-call [rpc_url: string, payload: string] {
+    let result = (txgen-rpc-call-result $rpc_url $payload)
+    if not $result.ok {
+        error make { msg: $"($result.error); payload: ($payload)" }
+    }
+    $result.response
 }
 
 def txgen-fetch-chain-id [rpc_url: string] {
@@ -167,9 +197,27 @@ def txgen-fund-accounts [txgen_bin: string, spec_path: string, rpc_url: string] 
     }
 
     print $"  Funding (($addresses | length)) txgen account\(s\)..."
-    $addresses | par-each { |address|
-        txgen-rpc-call $rpc_url $"{\"jsonrpc\":\"2.0\",\"method\":\"tempo_fundAddress\",\"params\":[\"($address)\"],\"id\":1}" | ignore
-    } | ignore
+    let funding_results = ($addresses | par-each { |address|
+        let result = (txgen-rpc-call-result $rpc_url $"{\"jsonrpc\":\"2.0\",\"method\":\"tempo_fundAddress\",\"params\":[\"($address)\"],\"id\":1}")
+        if $result.ok {
+            { address: $address, ok: true, error: "" }
+        } else {
+            { address: $address, ok: false, error: $result.error }
+        }
+    })
+
+    let failures = ($funding_results | where ok == false)
+    if not ($failures | is-empty) {
+        let failure_count = ($failures | length)
+        print $"Error: failed to fund ($failure_count)/($addresses | length) txgen account\(s\)."
+        for failure in ($failures | first 10) {
+            print $"  ($failure.address): ($failure.error)"
+        }
+        if $failure_count > 10 {
+            print $"  ... and ($failure_count - 10) more funding failure\(s\)"
+        }
+        error make { msg: "txgen account funding failed" }
+    }
 
     print "  Waiting for faucet transactions to drain..."
     txgen-wait-for-txpool-drain $rpc_url $TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS
