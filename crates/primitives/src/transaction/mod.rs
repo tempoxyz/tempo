@@ -12,8 +12,9 @@ pub use tt_signature::{
     derive_p256_address,
 };
 
+pub use crate::address::TIP20_TOKEN_PREFIX as TIP20_PAYMENT_PREFIX;
 pub use alloy_eips::eip7702::Authorization;
-pub use envelope::{TIP20_PAYMENT_PREFIX, TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
+pub use envelope::{TempoTxEnvelope, TempoTxType, TempoTypedTransaction};
 pub use key_authorization::{
     CallScope, KeyAuthorization, KeyAuthorizationChainIdError, SelectorRule,
     SignedKeyAuthorization, TokenLimit,
@@ -25,7 +26,23 @@ pub use tempo_transaction::{
 };
 pub use tt_signed::AASigned;
 
-use alloy_primitives::{U256, uint};
+use alloc::vec::Vec;
+use alloy_consensus::SignableTransaction;
+use alloy_primitives::{Address, B256, Signature, U256, uint};
+
+/// Computes the sender-scoped transaction identifier used for replay-sensitive features.
+///
+/// The identifier is `keccak256(encode_for_signing || sender)`, making it unique per recovered
+/// sender while remaining invariant to signatures that do not change the signed payload.
+pub(crate) fn unique_tx_identifier_from_signable<T>(tx: &T, sender: Address) -> B256
+where
+    T: SignableTransaction<Signature>,
+{
+    let mut buf = Vec::with_capacity(tx.payload_len_for_signature() + sender.as_slice().len());
+    tx.encode_for_signing(&mut buf);
+    buf.extend_from_slice(sender.as_slice());
+    alloy_primitives::keccak256(buf)
+}
 
 /// Scaling factor for converting gas prices (attodollars) to TIP-20 token amounts (microdollars).
 ///

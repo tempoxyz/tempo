@@ -604,6 +604,26 @@ def init-local-e2e-side [
     bench-save-e2e-meta $datadir $meta_dir ($marker | insert validator_role $role) [[$generated_genesis "genesis.json"] [$generated_trusted_peers "trusted-peers.txt"]]
 }
 
+# Update the PR comment with current benchmark phase status.
+# Requires BENCH_GH_TOKEN, BENCH_COMMENT_ID, BENCH_ACTOR, BENCH_JOB_URL,
+# BENCH_CONFIG, and GITHUB_REPOSITORY environment variables.
+def bench-update-pr-status [status: string] {
+    let comment_id = ($env | get -o BENCH_COMMENT_ID | default "")
+    let token = ($env | get -o BENCH_GH_TOKEN | default "")
+    if $comment_id == "" or $token == "" { return }
+    let repo = $env.GITHUB_REPOSITORY
+    let actor = ($env | get -o BENCH_ACTOR | default "")
+    let job_url = ($env | get -o BENCH_JOB_URL | default "")
+    let config = ($env | get -o BENCH_CONFIG | default "")
+    let body = $"cc @($actor)\n\n🚀 Benchmark started! [View job]\(($job_url)\)\n\n⏳ **Status:** ($status)\n\n($config)"
+    let payload = { body: $body } | to json
+    try {
+        ^curl -sS -X PATCH $"https://api.github.com/repos/($repo)/issues/comments/($comment_id)" -H $"Authorization: token ($token)" -H "Accept: application/vnd.github+json" -d $payload | ignore
+    } catch {
+        print $"Warning: failed to update PR comment status"
+    }
+}
+
 def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
     print $"=== Starting local e2e phase: ($phase) ==="
@@ -1055,8 +1075,11 @@ def "main e2e" [
         { phase: "feature-2", ref: $feature, tempo: $feature_tempo, genesis: $feature_genesis_path, hardfork: $feature_hardfork_name }
         { phase: "baseline-2", ref: $baseline, tempo: $baseline_tempo, genesis: $baseline_genesis_path, hardfork: $baseline_hardfork_name }
     ]
+    let num_phases = ($runs | length)
     mut e2e_exit = 0
-    for run in $runs {
+    for idx in 0..<$num_phases {
+        let run = ($runs | get $idx)
+        bench-update-pr-status $"Running benchmark phase ($run.phase) \(($idx + 1)/($num_phases)\)..."
         let phase_exit = (run-local-e2e-phase $run $ctx)
         if $phase_exit != 0 {
             $e2e_exit = $phase_exit
