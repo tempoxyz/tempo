@@ -76,7 +76,7 @@ pub(crate) enum TempoSubcommand {
     /// and applies them to the genesis state.
     InitFromBinaryDump(Box<init_state::InitFromBinaryDump<TempoChainSpecParser>>),
 
-    /// Generate TIP20 state bloat and load it directly into a freshly initialized database.
+    /// Generate TIP20 state bloat and load it directly into a freshly initialized storage-v2 database.
     InitStateBloat(Box<init_state::InitStateBloat<TempoChainSpecParser>>),
 
     /// Patch a virgin block-0 database to use a new genesis header.
