@@ -17,7 +17,6 @@ const E2E_B_CPUS = "8-15,24-31"
 const E2E_A_MEMORY = "60G"
 const E2E_B_MEMORY = "60G"
 const E2E_GAS_LIMIT = "1000000000000"
-const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
 const E2E_LOCAL_RETH_ARGS = [
@@ -152,7 +151,7 @@ def trusted-peers-from-localnet [localnet_dir: string] {
     } | str join ","
 }
 
-def init-e2e-db [tempo_bin: string, genesis: string, datadir: string, bloat: int, bloat_file: string] {
+def init-e2e-db [tempo_bin: string, genesis: string, datadir: string, bloat: int] {
     print $"Initializing database at ($datadir)..."
     let init_result = (run-external $tempo_bin "init" "--chain" $genesis "--datadir" $datadir | complete)
     if $init_result.stdout != "" { print $init_result.stdout }
@@ -585,7 +584,6 @@ def init-local-e2e-side [
     generated_genesis: string,
     trusted_peers: string,
     bloat: int,
-    bloat_file: string,
     tempo_bin: string,
     marker: record,
 ] {
@@ -596,7 +594,7 @@ def init-local-e2e-side [
     mkdir $datadir
     mkdir $node_dir
 
-    init-e2e-db $tempo_bin $generated_genesis $datadir $bloat $bloat_file
+    init-e2e-db $tempo_bin $generated_genesis $datadir $bloat
     for file in ["signing.key" "signing.share" "enode.key" "enode.identity"] {
         cp $"($generated_node_dir)/($file)" $"($node_dir)/($file)"
     }
@@ -913,13 +911,10 @@ def "main e2e" [
     if $should_init_snapshots {
         let init_dir = $"($LOCALNET_DIR)/e2e-local-init"
         let generated_genesis = $"($init_dir)/genesis.json"
-        let bloat_file = $"($E2E_BLOAT_TMP_DIR)/state_bloat.bin"
         mark-schelk-dirty-at $E2E_A_STATE_PATH
         mark-schelk-dirty-at $E2E_B_STATE_PATH
         if ($init_dir | path exists) { rm -rf $init_dir }
         mkdir $init_dir
-        if ($E2E_BLOAT_TMP_DIR | path exists) { rm -rf $E2E_BLOAT_TMP_DIR }
-        mkdir $E2E_BLOAT_TMP_DIR
 
         build-tempo --no-default-features=$no_default_features ["tempo"] $profile $features
         let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
@@ -945,11 +940,8 @@ def "main e2e" [
             topology: "single-runner"
             state_hardfork: $snapshot_state_hardfork
         }
-        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
-        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
-        if ($E2E_BLOAT_TMP_DIR | path exists) {
-            rm -rf $E2E_BLOAT_TMP_DIR
-        }
+        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
+        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
         bench-promote-at $E2E_A_STATE_PATH $a_db
         bench-promote-at $E2E_B_STATE_PATH $b_db
         bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db

@@ -87,27 +87,9 @@ def find-tempo-pids [] {
     ps | where name =~ '(^|/)tempo$' | get pid
 }
 
-# Initialize node with state bloat. New binaries use `tempo init-state-bloat`
-# directly after `tempo init`; old binaries can still fall back to a generated
-# binary dump file.
+# Initialize node with state bloat using `tempo init-state-bloat`.
 def bloat-token-args [] {
     $TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten
-}
-
-def tempo-supports-init-state-bloat [tempo_bin: string] {
-    let result = (run-external $tempo_bin "init-state-bloat" "--help" | complete)
-    $result.exit_code == 0
-}
-
-def generate-bloat-file [bloat_size: int, profile: string] {
-    let bloat_file = $"($LOCALNET_DIR)/state_bloat.bin"
-    if ($bloat_file | path exists) {
-        print $"State bloat file already exists \(($bloat_size) MiB\)"
-        return
-    }
-    print $"Generating state bloat \(($bloat_size) MiB\)..."
-    let token_args = (bloat-token-args)
-    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_size --out $bloat_file ...$token_args
 }
 
 # Load generated bloat into a single node's database
@@ -174,32 +156,24 @@ def bench-clean-datadir [datadir: string] {
     }
 }
 
-# Initialize a database: run `tempo init`, optionally load state bloat
-def bench-init-db [tempo_bin: string, genesis: string, datadir: string, bloat: int, bloat_file: string] {
+# Initialize a database: run `tempo init`, optionally generate and load state bloat.
+def bench-init-db [tempo_bin: string, genesis: string, datadir: string, bloat: int] {
     print $"Initializing database at ($datadir)..."
     run-external $tempo_bin "init" "--chain" $genesis "--datadir" $datadir
 
     if $bloat > 0 {
         let token_args = (bloat-token-args)
-        if (tempo-supports-init-state-bloat $tempo_bin) {
-            print $"Generating and loading state bloat into ($datadir)..."
-            run-external $tempo_bin "init-state-bloat" "--chain" $genesis "--datadir" $datadir "--size" $bloat ...$token_args | complete
-        } else {
-            print $"Loading state bloat into ($datadir)..."
-            run-external $tempo_bin "init-from-binary-dump" "--chain" $genesis "--datadir" $datadir $bloat_file | complete
-        }
+        print $"Generating and loading state bloat into ($datadir)..."
+        run-external $tempo_bin "init-state-bloat" "--chain" $genesis "--datadir" $datadir "--size" $bloat ...$token_args | complete
     }
 }
 
-# Save genesis files, bloat, and marker to meta dir, then promote and remount.
+# Save genesis files and marker to meta dir, then promote and remount.
 # Everything is written before promote so it's part of the virgin snapshot.
-def bench-save-and-promote [datadir: string, meta_dir: string, marker: record, genesis_files: list, bloat: int, bloat_file: string] {
+def bench-save-and-promote [datadir: string, meta_dir: string, marker: record, genesis_files: list] {
     mkdir $meta_dir
     for pair in $genesis_files {
         cp ($pair | first) $"($meta_dir)/($pair | last)"
-    }
-    if $bloat > 0 and ($bloat_file | path exists) {
-        cp $bloat_file $"($meta_dir)/state_bloat.bin"
     }
     let marker_path = $"($meta_dir)/marker.json"
     $marker | insert initialized_at (date now | format date "%Y-%m-%dT%H:%M:%SZ") | to json | save -f $marker_path
@@ -1679,23 +1653,15 @@ def "main bench-init" [
     print $"Generating genesis with ($genesis_accounts) accounts..."
     cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis
 
-    # Generate bloat file only for old binaries that do not support direct bloat init.
-    let bloat_file = $"($abs_localnet)/state_bloat.bin"
-    if $bloat > 0 and not (tempo-supports-init-state-bloat $tempo_bin) {
-        print $"Generating state bloat \(($bloat) MiB\)..."
-        let token_args = (bloat-token-args)
-        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-    }
-
     bench-clean-datadir $datadir
-    bench-init-db $tempo_bin $genesis_path $datadir $bloat $bloat_file
+    bench-init-db $tempo_bin $genesis_path $datadir $bloat
 
     bench-save-and-promote $datadir $meta_dir {
         bloat_mib: $bloat,
         accounts: $genesis_accounts,
         bench_datadir: $datadir,
         txgen_mnemonic: (txgen-account-mnemonic)
-    } [[$genesis_path "genesis.json"]] $bloat $bloat_file
+    } [[$genesis_path "genesis.json"]]
 
     print $"Virgin snapshot initialized and promoted."
 }
@@ -1923,7 +1889,6 @@ def "main bench" [
 
         # Determine paths (absolute for use inside worktree cd blocks)
         let abs_localnet = ($LOCALNET_DIR | path expand)
-        let bloat_file = $"($abs_localnet)/state_bloat.bin"
         let datadir = if $bench_datadir != "" {
             $bench_datadir
         } else if (has-schelk) {
@@ -2010,20 +1975,6 @@ def "main bench" [
                 cp $"($feature_genesis_dir)/genesis.json" $feature_genesis_path
                 rm -rf $feature_genesis_dir
 
-                # Generate bloat file only when at least one compared binary needs the legacy path.
-                if $bloat > 0 and not ((tempo-supports-init-state-bloat $baseline_tempo) and (tempo-supports-init-state-bloat $feature_tempo)) and not ($bloat_file | path exists) {
-                    print $"Generating state bloat \(($bloat) MiB\)..."
-                    let token_args = (bloat-token-args)
-                    if $baseline == "local" {
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                    } else {
-                        do {
-                            cd $baseline_wt
-                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                        }
-                    }
-                }
-
                 # Initialize both datadirs
                 for side in [
                     { name: "baseline", genesis: $baseline_genesis_path, dd: $baseline_datadir, tempo: $baseline_tempo }
@@ -2031,7 +1982,7 @@ def "main bench" [
                 ] {
                     bench-clean-datadir $side.dd
                     mkdir $side.dd
-                    bench-init-db $side.tempo $side.genesis $side.dd $bloat $bloat_file
+                    bench-init-db $side.tempo $side.genesis $side.dd $bloat
                 }
 
                 bench-save-and-promote $datadir $meta_dir {
@@ -2042,7 +1993,7 @@ def "main bench" [
                     feature_hardfork: ($feature_hardfork | str upcase)
                     gas_limit: $gas_limit
                     txgen_mnemonic: (txgen-account-mnemonic)
-                } [[$baseline_genesis_path "genesis-baseline.json"] [$feature_genesis_path "genesis-feature.json"]] $bloat $bloat_file
+                } [[$baseline_genesis_path "genesis-baseline.json"] [$feature_genesis_path "genesis-feature.json"]]
 
                 print "Dual-hardfork databases initialized and promoted."
             }
@@ -2083,21 +2034,8 @@ def "main bench" [
                     }
                 }
 
-                if $bloat > 0 and not (tempo-supports-init-state-bloat $baseline_tempo) and not ($bloat_file | path exists) {
-                    print $"Generating state bloat \(($bloat) MiB\) from baseline..."
-                    let token_args = (bloat-token-args)
-                    if $baseline == "local" {
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                    } else {
-                        do {
-                            cd $baseline_wt
-                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
-                        }
-                    }
-                }
-
                 bench-clean-datadir $datadir
-                bench-init-db $baseline_tempo $genesis_path_std $datadir $bloat $bloat_file
+                bench-init-db $baseline_tempo $genesis_path_std $datadir $bloat
 
                 bench-save-and-promote $datadir $meta_dir {
                     bloat_mib: $bloat,
@@ -2105,7 +2043,7 @@ def "main bench" [
                     bench_datadir: $datadir,
                     gas_limit: $gas_limit,
                     txgen_mnemonic: (txgen-account-mnemonic)
-                } [[$genesis_path_std "genesis.json"]] $bloat $bloat_file
+                } [[$genesis_path_std "genesis.json"]]
 
                 print "Database initialized and promoted to virgin baseline."
             }
