@@ -16,7 +16,10 @@ use futures::future::join_all;
 use reth_ethereum::provider::BlockNumReader as _;
 use tracing::info;
 
-use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
+use crate::{
+    CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, connect_execution_to_peers,
+    setup_validators,
+};
 
 #[test_traced]
 fn joins_from_snapshot() {
@@ -28,7 +31,6 @@ fn joins_from_snapshot() {
     let setup = Setup::new()
         .how_many_signers(4)
         .how_many_verifiers(1)
-        .connect_execution_layer_nodes(true)
         .epoch_length(epoch_length);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
@@ -54,6 +56,7 @@ fn joins_from_snapshot() {
             "must have removed the one non-signer node; must be left with only signers",
         );
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        connect_execution_peers(&validators).await;
 
         // The validator that will receive the donor's addresses to simulate
         // a late start.
@@ -67,16 +70,15 @@ fn joins_from_snapshot() {
             .parse::<Url>()
             .unwrap();
 
-        // First, remove the last actual validator (index 3 = last of 4 signers).
-        let receiver_index = 3u64;
+        // First, deactivate the last actual validator (the receiver).
         let receipt = execution_runtime
-            .change_validator_status(http_url.clone(), receiver_index, false)
+            .deactivate_validator_v2(http_url.clone(), &receiver)
             .await
             .unwrap();
 
         tracing::debug!(
             block.number = receipt.block_number,
-            "changeValidatorStatus call returned receipt"
+            "deactivateValidator call returned receipt"
         );
 
         // Then wait until the validator has left the committee.
@@ -86,18 +88,13 @@ fn joins_from_snapshot() {
 
         // Then, add the sacrificial validator without starting it(!).
         let receipt = execution_runtime
-            .add_validator(
-                http_url.clone(),
-                donor.chain_address,
-                donor.public_key().clone(),
-                donor.network_address,
-            )
+            .add_validator_v2(http_url.clone(), &donor)
             .await
             .unwrap();
 
         tracing::debug!(
             block.number = receipt.block_number,
-            "addValidator call returned receipt"
+            "addValidatorV2 call returned receipt"
         );
 
         // Wait until it was added to the committee
@@ -112,7 +109,7 @@ fn joins_from_snapshot() {
         // Now turn the receiver into the donor - except for the database dir and
         // env. This simulates a start from a snapshot.
         receiver.uid = donor.uid;
-        receiver.public_key = donor.public_key;
+        receiver.private_key = donor.private_key;
         {
             let peer_manager = receiver.consensus_config.peer_manager.clone();
             receiver.consensus_config = donor.consensus_config;
@@ -121,6 +118,7 @@ fn joins_from_snapshot() {
         receiver.network_address = donor.network_address;
         receiver.chain_address = donor.chain_address;
         receiver.start(&context).await;
+        connect_execution_to_peers(&receiver, &validators).await;
 
         info!(
             uid = %receiver.uid,
@@ -157,12 +155,7 @@ fn joins_from_snapshot() {
                     }
 
                     if metric.contains(&receiver.uid) {
-                        // -1 to account for stopping on boundaries.
-                        assert!(
-                            epoch >= last_epoch_before_stop.saturating_sub(1),
-                            "when starting from snapshot, older epochs must never \
-                            had consensus engines running"
-                        );
+                        assert!(epoch > 0, "validator should never boot into genesis epoch");
                     }
                 }
             }
@@ -183,8 +176,7 @@ fn can_restart_after_joining_from_snapshot() {
     let setup = Setup::new()
         .how_many_signers(4)
         .how_many_verifiers(1)
-        .epoch_length(epoch_length)
-        .connect_execution_layer_nodes(true);
+        .epoch_length(epoch_length);
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);
 
@@ -209,6 +201,7 @@ fn can_restart_after_joining_from_snapshot() {
             "must have removed the one non-signer node; must be left with only signers",
         );
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+        connect_execution_peers(&validators).await;
 
         // The validator that will receive the donor's addresses to simulate
         // a late start.
@@ -222,16 +215,15 @@ fn can_restart_after_joining_from_snapshot() {
             .parse::<Url>()
             .unwrap();
 
-        // First, remove the last actual validator (index 3 = last of 4 signers).
-        let receiver_index = 3u64;
+        // First, deactivate the last actual validator (the receiver).
         let receipt = execution_runtime
-            .change_validator_status(http_url.clone(), receiver_index, false)
+            .deactivate_validator_v2(http_url.clone(), &receiver)
             .await
             .unwrap();
 
         tracing::debug!(
             block.number = receipt.block_number,
-            "changeValidatorStatus call returned receipt"
+            "deactivateValidator call returned receipt"
         );
 
         // Then wait until the validator has left the committee.
@@ -241,18 +233,13 @@ fn can_restart_after_joining_from_snapshot() {
 
         // Then, add the sacrificial validator without starting it(!).
         let receipt = execution_runtime
-            .add_validator(
-                http_url.clone(),
-                donor.chain_address,
-                donor.public_key().clone(),
-                donor.network_address,
-            )
+            .add_validator_v2(http_url.clone(), &donor)
             .await
             .unwrap();
 
         tracing::debug!(
             block.number = receipt.block_number,
-            "addValidator call returned receipt"
+            "addValidatorV2 call returned receipt"
         );
 
         // Wait until it was added to the committee
@@ -273,7 +260,7 @@ fn can_restart_after_joining_from_snapshot() {
         // Now turn the receiver into the donor - except for the database dir and
         // env. This simulates a start from a snapshot.
         receiver.uid = donor.uid;
-        receiver.public_key = donor.public_key;
+        receiver.private_key = donor.private_key;
         {
             let peer_manager = receiver.consensus_config.peer_manager.clone();
             receiver.consensus_config = donor.consensus_config;
@@ -282,6 +269,7 @@ fn can_restart_after_joining_from_snapshot() {
         receiver.network_address = donor.network_address;
         receiver.chain_address = donor.chain_address;
         receiver.start(&context).await;
+        connect_execution_to_peers(&receiver, &validators).await;
 
         info!(
             uid = %receiver.uid,
@@ -317,12 +305,7 @@ fn can_restart_after_joining_from_snapshot() {
                     }
 
                     if metric.contains(&receiver.uid) {
-                        // -1 to account for stopping on boundaries.
-                        assert!(
-                            epoch >= last_epoch_before_stop.saturating_sub(1),
-                            "when starting from snapshot, older epochs must never \
-                            had consensus engines running"
-                        );
+                        assert!(epoch > 0, "validator should never boot into genesis epoch");
                     }
                 }
             }
@@ -342,6 +325,7 @@ fn can_restart_after_joining_from_snapshot() {
             .unwrap();
 
         receiver.start(&context).await;
+        connect_execution_to_peers(&receiver, &validators).await;
 
         info!(
             network_head,

@@ -1,0 +1,33 @@
+name: Changelog
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+    paths:
+      - crates/contracts/**
+      - crates/primitives/**
+      - crates/chainspec/**
+      - crates/alloy/**
+
+jobs:
+  changelog:
+    name: changelog
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+          ref: ${{ github.head_ref }}
+          persist-credentials: true
+
+      - run: curl -fsSL https://ampcode.com/install.sh | bash
+
+      - uses: wevm/changelogs/check@b0179e7300997dfa5a631a6a7a2de248bf63310f # master
+        with:
+          ai: 'amp -x'
+          ecosystem: rust
+        env:
+          AMP_API_KEY: ${{ secrets.AMP_API_KEY }}

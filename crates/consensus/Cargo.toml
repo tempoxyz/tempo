@@ -11,7 +11,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-chainspec.workspace = true
+tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-primitives = { workspace = true, features = ["reth"] }
 
 reth-chainspec.workspace = true
@@ -21,9 +21,11 @@ reth-ethereum-consensus.workspace = true
 reth-primitives-traits.workspace = true
 
 alloy-consensus.workspace = true
-alloy-evm.workspace = true
+alloy-evm = { workspace = true, features = ["std"] }
+alloy-primitives.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
-alloy-genesis.workspace = true
+alloy-genesis = { workspace = true, features = ["std"] }
 alloy-primitives.workspace = true
 serde_json.workspace = true

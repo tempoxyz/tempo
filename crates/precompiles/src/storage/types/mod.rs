@@ -1,3 +1,9 @@
+//! Storable type system for EVM storage.
+//!
+//! Defines the core traits ([`StorableType`], [`Storable`], [`FromWord`], [`Packable`])
+//! and types ([`Slot`], [`Mapping`], [`Set`], [`vec::VecHandler`], [`array::ArrayHandler`]) that
+//! enable type-safe access to EVM storage slots with automatic packing.
+
 mod slot;
 pub use slot::*;
 
@@ -53,9 +59,7 @@ impl Layout {
         }
     }
 
-    /// Returns the number of bytes this type occupies.
-    ///
-    /// For `Bytes(n)`, returns n.
+    /// Returns the number of bytes this type occupies. For `Bytes(n)`, returns n.
     /// For `Slots(n)`, returns n * 32 (each slot is 32 bytes).
     pub const fn bytes(&self) -> usize {
         match self {
@@ -83,7 +87,8 @@ impl Layout {
 /// ```rs
 /// enum LayoutCtx {
 ///    Full,
-///    Packed(usize)
+///    Init,
+///    Packed(usize),
 /// }
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -93,9 +98,20 @@ pub struct LayoutCtx(usize);
 impl LayoutCtx {
     /// Load/store the entire value at a given slot.
     ///
-    /// For writes, this directly overwrites the entire slot without needing SLOAD.
-    /// All storable types support this context.
+    /// For writes, this signals that the value occupies full slot(s), and that the
+    /// implementation must clear potential stale tail data:
+    ///
+    /// - Static types overwrite the entire slot without needing an SLOAD.
+    /// - Dynamic types read the prior length (1 extra SLOAD) and zero any stale tail slots.
     pub const FULL: Self = Self(usize::MAX);
+
+    /// Like `Full`, but the asserts the destination is virgin (zero-filled).
+    ///
+    /// - Static types behave identically to `Full`.
+    /// - Dynamic types skip reading the prior length and clearing stale tail slots.
+    ///
+    /// Used by hot paths that know by construction the target is empty.
+    pub const INIT: Self = Self(usize::MAX - 1);
 
     /// Load/store a packed primitive at the given byte offset within a slot.
     ///
@@ -104,19 +120,34 @@ impl LayoutCtx {
     /// packed fields in the same slot.
     ///
     /// Only primitive types with `Layout::Bytes(n)` where `n < 32` support this context.
+    /// Note that these include enums which are representable as `u8`.
     pub const fn packed(offset: usize) -> Self {
         debug_assert!(offset < 32);
         Self(offset)
     }
 
-    /// Get the packed offset, returns `None` for `Full`
+    /// Get the packed offset, returns `None` for `FULL` and `INIT`
     #[inline]
     pub const fn packed_offset(&self) -> Option<usize> {
-        if self.0 == usize::MAX {
+        if self.0 >= usize::MAX - 1 {
             None
         } else {
             Some(self.0)
         }
+    }
+
+    /// Returns `true` if this context signals the tail doesn't need to be cleared.
+    ///
+    /// Used by dynamic type's `Storable::store` to skip the extra SLOAD to check stale tails.
+    #[inline]
+    pub const fn skip_tail_cleanup(&self) -> bool {
+        self.0 == usize::MAX - 1
+    }
+
+    /// Returns true if this context is a full-slot context (`FULL` or `INIT`).
+    #[inline]
+    pub const fn is_full(&self) -> bool {
+        self.0 >= usize::MAX - 1
     }
 }
 
@@ -305,8 +336,7 @@ impl<T: Packable> Storable for T {
 /// # Encoding
 ///
 /// Mapping slots are computed as `keccak256(bytes32(key) | bytes32(slot))`, where the
-/// key's raw bytes are left-padded to 32 bytes
-/// and the slot is appended in big-endian.
+/// key's raw bytes are left-padded to 32 bytes and the slot is appended in big-endian.
 ///
 /// This differs from Solidity's `keccak256(abi.encode(key, slot))`, where signed integers
 /// are sign-extended and `bytesN` (N < 32) are right-padded. Per-type equivalence:

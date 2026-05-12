@@ -18,15 +18,26 @@ pub const PERMIT2_SALT: B256 =
 pub const ARACHNID_CREATE2_FACTORY_ADDRESS: Address =
     address!("0x4e59b44847b379578588920cA78FbF26c0B4956C");
 
-/// Helper macro to allow feature-gating rpc implementations behind the `rpc` feature.
+/// Helper macro to allow feature-gating rpc and serde implementations.
 macro_rules! sol {
     ($($input:tt)*) => {
-        #[cfg(feature = "rpc")]
+        #[cfg(all(feature = "rpc", feature = "serde"))]
+        alloy_sol_types::sol! {
+            #[sol(rpc)]
+            #[derive(serde::Serialize, serde::Deserialize)]
+            $($input)*
+        }
+        #[cfg(all(feature = "rpc", not(feature = "serde")))]
         alloy_sol_types::sol! {
             #[sol(rpc)]
             $($input)*
         }
-        #[cfg(not(feature = "rpc"))]
+        #[cfg(all(not(feature = "rpc"), feature = "serde"))]
+        alloy_sol_types::sol! {
+            #[derive(serde::Serialize, serde::Deserialize)]
+            $($input)*
+        }
+        #[cfg(all(not(feature = "rpc"), not(feature = "serde")))]
         alloy_sol_types::sol! {
             $($input)*
         }

@@ -11,16 +11,22 @@ pub(crate) mod dkg;
 pub(crate) mod epoch;
 pub(crate) mod executor;
 pub mod feed;
+pub mod follow;
 pub mod metrics;
 pub(crate) mod peer_manager;
+pub(crate) mod storage;
 pub(crate) mod utils;
 pub(crate) mod validators;
 
 pub(crate) mod subblocks;
 
+use std::sync::Arc;
+
+use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::ed25519::{PrivateKey, PublicKey};
 use commonware_p2p::authenticated::lookup;
 use commonware_runtime::Metrics as _;
+use commonware_utils::NZU64;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_commonware_node_config::SigningShare;
 use tempo_node::TempoFullNode;
@@ -34,10 +40,14 @@ pub use crate::config::{
 
 pub use args::{Args, PositiveDuration};
 
+// Shared by both the consensus and follow engines such that
+// snapshots for overlapping archives can be reused.
+const PARTITION_PREFIX: &str = "engine";
+
 pub async fn run_consensus_stack(
-    context: &commonware_runtime::tokio::Context,
+    context: commonware_runtime::tokio::Context,
     config: Args,
-    execution_node: TempoFullNode,
+    execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
     let share = config
@@ -61,7 +71,7 @@ pub async fn run_consensus_stack(
     let backfill_quota = commonware_runtime::Quota::per_second(config.backfill_frequency);
 
     let (mut network, oracle) =
-        instantiate_network(context, &config, signing_key.clone().into_inner())
+        instantiate_network(&context, &config, signing_key.clone().into_inner())
             .await
             .wrap_err("failed to start network")?;
 
@@ -80,21 +90,18 @@ pub async fn run_consensus_stack(
     );
     let marshal = network.register(MARSHAL_CHANNEL_IDENT, backfill_quota, message_backlog);
     let dkg = network.register(DKG_CHANNEL_IDENT, DKG_LIMIT, message_backlog);
+    // We create the subblocks channel even though it might not be used to make
+    // sure that we don't ban peers that activate subblocks and send messages
+    // through this subchannel.
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
-    let fee_recipient = config
-        .fee_recipient
-        .ok_or_eyre("required option `consensus.fee-recipient` not set")?;
-
     let consensus_engine = crate::consensus::engine::Builder {
-        fee_recipient,
-
         execution_node: Some(execution_node),
         blocker: oracle.clone(),
         peer_manager: oracle.clone(),
 
         // TODO: Set this through config?
-        partition_prefix: "engine".into(),
+        partition_prefix: PARTITION_PREFIX.into(),
         signer: signing_key.into_inner(),
         share,
 
@@ -107,10 +114,12 @@ pub async fn run_consensus_stack(
         time_for_peer_response: config.wait_for_peer_response.into_duration(),
         views_to_track: config.views_to_track,
         views_until_leader_skip: config.inactive_views_until_leader_skip,
-        new_payload_wait_time: config.time_to_build_proposal.into_duration(),
+        payload_interrupt_time: config.time_to_prepare_proposal_transactions.into_duration(),
+        new_payload_wait_time: config.minimum_time_before_propose.into_duration(),
         time_to_build_subblock: config.time_to_build_subblock.into_duration(),
         subblock_broadcast_interval: config.subblock_broadcast_interval.into_duration(),
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
+        with_subblocks: false,
 
         feed_state,
     }
@@ -146,6 +155,49 @@ pub async fn run_consensus_stack(
     }
 }
 
+/// Run the follower stack. This uses RPC to sync consensus state and drive
+/// the execution layer from the upstream node.
+pub async fn run_follow_stack(
+    context: commonware_runtime::tokio::Context,
+    config: Args,
+    upstream_url: String,
+    execution_node: Arc<TempoFullNode>,
+    feed_state: feed::FeedStateHandle,
+) -> eyre::Result<()> {
+    let epoch_length = execution_node
+        .chain_spec()
+        .info
+        .epoch_length()
+        .ok_or_eyre("chainspec did not contain epochLength")?;
+
+    let (upstream, upstream_mailbox) = crate::follow::upstream::init(
+        context.with_label("upstream"),
+        crate::follow::upstream::Config { upstream_url },
+    );
+
+    let config = follow::Config {
+        execution_node,
+        feed_state,
+        upstream,
+        upstream_mailbox,
+        partition_prefix: PARTITION_PREFIX.into(),
+        epoch_strategy: FixedEpocher::new(NZU64!(epoch_length)),
+        mailbox_size: config.mailbox_size,
+        fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
+    };
+
+    let ret = config
+        .try_init(context.with_label("engine"))
+        .await
+        .wrap_err("failed initializing follow engine")?
+        .start()
+        .await;
+
+    ret.map_err(eyre::Report::from)
+        .and_then(|ret| ret.and_then(|()| Err(eyre!("exited unexpectedly"))))
+        .wrap_err("follow engine task failed")
+}
+
 async fn instantiate_network(
     context: &commonware_runtime::tokio::Context,
     config: &Args,
@@ -163,6 +215,7 @@ async fn instantiate_network(
         listen: config.listen_address,
         max_message_size: config.max_message_size_bytes,
         mailbox_size: config.mailbox_size,
+        send_batch_size: commonware_utils::NZUsize!(8),
         bypass_ip_check: config.bypass_ip_check,
         allow_private_ips: config.allow_private_ips,
         allow_dns: config.allow_dns,
@@ -173,12 +226,8 @@ async fn instantiate_network(
         max_concurrent_handshakes: config.max_concurrent_handshakes,
         block_duration: config.time_to_unblock_byzantine_peer.into_duration(),
         dial_frequency: config.wait_before_peers_redial.into_duration(),
-        query_frequency: config.wait_before_peers_discovery.into_duration(),
         ping_frequency: config.wait_before_peers_reping.into_duration(),
-        allowed_connection_rate_per_peer: commonware_runtime::Quota::with_period(
-            config.connection_per_peer_min_period.into_duration(),
-        )
-        .ok_or_eyre("connection min period must be non-zero")?,
+        peer_connection_cooldown: config.connection_per_peer_min_period.into_duration(),
         allowed_handshake_rate_per_ip: commonware_runtime::Quota::with_period(
             config.handshake_per_ip_min_period.into_duration(),
         )

@@ -38,7 +38,8 @@ use std::{
     sync::{Arc, mpsc::RecvError},
     time::{Duration, Instant},
 };
-use tempo_node::{TempoFullNode, consensus::TEMPO_SHARED_GAS_DIVISOR, evm::evm::TempoEvm};
+use tempo_chainspec::hardfork::TempoHardforks;
+use tempo_node::{TempoFullNode, evm::evm::TempoEvm};
 use tempo_primitives::{
     RecoveredSubBlock, SignedSubBlock, SubBlock, SubBlockVersion, TempoTxEnvelope,
 };
@@ -55,7 +56,7 @@ pub(crate) struct Config<TContext> {
     pub(crate) context: TContext,
     pub(crate) signer: PrivateKey,
     pub(crate) scheme_provider: SchemeProvider,
-    pub(crate) node: TempoFullNode,
+    pub(crate) node: Arc<TempoFullNode>,
     pub(crate) fee_recipient: Address,
     pub(crate) time_to_build_subblock: Duration,
     pub(crate) subblock_broadcast_interval: Duration,
@@ -89,7 +90,7 @@ pub(crate) struct Actor<TContext> {
     /// ed25519 private key used for consensus.
     signer: PrivateKey,
     /// Execution layer node.
-    node: TempoFullNode,
+    node: Arc<TempoFullNode>,
     /// Fee recipient address to set for subblocks.
     fee_recipient: Address,
     /// Timeout for building a subblock.
@@ -304,6 +305,9 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             .epoch();
 
         // Can't proceed without knowing a validator set for the current epoch.
+        //
+        // TODO(hamdi): When finalizing a boundary block, the scheme for the next epoch is not yet registered meaning
+        // we skip the subblock building task. This issue is scoped to the boundary and will be fixed.
         let Some(scheme) = self.scheme_provider.scoped(epoch_of_next_block) else {
             debug!(%epoch_of_next_block, "scheme not found for epoch");
             return;
@@ -370,7 +374,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         });
     }
 
-    #[instrument(skip_all, err(level = Level::WARN), fields(sender = %sender, msg_bytes = message.len()))]
+    #[instrument(skip_all, err(level = Level::DEBUG), fields(sender = %sender, msg_bytes = message.len()))]
     async fn on_network_message(
         &mut self,
         sender: PublicKey,
@@ -689,7 +693,7 @@ fn evm_at_block(
 #[instrument(skip_all, fields(parent_hash = %parent_hash))]
 async fn build_subblock(
     transactions: Arc<Mutex<IndexMap<TxHash, Arc<Recovered<TempoTxEnvelope>>>>>,
-    node: TempoFullNode,
+    node: Arc<TempoFullNode>,
     parent_hash: BlockHash,
     num_validators: usize,
     signer: PrivateKey,
@@ -701,7 +705,11 @@ async fn build_subblock(
     let (transactions, senders) = match evm_at_block(&node, parent_hash) {
         Ok(mut evm) => {
             let (mut selected, mut senders, mut to_remove) = (Vec::new(), Vec::new(), Vec::new());
-            let gas_budget = (evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR)
+            let shared_gas_limit = node
+                .config
+                .chain
+                .shared_gas_limit_at(evm.block().timestamp.saturating_to(), evm.block().gas_limit);
+            let gas_budget = shared_gas_limit
                 .checked_div(num_validators as u64)
                 .expect("validator set must not be empty");
 
@@ -709,11 +717,14 @@ async fn build_subblock(
             let txs = transactions.lock().clone();
 
             for (tx_hash, tx) in txs {
+                let max_regular_gas =
+                    core::cmp::min(tx.gas_limit(), evm.cfg.tx_gas_limit_cap.unwrap_or(u64::MAX));
                 // Remove transactions over subblock gas budget
-                if tx.gas_limit() > gas_budget {
+                if max_regular_gas > gas_budget {
                     warn!(
                         %tx_hash,
                         tx_gas_limit = tx.gas_limit(),
+                        max_regular_gas,
                         gas_budget,
                         "removing transaction with gas limit exceeding maximum subblock gas budget"
                     );
@@ -722,7 +733,7 @@ async fn build_subblock(
                 }
 
                 // Skip transactions that don't fit in remaining budget (may fit in future rounds)
-                if tx.gas_limit() > gas_left {
+                if max_regular_gas > gas_left {
                     continue;
                 }
 
@@ -732,7 +743,7 @@ async fn build_subblock(
                     continue;
                 }
 
-                gas_left -= tx.gas_limit();
+                gas_left -= max_regular_gas;
                 selected.push(tx.inner().clone());
                 senders.push(tx.signer());
 
@@ -789,7 +800,7 @@ async fn build_subblock(
 #[instrument(skip_all, err(level = Level::WARN), fields(sender = %sender))]
 async fn validate_subblock(
     sender: PublicKey,
-    node: TempoFullNode,
+    node: Arc<TempoFullNode>,
     subblock: SignedSubBlock,
     actions_tx: mpsc::UnboundedSender<Message>,
     scheme_provider: SchemeProvider,
@@ -834,10 +845,17 @@ async fn validate_subblock(
         "sender is not a validator"
     );
 
-    // Bound subblock size at a value proportional to `TEMPO_SHARED_GAS_DIVISOR`.
+    let shared_gas_limit = node
+        .config
+        .chain
+        .shared_gas_limit_at(evm.block().timestamp.saturating_to(), evm.block().gas_limit);
+
+    // Bound subblock size at a value proportional to shared_gas_limit.
     //
     // This ensures we never collect too many subblocks to fit into a new proposal.
-    let max_size = MAX_RLP_BLOCK_SIZE / TEMPO_SHARED_GAS_DIVISOR as usize / participants;
+    let max_size = (MAX_RLP_BLOCK_SIZE as u128 * shared_gas_limit as u128
+        / evm.block().gas_limit as u128
+        / participants as u128) as usize;
     if subblock.total_tx_size() > max_size {
         warn!(
             size = subblock.total_tx_size(),
@@ -847,10 +865,12 @@ async fn validate_subblock(
     }
 
     // Bound subblock gas at the per-validator allocation.
-    let gas_budget = evm.block().gas_limit / TEMPO_SHARED_GAS_DIVISOR / participants as u64;
+    let gas_budget = shared_gas_limit / participants as u64;
     let mut total_gas = 0u64;
     for tx in subblock.transactions_recovered() {
-        total_gas = total_gas.saturating_add(tx.gas_limit());
+        let max_regular_gas =
+            core::cmp::min(tx.gas_limit(), evm.cfg.tx_gas_limit_cap.unwrap_or(u64::MAX));
+        total_gas = total_gas.saturating_add(max_regular_gas);
         if total_gas > gas_budget {
             warn!(
                 total_gas,

@@ -20,6 +20,7 @@ alloy = { workspace = true, features = [
     "network",
     "rand",
     "reqwest",
+    "reqwest-rustls-tls",
     "secp256k1",
     "signer-local",
     "signer-mnemonic",

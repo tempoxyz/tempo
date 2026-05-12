@@ -14,7 +14,7 @@ workspace = true
 [dependencies]
 tempo-precompiles = { workspace = true, features = ["rpc"] }
 reth-rpc-server-types.workspace = true
-tempo-alloy.workspace = true
+tempo-alloy = { workspace = true, features = ["reth"] }
 alloy = { workspace = true, features = [
   "rpc-types",
   "signers",

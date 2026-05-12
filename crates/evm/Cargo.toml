@@ -12,8 +12,7 @@ publish.workspace = true
 workspace = true
 
 [dependencies]
-tempo-chainspec.workspace = true
-tempo-consensus.workspace = true
+tempo-chainspec = { workspace = true, features = ["reth"] }
 tempo-contracts.workspace = true
 tempo-payload-types = { workspace = true, optional = true }
 tempo-primitives = { workspace = true, features = ["reth"] }
@@ -43,6 +42,7 @@ tracing.workspace = true
 [dev-dependencies]
 revm.workspace = true
 reth-storage-api.workspace = true
+tempo-primitives = { workspace = true, features = ["arbitrary"] }
 
 [features]
 default = ["rpc", "engine"]

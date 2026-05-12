@@ -10,7 +10,7 @@ use crate::{Setup, run};
 fn single_validator_can_transition_once() {
     AssertStaticTransitions {
         how_many: 1,
-        epoch_length: 10,
+        epoch_length: 5,
         transitions: 1,
     }
     .run();
@@ -20,7 +20,7 @@ fn single_validator_can_transition_once() {
 fn single_validator_can_transition_twice() {
     AssertStaticTransitions {
         how_many: 1,
-        epoch_length: 10,
+        epoch_length: 5,
         transitions: 2,
     }
     .run();
@@ -30,7 +30,7 @@ fn single_validator_can_transition_twice() {
 fn single_validator_can_transition_four_times() {
     AssertStaticTransitions {
         how_many: 1,
-        epoch_length: 10,
+        epoch_length: 5,
         transitions: 4,
     }
     .run();

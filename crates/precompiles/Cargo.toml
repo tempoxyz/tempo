@@ -1,6 +1,6 @@
 [package]
 name = "tempo-precompiles"
-description = "TODO:"
+description = "Tempo EVM precompile implementations for TIP-20 tokens, stablecoin DEX, fee manager, validator config, account keychain, and nonce management"
 
 version.workspace = true
 edition.workspace = true
@@ -14,9 +14,10 @@ workspace = true
 [dependencies]
 tempo-contracts.workspace = true
 tempo-chainspec.workspace = true
+tempo-primitives.workspace = true
 tempo-precompiles-macros.workspace = true
 alloy = { workspace = true, features = ["sol-types", "consensus"] }
-alloy-evm.workspace = true
+alloy-evm = { workspace = true, features = ["std"] }
 revm.workspace = true
 
 commonware-cryptography.workspace = true
@@ -33,11 +34,13 @@ alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
 eyre.workspace = true
+p256.workspace = true
 rand_08.workspace = true
 proptest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempo-evm.workspace = true
+tempo-revm.workspace = true
 
 [features]
 default = ["rpc"]

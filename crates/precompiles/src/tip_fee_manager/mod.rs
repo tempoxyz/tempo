@@ -1,20 +1,22 @@
+//! [Fee manager] precompile for transaction fee collection, distribution, and token swaps.
+//!
+//! [Fee manager]: <https://docs.tempo.xyz/protocol/fees>
+
 pub mod amm;
 pub mod dispatch;
 
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
-    tip_fee_manager::amm::{Pool, PoolKey, compute_amount_out},
+    tip_fee_manager::amm::{FeeRoute, Pool, compute_amount_out},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
 };
-use alloy::primitives::B256;
+use alloy::primitives::{Address, B256, U256, uint};
 pub use tempo_contracts::precompiles::{
     DEFAULT_FEE_TOKEN, FeeManagerError, FeeManagerEvent, IFeeManager, ITIPFeeAMM,
     TIP_FEE_MANAGER_ADDRESS, TIPFeeAMMError, TIPFeeAMMEvent,
 };
-// Re-export PoolKey for backward compatibility with tests
-use alloy::primitives::{Address, U256, uint};
 use tempo_precompiles_macros::contract;
 
 /// Fee manager precompile that handles transaction fee collection and distribution.
@@ -40,29 +42,28 @@ pub struct TipFeeManager {
     /// Checked by `burn` and `rebalance_swap` to prevent withdrawals that would violate the reservation.
     pending_fee_swap_reservation: Mapping<B256, u128>,
 
-    // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
-    // macro is refactored and has 2 independent layouts (persistent and transient).
-    // If new (persistent) storage fields need to be added to the precompile, they must go above this one.
-    /// T2+: The fee token used for the current transaction ([TIP-1007]).
-    /// Set by the handler before execution, read via `getFeeToken()`.
+    /// T5+: Intermediate token for two-hop fee swap routing ([TIP-1033]).
+    /// Set by `collect_fee_pre_tx` when the direct `(userToken, validatorToken)` pool has
+    /// insufficient liquidity and the swap falls back through `userToken.quoteToken()`.
     ///
-    /// [TIP-1007]: <https://docs.tempo.xyz/protocol/tips/tip-1007>
-    tx_fee_token: Address,
+    /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
+    two_hop_intermediate: Address,
 }
 
 impl TipFeeManager {
-    // Constants
-    pub const FEE_BPS: u64 = 25; // 0.25% fee
+    /// Swap fee in basis points (0.25%).
+    pub const FEE_BPS: u64 = 25;
+    /// Basis-point denominator (10 000 = 100%).
     pub const BASIS_POINTS: u64 = 10000;
-    pub const MINIMUM_BALANCE: U256 = uint!(1_000_000_000_U256); // 1e9
+    /// Minimum TIP-20 balance required for fee operations (1e9).
+    pub const MINIMUM_BALANCE: U256 = uint!(1_000_000_000_U256);
 
-    /// Initializes the contract
-    ///
-    /// This ensures the [`TipFeeManager`] isn't empty and prevents state clear.
+    /// Initializes the fee manager precompile.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
 
+    /// Returns the validator's preferred fee token, falling back to [`DEFAULT_FEE_TOKEN`].
     pub fn get_validator_token(&self, beneficiary: Address) -> Result<Address> {
         let token = self.validator_tokens[beneficiary].read()?;
 
@@ -73,6 +74,16 @@ impl TipFeeManager {
         }
     }
 
+    /// Sets the caller's preferred fee token as a validator.
+    ///
+    /// Rejects the call if `sender` is the current block's beneficiary (prevents mid-block
+    /// fee-token changes) or if the token is not a valid USD-denominated TIP-20 registered in
+    /// [`TIP20Factory`].
+    ///
+    /// # Errors
+    /// - `InvalidToken` — token is not a deployed TIP-20 in [`TIP20Factory`]
+    /// - `CannotChangeWithinBlock` — `sender` equals the current block `beneficiary`
+    /// - `InvalidCurrency` — token is not USD-denominated
     pub fn set_validator_token(
         &mut self,
         sender: Address,
@@ -103,6 +114,12 @@ impl TipFeeManager {
         ))
     }
 
+    /// Sets the caller's preferred fee token as a user. Must be a valid USD-denominated TIP-20
+    /// registered in [`TIP20Factory`].
+    ///
+    /// # Errors
+    /// - `InvalidToken` — token is not a deployed TIP-20 in [`TIP20Factory`]
+    /// - `InvalidCurrency` — token is not USD-denominated
     pub fn set_user_token(
         &mut self,
         sender: Address,
@@ -116,6 +133,15 @@ impl TipFeeManager {
         // Validate that the fee token is USD
         validate_usd_currency(call.token)?;
 
+        // T3+: skip write and event if the token is already set to the requested value.
+        // Prevents permissionless callers from forcing redundant pool invalidation scans.
+        if self.storage.spec().is_t3() {
+            let current = self.user_tokens[sender].read()?;
+            if current == call.token {
+                return Ok(());
+            }
+        }
+
         self.user_tokens[sender].write(call.token)?;
 
         // Emit UserTokenSet event
@@ -125,16 +151,24 @@ impl TipFeeManager {
         }))
     }
 
-    /// Collects fees from user before transaction execution.
+    /// Collects fees from `fee_payer` before transaction execution.
     ///
-    /// Transfers max fee to fee manager and checks liquidity for swaps if user and validator tokens differ.
-    /// After tx execution, collect_fee_post_tx refunds unused gas and executes the swap immediately.
+    /// Transfers `max_amount` of `user_token` to the fee manager via [`TIP20Token`] and, if the
+    /// validator prefers a different token, verifies sufficient pool liquidity.
+    /// Reserves liquidity on T1C+, with a two-hop fallback through `userToken.quoteToken()` on T5+.
+    /// Returns the user's fee token.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — `user_token` does not have a valid TIP-20 prefix
+    /// - `PolicyForbids` — TIP-403 policy rejects the fee token transfer
+    /// - `InsufficientLiquidity` — AMM pool lacks liquidity for the fee swap (T5+: with two-hop fallback)
     pub fn collect_fee_pre_tx(
         &mut self,
         fee_payer: Address,
         user_token: Address,
         max_amount: U256,
         beneficiary: Address,
+        skip_liquidity_check: bool,
     ) -> Result<Address> {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
@@ -145,23 +179,59 @@ impl TipFeeManager {
         tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
-        if user_token != validator_token {
-            let pool_id = PoolKey::new(user_token, validator_token).get_id();
-            let amount_out_needed = self.check_sufficient_liquidity(pool_id, max_amount)?;
-
-            if self.storage.spec().is_t1c() {
-                self.reserve_pool_liquidity(pool_id, amount_out_needed)?;
-            }
+        if !skip_liquidity_check {
+            let (route, ..) = self.plan_fee_route(user_token, validator_token, max_amount)?;
+            let route = route.ok_or_else(TIPFeeAMMError::insufficient_liquidity)?;
+            self.reserve_fee_liquidity(user_token, validator_token, max_amount, route)?;
         }
 
         // Return the user's token preference
         Ok(user_token)
     }
 
+    /// Reserves AMM liquidity needed to settle the selected fee route after transaction execution.
+    fn reserve_fee_liquidity(
+        &mut self,
+        user_token: Address,
+        validator_token: Address,
+        max_amount: U256,
+        route: FeeRoute,
+    ) -> Result<()> {
+        match route {
+            FeeRoute::SameToken => {}
+            FeeRoute::Direct if self.storage.spec().is_t1c() => {
+                let amount_out: u128 = compute_amount_out(max_amount)?
+                    .try_into()
+                    .map_err(|_| TempoPrecompileError::under_overflow())?;
+                self.reserve_pool_liquidity(self.pool_id(user_token, validator_token), amount_out)?;
+            }
+            FeeRoute::Direct => {}
+            FeeRoute::TwoHop(intermediate) => {
+                // T5+ implies T1C+, so reservation is always required here.
+                let out1: u128 = compute_amount_out(max_amount)?
+                    .try_into()
+                    .map_err(|_| TempoPrecompileError::under_overflow())?;
+                let out2: u128 = compute_amount_out(U256::from(out1))?
+                    .try_into()
+                    .map_err(|_| TempoPrecompileError::under_overflow())?;
+                self.reserve_pool_liquidity(self.pool_id(user_token, intermediate), out1)?;
+                self.reserve_pool_liquidity(self.pool_id(intermediate, validator_token), out2)?;
+                self.two_hop_intermediate.t_write(intermediate)?;
+            }
+        }
+
+        Ok(())
+    }
+
     /// Finalizes fee collection after transaction execution.
     ///
-    /// Refunds unused tokens to user, executes fee swap if needed, and accumulates fees for the validator.
-    /// Validators call distribute_fees() to collect accumulated fees.
+    /// Refunds unused `user_token` to `fee_payer` via [`TIP20Token`], executes the fee swap
+    /// through the AMM pool if tokens differ, and accumulates fees for the validator.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — `fee_token` does not have a valid TIP-20 prefix
+    /// - `InsufficientLiquidity` — AMM pool lacks liquidity for the fee swap
+    /// - `UnderOverflow` — collected-fee accumulator overflows
     pub fn collect_fee_post_tx(
         &mut self,
         fee_payer: Address,
@@ -175,20 +245,24 @@ impl TipFeeManager {
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
         // Execute fee swap and track collected fees
+        let hop_token = self.two_hop_intermediate.t_read()?;
         let validator_token = self.get_validator_token(beneficiary)?;
-
-        if fee_token != validator_token {
-            // Record the pool if there was a non-zero swap
-            if !actual_spending.is_zero() {
-                // Execute fee swap immediately and accumulate fees
-                self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
-            }
-        }
 
         let amount = if fee_token == validator_token {
             actual_spending
-        } else {
+        } else if hop_token.is_zero() {
+            // Single-hop (direct) swap
+            if !actual_spending.is_zero() {
+                self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
+            }
             compute_amount_out(actual_spending)?
+        } else {
+            // Two-hop swap (only in T5+): each hop applies M = 9970/10000 sequentially
+            if !actual_spending.is_zero() {
+                let out1 = self.execute_fee_swap(fee_token, hop_token, actual_spending)?;
+                self.execute_fee_swap(hop_token, validator_token, out1)?;
+            }
+            compute_amount_out(compute_amount_out(actual_spending)?)?
         };
 
         self.increment_collected_fees(beneficiary, validator_token, amount)?;
@@ -217,7 +291,11 @@ impl TipFeeManager {
         Ok(())
     }
 
-    /// Transfers the validator's fee balance for a specific token to their address.
+    /// Transfers a validator's accumulated fee balance to their address via [`TIP20Token`] and
+    /// zeroes the ledger. No-ops when the balance is zero.
+    ///
+    /// # Errors
+    /// - `InvalidToken` — `token` does not have a valid TIP-20 prefix
     pub fn distribute_fees(&mut self, validator: Address, token: Address) -> Result<()> {
         let amount = self.collected_fees[validator][token].read()?;
         if amount.is_zero() {
@@ -247,31 +325,15 @@ impl TipFeeManager {
         Ok(())
     }
 
-    pub fn get_fee_token(&self) -> Result<Address> {
-        self.tx_fee_token.t_read()
-    }
-
-    pub fn set_fee_token(&mut self, token: Address) -> Result<()> {
-        self.tx_fee_token.t_write(token)
-    }
-
+    /// Reads the stored fee token preference for a user.
     pub fn user_tokens(&self, call: IFeeManager::userTokensCall) -> Result<Address> {
         self.user_tokens[call.user].read()
-    }
-
-    pub fn validator_tokens(&self, call: IFeeManager::validatorTokensCall) -> Result<Address> {
-        let token = self.validator_tokens[call.validator].read()?;
-
-        if token.is_zero() {
-            Ok(DEFAULT_FEE_TOKEN)
-        } else {
-            Ok(token)
-        }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
     use super::*;
@@ -308,6 +370,57 @@ mod tests {
     }
 
     #[test]
+    fn test_set_user_token_noop_when_unchanged_pre_t3() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::create("Test", "TST", user).apply()?;
+            let mut fee_manager = TipFeeManager::new();
+
+            let call = IFeeManager::setUserTokenCall {
+                token: token.address(),
+            };
+
+            fee_manager.set_user_token(user, call.clone())?;
+            fee_manager.set_user_token(user, call)?;
+            let event_count = StorageCtx.get_events(TIP_FEE_MANAGER_ADDRESS).len();
+            assert_eq!(
+                event_count, 2,
+                "pre-T3: event emitted even when token unchanged"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_set_user_token_noop_when_unchanged_t3() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let user = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::create("Test", "TST", user).apply()?;
+            let mut fee_manager = TipFeeManager::new();
+
+            let call = IFeeManager::setUserTokenCall {
+                token: token.address(),
+            };
+
+            fee_manager.set_user_token(user, call.clone())?;
+            let event_count = StorageCtx.get_events(TIP_FEE_MANAGER_ADDRESS).len();
+            assert_eq!(event_count, 1, "first set_user_token should emit event");
+
+            fee_manager.set_user_token(user, call)?;
+            let event_count = StorageCtx.get_events(TIP_FEE_MANAGER_ADDRESS).len();
+            assert_eq!(
+                event_count, 1,
+                "T3+: repeated set_user_token with same token should not emit event"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_set_validator_token() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let validator = Address::random();
@@ -334,8 +447,7 @@ mod tests {
             let result = fee_manager.set_validator_token(validator, call, beneficiary);
             assert!(result.is_ok());
 
-            let query_call = IFeeManager::validatorTokensCall { validator };
-            let returned_token = fee_manager.validator_tokens(query_call)?;
+            let returned_token = fee_manager.get_validator_token(validator)?;
             assert_eq!(returned_token, token.address());
 
             Ok(())
@@ -409,7 +521,7 @@ mod tests {
 
             // Call collect_fee_pre_tx directly
             let result =
-                fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator);
+                fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator, false);
             assert!(result.is_ok());
             assert_eq!(result?, token.address());
 
@@ -557,7 +669,13 @@ mod tests {
             let max_amount = U256::from(1000);
 
             // Call collect_fee_pre_tx
-            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
+            fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                max_amount,
+                validator,
+                false,
+            )?;
 
             // With different tokens:
             // - Liquidity is checked (not reserved)
@@ -627,7 +745,13 @@ mod tests {
             let refund_amount = U256::from(200);
 
             // First call collect_fee_pre_tx (checks liquidity)
-            fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator)?;
+            fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                max_amount,
+                validator,
+                false,
+            )?;
 
             // Then call collect_fee_post_tx (executes swap immediately)
             fee_manager.collect_fee_post_tx(
@@ -699,10 +823,72 @@ mod tests {
             // 1000 * 0.997 = 997 output needed, but only 100 available
             let max_amount = U256::from(1000);
 
-            let result =
-                fee_manager.collect_fee_pre_tx(user, user_token.address(), max_amount, validator);
+            let result = fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                max_amount,
+                validator,
+                false,
+            );
 
             assert!(result.is_err(), "Should fail with insufficient liquidity");
+
+            Ok(())
+        })
+    }
+
+    /// Test that `skip_liquidity_check = true` bypasses the insufficient-liquidity error
+    /// when `user_token != validator_token`.
+    #[test]
+    fn test_collect_fee_pre_tx_skip_liquidity_check() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .with_mint(user, U256::from(10000))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?;
+
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .apply()?;
+
+            let mut fee_manager = TipFeeManager::new();
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token.address(),
+                },
+                Address::random(),
+            )?;
+
+            // Skip liquidity check = false should fail
+            let result = fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                U256::from(1000),
+                validator,
+                false,
+            );
+            assert!(
+                result.is_err(),
+                "Should fail without liquidity, got: {result:?}"
+            );
+
+            // Skip liquidity check = true should pass
+            let result = fee_manager.collect_fee_pre_tx(
+                user,
+                user_token.address(),
+                U256::from(1000),
+                validator,
+                true,
+            );
+            assert!(result.is_ok());
+            assert_eq!(result?, user_token.address());
 
             Ok(())
         })
@@ -819,6 +1005,447 @@ mod tests {
             // New handle should still see initialized state
             let fee_manager2 = TipFeeManager::new();
             assert!(fee_manager2.is_initialized()?);
+
+            Ok(())
+        })
+    }
+
+    struct TwoHopTokens {
+        user: Address,
+        hop: Address,
+        validator: Address,
+    }
+
+    /// Builds the standard 3-token environment used by all TIP-1033 tests.
+    ///
+    /// The closure receives the fee manager, the three tokens, and the `user` / `validator` /
+    /// `admin` addresses (admin holds `DEFAULT_ADMIN_ROLE` and `ISSUER_ROLE` on every token).
+    fn with_two_hop_env<F>(spec: TempoHardfork, hop_quote_is_val: bool, f: F) -> eyre::Result<()>
+    where
+        F: FnOnce(&mut TipFeeManager, &TwoHopTokens, Address, Address, Address) -> eyre::Result<()>,
+    {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+        let admin = Address::random();
+        let user = Address::random();
+        let validator = Address::random();
+        StorageCtx::enter(&mut storage, || {
+            let hop_token = TIP20Setup::create("HopToken", "HTK", admin)
+                .with_issuer(admin)
+                .apply()?
+                .address();
+            let validator_token = TIP20Setup::create("ValidatorToken", "VTK", admin)
+                .with_issuer(admin)
+                .apply()?
+                .address();
+            let quote_token = if hop_quote_is_val {
+                validator_token
+            } else {
+                hop_token
+            };
+            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+                .with_issuer(admin)
+                .quote_token(quote_token)
+                .with_mint(user, U256::from(u64::MAX))
+                .with_approval(user, TIP_FEE_MANAGER_ADDRESS, U256::MAX)
+                .apply()?
+                .address();
+
+            let mut fee_manager = TipFeeManager::new();
+            fee_manager.set_validator_token(
+                validator,
+                IFeeManager::setValidatorTokenCall {
+                    token: validator_token,
+                },
+                Address::random(),
+            )?;
+
+            let tokens = TwoHopTokens {
+                user: user_token,
+                hop: hop_token,
+                validator: validator_token,
+            };
+            f(&mut fee_manager, &tokens, user, validator, admin)
+        })
+    }
+
+    /// Writes a pool with `validator_reserve` on both sides.
+    fn write_pool(
+        fm: &mut TipFeeManager,
+        a: Address,
+        b: Address,
+        validator_reserve: u128,
+    ) -> Result<()> {
+        let pid = fm.pool_id(a, b);
+        fm.pools[pid].write(crate::tip_fee_manager::amm::Pool {
+            reserve_user_token: validator_reserve.max(1),
+            reserve_validator_token: validator_reserve,
+        })
+    }
+
+    #[test]
+    fn test_collect_fee_pre_tx_two_hop_hardfork_gating() -> eyre::Result<()> {
+        // Direct pool empty, both hop pools deep — the only fee path is the two-hop fallback.
+        let setup_pools = |fm: &mut TipFeeManager, t: &TwoHopTokens| -> Result<()> {
+            write_pool(fm, t.user, t.validator, 0)?;
+            write_pool(fm, t.user, t.hop, 100_000)?;
+            write_pool(fm, t.hop, t.validator, 100_000)?;
+            Ok(())
+        };
+
+        // Pre-T5: fallback disabled — must revert.
+        with_two_hop_env(
+            TempoHardfork::T4,
+            false,
+            |fm, t, user, validator, _admin| {
+                setup_pools(fm, t)?;
+                let res = fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, false);
+                assert_eq!(
+                    res.unwrap_err(),
+                    TIPFeeAMMError::insufficient_liquidity().into(),
+                    "T4: expected InsufficientLiquidity",
+                );
+                Ok(())
+            },
+        )?;
+
+        // T5: same setup — fallback engages successfully.
+        with_two_hop_env(
+            TempoHardfork::T5,
+            false,
+            |fm, t, user, validator, _admin| {
+                setup_pools(fm, t)?;
+
+                fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, false)?;
+                assert_eq!(
+                    fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.hop)].t_read()?,
+                    997 // 1st hop: floor(1000 * 9970/10000) = 997
+                );
+                assert_eq!(
+                    fm.pending_fee_swap_reservation[fm.pool_id(t.hop, t.validator)].t_read()?,
+                    994 // 2nd hop: floor(997 * 9970/10000) = 994
+                );
+                assert_eq!(
+                    fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.validator)].t_read()?,
+                    0 // direct pool is NOT reserved
+                );
+                Ok(())
+            },
+        )
+    }
+
+    #[test]
+    fn test_collect_fee_pre_tx_two_hop_no_side_effects() -> eyre::Result<()> {
+        // (label, hop_quote_is_val, skip, direct, first_hop, second_hop)
+        let cases: &[(&str, bool, bool, u128, u128, u128)] = &[
+            ("direct pool sufficient", false, false, 100_000, 0, 0),
+            ("skip_liquidity_check bypass", false, true, 0, 0, 0),
+            ("1st hop empty", false, false, 0, 0, 100_000),
+            ("2nd hop too small", false, false, 0, 100_000, 50),
+            // `userToken.quoteToken() == validatorToken` degenerates failed direct pair.
+            ("quote == validator", true, false, 0, 100_000, 100_000),
+        ];
+
+        for &(label, hop_quote_is_val, skip, direct, r1, r2) in cases {
+            with_two_hop_env(
+                TempoHardfork::T5,
+                hop_quote_is_val,
+                |fm, t, user, validator, _admin| {
+                    write_pool(fm, t.user, t.validator, direct)?;
+                    write_pool(fm, t.user, t.hop, r1)?;
+                    write_pool(fm, t.hop, t.validator, r2)?;
+
+                    let res =
+                        fm.collect_fee_pre_tx(user, t.user, U256::from(1_000), validator, skip);
+                    assert_eq!(
+                        res.is_ok(),
+                        direct > 0 || skip,
+                        "{label}: succeeds iff the two-hop fallback isn't needed, got {res:?}",
+                    );
+
+                    // Two-hop fallback must never half-commit: neither hop pool is
+                    // reserved and no intermediate token is cached.
+                    for (a, b) in [(t.user, t.hop), (t.hop, t.validator)] {
+                        assert_eq!(
+                            fm.pending_fee_swap_reservation[fm.pool_id(a, b)].t_read()?,
+                            0,
+                            "{label}: hop pool reservation leaked for ({a}, {b})",
+                        );
+                    }
+                    assert!(
+                        fm.two_hop_intermediate.t_read()?.is_zero(),
+                        "{label}: intermediate cache leaked",
+                    );
+                    Ok(())
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    #[test]
+    fn test_collect_fee_post_tx_two_hop_compound_fee() -> eyre::Result<()> {
+        // TIP-1033 states two-hop fee math MUST apply M = 9970/10000 sequentially
+        // (amount_in, expected_out1, expected_out2):
+        let cases: &[(u128, u128, u128)] = &[
+            (123_456_789, 123_086_418, 122_717_158),
+            (987_654_123, 984_691_160, 981_737_086),
+            (456_321_789, 454_952_823, 453_587_964),
+        ];
+
+        let assert_sequential_diverges_from_combined = |amount: U256| {
+            const COMBINED: U256 = uint!(99_400_900_U256); // M * M
+            const SCALE: U256 = uint!(100_000_000_U256); // SCALE * SCALE
+            let combined = amount * COMBINED / SCALE;
+
+            let sequential = compute_amount_out(compute_amount_out(amount).unwrap()).unwrap();
+            assert_ne!(
+                sequential, combined,
+                "amount={amount}: pick another value for sequential to not match combined fee math"
+            );
+        };
+
+        for &(amount, expected_out1, expected_out2) in cases {
+            assert_sequential_diverges_from_combined(U256::from(amount));
+
+            with_two_hop_env(
+                TempoHardfork::T5,
+                false,
+                |fm, t, user, validator, _admin| {
+                    // Reserves are deep enough that liquidity never bounds the result;
+                    // any deviation in `collected_fees` is purely a fee-math bug.
+                    let reserve = 10 * amount;
+                    write_pool(fm, t.user, t.validator, 0)?;
+                    write_pool(fm, t.user, t.hop, reserve)?;
+                    write_pool(fm, t.hop, t.validator, reserve)?;
+
+                    let amount_u = U256::from(amount);
+                    fm.collect_fee_pre_tx(user, t.user, amount_u, validator, false)?;
+                    fm.collect_fee_post_tx(user, amount_u, U256::ZERO, t.user, validator)?;
+
+                    assert_eq!(
+                        fm.collected_fees[validator][t.validator].read()?,
+                        U256::from(expected_out2),
+                        "amount={amount}: post-tx MUST accumulate sequential floor(floor(N*M)*M)",
+                    );
+
+                    // pool1 (user, hop): user-side gained `amount`, hop-side lost `out1`.
+                    let p1 = fm.pools[fm.pool_id(t.user, t.hop)].read()?;
+                    assert_eq!(
+                        (p1.reserve_user_token, p1.reserve_validator_token),
+                        (reserve + amount, reserve - expected_out1),
+                        "amount={amount}: pool1 reserves must move by (amount, out1)",
+                    );
+                    // pool2 (hop, validator): hop-side gained `out1`, validator-side lost `out2`.
+                    let p2 = fm.pools[fm.pool_id(t.hop, t.validator)].read()?;
+                    assert_eq!(
+                        (p2.reserve_user_token, p2.reserve_validator_token),
+                        (reserve + expected_out1, reserve - expected_out2),
+                        "amount={amount}: pool2 reserves must move by (out1, out2)",
+                    );
+                    Ok(())
+                },
+            )?;
+        }
+        Ok(())
+    }
+
+    /// TIP-1033 FEE15 (route immutability): once `collect_fee_pre_tx` caches the two-hop
+    /// intermediate, `collect_fee_post_tx` MUST settle through that cached path even if
+    /// `userToken.quoteToken()` is rotated mid-transaction. The freshly rotated quote token
+    /// must NOT reroute the post-tx swap.
+    #[test]
+    fn test_collect_fee_two_hop_route_immutable_under_quote_rotation() -> eyre::Result<()> {
+        with_two_hop_env(TempoHardfork::T5, false, |fm, t, user, validator, admin| {
+            // Direct pool empty + deep hop pools ⇒ pre_tx selects two-hop via `hop`.
+            let reserve: u128 = 1_000_000;
+            write_pool(fm, t.user, t.validator, 0)?;
+            write_pool(fm, t.user, t.hop, reserve)?;
+            write_pool(fm, t.hop, t.validator, reserve)?;
+
+            let amount = U256::from(1_000);
+            fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
+            assert_eq!(fm.two_hop_intermediate.t_read()?, t.hop);
+
+            // Mid-tx: rotate user.quoteToken from hop → validator. After this rotation,
+            // a freshly re-resolved route would degenerate (intermediate == validator),
+            // so any post_tx that re-resolves would silently break (or revert).
+            let mut user_token = TIP20Token::from_address(t.user)?;
+            user_token.set_next_quote_token(
+                admin,
+                ITIP20::setNextQuoteTokenCall {
+                    newQuoteToken: t.validator,
+                },
+            )?;
+            user_token
+                .complete_quote_token_update(admin, ITIP20::completeQuoteTokenUpdateCall {})?;
+            assert_eq!(
+                user_token.quote_token()?,
+                t.validator,
+                "rotation took effect"
+            );
+
+            // Post-tx MUST use the cached two_hop_intermediate (hop), not the new quote token.
+            fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+
+            let out1: u128 = compute_amount_out(amount)?.try_into().unwrap();
+            let out2: u128 = compute_amount_out(U256::from(out1))?.try_into().unwrap();
+            assert_eq!(
+                fm.collected_fees[validator][t.validator].read()?,
+                U256::from(out2),
+                "post-tx must apply two-hop sequential fee math via cached intermediate",
+            );
+
+            // Both hop pool reserves must have moved (proves two-hop swap actually executed).
+            let p1 = fm.pools[fm.pool_id(t.user, t.hop)].read()?;
+            assert_eq!(
+                (p1.reserve_user_token, p1.reserve_validator_token),
+                (reserve + 1_000, reserve - out1),
+                "pool1 (user, hop) reserves must reflect 1st-hop swap",
+            );
+            let p2 = fm.pools[fm.pool_id(t.hop, t.validator)].read()?;
+            assert_eq!(
+                (p2.reserve_user_token, p2.reserve_validator_token),
+                (reserve + out1, reserve - out2),
+                "pool2 (hop, validator) reserves must reflect 2nd-hop swap",
+            );
+            // Direct pool was seeded empty (`write_pool` clamps user-side to 1) and must
+            // remain untouched — settlement went through the cached two-hop route.
+            let direct = fm.pools[fm.pool_id(t.user, t.validator)].read()?;
+            assert_eq!(
+                (direct.reserve_user_token, direct.reserve_validator_token),
+                (1, 0),
+                "direct (user, validator) pool must NOT be used for settlement",
+            );
+
+            Ok(())
+        })
+    }
+
+    /// TIP-1033 FEE14 (transient hygiene): `two_hop_intermediate` is transient — it MUST
+    /// NOT survive across transaction boundaries. A subsequent transaction whose direct pool
+    /// has liquidity must take the single-hop path with `two_hop_intermediate == 0`.
+    #[test]
+    fn test_two_hop_intermediate_does_not_survive_across_tx() -> eyre::Result<()> {
+        with_two_hop_env(
+            TempoHardfork::T5,
+            false,
+            |fm, t, user, validator, _admin| {
+                // tx1: two-hop only — sets the transient intermediate.
+                let reserve: u128 = 1_000_000;
+                write_pool(fm, t.user, t.validator, 0)?;
+                write_pool(fm, t.user, t.hop, reserve)?;
+                write_pool(fm, t.hop, t.validator, reserve)?;
+
+                let amount = U256::from(1_000);
+                fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
+                assert_eq!(fm.two_hop_intermediate.t_read()?, t.hop, "tx1: cached");
+                fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+                // Note: post_tx leaves the slot non-zero in-tx; EVM clears it at tx boundary.
+                assert_eq!(
+                    fm.two_hop_intermediate.t_read()?,
+                    t.hop,
+                    "tx1: intermediate persists in-tx until EOT",
+                );
+
+                // Simulate tx boundary (EVM clears all transient storage).
+                fm.storage_mut().clear_transient();
+                assert!(
+                    fm.two_hop_intermediate.t_read()?.is_zero(),
+                    "post-EOT: intermediate must be cleared",
+                );
+
+                // tx2: direct pool now has liquidity — single-hop path; intermediate must stay zero.
+                write_pool(fm, t.user, t.validator, reserve)?;
+                // Drain hop pools so a stale intermediate would route through dry pools and revert,
+                // making any FEE14 violation observable rather than silently consistent.
+                write_pool(fm, t.user, t.hop, 0)?;
+                write_pool(fm, t.hop, t.validator, 0)?;
+
+                fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
+                assert!(
+                    fm.two_hop_intermediate.t_read()?.is_zero(),
+                    "tx2: pre_tx took direct route, must not set intermediate",
+                );
+                fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+
+                // tx2 settled via direct pool: validator received single-hop fee.
+                let out_single: U256 = compute_amount_out(amount)?;
+                let out1: u128 = compute_amount_out(amount)?.try_into().unwrap();
+                let out2: u128 = compute_amount_out(U256::from(out1))?.try_into().unwrap();
+                // tx1 collected two-hop out2; tx2 added single-hop out_single.
+                assert_eq!(
+                    fm.collected_fees[validator][t.validator].read()?,
+                    U256::from(out2) + out_single,
+                    "tx2 settled via single-hop direct pool",
+                );
+
+                Ok(())
+            },
+        )
+    }
+
+    /// TIP-1033 FEE12 (reservation enforcement, two-hop): a pending two-hop fee swap reserves
+    /// liquidity on BOTH hop pools. Burns or rebalance swaps that would deplete either pool
+    /// past its reservation MUST revert with `InsufficientLiquidity`.
+    #[test]
+    fn test_two_hop_reservation_blocks_mid_tx_burn_on_both_hops() -> eyre::Result<()> {
+        with_two_hop_env(TempoHardfork::T5, false, |fm, t, user, validator, admin| {
+            // Tight hop pools — full burn would dip below the pending reservation.
+            let reserve: u128 = 100_000;
+            write_pool(fm, t.user, t.validator, 0)?;
+            write_pool(fm, t.user, t.hop, reserve)?;
+            write_pool(fm, t.hop, t.validator, reserve)?;
+
+            // Seed admin LP balance + total supply for both hop pools so `burn` reaches
+            // the reservation check (not gated by LP-balance check). The reservation check
+            // fires before any token transfer, so we don't need real AMM-held balances.
+            let supply = U256::from(reserve);
+            for (a, b) in [(t.user, t.hop), (t.hop, t.validator)] {
+                let pid = fm.pool_id(a, b);
+                fm.total_supply[pid].write(supply)?;
+                fm.liquidity_balances[pid][admin].write(supply)?;
+            }
+
+            // pre_tx reserves: hop1 = 997, hop2 = 994 (computed from 1_000 input).
+            let amount = U256::from(1_000);
+            fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
+            let r1 = fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.hop)].t_read()?;
+            let r2 = fm.pending_fee_swap_reservation[fm.pool_id(t.hop, t.validator)].t_read()?;
+            assert!(r1 > 0 && r2 > 0, "both hop pools must be reserved");
+
+            // Full-supply burn on hop1 would zero the reserve → must trip reservation.
+            let res1 = fm.burn(admin, t.user, t.hop, supply, admin);
+            assert!(
+                matches!(
+                    res1,
+                    Err(TempoPrecompileError::TIPFeeAMMError(
+                        TIPFeeAMMError::InsufficientLiquidity(_)
+                    ))
+                ),
+                "hop1 full burn must revert: got {res1:?}",
+            );
+
+            // Same for hop2.
+            let res2 = fm.burn(admin, t.hop, t.validator, supply, admin);
+            assert!(
+                matches!(
+                    res2,
+                    Err(TempoPrecompileError::TIPFeeAMMError(
+                        TIPFeeAMMError::InsufficientLiquidity(_)
+                    ))
+                ),
+                "hop2 full burn must revert: got {res2:?}",
+            );
+
+            // Sanity: reservations are unchanged by the failed burns.
+            assert_eq!(
+                fm.pending_fee_swap_reservation[fm.pool_id(t.user, t.hop)].t_read()?,
+                r1,
+            );
+            assert_eq!(
+                fm.pending_fee_swap_reservation[fm.pool_id(t.hop, t.validator)].t_read()?,
+                r2,
+            );
 
             Ok(())
         })

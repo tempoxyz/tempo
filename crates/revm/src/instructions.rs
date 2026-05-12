@@ -24,7 +24,7 @@ fn millis_timestamp<DB: Database>(context: TempoInstructionContext<'_, DB>) {
 pub(crate) fn tempo_instructions<DB: Database>(
     spec: TempoHardfork,
 ) -> EthInstructions<EthInterpreter, TempoContext<DB>> {
-    let mut instructions = EthInstructions::new_mainnet();
+    let mut instructions = EthInstructions::new_mainnet_with_spec(spec.into());
     if !spec.is_t1c() {
         instructions.insert_instruction(
             MILLIS_TIMESTAMP,

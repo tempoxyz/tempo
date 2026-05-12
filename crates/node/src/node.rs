@@ -2,15 +2,15 @@ use crate::{
     TempoPayloadTypes,
     engine::TempoEngineValidator,
     rpc::{
-        TempoAdminApi, TempoAdminApiServer, TempoEthApiBuilder, TempoEthExt, TempoEthExtApiServer,
+        TempoAdminApi, TempoAdminApiServer, TempoEthApi, TempoEthApiBuilder, TempoEthExt,
+        TempoEthExtApiServer, TempoForkScheduleApiServer, TempoForkScheduleRpc,
+        TempoOperatorApiServer, TempoOperatorRpc, TempoSimulate, TempoSimulateApiServer,
         TempoToken, TempoTokenApiServer,
     },
 };
 use alloy_primitives::B256;
-use reth_engine_local::LocalPayloadAttributesBuilder;
-use reth_evm::revm::primitives::Address;
 use reth_node_api::{
-    AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodePrimitives, NodeTypes,
+    AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
 };
 use reth_node_builder::{
@@ -20,12 +20,12 @@ use reth_node_builder::{
         PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
-        BasicEngineValidatorBuilder, EngineValidatorAddOn, EngineValidatorBuilder, EthApiBuilder,
-        NoopEngineApiBuilder, PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns,
+        BasicEngineValidatorBuilder, EngineValidatorAddOn, NoopEngineApiBuilder,
+        PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle, RpcHooks,
     },
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
-use reth_primitives_traits::SealedHeader;
+use reth_primitives_traits::{SealedBlock, SealedHeader};
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
@@ -39,7 +39,7 @@ use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::TempoConsensus;
 use tempo_evm::TempoEvmConfig;
 use tempo_payload_builder::TempoPayloadBuilder;
-use tempo_payload_types::TempoPayloadAttributes;
+use tempo_payload_types::{TempoExecutionData, TempoPayloadAttributes};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool,
@@ -153,18 +153,19 @@ impl NodeTypes for TempoNode {
 }
 
 #[derive(Debug)]
-pub struct TempoAddOns<
-    N: FullNodeComponents,
-    EthB: EthApiBuilder<N> = TempoEthApiBuilder,
-    PVB = TempoEngineValidatorBuilder,
-    EVB = BasicEngineValidatorBuilder<PVB>,
-    RpcMiddleware = Identity,
-> {
-    inner: RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB, RpcMiddleware>,
+pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
+    inner: RpcAddOns<
+        NodeAdapter<N>,
+        TempoEthApiBuilder,
+        TempoEngineValidatorBuilder,
+        NoopEngineApiBuilder,
+        BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
+        Identity,
+    >,
     validator_key: Option<B256>,
 }
 
-impl<N> TempoAddOns<NodeAdapter<N>, TempoEthApiBuilder>
+impl<N> TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
@@ -177,26 +178,27 @@ where
                 NoopEngineApiBuilder::default(),
                 BasicEngineValidatorBuilder::default(),
                 Identity::default(),
+                Default::default(),
             ),
             validator_key,
         }
     }
 }
 
-impl<N, EthB, PVB, EVB> NodeAddOns<N> for TempoAddOns<N, EthB, PVB, EVB>
+impl<N> NodeAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
-    N: FullNodeComponents<Types = TempoNode, Evm = TempoEvmConfig>,
-    EthB: EthApiBuilder<N>,
-    PVB: Send + PayloadValidatorBuilder<N>,
-    EVB: EngineValidatorBuilder<N>,
-    EthB::EthApi:
-        RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
+    N: FullNodeTypes<Types = TempoNode>,
 {
-    type Handle = <RpcAddOns<N, EthB, PVB, NoopEngineApiBuilder, EVB> as NodeAddOns<N>>::Handle;
+    type Handle = RpcHandle<NodeAdapter<N>, TempoEthApi<N>>;
 
-    async fn launch_add_ons(self, ctx: AddOnsContext<'_, N>) -> eyre::Result<Self::Handle> {
-        let eth_config =
-            EthConfigHandler::new(ctx.node.provider().clone(), ctx.node.evm_config().clone());
+    async fn launch_add_ons(
+        self,
+        ctx: AddOnsContext<'_, NodeAdapter<N>>,
+    ) -> eyre::Result<Self::Handle> {
+        let eth_config = EthConfigHandler::new(
+            ctx.node.provider.clone(),
+            ctx.node.components.evm_config.clone(),
+        );
 
         self.inner
             .launch_add_ons_with(ctx, move |container| {
@@ -206,11 +208,21 @@ where
 
                 let eth_api = registry.eth_api().clone();
                 let token = TempoToken::new(eth_api.clone());
-                let eth_ext = TempoEthExt::new(eth_api);
+                let eth_ext = TempoEthExt::new(eth_api.clone());
+                let simulate = TempoSimulate::new(eth_api);
                 let admin = TempoAdminApi::new(self.validator_key);
+                let operator = TempoOperatorRpc::new(registry.admin_api());
+                let fork_schedule =
+                    TempoForkScheduleRpc::new(registry.eth_api().provider().clone());
 
                 modules.merge_configured(token.into_rpc())?;
                 modules.merge_configured(eth_ext.into_rpc())?;
+                modules.merge_if_module_configured(RethRpcModule::Eth, simulate.into_rpc())?;
+                modules.merge_configured(fork_schedule.into_rpc())?;
+                modules.merge_if_module_configured(
+                    RethRpcModule::Other("operator".to_string()),
+                    operator.into_rpc(),
+                )?;
                 modules.merge_if_module_configured(RethRpcModule::Admin, admin.into_rpc())?;
                 modules.merge_if_module_configured(RethRpcModule::Eth, eth_config.into_rpc())?;
 
@@ -220,30 +232,22 @@ where
     }
 }
 
-impl<N, EthB, PVB, EVB> RethRpcAddOns<N> for TempoAddOns<N, EthB, PVB, EVB>
+impl<N> RethRpcAddOns<NodeAdapter<N>> for TempoAddOns<N>
 where
-    N: FullNodeComponents<Types = TempoNode, Evm = TempoEvmConfig>,
-    EthB: EthApiBuilder<N>,
-    PVB: PayloadValidatorBuilder<N>,
-    EVB: EngineValidatorBuilder<N>,
-    EthB::EthApi:
-        RpcNodeCore<Evm = TempoEvmConfig, Primitives: NodePrimitives<BlockHeader = TempoHeader>>,
+    N: FullNodeTypes<Types = TempoNode>,
 {
-    type EthApi = EthB::EthApi;
+    type EthApi = TempoEthApi<N>;
 
-    fn hooks_mut(&mut self) -> &mut reth_node_builder::rpc::RpcHooks<N, Self::EthApi> {
+    fn hooks_mut(&mut self) -> &mut RpcHooks<NodeAdapter<N>, Self::EthApi> {
         self.inner.hooks_mut()
     }
 }
 
-impl<N, EthB, PVB, EVB> EngineValidatorAddOn<N> for TempoAddOns<N, EthB, PVB, EVB>
+impl<N> EngineValidatorAddOn<NodeAdapter<N>> for TempoAddOns<N>
 where
-    N: FullNodeComponents<Types = TempoNode, Evm = TempoEvmConfig>,
-    EthB: EthApiBuilder<N>,
-    PVB: Send,
-    EVB: EngineValidatorBuilder<N>,
+    N: FullNodeTypes<Types = TempoNode>,
 {
-    type ValidatorBuilder = EVB;
+    type ValidatorBuilder = BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>;
 
     fn engine_validator_builder(&self) -> Self::ValidatorBuilder {
         self.inner.engine_validator_builder()
@@ -263,7 +267,7 @@ where
         TempoConsensusBuilder,
     >;
 
-    type AddOns = TempoAddOns<NodeAdapter<N>>;
+    type AddOns = TempoAddOns<N>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
         Self::components(self.pool_builder, self.payload_builder_builder)
@@ -278,54 +282,54 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
     type RpcBlock =
         alloy_rpc_types_eth::Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeader>;
 
-    fn rpc_to_primitive_block(rpc_block: Self::RpcBlock) -> tempo_primitives::Block {
-        rpc_block
+    fn rpc_to_execution_data(rpc_block: Self::RpcBlock) -> TempoExecutionData {
+        let block = rpc_block
             .into_consensus_block()
-            .map_transactions(|tx| tx.into_inner())
+            .map_transactions(|tx| tx.into_inner());
+        TempoExecutionData {
+            block: Arc::new(SealedBlock::seal_slow(block)),
+            validator_set: None,
+        }
     }
 
     fn local_payload_attributes_builder(
-        chain_spec: &Self::ChainSpec,
+        _chain_spec: &Self::ChainSpec,
     ) -> impl PayloadAttributesBuilder<<Self::Payload as PayloadTypes>::PayloadAttributes, TempoHeader>
     {
-        TempoPayloadAttributesBuilder::new(Arc::new(chain_spec.clone()))
+        TempoPayloadAttributesBuilder::new()
     }
 }
 
 /// The attributes builder with a restricted set of validators
-#[derive(Debug)]
+#[derive(Debug, Default)]
 #[non_exhaustive]
-pub struct TempoPayloadAttributesBuilder {
-    /// The vanilla eth payload attributes builder
-    inner: LocalPayloadAttributesBuilder<TempoChainSpec>,
-}
+pub struct TempoPayloadAttributesBuilder;
 
 impl TempoPayloadAttributesBuilder {
     /// Creates a new instance of the builder.
-    pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
-        Self {
-            inner: LocalPayloadAttributesBuilder::new(chain_spec).without_increasing_timestamp(),
-        }
+    pub const fn new() -> Self {
+        Self
     }
 }
 
 impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
     for TempoPayloadAttributesBuilder
 {
-    fn build(&self, parent: &SealedHeader<TempoHeader>) -> TempoPayloadAttributes {
-        let mut inner = self.inner.build(parent);
-        inner.suggested_fee_recipient = Address::ZERO;
-
-        let timestamp_millis_part = std::time::SystemTime::now()
+    fn build(&self, _parent: &SealedHeader<TempoHeader>) -> TempoPayloadAttributes {
+        let millis = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
-            .as_millis() as u64
-            % 1000;
+            .as_millis() as u64;
 
-        TempoPayloadAttributes {
-            inner,
+        let (timestamp, timestamp_millis_part) = (millis / 1000, millis % 1000);
+        TempoPayloadAttributes::new(
+            None,
+            timestamp,
             timestamp_millis_part,
-        }
+            Default::default(),
+            None,
+            Vec::new,
+        )
     }
 }
 
@@ -472,7 +476,7 @@ where
 
         // Spawn unified Tempo pool maintenance task
         // This consolidates: expired AA txs, 2D nonce updates, AMM cache, and keychain revocations
-        ctx.task_executor().spawn_critical(
+        ctx.task_executor().spawn_critical_task(
             "txpool maintenance - tempo pool",
             tempo_transaction_pool::maintain::maintain_tempo_pool(transaction_pool.clone()),
         );
@@ -510,6 +514,7 @@ where
             pool,
             ctx.provider().clone(),
             evm_config,
+            ctx.is_dev(),
             self.state_provider_metrics,
             self.disable_state_cache,
         ))

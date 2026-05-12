@@ -21,7 +21,7 @@ pub enum TempoInvalidTransaction {
 
     /// System transaction execution failed.
     #[error("system transaction execution failed, result: {_0:?}")]
-    SystemTransactionFailed(ExecutionResult<TempoHaltReason>),
+    SystemTransactionFailed(Box<ExecutionResult<TempoHaltReason>>),
 
     /// Fee payer signature recovery failed.
     ///
@@ -29,6 +29,10 @@ pub enum TempoInvalidTransaction {
     /// signature recovery for the fee payer fails.
     #[error("fee payer signature recovery failed")]
     InvalidFeePayerSignature,
+
+    /// Fee payer cannot resolve to the sender address.
+    #[error("fee payer cannot resolve to sender")]
+    SelfSponsoredFeePayer,
 
     // Tempo transaction errors
     /// Transaction cannot be included before validAfter timestamp.
@@ -68,20 +72,6 @@ pub enum TempoInvalidTransaction {
     InvalidWebAuthnSignature {
         /// Specific reason for failure.
         reason: String,
-    },
-
-    /// Insufficient gas for intrinsic cost.
-    ///
-    /// Tempo transactions have variable intrinsic gas costs based on signature type and nonce usage.
-    /// This error occurs when the gas_limit is less than the calculated intrinsic gas.
-    #[error(
-        "insufficient gas for intrinsic cost: gas_limit {gas_limit} < intrinsic_gas {intrinsic_gas}"
-    )]
-    InsufficientGasForIntrinsicCost {
-        /// The transaction's gas limit.
-        gas_limit: u64,
-        /// The calculated intrinsic gas required.
-        intrinsic_gas: u64,
     },
 
     /// Nonce manager error.
@@ -230,6 +220,88 @@ pub enum TempoInvalidTransaction {
     /// This wraps validation errors from the shared validate_calls function.
     #[error("{0}")]
     CallsValidation(&'static str),
+}
+
+impl TempoInvalidTransaction {
+    /// Returns `true` if this error is deterministic — i.e. the transaction is inherently
+    /// malformed and will never become valid regardless of state changes.
+    ///
+    /// Returns `false` for state-dependent errors (balance, nonce, expiry, liquidity)
+    /// that may resolve as state advances.
+    pub fn is_bad_transaction(&self) -> bool {
+        match self {
+            Self::EthInvalidTransaction(eth) => match eth {
+                InvalidTransaction::PriorityFeeGreaterThanMaxFee
+                | InvalidTransaction::CallGasCostMoreThanGasLimit { .. }
+                | InvalidTransaction::GasFloorMoreThanGasLimit { .. }
+                | InvalidTransaction::CreateInitCodeSizeLimit
+                | InvalidTransaction::InvalidChainId
+                | InvalidTransaction::MissingChainId
+                | InvalidTransaction::AccessListNotSupported
+                | InvalidTransaction::MaxFeePerBlobGasNotSupported
+                | InvalidTransaction::BlobVersionedHashesNotSupported
+                | InvalidTransaction::EmptyBlobs
+                | InvalidTransaction::BlobCreateTransaction
+                | InvalidTransaction::TooManyBlobs { .. }
+                | InvalidTransaction::BlobVersionNotSupported
+                | InvalidTransaction::AuthorizationListNotSupported
+                | InvalidTransaction::AuthorizationListInvalidFields
+                | InvalidTransaction::EmptyAuthorizationList
+                | InvalidTransaction::Eip2930NotSupported
+                | InvalidTransaction::Eip1559NotSupported
+                | InvalidTransaction::Eip4844NotSupported
+                | InvalidTransaction::Eip7702NotSupported
+                | InvalidTransaction::Eip7873NotSupported
+                | InvalidTransaction::Eip7873MissingTarget
+                | InvalidTransaction::OverflowPaymentInTransaction
+                | InvalidTransaction::NonceOverflowInTransaction
+                | InvalidTransaction::TxGasLimitGreaterThanCap { .. } => true,
+
+                InvalidTransaction::GasPriceLessThanBasefee
+                | InvalidTransaction::CallerGasLimitMoreThanBlock
+                | InvalidTransaction::RejectCallerWithCode
+                | InvalidTransaction::LackOfFundForMaxFee { .. }
+                | InvalidTransaction::NonceTooHigh { .. }
+                | InvalidTransaction::NonceTooLow { .. }
+                | InvalidTransaction::BlobGasPriceGreaterThanMax { .. }
+                | InvalidTransaction::Str(_) => false,
+            },
+
+            // Deterministic: tx is inherently malformed.
+            Self::SystemTransactionMustBeCall
+            | Self::SystemTransactionFailed(_)
+            | Self::InvalidFeePayerSignature
+            | Self::SelfSponsoredFeePayer
+            | Self::InvalidP256Signature
+            | Self::InvalidWebAuthnSignature { .. }
+            | Self::AccessKeyRecoveryFailed
+            | Self::AccessKeyCannotAuthorizeOtherKeys
+            | Self::KeyAuthorizationSignatureRecoveryFailed
+            | Self::KeyAuthorizationNotSignedByRoot { .. }
+            | Self::KeychainUserAddressMismatch { .. }
+            | Self::KeyAuthorizationChainIdMismatch { .. }
+            | Self::ValueTransferNotAllowed
+            | Self::ValueTransferNotAllowedInAATx
+            | Self::ExpiringNonceMissingTxEnv
+            | Self::ExpiringNonceMissingValidBefore
+            | Self::ExpiringNonceNonceNotZero
+            | Self::SubblockTransactionMustHaveZeroFee
+            | Self::KeychainOpInSubblockTransaction
+            | Self::LegacyKeychainSignature
+            | Self::CallsValidation(_) => true,
+
+            // State-dependent: may resolve as state advances.
+            Self::ValidAfter { .. }
+            | Self::ValidBefore { .. }
+            | Self::InvalidFeeToken(_)
+            | Self::AccessKeyExpiryInPast { .. }
+            | Self::KeychainPrecompileError { .. }
+            | Self::KeychainValidationFailed { .. }
+            | Self::CollectFeePreTx(_)
+            | Self::NonceManagerError(_)
+            | Self::V2KeychainBeforeActivation => false,
+        }
+    }
 }
 
 impl InvalidTxError for TempoInvalidTransaction {
@@ -386,6 +458,10 @@ mod tests {
         assert!(err.as_invalid_tx_err().is_some());
 
         let err = TempoInvalidTransaction::InvalidFeePayerSignature;
+        assert!(!err.is_nonce_too_low());
+        assert!(err.as_invalid_tx_err().is_none());
+
+        let err = TempoInvalidTransaction::SelfSponsoredFeePayer;
         assert!(!err.is_nonce_too_low());
         assert!(err.as_invalid_tx_err().is_none());
     }

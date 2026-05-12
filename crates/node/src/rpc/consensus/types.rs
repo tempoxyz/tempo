@@ -1,9 +1,12 @@
 //! RPC types for the consensus namespace.
 
+use std::fmt::Display;
+
 use alloy_primitives::B256;
 use futures::Future;
 use serde::{Deserialize, Serialize};
 use tempo_alloy::rpc::TempoHeaderResponse;
+use tempo_primitives::Block;
 use tokio::sync::broadcast;
 
 /// A block with a threshold BLS certificate (notarization or finalization).
@@ -12,11 +15,22 @@ use tokio::sync::broadcast;
 pub struct CertifiedBlock {
     pub epoch: u64,
     pub view: u64,
-    /// Block height, if known. May be `None` if the block hasn't been stored yet.
-    pub height: Option<u64>,
     pub digest: B256,
+
     /// Hex-encoded full notarization or finalization.
     pub certificate: String,
+
+    /// The Tempo block.
+    pub block: Block,
+}
+
+impl Display for CertifiedBlock {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match serde_json::to_string(self) {
+            Ok(s) => f.write_str(&s),
+            Err(err) => write!(f, "<failed formatting certified block: {err}"),
+        }
+    }
 }
 
 /// Consensus event emitted.
@@ -54,6 +68,15 @@ pub enum Query {
     Latest,
     /// Get by block height.
     Height(u64),
+}
+
+impl Display for Query {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match serde_json::to_string(self) {
+            Ok(s) => f.write_str(&s),
+            Err(err) => write!(f, "<failed formatting query: {err}>"),
+        }
+    }
 }
 
 /// Response for get_latest - current consensus state snapshot.
@@ -127,11 +150,45 @@ pub struct TransitionProofData {
     pub finalization_certificate: String,
 }
 
+#[derive(Debug)]
+pub enum Response<T> {
+    Success(T),
+    NotReady,
+    Missing(&'static str),
+}
+
+impl<T> Response<T>
+where
+    T: std::fmt::Debug,
+{
+    pub fn unwrap(self) -> T {
+        let Self::Success(val) = self else {
+            panic!("not a success: {self:?}")
+        };
+        val
+    }
+}
+
+impl<T> Display for Response<T>
+where
+    T: Display,
+{
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Success(obj) => write!(f, "success: {obj}"),
+            Self::NotReady => write!(f, "service not ready"),
+            Self::Missing(msg) => write!(f, "missing: {msg}"),
+        }
+    }
+}
+
 /// Trait for accessing consensus feed data.
 pub trait ConsensusFeed: Send + Sync + 'static {
     /// Get a finalization by query (supports `Latest` or `Height`).
-    fn get_finalization(&self, query: Query)
-    -> impl Future<Output = Option<CertifiedBlock>> + Send;
+    fn get_finalization(
+        &self,
+        query: Query,
+    ) -> impl Future<Output = Response<CertifiedBlock>> + Send;
 
     /// Get the current consensus state (latest finalized + latest notarized).
     fn get_latest(&self) -> impl Future<Output = ConsensusState> + Send;

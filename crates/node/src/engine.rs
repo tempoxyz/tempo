@@ -37,7 +37,7 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
         header: &TempoHeader,
     ) -> Result<(), InvalidPayloadAttributesError> {
         // Ensure that payload attributes timestamp is not in the past
-        if attr.inner.timestamp < header.timestamp() {
+        if attr.timestamp < header.timestamp() {
             return Err(InvalidPayloadAttributesError::InvalidTimestamp);
         }
         Ok(())

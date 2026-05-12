@@ -4,8 +4,7 @@ use crate::{
     evm::{TempoContext, TempoEvm},
     handler::TempoEvmHandler,
 };
-use alloy_evm::Database;
-use reth_evm::TransactionEnv;
+use alloy_evm::{Database, TransactionEnvMut};
 use revm::{
     DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
     context::{ContextSetters, TxEnv, result::ExecResultAndState},

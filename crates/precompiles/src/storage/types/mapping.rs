@@ -25,7 +25,7 @@ use crate::storage::{Layout, LayoutCtx, StorableType, StorageKey, types::Handler
 ///
 /// # Storage Layout
 ///
-/// Mappings use Solidity's storage layout:
+/// Mappings use a Solidity-equivalent storage layout:
 /// - Base slot: stored in `base_slot` field (never accessed directly)
 /// - Actual slot for key `k`: `keccak256(k || base_slot)`
 ///

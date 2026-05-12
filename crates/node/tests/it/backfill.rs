@@ -9,7 +9,7 @@ use alloy_network::TxSignerSync;
 use alloy_primitives::Address;
 use alloy_rpc_types_engine::ForkchoiceState;
 use reth_e2e_test_utils::wallet::Wallet;
-use reth_node_api::{BuiltPayload, EngineApiMessageVersion};
+use reth_node_api::BuiltPayload;
 use reth_node_metrics::recorder::install_prometheus_recorder;
 use reth_primitives_traits::{AlloyBlockHeader as _, transaction::TxHashRef};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
@@ -161,7 +161,7 @@ async fn test_backfill_sync() -> eyre::Result<()> {
         .inner
         .add_ons_handle
         .beacon_engine_handle
-        .fork_choice_updated(forkchoice_state, None, EngineApiMessageVersion::default())
+        .fork_choice_updated(forkchoice_state, None)
         .await?;
 
     println!("FCU result: {result:?}");

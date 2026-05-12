@@ -2,7 +2,7 @@
 //!
 //! This crate provides:
 //! - `#[contract]` macro that transforms a storage schema into a fully-functional contract
-//! - `#[derive(Storable)]` macro for multi-slot storage structs
+//! - `#[derive(Storable)]` macro for storage structs and `#[repr(u8)]` unit enums
 //! - `storable_alloy_ints!` macro for generating alloy integer storage implementations
 //! - `storable_alloy_bytes!` macro for generating alloy FixedBytes storage implementations
 //! - `storable_rust_ints!` macro for generating standard Rust integer storage implementations
@@ -207,25 +207,28 @@ fn gen_contract_storage(
     Ok(output)
 }
 
-/// Derives the `Storable` trait for structs with named fields.
+/// Derives the `Storable` trait for structs with named fields and `#[repr(u8)]` unit enums.
 ///
 /// This macro generates implementations for loading and storing multi-slot
-/// struct layout in EVM storage.
+/// struct layouts and single-byte unit enums in EVM storage.
 /// Its packing and encoding schemes aim to be an exact representation of
 /// the storage model used by Solidity.
 ///
 /// # Requirements
 ///
-/// - The struct must have named fields (not tuple structs or unit structs)
-/// - All fields must implement the `Storable` trait
+/// - Structs must have named fields (not tuple structs or unit structs)
+/// - Unit enums must be annotated with `#[repr(u8)]`
+/// - Unit enums must include a zero-valued variant so fresh or deleted storage stays readable
+/// - All stored field types must implement the `Storable` trait
 ///
 /// # Generated Code
 ///
-/// For each struct field, the macro generates sequential slot offsets.
-/// It implements the `Storable` trait methods:
+/// For structs, the macro generates sequential slot offsets for each field.
+/// For `#[repr(u8)]` unit enums, it loads and stores the enum through `u8`.
+/// In both cases it implements the `Storable` trait methods:
 /// - `load` - Loads the struct from storage
 /// - `store` - Stores the struct to storage
-/// - `delete` - Uses default implementation (sets all slots to zero)
+/// - `delete` - Removes the value from storage using the type-specific semantics
 ///
 /// # Example
 ///

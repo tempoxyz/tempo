@@ -3,8 +3,9 @@ use std::{collections::HashMap, sync::Arc};
 use alloy_evm::{Database, EvmEnv};
 use alloy_primitives::{Address, B256, Bytes};
 use reth_chainspec::EthChainSpec;
-use reth_revm::{State, context::BlockEnv};
-use revm::{database::EmptyDB, inspector::NoOpInspector};
+use reth_evm::block::StateDB;
+use reth_revm::context::BlockEnv;
+use revm::inspector::NoOpInspector;
 use tempo_chainspec::{TempoChainSpec, spec::MODERATO};
 use tempo_revm::TempoBlockEnv;
 
@@ -52,6 +53,8 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) validator_set: Option<Vec<B256>>,
     pub(crate) parent_beacon_block_root: Option<B256>,
     pub(crate) subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
+    /// Sets `cfg_env.enable_amsterdam_eip8037` to gate TIP-1016 behavior in tests.
+    pub(crate) amsterdam_eip8037_enabled: bool,
     // Test state to seed into the executor after creation
     pub(crate) initial_section: Option<BlockSection>,
     pub(crate) initial_seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
@@ -68,6 +71,7 @@ impl Default for TestExecutorBuilder {
             validator_set: None,
             parent_beacon_block_root: None,
             subblock_fee_recipients: HashMap::new(),
+            amsterdam_eip8037_enabled: false,
             initial_section: None,
             initial_seen_subblocks: Vec::new(),
             initial_incentive_gas_used: 0,
@@ -96,6 +100,13 @@ impl TestExecutorBuilder {
         self
     }
 
+    /// Toggles `cfg_env.enable_amsterdam_eip8037`, which gates TIP-1016 (state gas split)
+    /// behavior independently of the T4 hardfork.
+    pub(crate) fn with_amsterdam_eip8037_enabled(mut self, enabled: bool) -> Self {
+        self.amsterdam_eip8037_enabled = enabled;
+        self
+    }
+
     /// Set the initial block section for the executor (for testing section transitions).
     pub(crate) fn with_section(mut self, section: BlockSection) -> Self {
         self.initial_section = Some(section);
@@ -118,14 +129,18 @@ impl TestExecutorBuilder {
         self
     }
 
-    pub(crate) fn build<'a>(
+    pub(crate) fn build<'a, DB: StateDB>(
         self,
-        db: &'a mut State<EmptyDB>,
+        db: DB,
         chainspec: &'a Arc<TempoChainSpec>,
-    ) -> TempoBlockExecutor<'a, EmptyDB, NoOpInspector> {
+    ) -> TempoBlockExecutor<'a, DB, NoOpInspector> {
+        let mut cfg_env = revm::context::CfgEnv::default();
+        cfg_env.enable_amsterdam_eip8037 = self.amsterdam_eip8037_enabled;
+
         let evm = TempoEvm::new(
             db,
             EvmEnv {
+                cfg_env,
                 block_env: TempoBlockEnv {
                     inner: BlockEnv {
                         number: U256::from(self.block_number),
@@ -135,7 +150,6 @@ impl TestExecutorBuilder {
                     },
                     ..Default::default()
                 },
-                ..Default::default()
             },
         );
 
@@ -147,10 +161,12 @@ impl TestExecutorBuilder {
                 withdrawals: None,
                 extra_data: Bytes::new(),
                 tx_count_hint: None,
+                slot_number: None,
             },
             general_gas_limit: self.general_gas_limit,
             shared_gas_limit: self.shared_gas_limit,
             validator_set: self.validator_set,
+            consensus_context: None,
             subblock_fee_recipients: self.subblock_fee_recipients,
         };
 
