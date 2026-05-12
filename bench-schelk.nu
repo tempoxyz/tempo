@@ -33,14 +33,11 @@ def cmd-detect [] {
         return
     }
 
-    if ("/var/lib/schelk/state.json" | path exists) {
-        print "SCHELK_STATE_PATH=/var/lib/schelk/state.json"
-        print "SCHELK_MOUNT=/reth-bench"
-    } else if ("/var/lib/schelk/a.json" | path exists) {
+    if ("/var/lib/schelk/a.json" | path exists) {
         print "SCHELK_STATE_PATH=/var/lib/schelk/a.json"
         print "SCHELK_MOUNT=/reth-bench-a"
     } else {
-        print "::error::No supported schelk state file found"
+        print "::error::No dual-schelk state file found"
         exit 1
     }
 }

@@ -2,6 +2,8 @@
 
 # Tempo local utilities
 
+source contrib/bench/txgen/helpers.nu
+
 const BENCH_DIR = "contrib/bench"
 const LOCALNET_DIR = "localnet"
 const LOGS_DIR = "contrib/bench/logs"
@@ -10,19 +12,9 @@ const DEFAULT_PROFILE = "profiling"
 const DEFAULT_FEATURES = "jemalloc,asm-keccak"
 const BENCH_WORKTREES_DIR = ".bench-worktrees"
 const BENCH_RESULTS_DIR = "bench-results"
-const BLOAT_MNEMONIC = "test test test test test test test test test test test junk"
 const METRICS_PROXY_SCRIPT = "contrib/bench/bench-metrics-proxy.py"
 const MINIO_BUCKET = "minio/tempo-binaries"
 const BENCH_META_SUBDIR = ".bench-meta"
-
-# Preset weight configurations: [tip20, erc20, swap, order]
-const PRESETS = {
-    tip20: [1.0, 0.0, 0.0, 0.0],
-    erc20: [0.0, 1.0, 0.0, 0.0],
-    swap: [0.0, 0.0, 1.0, 0.0],
-    order: [0.0, 0.0, 0.0, 1.0],
-    "tempo-mix": [0.8, 0, 0.19, 0.01]
-}
 
 # TIP20 token IDs created by localnet genesis (pathUSD, AlphaUSD, BetaUSD, ThetaUSD)
 const TIP20_TOKEN_IDS = [0, 1, 2, 3]
@@ -52,8 +44,7 @@ def wrap-samply [cmd: list<string>, samply: bool, samply_args: list<string>] {
 
 # Compute effective features and RUSTFLAGS for tracy builds.
 # The "tracy" cargo feature on bin/tempo already includes tracy-client/ondemand,
-# so we only need to append "tracy" here. tempo-bench doesn't have a tracy feature,
-# so it must be built separately with the base features.
+# so we only need to append "tracy" here.
 def tracy-build-config [features: string, tracy: string] {
     if $tracy == "off" {
         { features: $features, extra_rustflags: "" }
@@ -91,9 +82,9 @@ def build-tempo [bins: list<string>, profile: string, features: string, --no-def
     }
 }
 
-# Find tempo process PIDs (excluding tempo-bench)
+# Find tempo node process PIDs.
 def find-tempo-pids [] {
-    ps | where name =~ "tempo" | where name !~ "tempo-bench" | get pid
+    ps | where name =~ '(^|/)tempo$' | get pid
 }
 
 # Initialize node with state bloat
@@ -373,7 +364,7 @@ def bench-cache-key [commit_sha: string, features: string, no_default_features: 
 def try-cache-download [worktree_dir: string, profile: string, commit_sha: string, cache_key: string] {
     if not (has-mc) { return false }
 
-    let bins = ["tempo" "tempo-bench"]
+    let bins = ["tempo"]
     # Check that all binaries exist in the cache
     for bin in $bins {
         let remote = $"($MINIO_BUCKET)/($cache_key)/($bin)"
@@ -431,7 +422,7 @@ def cache-upload [worktree_dir: string, profile: string, commit_sha: string, cac
         $"($worktree_dir)/target/($profile)"
     }
 
-    for bin in ["tempo" "tempo-bench"] {
+    for bin in ["tempo"] {
         let local = $"($target_dir)/($bin)"
         let remote = $"($MINIO_BUCKET)/($cache_key)/($bin)"
         print $"Uploading ($bin) to cache for ($commit_sha | str substring 0..8)..."
@@ -443,7 +434,7 @@ def cache-upload [worktree_dir: string, profile: string, commit_sha: string, cac
     }
 }
 
-# Build tempo binaries in a git worktree (with optional MinIO cache)
+# Build tempo binary in a git worktree (with optional MinIO cache)
 def build-in-worktree [worktree_dir: string, ref: string, profile: string, features: string, commit_sha: string, --no-cache, --no-default-features, --extra-rustflags: string = "", --bench-features: string = ""] {
     let cache_key = (bench-cache-key $commit_sha $features $no_default_features)
 
@@ -452,32 +443,14 @@ def build-in-worktree [worktree_dir: string, ref: string, profile: string, featu
         return
     }
 
-    # Build from source — when tracy is enabled, tempo and tempo-bench need different features
-    print $"Building binaries for ($ref) in ($worktree_dir)..."
+    print $"Building tempo for ($ref) in ($worktree_dir)..."
     let rustflags = $"($RUSTFLAGS)($extra_rustflags)"
-    if $bench_features != "" and $bench_features != $features {
-        # Build tempo (with tracy features) and tempo-bench (without) separately
-        let tempo_feature_args = (cargo-feature-args $features $no_default_features)
-        let bench_feature_args = (cargo-feature-args $bench_features $no_default_features)
-        let tempo_cmd = ["cargo" "build" "--profile" $profile]
-            | append $tempo_feature_args
-            | append ["--bin" "tempo"]
-        let bench_cmd = ["cargo" "build" "--profile" $profile]
-            | append $bench_feature_args
-            | append ["--bin" "tempo-bench"]
-        with-env { RUSTFLAGS: $rustflags } {
-            do { cd $worktree_dir; run-external ($tempo_cmd | first) ...($tempo_cmd | skip 1) }
-            do { cd $worktree_dir; run-external ($bench_cmd | first) ...($bench_cmd | skip 1) }
-        }
-    } else {
-        let bin_args = ["--bin" "tempo" "--bin" "tempo-bench"]
-        let feature_args = (cargo-feature-args $features $no_default_features)
-        let build_cmd = ["cargo" "build" "--profile" $profile]
-            | append $feature_args
-            | append $bin_args
-        with-env { RUSTFLAGS: $rustflags } {
-            do { cd $worktree_dir; run-external ($build_cmd | first) ...($build_cmd | skip 1) }
-        }
+    let feature_args = (cargo-feature-args $features $no_default_features)
+    let build_cmd = ["cargo" "build" "--profile" $profile]
+        | append $feature_args
+        | append ["--bin" "tempo"]
+    with-env { RUSTFLAGS: $rustflags } {
+        do { cd $worktree_dir; run-external ($build_cmd | first) ...($build_cmd | skip 1) }
     }
 
     # Upload to cache
@@ -529,7 +502,10 @@ def dedup-args [base_args: list<string>, extra_args: list<string>] {
 # Run a single benchmark run (start node, run bench, stop node, collect report)
 def run-bench-single [
     --tempo-bin: string
-    --bench-bin: string
+    --txgen-tempo-bin: string
+    --txgen-bench-bin: string
+    --rpc-urls: string
+    --metrics-url: string
     --genesis-path: string
     --datadir: string
     --run-label: string
@@ -538,8 +514,7 @@ def run-bench-single [
     --duration: int
     --accounts: int
     --max-concurrent-requests: int
-    --weights: list<float>
-    --preset: string = ""
+    --preset-path: string
     --bench-args: string = ""
     --loud
     --node-args: string = ""
@@ -626,7 +601,7 @@ def run-bench-single [
     wait-for-rpc "http://localhost:8545" $rpc_timeout
 
     # Start tracy-capture after RPC is ready (node must be running for connection)
-    # If tracy-offset > 0, delay the capture start in a background job so tempo-bench isn't blocked
+    # If tracy-offset > 0, delay the capture start in a background job so txgen isn't blocked
     let tracy_output = $"($results_dir)/tracy-profile-($run_label).tracy"
     let tracy_capture_started = if $tracy != "off" {
         let seconds_flag = if $tracy_seconds > 0 { $"-s ($tracy_seconds)" } else { "" }
@@ -642,53 +617,34 @@ def run-bench-single [
         true
     } else { false }
 
-    # Run tempo-bench
-    let bench_cmd = [
-        $bench_bin
-        "run-max-tps"
-        "--tps" $"($tps)"
-        "--duration" $"($duration)"
-        "--accounts" $"($accounts)"
-        "--max-concurrent-requests" $"($max_concurrent_requests)"
-        "--target-urls" "http://localhost:8545"
-        "--faucet"
-        "--clear-txpool"
-    ]
-    | append (if $preset != "" {
-        [
-            "--tip20-weight" $"($weights | get 0)"
-            "--erc20-weight" $"($weights | get 1)"
-            "--swap-weight" $"($weights | get 2)"
-            "--place-order-weight" $"($weights | get 3)"
-        ]
-    } else { [] })
-    | append (if $bloat > 0 {
-        [
-            "--mnemonic" $"'($BLOAT_MNEMONIC)'"
-        ]
-    } else { [] })
-    | append (if $bench_args != "" { $bench_args | split row " " } else { [] })
-    | append (if $git_ref != "" { ["--node-commit-sha" $git_ref] } else { [] })
-    | append (if $build_profile != "" { ["--build-profile" $build_profile] } else { [] })
-    | append (if $benchmark_mode != "" { ["--benchmark-mode" $benchmark_mode] } else { [] })
-
-    let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
-    print $"  Running benchmark..."
-    try {
-        bash -c $"($bench_env_export)ulimit -Sn unlimited && ($bench_cmd | str join ' ')"
+    print $"  Running txgen benchmark..."
+    let report_path = $"($results_dir)/report-($run_label).json"
+    let bench_result = (try {
+        let result = (txgen-run-preset-pipeline
+            --txgen-tempo-bin $txgen_tempo_bin
+            --txgen-bench-bin $txgen_bench_bin
+            --preset-path $preset_path
+            --generate-rpc-url "http://localhost:8545"
+            --submit-rpc-url $rpc_urls
+            --metrics-url $metrics_url
+            --report-path $report_path
+            --tps $tps
+            --duration $duration
+            --accounts $accounts
+            --max-concurrent-requests $max_concurrent_requests
+            --bench-env $bench_env
+            --git-ref $git_ref
+            --build-profile $build_profile
+            --benchmark-mode $benchmark_mode)
+        if not $result.ok {
+            print $"  Benchmark run ($run_label) failed with exit code ($result.exit_code)"
+        }
+        $result
     } catch { |e|
         print $"  Benchmark run ($run_label) failed: ($e.msg)"
-    }
-
-    # Collect report
-    if ("report.json" | path exists) {
-        cp report.json $"($results_dir)/report-($run_label).json"
-        rm report.json
-        print $"  Report saved: report-($run_label).json"
-    } else {
-        print $"  ERROR: no report.json found for ($run_label)"
-        error make { msg: $"Benchmark run ($run_label) produced no report.json" }
-    }
+        { ok: false, exit_code: 1, report_path: $report_path }
+    })
+    let bench_failed = not $bench_result.ok
 
     # Stop tracy-capture FIRST (it needs the node alive to flush data)
     if $tracy_capture_started {
@@ -760,6 +716,9 @@ def run-bench-single [
     }
 
     print $"=== Run ($run_label) complete ==="
+    if $bench_failed {
+        error make { msg: $"Benchmark run ($run_label) failed" }
+    }
 }
 
 # Upload a samply profile (.json.gz) to Firefox Profiler and return the short URL.
@@ -1663,7 +1622,7 @@ def restore-system-tuning [tuning_state: record] {
 
 # Initialize the schelk virgin snapshot with genesis + state bloat.
 # Run once (or when changing bloat size). Subsequent `bench` calls skip init
-# if the marker at $HOME/.tempo-bench-meta.json matches the requested config.
+# if the marker in the benchmark datadir matches the requested config.
 def "main bench-init" [
     --bloat: int = 1024                                 # State bloat size in MiB
     --accounts: int = 1000                              # Number of genesis accounts
@@ -1689,7 +1648,7 @@ def "main bench-init" [
     if not $force {
         let marker = (read-bench-marker $datadir)
         if $marker != null {
-            if ($marker.bloat_mib | into int) == $bloat and ($marker.accounts | into int) == $genesis_accounts {
+            if ($marker.bloat_mib | into int) == $bloat and ($marker.accounts | into int) == $genesis_accounts and ($marker | get -o txgen_mnemonic | default "") == (txgen-account-mnemonic) {
                 if ($"($datadir)/db" | path exists) and ($"($meta_dir)/genesis.json" | path exists) {
                     print $"Virgin snapshot already initialized \(bloat=($bloat) MiB, accounts=($genesis_accounts)\). Use --force to re-initialize."
                     return
@@ -1706,8 +1665,9 @@ def "main bench-init" [
     let abs_localnet = ($LOCALNET_DIR | path expand)
     if not ($abs_localnet | path exists) { mkdir $abs_localnet }
     let genesis_path = $"($abs_localnet)/genesis.json"
+    let txgen_genesis_args = ["--mnemonic" (txgen-account-mnemonic)]
     print $"Generating genesis with ($genesis_accounts) accounts..."
-    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis
+    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis
 
     # Generate bloat file
     let bloat_file = $"($abs_localnet)/state_bloat.bin"
@@ -1723,7 +1683,8 @@ def "main bench-init" [
     bench-save-and-promote $datadir $meta_dir {
         bloat_mib: $bloat,
         accounts: $genesis_accounts,
-        bench_datadir: $datadir
+        bench_datadir: $datadir,
+        txgen_mnemonic: (txgen-account-mnemonic)
     } [[$genesis_path "genesis.json"]] $bloat $bloat_file
 
     print $"Virgin snapshot initialized and promoted."
@@ -1733,10 +1694,10 @@ def "main bench-init" [
 # Bench command
 # ============================================================================
 
-# Run a full benchmark: start infra, localnet, and tempo-bench
+# Run a full benchmark: start infra, localnet, and txgen traffic
 def "main bench" [
     --mode: string = "consensus"                    # Mode: "dev" or "consensus"
-    --preset: string = ""                           # Preset: tip20, erc20, swap, order, tempo-mix
+    --preset: string = ""                           # Txgen preset name
     --tps: int = 10000                              # Target TPS
     --duration: int = 30                            # Duration in seconds
     --accounts: int = 1000                          # Number of accounts
@@ -1751,10 +1712,10 @@ def "main bench" [
     --node-args: string = ""                        # Additional node arguments (space-separated, applied to all runs)
     --baseline-args: string = ""                    # Additional node arguments for baseline runs only (space-separated)
     --feature-args: string = ""                     # Additional node arguments for feature runs only (space-separated)
-    --bench-args: string = ""                       # Additional tempo-bench arguments (space-separated)
+    --bench-args: string = ""                       # Legacy benchmark arguments; only --existing-recipients is ignored for txgen
     --baseline-env: string = ""                     # Environment variables for baseline node runs (KEY=VAL KEY2=VAL2)
     --feature-env: string = ""                      # Environment variables for feature node runs (KEY=VAL KEY2=VAL2)
-    --bench-env: string = ""                        # Environment variables for tempo-bench (KEY=VAL KEY2=VAL2)
+    --bench-env: string = ""                        # Environment variables for txgen/bench (KEY=VAL KEY2=VAL2)
     --bloat: int = 0                                # Generate state bloat (size in MiB) for TIP20 tokens
     --no-infra                                      # Skip starting observability stack (Grafana + Prometheus)
     --baseline: string = ""                         # Git ref for baseline (comparison mode)
@@ -1780,21 +1741,12 @@ def "main bench" [
         exit 1
     }
 
-    # Validate: either preset or bench-args must be provided
-    if $preset == "" and $bench_args == "" {
-        print "Error: either --preset or --bench-args must be provided"
-        print $"  Available presets: ($PRESETS | columns | str join ', ')"
-        exit 1
-    }
+    let preset_path = (txgen-preset-path $preset)
+    txgen-validate-bench-args $bench_args
+    let txgen = (txgen-resolve-binaries)
 
-    # Validate preset if provided
-    if $preset != "" and not ($preset in $PRESETS) {
-        print $"Unknown preset: ($preset). Available: ($PRESETS | columns | str join ', ')"
-        exit 1
-    }
-
-    let weights = if $preset != "" { $PRESETS | get $preset } else { [0.0, 0.0, 0.0, 0.0] }
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
+    let txgen_genesis_args = ["--mnemonic" (txgen-account-mnemonic)]
 
     # Auto-derive tracing OTLP URL: prefer GRAFANA_TEMPO, fall back to TEMPO_TELEMETRY_URL
     let tracing_otlp = if $tracing_otlp == "" and ($env.GRAFANA_TEMPO? | default "" | str length) > 0 {
@@ -1937,13 +1889,7 @@ def "main bench" [
 
         if $baseline == "local" or $feature == "local" {
             print "Building local binaries..."
-            if $tracy != "off" {
-                # Build tempo (with tracy) and tempo-bench (without) separately
-                build-tempo --extra-rustflags $effective_extra_rustflags ["tempo"] $profile $effective_features
-                build-tempo ["tempo-bench"] $profile $features
-            } else {
-                build-tempo ["tempo" "tempo-bench"] $profile $effective_features
-            }
+            build-tempo --extra-rustflags $effective_extra_rustflags ["tempo"] $profile $effective_features
         }
         if $baseline != "local" {
             if $effective_no_cache {
@@ -1963,7 +1909,6 @@ def "main bench" [
         let local_bin = { |name: string| if $profile == "dev" { $"./target/debug/($name)" } else { $"./target/($profile)/($name)" } }
 
         let baseline_tempo = if $baseline == "local" { do $local_bin "tempo" } else { worktree-bin $baseline_wt $profile "tempo" }
-        let baseline_bench_bin = if $baseline == "local" { do $local_bin "tempo-bench" } else { worktree-bin $baseline_wt $profile "tempo-bench" }
         let feature_tempo = if $feature == "local" { do $local_bin "tempo" } else { worktree-bin $feature_wt $profile "tempo" }
 
         # Determine paths (absolute for use inside worktree cd blocks)
@@ -2010,6 +1955,7 @@ def "main bench" [
                 and ($marker | get -o baseline_hardfork | default "") == ($baseline_hardfork | str upcase)
                 and ($marker | get -o feature_hardfork | default "") == ($feature_hardfork | str upcase)
                 and ($marker | get -o gas_limit | default "") == $gas_limit
+                and ($marker | get -o txgen_mnemonic | default "") == (txgen-account-mnemonic)
                 and ($"($baseline_datadir)/db" | path exists)
                 and ($"($feature_datadir)/db" | path exists)
                 and ($"($meta_dir)/genesis-baseline.json" | path exists)
@@ -2027,11 +1973,11 @@ def "main bench" [
                 if ($baseline_genesis_dir | path exists) { rm -rf $baseline_genesis_dir }
                 mkdir $baseline_genesis_dir
                 if $baseline == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args
+                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args
                 } else {
                     do {
                         cd $baseline_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $baseline_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$baseline_genesis_args ...$gas_limit_args
                     }
                 }
                 cp $"($baseline_genesis_dir)/genesis.json" $baseline_genesis_path
@@ -2042,13 +1988,13 @@ def "main bench" [
                 if ($feature_genesis_dir | path exists) { rm -rf $feature_genesis_dir }
                 mkdir $feature_genesis_dir
                 if $feature == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args
+                    cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args
                 } else {
                     # Use feature worktree for feature genesis so it picks up any
                     # new hardfork-related genesis changes from the feature branch
                     do {
                         cd $feature_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $feature_genesis_dir -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$feature_genesis_args ...$gas_limit_args
                     }
                 }
                 cp $"($feature_genesis_dir)/genesis.json" $feature_genesis_path
@@ -2085,6 +2031,7 @@ def "main bench" [
                     baseline_hardfork: ($baseline_hardfork | str upcase)
                     feature_hardfork: ($feature_hardfork | str upcase)
                     gas_limit: $gas_limit
+                    txgen_mnemonic: (txgen-account-mnemonic)
                 } [[$baseline_genesis_path "genesis-baseline.json"] [$feature_genesis_path "genesis-feature.json"]] $bloat $bloat_file
 
                 print "Dual-hardfork databases initialized and promoted."
@@ -2102,6 +2049,7 @@ def "main bench" [
                 and ($marker.bloat_mib | into int) == $bloat
                 and ($marker.accounts | into int) == $genesis_accounts
                 and ($marker | get -o gas_limit | default "") == $gas_limit
+                and ($marker | get -o txgen_mnemonic | default "") == (txgen-account-mnemonic)
                 and ($"($datadir)/db" | path exists)
                 and ($"($meta_dir)/genesis.json" | path exists)
             )
@@ -2116,11 +2064,11 @@ def "main bench" [
                     if not ($abs_localnet | path exists) { mkdir $abs_localnet }
                     print $"Generating genesis with ($genesis_accounts) accounts from baseline..."
                     if $baseline == "local" {
-                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis ...$gas_limit_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$gas_limit_args
                     } else {
                         do {
                             cd $baseline_wt
-                            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts --no-dkg-in-genesis ...$gas_limit_args
+                            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $abs_localnet -a $genesis_accounts ...$txgen_genesis_args --no-dkg-in-genesis ...$gas_limit_args
                         }
                     }
                 }
@@ -2145,7 +2093,8 @@ def "main bench" [
                     bloat_mib: $bloat,
                     accounts: $genesis_accounts,
                     bench_datadir: $datadir,
-                    gas_limit: $gas_limit
+                    gas_limit: $gas_limit,
+                    txgen_mnemonic: (txgen-account-mnemonic)
                 } [[$genesis_path_std "genesis.json"]] $bloat $bloat_file
 
                 print "Database initialized and promoted to virgin baseline."
@@ -2205,12 +2154,16 @@ def "main bench" [
             let effective_node_args = ([$node_args $side_args] | where { |a| $a != "" } | str join " ")
 
             (run-bench-single
-                --tempo-bin $run.tempo --bench-bin $baseline_bench_bin
+                --tempo-bin $run.tempo
+                --txgen-tempo-bin $txgen.txgen_tempo_bin
+                --txgen-bench-bin $txgen.txgen_bench_bin
+                --rpc-urls "http://localhost:8545"
+                --metrics-url "http://127.0.0.1:9090/metrics"
                 --genesis-path $run.genesis --datadir $run.datadir
                 --run-label $run.label --results-dir $results_dir
                 --tps $tps --duration $duration --accounts $accounts
                 --max-concurrent-requests $max_concurrent_requests
-                --weights $weights --preset $preset --bench-args $bench_args
+                --preset-path $preset_path --bench-args $bench_args
                 --loud=$loud --node-args $effective_node_args --bloat $bloat
                 --extra-env $side_env --bench-env $bench_env
                 --git-ref $run.git_ref --build-profile $profile --benchmark-mode $mode
@@ -2276,8 +2229,8 @@ def "main bench" [
         docker compose -f $"($BENCH_DIR)/docker-compose.yml" up -d
     }
 
-    # Build both binaries first
-    build-tempo ["tempo" "tempo-bench"] $profile $features
+    # Build tempo first
+    build-tempo ["tempo"] $profile $features
 
     # Start nodes in background (skip build since we already compiled)
     let num_nodes = if $mode == "dev" { 1 } else { $nodes }
@@ -2319,45 +2272,33 @@ def "main bench" [
     }
     print "All nodes ready!"
 
-    # Run tempo-bench
-    let tempo_bench_bin = if $profile == "dev" {
-        "./target/debug/tempo-bench"
-    } else {
-        $"./target/($profile)/tempo-bench"
-    }
-    let bench_cmd = [
-        $tempo_bench_bin
-        "run-max-tps"
-        "--tps" $"($tps)"
-        "--duration" $"($duration)"
-        "--accounts" $"($accounts)"
-        "--max-concurrent-requests" $"($max_concurrent_requests)"
-        "--target-urls" ($rpc_urls | str join ",")
-        "--faucet"
-        "--clear-txpool"
-    ]
-    | append (if $preset != "" {
-        [
-            "--tip20-weight" $"($weights | get 0)"
-            "--erc20-weight" $"($weights | get 1)"
-            "--swap-weight" $"($weights | get 2)"
-            "--place-order-weight" $"($weights | get 3)"
-        ]
-    } else { [] })
-    | append (if $bloat > 0 {
-        [
-            "--mnemonic" "'test test test test test test test test test test test junk'"
-        ]
-    } else { [] })
-    | append (if $bench_args != "" { $bench_args | split row " " } else { [] })
-    | append ["--node-commit-sha" (git rev-parse HEAD | str trim) "--build-profile" $profile "--benchmark-mode" $mode]
-
-    print $"Running benchmark: ($bench_cmd | str join ' ')"
-    try {
-        bash -c $"ulimit -Sn unlimited && ($bench_cmd | str join ' ')"
-    } catch {
-        print "Benchmark interrupted or failed."
-    }
+    print "Running txgen benchmark..."
+    let submit_rpc_url = ($rpc_urls | str join ",")
+    let primary_rpc_url = ($rpc_urls | first)
+    let current_sha = (git rev-parse HEAD | str trim)
+    let bench_result = (try {
+        let result = (txgen-run-preset-pipeline
+            --txgen-tempo-bin $txgen.txgen_tempo_bin
+            --txgen-bench-bin $txgen.txgen_bench_bin
+            --preset-path $preset_path
+            --generate-rpc-url $primary_rpc_url
+            --submit-rpc-url $submit_rpc_url
+            --metrics-url "http://127.0.0.1:9001/metrics"
+            --report-path "report.json"
+            --tps $tps
+            --duration $duration
+            --accounts $accounts
+            --max-concurrent-requests $max_concurrent_requests
+            --bench-env $bench_env
+            --git-ref $current_sha
+            --build-profile $profile
+            --benchmark-mode $mode)
+        $result
+    } catch { |e|
+        print $"Benchmark interrupted or failed: ($e.msg)"
+        { ok: false, exit_code: 1, report_path: "report.json" }
+    })
+    let single_bench_failed = not $bench_result.ok
 
     # Cleanup
     print "Cleaning up..."
@@ -2377,6 +2318,9 @@ def "main bench" [
     }
 
     restore-system-tuning $tuning_state
+    if $single_bench_failed {
+        error make { msg: "Benchmark interrupted or failed" }
+    }
     print "Done."
 }
 
@@ -2465,7 +2409,7 @@ def "main coverage" [
     --invariant-profile: string = "ci"     # Foundry profile for invariants (ci, fuzz500, default)
     --invariant-contract: string = ""      # Run only a specific invariant contract (e.g. TempoTransactionInvariantTest)
     --live                                 # Include live node coverage (runs localnet + traffic)
-    --preset: string = ""                  # Bench preset for live mode (tip20, erc20, swap, order, tempo-mix)
+    --preset: string = ""                  # Txgen preset name for live mode
     --script: string = ""                  # External script to run against live node (instead of bench)
     --tps: int = 1000                      # Target TPS for live bench (ignored with --script)
     --duration: int = 10                   # Bench duration in seconds (ignored with --script)
@@ -2487,13 +2431,14 @@ def "main coverage" [
 
     if $live and $script == "" and $preset == "" {
         print "Error: --live requires --preset or --script"
-        print $"  Available presets: ($PRESETS | columns | str join ', ')"
+        print $"  Available txgen presets: (txgen-available-presets-message)"
         exit 1
     }
 
-    if $live and $preset != "" and not ($preset in $PRESETS) {
-        print $"Unknown preset: ($preset). Available: ($PRESETS | columns | str join ', ')"
-        exit 1
+    let live_preset_path = if $live and $script == "" {
+        txgen-preset-path $preset
+    } else {
+        ""
     }
 
     if $script != "" and not ($script | path exists) {
@@ -2743,31 +2688,28 @@ tempo-precompiles = { path = '($tempo_root)/crates/precompiles' }
                     print "Script finished (or failed)."
                 }
             } else {
-                print "Building tempo-bench..."
-                cargo build --bin tempo-bench
-
-                let weights = $PRESETS | get $preset
-                let bench_bin = "./target/debug/tempo-bench"
-                let bench_cmd = [
-                    $bench_bin
-                    "run-max-tps"
-                    "--tps" $"($tps)"
-                    "--duration" $"($duration)"
-                    "--accounts" $"($accounts)"
-                    "--target-urls" "http://localhost:8545"
-                    "--faucet"
-                    "--clear-txpool"
-                    "--tip20-weight" $"($weights | get 0)"
-                    "--erc20-weight" $"($weights | get 1)"
-                    "--swap-weight" $"($weights | get 2)"
-                    "--place-order-weight" $"($weights | get 3)"
-                ]
-
-                print $"Running bench: ($bench_cmd | str join ' ')"
+                let txgen = (txgen-resolve-binaries)
+                print "Running txgen bench..."
                 try {
-                    run-external ($bench_cmd | first) ...($bench_cmd | skip 1)
-                } catch {
-                    print "Bench finished (or interrupted)."
+                    let bench_result = (txgen-run-preset-pipeline
+                        --txgen-tempo-bin $txgen.txgen_tempo_bin
+                        --txgen-bench-bin $txgen.txgen_bench_bin
+                        --preset-path $live_preset_path
+                        --generate-rpc-url "http://localhost:8545"
+                        --submit-rpc-url "http://localhost:8545"
+                        --metrics-url "http://127.0.0.1:9001/metrics"
+                        --report-path "report.json"
+                        --tps $tps
+                        --duration $duration
+                        --accounts $accounts
+                        --max-concurrent-requests 100
+                        --build-profile "coverage"
+                        --benchmark-mode "coverage")
+                    if not $bench_result.ok {
+                        print "Bench finished (or interrupted)."
+                    }
+                } catch { |e|
+                    print $"Bench finished (or interrupted): ($e.msg)"
                 }
             }
 
@@ -2830,9 +2772,9 @@ def main [] {
     print "  nu tempo.nu infra down               Stop the observability stack"
     print "  nu tempo.nu kill                     Kill any running tempo processes"
     print ""
-    print "Bench flags (either --preset or --bench-args required):"
+    print "Bench flags (--preset resolves under contrib/bench/txgen/presets):"
     print "  --mode <M>               Mode: dev or consensus (default: consensus)"
-    print "  --preset <P>             Preset: tip20, erc20, swap, order, tempo-mix"
+    print "  --preset <P>             Txgen preset name (e.g. tip20)"
     print "  --tps <N>                Target TPS (default: 10000)"
     print "  --duration <N>           Duration in seconds (default: 30)"
     print "  --accounts <N>           Number of accounts (default: 1000)"
@@ -2852,7 +2794,7 @@ def main [] {
     print "  --node-args <ARGS>       Additional node arguments (space-separated, all runs)"
     print "  --baseline-args <ARGS>       Additional node arguments for baseline runs only"
     print "  --feature-args <ARGS>        Additional node arguments for feature runs only"
-    print "  --bench-args <ARGS>      Additional tempo-bench arguments (space-separated)"
+    print "  --bench-args <ARGS>      Legacy benchmark arguments (only --existing-recipients is ignored)"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
     print "  --gas-limit <N>          Block gas limit for genesis (raw number, default: 1000000000000)"
     print ""
@@ -2875,7 +2817,7 @@ def main [] {
     print "  --invariant-profile <P>  Foundry profile for invariants (ci, fuzz500, default; default: ci)"
     print "  --invariant-contract <C> Run only a specific invariant contract"
     print "  --live                   Include live node coverage (runs localnet + traffic)"
-    print "  --preset <P>             Bench preset for live mode"
+    print "  --preset <P>             Txgen preset name for live mode"
     print "  --script <PATH>          External script to run against live node (instead of bench)"
     print "  --tps <N>                Target TPS for live bench (default: 1000)"
     print "  --duration <N>           Bench duration in seconds (default: 10)"
@@ -2893,14 +2835,14 @@ def main [] {
     print ""
     print "Examples:"
     print "  nu tempo.nu bench --preset tip20 --tps 20000 --duration 60"
-    print "  nu tempo.nu bench --preset tempo-mix --tps 5000 --samply --reset"
+    print "  nu tempo.nu bench --preset tip20 --tps 5000 --samply --reset"
     print "  nu tempo.nu coverage --tests                              # unit + integration tests"
     print "  nu tempo.nu coverage --invariants                         # forge invariant fuzz (precompile coverage)"
     print "  nu tempo.nu coverage --tests --invariants                 # merged: cargo + forge coverage"
     print "  nu tempo.nu coverage --invariants --invariant-profile fuzz500  # deeper fuzz run"
     print "  nu tempo.nu coverage --live --preset tip20 --open         # live tx coverage"
     print "  nu tempo.nu coverage --live --script /path/to/test.sh     # live + external script"
-    print "  nu tempo.nu coverage --tests --live --preset tempo-mix    # everything merged"
+    print "  nu tempo.nu coverage --tests --live --preset tip20        # everything merged"
     print "  nu tempo.nu infra up"
     print "  nu tempo.nu localnet --mode dev --samply --accounts 50000 --reset"
     print "  nu tempo.nu localnet --mode dev --bloat 1024 --reset"
