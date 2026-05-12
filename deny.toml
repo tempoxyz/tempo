@@ -90,5 +90,6 @@ unknown-git = "deny"
 allow-git = [
   "https://github.com/commonwarexyz/monorepo",
   "https://github.com/paradigmxyz/reth",
+  "https://github.com/paradigmxyz/revmc?branch=main",
   "https://github.com/sigp/discv5",
 ]
