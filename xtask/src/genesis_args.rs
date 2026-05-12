@@ -43,7 +43,7 @@ use tempo_contracts::{
     ARACHNID_CREATE2_FACTORY_ADDRESS, CREATEX_ADDRESS, MULTICALL3_ADDRESS, PERMIT2_ADDRESS,
     PERMIT2_SALT, SAFE_DEPLOYER_ADDRESS,
     contracts::{ARACHNID_CREATE2_FACTORY_BYTECODE, CreateX, Multicall3, SafeDeployer},
-    precompiles::{ITIP20Factory, IValidatorConfigV2},
+    precompiles::{IValidatorConfigV2, createTokenCall},
 };
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_evm::evm::{TempoEvm, TempoEvmFactory};
@@ -181,6 +181,10 @@ pub(crate) struct GenesisArgs {
     /// T5 hardfork activation time.
     #[arg(long, default_value = "0")]
     t5_time: u64,
+
+    /// T6 hardfork activation time.
+    #[arg(long, default_value = "0")]
+    t6_time: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -548,6 +552,9 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("t5Time".to_string(), self.t5_time)?;
+        chain_config
+            .extra_fields
+            .insert_value("t6Time".to_string(), self.t6_time)?;
         let mut extra_data = Bytes::from_static(b"tempo-genesis");
 
         if let Some(consensus_config) = &consensus_config {
@@ -730,7 +737,7 @@ fn create_and_mint_token(
                 SaltOrAddress::Salt(salt) => factory
                     .create_token(
                         admin,
-                        ITIP20Factory::createTokenCall {
+                        createTokenCall {
                             name: name.into(),
                             symbol: symbol.into(),
                             currency: currency.into(),

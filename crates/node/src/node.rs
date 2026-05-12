@@ -9,7 +9,6 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
-use reth_evm::revm::primitives::Address;
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
@@ -26,7 +25,7 @@ use reth_node_builder::{
     },
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
-use reth_primitives_traits::SealedHeader;
+use reth_primitives_traits::{SealedBlock, SealedHeader};
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
@@ -35,12 +34,12 @@ use reth_rpc_eth_api::{
 };
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
-use std::default::Default;
+use std::{default::Default, sync::Arc};
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::TempoConsensus;
 use tempo_evm::TempoEvmConfig;
 use tempo_payload_builder::TempoPayloadBuilder;
-use tempo_payload_types::TempoPayloadAttributes;
+use tempo_payload_types::{TempoExecutionData, TempoPayloadAttributes};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool,
@@ -304,10 +303,14 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
     type RpcBlock =
         alloy_rpc_types_eth::Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeader>;
 
-    fn rpc_to_primitive_block(rpc_block: Self::RpcBlock) -> tempo_primitives::Block {
-        rpc_block
+    fn rpc_to_execution_data(rpc_block: Self::RpcBlock) -> TempoExecutionData {
+        let block = rpc_block
             .into_consensus_block()
-            .map_transactions(|tx| tx.into_inner())
+            .map_transactions(|tx| tx.into_inner());
+        TempoExecutionData {
+            block: Arc::new(SealedBlock::seal_slow(block)),
+            validator_set: None,
+        }
     }
 
     fn local_payload_attributes_builder(
@@ -341,7 +344,6 @@ impl PayloadAttributesBuilder<TempoPayloadAttributes, TempoHeader>
 
         let (timestamp, timestamp_millis_part) = (millis / 1000, millis % 1000);
         TempoPayloadAttributes::new(
-            Address::ZERO,
             None,
             timestamp,
             timestamp_millis_part,

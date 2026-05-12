@@ -46,10 +46,10 @@
           {
             "astId": 40,
             "contract": "tests/storage_tests/solidity/testdata/tip20.sol:TIP20",
-            "label": "domainSeparator",
+            "label": "logoUri",
             "offset": 0,
             "slot": "5",
-            "type": "t_bytes32"
+            "type": "t_string_storage"
           },
           {
             "astId": 42,

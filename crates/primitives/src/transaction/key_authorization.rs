@@ -165,12 +165,14 @@ impl From<SelectorRule> for AbiSelectorRule {
 /// Used in TempoTransaction to add a new key to the AccountKeychain precompile.
 /// The transaction must be signed by the root key to authorize adding this access key.
 ///
-/// RLP encoding: `[chain_id, key_type, key_id, expiry?, limits?, allowed_calls?]`
+/// RLP encoding: `[chain_id, key_type, key_id, expiry?, limits?, allowed_calls?, witness?]`
 /// - Non-optional fields come first, followed by optional (trailing) fields
 /// - `expiry`: `None` (omitted or 0x80) = key never expires, `Some(timestamp)` = expires at timestamp
 /// - `limits`: `None` (omitted or 0x80) = unlimited spending, `Some([])` = no spending, `Some([...])` = specific limits
 /// - `allowed_calls`: `None` (canonically omitted, explicit 0x80 accepted) = unrestricted,
 ///   `Some([])` = scoped with no allowed calls, `Some([...])` = scoped calls
+/// - `witness`: `None` (canonically omitted) = no TIP-1053 witness,
+///   `Some(bytes32)` = arbitrary signed witness checked against the account's burned set.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 #[rlp(trailing(canonical))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -208,6 +210,12 @@ pub struct KeyAuthorization {
     /// - `Some([])` = scoped mode with no allowed calls
     /// - `Some([CallScope{...}])` = explicit target/selector scope list
     pub allowed_calls: Option<Vec<CallScope>>,
+
+    /// Optional TIP-1053 witness for offchain context binding and manual revocation.
+    ///
+    /// `None` means no witness. `Some(witness)` means the witness field is present, including when
+    /// `witness == B256::ZERO`.
+    pub witness: Option<B256>,
 }
 
 impl KeyAuthorization {
@@ -221,6 +229,7 @@ impl KeyAuthorization {
             expiry: None,
             limits: None,
             allowed_calls: None,
+            witness: None,
         }
     }
 
@@ -254,6 +263,17 @@ impl KeyAuthorization {
         self
     }
 
+    /// Attach a TIP-1053 witness to this authorization.
+    pub fn with_witness(mut self, witness: B256) -> Self {
+        self.witness = Some(witness);
+        self
+    }
+
+    /// Returns this authorization's TIP-1053 witness, if present.
+    pub fn witness(&self) -> Option<B256> {
+        self.witness
+    }
+
     /// Computes the authorization message hash for this key authorization.
     pub fn signature_hash(&self) -> B256 {
         let mut buf = Vec::new();
@@ -273,6 +293,11 @@ impl KeyAuthorization {
         self.allowed_calls.is_some()
     }
 
+    /// Returns whether this authorization carries a TIP-1053 witness field.
+    pub fn has_witness(&self) -> bool {
+        self.witness.is_some()
+    }
+
     /// Returns whether this key has unlimited spending (limits is None)
     pub fn has_unlimited_spending(&self) -> bool {
         self.limits.is_none()
@@ -285,7 +310,7 @@ impl KeyAuthorization {
 
     /// Returns whether this authorization can be encoded with the legacy pre-T3 ABI.
     pub fn is_legacy_compatible(&self) -> bool {
-        !(self.has_periodic_limits() || self.has_call_scopes())
+        !(self.has_periodic_limits() || self.has_call_scopes() || self.has_witness())
     }
 
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
@@ -392,6 +417,7 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
             expiry: u.arbitrary()?,
             limits: u.arbitrary()?,
             allowed_calls: u.arbitrary()?,
+            witness: u.arbitrary::<Option<[u8; 32]>>()?.map(B256::from),
         })
     }
 }
@@ -532,7 +558,123 @@ mod tests {
             expiry: expiry.and_then(NonZeroU64::new),
             limits,
             allowed_calls: None,
+            witness: None,
         }
+    }
+
+    #[test]
+    fn test_zero_witness_roundtrip_and_changes_signature_hash() {
+        let auth = make_auth(None, None);
+        let zero_witness_auth = auth.clone().with_witness(B256::ZERO);
+
+        let mut encoded = Vec::new();
+        zero_witness_auth.encode(&mut encoded);
+
+        assert_eq!(zero_witness_auth.witness(), Some(B256::ZERO));
+        assert!(zero_witness_auth.has_witness());
+        assert_ne!(zero_witness_auth.signature_hash(), auth.signature_hash());
+
+        let decoded =
+            <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
+        assert_eq!(decoded, zero_witness_auth);
+
+        let mut reencoded = Vec::new();
+        decoded.encode(&mut reencoded);
+        assert_eq!(reencoded, encoded);
+    }
+
+    #[test]
+    fn test_witness_roundtrip_and_changes_signature_hash() {
+        let auth = make_auth(None, None);
+        let witness = B256::repeat_byte(0x53);
+        let witness_auth = auth.clone().with_witness(witness);
+
+        assert_eq!(witness_auth.witness(), Some(witness));
+        assert!(witness_auth.has_witness());
+        assert_ne!(witness_auth.signature_hash(), auth.signature_hash());
+
+        let mut encoded = Vec::new();
+        witness_auth.encode(&mut encoded);
+
+        let decoded =
+            <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
+        assert_eq!(decoded, witness_auth);
+
+        let mut reencoded = Vec::new();
+        decoded.encode(&mut reencoded);
+        assert_eq!(reencoded, encoded);
+    }
+
+    #[test]
+    fn test_witness_encoding_preserves_prior_absent_trailing_fields() {
+        let witness = B256::repeat_byte(0x53);
+        let auth = make_auth(None, None).with_witness(witness);
+
+        let mut encoded = Vec::new();
+        auth.encode(&mut encoded);
+
+        let mut payload = &encoded[..];
+        let header = alloy_rlp::Header::decode(&mut payload).expect("decode list header");
+        assert!(header.list);
+        assert_eq!(header.payload_length, payload.len());
+
+        let fixed_fields_len =
+            auth.chain_id.length() + auth.key_type.length() + auth.key_id.length();
+        assert_eq!(
+            &payload[fixed_fields_len..fixed_fields_len + 3],
+            &[alloy_rlp::EMPTY_STRING_CODE; 3],
+            "expiry, limits, and allowed_calls must be explicit empty placeholders before witness"
+        );
+
+        let mut witness_payload = &payload[fixed_fields_len + 3..];
+        let decoded_witness = B256::decode(&mut witness_payload).expect("decode witness field");
+        assert_eq!(decoded_witness, witness);
+        assert!(witness_payload.is_empty());
+    }
+
+    #[test]
+    fn test_decode_accepts_explicit_zero_witness() {
+        let auth = make_auth(None, None);
+        let mut encoded = Vec::new();
+        let payload_length = auth.chain_id.length()
+            + auth.key_type.length()
+            + auth.key_id.length()
+            + 3
+            + B256::ZERO.length();
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(&mut encoded);
+        auth.chain_id.encode(&mut encoded);
+        auth.key_type.encode(&mut encoded);
+        auth.key_id.encode(&mut encoded);
+        encoded.extend_from_slice(&[alloy_rlp::EMPTY_STRING_CODE; 3]);
+        B256::ZERO.encode(&mut encoded);
+
+        let decoded =
+            <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
+        assert_eq!(decoded.witness(), Some(B256::ZERO));
+    }
+
+    #[test]
+    fn test_decode_rejects_explicit_absent_witness_field() {
+        let auth = make_auth(None, None);
+        let mut encoded = Vec::new();
+        let payload_length =
+            auth.chain_id.length() + auth.key_type.length() + auth.key_id.length() + 4;
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(&mut encoded);
+        auth.chain_id.encode(&mut encoded);
+        auth.key_type.encode(&mut encoded);
+        auth.key_id.encode(&mut encoded);
+        encoded.extend_from_slice(&[alloy_rlp::EMPTY_STRING_CODE; 4]);
+
+        <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice())
+            .expect_err("absent witness field must be omitted, not encoded as 0x80");
     }
 
     #[test]
@@ -644,6 +786,7 @@ mod tests {
             expiry: None,
             limits: None,
             allowed_calls: None,
+            witness: None,
         }
     }
 

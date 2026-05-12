@@ -19,3 +19,4 @@ thiserror.workspace = true
 [dev-dependencies]
 commonware-utils.workspace = true
 rand_08.workspace = true
+tempfile.workspace = true

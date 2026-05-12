@@ -4,7 +4,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 
 pub(crate) const RUST_INT_SIZES: &[usize] = &[8, 16, 32, 64, 128];
-pub(crate) const ALLOY_INT_SIZES: &[usize] = &[8, 16, 32, 64, 128, 256];
+pub(crate) const ALLOY_INT_SIZES: &[usize] = &[8, 16, 32, 64, 96, 128, 256];
 
 // -- CONFIGURATION TYPES ------------------------------------------------------
 
@@ -100,7 +100,7 @@ fn gen_to_word_impl(type_path: &TokenStream, strategy: &StorableConversionStrate
                     #[inline]
                     fn from_word(word: ::alloy::primitives::U256) -> crate::error::Result<Self> {
                         // Check if value fits in target type
-                        if word > ::alloy::primitives::U256::from(::alloy::primitives::#ty::MAX) {
+                        if word > ::alloy::primitives::U256::from(::alloy::primitives::aliases::#ty::MAX) {
                             return Err(crate::error::TempoPrecompileError::under_overflow());
                         }
                         Ok(word.to::<Self>())
@@ -139,11 +139,11 @@ fn gen_to_word_impl(type_path: &TokenStream, strategy: &StorableConversionStrate
                     #[inline]
                     fn from_word(word: ::alloy::primitives::U256) -> crate::error::Result<Self> {
                         // Check if value fits in the unsigned backing type
-                        if word > ::alloy::primitives::U256::from(::alloy::primitives::#unsigned_type::MAX) {
+                        if word > ::alloy::primitives::U256::from(::alloy::primitives::aliases::#unsigned_type::MAX) {
                             return Err(crate::error::TempoPrecompileError::under_overflow());
                         }
                         // Extract low bytes as unsigned, then interpret as signed
-                        let unsigned_val = word.to::<::alloy::primitives::#unsigned_type>();
+                        let unsigned_val = word.to::<::alloy::primitives::aliases::#unsigned_type>();
                         Ok(Self::from_raw(unsigned_val))
                     }
                 }
@@ -264,7 +264,7 @@ fn gen_alloy_integers() -> Vec<TokenStream> {
 
         // Generate unsigned integer configuration and implementation
         let unsigned_config = TypeConfig {
-            type_path: quote! { ::alloy::primitives::#unsigned_type },
+            type_path: quote! { ::alloy::primitives::aliases::#unsigned_type },
             byte_count,
             storable_strategy: StorableConversionStrategy::UnsignedAlloy(unsigned_type.clone()),
             storage_key_strategy: StorageKeyStrategy::WithSize(byte_count),
@@ -273,7 +273,7 @@ fn gen_alloy_integers() -> Vec<TokenStream> {
 
         // Generate signed integer configuration and implementation
         let signed_config = TypeConfig {
-            type_path: quote! { ::alloy::primitives::#signed_type },
+            type_path: quote! { ::alloy::primitives::aliases::#signed_type },
             byte_count,
             storable_strategy: StorableConversionStrategy::SignedAlloy(unsigned_type.clone()),
             storage_key_strategy: StorageKeyStrategy::SignedRaw(byte_count),
@@ -334,7 +334,7 @@ struct ArrayConfig {
 
 /// Whether a given amount of bytes (primitives only) should be packed, or not.
 fn is_packable(byte_count: usize) -> bool {
-    byte_count < 32 && 32 % byte_count == 0
+    byte_count < 32
 }
 
 /// Generate `StorableType`, `Storable`, and `StorageKey` for a fixed-size array.
@@ -347,12 +347,11 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
     } = config;
 
     // Calculate slot count at compile time
-    let slot_count = if *elem_is_packable {
-        // Packed: multiple elements per slot
-        (*array_size * elem_byte_count).div_ceil(32)
+    let slot_count_expr = if *elem_is_packable {
+        quote! { crate::storage::packing::calc_packed_slot_count(#array_size, #elem_byte_count) }
     } else {
         // Unpacked: each element uses full slots (assume 1 slot per element for primitives)
-        *array_size
+        quote! { #array_size }
     };
 
     let load_impl = if *elem_is_packable {
@@ -371,12 +370,12 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
         // Implement StorableType
         impl crate::storage::StorableType for [#elem_type; #array_size] {
             // Arrays cannot be packed, so they must take full slots
-            const LAYOUT: crate::storage::Layout = crate::storage::Layout::Slots(#slot_count);
+            const LAYOUT: crate::storage::Layout = crate::storage::Layout::Slots(#slot_count_expr);
 
             type Handler = crate::storage::types::array::ArrayHandler<#elem_type, #array_size>;
 
             fn handle(slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx, address: ::alloy::primitives::Address) -> Self::Handler {
-                debug_assert_eq!(ctx, crate::storage::LayoutCtx::FULL, "Arrays cannot be packed");
+                debug_assert!(ctx.is_full(), "Arrays can only use full-slot LayoutCtx (FULL or INIT)");
                 Self::Handler::new(slot, address)
             }
         }
@@ -385,9 +384,9 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
         impl crate::storage::Storable for [#elem_type; #array_size] {
             #[inline]
             fn load<S: crate::storage::StorageOps>(storage: &S, slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<Self> {
-                debug_assert_eq!(
-                    ctx, crate::storage::LayoutCtx::FULL,
-                    "Arrays can only be loaded with LayoutCtx::FULL"
+                debug_assert!(
+                    ctx.is_full(),
+                    "Arrays can only be loaded with a full-slot LayoutCtx (FULL or INIT)"
                 );
 
                 use crate::storage::packing::{calc_element_slot, calc_element_offset, extract_from_word};
@@ -397,9 +396,9 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
 
             #[inline]
             fn store<S: crate::storage::StorageOps>(&self, storage: &mut S, slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<()> {
-                debug_assert_eq!(
-                    ctx, crate::storage::LayoutCtx::FULL,
-                    "Arrays can only be stored with LayoutCtx::FULL"
+                debug_assert!(
+                    ctx.is_full(),
+                    "Arrays can only be stored with a full-slot LayoutCtx (FULL or INIT)"
                 );
 
                 use crate::storage::packing::{calc_element_slot, calc_element_offset, insert_into_word};
@@ -432,7 +431,10 @@ fn gen_packed_array_load(array_size: &usize, elem_byte_count: &usize) -> TokenSt
 fn gen_packed_array_store(array_size: &usize, elem_byte_count: &usize) -> TokenStream {
     quote! {
         // Determine how many slots we need
-        let slot_count = (#array_size * #elem_byte_count).div_ceil(32);
+        let slot_count = crate::storage::packing::calc_packed_slot_count(
+            #array_size,
+            #elem_byte_count,
+        );
 
         // Build slots by packing elements
         for slot_idx in 0..slot_count {
@@ -531,7 +533,7 @@ pub(crate) fn gen_storable_arrays() -> TokenStream {
         let type_ident = quote::format_ident!("U{}", bit_size);
         let byte_count = bit_size / 8;
         all_impls.extend(gen_arrays_for_type(
-            quote! { ::alloy::primitives::#type_ident },
+            quote! { ::alloy::primitives::aliases::#type_ident },
             byte_count,
             &sizes,
         ));
@@ -542,7 +544,7 @@ pub(crate) fn gen_storable_arrays() -> TokenStream {
         let type_ident = quote::format_ident!("I{}", bit_size);
         let byte_count = bit_size / 8;
         all_impls.extend(gen_arrays_for_type(
-            quote! { ::alloy::primitives::#type_ident },
+            quote! { ::alloy::primitives::aliases::#type_ident },
             byte_count,
             &sizes,
         ));
@@ -672,9 +674,9 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
         impl crate::storage::Storable for [#struct_type; #array_size] {
             #[inline]
             fn load<S: crate::storage::StorageOps>(storage: &S, slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<Self> {
-                debug_assert_eq!(
-                    ctx, crate::storage::LayoutCtx::FULL,
-                    "Struct arrays can only be loaded with LayoutCtx::FULL"
+                debug_assert!(
+                    ctx.is_full(),
+                    "Struct arrays can only be loaded with a full-slot LayoutCtx (FULL or INIT)"
                 );
                 let base_slot = slot;
                 #load_impl
@@ -682,9 +684,9 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
 
             #[inline]
             fn store<S: crate::storage::StorageOps>(&self, storage: &mut S, slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx) -> crate::error::Result<()> {
-                debug_assert_eq!(
-                    ctx, crate::storage::LayoutCtx::FULL,
-                    "Struct arrays can only be stored with LayoutCtx::FULL"
+                debug_assert!(
+                    ctx.is_full(),
+                    "Struct arrays can only be stored with a full-slot LayoutCtx (FULL or INIT)"
                 );
                 let base_slot = slot;
                 #store_impl
