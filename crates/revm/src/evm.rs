@@ -14,7 +14,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 
 #[cfg(feature = "jit")]
 pub use revmc::runtime::{
-    CompilationEvent, JitBackend, LookupDecision, LookupRequest, RuntimeConfig,
+    CompilationEvent, JitBackend, LookupDecision, LookupRequest, RuntimeCacheKey, RuntimeConfig,
     RuntimeStatsSnapshot, RuntimeTuning,
 };
 
@@ -241,9 +241,8 @@ where
             } else {
                 let code = frame.interpreter.bytecode.original_bytes();
                 let decision = backend.lookup(LookupRequest {
-                    code_hash,
+                    key: RuntimeCacheKey { code_hash, spec_id },
                     code,
-                    spec_id,
                 });
                 self.jit_lookup_cache.insert(code_hash, decision.clone());
                 decision

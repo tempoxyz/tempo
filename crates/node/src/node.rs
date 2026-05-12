@@ -398,8 +398,8 @@ impl TempoExecutorBuilder {
         let tuning = RuntimeTuning {
             jit_hot_threshold: jit.hot_threshold,
             jit_worker_count: jit.worker_count.unwrap_or(default_tuning.jit_worker_count),
-            lookup_event_channel_capacity: jit.channel_capacity,
-            max_pending_jit_jobs: jit.max_pending_jobs,
+            channel_capacity: jit.channel_capacity,
+            jit_max_pending_jobs: jit.max_pending_jobs,
             jit_max_bytecode_len: jit.max_bytecode_len,
             resident_code_cache_bytes: jit.code_cache_bytes,
             idle_evict_duration: Some(jit.idle_evict_duration),

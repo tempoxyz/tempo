@@ -91,5 +91,6 @@ allow-git = [
   "https://github.com/commonwarexyz/monorepo",
   "https://github.com/paradigmxyz/reth",
   "https://github.com/paradigmxyz/revmc?branch=main",
+  "https://github.com/TheDan64/inkwell",
   "https://github.com/sigp/discv5",
 ]
