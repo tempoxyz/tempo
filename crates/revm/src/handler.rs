@@ -82,8 +82,8 @@ const KEY_AUTH_BASE_GAS: u64 = 27_000;
 /// Gas per spending limit in KeyAuthorization
 const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
 
-/// Extra buffer for the second LOG3 emitted by T5 nonce-bearing key authorizations.
-const KEY_AUTH_T5_NONCE_EVENT_BUFFER: u64 = 1_500;
+/// Extra buffer for the second LOG3 emitted by T5 witness-bearing key authorizations.
+const KEY_AUTH_T5_WITNESS_EVENT_BUFFER: u64 = 1_500;
 
 /// Gas cost for expiring nonce transactions (replay check + insert).
 ///
@@ -338,7 +338,7 @@ fn calculate_key_authorization_gas(
         // T1B+: Accurate gas matching actual precompile storage operations.
         // authorize_key does: 1 SLOAD (read existing key) + 1 SSTORE (write key)
         //   + N SSTOREs (one per spending limit) + 2k buffer (TSTORE + keccak + event)
-        // T5 nonce authorizations emit one additional LOG3 event with no data.
+        // T5 witness authorizations emit one additional LOG3 event with no data.
         const BUFFER: u64 = 2_000;
         let sload_cost =
             gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
@@ -351,22 +351,18 @@ fn calculate_key_authorization_gas(
             num_limits
         };
 
-        let has_t5_nonce = key_auth.has_nonce();
+        let has_t5_witness = key_auth.has_witness();
         let mut num_sstores = 1 + limit_slots;
 
         if spec.is_t3() {
             num_sstores += call_scope_storage_slots(&key_auth.authorization, spec);
         }
 
-        if has_t5_nonce {
-            num_sstores += 1;
-        }
-
         let sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
         let mut total_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
 
-        if has_t5_nonce {
-            total_gas += sload_cost + KEY_AUTH_T5_NONCE_EVENT_BUFFER;
+        if has_t5_witness {
+            total_gas += sload_cost + KEY_AUTH_T5_WITNESS_EVENT_BUFFER;
         }
 
         // T4+: include extra gas for call scopes configuration
@@ -1369,7 +1365,7 @@ where
                     access_key_addr,
                     signature_type,
                     config,
-                    key_auth.nonce(),
+                    key_auth.witness(),
                 );
 
                 match result {
@@ -1642,9 +1638,9 @@ where
                     .validate_chain_id(cfg.chain_id(), cfg.spec.is_t1c())
                     .map_err(TempoInvalidTransaction::from)?;
 
-                if key_auth.has_nonce() && !cfg.spec.is_t5() {
+                if key_auth.has_witness() && !cfg.spec.is_t5() {
                     return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: "key authorization nonces are not active before T5".to_string(),
+                        reason: "key authorization witnesses are not active before T5".to_string(),
                     }
                     .into());
                 }
@@ -3051,32 +3047,31 @@ mod tests {
         }
 
         let t5_gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T5);
-        let t5_sstore =
-            t5_gas_params.get(revm::context_interface::cfg::GasId::sstore_set_without_load_cost());
         let t5_sload =
             t5_gas_params.warm_storage_read_cost() + t5_gas_params.cold_storage_additional_cost();
-        let t5_sstore_state =
-            t5_gas_params.get(revm::context_interface::cfg::GasId::sstore_set_state_gas());
         let base_t5_key_auth = create_key_auth(0);
-        let mut nonce_t5_key_auth = create_key_auth(0);
-        nonce_t5_key_auth.authorization = nonce_t5_key_auth
+        let mut witness_t5_key_auth = create_key_auth(0);
+        witness_t5_key_auth.authorization = witness_t5_key_auth
             .authorization
-            .with_nonce(B256::repeat_byte(0x53));
+            .with_witness(B256::repeat_byte(0x53));
 
         let (base_t5_gas, base_t5_state_gas) =
             calculate_key_authorization_gas(&base_t5_key_auth, &t5_gas_params, TempoHardfork::T5);
-        let (nonce_t5_gas, nonce_t5_state_gas) =
-            calculate_key_authorization_gas(&nonce_t5_key_auth, &t5_gas_params, TempoHardfork::T5);
+        let (witness_t5_gas, witness_t5_state_gas) = calculate_key_authorization_gas(
+            &witness_t5_key_auth,
+            &t5_gas_params,
+            TempoHardfork::T5,
+        );
 
         assert_eq!(
-            nonce_t5_gas - base_t5_gas,
-            t5_sload + t5_sstore + t5_sstore_state + KEY_AUTH_T5_NONCE_EVENT_BUFFER,
-            "T5 nonce adds one consumed-nonce SLOAD, one consumed-nonce SSTORE, and one event"
+            witness_t5_gas - base_t5_gas,
+            t5_sload + KEY_AUTH_T5_WITNESS_EVENT_BUFFER,
+            "T5 witness adds one burned-witness SLOAD and one event"
         );
         assert_eq!(
-            nonce_t5_state_gas - base_t5_state_gas,
-            t5_sstore_state,
-            "T5 nonce adds state gas for one consumed-nonce SSTORE"
+            witness_t5_state_gas - base_t5_state_gas,
+            0,
+            "T5 witness authorization does not add state gas"
         );
 
         let scoped = SignedKeyAuthorization {
@@ -4752,13 +4747,13 @@ mod tests {
         }
 
         #[test]
-        fn test_key_authorization_nonce_rejected_before_t5() {
+        fn test_key_authorization_witness_rejected_before_t5() {
             let (signer, user) = generate_keypair();
             let key = Address::random();
             let signed = sign_key_auth(
                 &signer,
                 KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
-                    .with_nonce(B256::repeat_byte(0x53)),
+                    .with_witness(B256::repeat_byte(0x53)),
             );
             let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T4, None, false);
 
@@ -4769,20 +4764,21 @@ mod tests {
                     Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
                         if reason.contains("before T5")
                 ),
-                "nonce-bearing key authorization should be rejected before T5, got: {result:?}"
+                "witness-bearing key authorization should be rejected before T5, got: {result:?}"
             );
         }
 
         #[test]
-        fn test_t5_key_authorization_consumes_nonce_in_state() {
-            use tempo_precompiles::account_keychain::isKeyAuthorizationNonceUsedCall;
+        fn test_t5_key_authorization_witness_is_not_burned_in_state() {
+            use tempo_precompiles::account_keychain::isKeyAuthorizationWitnessBurnedCall;
 
             let (signer, user) = generate_keypair();
             let key = Address::random();
-            let nonce = B256::repeat_byte(0x54);
+            let witness = B256::repeat_byte(0x54);
             let signed = sign_key_auth(
                 &signer,
-                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key).with_nonce(nonce),
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
+                    .with_witness(witness),
             );
             let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T5, None, false);
 
@@ -4790,19 +4786,19 @@ mod tests {
                 h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
             assert!(
                 result.is_ok(),
-                "T5 nonce authorization should pass: {result:?}"
+                "T5 witness authorization should pass: {result:?}"
             );
 
             StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
                 let keychain = AccountKeychain::new();
                 assert!(
-                    keychain
-                        .is_key_authorization_nonce_used(isKeyAuthorizationNonceUsedCall {
+                    !keychain
+                        .is_key_authorization_witness_burned(isKeyAuthorizationWitnessBurnedCall {
                             account: user,
-                            nonce,
+                            witness,
                         })
-                        .expect("nonce read succeeds"),
-                    "T5 key authorization must consume its nonce"
+                        .expect("witness read succeeds"),
+                    "T5 key authorization must not burn its witness"
                 );
             });
         }

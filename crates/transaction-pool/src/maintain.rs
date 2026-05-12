@@ -89,11 +89,11 @@ pub struct TempoPoolUpdates {
     /// with the runtime's actual spending-limit decrements instead of inferring them from
     /// the mined transaction body.
     pub spending_limit_spends: SpendingLimitUpdates,
-    /// TIP-1053 key-authorization nonce consumptions.
+    /// TIP-1053 key-authorization witness burns.
     ///
-    /// Pending AA transactions carrying the same `(account, nonce)` key authorization are no
-    /// longer executable once either a sibling authorization or an explicit burn consumes it.
-    pub key_authorization_nonce_consumptions: AddressMap<HashSet<B256>>,
+    /// Pending AA transactions carrying the same `(account, witness)` key authorization are no
+    /// longer executable once the account explicitly burns that witness.
+    pub key_authorization_witness_burns: AddressMap<HashSet<B256>>,
 }
 
 impl TempoPoolUpdates {
@@ -116,7 +116,7 @@ impl TempoPoolUpdates {
             && self.quote_token_updates.is_empty()
             && self.fee_balance_changes.is_empty()
             && self.spending_limit_spends.is_empty()
-            && self.key_authorization_nonce_consumptions.is_empty()
+            && self.key_authorization_witness_burns.is_empty()
     }
 
     /// Extracts pool updates from a committed chain segment.
@@ -151,13 +151,13 @@ impl TempoPoolUpdates {
                         Some(event.token),
                     );
                 } else if let Ok(event) =
-                    IAccountKeychain::KeyAuthorizationNonceConsumed::decode_log(log)
+                    IAccountKeychain::KeyAuthorizationWitnessBurned::decode_log(log)
                 {
                     updates
-                        .key_authorization_nonce_consumptions
+                        .key_authorization_witness_burns
                         .entry(event.account)
                         .or_default()
-                        .insert(event.nonce);
+                        .insert(event.witness);
                 }
             }
             // Validator and user token changes
@@ -217,7 +217,7 @@ impl TempoPoolUpdates {
             || !self.blacklist_additions.is_empty()
             || !self.whitelist_removals.is_empty()
             || !self.fee_balance_changes.is_empty()
-            || !self.key_authorization_nonce_consumptions.is_empty()
+            || !self.key_authorization_witness_burns.is_empty()
     }
 }
 
@@ -582,13 +582,13 @@ where
                 if !updates.revoked_keys.is_empty()
                     || !updates.spending_limit_changes.is_empty()
                     || !updates.spending_limit_spends.is_empty()
-                    || !updates.key_authorization_nonce_consumptions.is_empty()
+                    || !updates.key_authorization_witness_burns.is_empty()
                 {
                     state.paused_pool.evict_invalidated(
                         &updates.revoked_keys,
                         &updates.spending_limit_changes,
                         &updates.spending_limit_spends,
-                        &updates.key_authorization_nonce_consumptions,
+                        &updates.key_authorization_witness_burns,
                     );
                 }
                 metrics.pause_events_duration_seconds.record(pause_start.elapsed());
@@ -945,13 +945,13 @@ mod tests {
         }
 
         #[test]
-        fn extracts_key_authorization_nonce_consumed_events() {
+        fn extracts_key_authorization_witness_burned_events() {
             let account = Address::random();
-            let nonce = B256::random();
+            let witness = B256::random();
 
             let log = alloy_primitives::Log::new_from_event_unchecked(
                 ACCOUNT_KEYCHAIN_ADDRESS,
-                IAccountKeychain::KeyAuthorizationNonceConsumed { account, nonce },
+                IAccountKeychain::KeyAuthorizationWitnessBurned { account, witness },
             )
             .reserialize();
             let receipt = tempo_primitives::TempoReceipt {
@@ -968,10 +968,10 @@ mod tests {
 
             assert!(
                 updates
-                    .key_authorization_nonce_consumptions
+                    .key_authorization_witness_burns
                     .get(&account)
-                    .is_some_and(|nonces| nonces.contains(&nonce)),
-                "Should contain the consumed (account, nonce)"
+                    .is_some_and(|witnesses| witnesses.contains(&witness)),
+                "Should contain the burned (account, witness)"
             );
             assert!(updates.has_invalidation_events());
         }

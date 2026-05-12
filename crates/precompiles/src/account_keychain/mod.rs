@@ -16,11 +16,12 @@ pub use tempo_contracts::precompiles::{
     IAccountKeychain,
     IAccountKeychain::{
         CallScope, KeyInfo, KeyRestrictions, SelectorRule, SignatureType, TokenLimit,
-        burnKeyAuthorizationNonceCall, getAllowedCallsCall, getKeyCall, getRemainingLimitCall,
-        getRemainingLimitWithPeriodCall, getTransactionKeyCall, isKeyAuthorizationNonceUsedCall,
-        removeAllowedCallsCall, revokeKeyCall, setAllowedCallsCall, updateSpendingLimitCall,
+        burnKeyAuthorizationWitnessCall, getAllowedCallsCall, getKeyCall, getRemainingLimitCall,
+        getRemainingLimitWithPeriodCall, getTransactionKeyCall,
+        isKeyAuthorizationWitnessBurnedCall, removeAllowedCallsCall, revokeKeyCall,
+        setAllowedCallsCall, updateSpendingLimitCall,
     },
-    authorizeKeyCall, authorizeKeyWithNonceCall, getAllowedCallsReturn, getRemainingLimitReturn,
+    authorizeKeyCall, authorizeKeyWithWitnessCall, getAllowedCallsReturn, getRemainingLimitReturn,
 };
 use tempo_primitives::TempoAddressExt;
 
@@ -81,8 +82,8 @@ pub struct AccountKeychain {
     // key_scopes[(account, keyId)] -> call scoping configuration.
     key_scopes: Mapping<B256, KeyScope>,
 
-    // key_authorization_nonces[account][nonce] -> true once a TIP-1053 nonce is consumed.
-    key_authorization_nonces: Mapping<Address, Mapping<B256, bool>>,
+    // key_authorization_witnesses[account][witness] -> true once manually burned.
+    key_authorization_witnesses: Mapping<Address, Mapping<B256, bool>>,
 
     // WARNING(rusowsky): transient storage slots must always be placed at the very end until the `contract`
     // macro is refactored and has 2 independent layouts (persistent and transient).
@@ -206,7 +207,7 @@ impl AccountKeychain {
         key_id: Address,
         signature_type: SignatureType,
         config: KeyRestrictions,
-        nonce: Option<B256>,
+        witness: Option<B256>,
     ) -> Result<()> {
         let config = &config;
         self.ensure_admin_caller(msg_sender)?;
@@ -272,8 +273,8 @@ impl AccountKeychain {
             None
         };
 
-        if let Some(nonce) = nonce {
-            self.consume_key_authorization_nonce(msg_sender, nonce)?;
+        if let Some(witness) = witness {
+            self.ensure_key_authorization_witness_not_burned(msg_sender, witness)?;
         }
 
         // Create and store the new key
@@ -299,6 +300,15 @@ impl AccountKeychain {
             allowed_call_configs,
         )?;
 
+        if let Some(witness) = witness {
+            self.emit_event(AccountKeychainEvent::KeyAuthorizationWitness(
+                IAccountKeychain::KeyAuthorizationWitness {
+                    account: msg_sender,
+                    witness,
+                },
+            ))?;
+        }
+
         // Emit event
         self.emit_event(AccountKeychainEvent::KeyAuthorized(
             IAccountKeychain::KeyAuthorized {
@@ -312,14 +322,14 @@ impl AccountKeychain {
         Ok(())
     }
 
-    /// Burns a TIP-1053 nonce without authorizing a key.
-    pub fn burn_key_authorization_nonce(
+    /// Burns a TIP-1053 witness without authorizing a key.
+    pub fn burn_key_authorization_witness(
         &mut self,
         msg_sender: Address,
-        call: burnKeyAuthorizationNonceCall,
+        call: burnKeyAuthorizationWitnessCall,
     ) -> Result<()> {
         self.ensure_account_caller(msg_sender, true)?;
-        self.consume_key_authorization_nonce(msg_sender, call.nonce)
+        self.burn_key_authorization_witness_value(msg_sender, call.witness)
     }
 
     /// Permanently revokes an access key. Once revoked, a key ID can never be re-authorized for
@@ -608,12 +618,12 @@ impl AccountKeychain {
         })
     }
 
-    /// Returns whether a TIP-1053 key-authorization nonce has been consumed for an account.
-    pub fn is_key_authorization_nonce_used(
+    /// Returns whether a TIP-1053 key-authorization witness has been manually burned.
+    pub fn is_key_authorization_witness_burned(
         &self,
-        call: isKeyAuthorizationNonceUsedCall,
+        call: isKeyAuthorizationWitnessBurnedCall,
     ) -> Result<bool> {
-        self.key_authorization_nonces[call.account][call.nonce].read()
+        self.key_authorization_witnesses[call.account][call.witness].read()
     }
 
     /// Returns the access key used to authorize the current transaction (`Address::ZERO` = root key).
@@ -1020,14 +1030,28 @@ impl AccountKeychain {
         Ok(())
     }
 
-    fn consume_key_authorization_nonce(&mut self, account: Address, nonce: B256) -> Result<()> {
-        if self.key_authorization_nonces[account][nonce].read()? {
-            return Err(AccountKeychainError::key_authorization_nonce_already_used().into());
+    fn ensure_key_authorization_witness_not_burned(
+        &self,
+        account: Address,
+        witness: B256,
+    ) -> Result<()> {
+        if self.key_authorization_witnesses[account][witness].read()? {
+            return Err(AccountKeychainError::key_authorization_witness_already_burned().into());
         }
 
-        self.key_authorization_nonces[account][nonce].write(true)?;
-        self.emit_event(AccountKeychainEvent::KeyAuthorizationNonceConsumed(
-            IAccountKeychain::KeyAuthorizationNonceConsumed { account, nonce },
+        Ok(())
+    }
+
+    fn burn_key_authorization_witness_value(
+        &mut self,
+        account: Address,
+        witness: B256,
+    ) -> Result<()> {
+        self.ensure_key_authorization_witness_not_burned(account, witness)?;
+
+        self.key_authorization_witnesses[account][witness].write(true)?;
+        self.emit_event(AccountKeychainEvent::KeyAuthorizationWitnessBurned(
+            IAccountKeychain::KeyAuthorizationWitnessBurned { account, witness },
         ))
     }
 
@@ -1411,10 +1435,10 @@ mod tests {
         )
     }
 
-    fn authorize_key_with_nonce(
+    fn authorize_key_with_witness(
         keychain: &mut AccountKeychain,
         msg_sender: Address,
-        call: authorizeKeyWithNonceCall,
+        call: authorizeKeyWithWitnessCall,
     ) -> Result<()> {
         AccountKeychain::authorize_key(
             keychain,
@@ -1422,7 +1446,7 @@ mod tests {
             call.keyId,
             call.signatureType,
             call.config,
-            Some(call.nonce),
+            Some(call.witness),
         )
     }
 
@@ -1468,90 +1492,82 @@ mod tests {
     }
 
     #[test]
-    fn test_t5_authorize_key_with_nonce_consumes_and_rejects_reuse() -> eyre::Result<()> {
+    fn test_t5_authorize_key_with_witness_does_not_burn_and_allows_reuse() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let account = Address::random();
         let first_key = Address::random();
         let second_key = Address::random();
-        let nonce = B256::ZERO;
+        let witness = B256::ZERO;
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_tx_origin(account)?;
 
-            authorize_key_with_nonce(
+            authorize_key_with_witness(
                 &mut keychain,
                 account,
-                authorizeKeyWithNonceCall {
+                authorizeKeyWithWitnessCall {
                     keyId: first_key,
                     signatureType: SignatureType::Secp256k1,
                     config: unrestricted_restrictions(),
-                    nonce,
+                    witness,
                 },
             )?;
 
-            assert!(
-                keychain.is_key_authorization_nonce_used(isKeyAuthorizationNonceUsedCall {
-                    account,
-                    nonce,
-                })?
-            );
+            assert!(!keychain.is_key_authorization_witness_burned(
+                isKeyAuthorizationWitnessBurnedCall { account, witness }
+            )?);
 
-            let replay = authorize_key_with_nonce(
+            authorize_key_with_witness(
                 &mut keychain,
                 account,
-                authorizeKeyWithNonceCall {
+                authorizeKeyWithWitnessCall {
                     keyId: second_key,
                     signatureType: SignatureType::Secp256k1,
                     config: unrestricted_restrictions(),
-                    nonce,
+                    witness,
                 },
-            );
-            assert_eq!(
-                replay.expect_err("nonce replay must fail"),
-                AccountKeychainError::key_authorization_nonce_already_used().into()
-            );
+            )?;
 
-            assert_eq!(keychain.keys[account][second_key].read()?.expiry, 0);
+            assert!(keychain.keys[account][second_key].read()?.expiry > 0);
             Ok(())
         })
     }
 
     #[test]
-    fn test_t5_burn_key_authorization_nonce_blocks_later_auth() -> eyre::Result<()> {
+    fn test_t5_burn_key_authorization_witness_blocks_later_auth() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let account = Address::random();
-        let nonce = B256::repeat_byte(0x54);
+        let witness = B256::repeat_byte(0x54);
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_tx_origin(account)?;
 
-            keychain
-                .burn_key_authorization_nonce(account, burnKeyAuthorizationNonceCall { nonce })?;
+            keychain.burn_key_authorization_witness(
+                account,
+                burnKeyAuthorizationWitnessCall { witness },
+            )?;
 
-            assert!(
-                keychain.is_key_authorization_nonce_used(isKeyAuthorizationNonceUsedCall {
-                    account,
-                    nonce,
-                })?
-            );
+            assert!(keychain.is_key_authorization_witness_burned(
+                isKeyAuthorizationWitnessBurnedCall { account, witness }
+            )?);
 
-            let result = authorize_key_with_nonce(
+            let result = authorize_key_with_witness(
                 &mut keychain,
                 account,
-                authorizeKeyWithNonceCall {
+                authorizeKeyWithWitnessCall {
                     keyId: Address::random(),
                     signatureType: SignatureType::Secp256k1,
                     config: unrestricted_restrictions(),
-                    nonce,
+                    witness,
                 },
             );
             assert_eq!(
-                result.expect_err("burned nonce must not authorize"),
-                AccountKeychainError::key_authorization_nonce_already_used().into()
+                result.expect_err("burned witness must not authorize"),
+                AccountKeychainError::key_authorization_witness_already_burned().into()
             );
 
             Ok(())
@@ -1559,11 +1575,11 @@ mod tests {
     }
 
     #[test]
-    fn test_t5_access_key_can_burn_key_authorization_nonce() -> eyre::Result<()> {
+    fn test_t5_access_key_can_burn_key_authorization_witness() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let account = Address::random();
         let access_key = Address::random();
-        let nonce = B256::repeat_byte(0x55);
+        let witness = B256::repeat_byte(0x55);
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
@@ -1581,15 +1597,14 @@ mod tests {
             )?;
 
             keychain.set_transaction_key(access_key)?;
-            keychain
-                .burn_key_authorization_nonce(account, burnKeyAuthorizationNonceCall { nonce })?;
+            keychain.burn_key_authorization_witness(
+                account,
+                burnKeyAuthorizationWitnessCall { witness },
+            )?;
 
-            assert!(
-                keychain.is_key_authorization_nonce_used(isKeyAuthorizationNonceUsedCall {
-                    account,
-                    nonce,
-                })?
-            );
+            assert!(keychain.is_key_authorization_witness_burned(
+                isKeyAuthorizationWitnessBurnedCall { account, witness }
+            )?);
 
             Ok(())
         })

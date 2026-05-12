@@ -165,14 +165,14 @@ impl From<SelectorRule> for AbiSelectorRule {
 /// Used in TempoTransaction to add a new key to the AccountKeychain precompile.
 /// The transaction must be signed by the root key to authorize adding this access key.
 ///
-/// RLP encoding: `[chain_id, key_type, key_id, expiry?, limits?, allowed_calls?, nonce?]`
+/// RLP encoding: `[chain_id, key_type, key_id, expiry?, limits?, allowed_calls?, witness?]`
 /// - Non-optional fields come first, followed by optional (trailing) fields
 /// - `expiry`: `None` (omitted or 0x80) = key never expires, `Some(timestamp)` = expires at timestamp
 /// - `limits`: `None` (omitted or 0x80) = unlimited spending, `Some([])` = no spending, `Some([...])` = specific limits
 /// - `allowed_calls`: `None` (canonically omitted, explicit 0x80 accepted) = unrestricted,
 ///   `Some([])` = scoped with no allowed calls, `Some([...])` = scoped calls
-/// - `nonce`: `None` (canonically omitted) = no TIP-1053 uniqueness tracking,
-///   `Some(bytes32)` = arbitrary nonce consumed on successful T5+ authorization.
+/// - `witness`: `None` (canonically omitted) = no TIP-1053 witness,
+///   `Some(bytes32)` = arbitrary signed witness checked against the account's burned set.
 #[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
 #[rlp(trailing(canonical))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -211,11 +211,11 @@ pub struct KeyAuthorization {
     /// - `Some([CallScope{...}])` = explicit target/selector scope list
     pub allowed_calls: Option<Vec<CallScope>>,
 
-    /// Optional TIP-1053 nonce for per-account uniqueness tracking.
+    /// Optional TIP-1053 witness for offchain context binding and manual revocation.
     ///
-    /// `None` means no nonce. `Some(nonce)` means the nonce field is present, including when
-    /// `nonce == B256::ZERO`.
-    pub nonce: Option<B256>,
+    /// `None` means no witness. `Some(witness)` means the witness field is present, including when
+    /// `witness == B256::ZERO`.
+    pub witness: Option<B256>,
 }
 
 impl KeyAuthorization {
@@ -229,7 +229,7 @@ impl KeyAuthorization {
             expiry: None,
             limits: None,
             allowed_calls: None,
-            nonce: None,
+            witness: None,
         }
     }
 
@@ -263,15 +263,15 @@ impl KeyAuthorization {
         self
     }
 
-    /// Attach a TIP-1053 nonce to this authorization.
-    pub fn with_nonce(mut self, nonce: B256) -> Self {
-        self.nonce = Some(nonce);
+    /// Attach a TIP-1053 witness to this authorization.
+    pub fn with_witness(mut self, witness: B256) -> Self {
+        self.witness = Some(witness);
         self
     }
 
-    /// Returns this authorization's TIP-1053 nonce, if present.
-    pub fn nonce(&self) -> Option<B256> {
-        self.nonce
+    /// Returns this authorization's TIP-1053 witness, if present.
+    pub fn witness(&self) -> Option<B256> {
+        self.witness
     }
 
     /// Computes the authorization message hash for this key authorization.
@@ -293,9 +293,9 @@ impl KeyAuthorization {
         self.allowed_calls.is_some()
     }
 
-    /// Returns whether this authorization carries a TIP-1053 nonce field.
-    pub fn has_nonce(&self) -> bool {
-        self.nonce.is_some()
+    /// Returns whether this authorization carries a TIP-1053 witness field.
+    pub fn has_witness(&self) -> bool {
+        self.witness.is_some()
     }
 
     /// Returns whether this key has unlimited spending (limits is None)
@@ -310,7 +310,7 @@ impl KeyAuthorization {
 
     /// Returns whether this authorization can be encoded with the legacy pre-T3 ABI.
     pub fn is_legacy_compatible(&self) -> bool {
-        !(self.has_periodic_limits() || self.has_call_scopes() || self.has_nonce())
+        !(self.has_periodic_limits() || self.has_call_scopes() || self.has_witness())
     }
 
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
@@ -417,7 +417,7 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
             expiry: u.arbitrary()?,
             limits: u.arbitrary()?,
             allowed_calls: u.arbitrary()?,
-            nonce: u.arbitrary::<Option<[u8; 32]>>()?.map(B256::from),
+            witness: u.arbitrary::<Option<[u8; 32]>>()?.map(B256::from),
         })
     }
 }
@@ -558,25 +558,25 @@ mod tests {
             expiry: expiry.and_then(NonZeroU64::new),
             limits,
             allowed_calls: None,
-            nonce: None,
+            witness: None,
         }
     }
 
     #[test]
-    fn test_zero_nonce_roundtrip_and_changes_signature_hash() {
+    fn test_zero_witness_roundtrip_and_changes_signature_hash() {
         let auth = make_auth(None, None);
-        let zero_nonce_auth = auth.clone().with_nonce(B256::ZERO);
+        let zero_witness_auth = auth.clone().with_witness(B256::ZERO);
 
         let mut encoded = Vec::new();
-        zero_nonce_auth.encode(&mut encoded);
+        zero_witness_auth.encode(&mut encoded);
 
-        assert_eq!(zero_nonce_auth.nonce(), Some(B256::ZERO));
-        assert!(zero_nonce_auth.has_nonce());
-        assert_ne!(zero_nonce_auth.signature_hash(), auth.signature_hash());
+        assert_eq!(zero_witness_auth.witness(), Some(B256::ZERO));
+        assert!(zero_witness_auth.has_witness());
+        assert_ne!(zero_witness_auth.signature_hash(), auth.signature_hash());
 
         let decoded =
             <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
-        assert_eq!(decoded, zero_nonce_auth);
+        assert_eq!(decoded, zero_witness_auth);
 
         let mut reencoded = Vec::new();
         decoded.encode(&mut reencoded);
@@ -584,21 +584,21 @@ mod tests {
     }
 
     #[test]
-    fn test_nonce_roundtrip_and_changes_signature_hash() {
+    fn test_witness_roundtrip_and_changes_signature_hash() {
         let auth = make_auth(None, None);
-        let nonce = B256::repeat_byte(0x53);
-        let nonce_auth = auth.clone().with_nonce(nonce);
+        let witness = B256::repeat_byte(0x53);
+        let witness_auth = auth.clone().with_witness(witness);
 
-        assert_eq!(nonce_auth.nonce(), Some(nonce));
-        assert!(nonce_auth.has_nonce());
-        assert_ne!(nonce_auth.signature_hash(), auth.signature_hash());
+        assert_eq!(witness_auth.witness(), Some(witness));
+        assert!(witness_auth.has_witness());
+        assert_ne!(witness_auth.signature_hash(), auth.signature_hash());
 
         let mut encoded = Vec::new();
-        nonce_auth.encode(&mut encoded);
+        witness_auth.encode(&mut encoded);
 
         let decoded =
             <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
-        assert_eq!(decoded, nonce_auth);
+        assert_eq!(decoded, witness_auth);
 
         let mut reencoded = Vec::new();
         decoded.encode(&mut reencoded);
@@ -606,9 +606,9 @@ mod tests {
     }
 
     #[test]
-    fn test_nonce_encoding_preserves_prior_absent_trailing_fields() {
-        let nonce = B256::repeat_byte(0x53);
-        let auth = make_auth(None, None).with_nonce(nonce);
+    fn test_witness_encoding_preserves_prior_absent_trailing_fields() {
+        let witness = B256::repeat_byte(0x53);
+        let auth = make_auth(None, None).with_witness(witness);
 
         let mut encoded = Vec::new();
         auth.encode(&mut encoded);
@@ -623,17 +623,17 @@ mod tests {
         assert_eq!(
             &payload[fixed_fields_len..fixed_fields_len + 3],
             &[alloy_rlp::EMPTY_STRING_CODE; 3],
-            "expiry, limits, and allowed_calls must be explicit empty placeholders before nonce"
+            "expiry, limits, and allowed_calls must be explicit empty placeholders before witness"
         );
 
-        let mut nonce_payload = &payload[fixed_fields_len + 3..];
-        let decoded_nonce = B256::decode(&mut nonce_payload).expect("decode nonce field");
-        assert_eq!(decoded_nonce, nonce);
-        assert!(nonce_payload.is_empty());
+        let mut witness_payload = &payload[fixed_fields_len + 3..];
+        let decoded_witness = B256::decode(&mut witness_payload).expect("decode witness field");
+        assert_eq!(decoded_witness, witness);
+        assert!(witness_payload.is_empty());
     }
 
     #[test]
-    fn test_decode_accepts_explicit_zero_nonce() {
+    fn test_decode_accepts_explicit_zero_witness() {
         let auth = make_auth(None, None);
         let mut encoded = Vec::new();
         let payload_length = auth.chain_id.length()
@@ -654,11 +654,11 @@ mod tests {
 
         let decoded =
             <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
-        assert_eq!(decoded.nonce(), Some(B256::ZERO));
+        assert_eq!(decoded.witness(), Some(B256::ZERO));
     }
 
     #[test]
-    fn test_decode_rejects_explicit_absent_nonce_field() {
+    fn test_decode_rejects_explicit_absent_witness_field() {
         let auth = make_auth(None, None);
         let mut encoded = Vec::new();
         let payload_length =
@@ -674,7 +674,7 @@ mod tests {
         encoded.extend_from_slice(&[alloy_rlp::EMPTY_STRING_CODE; 4]);
 
         <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice())
-            .expect_err("absent nonce field must be omitted, not encoded as 0x80");
+            .expect_err("absent witness field must be omitted, not encoded as 0x80");
     }
 
     #[test]
@@ -786,7 +786,7 @@ mod tests {
             expiry: None,
             limits: None,
             allowed_calls: None,
-            nonce: None,
+            witness: None,
         }
     }
 

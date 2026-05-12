@@ -872,7 +872,7 @@ mod tests {
                     expiry: None,
                     limits: None,
                     allowed_calls: None,
-                    nonce: None,
+                    witness: None,
                 },
                 signature: PrimitiveSignature::Secp256k1(Signature::test_signature()),
             }),
