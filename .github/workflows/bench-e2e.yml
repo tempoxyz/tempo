@@ -143,6 +143,11 @@ on:
         type: boolean
         required: true
         default: false
+      no-slack:
+        description: Skip Slack notification.
+        type: boolean
+        required: true
+        default: true
       bench-args:
         description: Extra bench args.
         type: string
@@ -333,7 +338,7 @@ jobs:
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
-      BENCH_NO_SLACK: ${{ inputs.no-slack || 'true' }}
+      BENCH_NO_SLACK: ${{ inputs.no-slack }}
       BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
