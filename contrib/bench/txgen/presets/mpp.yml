@@ -16,27 +16,6 @@ artifacts:
   MPPChannel: ../mpp-channel.json
 
 templates:
-  tip20_transfer:
-    type: tempo
-    from:
-      pool: users
-      select: random
-    gas_limit: 300000
-    max_fee_per_gas: 100000000000
-    max_priority_fee_per_gas: 100000000000
-    fee_token: "0x20c0000000000000000000000000000000000000"
-    expiring_nonce: true
-    valid_for_secs: 25
-    call:
-      to: "0x20c0000000000000000000000000000000000000"
-      abi: ERC20
-      function: transfer
-      args:
-        - pool:
-            pool: users
-            select: random
-        - 1
-
   mpp_approve:
     type: tempo
     gas_limit: 2000000
