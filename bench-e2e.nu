@@ -346,14 +346,11 @@ def e2e-snapshot-state-hardfork [datadir: string] {
     normalize-hardfork $state_hardfork
 }
 
-def ensure-e2e-snapshot-supports-hardfork [datadir: string, requested_hardfork: string] {
-    let state_hardfork = (e2e-snapshot-state-hardfork $datadir)
-    let requested = (normalize-hardfork $requested_hardfork)
-    if (hardfork-index $state_hardfork) < (hardfork-index $requested) {
-        print $"Error: local e2e snapshot at ($datadir) was initialized with state_hardfork=($state_hardfork), but requested ($requested)."
-        print "Re-run with --force-bloat to regenerate the local benchmark snapshot for the requested hardfork."
-        exit 1
-    }
+def e2e-update-snapshot-hardfork-marker [datadir: string, hardfork: string] {
+    let fork = (normalize-hardfork $hardfork)
+    let marker_path = $"($datadir)/($BENCH_META_SUBDIR)/marker.json"
+    let marker = (open $marker_path)
+    $marker | upsert state_hardfork $fork | to json | save -f $marker_path
 }
 
 def e2e-synthesize-hardfork-genesis [source_genesis: string, target_genesis: string, hardfork: string] {
@@ -370,22 +367,15 @@ def e2e-synthesize-hardfork-genesis [source_genesis: string, target_genesis: str
     print $"Synthesized ($fork) genesis at ($target_genesis)"
 }
 
-def e2e-hardfork-config-matches [genesis: string, hardfork: string] {
-    let fork = (normalize-hardfork $hardfork)
-    let config = (open $genesis | get config)
-    hardfork-genesis-config-fields $fork | all { |field|
-        ($config | get -o $field.name) == $field.value
-    }
-}
-
 def e2e-regenesis [tempo_bin: string, genesis: string, datadir: string, hardfork: string] {
-    let current_genesis = $"($datadir)/($BENCH_META_SUBDIR)/genesis.json"
-    if (e2e-hardfork-config-matches $current_genesis $hardfork) {
-        print $"Skipping tempo regenesis for ($datadir); hardfork config already matches ($hardfork)"
+    let fork = (normalize-hardfork $hardfork)
+    let current_hardfork = (e2e-snapshot-state-hardfork $datadir)
+    if $current_hardfork == $fork {
+        print $"Skipping tempo regenesis for ($datadir); marker state_hardfork already matches ($fork)"
         return
     }
 
-    print $"Running tempo regenesis for ($datadir) with ($genesis)..."
+    print $"Running tempo regenesis for ($datadir): state_hardfork=($current_hardfork) -> ($fork) with ($genesis)..."
     let result = (run-external $tempo_bin "regenesis" "--chain" $genesis "--datadir" $datadir | complete)
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }
@@ -393,6 +383,8 @@ def e2e-regenesis [tempo_bin: string, genesis: string, datadir: string, hardfork
         print $"Error: tempo regenesis failed for ($datadir) with exit code ($result.exit_code)"
         exit $result.exit_code
     }
+    e2e-synthesize-hardfork-genesis $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $fork
+    e2e-update-snapshot-hardfork-marker $datadir $fork
 }
 
 def derive-tracing-otlp [tracing_otlp: string] {
@@ -1129,8 +1121,6 @@ def "main e2e" [
     let baseline_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-baseline.json" } else { $genesis_path }
     let feature_genesis_path = if $hardfork_mode { $"($hardfork_genesis_dir)/genesis-feature.json" } else { $genesis_path }
     if $hardfork_mode {
-        ensure-e2e-snapshot-supports-hardfork $a_db $snapshot_state_hardfork
-        ensure-e2e-snapshot-supports-hardfork $b_db $snapshot_state_hardfork
         if ($hardfork_genesis_dir | path exists) { rm -rf $hardfork_genesis_dir }
         mkdir $hardfork_genesis_dir
         e2e-synthesize-hardfork-genesis $genesis_path $baseline_genesis_path $baseline_hardfork_name
