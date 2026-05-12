@@ -36,7 +36,6 @@ templates:
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
     fee_token: "0x20c0000000000000000000000000000000000000"
-    nonce_key: "1"
     call:
       to: "0x20c0000000000000000000000000000000000001"
       abi: ERC20
@@ -49,7 +48,6 @@ templates:
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
     fee_token: "0x20c0000000000000000000000000000000000000"
-    nonce_key: "1"
     call:
       abi: MPPChannel
       function: open
@@ -61,7 +59,6 @@ templates:
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
     fee_token: "0x20c0000000000000000000000000000000000000"
-    nonce_key: "1"
     call:
       abi: MPPChannel
       function: close
