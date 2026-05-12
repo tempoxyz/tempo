@@ -92,8 +92,6 @@ jobs:
         binary:
           - name: tempo
             features: "asm-keccak,jemalloc,otlp"
-          - name: tempo-bench
-            features: ""
           - name: tempo-sidecar
             features: ""
         platform:

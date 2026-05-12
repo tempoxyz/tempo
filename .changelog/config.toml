@@ -7,7 +7,6 @@ dependent_bump = "patch"
 # Ignore all workspace-only crates (not published to crates.io).
 ignore = [
     "tempo",
-    "tempo-bench",
     "tempo-chainspec",
     "tempo-commonware-node",
     "tempo-commonware-node-config",
