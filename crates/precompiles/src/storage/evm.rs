@@ -17,6 +17,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
     gas_tracker: GasTracker,
     spec: TempoHardfork,
+    amsterdam_eip8037_enabled: bool,
     is_static: bool,
     gas_params: GasParams,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
@@ -31,6 +32,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         gas_limit: u64,
         reservoir: u64,
         spec: TempoHardfork,
+        amsterdam_eip8037_enabled: bool,
         is_static: bool,
         gas_params: GasParams,
     ) -> Self {
@@ -38,6 +40,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             internals,
             gas_tracker: GasTracker::new(gas_limit, gas_limit, reservoir),
             spec,
+            amsterdam_eip8037_enabled,
             is_static,
             gas_params,
             #[cfg(debug_assertions)]
@@ -52,6 +55,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             u64::MAX,
             0,
             cfg.spec,
+            cfg.enable_amsterdam_eip8037,
             false,
             cfg.gas_params.clone(),
         )
@@ -69,6 +73,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             gas_limit,
             reservoir,
             cfg.spec,
+            cfg.enable_amsterdam_eip8037,
             false,
             cfg.gas_params.clone(),
         )
@@ -115,8 +120,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             was_empty
         };
 
-        // T4: charge TIP20 deployments as CREATE.
-        if self.spec.is_t4() && was_empty {
+        // TIP-1016: charge TIP20 deployments as CREATE.
+        if self.amsterdam_eip8037_enabled && was_empty {
             self.deduct_gas(self.gas_params.create_cost())?;
             self.deduct_state_gas(self.gas_params.create_state_gas())?;
             self.deduct_gas(self.gas_params.keccak256_cost(code_len.div_ceil(32)))?;
@@ -314,6 +319,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
+    fn amsterdam_eip8037_enabled(&self) -> bool {
+        self.amsterdam_eip8037_enabled
+    }
+
+    #[inline]
     fn is_static(&self) -> bool {
         self.is_static
     }
@@ -393,16 +403,30 @@ mod tests {
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_evm::{TempoEvmFactory, evm::TempoEvm};
-    use tempo_revm::gas_params::tempo_gas_params;
+    use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
 
     struct TestEvm(TempoEvm<CacheDB<EmptyDB>>);
 
     impl TestEvm {
         fn new(spec: TempoHardfork) -> Self {
+            Self::with_amsterdam(spec, false)
+        }
+
+        /// Constructs a [`TestEvm`] with TIP-1016 (EIP-8037) manually enabled.
+        ///
+        /// Used by tests that exercise TIP-1016 behavior (state gas split, reservoir
+        /// accounting). TIP-1016 is otherwise opt-in via `cfg.enable_amsterdam_eip8037`,
+        /// which defaults to `false` in production.
+        fn new_with_tip1016(spec: TempoHardfork) -> Self {
+            Self::with_amsterdam(spec, true)
+        }
+
+        fn with_amsterdam(spec: TempoHardfork, amsterdam_eip8037_enabled: bool) -> Self {
             let db = CacheDB::new(EmptyDB::new());
             let mut cfg = revm::context::CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
-            cfg.gas_params = tempo_gas_params(spec);
+            cfg.enable_amsterdam_eip8037 = amsterdam_eip8037_enabled;
+            cfg.gas_params = tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled);
 
             Self(TempoEvmFactory::default().create_evm(
                 db,
@@ -420,6 +444,7 @@ mod tests {
         ) -> EvmPrecompileStorageProvider<'_> {
             let ctx = self.0.ctx_mut();
             let spec = ctx.cfg.spec;
+            let amsterdam_eip8037_enabled = ctx.cfg.enable_amsterdam_eip8037;
             let gas_params = ctx.cfg.gas_params.clone();
             let evm_internals =
                 EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
@@ -429,6 +454,7 @@ mod tests {
                 gas_limit,
                 reservoir,
                 spec,
+                amsterdam_eip8037_enabled,
                 false,
                 gas_params,
             )
@@ -754,7 +780,7 @@ mod tests {
 
     #[test]
     fn test_state_gas_used_only_counts_state_creating_ops() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
         let gas_params = evm.ctx().cfg.gas_params.clone();
         let mut provider = evm.provider_with_reservoir(0);
 
@@ -811,7 +837,7 @@ mod tests {
     /// spills into regular gas once the reservoir is exhausted.
     #[test]
     fn test_state_gas_spills_from_reservoir_to_regular_gas() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
 
         // Reservoir = 500k: enough for 2 full SSTOREs (2 × 230k = 460k)
         // but the 3rd SSTORE (230k) must spill 190k into regular gas.
@@ -880,7 +906,7 @@ mod tests {
 
     #[test]
     fn test_t4_cold_sstore_matches_tip1016_spec() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
         let mut provider = evm.provider_with_reservoir(460_000);
 
         let (address, cold_slot, warm_slot) = (Address::random(), U256::ONE, U256::from(2));
@@ -918,7 +944,7 @@ mod tests {
 
     #[test]
     fn test_t4_set_code_new_account_matches_tip1016_success_path() -> eyre::Result<()> {
-        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
         let gas_params = evm.ctx().cfg.gas_params.clone();
 
         let code = Bytecode::new_raw(vec![0xef].into());
@@ -1020,7 +1046,7 @@ mod tests {
     fn test_sstore_insufficient_gas_for_cold_load_t4() -> eyre::Result<()> {
         // T4 fork sstore with a tight gas budget: cold-load cost is skipped when the
         // pre-charged static gas leaves the remaining gas below the cold additional cost.
-        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
         let gas_params = evm.ctx().cfg.gas_params.clone();
 
         let static_gas = gas_params.sstore_static_gas();
@@ -1105,7 +1131,7 @@ mod tests {
     #[test]
     fn test_multiple_sstore_insufficient_gas_scenarios_t4() -> eyre::Result<()> {
         // T4 fork multiple sstores under a constrained gas budget.
-        let mut evm = TestEvm::new(TempoHardfork::T4);
+        let mut evm = TestEvm::new_with_tip1016(TempoHardfork::T4);
         let gas_params = evm.ctx().cfg.gas_params.clone();
 
         let static_gas = gas_params.sstore_static_gas();

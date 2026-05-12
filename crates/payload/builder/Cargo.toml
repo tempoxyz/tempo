@@ -12,7 +12,6 @@ workspace = true
 
 [dependencies]
 tempo-chainspec = { workspace = true, features = ["reth"] }
-tempo-consensus.workspace = true
 tempo-evm.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
@@ -39,7 +38,6 @@ alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 
-either.workspace = true
 metrics.workspace = true
 tracing.workspace = true
 

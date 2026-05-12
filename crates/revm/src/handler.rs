@@ -40,7 +40,7 @@ use tempo_precompiles::{
     ECRECOVER_GAS,
     account_keychain::{
         AccountKeychain, CallScope as PrecompileCallScope, KeyRestrictions,
-        SelectorRule as PrecompileSelectorRule, TokenLimit, authorizeKeyCall,
+        SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
     nonce::{
@@ -81,6 +81,9 @@ const KEY_AUTH_BASE_GAS: u64 = 27_000;
 
 /// Gas per spending limit in KeyAuthorization
 const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
+
+/// Extra buffer for the second LOG3 emitted by T5 witness-bearing key authorizations.
+const KEY_AUTH_T5_WITNESS_EVENT_BUFFER: u64 = 1_500;
 
 /// Gas cost for expiring nonce transactions (replay check + insert).
 ///
@@ -335,6 +338,7 @@ fn calculate_key_authorization_gas(
         // T1B+: Accurate gas matching actual precompile storage operations.
         // authorize_key does: 1 SLOAD (read existing key) + 1 SSTORE (write key)
         //   + N SSTOREs (one per spending limit) + 2k buffer (TSTORE + keccak + event)
+        // T5 witness authorizations emit one additional LOG3 event with no data.
         const BUFFER: u64 = 2_000;
         let sload_cost =
             gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
@@ -347,6 +351,7 @@ fn calculate_key_authorization_gas(
             num_limits
         };
 
+        let has_t5_witness = key_auth.has_witness();
         let mut num_sstores = 1 + limit_slots;
 
         if spec.is_t3() {
@@ -355,6 +360,10 @@ fn calculate_key_authorization_gas(
 
         let sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
         let mut total_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
+
+        if has_t5_witness {
+            total_gas += sload_cost + KEY_AUTH_T5_WITNESS_EVENT_BUFFER;
+        }
 
         // T4+: include extra gas for call scopes configuration
         if spec.is_t4() {
@@ -1260,6 +1269,7 @@ where
                 None
             };
 
+            let amsterdam_eip8037_enabled = cfg.enable_amsterdam_eip8037;
             let internals = EvmInternals::new(journal, block, cfg, tx);
 
             // T1/T1A: Apply gas metering for the keychain precompile call.
@@ -1294,7 +1304,13 @@ where
 
             // It's ok to set reservoir to 0 because pre-T1B it doesn't matter and post-T1B we have unlimited gas anyway.
             let mut provider = EvmPrecompileStorageProvider::new(
-                internals, gas_limit, 0, cfg.spec, false, gas_params,
+                internals,
+                gas_limit,
+                0,
+                cfg.spec,
+                amsterdam_eip8037_enabled,
+                false,
+                gas_params,
             );
 
             // The core logic of setting up thread-local storage is here.
@@ -1335,21 +1351,24 @@ where
                 let allow_any_calls = key_auth.allowed_calls.is_none();
                 let precompile_allowed_calls = translate_allowed_calls_for_precompile(key_auth);
 
-                // Create the authorize key call
-                let authorize_call = authorizeKeyCall {
-                    keyId: access_key_addr,
-                    signatureType: signature_type,
-                    config: KeyRestrictions {
-                        expiry,
-                        enforceLimits: enforce_limits,
-                        limits: precompile_limits,
-                        allowAnyCalls: allow_any_calls,
-                        allowedCalls: precompile_allowed_calls,
-                    },
+                let config = KeyRestrictions {
+                    expiry,
+                    enforceLimits: enforce_limits,
+                    limits: precompile_limits,
+                    allowAnyCalls: allow_any_calls,
+                    allowedCalls: precompile_allowed_calls,
                 };
 
                 // Call precompile to authorize the key (same phase as nonce increment)
-                match keychain.authorize_key(tx.caller, authorize_call) {
+                let result = keychain.authorize_key(
+                    tx.caller,
+                    access_key_addr,
+                    signature_type,
+                    config,
+                    key_auth.witness(),
+                );
+
+                match result {
                     // all is good, we can do execution.
                     Ok(_) => Ok(false),
                     // on out of gas we are skipping execution but not invalidating the transaction.
@@ -1618,6 +1637,13 @@ where
                 key_auth
                     .validate_chain_id(cfg.chain_id(), cfg.spec.is_t1c())
                     .map_err(TempoInvalidTransaction::from)?;
+
+                if key_auth.has_witness() && !cfg.spec.is_t5() {
+                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                        reason: "key authorization witnesses are not active before T5".to_string(),
+                    }
+                    .into());
+                }
 
                 // T3 gates all TIP-1011 fields. Before activation, transaction semantics must stay
                 // unchanged, so periodic limits and call scopes are rejected.
@@ -2258,7 +2284,6 @@ mod tests {
             let mut cfg = CfgEnv::<TempoHardfork>::default();
             cfg.spec = spec;
             cfg.gas_params = tempo_gas_params(spec);
-            cfg.enable_amsterdam_eip8037 = spec.is_t4();
             configure(&mut cfg);
 
             let ctx = Context::mainnet()
@@ -3021,6 +3046,34 @@ mod tests {
             );
         }
 
+        let t5_gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T5);
+        let t5_sload =
+            t5_gas_params.warm_storage_read_cost() + t5_gas_params.cold_storage_additional_cost();
+        let base_t5_key_auth = create_key_auth(0);
+        let mut witness_t5_key_auth = create_key_auth(0);
+        witness_t5_key_auth.authorization = witness_t5_key_auth
+            .authorization
+            .with_witness(B256::repeat_byte(0x53));
+
+        let (base_t5_gas, base_t5_state_gas) =
+            calculate_key_authorization_gas(&base_t5_key_auth, &t5_gas_params, TempoHardfork::T5);
+        let (witness_t5_gas, witness_t5_state_gas) = calculate_key_authorization_gas(
+            &witness_t5_key_auth,
+            &t5_gas_params,
+            TempoHardfork::T5,
+        );
+
+        assert_eq!(
+            witness_t5_gas - base_t5_gas,
+            t5_sload + KEY_AUTH_T5_WITNESS_EVENT_BUFFER,
+            "T5 witness adds one burned-witness SLOAD and one event"
+        );
+        assert_eq!(
+            witness_t5_state_gas - base_t5_state_gas,
+            0,
+            "T5 witness authorization does not add state gas"
+        );
+
         let scoped = SignedKeyAuthorization {
             authorization: KeyAuthorization::unrestricted(
                 1,
@@ -3122,7 +3175,9 @@ mod tests {
             signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
         };
 
-        let gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T4);
+        // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
+        let gas_params =
+            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
         let sig_gas = ECRECOVER_GAS + primitive_signature_verification_gas(&key_auth.signature);
         let sload = gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
@@ -3527,23 +3582,22 @@ mod tests {
             keychain
                 .authorize_key(
                     caller,
-                    authorizeKeyCall {
-                        keyId: access_key,
-                        signatureType: PrecompileSignatureType::Secp256k1,
-                        config: KeyRestrictions {
-                            expiry: u64::MAX,
-                            enforceLimits: false,
-                            limits: vec![],
-                            allowAnyCalls: false,
-                            allowedCalls: vec![PrecompileCallScope {
-                                target,
-                                selectorRules: vec![PrecompileSelectorRule {
-                                    selector: CALL_SCOPE_SELECTOR.into(),
-                                    recipients: vec![],
-                                }],
+                    access_key,
+                    PrecompileSignatureType::Secp256k1,
+                    KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        allowAnyCalls: false,
+                        allowedCalls: vec![PrecompileCallScope {
+                            target,
+                            selectorRules: vec![PrecompileSelectorRule {
+                                selector: CALL_SCOPE_SELECTOR.into(),
+                                recipients: vec![],
                             }],
-                        },
+                        }],
                     },
+                    None,
                 )
                 .expect("access key authorization succeeds");
         });
@@ -3650,23 +3704,22 @@ mod tests {
             keychain
                 .authorize_key(
                     caller,
-                    authorizeKeyCall {
-                        keyId: access_key,
-                        signatureType: PrecompileSignatureType::Secp256k1,
-                        config: KeyRestrictions {
-                            expiry: u64::MAX,
-                            enforceLimits: false,
-                            limits: vec![],
-                            allowAnyCalls: false,
-                            allowedCalls: vec![PrecompileCallScope {
-                                target,
-                                selectorRules: vec![PrecompileSelectorRule {
-                                    selector: ALLOWED_SELECTOR.into(),
-                                    recipients: vec![],
-                                }],
+                    access_key,
+                    PrecompileSignatureType::Secp256k1,
+                    KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        allowAnyCalls: false,
+                        allowedCalls: vec![PrecompileCallScope {
+                            target,
+                            selectorRules: vec![PrecompileSelectorRule {
+                                selector: ALLOWED_SELECTOR.into(),
+                                recipients: vec![],
                             }],
-                        },
+                        }],
                     },
+                    None,
                 )
                 .expect("access key authorization succeeds");
         });
@@ -4550,17 +4603,16 @@ mod tests {
                 if seed_key {
                     kc.authorize_key(
                         user,
-                        authorizeKeyCall {
-                            keyId: access_key,
-                            signatureType: PrecompileSignatureType::Secp256k1,
-                            config: KeyRestrictions {
-                                expiry: u64::MAX,
-                                enforceLimits: false,
-                                limits: vec![],
-                                allowAnyCalls: true,
-                                allowedCalls: vec![],
-                            },
+                        access_key,
+                        PrecompileSignatureType::Secp256k1,
+                        KeyRestrictions {
+                            expiry: u64::MAX,
+                            enforceLimits: false,
+                            limits: vec![],
+                            allowAnyCalls: true,
+                            allowedCalls: vec![],
                         },
+                        None,
                     )
                     .unwrap();
                 }
@@ -4692,6 +4744,63 @@ mod tests {
 
             let _ = h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
             assert_eq!(evm.key_expiry, Some(expiry));
+        }
+
+        #[test]
+        fn test_key_authorization_witness_rejected_before_t5() {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
+                    .with_witness(B256::repeat_byte(0x53)),
+            );
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T4, None, false);
+
+            let result = h.validate_env(&mut evm);
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("before T5")
+                ),
+                "witness-bearing key authorization should be rejected before T5, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t5_key_authorization_witness_is_not_burned_in_state() {
+            use tempo_precompiles::account_keychain::isKeyAuthorizationWitnessBurnedCall;
+
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let witness = B256::repeat_byte(0x54);
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
+                    .with_witness(witness),
+            );
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T5, None, false);
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                result.is_ok(),
+                "T5 witness authorization should pass: {result:?}"
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let keychain = AccountKeychain::new();
+                assert!(
+                    !keychain
+                        .is_key_authorization_witness_burned(isKeyAuthorizationWitnessBurnedCall {
+                            account: user,
+                            witness,
+                        })
+                        .expect("witness read succeeds"),
+                    "T5 key authorization must not burn its witness"
+                );
+            });
         }
 
         #[test]
@@ -4846,7 +4955,9 @@ mod tests {
     /// later in validate_against_state_and_deduct_caller, not in upstream initial_tx_gas.
     #[test]
     fn test_state_gas_standard_create_tx_populates_initial_state_gas() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
+        // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
+        let gas_params =
+            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
         let initcode = Bytes::from(vec![0x60, 0x80]);
 
         let init_gas = gas_params.initial_tx_gas(
@@ -4998,8 +5109,12 @@ mod tests {
             ..Default::default()
         };
 
+        // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
         let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
             cfg.tx_gas_limit_cap = Some(30_000_000);
+            cfg.enable_amsterdam_eip8037 = true;
+            cfg.gas_params =
+                crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
         });
 
         // validate_env should pass even though gas_limit > cap
@@ -5060,6 +5175,9 @@ mod tests {
 
         let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
             cfg.tx_gas_limit_cap = Some(CAP);
+            cfg.enable_amsterdam_eip8037 = true;
+            cfg.gas_params =
+                crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
         });
 
         // Sanity: T4 must actually have the cap-skip enabled so tx_gas_limit > cap is legal.
@@ -5292,7 +5410,9 @@ mod tests {
     /// TIP-1016: AA auth list entries with nonce==0 should track state gas.
     #[test]
     fn test_state_gas_aa_auth_list_nonce_zero() {
-        let gas_params = tempo_gas_params(TempoHardfork::T4);
+        // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
+        let gas_params =
+            crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
 
         let aa_env = TempoBatchCallEnv {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(

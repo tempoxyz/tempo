@@ -15,7 +15,8 @@
 #   BENCH_SAMPLY                  – "true" to enable samply profiling (optional)
 set -euxo pipefail
 
-SCHELK_MOUNT="/reth-bench"
+eval "$(nu bench-schelk.nu detect)"
+
 BENCH_WORK_DIR="${BENCH_WORK_DIR:-bench-results/replay}"
 SNAPSHOT_BUCKET="r2-tempo-snapshots/tempo-node-snapshots"
 TEMPO_SCOPE="tempo-replay.scope"
@@ -50,12 +51,41 @@ WARMUP="${BENCH_WARMUP_BLOCKS:-1000}"
 
 mkdir -p "$BENCH_WORK_DIR"
 
+# `cargo install` writes binaries to CARGO_HOME/bin, but self-hosted runner
+# services do not necessarily inherit a login-shell PATH for the runner user.
+CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
+export PATH="$CARGO_BIN_DIR:$PATH"
+TXGEN_TEMPO_BIN="${TXGEN_TEMPO_BIN:-txgen-tempo}"
+TXGEN_BENCH_BIN="${TXGEN_BENCH_BIN:-bench}"
+BENCH_FEATURES="${BENCH_FEATURES:-jemalloc,asm-keccak,keccak-cache-global}"
+
+if [ "${BENCH_OTLP:-false}" = "true" ]; then
+  if [ -z "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" ] && [ -n "${GRAFANA_TEMPO:-}" ]; then
+    export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="${GRAFANA_TEMPO%/}/v1/traces"
+  elif [ -z "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" ] && [ -n "${TEMPO_TELEMETRY_URL:-}" ]; then
+    export OTEL_EXPORTER_OTLP_TRACES_ENDPOINT="${TEMPO_TELEMETRY_URL%/}/opentelemetry/v1/traces"
+  fi
+  export OTEL_BSP_MAX_QUEUE_SIZE="${OTEL_BSP_MAX_QUEUE_SIZE:-65536}"
+  export OTEL_BLRP_MAX_QUEUE_SIZE="${OTEL_BLRP_MAX_QUEUE_SIZE:-65536}"
+else
+  unset TEMPO_TELEMETRY_URL
+  unset GRAFANA_TEMPO
+  unset OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+  unset OTEL_EXPORTER_OTLP_HEADERS
+fi
+
+bench_schelk() {
+  nu bench-schelk.nu "$@"
+}
+
 # ============================================================================
 # Install txgen-tempo and bench-cli
 # ============================================================================
 
 echo "Installing txgen-tempo and bench-cli..."
-cargo install --git "https://x-access-token:${DEREK_PAT}@github.com/tempoxyz/txgen" --locked txgen-tempo bench-cli
+cargo install --git "https://x-access-token:${DEREK_BENCH_TOKEN}@github.com/tempoxyz/txgen" --locked txgen-tempo bench-cli
+command -v "$TXGEN_TEMPO_BIN"
+command -v "$TXGEN_BENCH_BIN"
 
 # ============================================================================
 # Build baseline + feature binaries
@@ -74,7 +104,7 @@ build_tempo() {
   echo "Building $label tempo ($ref)..."
   cd "$src_dir"
   RUSTFLAGS="-C target-cpu=native" \
-    cargo build --profile profiling --bin tempo
+    cargo build --profile profiling --bin tempo --no-default-features --features "$BENCH_FEATURES"
   cd -
 }
 
@@ -118,8 +148,7 @@ LOCAL_HASH=""
 [ -f "$SNAPSHOT_HASH_FILE" ] && LOCAL_HASH=$(cat "$SNAPSHOT_HASH_FILE")
 
 # Mount schelk before checking $DATADIR/db existence
-sudo schelk recover -y --kill 2>/dev/null || true
-sudo schelk mount -y
+bench_schelk restore "$SCHELK_STATE_PATH" "$SCHELK_MOUNT"
 
 if [ "$REMOTE_HASH" != "$LOCAL_HASH" ] || [ ! -d "$DATADIR/db" ]; then
   if [ -n "$LOCAL_HASH" ]; then
@@ -131,6 +160,7 @@ if [ "$REMOTE_HASH" != "$LOCAL_HASH" ] || [ ! -d "$DATADIR/db" ]; then
   MANIFEST_URL="https://tempo-node-snapshots.tempoxyz.dev/${SNAPSHOT_NAME}/manifest.json"
 
   # Prepare schelk volume for fresh download
+  bench_schelk mark-dirty "$SCHELK_STATE_PATH"
   sudo rm -rf "$DATADIR"
   sudo mkdir -p "$DATADIR"
   sudo chown -R "$(id -u):$(id -g)" "$DATADIR"
@@ -149,7 +179,7 @@ if [ "$REMOTE_HASH" != "$LOCAL_HASH" ] || [ ! -d "$DATADIR/db" ]; then
   fi
 
   sync
-  sudo schelk promote -y
+  bench_schelk promote "$SCHELK_STATE_PATH"
   echo "$REMOTE_HASH" > "$SNAPSHOT_HASH_FILE"
   echo "Snapshot promoted to schelk baseline"
 else
@@ -170,12 +200,11 @@ run_single() {
   # Recover snapshot
   sudo systemctl stop "$TEMPO_SCOPE" 2>/dev/null || true
   sudo systemctl reset-failed "$TEMPO_SCOPE" 2>/dev/null || true
-  sudo schelk recover -y --kill || sudo schelk full-recover -y || true
-  sudo schelk mount -y
-  sudo chown -R "$(id -u):$(id -g)" "$SCHELK_MOUNT"
+  bench_schelk restore "$SCHELK_STATE_PATH" "$SCHELK_MOUNT"
 
   sync
   sudo sh -c 'echo 3 > /proc/sys/vm/drop_caches'
+  bench_schelk mark-dirty "$SCHELK_STATE_PATH"
 
   # Build node args
   local NODE_ARGS=(
@@ -209,13 +238,22 @@ run_single() {
   total_mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
   local mem_limit=$(( total_mem_kb * 95 / 100 * 1024 ))
 
+  local scope_env=(env)
+  local env_name env_value
+  for env_name in TEMPO_TELEMETRY_URL OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OTEL_RESOURCE_ATTRIBUTES OTEL_BSP_MAX_QUEUE_SIZE OTEL_BLRP_MAX_QUEUE_SIZE; do
+    env_value="${!env_name:-}"
+    if [ -n "$env_value" ]; then
+      scope_env+=("${env_name}=${env_value}")
+    fi
+  done
+
   # Start tempo node
   if [ "${BENCH_SAMPLY:-false}" = "true" ]; then
     local samply_bin
     samply_bin="$(which samply)"
     sudo systemd-run --quiet --scope --collect --unit="$TEMPO_SCOPE" \
       -p MemoryMax="$mem_limit" \
-      nice -n -20 \
+      "${scope_env[@]}" nice -n -20 \
       "$samply_bin" record --save-only --presymbolicate --rate 10000 \
       --output "$output_dir/samply-profile.json.gz" \
       -- "$binary" "${NODE_ARGS[@]}" \
@@ -223,7 +261,7 @@ run_single() {
   else
     sudo systemd-run --quiet --scope --collect --unit="$TEMPO_SCOPE" \
       -p MemoryMax="$mem_limit" \
-      nice -n -20 "$binary" "${NODE_ARGS[@]}" \
+      "${scope_env[@]}" nice -n -20 "$binary" "${NODE_ARGS[@]}" \
       > "$log" 2>&1 &
   fi
   stdbuf -oL tail -f "$log" | sed -u "s/^/[$label] /" &
@@ -253,8 +291,8 @@ run_single() {
   if [ "$WARMUP" -gt 0 ]; then
     local warmup_to=$(( from_block + WARMUP - 1 ))
     echo "Running warmup ($WARMUP blocks: $from_block..$warmup_to)..."
-    txgen-tempo extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$warmup_to" \
-      | bench send-blocks \
+    "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$warmup_to" \
+      | "$TXGEN_BENCH_BIN" send-blocks \
         --engine http://127.0.0.1:8551 \
         --jwt-secret "$DATADIR/jwt.hex" 2>&1 | sed -u "s/^/[bench] /"
     from_block=$(( warmup_to + 1 ))
@@ -263,8 +301,8 @@ run_single() {
   # Benchmark
   local bench_to=$(( from_block + BLOCKS - 1 ))
   echo "Running benchmark ($BLOCKS blocks: $from_block..$bench_to)..."
-  txgen-tempo extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$bench_to" \
-    | bench send-blocks \
+  "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$bench_to" \
+    | "$TXGEN_BENCH_BIN" send-blocks \
       --engine http://127.0.0.1:8551 \
       --jwt-secret "$DATADIR/jwt.hex" \
       --metrics-url http://localhost:9001 \
@@ -282,7 +320,7 @@ run_single() {
   sudo systemctl stop "$TEMPO_SCOPE" 2>/dev/null || true
   sudo systemctl reset-failed "$TEMPO_SCOPE" 2>/dev/null || true
   sudo chown -R "$(id -un):$(id -gn)" "$output_dir" 2>/dev/null || true
-  sudo schelk recover -y --kill || true
+  bench_schelk cleanup "$SCHELK_STATE_PATH" || true
   echo "=== Finished run: $label ==="
 }
 

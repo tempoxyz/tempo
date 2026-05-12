@@ -1,6 +1,8 @@
 //! A testing node that can start and stop both consensus and execution layers.
 
-use crate::execution_runtime::{self, ExecutionNode, ExecutionNodeConfig, ExecutionRuntimeHandle};
+use crate::execution_runtime::{
+    self, ExecutionNode, ExecutionNodeConfig, ExecutionRuntimeHandle, test_db_args,
+};
 use alloy_primitives::{Address, B256};
 use commonware_cryptography::{
     Signer as _,
@@ -9,7 +11,7 @@ use commonware_cryptography::{
 use commonware_p2p::simulated::{Control, Oracle, SocketManager};
 use commonware_runtime::{Handle, Metrics as _, deterministic::Context};
 use reth_config::config::StageConfig;
-use reth_db::{Database, DatabaseEnv, mdbx::DatabaseArguments, open_db_read_only};
+use reth_db::{Database, DatabaseEnv, open_db_read_only};
 use reth_downloaders::{bodies::noop::NoopBodiesDownloader, headers::noop::NoopHeaderDownloader};
 use reth_ethereum::{
     consensus::noop::NoopConsensus,
@@ -225,7 +227,7 @@ where
         if self.execution_database.is_none() {
             let db_path = self.execution_node_datadir.join("db");
             self.execution_database = Some(
-                reth_db::init_db(db_path, DatabaseArguments::default())
+                reth_db::init_db(db_path, test_db_args())
                     .expect("failed to init database")
                     .with_metrics(),
             );
@@ -263,7 +265,7 @@ where
         self.consensus_config = self
             .consensus_config
             .clone()
-            .with_execution_node((*execution_node.node).clone());
+            .with_execution_node(execution_node.node.clone().into());
         self.execution_node = Some(execution_node);
         debug!(%self.uid, "started execution node for testing node");
     }
@@ -356,7 +358,7 @@ where
     /// # Panics
     /// Panics if consensus is not running.
     #[instrument(skip_all)]
-    async fn stop_consensus(&mut self) {
+    pub async fn stop_consensus(&mut self) {
         let handle = self
             .consensus_handle
             .take()
@@ -473,12 +475,9 @@ where
         // Open a read-only provider to the database
         // Note: MDBX allows multiple readers, so this is safe even if another process
         // has the database open for reading
-        let database = open_db_read_only(
-            self.execution_node_datadir.join("db"),
-            DatabaseArguments::default(),
-        )
-        .expect("failed to open execution node database")
-        .with_metrics();
+        let database = open_db_read_only(self.execution_node_datadir.join("db"), test_db_args())
+            .expect("failed to open execution node database")
+            .with_metrics();
 
         let static_file_provider =
             StaticFileProvider::read_only(self.execution_node_datadir.join("static_files"))

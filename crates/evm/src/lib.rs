@@ -5,7 +5,6 @@
 
 mod assemble;
 use alloy_consensus::{BlockHeader as _, Transaction};
-use alloy_primitives::Address;
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
 mod block;
@@ -39,7 +38,7 @@ use tempo_primitives::{
 use crate::evm::TempoEvm;
 use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params};
+use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
 
 pub use tempo_revm::{TempoBlockEnv, TempoHaltReason, TempoStateAccess};
 
@@ -140,16 +139,23 @@ impl ConfigureEvm for TempoEvmConfig {
         let spec = self.chain_spec().tempo_hardfork_at(header.timestamp());
 
         // Apply TIP-1000 gas params for T1 hardfork.
-        let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
+        //
+        // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
+        // and is independent of the T4 hardfork. The flag is currently left at its default
+        // (`false`) so TIP-1016 is disabled even on T4; flipping it on enables the regular/
+        // state gas split everywhere it is checked downstream.
+        //
+        // TODO(TIP-1016): this is the place where we previously did
+        // `cfg_env.enable_amsterdam_eip8037 = spec.is_t4();`. When TIP-1016 is ready to
+        // ship, re-enable it here (or wire it through chain spec / cfg defaults) so the
+        // state gas split activates on the appropriate hardfork.
+        let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
+        let mut cfg_env = cfg_env.with_spec_and_gas_params(
+            spec,
+            tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
+        );
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
-        // TIP-1016 (T4): Enable EIP-8037 state gas charging. All Tempo hardforks map to
-        // SpecId::OSAKA, but revm's AMSTERDAM (which gates record_state_cost in SSTORE/CREATE)
-        // comes after OSAKA in the SpecId enum. Without this flag, state gas overrides
-        // (sstore_set_state_gas, new_account_state_gas, etc.) are configured but never charged.
-        if spec.is_t4() {
-            cfg_env.enable_amsterdam_eip8037 = true;
-        }
         Ok(EvmEnv {
             cfg_env,
             block_env: TempoBlockEnv {
@@ -184,17 +190,21 @@ impl ConfigureEvm for TempoEvmConfig {
 
         let spec = self.chain_spec().tempo_hardfork_at(attributes.timestamp);
 
-        // Apply TIP-1000 gas params for T1 hardfork.
-        let mut cfg_env = cfg_env.with_spec_and_gas_params(spec, tempo_gas_params(spec));
+        // Apply TIP-1000 gas params for T1 hardfork. TIP-1016 is gated by
+        // `cfg_env.enable_amsterdam_eip8037`, independent of the T4 hardfork
+        // (see `evm_env_for_block` for details).
+        //
+        // TODO(TIP-1016): this is the place where we previously did
+        // `cfg_env.enable_amsterdam_eip8037 = spec.is_t4();`. When TIP-1016 is ready to
+        // ship, re-enable it here (or wire it through chain spec / cfg defaults) so the
+        // state gas split activates on the appropriate hardfork.
+        let amsterdam_eip8037_enabled = cfg_env.enable_amsterdam_eip8037;
+        let mut cfg_env = cfg_env.with_spec_and_gas_params(
+            spec,
+            tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled),
+        );
         cfg_env.tx_gas_limit_cap = spec.tx_gas_limit_cap();
 
-        // TIP-1016 (T4): Enable EIP-8037 state gas charging. All Tempo hardforks map to
-        // SpecId::OSAKA, but revm's AMSTERDAM (which gates record_state_cost in SSTORE/CREATE)
-        // comes after OSAKA in the SpecId enum. Without this flag, state gas overrides
-        // (sstore_set_state_gas, new_account_state_gas, etc.) are configured but never charged.
-        if spec.is_t4() {
-            cfg_env.enable_amsterdam_eip8037 = true;
-        }
         Ok(EvmEnv {
             cfg_env,
             block_env: TempoBlockEnv {
@@ -214,7 +224,7 @@ impl ConfigureEvm for TempoEvmConfig {
             .transactions
             .iter()
             .rev()
-            .filter(|tx| (*tx).to() == Some(Address::ZERO))
+            .filter(|tx| tx.is_system_tx())
             .find_map(|tx| Vec::<SubBlockMetadata>::decode(&mut tx.input().as_ref()).ok())
             .unwrap_or_default()
             .into_iter()
@@ -242,8 +252,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 slot_number: block.slot_number(),
             },
             general_gas_limit: block.header().general_gas_limit,
-            shared_gas_limit: block.header().gas_limit()
-                / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
+            shared_gas_limit: block.header().shared_gas_limit,
             // Not available when we only have a block body.
             validator_set: None,
             consensus_context: block.header().consensus_context,
@@ -270,8 +279,7 @@ impl ConfigureEvm for TempoEvmConfig {
                 tx_count_hint: None,
             },
             general_gas_limit: attributes.general_gas_limit,
-            shared_gas_limit: attributes.inner.gas_limit
-                / tempo_consensus::TEMPO_SHARED_GAS_DIVISOR,
+            shared_gas_limit: attributes.shared_gas_limit,
             // Fine to not validate during block building.
             validator_set: None,
             consensus_context: attributes.consensus_context,
@@ -285,7 +293,7 @@ mod tests {
     use super::*;
     use crate::test_utils::test_chainspec;
     use alloy_consensus::{BlockHeader, Signed, TxLegacy};
-    use alloy_primitives::{B256, Bytes, TxKind, U256};
+    use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
     use alloy_rlp::{Encodable, bytes::BytesMut};
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use std::collections::HashMap;
@@ -556,7 +564,7 @@ mod tests {
             },
             general_gas_limit: 10_000_000,
             timestamp_millis_part: 0,
-            shared_gas_limit: 3_000_000,
+            shared_gas_limit: 0,
             ..Default::default()
         };
         let parent = SealedHeader::seal_slow(parent_header);
@@ -591,7 +599,7 @@ mod tests {
 
         // Verify context fields from attributes
         assert_eq!(context.general_gas_limit, 12_000_000);
-        assert_eq!(context.shared_gas_limit, 3_000_000);
+        assert_eq!(context.shared_gas_limit, 4_000_000);
         assert!(context.validator_set.is_none());
         assert_eq!(context.inner.parent_hash, parent.hash());
         assert_eq!(

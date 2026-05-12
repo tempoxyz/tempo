@@ -106,6 +106,14 @@ macro_rules! tempo_hardfork {
                     .general_gas_limit()
                     .unwrap_or_else(|| (gas_limit - shared_gas_limit) / 2)
             }
+
+            /// Returns the shared gas limit for the given timestamp and block.
+            /// - T4+: 0 gas
+            /// - Pre-T4: block_gas_limit / 10
+            fn shared_gas_limit_at(&self, timestamp: u64, gas_limit: u64) -> u64 {
+                self.tempo_hardfork_at(timestamp)
+                    .shared_gas_limit(gas_limit)
+            }
         }
 
         #[cfg(all(test, feature = "reth"))]
@@ -219,6 +227,17 @@ impl TempoHardfork {
         None
     }
 
+    /// Returns the shared gas limit for the given block gas limit.
+    /// - T4+: 0 gas
+    /// - Pre-T4: block_gas_limit / 10
+    pub const fn shared_gas_limit(&self, block_gas_limit: u64) -> u64 {
+        if self.is_t4() {
+            0
+        } else {
+            block_gas_limit / 10
+        }
+    }
+
     /// Returns the per-transaction gas limit cap.
     /// - Pre-T1A: EIP-7825 Osaka limit (16,777,216 gas)
     /// - T1A+: 30M gas (allows maximum-sized contract deployments under [TIP-1000] state creation)
@@ -301,7 +320,7 @@ impl TempoHardfork {
             Self::T1C => Some(MAINNET_T1C_TIMESTAMP),
             Self::T2 => Some(MAINNET_T2_TIMESTAMP),
             Self::T3 => Some(MAINNET_T3_TIMESTAMP),
-            Self::T4 => None,
+            Self::T4 => Some(MAINNET_T4_TIMESTAMP),
             Self::T5 => None,
             Self::T6 => None,
         }
@@ -337,7 +356,7 @@ impl TempoHardfork {
             Self::T1C => Some(MODERATO_T1C_TIMESTAMP),
             Self::T2 => Some(MODERATO_T2_TIMESTAMP),
             Self::T3 => Some(MODERATO_T3_TIMESTAMP),
-            Self::T4 => None,
+            Self::T4 => Some(MODERATO_T4_TIMESTAMP),
             Self::T5 => None,
             Self::T6 => None,
         }
