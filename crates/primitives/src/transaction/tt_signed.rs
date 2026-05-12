@@ -36,6 +36,8 @@ pub struct AASigned {
     /// Cached transaction hash
     #[doc(alias = "tx_hash", alias = "transaction_hash")]
     hash: OnceLock<B256>,
+    /// Cached signing hash used for sender and keychain recovery.
+    signature_hash: OnceLock<B256>,
 }
 
 impl AASigned {
@@ -49,6 +51,7 @@ impl AASigned {
             tx,
             signature,
             hash: value,
+            signature_hash: OnceLock::new(),
         }
     }
 
@@ -59,6 +62,7 @@ impl AASigned {
             tx,
             signature,
             hash: OnceLock::new(),
+            signature_hash: OnceLock::new(),
         }
     }
 
@@ -99,7 +103,7 @@ impl AASigned {
 
     /// Calculate the signing hash for the transaction.
     pub fn signature_hash(&self) -> B256 {
-        self.tx.signature_hash()
+        *self.signature_hash.get_or_init(|| self.tx.signature_hash())
     }
 
     /// Calculate the expiring nonce dedup hash for replay protection.
