@@ -17,7 +17,8 @@ const E2E_B_CPUS = "8-15,24-31"
 const E2E_A_MEMORY = "60G"
 const E2E_B_MEMORY = "60G"
 const E2E_GAS_LIMIT = "1000000000000"
-const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
+const E2E_A_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
+const E2E_B_BLOAT_TMP_DIR = "/reth-bench-b/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
 const E2E_LOCAL_RETH_ARGS = [
@@ -171,6 +172,18 @@ def init-e2e-db [tempo_bin: string, genesis: string, datadir: string, bloat: int
             print $"Error: state bloat load failed for ($datadir) with exit code ($bloat_result.exit_code)"
             exit $bloat_result.exit_code
         }
+    }
+}
+
+def generate-e2e-state-bloat [role: string, profile: string, bloat: int, bloat_file: string] {
+    print $"Generating local e2e state bloat for ($role) \(($bloat) MiB\)..."
+    let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
+    let result = (cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args | complete)
+    if $result.stdout != "" { print $result.stdout }
+    if $result.stderr != "" { print $result.stderr }
+    if $result.exit_code != 0 {
+        print $"Error: state bloat generation failed for ($role) with exit code ($result.exit_code)"
+        exit $result.exit_code
     }
 }
 
@@ -589,7 +602,7 @@ def init-local-e2e-side [
     marker: record,
 ] {
     let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
-    let generated_trusted_peers = $"($LOCALNET_DIR)/e2e-local-init/trusted-peers.txt"
+    let generated_trusted_peers = $"($LOCALNET_DIR)/e2e-local-init/trusted-peers-($role).txt"
 
     bench-clean-datadir $datadir
     mkdir $datadir
@@ -602,6 +615,20 @@ def init-local-e2e-side [
     $trusted_peers | save -f $generated_trusted_peers
 
     bench-save-e2e-meta $datadir $meta_dir ($marker | insert validator_role $role) [[$generated_genesis "genesis.json"] [$generated_trusted_peers "trusted-peers.txt"]]
+}
+
+def prepare-local-e2e-side [
+    side: record,
+    generated_genesis: string,
+    trusted_peers: string,
+    bloat: int,
+    tempo_bin: string,
+    profile: string,
+] {
+    if $bloat > 0 {
+        generate-e2e-state-bloat $side.role $profile $bloat $side.bloat_file
+    }
+    init-local-e2e-side $side.role $side.state_path $side.mount_point $side.datadir $side.node_dir $side.generated_node_dir $generated_genesis $trusted_peers $bloat $side.bloat_file $tempo_bin $side.marker
 }
 
 def run-local-e2e-phase [run: record, ctx: record] {
@@ -892,13 +919,16 @@ def "main e2e" [
     if $should_init_snapshots {
         let init_dir = $"($LOCALNET_DIR)/e2e-local-init"
         let generated_genesis = $"($init_dir)/genesis.json"
-        let bloat_file = $"($E2E_BLOAT_TMP_DIR)/state_bloat.bin"
+        let a_bloat_file = $"($E2E_A_BLOAT_TMP_DIR)/state_bloat.bin"
+        let b_bloat_file = $"($E2E_B_BLOAT_TMP_DIR)/state_bloat.bin"
         mark-schelk-dirty-at $E2E_A_STATE_PATH
         mark-schelk-dirty-at $E2E_B_STATE_PATH
         if ($init_dir | path exists) { rm -rf $init_dir }
         mkdir $init_dir
-        if ($E2E_BLOAT_TMP_DIR | path exists) { rm -rf $E2E_BLOAT_TMP_DIR }
-        mkdir $E2E_BLOAT_TMP_DIR
+        for dir in [$E2E_A_BLOAT_TMP_DIR $E2E_B_BLOAT_TMP_DIR] {
+            if ($dir | path exists) { rm -rf $dir }
+            mkdir $dir
+        }
 
         build-tempo --no-default-features=$no_default_features ["tempo"] $profile $features
         let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
@@ -913,9 +943,6 @@ def "main e2e" [
         }
         if $bloat_mib > 0 {
             ensure-bloat-space $bloat_mib
-            print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
-            let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
         }
 
         let marker = {
@@ -929,10 +956,38 @@ def "main e2e" [
             topology: "single-runner"
             state_hardfork: $snapshot_state_hardfork
         }
-        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
-        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
-        if ($E2E_BLOAT_TMP_DIR | path exists) {
-            rm -rf $E2E_BLOAT_TMP_DIR
+        let e2e_sides = [
+            {
+                role: "a"
+                state_path: $E2E_A_STATE_PATH
+                mount_point: $E2E_A_MOUNT
+                datadir: $a_db
+                node_dir: $a_identity
+                generated_node_dir: $"($init_dir)/($a_validator)"
+                bloat_file: $a_bloat_file
+                marker: ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
+            }
+            {
+                role: "b"
+                state_path: $E2E_B_STATE_PATH
+                mount_point: $E2E_B_MOUNT
+                datadir: $b_db
+                node_dir: $b_identity
+                generated_node_dir: $"($init_dir)/($b_validator)"
+                bloat_file: $b_bloat_file
+                marker: ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
+            }
+        ]
+        let _init_results = (
+            $e2e_sides
+            | par-each --threads 2 { |side|
+                prepare-local-e2e-side $side $generated_genesis $trusted_peers $bloat_mib $tempo_bin $profile
+            }
+        )
+        for dir in [$E2E_A_BLOAT_TMP_DIR $E2E_B_BLOAT_TMP_DIR] {
+            if ($dir | path exists) {
+                rm -rf $dir
+            }
         }
         bench-promote-at $E2E_A_STATE_PATH $a_db
         bench-promote-at $E2E_B_STATE_PATH $b_db
