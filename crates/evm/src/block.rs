@@ -454,7 +454,7 @@ where
             .as_ref()
             .is_some_and(|withdrawals| !withdrawals.is_empty())
         {
-            return Err(BlockExecutionError::msg("withdrawals must be empty"));
+            return Err(BlockExecutionError::msg("withdrawals are not permitted"));
         }
 
         self.inner.apply_pre_execution_changes()?;
