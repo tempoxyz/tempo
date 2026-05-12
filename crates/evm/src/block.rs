@@ -26,10 +26,7 @@ use reth_revm::{
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
-use tempo_chainspec::{
-    TempoChainSpec,
-    hardfork::{TempoHardfork, TempoHardforks},
-};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS,
     VALIDATOR_CONFIG_V2_ADDRESS,
@@ -137,7 +134,6 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     pub(crate) inner:
         EthBlockExecutor<'a, TempoEvm<DB, I>, &'a TempoChainSpec, TempoReceiptBuilder>,
 
-    hardfork: TempoHardfork,
     section: BlockSection,
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
     validator_set: Option<Vec<B256>>,
@@ -161,7 +157,6 @@ where
     ) -> Self {
         Self {
             incentive_gas_used: 0,
-            hardfork: chain_spec.tempo_hardfork_at(evm.block().timestamp.to::<u64>()),
             validator_set: ctx.validator_set,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
@@ -387,7 +382,7 @@ where
     /// [`is_payment_v1`]: TempoTxEnvelope::is_payment_v1
     /// [`is_payment_v2`]: TempoTxEnvelope::is_payment_v2
     pub(crate) fn is_payment(&self, tx: &TempoTxEnvelope) -> bool {
-        if self.hardfork.is_t5() {
+        if self.evm().cfg.spec.is_t5() {
             tx.is_payment_v2()
         } else {
             tx.is_payment_v1()
@@ -1144,7 +1139,8 @@ mod tests {
 
         let chainspec = DEV.clone();
         let mut db = State::builder().with_bundle_update().build();
-        let t5_executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let mut t5_executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        t5_executor.inner.evm.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T5;
         assert!(!t5_executor.is_payment(&tx));
     }
 
