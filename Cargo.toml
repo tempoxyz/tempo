@@ -208,7 +208,7 @@ alloy-contract = { version = "2.0.4", default-features = false }
 alloy-eips = { version = "2.0.4", default-features = false }
 alloy-evm = { version = "0.34.0", default-features = false }
 revm-inspectors = "0.39.0"
-revmc = { git = "https://github.com/paradigmxyz/revmc", branch = "dani/alloy-evm-0.34", default-features = false, features = ["llvm-prefer-static"] }
+revmc = { git = "https://github.com/paradigmxyz/revmc", branch = "main", default-features = false, features = ["llvm-prefer-static"] }
 alloy-genesis = { version = "2.0.4", default-features = false }
 alloy-hardforks = "0.4.7"
 alloy-json-abi = { version = "1.5.7", default-features = false }
