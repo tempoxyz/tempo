@@ -25,11 +25,11 @@ use tempo_primitives::TempoAddressExt;
 /// Version tag for the v1 [`ITIP1028Escrow::ClaimReceiptV1`] layout.
 pub const BLOCKED_RECEIPT_VERSION: u8 = 1;
 
-/// Recovery-authority sentinel: receiver is authorized to claim (`address(0)`).
-pub const RECOVERY_RECEIVER: Address = Address::ZERO;
+/// Recovery-authority sentinel: originator/sender is authorized to claim (`address(0)`).
+pub const RECOVERY_ORIGINATOR: Address = Address::ZERO;
 
-/// Recovery-authority sentinel: originator/sender is authorized to claim (`address(1)`).
-pub const RECOVERY_SENDER: Address = Address::with_last_byte(1);
+/// Recovery-authority sentinel: receiver is authorized to claim (`address(1)`).
+pub const RECOVERY_RECEIVER: Address = Address::with_last_byte(1);
 
 /// TIP-1028 escrow holding blocked inbound transfers and mints until claimed.
 #[contract(addr = ESCROW_ADDRESS)]
@@ -240,10 +240,10 @@ enum RecoveryAuthority {
 
 impl RecoveryAuthority {
     fn from_address(address: Address, receiver: Address, originator: Address) -> Self {
-        if address == RECOVERY_RECEIVER {
-            Self::Receiver(receiver)
-        } else if address == RECOVERY_SENDER {
+        if address == RECOVERY_ORIGINATOR {
             Self::Originator(originator)
+        } else if address == RECOVERY_RECEIVER {
+            Self::Receiver(receiver)
         } else {
             Self::Contract(address)
         }
@@ -297,13 +297,13 @@ mod tests {
         }
     }
 
-    fn block_all_senders(receiver: Address, recovery_address: Address) -> Result<()> {
+    fn block_all_senders(receiver: Address, recovery_authority: Address) -> Result<()> {
         TIP403Registry::new().set_receive_policy(
             receiver,
             ITIP403Registry::setReceivePolicyCall {
                 senderPolicyId: REJECT_ALL_POLICY_ID,
                 tokenFilterId: ALLOW_ALL_POLICY_ID,
-                recoveryAuthority: recovery_address,
+                recoveryAuthority: recovery_authority,
             },
         )
     }
@@ -367,7 +367,7 @@ mod tests {
                 .with_issuer(admin)
                 .with_mint(originator, amount)
                 .apply()?;
-            block_all_senders(receiver, Address::ZERO)?;
+            block_all_senders(receiver, RECOVERY_RECEIVER)?;
 
             let unknown = receipt_v1(
                 originator,
@@ -380,7 +380,7 @@ mod tests {
             );
             let escrow = TIP1028Escrow::new();
             assert_eq!(
-                receipt_balance(&escrow, token.address(), Address::ZERO, &unknown)?,
+                receipt_balance(&escrow, token.address(), RECOVERY_RECEIVER, &unknown)?,
                 U256::ZERO
             );
 
@@ -402,7 +402,7 @@ mod tests {
                 B256::ZERO,
             );
             assert_eq!(
-                receipt_balance(&escrow, token.address(), Address::ZERO, &receipt)?,
+                receipt_balance(&escrow, token.address(), RECOVERY_RECEIVER, &receipt)?,
                 amount
             );
 
@@ -410,7 +410,7 @@ mod tests {
                 receiver,
                 ITIP1028Escrow::claimCall {
                     token: token.address(),
-                    recoveryAuthority: Address::ZERO,
+                    recoveryAuthority: RECOVERY_RECEIVER,
                     receiptVersion: BLOCKED_RECEIPT_VERSION,
                     receipt: receipt.abi_encode().into(),
                     to: receiver,
@@ -418,7 +418,7 @@ mod tests {
             )?;
 
             assert_eq!(
-                receipt_balance(&escrow, token.address(), Address::ZERO, &receipt)?,
+                receipt_balance(&escrow, token.address(), RECOVERY_RECEIVER, &receipt)?,
                 U256::ZERO
             );
             assert_eq!(
@@ -452,7 +452,7 @@ mod tests {
                 .with_role(admin, TIP20Token::pause_role())
                 .with_mint(originator, amount)
                 .apply()?;
-            block_all_senders(receiver, Address::ZERO)?;
+            block_all_senders(receiver, RECOVERY_RECEIVER)?;
 
             token.transfer(
                 originator,
@@ -475,11 +475,11 @@ mod tests {
             let mut escrow = TIP1028Escrow::new();
             let result = escrow.claim(
                 receiver,
-                claim_call(token.address(), Address::ZERO, &receipt, receiver),
+                claim_call(token.address(), RECOVERY_RECEIVER, &receipt, receiver),
             );
             assert_eq!(result.unwrap_err(), TIP20Error::contract_paused().into());
             assert_eq!(
-                receipt_balance(&escrow, token.address(), Address::ZERO, &receipt)?,
+                receipt_balance(&escrow, token.address(), RECOVERY_RECEIVER, &receipt)?,
                 amount
             );
             assert_eq!(
@@ -522,9 +522,9 @@ mod tests {
                 .with_mint(originator, amount_c)
                 .apply()?;
 
-            block_all_senders(receiver_a, Address::ZERO)?;
+            block_all_senders(receiver_a, RECOVERY_RECEIVER)?;
             block_all_senders(receiver_b, recovery)?;
-            block_all_senders(receiver_c, Address::ZERO)?;
+            block_all_senders(receiver_c, RECOVERY_RECEIVER)?;
 
             token_a.transfer(
                 originator,
@@ -581,19 +581,19 @@ mod tests {
                 token_a.balance_of(ITIP20::balanceOfCall {
                     account: ESCROW_ADDRESS
                 })?,
-                receipt_balance(&escrow, token_a.address(), Address::ZERO, &receipt_a)?
+                receipt_balance(&escrow, token_a.address(), RECOVERY_RECEIVER, &receipt_a)?
                     + receipt_balance(&escrow, token_a.address(), recovery, &receipt_b)?
             );
             assert_eq!(
                 token_b.balance_of(ITIP20::balanceOfCall {
                     account: ESCROW_ADDRESS
                 })?,
-                receipt_balance(&escrow, token_b.address(), Address::ZERO, &receipt_c)?
+                receipt_balance(&escrow, token_b.address(), RECOVERY_RECEIVER, &receipt_c)?
             );
 
             TIP1028Escrow::new().claim(
                 receiver_a,
-                claim_call(token_a.address(), Address::ZERO, &receipt_a, receiver_a),
+                claim_call(token_a.address(), RECOVERY_RECEIVER, &receipt_a, receiver_a),
             )?;
             assert_eq!(
                 token_a.balance_of(ITIP20::balanceOfCall {
@@ -605,7 +605,7 @@ mod tests {
                 token_b.balance_of(ITIP20::balanceOfCall {
                     account: ESCROW_ADDRESS
                 })?,
-                receipt_balance(&escrow, token_b.address(), Address::ZERO, &receipt_c)?
+                receipt_balance(&escrow, token_b.address(), RECOVERY_RECEIVER, &receipt_c)?
             );
 
             TIP1028Escrow::new().claim(
@@ -622,7 +622,7 @@ mod tests {
                 token_b.balance_of(ITIP20::balanceOfCall {
                     account: ESCROW_ADDRESS
                 })?,
-                receipt_balance(&escrow, token_b.address(), Address::ZERO, &receipt_c)?
+                receipt_balance(&escrow, token_b.address(), RECOVERY_RECEIVER, &receipt_c)?
             );
 
             Ok(())
@@ -884,10 +884,10 @@ mod tests {
 
             assert_invalid_receipt(TIP1028Escrow::new().claim(
                 receiver,
-                claim_call(token.address(), Address::ZERO, &receipt, receiver),
+                claim_call(token.address(), RECOVERY_RECEIVER, &receipt, receiver),
             ));
 
-            block_all_senders(receiver, Address::ZERO)?;
+            block_all_senders(receiver, RECOVERY_RECEIVER)?;
             token.transfer(
                 originator,
                 ITIP20::transferCall {
@@ -897,11 +897,11 @@ mod tests {
             )?;
             TIP1028Escrow::new().claim(
                 receiver,
-                claim_call(token.address(), Address::ZERO, &receipt, receiver),
+                claim_call(token.address(), RECOVERY_RECEIVER, &receipt, receiver),
             )?;
             assert_invalid_receipt(TIP1028Escrow::new().claim(
                 receiver,
-                claim_call(token.address(), Address::ZERO, &receipt, receiver),
+                claim_call(token.address(), RECOVERY_RECEIVER, &receipt, receiver),
             ));
 
             Ok(())
@@ -926,7 +926,7 @@ mod tests {
                 .with_issuer(admin)
                 .with_mint(originator, amount * U256::from(2u64))
                 .apply()?;
-            block_all_senders(receiver, Address::ZERO)?;
+            block_all_senders(receiver, RECOVERY_RECEIVER)?;
             block_all_senders(recovery_receiver, recovery)?;
 
             token.transfer(
@@ -965,7 +965,7 @@ mod tests {
 
             assert_unauthorized(TIP1028Escrow::new().claim(
                 stranger,
-                claim_call(token.address(), Address::ZERO, &self_receipt, receiver),
+                claim_call(token.address(), RECOVERY_RECEIVER, &self_receipt, receiver),
             ));
             for caller in [recovery_receiver, stranger] {
                 assert_unauthorized(TIP1028Escrow::new().claim(
@@ -983,7 +983,7 @@ mod tests {
                 receipt_balance(
                     &TIP1028Escrow::new(),
                     token.address(),
-                    Address::ZERO,
+                    RECOVERY_RECEIVER,
                     &self_receipt
                 )?,
                 amount
@@ -1017,7 +1017,7 @@ mod tests {
                 .with_issuer(admin)
                 .with_mint(originator, amount)
                 .apply()?;
-            block_all_senders(receiver, Address::ZERO)?;
+            block_all_senders(receiver, RECOVERY_RECEIVER)?;
             token.transfer(
                 originator,
                 ITIP20::transferCall {
@@ -1040,7 +1040,7 @@ mod tests {
             escrow.clear_emitted_events();
             escrow.claim(
                 receiver,
-                claim_call(token.address(), Address::ZERO, &receipt, receiver),
+                claim_call(token.address(), RECOVERY_RECEIVER, &receipt, receiver),
             )?;
 
             escrow.assert_emitted_events(vec![TIP1028EscrowEvent::BlockedReceiptClaimed(
@@ -1052,14 +1052,14 @@ mod tests {
                     blockedAt: 1_728_005,
                     originator,
                     recipient: receiver,
-                    recoveryAuthority: Address::ZERO,
+                    recoveryAuthority: RECOVERY_RECEIVER,
                     caller: receiver,
                     to: receiver,
                     amount,
                 },
             )]);
             assert_eq!(
-                receipt_balance(&escrow, token.address(), Address::ZERO, &receipt)?,
+                receipt_balance(&escrow, token.address(), RECOVERY_RECEIVER, &receipt)?,
                 U256::ZERO
             );
             assert_eq!(
@@ -1171,7 +1171,7 @@ mod tests {
                 .with_issuer(admin)
                 .with_mint(originator, amount)
                 .apply()?;
-            block_all_senders(receiver, Address::ZERO)?;
+            block_all_senders(receiver, RECOVERY_RECEIVER)?;
             token.transfer(
                 originator,
                 ITIP20::transferCall {
@@ -1179,7 +1179,7 @@ mod tests {
                     amount,
                 },
             )?;
-            block_all_senders(destination, Address::ZERO)?;
+            block_all_senders(destination, RECOVERY_RECEIVER)?;
 
             let receipt = receipt_v1(
                 originator,
@@ -1193,7 +1193,7 @@ mod tests {
             let escrow = TIP1028Escrow::new();
             let result = TIP1028Escrow::new().claim(
                 receiver,
-                claim_call(token.address(), Address::ZERO, &receipt, destination),
+                claim_call(token.address(), RECOVERY_RECEIVER, &receipt, destination),
             );
             assert!(matches!(
                 result,
@@ -1201,7 +1201,7 @@ mod tests {
             ));
 
             assert_eq!(
-                receipt_balance(&escrow, token.address(), Address::ZERO, &receipt)?,
+                receipt_balance(&escrow, token.address(), RECOVERY_RECEIVER, &receipt)?,
                 amount
             );
             assert_eq!(
@@ -1274,7 +1274,7 @@ mod tests {
                 U256::ZERO
             );
 
-            assert_invalid_receipt(TIP1028Escrow::new().claim(
+            assert_unauthorized(TIP1028Escrow::new().claim(
                 receiver,
                 claim_call(token.address(), Address::ZERO, &receipt, receiver),
             ));
@@ -1310,7 +1310,7 @@ mod tests {
                 .with_issuer(admin)
                 .with_mint(originator, amount)
                 .apply()?;
-            block_all_senders(VIRTUAL_MASTER, Address::ZERO)?;
+            block_all_senders(VIRTUAL_MASTER, RECOVERY_RECEIVER)?;
             token.transfer(
                 originator,
                 ITIP20::transferCall {
@@ -1332,7 +1332,7 @@ mod tests {
             escrow.clear_emitted_events();
             escrow.claim(
                 VIRTUAL_MASTER,
-                claim_call(token.address(), Address::ZERO, &receipt, VIRTUAL_MASTER),
+                claim_call(token.address(), RECOVERY_RECEIVER, &receipt, VIRTUAL_MASTER),
             )?;
 
             escrow.assert_emitted_events(vec![TIP1028EscrowEvent::BlockedReceiptClaimed(
@@ -1344,7 +1344,7 @@ mod tests {
                     blockedAt: 1_728_009,
                     originator,
                     recipient: virtual_addr,
-                    recoveryAuthority: Address::ZERO,
+                    recoveryAuthority: RECOVERY_RECEIVER,
                     caller: VIRTUAL_MASTER,
                     to: VIRTUAL_MASTER,
                     amount,
@@ -1380,7 +1380,7 @@ mod tests {
             let mut token = TIP20Setup::create("T", "T", admin)
                 .with_issuer(admin)
                 .apply()?;
-            block_all_senders(receiver, Address::ZERO)?;
+            block_all_senders(receiver, RECOVERY_RECEIVER)?;
 
             let mut escrow = TIP1028Escrow::new();
             escrow.clear_emitted_events();
@@ -1402,7 +1402,7 @@ mod tests {
                     recipient: receiver,
                     amount,
                     blockedReason: BlockedReason::RECEIVE_POLICY as u8,
-                    recoveryAuthority: Address::ZERO,
+                    recoveryAuthority: RECOVERY_RECEIVER,
                     memo: B256::ZERO,
                 },
             )]);
@@ -1429,7 +1429,7 @@ mod tests {
             );
             escrow.claim(
                 receiver,
-                claim_call(token.address(), Address::ZERO, &receipt, receiver),
+                claim_call(token.address(), RECOVERY_RECEIVER, &receipt, receiver),
             )?;
 
             assert_eq!(

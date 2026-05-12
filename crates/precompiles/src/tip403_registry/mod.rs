@@ -1189,7 +1189,7 @@ mod tests {
                 );
             }
 
-            // Zero remains the self-recovery sentinel.
+            // Zero is the originator-recovery sentinel; address(1) is the receiver/self-recovery sentinel.
             registry.set_receive_policy(
                 account,
                 ITIP403Registry::setReceivePolicyCall {
