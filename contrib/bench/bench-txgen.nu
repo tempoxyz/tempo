@@ -49,7 +49,7 @@ def run-txgen-bench-single [
     --benchmark-mode: string = ""
     --benchmark-id: string = ""
     --platform: string = ""
-    --scenario: string = ""
+    --bench-mode: string = ""
     --reference-epoch: int = 0
     --samply
     --samply-args: list<string> = []
@@ -153,7 +153,7 @@ def run-txgen-bench-single [
         --benchmark-mode $benchmark_mode
         --git-ref-label $git_ref_label
         --platform $platform
-        --scenario $scenario)
+        --bench-mode $bench_mode)
     if not $bench_result.ok {
         error make { msg: $"txgen benchmark run ($run_label) failed with exit code ($bench_result.exit_code)" }
     }
@@ -260,18 +260,17 @@ def "main run" [
     --feature-hardfork: string = ""
     --gas-limit: string = ""
     --platform: string = "tempo"
-    --scenario: string = ""
+    --bench-mode: string = ""
 ] {
     let runtime_mode = (resolved-runtime-mode $mode)
     if $runtime_mode != "dev" {
         error make { msg: $"txgen benchmark path currently supports only dev/e2e mode \(got ($mode)\)" }
     }
     let preset_path = (txgen-preset-path $preset)
-    let resolved_scenario = if $scenario != "" {
-        $scenario
+    let resolved_mode = if $bench_mode != "" {
+        $bench_mode
     } else {
-        let tps_k = ($tps / 1000)
-        $"($preset)-($tps_k)k"
+        "e2e"
     }
     txgen-validate-bench-args $bench_args
     if ($baseline != "" and $feature == "") or ($baseline == "" and $feature != "") {
@@ -593,7 +592,7 @@ def "main run" [
             --tracy-offset $tracy_offset
             --tracing-otlp $tracing_otlp
             --platform $platform
-            --scenario $resolved_scenario)
+            --bench-mode $resolved_mode)
     }
 
     let summary_baseline = if $dual_hardfork { $"($baseline) \(($baseline_hardfork | str upcase)\)" } else { $baseline }
