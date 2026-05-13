@@ -194,6 +194,7 @@ def txgen-run-preset-pipeline [
     --benchmark-id: string = ""
     --benchmark-run: string = ""
     --run-type: string = ""
+    --benchmark-start: int = 0
     --victoriametrics-url: string = ""
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
@@ -225,6 +226,7 @@ def txgen-run-preset-pipeline [
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
         "--drain-timeout" $TXGEN_HELPER_DRAIN_TIMEOUT_SECS
     ]
+        | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
     let report_args = ["--report" $"json:($report_path)"]
         | append (if $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
     let metadata_args = [
