@@ -99,42 +99,68 @@ jobs:
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@stable
         with:
-          components: ${{ needs.check-precompiles.outputs.coverage == 'true' && 'llvm-tools-preview' || '' }}
+          components: ${{ github.event_name != 'merge_group' && 'llvm-tools-preview' || '' }}
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
       - uses: taiki-e/install-action@d0f23220b09a75c6db730f13bb37c4f8144b4382 # v2.75.9
         with:
           tool: nextest@0.9.124
-      # Build and run tests WITH coverage (only when precompiles changed)
+      # Build and run WITH coverage (pull_request and main push)
       - name: Build and compile tests with coverage
-        if: needs.check-precompiles.outputs.coverage == 'true'
+        if: github.event_name != 'merge_group'
         run: cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
         env:
           RUSTFLAGS: -C instrument-coverage
       - name: Run tests with coverage
-        if: needs.check-precompiles.outputs.coverage == 'true'
+        if: github.event_name != 'merge_group'
         run: |
           mkdir -p coverage
           cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
         env:
           RUSTFLAGS: -C instrument-coverage
           LLVM_PROFILE_FILE: ${{ github.workspace }}/coverage/cargo-%p-%m.profraw
-      # Build and run tests WITHOUT coverage (when precompiles not changed)
+      # Build and run WITHOUT coverage (merge_group)
       - name: Build and compile tests
-        if: needs.check-precompiles.outputs.coverage != 'true'
+        if: github.event_name == 'merge_group'
         run: cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2 --no-run
       - name: Run tests
-        if: needs.check-precompiles.outputs.coverage != 'true'
+        if: github.event_name == 'merge_group'
         run: cargo nextest run --profile ci -E 'not (package(tempo-e2e) | (package(tempo-node) & binary(it) & test(/test_matrices_(testnet|devnet)/)))' --partition count:${{ matrix.partition }}/2
-      - name: Generate precompiles coverage profdata
-        if: needs.check-precompiles.outputs.coverage == 'true'
+      - name: Generate coverage data
+        if: github.event_name != 'merge_group'
         run: |
           LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin"
           "$LLVM_BIN/llvm-profdata" merge -sparse coverage/*.profraw -o coverage/cargo-test.profdata
+
+          # Collect all test binaries for full-crate coverage
+          OBJECT_FLAGS=""
+          for bin in $(find target/debug/deps -type f -executable ! -name '*.d' ! -name '*.so'); do
+            OBJECT_FLAGS="$OBJECT_FLAGS --object=$bin"
+          done
+
+          # Generate lcov for all crates (Codecov upload)
+          "$LLVM_BIN/llvm-cov" export \
+            --format=lcov \
+            --instr-profile=coverage/cargo-test.profdata \
+            $OBJECT_FLAGS \
+            --ignore-filename-regex='/rustc/' \
+            --ignore-filename-regex='\.cargo/' \
+            --ignore-filename-regex='\.rustup/' \
+            > coverage/lcov.info 2>/dev/null || true
+
+          # Copy precompiles/contracts binaries for the detailed HTML report
           mkdir -p coverage/precompiles-bin
-          # Copy precompiles and contracts test binaries
           find target/debug/deps -name 'tempo_precompiles-*' -type f -executable ! -name '*.d' -exec cp {} coverage/precompiles-bin/ \;
           find target/debug/deps -name 'tempo_contracts-*' -type f -executable ! -name '*.d' -exec cp {} coverage/precompiles-bin/ \;
+      - name: Upload coverage to Codecov
+        if: github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+        uses: codecov/codecov-action@3f20e214133d0983f9a10f3d63b0faf9241a3daa # v6.0.0
+        with:
+          files: coverage/lcov.info
+          flags: cargo-test-${{ matrix.partition }}
+          fail_ci_if_error: false
+        env:
+          CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
       - name: Upload precompiles coverage artifacts
         if: needs.check-precompiles.outputs.coverage == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
