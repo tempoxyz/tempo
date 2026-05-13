@@ -760,7 +760,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --bench-env $ctx.bench_env
                 --git-ref $run.ref
                 --build-profile $ctx.profile
-                --benchmark-mode "e2e")
+                --benchmark-mode "e2e"
+                --benchmark-id $ctx.benchmark_id
+                --benchmark-run $phase
+                --run-type $run_type
+                --reference-epoch $ctx.reference_epoch
+                --victoriametrics-url $ctx.victoriametrics_url)
             if not $bench_result.ok {
                 $bench_result.exit_code
             } else {
@@ -814,6 +819,7 @@ def "main e2e" [
     --tracy-seconds: int = 30                           # Tracy capture duration limit in seconds
     --tracy-offset: int = 120                           # Seconds to wait before starting tracy capture
     --tracing-otlp: string = ""                         # OTLP endpoint for tracing (auto-derived from GRAFANA_TEMPO/TEMPO_TELEMETRY_URL)
+    --victoriametrics-url: string = ""                  # VictoriaMetrics base URL for txgen metric sample import
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
     --bench-args: string = ""                           # Additional txgen bench args
@@ -1062,6 +1068,7 @@ def "main e2e" [
         baseline_env: $baseline_env
         feature_env: $feature_env
         bench_env: $bench_env
+        victoriametrics_url: $victoriametrics_url
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
         tune: $tune
