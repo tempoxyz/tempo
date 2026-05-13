@@ -21,7 +21,7 @@ use eyre::{Context as _, ensure};
 use reth_chainspec::EthereumHardforks;
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, EnvironmentArgs};
 use reth_db_api::{
-    cursor::{DbCursorRO, DbCursorRW, DbDupCursorRW},
+    cursor::{DbCursorRO, DbDupCursorRW},
     models::CompactU256,
     table::Decompress,
     tables,
@@ -32,7 +32,7 @@ use reth_etl::Collector;
 use reth_primitives_traits::{Account, StorageEntry};
 use reth_provider::{BlockNumReader, DatabaseProviderFactory, HashingWriter, TrieWriter};
 use reth_storage_api::DBProvider;
-use reth_trie::{IntermediateStateRootState, StateRootProgress, updates::TrieUpdates};
+use reth_trie::{IntermediateStateRootState, StateRootProgress};
 use reth_trie_db::DatabaseStateRoot;
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tracing::info;
