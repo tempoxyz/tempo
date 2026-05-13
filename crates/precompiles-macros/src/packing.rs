@@ -453,3 +453,253 @@ pub(crate) fn gen_collision_check_fn(
 
     (check_fn_name, check_fn)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use syn::parse_quote;
+
+    /// Helper to build a simple `FieldInfo` for testing.
+    fn field(name: &str, ty: Type, slot: Option<u64>, base_slot: Option<u64>) -> FieldInfo {
+        FieldInfo {
+            name: Ident::new(name, proc_macro2::Span::call_site()),
+            ty,
+            slot: slot.map(U256::from),
+            base_slot: base_slot.map(U256::from),
+        }
+    }
+
+    // -- allocate_slots ---------------------------------------------------------
+
+    #[test]
+    fn allocate_empty_fields() {
+        let fields: Vec<FieldInfo> = vec![];
+        let result = allocate_slots(&fields).unwrap();
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn allocate_single_auto_field() {
+        let fields = vec![field("balance", parse_quote!(U256), None, None)];
+        let result = allocate_slots(&fields).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(*result[0].assigned_slot.ref_slot(), U256::ZERO);
+        assert!(matches!(result[0].assigned_slot, SlotAssignment::Auto { .. }));
+    }
+
+    #[test]
+    fn allocate_single_manual_field() {
+        let fields = vec![field("balance", parse_quote!(U256), Some(5), None)];
+        let result = allocate_slots(&fields).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(*result[0].assigned_slot.ref_slot(), U256::from(5));
+        assert!(matches!(result[0].assigned_slot, SlotAssignment::Manual(_)));
+    }
+
+    #[test]
+    fn allocate_multiple_auto_fields_share_base_slot() {
+        let fields = vec![
+            field("a", parse_quote!(u8), None, None),
+            field("b", parse_quote!(u16), None, None),
+            field("c", parse_quote!(u32), None, None),
+        ];
+        let result = allocate_slots(&fields).unwrap();
+        // All three should share base_slot = 0 (packing decided at compile-time)
+        for r in &result {
+            assert!(matches!(r.assigned_slot, SlotAssignment::Auto { base_slot } if base_slot == U256::ZERO));
+        }
+    }
+
+    #[test]
+    fn allocate_manual_slot_does_not_advance_auto_chain() {
+        let fields = vec![
+            field("a", parse_quote!(u8), None, None),        // auto, base=0
+            field("b", parse_quote!(U256), Some(10), None),  // manual slot=10
+            field("c", parse_quote!(u8), None, None),        // auto, should still be base=0
+        ];
+        let result = allocate_slots(&fields).unwrap();
+        assert!(matches!(result[0].assigned_slot, SlotAssignment::Auto { base_slot } if base_slot == U256::ZERO));
+        assert!(matches!(result[1].assigned_slot, SlotAssignment::Manual(s) if s == U256::from(10)));
+        // Manual slot must NOT reset the auto chain
+        assert!(matches!(result[2].assigned_slot, SlotAssignment::Auto { base_slot } if base_slot == U256::ZERO));
+    }
+
+    #[test]
+    fn allocate_base_slot_resets_auto_chain() {
+        let fields = vec![
+            field("a", parse_quote!(u8), None, None),         // auto, base=0
+            field("b", parse_quote!(u8), None, Some(5)),      // base_slot=5
+            field("c", parse_quote!(u8), None, None),          // auto, should be base=5
+        ];
+        let result = allocate_slots(&fields).unwrap();
+        assert!(matches!(result[0].assigned_slot, SlotAssignment::Auto { base_slot } if base_slot == U256::ZERO));
+        assert!(matches!(result[1].assigned_slot, SlotAssignment::Auto { base_slot } if base_slot == U256::from(5)));
+        assert!(matches!(result[2].assigned_slot, SlotAssignment::Auto { base_slot } if base_slot == U256::from(5)));
+    }
+
+    #[test]
+    fn allocate_multiple_base_slot_resets() {
+        let fields = vec![
+            field("a", parse_quote!(u8), None, None),         // base=0
+            field("b", parse_quote!(u8), None, Some(3)),      // base=3
+            field("c", parse_quote!(u8), None, None),          // base=3
+            field("d", parse_quote!(u8), None, Some(10)),     // base=10
+            field("e", parse_quote!(u8), None, None),          // base=10
+        ];
+        let result = allocate_slots(&fields).unwrap();
+        assert_eq!(*result[0].assigned_slot.ref_slot(), U256::ZERO);
+        assert_eq!(*result[1].assigned_slot.ref_slot(), U256::from(3));
+        assert_eq!(*result[2].assigned_slot.ref_slot(), U256::from(3));
+        assert_eq!(*result[3].assigned_slot.ref_slot(), U256::from(10));
+        assert_eq!(*result[4].assigned_slot.ref_slot(), U256::from(10));
+    }
+
+    #[test]
+    fn allocate_interleaved_manual_and_base_slot() {
+        let fields = vec![
+            field("a", parse_quote!(u8), None, None),         // auto base=0
+            field("b", parse_quote!(U256), Some(50), None),   // manual=50
+            field("c", parse_quote!(u8), None, Some(20)),     // base_slot=20
+            field("d", parse_quote!(u8), None, None),          // auto base=20
+            field("e", parse_quote!(U256), Some(99), None),   // manual=99
+            field("f", parse_quote!(u8), None, None),          // auto base=20 (manual doesn't change chain)
+        ];
+        let result = allocate_slots(&fields).unwrap();
+        assert_eq!(*result[0].assigned_slot.ref_slot(), U256::ZERO);
+        assert!(matches!(result[1].assigned_slot, SlotAssignment::Manual(s) if s == U256::from(50)));
+        assert_eq!(*result[2].assigned_slot.ref_slot(), U256::from(20));
+        assert_eq!(*result[3].assigned_slot.ref_slot(), U256::from(20));
+        assert!(matches!(result[4].assigned_slot, SlotAssignment::Manual(s) if s == U256::from(99)));
+        assert_eq!(*result[5].assigned_slot.ref_slot(), U256::from(20));
+    }
+
+    #[test]
+    fn allocate_mapping_field_classified_correctly() {
+        let fields = vec![
+            field("balances", parse_quote!(Mapping<Address, U256>), None, None),
+        ];
+        let result = allocate_slots(&fields).unwrap();
+        assert_eq!(result.len(), 1);
+        assert!(matches!(result[0].kind, FieldKind::Mapping { .. }));
+    }
+
+    #[test]
+    fn allocate_direct_field_classified_correctly() {
+        let fields = vec![field("name", parse_quote!(String), None, None)];
+        let result = allocate_slots(&fields).unwrap();
+        assert!(matches!(result[0].kind, FieldKind::Direct(_)));
+    }
+
+    #[test]
+    fn allocate_mixed_direct_and_mapping() {
+        let fields = vec![
+            field("name", parse_quote!(String), None, None),
+            field("balances", parse_quote!(Mapping<Address, U256>), None, None),
+            field("supply", parse_quote!(U256), None, None),
+        ];
+        let result = allocate_slots(&fields).unwrap();
+        assert!(matches!(result[0].kind, FieldKind::Direct(_)));
+        assert!(matches!(result[1].kind, FieldKind::Mapping { .. }));
+        assert!(matches!(result[2].kind, FieldKind::Direct(_)));
+    }
+
+    #[test]
+    fn allocate_preserves_field_names_and_types() {
+        let fields = vec![
+            field("alpha", parse_quote!(u64), None, None),
+            field("beta", parse_quote!(U256), Some(7), None),
+        ];
+        let result = allocate_slots(&fields).unwrap();
+        assert_eq!(result[0].name.to_string(), "alpha");
+        assert_eq!(result[1].name.to_string(), "beta");
+    }
+
+    #[test]
+    fn allocate_base_slot_zero_explicit() {
+        // Explicitly setting base_slot=0 should behave same as default
+        let fields = vec![
+            field("a", parse_quote!(u8), None, Some(0)),
+            field("b", parse_quote!(u8), None, None),
+        ];
+        let result = allocate_slots(&fields).unwrap();
+        assert_eq!(*result[0].assigned_slot.ref_slot(), U256::ZERO);
+        assert_eq!(*result[1].assigned_slot.ref_slot(), U256::ZERO);
+    }
+
+    #[test]
+    fn allocate_large_manual_slot() {
+        let fields = vec![field(
+            "data",
+            parse_quote!(U256),
+            Some(u64::MAX),
+            None,
+        )];
+        let result = allocate_slots(&fields).unwrap();
+        assert!(matches!(result[0].assigned_slot, SlotAssignment::Manual(s) if s == U256::from(u64::MAX)));
+    }
+
+    // -- classify_field_type ----------------------------------------------------
+
+    #[test]
+    fn classify_simple_type_is_direct() {
+        let ty: Type = parse_quote!(u64);
+        assert!(matches!(classify_field_type(&ty).unwrap(), FieldKind::Direct(_)));
+    }
+
+    #[test]
+    fn classify_mapping_type() {
+        let ty: Type = parse_quote!(Mapping<Address, U256>);
+        assert!(matches!(classify_field_type(&ty).unwrap(), FieldKind::Mapping { .. }));
+    }
+
+    #[test]
+    fn classify_nested_mapping_type() {
+        let ty: Type = parse_quote!(Mapping<Address, Mapping<Address, U256>>);
+        if let FieldKind::Mapping { key: _, value } = classify_field_type(&ty).unwrap() {
+            // The value type should itself be a Mapping
+            assert!(extract_mapping_types(value).is_some());
+        } else {
+            panic!("expected Mapping kind");
+        }
+    }
+
+    #[test]
+    fn classify_non_mapping_generic_is_direct() {
+        let ty: Type = parse_quote!(Vec<u8>);
+        assert!(matches!(classify_field_type(&ty).unwrap(), FieldKind::Direct(_)));
+    }
+
+    // -- PackingConstants -------------------------------------------------------
+
+    #[test]
+    fn packing_constants_naming() {
+        let name = Ident::new("total_supply", proc_macro2::Span::call_site());
+        let consts = PackingConstants::new(&name);
+        assert_eq!(consts.location().to_string(), "TOTAL_SUPPLY_LOC");
+        let (slot, offset) = consts.into_tuple();
+        assert_eq!(slot.to_string(), "TOTAL_SUPPLY");
+        assert_eq!(offset.to_string(), "TOTAL_SUPPLY_OFFSET");
+    }
+
+    #[test]
+    fn const_name_screaming_snake() {
+        let name = Ident::new("my_field", proc_macro2::Span::call_site());
+        assert_eq!(const_name(&name), "MY_FIELD");
+    }
+
+    // -- SlotAssignment ---------------------------------------------------------
+
+    #[test]
+    fn slot_assignment_ref_slot_manual() {
+        let sa = SlotAssignment::Manual(U256::from(42));
+        assert_eq!(*sa.ref_slot(), U256::from(42));
+    }
+
+    #[test]
+    fn slot_assignment_ref_slot_auto() {
+        let sa = SlotAssignment::Auto { base_slot: U256::from(7) };
+        assert_eq!(*sa.ref_slot(), U256::from(7));
+    }
+
+    use crate::utils::extract_mapping_types;
+}
