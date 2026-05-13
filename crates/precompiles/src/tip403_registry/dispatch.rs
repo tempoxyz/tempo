@@ -476,7 +476,7 @@ mod tests {
             Ok(())
         })?;
 
-        // Pre-T1 (T0): insufficient data returns error
+        // Pre-T1 (T0): insufficient data returns halted output
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T0);
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();

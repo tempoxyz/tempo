@@ -68,7 +68,7 @@ crate::sol! {
         // Standard token functions
         function name() external view returns (string memory);
         function symbol() external view returns (string memory);
-        function decimals() external view returns (uint8);
+        function decimals() external pure returns (uint8);
         function totalSupply() external view returns (uint256);
         function quoteToken() external view returns (address);
         function nextQuoteToken() external view returns (address);
@@ -85,6 +85,8 @@ crate::sol! {
         function supplyCap() external view returns (uint256);
         function paused() external view returns (bool);
         function transferPolicyId() external view returns (uint64);
+        function logoURI() external view returns (string memory);
+        function setLogoURI(string calldata newLogoURI) external;
         function burnBlocked(address from, uint256 amount) external;
         function mintWithMemo(address to, uint256 amount, bytes32 memo) external;
         function burnWithMemo(uint256 amount, bytes32 memo) external;
@@ -149,6 +151,7 @@ crate::sol! {
         event QuoteTokenUpdate(address indexed updater, address indexed newQuoteToken);
         event RewardDistributed(address indexed funder, uint256 amount);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
+        event LogoURIUpdated(address indexed updater, string newLogoURI);
 
         // Errors
         error InsufficientBalance(uint256 available, uint256 required, address token);
@@ -156,13 +159,11 @@ crate::sol! {
         error SupplyCapExceeded();
         error InvalidSupplyCap();
         error InvalidPayload();
-        error StringTooLong();
         error PolicyForbids();
         error InvalidRecipient();
         error ContractPaused();
         error InvalidCurrency();
         error InvalidQuoteToken();
-        error TransfersDisabled();
         error InvalidAmount();
         error NoOptedInSupply();
         error Unauthorized();
@@ -172,6 +173,8 @@ crate::sol! {
         error InvalidTransferPolicyId();
         error PermitExpired();
         error InvalidSignature();
+        error LogoURITooLong();
+        error InvalidLogoURI();
     }
 }
 
@@ -179,6 +182,7 @@ impl ITIP20::ITIP20Calls {
     /// Returns `true` if `input` matches one of the recognized [TIP-20 payment] selectors:
     /// - `transfer` / `transferWithMemo`
     /// - `transferFrom` / `transferFromWithMemo`
+    /// - `approve`
     /// - `mint` / `mintWithMemo`
     /// - `burn` / `burnWithMemo`
     ///
@@ -253,11 +257,6 @@ impl TIP20Error {
         Self::InvalidQuoteToken(ITIP20::InvalidQuoteToken {})
     }
 
-    /// Creates an error when string parameter exceeds maximum length.
-    pub const fn string_too_long() -> Self {
-        Self::StringTooLong(ITIP20::StringTooLong {})
-    }
-
     /// Creates an error when transfer is forbidden by policy.
     pub const fn policy_forbids() -> Self {
         Self::PolicyForbids(ITIP20::PolicyForbids {})
@@ -276,11 +275,6 @@ impl TIP20Error {
     /// Creates an error for invalid currency.
     pub const fn invalid_currency() -> Self {
         Self::InvalidCurrency(ITIP20::InvalidCurrency {})
-    }
-
-    /// Creates an error for transfers being disabled.
-    pub const fn transfers_disabled() -> Self {
-        Self::TransfersDisabled(ITIP20::TransfersDisabled {})
     }
 
     /// Creates an error for invalid amount.
@@ -321,6 +315,17 @@ impl TIP20Error {
     /// Error when permit signature is invalid
     pub const fn invalid_signature() -> Self {
         Self::InvalidSignature(ITIP20::InvalidSignature {})
+    }
+
+    /// Error when logoURI exceeds 256 bytes (TIP-1026)
+    pub const fn logo_uri_too_long() -> Self {
+        Self::LogoURITooLong(ITIP20::LogoURITooLong {})
+    }
+
+    /// Error when logoURI is not a syntactically valid URI or its scheme is
+    /// not in the protocol allowlist (TIP-1026).
+    pub const fn invalid_logo_uri() -> Self {
+        Self::InvalidLogoURI(ITIP20::InvalidLogoURI {})
     }
 }
 

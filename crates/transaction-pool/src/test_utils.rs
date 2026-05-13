@@ -8,21 +8,16 @@ use alloy_consensus::{Transaction, TxEip1559};
 use alloy_eips::eip2930::AccessList;
 use alloy_primitives::{Address, B256, Signature, TxKind, U256};
 use core::num::NonZeroU64;
-use reth_chainspec::EthChainSpec;
 use reth_primitives_traits::Recovered;
 use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
 use reth_transaction_pool::{TransactionOrigin, ValidPoolTransaction};
 use std::time::Instant;
-use tempo_chainspec::{
-    TempoChainSpec,
-    hardfork::TempoHardfork,
-    spec::{DEV, MODERATO},
-};
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::DEV};
 use tempo_precompiles::storage::{StorageCtx, hashmap::HashMapStorageProvider};
 use tempo_primitives::{
     TempoPrimitives, TempoTxEnvelope,
     transaction::{
-        TempoSignedAuthorization, TempoTransaction,
+        SignedKeyAuthorization, TempoSignedAuthorization, TempoTransaction,
         tempo_transaction::Call,
         tt_signature::{KeychainVersion, PrimitiveSignature, TempoSignature},
         tt_signed::AASigned,
@@ -66,6 +61,8 @@ pub(crate) struct TxBuilder {
     calls: Option<Vec<Call>>,
     /// Authorization list for AA transactions.
     authorization_list: Option<Vec<TempoSignedAuthorization>>,
+    /// Inline key authorization for AA transactions.
+    key_authorization: Option<SignedKeyAuthorization>,
     /// Access list for AA transactions.
     access_list: AccessList,
 }
@@ -87,6 +84,7 @@ impl Default for TxBuilder {
             chain_id: 42431, // MODERATO chain_id
             calls: None,
             authorization_list: None,
+            key_authorization: None,
             access_list: Default::default(),
         }
     }
@@ -179,6 +177,12 @@ impl TxBuilder {
         self
     }
 
+    /// Set the inline key authorization for the AA transaction.
+    pub(crate) fn key_authorization(mut self, key_authorization: SignedKeyAuthorization) -> Self {
+        self.key_authorization = Some(key_authorization);
+        self
+    }
+
     /// Set the access list for the AA transaction.
     pub(crate) fn access_list(mut self, access_list: AccessList) -> Self {
         self.access_list = access_list;
@@ -196,7 +200,7 @@ impl TxBuilder {
         });
 
         let tx = TempoTransaction {
-            chain_id: MODERATO.chain_id(),
+            chain_id: self.chain_id,
             max_priority_fee_per_gas: self.max_priority_fee_per_gas,
             max_fee_per_gas: self.max_fee_per_gas,
             gas_limit: self.gas_limit,
@@ -209,7 +213,7 @@ impl TxBuilder {
             valid_before: self.valid_before,
             access_list: self.access_list,
             tempo_authorization_list: self.authorization_list.unwrap_or_default(),
-            key_authorization: None,
+            key_authorization: self.key_authorization,
         };
 
         let signature =
@@ -252,7 +256,7 @@ impl TxBuilder {
         });
 
         let tx = TempoTransaction {
-            chain_id: 1,
+            chain_id: self.chain_id,
             max_priority_fee_per_gas: self.max_priority_fee_per_gas,
             max_fee_per_gas: self.max_fee_per_gas,
             gas_limit: self.gas_limit,
@@ -265,7 +269,7 @@ impl TxBuilder {
             valid_before: self.valid_before,
             access_list: self.access_list,
             tempo_authorization_list: self.authorization_list.unwrap_or_default(),
-            key_authorization: None,
+            key_authorization: self.key_authorization,
         };
 
         // Create a temp AASigned to get the signature hash

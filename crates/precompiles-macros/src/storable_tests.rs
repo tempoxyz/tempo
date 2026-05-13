@@ -68,8 +68,8 @@ fn gen_alloy_unsigned_arbitrary() -> TokenStream {
             let fn_name = quote::format_ident!("arb_u{size}_alloy");
 
             quote! {
-                fn #fn_name() -> impl Strategy<Value = ::alloy::primitives::#type_name> {
-                    Just(()).prop_perturb(|_, _| ::alloy::primitives::#type_name::random())
+                fn #fn_name() -> impl Strategy<Value = ::alloy::primitives::aliases::#type_name> {
+                    Just(()).prop_perturb(|_, _| ::alloy::primitives::aliases::#type_name::random())
                 }
             }
         })
@@ -93,23 +93,23 @@ fn gen_alloy_signed_arbitrary() -> TokenStream {
             vec![
                 // Any signed value
                 quote! {
-                    fn #arb_any_fn() -> impl Strategy<Value = ::alloy::primitives::#signed_type> {
-                        #arb_unsigned_fn().prop_map(|u| ::alloy::primitives::#signed_type::from_raw(u))
+                    fn #arb_any_fn() -> impl Strategy<Value = ::alloy::primitives::aliases::#signed_type> {
+                        #arb_unsigned_fn().prop_map(|u| ::alloy::primitives::aliases::#signed_type::from_raw(u))
                     }
                 },
                 // Positive values only
                 quote! {
-                    fn #arb_pos_fn() -> impl Strategy<Value = ::alloy::primitives::#signed_type> {
+                    fn #arb_pos_fn() -> impl Strategy<Value = ::alloy::primitives::aliases::#signed_type> {
                         #arb_unsigned_fn().prop_map(|u| {
-                            ::alloy::primitives::#signed_type::from_raw(
-                                u & (::alloy::primitives::#unsigned_type::MAX >> 1)
+                            ::alloy::primitives::aliases::#signed_type::from_raw(
+                                u & (::alloy::primitives::aliases::#unsigned_type::MAX >> 1)
                             )
                         })
                     }
                 },
                 // Negative values only
                 quote! {
-                    fn #arb_neg_fn() -> impl Strategy<Value = ::alloy::primitives::#signed_type> {
+                    fn #arb_neg_fn() -> impl Strategy<Value = ::alloy::primitives::aliases::#signed_type> {
                         #arb_pos_fn().prop_map(|i| -i)
                     }
                 },
@@ -273,7 +273,7 @@ fn gen_alloy_unsigned_tests() -> TokenStream {
                 fn #test_name(value in #arb_fn(), base_slot in arb_safe_slot()) {
                     let (mut storage, address) = setup_storage();
                     StorageCtx::enter(&mut storage, || {
-                        let mut slot = Slot::<::alloy::primitives::#type_name>::new(base_slot, address);
+                        let mut slot = Slot::<::alloy::primitives::aliases::#type_name>::new(base_slot, address);
 
                         // Verify store → load roundtrip
                         slot.write(value).unwrap();
@@ -285,13 +285,13 @@ fn gen_alloy_unsigned_tests() -> TokenStream {
                         let after_delete = slot.read().unwrap();
                         assert_eq!(
                             after_delete,
-                            ::alloy::primitives::#type_name::ZERO,
+                            ::alloy::primitives::aliases::#type_name::ZERO,
                             concat!(#label, " not zero after delete")
                         );
 
                         // EVM word roundtrip
                         let word = value.to_word();
-                        let recovered = ::alloy::primitives::#type_name::from_word(word).unwrap();
+                        let recovered = ::alloy::primitives::aliases::#type_name::from_word(word).unwrap();
                         assert_eq!(value, recovered, concat!(#label, " EVM word roundtrip failed"));
 
                     });
@@ -328,7 +328,7 @@ fn gen_alloy_signed_tests() -> TokenStream {
                     fn #pos_test_name(value in #arb_pos_fn(), base_slot in arb_safe_slot()) {
                         let (mut storage, address) = setup_storage();
                         StorageCtx::enter(&mut storage, || {
-                            let mut slot = Slot::<::alloy::primitives::#type_name>::new(base_slot, address);
+                            let mut slot = Slot::<::alloy::primitives::aliases::#type_name>::new(base_slot, address);
 
                             // Verify store → load roundtrip
                             slot.write(value).unwrap();
@@ -340,13 +340,13 @@ fn gen_alloy_signed_tests() -> TokenStream {
                             let after_delete = slot.read().unwrap();
                             assert_eq!(
                                 after_delete,
-                                ::alloy::primitives::#type_name::ZERO,
+                                ::alloy::primitives::aliases::#type_name::ZERO,
                                 concat!(#label, " not zero after delete")
                             );
 
                             // EVM word roundtrip
                             let word = value.to_word();
-                            let recovered = ::alloy::primitives::#type_name::from_word(word).unwrap();
+                            let recovered = ::alloy::primitives::aliases::#type_name::from_word(word).unwrap();
                             assert_eq!(value, recovered, concat!(#label, " positive EVM word roundtrip failed"));
                         });
                     }
@@ -357,7 +357,7 @@ fn gen_alloy_signed_tests() -> TokenStream {
                     fn #neg_test_name(value in #arb_neg_fn(), base_slot in arb_safe_slot()) {
                         let (mut storage, address) = setup_storage();
                         StorageCtx::enter(&mut storage, || {
-                            let mut slot = Slot::<::alloy::primitives::#type_name>::new(base_slot, address);
+                            let mut slot = Slot::<::alloy::primitives::aliases::#type_name>::new(base_slot, address);
 
                             // Verify store → load roundtrip
                             slot.write(value).unwrap();
@@ -369,13 +369,13 @@ fn gen_alloy_signed_tests() -> TokenStream {
                             let after_delete = slot.read().unwrap();
                             assert_eq!(
                                 after_delete,
-                                ::alloy::primitives::#type_name::ZERO,
+                                ::alloy::primitives::aliases::#type_name::ZERO,
                                 concat!(#label, " not zero after delete")
                             );
 
                             // EVM word roundtrip
                             let word = value.to_word();
-                            let recovered = ::alloy::primitives::#type_name::from_word(word).unwrap();
+                            let recovered = ::alloy::primitives::aliases::#type_name::from_word(word).unwrap();
                             assert_eq!(value, recovered, concat!(#label, " negative EVM word roundtrip failed"));
                         });
                     }

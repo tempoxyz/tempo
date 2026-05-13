@@ -5,13 +5,13 @@
 # and the Argo invariant-tests workflow.
 #
 # Usage:
-#   scripts/patch-foundry-cargo.sh <tempo_root> <foundry_root>
+#   scripts/foundry-patch.sh <tempo_root> <foundry_root>
 #
 # Example (GHA – repos side-by-side):
-#   scripts/patch-foundry-cargo.sh "$GITHUB_WORKSPACE/tempo" "$GITHUB_WORKSPACE/foundry"
+#   scripts/foundry-patch.sh "$GITHUB_WORKSPACE/tempo" "$GITHUB_WORKSPACE/foundry"
 #
 # Example (Argo – /workspace layout):
-#   /workspace/scripts/patch-foundry-cargo.sh /workspace /workspace/foundry
+#   /workspace/scripts/foundry-patch.sh /workspace /workspace/foundry
 
 set -euo pipefail
 
@@ -69,18 +69,102 @@ fi
 while IFS=$'\t' read -r crate path; do
   [[ -n "$crate" ]] || continue
   local_path="${TEMPO_ROOT}/${path}"
-  if sed -n '/^\[patch\.crates-io\]/,/^\[/{/^'"${crate}"' = /p}' "$FOUNDRY_CARGO" | grep -q .; then
-    sed -i'' '/^\[patch\.crates-io\]/,/^\[/{s|^'"${crate}"' = .*|'"${crate}"' = { path = "'"${local_path}"'" }|}' "$FOUNDRY_CARGO"
-  else
-    sed -i'' "/^\[patch\.crates-io\]/a ${crate} = { path = \"${local_path}\" }" "$FOUNDRY_CARGO"
-  fi
+  replacement="${crate} = { path = \"${local_path}\" }"
+  tmp_cargo="$(mktemp "${FOUNDRY_CARGO}.XXXXXX")"
+  awk -v crate="$crate" -v replacement="$replacement" '
+    /^\[patch\.crates-io\]/ {
+      seen = 1
+      in_section = 1
+      print
+      next
+    }
+    in_section && /^\[/ {
+      if (!done) {
+        print replacement
+        done = 1
+      }
+      in_section = 0
+    }
+    in_section && index($0, crate " = ") == 1 {
+      if (!done) {
+        print replacement
+        done = 1
+      }
+      next
+    }
+    { print }
+    END {
+      if (!seen) {
+        print ""
+        print "[patch.crates-io]"
+        print replacement
+      } else if (in_section && !done) {
+        print replacement
+      }
+    }
+  ' "$FOUNDRY_CARGO" > "$tmp_cargo"
+  mv "$tmp_cargo" "$FOUNDRY_CARGO"
 done <<< "$PATCHES"
 
 echo "Updated Cargo.toml patch sections:"
 sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
 
-# ── 4. Re-resolve the lockfile ──────────────────────────────────────────────
-(cd "$FOUNDRY_ROOT" && cargo update)
+# ── 4. Re-resolve the lockfile without upgrading unrelated crates ──────────
+# `cargo update` can pull newer upstream deps from Foundry's workspace, which is non-deterministic.
+# A normal resolver pass is enough to rewrite the lockfile entries for the tempo path overrides.
+# Keep this aligned with the CI Forge build so Optimism-only dependencies do not re-enter resolution.
+#
+# When tempo's reth bump introduces a stricter constraint on a transitive crate
+# already pinned in foundry's lockfile (e.g. reth bumps `alloy-eip7928` to ^0.3.6
+# while foundry's lock has 0.3.5), cargo cannot resolve it without an update.
+# On such failures, parse the conflicting package out of the error and run a
+# targeted `cargo update -p <pkg>` for it, then retry. Loop while there are
+# pending conflicts so several distinct crates can be resolved in one run
+# without falling back to a blanket `cargo update`. Bail out if the same crate
+# conflicts twice in a row (i.e. `cargo update` made no progress).
+pushd "$FOUNDRY_ROOT" >/dev/null
+prev_conflict_pkg=""
+while true; do
+  err="$(cargo metadata --format-version=1 --no-default-features 2>&1 >/dev/null)" && break
+  conflict_pkg="$(printf '%s\n' "$err" | sed -nE "s/^error: failed to select a version for \`([^']+)\`.*/\1/p" | head -n1)"
+  if [[ -z "$conflict_pkg" || "$conflict_pkg" == "$prev_conflict_pkg" ]]; then
+    printf '%s\n' "$err" >&2
+    exit 1
+  fi
+  echo "cargo metadata failed on '$conflict_pkg' constraint; running 'cargo update -p $conflict_pkg' and retrying"
+  cargo update -p "$conflict_pkg" >/dev/null
+  prev_conflict_pkg="$conflict_pkg"
+done
+
+stale_tempo_pkgs="$(
+  awk '
+    /^\[\[package\]\]/ {
+      name = ""
+      next
+    }
+    /^name = / {
+      name = $3
+      gsub(/"/, "", name)
+      next
+    }
+    /^source = "git\+https:\/\/github.com\/tempoxyz\/tempo\?rev=/ {
+      if (name != "") {
+        print name
+      }
+    }
+  ' Cargo.lock | sort -u
+)"
+if [[ -n "$stale_tempo_pkgs" ]]; then
+  update_args=()
+  while IFS= read -r pkg; do
+    [[ -n "$pkg" ]] || continue
+    update_args+=("-p" "$pkg")
+  done <<< "$stale_tempo_pkgs"
+  echo "Cargo.lock still contains stale Tempo git packages; running 'cargo update ${update_args[*]}'"
+  cargo update "${update_args[@]}" >/dev/null
+  cargo metadata --format-version=1 --no-default-features >/dev/null
+fi
+popd >/dev/null
 
 if grep -q '^source = "git+https://github.com/tempoxyz/tempo?rev=' "$FOUNDRY_ROOT/Cargo.lock"; then
   echo "ERROR: Tempo git sources still present in Cargo.lock after patching:" >&2

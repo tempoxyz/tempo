@@ -1,4 +1,4 @@
-use std::{pin::Pin, time::Duration};
+use std::{pin::Pin, sync::Arc, time::Duration};
 
 use alloy_consensus::{BlockHeader as _, Sealable as _};
 use commonware_codec::ReadExt as _;
@@ -38,7 +38,7 @@ where
     context: ContextCell<TContext>,
 
     oracle: TPeerManager,
-    execution_node: TempoFullNode,
+    execution_node: Arc<TempoFullNode>,
     epoch_strategy: FixedEpocher,
     last_finalized_height: Height,
     mailbox: mpsc::UnboundedReceiver<MessageWithCause>,
@@ -113,7 +113,7 @@ where
         info_span!("peer_manager").in_scope(|| error!(%reason,"agent shutting down"));
     }
     pub(crate) fn start(mut self) -> commonware_runtime::Handle<()> {
-        spawn_cell!(self.context, self.run().await)
+        spawn_cell!(self.context, self.run())
     }
 
     #[instrument(parent = &cause, skip_all)]

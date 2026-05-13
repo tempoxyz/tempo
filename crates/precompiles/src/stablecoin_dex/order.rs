@@ -6,6 +6,7 @@
 
 use crate::stablecoin_dex::{IStablecoinDEX, error::OrderError};
 use alloy::primitives::{Address, B256};
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles_macros::Storable;
 
 /// Represents an order in the stablecoin DEX orderbook.
@@ -31,7 +32,7 @@ use tempo_precompiles_macros::Storable;
 /// # Onchain Storage
 /// Orders are stored onchain in doubly linked lists organized by tick.
 /// Each tick maintains a FIFO queue of orders using `prev` and `next` pointers.
-#[derive(Debug, Clone, PartialEq, Eq, Storable)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
 pub struct Order {
     /// Unique identifier for this order
     pub order_id: u128,
@@ -53,9 +54,9 @@ pub struct Order {
     pub next: u128,
     /// Whether this is a flip order
     pub is_flip: bool,
-    /// Tick to flip to when fully filled (for flip orders, 0 for regular orders)
-    /// For bid flips: flip_tick must be > tick
-    /// For ask flips: flip_tick must be < tick
+    /// Tick to flip to when fully filled (for flip orders, 0 for regular orders).
+    /// Pre-T5: for bid flips `flip_tick > tick`; for ask flips `flip_tick < tick`.
+    /// T5+ (TIP-1030): for bid flips `flip_tick >= tick`; for ask flips `flip_tick <= tick`.
     pub flip_tick: i16,
 }
 
@@ -112,9 +113,14 @@ impl Order {
     /// Creates a new flip order with `prev` and `next` initialized to 0.
     /// The orderbook sets linked-list pointers when inserting.
     ///
+    /// The `hardfork` parameter controls flip-tick validation:
+    /// - Pre-T5: for bid flips `flip_tick > tick`; for ask flips `flip_tick < tick`.
+    /// - T5+ (TIP-1030): for bid flips `flip_tick >= tick`; for ask flips `flip_tick <= tick`.
+    ///
     /// # Errors
-    /// - `InvalidBidFlipTick` — `is_bid` is true and `flip_tick <= tick`
-    /// - `InvalidAskFlipTick` — `is_bid` is false and `flip_tick >= tick`
+    /// - `InvalidBidFlipTick` - `is_bid` is true and `flip_tick < tick`
+    /// - `InvalidAskFlipTick` - `is_bid` is false and `flip_tick > tick`
+    #[allow(clippy::too_many_arguments)]
     pub fn new_flip(
         order_id: u128,
         maker: Address,
@@ -123,14 +129,22 @@ impl Order {
         tick: i16,
         is_bid: bool,
         flip_tick: i16,
+        hardfork: TempoHardfork,
     ) -> Result<Self, OrderError> {
-        // Validate flip tick constraint
-        if is_bid {
-            if flip_tick <= tick {
-                return Err(OrderError::InvalidBidFlipTick { tick, flip_tick });
-            }
-        } else if flip_tick >= tick {
-            return Err(OrderError::InvalidAskFlipTick { tick, flip_tick });
+        // TIP-1030 (T5+) relaxes the constraint to allow `flip_tick == tick`.
+        let t5_active = hardfork.is_t5();
+        let invalid = if is_bid {
+            flip_tick < tick || (!t5_active && flip_tick == tick)
+        } else {
+            flip_tick > tick || (!t5_active && flip_tick == tick)
+        };
+
+        if invalid {
+            return Err(if is_bid {
+                OrderError::InvalidBidFlipTick { tick, flip_tick }
+            } else {
+                OrderError::InvalidAskFlipTick { tick, flip_tick }
+            });
         }
 
         Ok(Self::new(
@@ -244,25 +258,11 @@ impl Order {
     /// - New flip_tick = original tick
     /// - Amount is the same as original
     /// - Linked list pointers are reset to 0 (will be set by orderbook on insertion)
-    ///
-    /// # Errors
-    /// - `NotAFlipOrder` — called on a non-flip order
-    /// - `OrderNotFullyFilled` — `remaining` is not zero
-    pub fn create_flipped_order(&self, new_order_id: u128) -> Result<Self, OrderError> {
-        // Check if this is a flip order
-        if !self.is_flip {
-            return Err(OrderError::NotAFlipOrder);
-        }
-
-        // Check if fully filled
-        if self.remaining != 0 {
-            return Err(OrderError::OrderNotFullyFilled {
-                remaining: self.remaining,
-            });
-        }
+    pub(crate) fn create_flipped_order(&self, new_order_id: u128) -> Self {
+        debug_assert!(self.is_flip());
 
         // Create flipped order
-        Ok(Self {
+        Self {
             order_id: new_order_id,
             maker: self.maker,
             book_key: self.book_key,
@@ -274,7 +274,7 @@ impl Order {
             next: 0,
             is_flip: true,        // Keep as flip order
             flip_tick: self.tick, // Old tick becomes new flip_tick
-        })
+        }
     }
 }
 
@@ -340,7 +340,17 @@ mod tests {
 
     #[test]
     fn test_new_flip_order_bid() {
-        let order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
+        let order = Order::new_flip(
+            1,
+            TEST_MAKER,
+            TEST_BOOK_KEY,
+            1000,
+            5,
+            true,
+            10,
+            TempoHardfork::T4,
+        )
+        .unwrap();
 
         assert!(order.is_flip());
         assert_eq!(order.flip_tick(), 10);
@@ -350,7 +360,17 @@ mod tests {
 
     #[test]
     fn test_new_flip_order_ask() {
-        let order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, false, 2).unwrap();
+        let order = Order::new_flip(
+            1,
+            TEST_MAKER,
+            TEST_BOOK_KEY,
+            1000,
+            5,
+            false,
+            2,
+            TempoHardfork::T4,
+        )
+        .unwrap();
 
         assert!(order.is_flip());
         assert_eq!(order.flip_tick(), 2);
@@ -361,16 +381,135 @@ mod tests {
 
     #[test]
     fn test_new_flip_order_bid_invalid_flip_tick() {
-        let result = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 3);
+        let result = Order::new_flip(
+            1,
+            TEST_MAKER,
+            TEST_BOOK_KEY,
+            1000,
+            5,
+            true,
+            3,
+            TempoHardfork::T4,
+        );
 
         assert!(matches!(result, Err(OrderError::InvalidBidFlipTick { .. })));
     }
 
     #[test]
     fn test_new_flip_order_ask_invalid_flip_tick() {
-        let result = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, false, 7);
+        let result = Order::new_flip(
+            1,
+            TEST_MAKER,
+            TEST_BOOK_KEY,
+            1000,
+            5,
+            false,
+            7,
+            TempoHardfork::T4,
+        );
 
         assert!(matches!(result, Err(OrderError::InvalidAskFlipTick { .. })));
+    }
+
+    #[test]
+    fn test_new_flip_order_bid_same_tick_rejected() {
+        // Pre-T5: same-tick bid flip is rejected
+        let result = Order::new_flip(
+            1,
+            TEST_MAKER,
+            TEST_BOOK_KEY,
+            1000,
+            5,
+            true,
+            5,
+            TempoHardfork::T4,
+        );
+        assert!(matches!(result, Err(OrderError::InvalidBidFlipTick { .. })));
+    }
+
+    #[test]
+    fn test_new_flip_order_ask_same_tick_rejected() {
+        // Pre-T5: same-tick ask flip is rejected
+        let result = Order::new_flip(
+            1,
+            TEST_MAKER,
+            TEST_BOOK_KEY,
+            1000,
+            5,
+            false,
+            5,
+            TempoHardfork::T4,
+        );
+        assert!(matches!(result, Err(OrderError::InvalidAskFlipTick { .. })));
+    }
+
+    #[test]
+    fn test_new_flip_order_bid_same_tick_accepted() {
+        // TIP-1030 (T5+): same-tick bid flip is accepted
+        let order = Order::new_flip(
+            1,
+            TEST_MAKER,
+            TEST_BOOK_KEY,
+            1000,
+            5,
+            true,
+            5,
+            TempoHardfork::T5,
+        )
+        .unwrap();
+        assert!(order.is_flip());
+        assert_eq!(order.tick(), 5);
+        assert_eq!(order.flip_tick(), 5);
+        assert!(order.is_bid());
+    }
+
+    #[test]
+    fn test_new_flip_t5_still_rejects_wrong_side() {
+        // TIP-1030 (T5+): flip_tick < tick still rejected for bids
+        let result = Order::new_flip(
+            1,
+            TEST_MAKER,
+            TEST_BOOK_KEY,
+            1000,
+            5,
+            true,
+            3,
+            TempoHardfork::T5,
+        );
+        assert!(matches!(result, Err(OrderError::InvalidBidFlipTick { .. })));
+
+        // TIP-1030 (T5+): flip_tick > tick still rejected for asks
+        let result = Order::new_flip(
+            1,
+            TEST_MAKER,
+            TEST_BOOK_KEY,
+            1000,
+            5,
+            false,
+            7,
+            TempoHardfork::T5,
+        );
+        assert!(matches!(result, Err(OrderError::InvalidAskFlipTick { .. })));
+    }
+
+    #[test]
+    fn test_new_flip_order_ask_same_tick_accepted() {
+        // TIP-1030 (T5+): same-tick ask flip is accepted
+        let order = Order::new_flip(
+            1,
+            TEST_MAKER,
+            TEST_BOOK_KEY,
+            1000,
+            5,
+            false,
+            5,
+            TempoHardfork::T5,
+        )
+        .unwrap();
+        assert!(order.is_flip());
+        assert_eq!(order.tick(), 5);
+        assert_eq!(order.flip_tick(), 5);
+        assert!(order.is_ask());
     }
 
     #[test]
@@ -410,14 +549,24 @@ mod tests {
 
     #[test]
     fn test_create_flipped_order_bid_to_ask() {
-        let mut order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
+        let mut order = Order::new_flip(
+            1,
+            TEST_MAKER,
+            TEST_BOOK_KEY,
+            1000,
+            5,
+            true,
+            10,
+            TempoHardfork::T4,
+        )
+        .unwrap();
 
         // Fully fill the order
         order.fill(1000).unwrap();
         assert!(order.is_fully_filled());
 
         // Create flipped order
-        let flipped = order.create_flipped_order(2).unwrap();
+        let flipped = order.create_flipped_order(2);
 
         assert_eq!(flipped.order_id(), 2);
         assert_eq!(flipped.maker(), order.maker());
@@ -433,35 +582,25 @@ mod tests {
 
     #[test]
     fn test_create_flipped_order_ask_to_bid() {
-        let mut order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 10, false, 5).unwrap();
+        let mut order = Order::new_flip(
+            1,
+            TEST_MAKER,
+            TEST_BOOK_KEY,
+            1000,
+            10,
+            false,
+            5,
+            TempoHardfork::T4,
+        )
+        .unwrap();
 
         order.fill(1000).unwrap();
-        let flipped = order.create_flipped_order(2).unwrap();
+        let flipped = order.create_flipped_order(2);
 
         assert!(flipped.is_bid()); // Flipped from ask to bid
         assert!(!flipped.is_ask());
         assert_eq!(flipped.tick(), 5); // Old flip_tick
         assert_eq!(flipped.flip_tick(), 10); // Old tick
-    }
-
-    #[test]
-    fn test_create_flipped_order_non_flip() {
-        let mut order = Order::new_bid(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5);
-
-        order.fill(1000).unwrap();
-        let result = order.create_flipped_order(2);
-        assert!(matches!(result, Err(OrderError::NotAFlipOrder)));
-    }
-
-    #[test]
-    fn test_create_flipped_order_not_filled() {
-        let order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
-
-        let result = order.create_flipped_order(2);
-        assert!(matches!(
-            result,
-            Err(OrderError::OrderNotFullyFilled { .. })
-        ));
     }
 
     #[test]
@@ -483,11 +622,21 @@ mod tests {
     #[test]
     fn test_multiple_flips() {
         // Test that an order can flip multiple times
-        let mut order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
+        let mut order = Order::new_flip(
+            1,
+            TEST_MAKER,
+            TEST_BOOK_KEY,
+            1000,
+            5,
+            true,
+            10,
+            TempoHardfork::T4,
+        )
+        .unwrap();
 
         // First flip: bid -> ask
         order.fill(1000).unwrap();
-        let mut flipped1 = order.create_flipped_order(2).unwrap();
+        let mut flipped1 = order.create_flipped_order(2);
 
         assert!(!flipped1.is_bid());
         assert!(flipped1.is_ask());
@@ -496,7 +645,7 @@ mod tests {
 
         // Second flip: ask -> bid
         flipped1.fill(1000).unwrap();
-        let flipped2 = flipped1.create_flipped_order(3).unwrap();
+        let flipped2 = flipped1.create_flipped_order(3);
 
         assert!(flipped2.is_bid());
         assert!(!flipped2.is_ask());
@@ -540,7 +689,17 @@ mod tests {
 
     #[test]
     fn test_flipped_order_resets_linked_list_pointers() {
-        let mut order = Order::new_flip(1, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
+        let mut order = Order::new_flip(
+            1,
+            TEST_MAKER,
+            TEST_BOOK_KEY,
+            1000,
+            5,
+            true,
+            10,
+            TempoHardfork::T4,
+        )
+        .unwrap();
 
         // Set linked list pointers on original order
         order.set_prev(100);
@@ -550,7 +709,7 @@ mod tests {
         order.fill(1000).unwrap();
 
         // Create flipped order
-        let flipped = order.create_flipped_order(2).unwrap();
+        let flipped = order.create_flipped_order(2);
 
         // Flipped order should have reset pointers
         assert_eq!(flipped.prev(), 0);
@@ -564,7 +723,17 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
 
             let id = 42;
-            let order = Order::new_flip(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
+            let order = Order::new_flip(
+                id,
+                TEST_MAKER,
+                TEST_BOOK_KEY,
+                1000,
+                5,
+                true,
+                10,
+                TempoHardfork::T4,
+            )
+            .unwrap();
             exchange.orders[id].write(order)?;
 
             let loaded_order = exchange.orders[id].read()?;
@@ -591,7 +760,17 @@ mod tests {
             let mut exchange = StablecoinDEX::new();
 
             let id = 42;
-            let order = Order::new_flip(id, TEST_MAKER, TEST_BOOK_KEY, 1000, 5, true, 10).unwrap();
+            let order = Order::new_flip(
+                id,
+                TEST_MAKER,
+                TEST_BOOK_KEY,
+                1000,
+                5,
+                true,
+                10,
+                TempoHardfork::T4,
+            )
+            .unwrap();
             exchange.orders[id].write(order)?;
             exchange.orders[id].delete()?;
 

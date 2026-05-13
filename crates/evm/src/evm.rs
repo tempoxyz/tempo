@@ -8,7 +8,10 @@ use alloy_evm::{
     },
 };
 use alloy_primitives::{Address, Bytes, TxKind};
-use reth_revm::{InspectSystemCallEvm, MainContext, context::result::ExecutionResult};
+use reth_revm::{
+    InspectSystemCallEvm, MainContext,
+    context::{CfgEnv, result::ExecutionResult},
+};
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_revm::{
@@ -65,6 +68,9 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
     pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
+        // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
+        // and is independent of the T4 hardfork. The caller is responsible for setting the
+        // flag on the input `EvmEnv`; here we pass it through unchanged.
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
@@ -162,6 +168,10 @@ where
         &self.block
     }
 
+    fn cfg_env(&self) -> &CfgEnv<Self::Spec> {
+        &self.cfg
+    }
+
     fn chain_id(&self) -> u64 {
         self.cfg.chain_id
     }
@@ -249,7 +259,7 @@ mod tests {
         database::{EmptyDB, in_memory_db::CacheDB},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_revm::gas_params::tempo_gas_params;
+    use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
 
     use super::*;
 
@@ -413,7 +423,10 @@ mod tests {
         spec: tempo_chainspec::hardfork::TempoHardfork,
     ) -> EvmEnv<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv> {
         EvmEnv::<tempo_chainspec::hardfork::TempoHardfork, TempoBlockEnv>::new(
-            CfgEnv::new_with_spec_and_gas_params(spec, tempo_gas_params(spec)),
+            CfgEnv::new_with_spec_and_gas_params(
+                spec,
+                tempo_gas_params_with_amsterdam(spec, false),
+            ),
             TempoBlockEnv::default(),
         )
     }

@@ -3,7 +3,7 @@
 //! The application actor implements the [`commonware_consensus::Automaton`]
 //! trait to propose and verify blocks.
 
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use commonware_consensus::types::FixedEpocher;
 use commonware_cryptography::ed25519::PublicKey;
@@ -42,10 +42,6 @@ pub(super) struct Config<TContext> {
     /// the validator config v2 contract.
     pub(super) public_key: PublicKey,
 
-    /// Deprecated CLI fallback for the fee recipient. Used when the on-chain
-    /// fee recipient is `Address::ZERO` or the V2 contract is not yet active.
-    pub(super) fee_recipient: Option<alloy_primitives::Address>,
-
     /// Number of messages from consensus to hold in our backlog
     /// before blocking.
     pub(super) mailbox_size: usize,
@@ -56,7 +52,7 @@ pub(super) struct Config<TContext> {
     pub(super) executor: crate::executor::Mailbox,
 
     /// A handle to the execution node to verify and create new payloads.
-    pub(super) execution_node: TempoFullNode,
+    pub(super) execution_node: Arc<TempoFullNode>,
 
     /// A handle to the subblocks service to get subblocks for proposals.
     pub(crate) subblocks: Option<subblocks::Mailbox>,

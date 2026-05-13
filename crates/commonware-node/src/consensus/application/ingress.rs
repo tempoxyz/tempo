@@ -1,6 +1,6 @@
 use commonware_consensus::{
     Automaton, CertifiableAutomaton, Relay,
-    simplex::types::Context,
+    simplex::{Plan, types::Context},
     types::{Epoch, Round, View},
 };
 
@@ -24,7 +24,7 @@ impl Mailbox {
 /// Messages forwarded from consensus to application.
 // TODO: add trace spans into all of these messages.
 pub(super) enum Message {
-    Broadcast(Broadcast),
+    Broadcast(Box<Broadcast>),
     Genesis(Genesis),
     Propose(Box<Propose>),
     Verify(Box<Verify>),
@@ -55,12 +55,13 @@ impl From<Propose> for Message {
 }
 
 pub(super) struct Broadcast {
-    pub(super) payload: Digest,
+    pub(super) digest: Digest,
+    pub(super) plan: Plan<PublicKey>,
 }
 
 impl From<Broadcast> for Message {
     fn from(value: Broadcast) -> Self {
-        Self::Broadcast(value)
+        Self::Broadcast(Box::new(value))
     }
 }
 
@@ -160,10 +161,10 @@ impl Relay for Mailbox {
     type PublicKey = PublicKey;
     type Plan = commonware_consensus::simplex::Plan<PublicKey>;
 
-    async fn broadcast(&mut self, digest: Self::Digest, _plan: Self::Plan) {
+    async fn broadcast(&mut self, digest: Self::Digest, plan: Self::Plan) {
         // TODO: panicking here is really not necessary. Just log at the ERROR or WARN levels instead?
         self.inner
-            .send(Broadcast { payload: digest }.into())
+            .send(Broadcast { digest, plan }.into())
             .await
             .expect("application is present and ready to receive broadcasts");
     }

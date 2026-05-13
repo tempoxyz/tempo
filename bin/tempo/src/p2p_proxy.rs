@@ -6,6 +6,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     rpc::client::BatchRequest,
 };
+use alloy_rlp::Encodable;
 use clap::Parser;
 use eyre::{Context, Result};
 use futures::StreamExt;
@@ -42,7 +43,12 @@ type TempoRpcBlock = <TempoNetwork as Network>::BlockResponse;
 
 /// 3 hrs of blocks at 500ms block time.
 const CACHE_CAPACITY: u64 = 60 * 60 * 6; // 21600
-const HEADER_BATCH_SIZE: usize = 512;
+/// Maximum number of headers to fetch per RPC batch request.
+const HEADER_RPC_BATCH_SIZE: usize = 128;
+/// Maximum number of block headers to serve in a `GetBlockHeaders` response.
+const MAX_HEADERS_SERVE: usize = 1024;
+/// Soft cap on the total encoded body size in a `GetBlockBodies` response.
+const SOFT_BODY_RESPONSE_SIZE_LIMIT: usize = 1024 * 1024; // 1 MiB
 
 #[derive(Parser, Debug)]
 #[command(
@@ -303,7 +309,12 @@ async fn run_p2p_network(
     config.sessions_config.session_event_buffer = cfg.max_concurrent_inbound;
 
     let (requests_tx, mut requests_rx) = tokio::sync::mpsc::channel(1024);
-    let (transactions_tx, mut transactions_rx) = tokio::sync::mpsc::unbounded_channel();
+    let (transactions_tx, mut transactions_rx) = reth_metrics::common::mpsc::memory_bounded_channel(
+        config
+            .transactions_manager_config
+            .tx_channel_memory_limit_bytes,
+        "p2p-proxy.tx",
+    );
 
     let network = NetworkManager::new(config)
         .await
@@ -433,6 +444,9 @@ async fn run_p2p_network(
             IncomingEthRequest::GetBlockAccessLists { response, .. } => {
                 let _ = response.send(Ok(Default::default()));
             }
+            IncomingEthRequest::GetCells { response, .. } => {
+                let _ = response.send(Ok(Default::default()));
+            }
         }
     }
 
@@ -550,7 +564,7 @@ async fn fetch_and_cache_headers(
         .filter(|number| cache.get_by_number(*number).is_none())
         .collect();
 
-    for chunk in missing_numbers.chunks(HEADER_BATCH_SIZE) {
+    for chunk in missing_numbers.chunks(HEADER_RPC_BATCH_SIZE) {
         if fetch_and_cache_header_batch(provider, cache, chunk)
             .await
             .is_err()
@@ -585,10 +599,11 @@ fn requested_header_numbers(
     mut current: u64,
     request: &reth_eth_wire_types::GetBlockHeaders,
 ) -> Vec<u64> {
-    let mut numbers = Vec::with_capacity(request.limit.min(HEADER_BATCH_SIZE as u64) as usize);
+    let limit = request.limit.min(MAX_HEADERS_SERVE as u64) as usize;
+    let mut numbers = Vec::with_capacity(limit);
     let step = u64::from(request.skip) + 1;
 
-    for _ in 0..request.limit {
+    for _ in 0..limit {
         numbers.push(current);
 
         match request.direction {
@@ -665,18 +680,26 @@ async fn resolve_bodies(
     hashes: &[B256],
 ) -> Vec<tempo_primitives::BlockBody> {
     let mut bodies = Vec::new();
+    let mut total_bytes = 0usize;
 
     for &hash in hashes {
-        if let Some(body) = cache
+        let body = match cache
             .get_by_hash(&hash)
             .and_then(|block| block.body.clone())
         {
-            bodies.push(body);
-            continue;
-        }
+            Some(body) => body,
+            None => match fetch_body_by_hash(provider, cache, hash).await {
+                Some(body) => body,
+                None => break,
+            },
+        };
 
-        if let Some(body) = fetch_body_by_hash(provider, cache, hash).await {
-            bodies.push(body);
+        // At least one body is served as they can be up to ~8MiB.
+        total_bytes = total_bytes.saturating_add(body.length());
+        bodies.push(body);
+
+        if total_bytes >= SOFT_BODY_RESPONSE_SIZE_LIMIT {
+            break;
         }
     }
 
@@ -686,7 +709,10 @@ async fn resolve_bodies(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::{consensus::BlockHeader, primitives::Sealable};
+    use alloy::{
+        consensus::{BlockHeader, Header},
+        primitives::Sealable,
+    };
     use reth_eth_wire_types::GetBlockHeaders;
 
     const MODERATO_RPC: &str = "https://rpc.moderato.tempo.xyz";
@@ -694,6 +720,123 @@ mod tests {
     fn moderato_provider() -> impl Provider<TempoNetwork> {
         ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect_http(MODERATO_RPC.parse().unwrap())
+    }
+
+    fn cached_body_with_min_size(min_size: usize) -> tempo_primitives::BlockBody {
+        let mut body = tempo_primitives::BlockBody::default();
+        while body.length() < min_size {
+            body.ommers.push(TempoHeader::default());
+        }
+        body
+    }
+
+    fn numbered_hash(number: u64) -> B256 {
+        let mut hash = [0u8; 32];
+        hash[24..].copy_from_slice(&number.to_be_bytes());
+        B256::from(hash)
+    }
+
+    fn insert_test_header(cache: &mut BlockCache, number: u64) {
+        let header = TempoHeader {
+            inner: Header {
+                number,
+                parent_hash: number.checked_sub(1).map_or(B256::default(), numbered_hash),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        cache.insert_header(number, numbered_hash(number), header);
+    }
+
+    #[test]
+    fn requested_header_numbers_allows_reth_default_request_limit() {
+        let request = GetBlockHeaders {
+            start_block: BlockHashOrNumber::Number(10),
+            limit: 1_000,
+            skip: 0,
+            direction: HeadersDirection::Rising,
+        };
+
+        let numbers = requested_header_numbers(10, &request);
+
+        assert_eq!(numbers.len(), 1_000);
+        assert_eq!(numbers[0], 10);
+        assert_eq!(numbers[999], 1_009);
+    }
+
+    #[test]
+    fn requested_header_numbers_caps_at_protocol_header_limit() {
+        let request = GetBlockHeaders {
+            start_block: BlockHashOrNumber::Number(0),
+            limit: MAX_HEADERS_SERVE as u64 + 1,
+            skip: 0,
+            direction: HeadersDirection::Rising,
+        };
+
+        let numbers = requested_header_numbers(0, &request);
+
+        assert_eq!(numbers.len(), MAX_HEADERS_SERVE);
+        assert_eq!(numbers[MAX_HEADERS_SERVE - 1], MAX_HEADERS_SERVE as u64 - 1);
+    }
+
+    #[tokio::test]
+    async fn resolve_headers_serves_more_than_rpc_batch_size_when_cached() {
+        let provider = moderato_provider();
+        let mut cache = BlockCache::new(MAX_HEADERS_SERVE as u64);
+
+        for number in 1..=1_000 {
+            insert_test_header(&mut cache, number);
+        }
+
+        let request = GetBlockHeaders {
+            start_block: BlockHashOrNumber::Number(1),
+            limit: 1_000,
+            skip: 0,
+            direction: HeadersDirection::Rising,
+        };
+        let headers = resolve_headers(&provider, &mut cache, &request).await;
+
+        assert_eq!(headers.len(), 1_000);
+        assert_eq!(headers[0].number(), 1);
+        assert_eq!(headers[999].number(), 1_000);
+    }
+
+    #[tokio::test]
+    async fn resolve_bodies_stops_after_reaching_soft_size_limit() {
+        let provider = moderato_provider();
+        let mut cache = BlockCache::new(100);
+        let body = cached_body_with_min_size(SOFT_BODY_RESPONSE_SIZE_LIMIT / 2 + 1);
+        let first_hash = B256::with_last_byte(1);
+        let second_hash = B256::with_last_byte(2);
+        let third_hash = B256::with_last_byte(3);
+
+        cache.insert_block(1, first_hash, TempoHeader::default(), body.clone());
+        cache.insert_block(2, second_hash, TempoHeader::default(), body.clone());
+        cache.insert_block(3, third_hash, TempoHeader::default(), body);
+
+        let bodies = resolve_bodies(
+            &provider,
+            &mut cache,
+            &[first_hash, second_hash, third_hash],
+        )
+        .await;
+        assert_eq!(bodies.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn resolve_bodies_serves_body_exceeding_soft_size_limit() {
+        let provider = moderato_provider();
+        let mut cache = BlockCache::new(100);
+        let body = cached_body_with_min_size(8 * SOFT_BODY_RESPONSE_SIZE_LIMIT);
+        let first_hash = B256::with_last_byte(1);
+        let second_hash = B256::with_last_byte(2);
+
+        cache.insert_block(1, first_hash, TempoHeader::default(), body.clone());
+        cache.insert_block(2, second_hash, TempoHeader::default(), body);
+
+        let bodies = resolve_bodies(&provider, &mut cache, &[first_hash, second_hash]).await;
+        assert_eq!(bodies.len(), 1);
+        assert!(bodies[0].length() > SOFT_BODY_RESPONSE_SIZE_LIMIT);
     }
 
     #[tokio::test]
