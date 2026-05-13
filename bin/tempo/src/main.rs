@@ -498,7 +498,7 @@ fn main() -> eyre::Result<()> {
                 };
 
                 Either::Left(run_follow_stack(
-                    ctx.with_label("follow"),
+                    ctx.with_label("consensus"),
                     args.consensus,
                     follow_url,
                     Arc::new(node),
