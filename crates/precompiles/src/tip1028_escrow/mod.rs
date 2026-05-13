@@ -13,7 +13,7 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
-    tip20::TIP20Token,
+    tip20::{Recipient, TIP20Token},
 };
 use alloy::{
     primitives::{Address, B256, U256},
@@ -70,8 +70,7 @@ impl TIP1028Escrow {
         &mut self,
         token: Address,
         originator: Address,
-        receiver: Address,
-        recipient: Address,
+        to: &Recipient,
         recovery_address: Address,
         amount: U256,
         blocked_reason: BlockedReason,
@@ -89,6 +88,9 @@ impl TIP1028Escrow {
         {
             return Err(TIP1028EscrowError::invalid_receipt_claim().into());
         }
+
+        let receiver = to.target;
+        let recipient = to.virtual_addr.unwrap_or(to.target);
 
         let blocked_nonce = self.next_blocked_receipt_nonce()?;
         let blocked_at = self.storage.timestamp().saturating_to::<u64>();
@@ -711,8 +713,7 @@ mod tests {
                 let result = TIP1028Escrow::new().store_blocked(
                     token.address(),
                     Address::random(),
-                    Address::random(),
-                    Address::random(),
+                    &Recipient::direct(Address::random()),
                     Address::ZERO,
                     U256::from(1u64),
                     blocked_reason,
@@ -751,8 +752,7 @@ mod tests {
             let (nonce_a, blocked_at_a) = escrow.store_blocked(
                 token_a.address(),
                 originator_a,
-                recipient,
-                recipient,
+                &Recipient::direct(recipient),
                 recovery,
                 amount_a,
                 BlockedReason::RECEIVE_POLICY,
@@ -762,8 +762,7 @@ mod tests {
             let (nonce_b, blocked_at_b) = escrow.store_blocked(
                 token_a.address(),
                 originator_b,
-                recipient,
-                recipient,
+                &Recipient::direct(recipient),
                 recovery,
                 amount_b,
                 BlockedReason::TOKEN_FILTER,

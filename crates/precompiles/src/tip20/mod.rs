@@ -1216,7 +1216,6 @@ impl TIP20Token {
             return Ok(false);
         };
         let recovery = registry.receive_policy_recovery(to.target)?;
-        let recipient = to.virtual_addr.unwrap_or(to.target);
 
         match kind {
             InboundKind::TRANSFER => {
@@ -1230,8 +1229,7 @@ impl TIP20Token {
         TIP1028Escrow::new().store_blocked(
             self.address,
             originator,
-            to.target,
-            recipient,
+            to,
             recovery,
             amount,
             reason,
