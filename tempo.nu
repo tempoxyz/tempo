@@ -1517,6 +1517,7 @@ def "main follower" [
     } | math max) + 1)
 
     let consensus_port = ($follower_index * 100) + 8000
+    let consensus_ip = $"127.0.0.($follower_index + 1)"
     let http_port = 8545 + $follower_index
     let reth_metrics_port = 9001 + $follower_index
     let el_p2p_port = $consensus_port + 1
@@ -1529,7 +1530,7 @@ def "main follower" [
     let args = (build-base-args $genesis_path $follower_dir $log_dir "0.0.0.0" $http_port $reth_metrics_port)
         | append [
             "--follow" $"ws://127.0.0.1:8545"
-            "--consensus.listen-address" $"127.0.0.1:($consensus_port)"
+            "--consensus.listen-address" $"($consensus_ip):($consensus_port)"
             "--consensus.metrics-address" $"0.0.0.0:($consensus_metrics_port)"
             "--trusted-peers" $trusted_peers
             "--port" $"($el_p2p_port)"
