@@ -158,12 +158,16 @@ impl TIP1028Escrow {
             RecoveryAuthority::Originator(_) => true,
             RecoveryAuthority::Receiver(_) | RecoveryAuthority::Contract(_) => call.to != receiver,
         };
+        let recovery_addr = match recovery_authority {
+            RecoveryAuthority::Receiver(addr) | RecoveryAuthority::Originator(addr) => Some(addr),
+            RecoveryAuthority::Contract(_) => None,
+        };
         TIP20Token::from_address(call.token)?.release_from_escrow(
             receipt.originator,
-            receiver,
             call.to,
             amount,
             reroute,
+            recovery_addr,
         )?;
 
         self.emit_event(TIP1028EscrowEvent::BlockedReceiptClaimed(

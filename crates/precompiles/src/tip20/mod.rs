@@ -1244,10 +1244,10 @@ impl TIP20Token {
     pub(crate) fn release_from_escrow(
         &mut self,
         originator: Address,
-        receiver: Address,
         to: Address,
         amount: U256,
         reroute: bool,
+        recovery_addr: Option<Address>,
     ) -> Result<()> {
         self.check_not_paused()?;
 
@@ -1270,7 +1270,9 @@ impl TIP20Token {
             {
                 return Err(TIP20Error::policy_forbids().into());
             }
-            self.check_and_update_spending_limit(receiver, amount)?;
+            if let Some(addr) = recovery_addr {
+                self.check_and_update_spending_limit(addr, amount)?;
+            }
         }
 
         let escrow_balance = self.get_balance(ESCROW_ADDRESS)?;
