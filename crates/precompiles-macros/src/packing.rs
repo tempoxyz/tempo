@@ -669,36 +669,45 @@ mod tests {
         assert!(matches!(classify_field_type(&ty).unwrap(), FieldKind::Direct(_)));
     }
 
-    // -- PackingConstants -------------------------------------------------------
+    // -- PackingConstants + SlotAssignment + const_name -------------------------
 
     #[test]
-    fn packing_constants_naming() {
-        let name = Ident::new("total_supply", proc_macro2::Span::call_site());
-        let consts = PackingConstants::new(&name);
-        assert_eq!(consts.location().to_string(), "TOTAL_SUPPLY_LOC");
-        let (slot, offset) = consts.into_tuple();
+    fn packing_helpers_all_variations() {
+        let span = proc_macro2::Span::call_site();
+
+        // const_name: snake_case → SCREAMING_SNAKE
+        assert_eq!(const_name(&Ident::new("my_field", span)), "MY_FIELD");
+        assert_eq!(const_name(&Ident::new("x", span)), "X");
+        assert_eq!(const_name(&Ident::new("total_supply", span)), "TOTAL_SUPPLY");
+
+        // PackingConstants: slot, offset, location naming
+        let c = PackingConstants::new(&Ident::new("total_supply", span));
+        assert_eq!(c.location().to_string(), "TOTAL_SUPPLY_LOC");
+        let (slot, offset) = c.into_tuple();
         assert_eq!(slot.to_string(), "TOTAL_SUPPLY");
         assert_eq!(offset.to_string(), "TOTAL_SUPPLY_OFFSET");
-    }
 
-    #[test]
-    fn const_name_screaming_snake() {
-        let name = Ident::new("my_field", proc_macro2::Span::call_site());
-        assert_eq!(const_name(&name), "MY_FIELD");
-    }
+        // single-char field
+        let c2 = PackingConstants::new(&Ident::new("x", span));
+        assert_eq!(c2.slot().to_string(), "X");
+        assert_eq!(c2.offset().to_string(), "X_OFFSET");
+        assert_eq!(c2.location().to_string(), "X_LOC");
 
-    // -- SlotAssignment ---------------------------------------------------------
+        // SlotAssignment::Manual ref_slot
+        let manual = SlotAssignment::Manual(U256::from(42));
+        assert_eq!(*manual.ref_slot(), U256::from(42));
 
-    #[test]
-    fn slot_assignment_ref_slot_manual() {
-        let sa = SlotAssignment::Manual(U256::from(42));
-        assert_eq!(*sa.ref_slot(), U256::from(42));
-    }
+        // SlotAssignment::Auto ref_slot
+        let auto = SlotAssignment::Auto { base_slot: U256::from(7) };
+        assert_eq!(*auto.ref_slot(), U256::from(7));
 
-    #[test]
-    fn slot_assignment_ref_slot_auto() {
-        let sa = SlotAssignment::Auto { base_slot: U256::from(7) };
-        assert_eq!(*sa.ref_slot(), U256::from(7));
+        // SlotAssignment::Auto zero
+        let auto_zero = SlotAssignment::Auto { base_slot: U256::ZERO };
+        assert_eq!(*auto_zero.ref_slot(), U256::ZERO);
+
+        // SlotAssignment::Manual large value
+        let manual_large = SlotAssignment::Manual(U256::from(u64::MAX));
+        assert_eq!(*manual_large.ref_slot(), U256::from(u64::MAX));
     }
 
     use crate::utils::extract_mapping_types;
