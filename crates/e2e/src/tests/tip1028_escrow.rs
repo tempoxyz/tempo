@@ -24,7 +24,7 @@ use tempo_precompiles::{
     tip1028_escrow::{
         BLOCKED_RECEIPT_VERSION,
         ITIP1028Escrow::{self, ITIP1028EscrowErrors as TIP1028EscrowError},
-        InboundKind,
+        InboundKind, RECOVERY_RECEIVER,
     },
 };
 
@@ -47,7 +47,7 @@ fn test_escrow_claim_no_recovery() {
             http_url.clone(),
             10,
             11,
-            Address::ZERO,
+            RECOVERY_RECEIVER,
             B256::from([0x01; 32]),
             amount,
         )
@@ -62,7 +62,7 @@ fn test_escrow_claim_no_recovery() {
         let Err(result) = other_escrow
             .claim(
                 blocked.token,
-                Address::ZERO,
+                RECOVERY_RECEIVER,
                 BLOCKED_RECEIPT_VERSION,
                 blocked.receipt.clone(),
                 other,
@@ -92,7 +92,7 @@ fn test_escrow_claim_no_recovery() {
         let claim = receiver_escrow
             .claim(
                 blocked.token,
-                Address::ZERO,
+                RECOVERY_RECEIVER,
                 BLOCKED_RECEIPT_VERSION,
                 blocked.receipt.clone(),
                 blocked.receiver,
