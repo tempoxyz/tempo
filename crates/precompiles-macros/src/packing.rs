@@ -587,10 +587,16 @@ mod tests {
     #[test]
     fn classify_field_type_variations() {
         let assert_direct = |ty: Type| {
-            assert!(matches!(classify_field_type(&ty).unwrap(), FieldKind::Direct(_)));
+            assert!(matches!(
+                classify_field_type(&ty).unwrap(),
+                FieldKind::Direct(_)
+            ));
         };
         let assert_mapping = |ty: Type| {
-            assert!(matches!(classify_field_type(&ty).unwrap(), FieldKind::Mapping { .. }));
+            assert!(matches!(
+                classify_field_type(&ty).unwrap(),
+                FieldKind::Mapping { .. }
+            ));
         };
 
         // primitive → Direct
@@ -651,12 +657,29 @@ mod tests {
         // Manual: typical, zero, large
         assert_ref_slot(SlotAssignment::Manual(U256::from(42)), U256::from(42));
         assert_ref_slot(SlotAssignment::Manual(U256::ZERO), U256::ZERO);
-        assert_ref_slot(SlotAssignment::Manual(U256::from(u64::MAX)), U256::from(u64::MAX));
+        assert_ref_slot(
+            SlotAssignment::Manual(U256::from(u64::MAX)),
+            U256::from(u64::MAX),
+        );
 
         // Auto: typical, zero, large
-        assert_ref_slot(SlotAssignment::Auto { base_slot: U256::from(7) }, U256::from(7));
-        assert_ref_slot(SlotAssignment::Auto { base_slot: U256::ZERO }, U256::ZERO);
-        assert_ref_slot(SlotAssignment::Auto { base_slot: U256::from(u64::MAX) }, U256::from(u64::MAX));
+        assert_ref_slot(
+            SlotAssignment::Auto {
+                base_slot: U256::from(7),
+            },
+            U256::from(7),
+        );
+        assert_ref_slot(
+            SlotAssignment::Auto {
+                base_slot: U256::ZERO,
+            },
+            U256::ZERO,
+        );
+        assert_ref_slot(
+            SlotAssignment::Auto {
+                base_slot: U256::from(u64::MAX),
+            },
+            U256::from(u64::MAX),
+        );
     }
-
 }
