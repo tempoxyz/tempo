@@ -342,6 +342,19 @@ def resolve-git-ref [ref: string] {
     git rev-parse $ref | str trim
 }
 
+# Resolve a SHA to a human-readable label: tag > branch > fallback.
+def resolve-git-ref-label [sha: string, fallback: string] {
+    let tag = (git tag --points-at $sha | lines | first | default "")
+    if $tag != "" {
+        return $tag
+    }
+    let branch = (git branch -r --points-at $sha | lines | first | default "" | str replace -r '^\s*origin/' '')
+    if $branch != "" {
+        return $branch
+    }
+    $fallback
+}
+
 def bench-cache-key [commit_sha: string, features: string, no_default_features: bool] {
     if not $no_default_features {
         return $commit_sha

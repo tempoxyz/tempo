@@ -306,6 +306,11 @@ def "main run" [
 
     let baseline_sha = if $baseline == "local" { "local" } else { resolve-git-ref $baseline }
     let feature_sha = if $feature == "local" { "local" } else { resolve-git-ref $feature }
+
+    # Resolve git-ref label: tag > branch > original input
+    let baseline_ref_label = if $baseline == "local" { "local" } else { resolve-git-ref-label $baseline_sha $baseline }
+    let feature_ref_label = if $feature == "local" { "local" } else { resolve-git-ref-label $feature_sha $feature }
+
     let baseline_label = if $baseline == "local" { "local (working tree)" } else { $"($baseline) → ($baseline_sha)" }
     let feature_label = if $feature == "local" { "local (working tree)" } else { $"($feature) → ($feature_sha)" }
     print $"Baseline: ($baseline_label)"
@@ -539,17 +544,17 @@ def "main run" [
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
     let runs = if $dual_hardfork {
         [
-            { label: "baseline-1", tempo: $baseline_tempo, git_ref: $baseline_sha, git_ref_label: $baseline, genesis: $"($abs_localnet)/genesis-baseline.json", datadir: $"($datadir)/baseline-db" }
-            { label: "feature-1", tempo: $feature_tempo, git_ref: $feature_sha, git_ref_label: $feature, genesis: $"($abs_localnet)/genesis-feature.json", datadir: $"($datadir)/feature-db" }
-            { label: "feature-2", tempo: $feature_tempo, git_ref: $feature_sha, git_ref_label: $feature, genesis: $"($abs_localnet)/genesis-feature.json", datadir: $"($datadir)/feature-db" }
-            { label: "baseline-2", tempo: $baseline_tempo, git_ref: $baseline_sha, git_ref_label: $baseline, genesis: $"($abs_localnet)/genesis-baseline.json", datadir: $"($datadir)/baseline-db" }
+            { label: "baseline-1", tempo: $baseline_tempo, git_ref: $baseline_sha, git_ref_label: $baseline_ref_label, genesis: $"($abs_localnet)/genesis-baseline.json", datadir: $"($datadir)/baseline-db" }
+            { label: "feature-1", tempo: $feature_tempo, git_ref: $feature_sha, git_ref_label: $feature_ref_label, genesis: $"($abs_localnet)/genesis-feature.json", datadir: $"($datadir)/feature-db" }
+            { label: "feature-2", tempo: $feature_tempo, git_ref: $feature_sha, git_ref_label: $feature_ref_label, genesis: $"($abs_localnet)/genesis-feature.json", datadir: $"($datadir)/feature-db" }
+            { label: "baseline-2", tempo: $baseline_tempo, git_ref: $baseline_sha, git_ref_label: $baseline_ref_label, genesis: $"($abs_localnet)/genesis-baseline.json", datadir: $"($datadir)/baseline-db" }
         ]
     } else {
         [
-            { label: "baseline-1", tempo: $baseline_tempo, git_ref: $baseline_sha, git_ref_label: $baseline, genesis: $genesis_path, datadir: $datadir }
-            { label: "feature-1", tempo: $feature_tempo, git_ref: $feature_sha, git_ref_label: $feature, genesis: $genesis_path, datadir: $datadir }
-            { label: "feature-2", tempo: $feature_tempo, git_ref: $feature_sha, git_ref_label: $feature, genesis: $genesis_path, datadir: $datadir }
-            { label: "baseline-2", tempo: $baseline_tempo, git_ref: $baseline_sha, git_ref_label: $baseline, genesis: $genesis_path, datadir: $datadir }
+            { label: "baseline-1", tempo: $baseline_tempo, git_ref: $baseline_sha, git_ref_label: $baseline_ref_label, genesis: $genesis_path, datadir: $datadir }
+            { label: "feature-1", tempo: $feature_tempo, git_ref: $feature_sha, git_ref_label: $feature_ref_label, genesis: $genesis_path, datadir: $datadir }
+            { label: "feature-2", tempo: $feature_tempo, git_ref: $feature_sha, git_ref_label: $feature_ref_label, genesis: $genesis_path, datadir: $datadir }
+            { label: "baseline-2", tempo: $baseline_tempo, git_ref: $baseline_sha, git_ref_label: $baseline_ref_label, genesis: $genesis_path, datadir: $datadir }
         ]
     }
 
