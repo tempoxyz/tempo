@@ -77,11 +77,19 @@ impl TIP20Token {
     /// Rewards are accumulated in the delegated recipient's rewardBalance.
     /// Returns the holder's delegated recipient address.
     pub fn update_rewards(&mut self, holder: Address) -> Result<Address> {
+        let global_reward_per_token = self.get_global_reward_per_token()?;
+        self.update_rewards_with_global(holder, global_reward_per_token)
+    }
+
+    fn update_rewards_with_global(
+        &mut self,
+        holder: Address,
+        global_reward_per_token: U256,
+    ) -> Result<Address> {
         let mut info = self.user_reward_info[holder].read()?;
 
         let cached_delegate = info.reward_recipient;
 
-        let global_reward_per_token = self.get_global_reward_per_token()?;
         let reward_per_token_delta = global_reward_per_token
             .checked_sub(info.reward_per_token)
             .ok_or(TempoPrecompileError::under_overflow())?;
@@ -263,8 +271,9 @@ impl TIP20Token {
         to: Address,
         amount: U256,
     ) -> Result<()> {
-        let from_delegate = self.update_rewards(from)?;
-        let to_delegate = self.update_rewards(to)?;
+        let global_reward_per_token = self.get_global_reward_per_token()?;
+        let from_delegate = self.update_rewards_with_global(from, global_reward_per_token)?;
+        let to_delegate = self.update_rewards_with_global(to, global_reward_per_token)?;
 
         if !from_delegate.is_zero() {
             if to_delegate.is_zero() {
