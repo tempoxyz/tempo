@@ -333,7 +333,7 @@ run_single() {
       -m "git-sha=$git_sha" \
       -m "git-ref=$git_ref" \
       -m "platform=tempo" \
-      -m "mode=replay" \
+      -m "scenario=replay" \
       -m "chain=$CHAIN_NAME" \
       -m "blocks=$BLOCKS" 2>&1 | sed -u "s/^/[bench] /"
 
