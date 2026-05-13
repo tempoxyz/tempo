@@ -79,6 +79,8 @@ reth-etl.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli", "network"] }
 reth-ethereum-cli.workspace = true
 reth-metrics.workspace = true
+metrics.workspace = true
+metrics-exporter-prometheus = { version = "0.18.1", features = ["http-listener"] }
 reth-network-peers.workspace = true
 reth-node-builder.workspace = true
 reth-primitives-traits.workspace = true

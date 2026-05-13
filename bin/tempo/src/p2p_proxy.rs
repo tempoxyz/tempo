@@ -23,6 +23,7 @@ use reth_ethereum::{
 };
 use std::{
     collections::{BTreeMap, HashMap},
+    net::SocketAddr,
     path::PathBuf,
     sync::{
         Arc,
@@ -81,10 +82,24 @@ pub(crate) struct P2pProxyArgs {
     /// and saved. If omitted, an ephemeral key is generated on each start.
     #[arg(long)]
     p2p_secret_key: Option<PathBuf>,
+
+    /// Enable Prometheus metrics.
+    ///
+    /// The metrics will be served at the given interface and port.
+    #[arg(long, value_parser = reth_cli_util::parse_socket_address)]
+    metrics: Option<SocketAddr>,
 }
 
 impl P2pProxyArgs {
     pub(crate) async fn run(self) -> Result<()> {
+        if let Some(metrics_addr) = self.metrics {
+            metrics_exporter_prometheus::PrometheusBuilder::new()
+                .with_http_listener(metrics_addr)
+                .install()
+                .context("failed to start Prometheus metrics endpoint")?;
+            info!(listen_addr = %metrics_addr, "started Prometheus metrics endpoint");
+        }
+
         let chain_spec = chain_value_parser(&self.chain)?;
 
         // Fetch latest head from RPC for the network status handshake
@@ -362,6 +377,9 @@ async fn run_p2p_network(
             let h = stats_log.headers.load(Ordering::Relaxed);
             let b = stats_log.bodies.load(Ordering::Relaxed);
             let peers = stats_handle.num_connected_peers();
+            metrics::gauge!("p2p_proxy_connected_peers").set(peers as f64);
+            metrics::gauge!("p2p_proxy_headers_served").set(h as f64);
+            metrics::gauge!("p2p_proxy_bodies_served").set(b as f64);
             info!(peers, headers_served = h, bodies_served = b, "proxy stats");
         }
     });
@@ -376,6 +394,7 @@ async fn run_p2p_network(
             } => {
                 debug!(%peer_id, ?request, "received GetBlockHeaders");
                 stats.headers.fetch_add(1, Ordering::Relaxed);
+                metrics::counter!("p2p_proxy_requests_total", "request" => "headers").increment(1);
                 let fetch_tx = fetch_tx.clone();
                 tokio::spawn(async move {
                     let headers = async {
@@ -401,6 +420,7 @@ async fn run_p2p_network(
             } => {
                 debug!(%peer_id, ?request, "received GetBlockBodies");
                 stats.bodies.fetch_add(1, Ordering::Relaxed);
+                metrics::counter!("p2p_proxy_requests_total", "request" => "bodies").increment(1);
                 let fetch_tx = fetch_tx.clone();
                 tokio::spawn(async move {
                     let bodies = async {
