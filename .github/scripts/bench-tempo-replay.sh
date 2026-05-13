@@ -325,12 +325,38 @@ run_single() {
 }
 
 # ============================================================================
+# PR comment status helper
+# ============================================================================
+
+update_bench_status() {
+  local status="$1"
+  if [ -z "${BENCH_COMMENT_ID:-}" ] || [ -z "${BENCH_GH_TOKEN:-${DEREK_BENCH_TOKEN:-}}" ]; then
+    return 0
+  fi
+  local token="${BENCH_GH_TOKEN:-${DEREK_BENCH_TOKEN}}"
+  local body
+  body=$(printf 'cc @%s\n\n🚀 Benchmark started! [View job](%s)\n\n⏳ **Status:** %s\n\n%s' \
+    "${BENCH_ACTOR:-}" "${BENCH_JOB_URL:-}" "$status" "${BENCH_CONFIG:-}")
+  local payload
+  payload=$(jq -n --arg body "$body" '{body: $body}')
+  curl -sS -X PATCH \
+    "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/comments/${BENCH_COMMENT_ID}" \
+    -H "Authorization: token $token" \
+    -H "Accept: application/vnd.github+json" \
+    -d "$payload" > /dev/null || echo "Warning: failed to update PR comment status"
+}
+
+# ============================================================================
 # B-F-F-B interleaved runs
 # ============================================================================
 
+update_bench_status "Running replay phase baseline-1 (1/4)..."
 run_single baseline-1 "$BASELINE_BIN" "$BENCH_WORK_DIR/baseline-1"
+update_bench_status "Running replay phase feature-1 (2/4)..."
 run_single feature-1  "$FEATURE_BIN"  "$BENCH_WORK_DIR/feature-1"
+update_bench_status "Running replay phase feature-2 (3/4)..."
 run_single feature-2  "$FEATURE_BIN"  "$BENCH_WORK_DIR/feature-2"
+update_bench_status "Running replay phase baseline-2 (4/4)..."
 run_single baseline-2 "$BASELINE_BIN" "$BENCH_WORK_DIR/baseline-2"
 
 echo "All replay benchmark runs complete."

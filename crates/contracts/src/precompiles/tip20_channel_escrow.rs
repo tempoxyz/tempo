@@ -1,0 +1,398 @@
+pub use ITIP20ChannelEscrow::{
+    ITIP20ChannelEscrowErrors as TIP20ChannelEscrowError,
+    ITIP20ChannelEscrowEvents as TIP20ChannelEscrowEvent,
+};
+use alloy_primitives::{Address, address};
+use alloy_sol_types::{SolCall, SolType};
+
+/// Native TIP-1034 channel escrow precompile address.
+pub const TIP20_CHANNEL_ESCROW_ADDRESS: Address =
+    address!("0x4D50500000000000000000000000000000000000");
+
+crate::sol! {
+    /// TIP-20 channel escrow ABI.
+    ///
+    /// The escrow locks payer deposits, verifies EIP-712 cumulative vouchers, pays the payee
+    /// incrementally, and lets the payer withdraw the remaining balance after a close grace period.
+    #[derive(Debug, PartialEq, Eq)]
+    #[sol(abi)]
+    #[allow(clippy::too_many_arguments)]
+    interface ITIP20ChannelEscrow {
+        /// Immutable channel identity supplied to all descriptor-based methods.
+        struct ChannelDescriptor {
+            /// Account that funded the channel and receives refunds.
+            address payer;
+            /// Account that receives settled voucher payments.
+            address payee;
+            /// Optional relayer allowed to submit `settle` for the payee.
+            address operator;
+            /// TIP-20 token address held by the channel.
+            address token;
+            /// User-supplied salt to distinguish otherwise identical channels.
+            bytes32 salt;
+            /// Optional signer for vouchers. Zero means `payer` signs.
+            address authorizedSigner;
+            /// Transaction-derived hash assigned when the channel was opened.
+            bytes32 expiringNonceHash;
+        }
+
+        /// Mutable channel state packed into one native storage slot.
+        struct ChannelState {
+            /// Cumulative amount already paid to the payee.
+            uint96 settled;
+            /// Total deposit currently locked by the channel.
+            uint96 deposit;
+            /// Payer close-request timestamp, or zero when no close is pending.
+            uint32 closeRequestedAt;
+        }
+
+        /// Full descriptor plus current state.
+        struct Channel {
+            /// Channel identity fields.
+            ChannelDescriptor descriptor;
+            /// Mutable channel accounting state.
+            ChannelState state;
+        }
+
+        /// Delay between payer `requestClose` and `withdraw`.
+        function CLOSE_GRACE_PERIOD() external view returns (uint64);
+        /// EIP-712 type hash for `Voucher(bytes32 channelId,uint96 cumulativeAmount)`.
+        function VOUCHER_TYPEHASH() external view returns (bytes32);
+
+        /// Opens a channel and pulls `deposit` TIP-20 units from `msg.sender`.
+        function open(
+            address payee,
+            address operator,
+            address token,
+            uint96 deposit,
+            bytes32 salt,
+            address authorizedSigner
+        )
+            external
+            returns (bytes32 channelId);
+
+        /// Pays the unsettled delta up to `cumulativeAmount` using a valid voucher.
+        function settle(
+            ChannelDescriptor calldata descriptor,
+            uint96 cumulativeAmount,
+            bytes calldata signature
+        )
+            external;
+
+        /// Adds deposit to a channel and cancels any pending close request.
+        function topUp(
+            ChannelDescriptor calldata descriptor,
+            uint96 additionalDeposit
+        )
+            external;
+
+        /// Closes the channel from the payee/operator side and refunds uncaptured deposit.
+        function close(
+            ChannelDescriptor calldata descriptor,
+            uint96 cumulativeAmount,
+            uint96 captureAmount,
+            bytes calldata signature
+        )
+            external;
+
+        /// Starts the payer withdrawal timer.
+        function requestClose(ChannelDescriptor calldata descriptor) external;
+
+        /// Withdraws the payer refund after the close grace period has elapsed.
+        function withdraw(ChannelDescriptor calldata descriptor) external;
+
+        /// Returns the descriptor and state for a channel.
+        function getChannel(ChannelDescriptor calldata descriptor)
+            external
+            view
+            returns (Channel memory);
+
+        /// Returns the state for `channelId`, or the zero state when absent.
+        function getChannelState(bytes32 channelId) external view returns (ChannelState memory);
+
+        /// Returns states for `channelIds` in order.
+        function getChannelStatesBatch(bytes32[] calldata channelIds)
+            external
+            view
+            returns (ChannelState[] memory);
+
+        /// Computes the canonical channel id for a descriptor.
+        function computeChannelId(
+            address payer,
+            address payee,
+            address operator,
+            address token,
+            bytes32 salt,
+            address authorizedSigner,
+            bytes32 expiringNonceHash
+        )
+            external
+            view
+            returns (bytes32);
+
+        /// Computes the EIP-712 digest signed by the payer or authorized signer.
+        function getVoucherDigest(bytes32 channelId, uint96 cumulativeAmount)
+            external
+            view
+            returns (bytes32);
+
+        /// Returns the EIP-712 domain separator for the current chain.
+        function domainSeparator() external view returns (bytes32);
+
+        /// Emitted after a channel is opened and funded.
+        event ChannelOpened(
+            bytes32 indexed channelId,
+            address indexed payer,
+            address indexed payee,
+            address operator,
+            address token,
+            address authorizedSigner,
+            bytes32 salt,
+            bytes32 expiringNonceHash,
+            uint96 deposit
+        );
+
+        /// Emitted after voucher settlement pays a delta to the payee.
+        event Settled(
+            bytes32 indexed channelId,
+            address indexed payer,
+            address indexed payee,
+            uint96 cumulativeAmount,
+            uint96 deltaPaid,
+            uint96 newSettled
+        );
+
+        /// Emitted after channel deposit changes or a close request is cancelled by top-up.
+        event TopUp(
+            bytes32 indexed channelId,
+            address indexed payer,
+            address indexed payee,
+            uint96 additionalDeposit,
+            uint96 newDeposit
+        );
+
+        /// Emitted when the payer starts the close grace timer.
+        event CloseRequested(
+            bytes32 indexed channelId,
+            address indexed payer,
+            address indexed payee,
+            uint256 closeGraceEnd
+        );
+
+        /// Emitted when a channel is deleted by payee close or payer withdraw.
+        event ChannelClosed(
+            bytes32 indexed channelId,
+            address indexed payer,
+            address indexed payee,
+            uint96 settledToPayee,
+            uint96 refundedToPayer
+        );
+
+        /// Emitted when top-up clears a pending close request.
+        event CloseRequestCancelled(
+            bytes32 indexed channelId,
+            address indexed payer,
+            address indexed payee
+        );
+
+        /// Channel id already exists in persistent state or earlier in this transaction.
+        error ChannelAlreadyExists();
+        /// Descriptor resolves to an empty channel slot.
+        error ChannelNotFound();
+        /// Caller must be the descriptor payer.
+        error NotPayer();
+        /// Caller must be the descriptor payee or nonzero operator.
+        error NotPayeeOrOperator();
+        /// Payee is zero or a TIP-20-prefix address.
+        error InvalidPayee();
+        /// Token is not a TIP-20-prefix address.
+        error InvalidToken();
+        /// Initial deposit cannot be zero.
+        error ZeroDeposit();
+        /// Handler did not seed the transaction-scoped open context hash.
+        error ExpiringNonceHashNotSet();
+        /// Voucher signature did not recover to the expected signer.
+        error InvalidSignature();
+        /// Voucher or capture amount exceeds the channel deposit.
+        error AmountExceedsDeposit();
+        /// Settlement amount must be greater than the current settled amount.
+        error AmountNotIncreasing();
+        /// Close capture is below settled amount or above voucher amount.
+        error CaptureAmountInvalid();
+        /// Payer withdraw was attempted before the close grace period elapsed.
+        error CloseNotReady();
+        /// Top-up would overflow the packed deposit.
+        error DepositOverflow();
+    }
+}
+
+/// TIP-1045 Maximum calldata length (in bytes) for payment-eligible calls with dynamic params.
+pub const MAX_PAYMENT_CALLDATA_LEN: usize = 2048;
+
+impl ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls {
+    /// Returns `true` if `input` matches one of the recognized [TIP-20 channel escrow payment]
+    /// selectors: `open`, `topUp`, `settle`, `close`, `requestClose`, `withdraw`.
+    ///
+    /// # NOTES
+    /// - Only validates calldata; caller must check that `to == TIP20_CHANNEL_ESCROW_ADDRESS`.
+    /// - Static-only calls require exact ABI-encoded length.
+    /// - Dynamic calls require valid ABI decoding + calldata length <= [`MAX_PAYMENT_CALLDATA_LEN`]
+    ///
+    /// [TIP-20 channel escrow payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
+    pub fn is_payment(input: &[u8]) -> bool {
+        fn is_call<C: SolCall>(input: &[u8]) -> bool {
+            if input.first_chunk::<4>() != Some(&C::SELECTOR) {
+                return false;
+            }
+
+            if let Some(canonical_size) = <C::Parameters<'_> as SolType>::ENCODED_SIZE {
+                input.len() == 4 + canonical_size
+            } else {
+                input.len() <= MAX_PAYMENT_CALLDATA_LEN && C::abi_decode_validate(input).is_ok()
+            }
+        }
+
+        is_call::<ITIP20ChannelEscrow::openCall>(input)
+            || is_call::<ITIP20ChannelEscrow::topUpCall>(input)
+            || is_call::<ITIP20ChannelEscrow::closeCall>(input)
+            || is_call::<ITIP20ChannelEscrow::settleCall>(input)
+            || is_call::<ITIP20ChannelEscrow::requestCloseCall>(input)
+            || is_call::<ITIP20ChannelEscrow::withdrawCall>(input)
+    }
+}
+
+impl TIP20ChannelEscrowError {
+    pub const fn channel_already_exists() -> Self {
+        Self::ChannelAlreadyExists(ITIP20ChannelEscrow::ChannelAlreadyExists {})
+    }
+
+    pub const fn channel_not_found() -> Self {
+        Self::ChannelNotFound(ITIP20ChannelEscrow::ChannelNotFound {})
+    }
+
+    pub const fn not_payer() -> Self {
+        Self::NotPayer(ITIP20ChannelEscrow::NotPayer {})
+    }
+
+    pub const fn not_payee_or_operator() -> Self {
+        Self::NotPayeeOrOperator(ITIP20ChannelEscrow::NotPayeeOrOperator {})
+    }
+
+    pub const fn invalid_payee() -> Self {
+        Self::InvalidPayee(ITIP20ChannelEscrow::InvalidPayee {})
+    }
+
+    pub const fn invalid_token() -> Self {
+        Self::InvalidToken(ITIP20ChannelEscrow::InvalidToken {})
+    }
+
+    pub const fn zero_deposit() -> Self {
+        Self::ZeroDeposit(ITIP20ChannelEscrow::ZeroDeposit {})
+    }
+
+    pub const fn expiring_nonce_hash_not_set() -> Self {
+        Self::ExpiringNonceHashNotSet(ITIP20ChannelEscrow::ExpiringNonceHashNotSet {})
+    }
+
+    pub const fn invalid_signature() -> Self {
+        Self::InvalidSignature(ITIP20ChannelEscrow::InvalidSignature {})
+    }
+
+    pub const fn amount_exceeds_deposit() -> Self {
+        Self::AmountExceedsDeposit(ITIP20ChannelEscrow::AmountExceedsDeposit {})
+    }
+
+    pub const fn amount_not_increasing() -> Self {
+        Self::AmountNotIncreasing(ITIP20ChannelEscrow::AmountNotIncreasing {})
+    }
+
+    pub const fn capture_amount_invalid() -> Self {
+        Self::CaptureAmountInvalid(ITIP20ChannelEscrow::CaptureAmountInvalid {})
+    }
+
+    pub const fn close_not_ready() -> Self {
+        Self::CloseNotReady(ITIP20ChannelEscrow::CloseNotReady {})
+    }
+
+    pub const fn deposit_overflow() -> Self {
+        Self::DepositOverflow(ITIP20ChannelEscrow::DepositOverflow {})
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloc::{vec, vec::Vec};
+    use alloy_primitives::{B256, aliases::U96};
+
+    fn descriptor() -> ITIP20ChannelEscrow::ChannelDescriptor {
+        ITIP20ChannelEscrow::ChannelDescriptor {
+            payer: Address::random(),
+            payee: Address::random(),
+            operator: Address::random(),
+            token: Address::random(),
+            salt: B256::random(),
+            authorizedSigner: Address::random(),
+            expiringNonceHash: B256::random(),
+        }
+    }
+
+    #[rustfmt::skip]
+    fn payment_calldatas() -> [Vec<u8>; 6] {
+        let descriptor = descriptor();
+        [
+            ITIP20ChannelEscrow::openCall { payee: Address::random(), operator: Address::random(), token: Address::random(), deposit: U96::from(1), salt: B256::random(), authorizedSigner: Address::random() }.abi_encode(),
+            ITIP20ChannelEscrow::topUpCall { descriptor: descriptor.clone(), additionalDeposit: U96::ONE }.abi_encode(),
+            ITIP20ChannelEscrow::settleCall { descriptor: descriptor.clone(), cumulativeAmount: U96::ONE, signature: vec![1, 2, 3].into() }.abi_encode(),
+            ITIP20ChannelEscrow::closeCall { descriptor: descriptor.clone(), cumulativeAmount: U96::ONE, captureAmount: U96::ONE, signature: vec![1, 2, 3].into() }.abi_encode(),
+            ITIP20ChannelEscrow::requestCloseCall { descriptor: descriptor.clone() }.abi_encode(),
+            ITIP20ChannelEscrow::withdrawCall { descriptor }.abi_encode(),
+        ]
+    }
+
+    #[test]
+    fn test_is_payment() {
+        for calldata in payment_calldatas() {
+            assert!(ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
+                &calldata
+            ));
+        }
+
+        let mut unknown = payment_calldatas()[0].clone();
+        unknown[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
+        assert!(!ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
+            &unknown
+        ));
+    }
+
+    #[test]
+    fn test_is_payment_rejects_malformed_dynamic_calldata() {
+        let mut calldata = ITIP20ChannelEscrow::settleCall {
+            descriptor: descriptor(),
+            cumulativeAmount: U96::from(1),
+            signature: vec![1, 2, 3].into(),
+        }
+        .abi_encode();
+        // Corrupt the dynamic `signature` offset word.
+        calldata[4 + 8 * 32 + 31] = 0;
+        assert!(!ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
+            &calldata
+        ));
+
+        let mut oversized = ITIP20ChannelEscrow::settleCall {
+            descriptor: descriptor(),
+            cumulativeAmount: U96::from(1),
+            signature: vec![0; 2048].into(),
+        }
+        .abi_encode();
+        assert!(oversized.len() > 2048);
+        assert!(!ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
+            &oversized
+        ));
+
+        oversized.truncate(4);
+        assert!(!ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
+            &oversized
+        ));
+    }
+}

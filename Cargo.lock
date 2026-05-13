@@ -907,9 +907,7 @@ dependencies = [
  "coins-bip39",
  "k256",
  "rand 0.8.6",
- "secp256k1 0.30.0",
  "thiserror 2.0.18",
- "yubihsm",
  "zeroize",
 ]
 
@@ -2551,15 +2549,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cbc"
-version = "0.1.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "26b52a9543ae338f279b96b0b9fed9c8093744685043739079ce85cd58f289a6"
-dependencies = [
- "cipher",
-]
-
-[[package]]
 name = "cc"
 version = "1.2.60"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2735,17 +2724,6 @@ name = "clap_lex"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c8d4a3bb8b1e0c1050499d1815f5ab16d04f0959b233085fb31653fbfc9d98f9"
-
-[[package]]
-name = "cmac"
-version = "0.7.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8543454e3c3f5126effff9cd44d562af4e31fb8ce1cc0d3dcd8f084515dbc1aa"
-dependencies = [
- "cipher",
- "dbl",
- "digest 0.10.7",
-]
 
 [[package]]
 name = "cmake"
@@ -3725,15 +3703,6 @@ checksum = "7ab67060fc6b8ef687992d439ca0fa36e7ed17e9a0b16b25b601e8757df720de"
 dependencies = [
  "data-encoding",
  "syn 2.0.117",
-]
-
-[[package]]
-name = "dbl"
-version = "0.3.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd2735a791158376708f9347fe8faba9667589d82427ef3aed6794a8981de3d9"
-dependencies = [
- "generic-array",
 ]
 
 [[package]]
@@ -5482,7 +5451,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "25470f23803092da7d239834776d653104d551bc4d7eacaf31e6837854b8e9eb"
 dependencies = [
  "console",
- "futures-core",
  "portable-atomic",
  "rayon",
  "unicode-width",
@@ -6123,15 +6091,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b6d2cec3eae94f9f509c767b45932f1ada8350c4bdb85af2fcab4a3c14807981"
 
 [[package]]
-name = "libmimalloc-sys"
-version = "0.1.47"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "2d1eacfa31c33ec25e873c136ba5669f00f9866d0688bea7be4d3f7e43067df6"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "libp2p-identity"
 version = "0.2.13"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6488,15 +6447,6 @@ dependencies = [
  "rand 0.9.4",
  "rand_xoshiro",
  "sketches-ddsketch",
-]
-
-[[package]]
-name = "mimalloc"
-version = "0.1.50"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b3627c4272df786b9260cabaa46aec1d59c93ede723d4c3ef646c503816b0640"
-dependencies = [
- "libmimalloc-sys",
 ]
 
 [[package]]
@@ -7076,18 +7026,6 @@ dependencies = [
  "elliptic-curve",
  "primeorder",
  "serdect",
- "sha2 0.10.9",
-]
-
-[[package]]
-name = "p384"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fe42f1670a52a47d448f14b6a5c61dd78fce51856e68edaa38f7ae3a46b8d6b6"
-dependencies = [
- "ecdsa",
- "elliptic-curve",
- "primeorder",
  "sha2 0.10.9",
 ]
 
@@ -12065,18 +12003,6 @@ checksum = "77549399552de45a898a580c1b41d445bf730df867cc44e6c0233bbc4b8329de"
 dependencies = [
  "digest 0.10.7",
  "rand_core 0.6.4",
- "signature_derive",
-]
-
-[[package]]
-name = "signature_derive"
-version = "2.1.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "ab0381d1913eeaf4c7bc4094016c9a8de6c1120663afe32a90ff268ad7f80486"
-dependencies = [
- "proc-macro2",
- "quote",
- "syn 2.0.117",
 ]
 
 [[package]]
@@ -12567,33 +12493,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "tempo-bench"
-version = "1.7.0"
-dependencies = [
- "alloy",
- "alloy-consensus",
- "clap",
- "eyre",
- "futures",
- "governor",
- "indicatif",
- "itertools 0.14.0",
- "mimalloc",
- "rand 0.8.6",
- "rand 0.9.4",
- "rayon",
- "reth-tracing",
- "rlimit",
- "serde",
- "serde_json",
- "tempo-alloy",
- "tempo-contracts",
- "tempo-precompiles",
- "tokio",
- "tokio-util",
-]
-
-[[package]]
 name = "tempo-chainspec"
 version = "1.5.3"
 dependencies = [
@@ -12988,6 +12887,7 @@ dependencies = [
  "scoped-tls",
  "serde",
  "serde_json",
+ "tempo-alloy",
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-evm",
@@ -14112,7 +14012,6 @@ checksum = "ddd74a9687298c6858e9b88ec8935ec45d22e8fd5e6394fa1bd4e99a87789c76"
 dependencies = [
  "getrandom 0.4.2",
  "js-sys",
- "serde_core",
  "wasm-bindgen",
 ]
 
@@ -15123,37 +15022,6 @@ dependencies = [
  "quote",
  "syn 2.0.117",
  "synstructure",
-]
-
-[[package]]
-name = "yubihsm"
-version = "0.42.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "467a4c054be41ff657a6823246b0194cd727fadc3c539b265d7bc125ac6d4884"
-dependencies = [
- "aes",
- "bitflags 2.11.1",
- "cbc",
- "cmac",
- "ecdsa",
- "ed25519",
- "hmac",
- "k256",
- "log",
- "p256",
- "p384",
- "pbkdf2",
- "rand_core 0.6.4",
- "rusb",
- "serde",
- "serde_json",
- "sha2 0.10.9",
- "signature",
- "subtle",
- "thiserror 1.0.69",
- "time",
- "uuid",
- "zeroize",
 ]
 
 [[package]]
