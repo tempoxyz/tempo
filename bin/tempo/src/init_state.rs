@@ -704,13 +704,8 @@ fn for_each_token_storage_entry(
         if let Some(extra) = extras.get(extra_index).copied()
             && extra.key == slot
         {
-            let value = if extra.key == hashed_total_supply_slot {
-                extra.value
-            } else {
-                balance_value
-            };
-            if !value.is_zero() {
-                f(slot, value)?;
+            if !extra.value.is_zero() {
+                f(slot, extra.value)?;
                 entries += 1;
             }
             extra_index += 1;
@@ -747,7 +742,7 @@ fn token_extra_storage_entries(
     }
 
     match extras.binary_search_by_key(&hashed_total_supply_slot, |entry| entry.key) {
-        Ok(index) => extras[index].value = total_supply,
+        Ok(_) => {}
         Err(index) => extras.insert(
             index,
             StorageEntry {
