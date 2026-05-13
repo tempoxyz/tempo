@@ -201,12 +201,13 @@ def txgen-run-preset-pipeline [
     txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
 
     let tx_count = [($tps * $duration) 1] | math max
-    let bench_duration = $"($duration)s"
+    let txgen_duration = $"($duration)s"
     let txgen_cmd = [
         $txgen_tempo_bin
         "generate"
         "-s" $spec_path
         "-n" $tx_count
+        "--duration" $txgen_duration
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
     ]
@@ -219,7 +220,6 @@ def txgen-run-preset-pipeline [
         "--metrics-url" $metrics_url
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
         "--drain-timeout" $TXGEN_HELPER_DRAIN_TIMEOUT_SECS
-        "--duration" $bench_duration
         "--report" $"json:($report_path)"
         "-m" $"chain_id=($chain_id)"
         "-m" $"target_tps=($tps)"
@@ -240,7 +240,7 @@ def txgen-run-preset-pipeline [
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
 
-    print $"  Streaming ($tx_count) txgen transaction\(s\) into bench send..."
+    print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
     let result = (bash -lc $pipeline | complete)
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }
