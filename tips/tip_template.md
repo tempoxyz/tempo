@@ -37,4 +37,11 @@ Where a feature involves multiple processes, state diagrams / flowcharts should 
 
 # Invariants
 
-This section should describe invariants that must always hold, and outline the critical cases that the test suite must cover. 
+This section should describe invariants that must always hold, and outline the critical cases that the test suite must cover.
+
+# Compatibility
+
+Describe the impact of this TIP on external systems (indexers, market makers, analytics, wallets, tooling, etc.) and on existing on-chain state, events, or interfaces. Call out any breaking changes and the rules external systems must adopt to remain compatible.
+
+If this TIP has no external compatibility impact, write `N/A`.
+
