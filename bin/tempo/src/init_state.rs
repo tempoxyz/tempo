@@ -76,6 +76,9 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> InitStateB
 
         let environment = self.env.init::<N>(AccessRights::RW, runtime)?;
         let provider_factory = environment.provider_factory;
+        let provider_ro = provider_factory
+            .database_provider_ro()?
+            .disable_long_read_transaction_safety();
         let provider_rw = provider_factory.database_provider_rw()?;
 
         let last_block = provider_rw.last_block_number()?;
@@ -130,8 +133,9 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> InitStateB
         let storage_write_started = Instant::now();
         let (total_token_entries, storage_trie_writes) =
             reth_trie_db::with_adapter!(provider_rw, |A| {
-                write_v2_hashed_storage_and_tries::<_, A>(
+                write_v2_hashed_storage_and_tries::<_, _, A>(
                     provider_rw.tx_ref(),
+                    provider_ro.tx_ref(),
                     &targets,
                     non_token_storage,
                     &token_set,
@@ -141,6 +145,7 @@ impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> InitStateB
                     total_supply,
                 )
             })?;
+        drop(provider_ro);
 
         for target in &targets {
             provider_rw
@@ -278,6 +283,17 @@ struct StorageTrieRow {
     node: BranchNodeCompact,
 }
 
+struct PreservedStorageTrieRows<'a> {
+    token_set: &'a B256Set,
+    next: Option<StorageTrieRow>,
+}
+
+#[derive(Clone, Copy)]
+enum StorageTrieCursorStep {
+    First,
+    Next,
+}
+
 fn generate_hashed_balance_slots(
     mnemonic: &str,
     sizing: &GeneratedStateBloatContext,
@@ -357,8 +373,9 @@ fn read_non_token_hashed_storage<TX: DbTx>(
     Ok(entries)
 }
 
-fn write_v2_hashed_storage_and_tries<TX, A>(
+fn write_v2_hashed_storage_and_tries<TX, SourceTX, A>(
     tx: &TX,
+    storage_trie_source_tx: &SourceTX,
     targets: &[TokenTarget],
     non_token_storage: Vec<(B256, StorageEntry)>,
     token_set: &B256Set,
@@ -369,9 +386,12 @@ fn write_v2_hashed_storage_and_tries<TX, A>(
 ) -> eyre::Result<(u64, usize)>
 where
     TX: DbTx + DbTxMut,
+    SourceTX: DbTx,
     A: TrieTableAdapter,
 {
-    let preserved_trie = read_non_token_storage_trie_rows::<_, A>(tx, token_set)?;
+    let mut preserved_trie_cursor = storage_trie_source_tx.cursor_read::<A::StorageTrieTable>()?;
+    let mut preserved_trie =
+        read_non_token_storage_trie_rows::<A, _>(&mut preserved_trie_cursor, token_set)?;
 
     tx.clear::<tables::HashedStorages>()?;
     tx.clear::<A::StorageTrieTable>()?;
@@ -379,7 +399,6 @@ where
     let mut hashed_cursor = tx.cursor_dup_write::<tables::HashedStorages>()?;
     let mut trie_cursor = tx.cursor_dup_write::<A::StorageTrieTable>()?;
     let mut non_token_iter = non_token_storage.into_iter().peekable();
-    let mut preserved_trie_iter = preserved_trie.into_iter().peekable();
     let mut total_token_entries = 0u64;
     let mut storage_trie_writes = 0usize;
 
@@ -393,10 +412,11 @@ where
             hashed_cursor.append_dup(hashed_address, entry)?;
         }
 
-        storage_trie_writes += append_preserved_storage_trie_rows::<A, _>(
+        storage_trie_writes += append_preserved_storage_trie_rows::<A, _, _>(
             &mut trie_cursor,
-            &mut preserved_trie_iter,
-            target.hashed_address,
+            &mut preserved_trie_cursor,
+            &mut preserved_trie,
+            Some(target.hashed_address),
         )?;
 
         let token_started = Instant::now();
@@ -459,57 +479,99 @@ where
     for (hashed_address, entry) in non_token_iter {
         hashed_cursor.append_dup(hashed_address, entry)?;
     }
-    for row in preserved_trie_iter {
-        append_storage_trie_row::<A, _>(&mut trie_cursor, row)?;
-        storage_trie_writes += 1;
-    }
+    storage_trie_writes += append_preserved_storage_trie_rows::<A, _, _>(
+        &mut trie_cursor,
+        &mut preserved_trie_cursor,
+        &mut preserved_trie,
+        None,
+    )?;
 
     Ok((total_token_entries, storage_trie_writes))
 }
 
-fn read_non_token_storage_trie_rows<TX, A>(
-    tx: &TX,
-    token_set: &B256Set,
-) -> eyre::Result<Vec<StorageTrieRow>>
+fn read_non_token_storage_trie_rows<'a, A, C>(
+    cursor: &mut C,
+    token_set: &'a B256Set,
+) -> eyre::Result<PreservedStorageTrieRows<'a>>
 where
-    TX: DbTx,
     A: TrieTableAdapter,
+    C: DbCursorRO<A::StorageTrieTable>,
 {
-    let mut cursor = tx.cursor_read::<A::StorageTrieTable>()?;
-    let mut rows = Vec::new();
-    for row in cursor.walk(None)? {
-        let (hashed_address, value) = row?;
+    Ok(PreservedStorageTrieRows {
+        token_set,
+        next: next_non_token_storage_trie_row::<A, _>(
+            cursor,
+            token_set,
+            StorageTrieCursorStep::First,
+        )?,
+    })
+}
+
+fn next_non_token_storage_trie_row<A, C>(
+    cursor: &mut C,
+    token_set: &B256Set,
+    mut step: StorageTrieCursorStep,
+) -> eyre::Result<Option<StorageTrieRow>>
+where
+    A: TrieTableAdapter,
+    C: DbCursorRO<A::StorageTrieTable>,
+{
+    loop {
+        let row = match step {
+            StorageTrieCursorStep::First => cursor.first()?,
+            StorageTrieCursorStep::Next => cursor.next()?,
+        };
+        step = StorageTrieCursorStep::Next;
+
+        let Some((hashed_address, value)) = row else {
+            return Ok(None);
+        };
         if token_set.contains(&hashed_address) {
             continue;
         }
+
         let (subkey, node) = value.into_parts();
-        rows.push(StorageTrieRow {
+        return Ok(Some(StorageTrieRow {
             hashed_address,
             nibbles: A::subkey_to_nibbles(&subkey),
             node,
-        });
+        }));
     }
-    Ok(rows)
 }
 
-fn append_preserved_storage_trie_rows<A, C>(
-    cursor: &mut C,
-    preserved_iter: &mut std::iter::Peekable<impl Iterator<Item = StorageTrieRow>>,
-    before_hashed_address: B256,
+fn append_preserved_storage_trie_rows<A, SourceC, DestC>(
+    destination: &mut DestC,
+    source: &mut SourceC,
+    preserved: &mut PreservedStorageTrieRows<'_>,
+    before_hashed_address: Option<B256>,
 ) -> eyre::Result<usize>
 where
     A: TrieTableAdapter,
-    C: DbDupCursorRW<A::StorageTrieTable>,
+    SourceC: DbCursorRO<A::StorageTrieTable>,
+    DestC: DbDupCursorRW<A::StorageTrieTable>,
 {
     let mut writes = 0usize;
-    while let Some(row) = preserved_iter.peek()
-        && row.hashed_address < before_hashed_address
-    {
-        let row = preserved_iter
-            .next()
-            .expect("peeked preserved trie row exists");
-        append_storage_trie_row::<A, _>(cursor, row)?;
+    loop {
+        let should_append = match (&preserved.next, before_hashed_address) {
+            (Some(row), Some(before)) => row.hashed_address < before,
+            (Some(_), None) => true,
+            (None, _) => false,
+        };
+        if !should_append {
+            break;
+        }
+
+        let row = preserved
+            .next
+            .take()
+            .expect("checked preserved trie row exists");
+        append_storage_trie_row::<A, _>(destination, row)?;
         writes += 1;
+        preserved.next = next_non_token_storage_trie_row::<A, _>(
+            source,
+            preserved.token_set,
+            StorageTrieCursorStep::Next,
+        )?;
     }
     Ok(writes)
 }
