@@ -113,17 +113,6 @@ def txgen-validate-bench-args [bench_args: string] {
     }
 }
 
-def txgen-victoriametrics-base-url [url: string] {
-    let trimmed = ($url | str trim | str trim --right --char '/')
-    if $trimmed == "" {
-        return ""
-    }
-
-    $trimmed
-        | str replace --regex '/api/v1/write$' ''
-        | str replace --regex '/api/v1/import/prometheus$' ''
-}
-
 def txgen-rpc-call [rpc_url: string, payload: string] {
     let result = (^curl -sf -X POST -H "Content-Type: application/json" -d $payload $rpc_url | complete)
     if $result.exit_code != 0 {
@@ -237,9 +226,8 @@ def txgen-run-preset-pipeline [
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
         "--drain-timeout" $TXGEN_HELPER_DRAIN_TIMEOUT_SECS
     ]
-    let vm_url = (txgen-victoriametrics-base-url $victoriametrics_url)
     let report_args = ["--report" $"json:($report_path)"]
-        | append (if $vm_url != "" { ["--report" $"victoriametrics:($vm_url)"] } else { [] })
+        | append (if $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
     let metadata_args = [
         "-m" $"chain_id=($chain_id)"
         "-m" $"target_tps=($tps)"
