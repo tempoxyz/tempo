@@ -30,7 +30,7 @@ use reth_db_api::{
 use reth_ethereum::{chainspec::EthChainSpec, tasks::Runtime};
 use reth_etl::Collector;
 use reth_primitives_traits::{Account, StorageEntry};
-use reth_provider::{BlockNumReader, DatabaseProviderFactory, HashingWriter};
+use reth_provider::{BlockNumReader, DatabaseProviderFactory, HashingWriter, TrieWriter};
 use reth_storage_api::DBProvider;
 use reth_trie::{IntermediateStateRootState, StateRootProgress, updates::TrieUpdates};
 use reth_trie_db::DatabaseStateRoot;
@@ -339,7 +339,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                     .root_with_progress()?
                 {
                     StateRootProgress::Progress(state, _, updates) => {
-                        trie_writes += write_packed_trie_updates(provider_rw.tx_ref(), updates)?;
+                        trie_writes += provider_rw.write_trie_updates(updates)?;
                         info!(
                             target: "tempo::cli",
                             last_key = %state.account_root_state.last_hashed_key,
@@ -350,7 +350,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                         resume = Some(*state);
                     }
                     StateRootProgress::Complete(root, _, updates) => {
-                        trie_writes += write_packed_trie_updates(provider_rw.tx_ref(), updates)?;
+                        trie_writes += provider_rw.write_trie_updates(updates)?;
                         break root;
                     }
                 }
@@ -378,53 +378,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         Ok(())
     }
-}
-
-fn write_packed_trie_updates<TX>(tx: &TX, updates: TrieUpdates) -> eyre::Result<usize>
-where
-    TX: DbTx + DbTxMut,
-{
-    let updates = updates.into_sorted();
-    if updates.is_empty() {
-        return Ok(0);
-    }
-
-    let mut num_entries = 0;
-
-    {
-        let mut account_cursor = tx.cursor_write::<reth_db::PackedAccountsTrie>()?;
-        for (key, updated_node) in updates.account_nodes_ref() {
-            let nibbles = reth_trie::PackedStoredNibbles::from(*key);
-            match updated_node {
-                Some(node) => {
-                    if !key.is_empty() {
-                        num_entries += 1;
-                        account_cursor.upsert(nibbles, node)?;
-                    }
-                }
-                None => {
-                    num_entries += 1;
-                    if account_cursor.seek_exact(nibbles)?.is_some() {
-                        account_cursor.delete_current()?;
-                    }
-                }
-            }
-        }
-    }
-
-    let mut storage_tries = updates.storage_tries_ref().iter().collect::<Vec<_>>();
-    storage_tries.sort_unstable_by(|a, b| a.0.cmp(b.0));
-    let mut storage_cursor = tx.cursor_dup_write::<reth_trie_db::PackedStoragesTrie>()?;
-    for (hashed_address, storage_updates) in storage_tries {
-        let mut trie_cursor = reth_trie_db::DatabaseStorageTrieCursor::<
-            _,
-            reth_trie_db::PackedKeyAdapter,
-        >::new(storage_cursor, *hashed_address);
-        num_entries += trie_cursor.write_storage_trie_updates_sorted(storage_updates)?;
-        storage_cursor = trie_cursor.cursor;
-    }
-
-    Ok(num_entries)
 }
 
 /// Iterate a sorted ETL collector, deduplicate consecutive entries with the same key
