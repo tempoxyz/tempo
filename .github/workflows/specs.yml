@@ -6,10 +6,15 @@ on:
   push:
     branches: [main]
     paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**/Cargo.toml"
       - "tips/verify/**"
       - "crates/contracts/**"
       - "crates/precompiles/**"
+      - "scripts/foundry-patch.sh"
       - ".github/workflows/specs.yml"
+      - ".github/workflows/update-reth.yml"
   merge_group:
   pull_request:
 
@@ -26,6 +31,7 @@ jobs:
       pull-requests: read
     outputs:
       should_run: ${{ steps.filter.outputs.specs }}
+      foundry_smoke: ${{ steps.filter.outputs.foundry_smoke }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -39,6 +45,51 @@ jobs:
               - 'crates/contracts/**'
               - 'crates/precompiles/**'
               - '.github/workflows/specs.yml'
+            foundry_smoke:
+              - 'Cargo.lock'
+              - 'Cargo.toml'
+              - 'crates/**/Cargo.toml'
+              - 'scripts/foundry-patch.sh'
+              - '.github/workflows/specs.yml'
+              - '.github/workflows/update-reth.yml'
+
+  foundry-resolver-smoke:
+    name: Foundry Resolver Smoke
+    needs: check-specs-changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Skip Foundry resolver smoke
+        if: needs.check-specs-changes.outputs.foundry_smoke != 'true'
+        run: |
+          echo "Skipping Foundry resolver smoke: no dependency-sensitive files changed."
+
+      - name: Checkout tempo
+        if: needs.check-specs-changes.outputs.foundry_smoke == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: tempo
+          persist-credentials: false
+
+      - name: Checkout foundry
+        if: needs.check-specs-changes.outputs.foundry_smoke == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: foundry-rs/foundry
+          ref: master
+          path: foundry
+          persist-credentials: false
+
+      - name: Setup Rust
+        if: needs.check-specs-changes.outputs.foundry_smoke == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Patch foundry to use checked-out tempo crates
+        if: needs.check-specs-changes.outputs.foundry_smoke == 'true'
+        env:
+          RUSTC_WRAPPER: ""
+        run: tempo/scripts/foundry-patch.sh "$GITHUB_WORKSPACE/tempo" "$GITHUB_WORKSPACE/foundry"
 
   check-precompiles:
     name: Check precompiles changes
@@ -238,6 +289,7 @@ jobs:
     permissions: {}
     needs:
       - check-specs-changes
+      - foundry-resolver-smoke
       - check-precompiles
       - build
       - abi-alignment-check

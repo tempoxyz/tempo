@@ -18,6 +18,38 @@ on:
         type: string
         required: false
         default: ""
+      baseline-hardfork:
+        description: Latest active hardfork for the baseline run.
+        type: choice
+        required: true
+        default: T6
+        options:
+          - T0
+          - T1
+          - T1A
+          - T1B
+          - T1C
+          - T2
+          - T3
+          - T4
+          - T5
+          - T6
+      feature-hardfork:
+        description: Latest active hardfork for the feature run.
+        type: choice
+        required: true
+        default: T6
+        options:
+          - T0
+          - T1
+          - T1A
+          - T1B
+          - T1C
+          - T2
+          - T3
+          - T4
+          - T5
+          - T6
       preset:
         description: Benchmark preset.
         type: string
@@ -57,30 +89,21 @@ on:
         type: string
         required: false
         default: ""
-      samply:
-        description: Capture samply profiles.
+      profiling:
+        description: Profiling.
+        type: choice
+        required: true
+        default: "Off"
+        options:
+          - "Off"
+          - Samply
+          - Tracy
+          - Both
+      otlp:
+        description: Export OTLP traces and logs.
         type: boolean
         required: true
         default: false
-      tracy:
-        description: Tracy mode.
-        type: choice
-        required: true
-        default: "off"
-        options:
-          - "off"
-          - "on"
-          - full
-      tracy-seconds:
-        description: Tracy capture duration in seconds.
-        type: string
-        required: true
-        default: "30"
-      tracy-offset:
-        description: Tracy capture start offset in seconds.
-        type: string
-        required: true
-        default: "120"
       baseline-args:
         description: Extra args passed only to the baseline node.
         type: string
@@ -166,6 +189,14 @@ on:
       feature:
         type: string
         required: true
+      baseline-hardfork:
+        type: string
+        required: false
+        default: ""
+      feature-hardfork:
+        type: string
+        required: false
+        default: ""
       txgen-ref:
         type: string
         required: false
@@ -187,6 +218,10 @@ on:
       tracy-offset:
         type: string
         required: true
+      otlp:
+        type: string
+        required: false
+        default: "false"
       baseline-args:
         type: string
         required: false
@@ -246,6 +281,8 @@ on:
         required: false
       CLICKHOUSE_PASSWORD:
         required: false
+      BENCH_VICTORIAMETRICS_URL:
+        required: false
       SLACK_BENCH_BOT_TOKEN:
         required: false
       SLACK_BENCH_CHANNEL:
@@ -274,11 +311,15 @@ jobs:
       BENCH_TPS: ${{ inputs.tps }}
       BENCH_ACCOUNTS: ${{ inputs.accounts || '1000' }}
       BENCH_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests || '100' }}
+      BENCH_BASELINE_HARDFORK: ${{ inputs.baseline-hardfork }}
+      BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
-      BENCH_SAMPLY: ${{ inputs.samply }}
-      BENCH_TRACY: ${{ inputs.tracy }}
-      BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds }}
-      BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset }}
+      BENCH_SAMPLY: ${{ inputs.profiling == 'Samply' || inputs.profiling == 'Both' || inputs.samply == true || inputs.samply == 'true' }}
+      BENCH_TRACY: ${{ (inputs.profiling == 'Tracy' || inputs.profiling == 'Both') && 'on' || ((inputs.profiling == 'Off' || inputs.profiling == 'Samply') && 'off' || inputs.tracy) }}
+      BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '30' }}
+      BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset || '120' }}
+      BENCH_OTLP: ${{ inputs.otlp == true || inputs.otlp == 'true' }}
+      BENCH_FEATURES: ${{ (inputs.otlp == true || inputs.otlp == 'true') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
       BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '1000000000000' }}
@@ -293,27 +334,37 @@ jobs:
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
       BENCH_PR_HEAD_REF: ${{ inputs.pr-head-ref }}
-      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
-      GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
-      - name: Mask telemetry URL
-        if: env.TEMPO_TELEMETRY_URL
-        run: echo "::add-mask::$TEMPO_TELEMETRY_URL"
-
-      - name: Mask Grafana Tempo URL
-        if: env.GRAFANA_TEMPO
-        run: echo "::add-mask::$GRAFANA_TEMPO"
+      - name: Configure OTLP telemetry
+        if: env.BENCH_OTLP == 'true'
+        env:
+          TEMPO_TELEMETRY_URL_SECRET: ${{ secrets.TEMPO_TELEMETRY_URL }}
+          GRAFANA_TEMPO_SECRET: ${{ secrets.GRAFANA_TEMPO }}
+        run: |
+          if [ -n "$TEMPO_TELEMETRY_URL_SECRET" ]; then
+            echo "::add-mask::$TEMPO_TELEMETRY_URL_SECRET"
+            printf 'TEMPO_TELEMETRY_URL=%s\n' "$TEMPO_TELEMETRY_URL_SECRET" >> "$GITHUB_ENV"
+          fi
+          if [ -n "$GRAFANA_TEMPO_SECRET" ]; then
+            echo "::add-mask::$GRAFANA_TEMPO_SECRET"
+            printf 'GRAFANA_TEMPO=%s\n' "$GRAFANA_TEMPO_SECRET" >> "$GITHUB_ENV"
+          fi
 
       - name: Mask ClickHouse credentials
         if: env.CLICKHOUSE_URL
         run: |
           echo "::add-mask::$CLICKHOUSE_URL"
           echo "::add-mask::$CLICKHOUSE_PASSWORD"
+
+      - name: Mask VictoriaMetrics URL
+        if: env.BENCH_VICTORIAMETRICS_URL
+        run: echo "::add-mask::$BENCH_VICTORIAMETRICS_URL"
 
       - name: Clean up previous results
         run: sudo rm -rf bench-results/ 2>/dev/null || true
@@ -374,6 +425,8 @@ jobs:
             const tps = process.env.BENCH_TPS;
             const accounts = process.env.BENCH_ACCOUNTS;
             const maxConcurrentRequests = process.env.BENCH_MAX_CONCURRENT_REQUESTS;
+            const baselineHardfork = process.env.BENCH_BASELINE_HARDFORK || '';
+            const featureHardfork = process.env.BENCH_FEATURE_HARDFORK || '';
             const baseline = process.env.INPUT_BASELINE_NAME;
             const feature = process.env.INPUT_FEATURE_NAME;
             const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
@@ -381,10 +434,13 @@ jobs:
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = process.env.BENCH_TRACY;
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
+            const otlp = process.env.BENCH_OTLP === 'true';
+            const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
             const noCache = process.env.BENCH_NO_CACHE === 'true';
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
             const gasLimit = process.env.BENCH_GAS_LIMIT;
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${noCacheNote}`);
+            const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -531,7 +587,14 @@ jobs:
         env:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
+          BENCH_GH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
         run: |
+          if [ "$BENCH_OTLP" != "true" ]; then
+            unset TEMPO_TELEMETRY_URL
+            unset GRAFANA_TEMPO
+            unset OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
+            unset OTEL_EXPORTER_OTLP_HEADERS
+          fi
           cmd=(nu bench-e2e.nu e2e)
           cmd+=(
             --preset "$BENCH_PRESET"
@@ -546,17 +609,22 @@ jobs:
             --baseline-name "${{ steps.refs.outputs.baseline-name }}"
             --feature-name "${{ steps.refs.outputs.feature-name }}"
             --tune
+            --no-default-features
+            --features "$BENCH_FEATURES"
           )
           [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force-bloat)
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
           [ "$BENCH_SAMPLY" = "true" ] && cmd+=(--samply)
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
+          [ -n "$BENCH_BASELINE_HARDFORK" ] && cmd+=(--baseline-hardfork="$BENCH_BASELINE_HARDFORK")
+          [ -n "$BENCH_FEATURE_HARDFORK" ] && cmd+=(--feature-hardfork="$BENCH_FEATURE_HARDFORK")
           [ -n "$BENCH_BASELINE_ARGS" ] && cmd+=(--baseline-args="$BENCH_BASELINE_ARGS")
           [ -n "$BENCH_FEATURE_ARGS" ] && cmd+=(--feature-args="$BENCH_FEATURE_ARGS")
           [ -n "$BENCH_BENCH_ARGS" ] && cmd+=(--bench-args="$BENCH_BENCH_ARGS")
           [ -n "$BENCH_BENCH_ENV" ] && cmd+=(--bench-env="$BENCH_BENCH_ENV")
           [ -n "$BENCH_BASELINE_ENV" ] && cmd+=(--baseline-env="$BENCH_BASELINE_ENV")
           [ -n "$BENCH_FEATURE_ENV" ] && cmd+=(--feature-env="$BENCH_FEATURE_ENV")
+          [ -n "$BENCH_VICTORIAMETRICS_URL" ] && cmd+=(--victoriametrics-url "$BENCH_VICTORIAMETRICS_URL")
           "${cmd[@]}"
 
       - name: Find results directory
@@ -615,7 +683,7 @@ jobs:
               if (refEpoch && benchId) {
                 const fromMs = refEpoch * 1000;
                 const toMs = Date.now();
-                const grafanaUrl = `https://tempoxyz.grafana.net/d/tikv2tn/tempo-bench?orgId=1&from=${fromMs}&to=${toMs}&var-benchmark_id=${benchId}&var-job=tempo-bench`;
+                const grafanaUrl = `https://tempoxyz.grafana.net/d/tikv2tn/tempo-bench?orgId=1&from=${fromMs}&to=${toMs}&var-benchmark_id=${benchId}&var-job=github-tempo-bench-e2e`;
                 const logsPane = JSON.stringify({
                   pw4: {
                     datasource: 'ffdsfozmb3eo0e',

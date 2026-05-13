@@ -326,6 +326,7 @@ where
             block_gas_limit,
             shared_gas_limit,
         );
+        let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
 
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;
@@ -487,7 +488,7 @@ where
                 // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
                     &pool_tx,
-                    &InvalidPoolTransactionError::ExceedsGasLimit(
+                    InvalidPoolTransactionError::ExceedsGasLimit(
                         pool_tx.gas_limit(),
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
@@ -497,14 +498,18 @@ where
                 continue;
             }
 
+            let is_payment = if hardfork.is_t5() {
+                pool_tx.transaction.inner().is_payment_v2()
+            } else {
+                pool_tx.transaction.inner().is_payment_v1()
+            };
+
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
-            if !pool_tx.transaction.is_payment()
-                && non_payment_gas_used + max_regular_gas_used > general_gas_limit
-            {
+            if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
                 best_txs.mark_invalid(
                     &pool_tx,
-                    &InvalidPoolTransactionError::Other(Box::new(
+                    InvalidPoolTransactionError::Other(Box::new(
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
                 );
@@ -519,7 +524,6 @@ where
             }
 
             check_cancel!();
-            let is_payment = pool_tx.transaction.is_payment();
             if is_payment {
                 payment_transactions += 1;
             }
@@ -530,7 +534,7 @@ where
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
                 best_txs.mark_invalid(
                     &pool_tx,
-                    &InvalidPoolTransactionError::OversizedData {
+                    InvalidPoolTransactionError::OversizedData {
                         size: estimated_block_size_with_tx,
                         limit: MAX_RLP_BLOCK_SIZE,
                     },
@@ -596,7 +600,7 @@ where
                         trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
                         best_txs.mark_invalid(
                             &pool_tx,
-                            &InvalidPoolTransactionError::Consensus(
+                            InvalidPoolTransactionError::Consensus(
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),
                         );

@@ -182,6 +182,7 @@ impl ITIP20::ITIP20Calls {
     /// Returns `true` if `input` matches one of the recognized [TIP-20 payment] selectors:
     /// - `transfer` / `transferWithMemo`
     /// - `transferFrom` / `transferFromWithMemo`
+    /// - `approve`
     /// - `mint` / `mintWithMemo`
     /// - `burn` / `burnWithMemo`
     ///

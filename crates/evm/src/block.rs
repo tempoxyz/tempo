@@ -28,7 +28,8 @@ use reth_revm::{
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -373,6 +374,21 @@ where
         }
     }
 
+    /// Returns whether `tx` qualifies for the payment lane under the active hardfork.
+    ///
+    /// T5+: TIP-1045 classification ([`is_payment_v2`]).
+    /// Pre-T5: legacy TIP-20 prefix-only check ([`is_payment_v1`]).
+    ///
+    /// [`is_payment_v1`]: TempoTxEnvelope::is_payment_v1
+    /// [`is_payment_v2`]: TempoTxEnvelope::is_payment_v2
+    pub(crate) fn is_payment(&self, tx: &TempoTxEnvelope) -> bool {
+        if self.evm().cfg.spec.is_t5() {
+            tx.is_payment_v2()
+        } else {
+            tx.is_payment_v1()
+        }
+    }
+
     pub(crate) fn validate_tx(
         &self,
         tx: &TempoTxEnvelope,
@@ -409,7 +425,7 @@ where
             match self.section {
                 BlockSection::StartOfBlock | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
-                        || (!tx.is_payment_v1() && gas_used > self.non_payment_gas_left)
+                        || (!self.is_payment(tx) && gas_used > self.non_payment_gas_left)
                     {
                         // Assume that this transaction wants to make use of gas incentive section
                         //
@@ -447,6 +463,16 @@ where
     type Result = TempoTxResult;
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
+        if self
+            .inner
+            .ctx
+            .withdrawals
+            .as_ref()
+            .is_some_and(|withdrawals| !withdrawals.is_empty())
+        {
+            return Err(BlockValidationError::msg("withdrawals are not permitted").into());
+        }
+
         self.inner.apply_pre_execution_changes()?;
 
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
@@ -457,6 +483,9 @@ where
         if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
             self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
+        }
+        if self.inner.spec.is_t5_active_at_timestamp(timestamp) {
+            self.deploy_precompile_at_boundary(TIP20_CHANNEL_ESCROW_ADDRESS)?;
         }
 
         Ok(())
@@ -512,7 +541,7 @@ where
         Ok(TempoTxResult {
             inner,
             next_section,
-            is_payment: recovered.tx().is_payment_v1(),
+            is_payment: self.is_payment(recovered.tx()),
             tx: matches!(next_section, BlockSection::SubBlock { .. })
                 .then(|| recovered.tx().clone()),
             block_gas_used,
@@ -666,6 +695,7 @@ mod tests {
     };
     use std::sync::Arc;
     use tempo_chainspec::spec::DEV;
+    use tempo_contracts::precompiles::PATH_USD_ADDRESS;
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
@@ -680,6 +710,19 @@ mod tests {
             gas_price: 1,
             gas_limit: 21000,
             to: TxKind::Call(Address::ZERO),
+            value: U256::ZERO,
+            input: Bytes::new(),
+        };
+        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+    }
+
+    fn create_tip20_empty_calldata_tx() -> TempoTxEnvelope {
+        let tx = TxLegacy {
+            chain_id: Some(1),
+            nonce: 0,
+            gas_price: 1,
+            gas_limit: 21000,
+            to: TxKind::Call(PATH_USD_ADDRESS),
             value: U256::ZERO,
             input: Bytes::new(),
         };
@@ -1085,6 +1128,30 @@ mod tests {
             result.unwrap_err().to_string(),
             "incentive gas limit exceeded"
         );
+    }
+
+    #[test]
+    fn test_is_payment_uses_v2_from_t5() {
+        let tx = create_tip20_empty_calldata_tx();
+        assert!(
+            tx.is_payment_v1(),
+            "pre-T5 prefix check accepts TIP-20 target"
+        );
+        assert!(
+            !tx.is_payment_v2(),
+            "T5 classifier rejects empty calldata per TIP-1045"
+        );
+
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let pre_t5_executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        assert!(pre_t5_executor.is_payment(&tx));
+
+        let chainspec = DEV.clone();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut t5_executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        t5_executor.inner.evm.cfg.spec = tempo_chainspec::hardfork::TempoHardfork::T5;
+        assert!(!t5_executor.is_payment(&tx));
     }
 
     #[test]

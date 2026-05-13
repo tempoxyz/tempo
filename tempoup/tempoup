@@ -6,12 +6,11 @@ set -e
 
 # NOTE: if you make modifications to this script, please increment the version number.
 # WARNING: the SemVer pattern: major.minor.patch must be followed as we use it to determine if the script is up to date.
-TEMPOUP_INSTALLER_VERSION="0.0.9"
+TEMPOUP_INSTALLER_VERSION="0.0.10"
 
 REPO="tempoxyz/tempo"
 # GPG key fingerprint for release signing verification
 GPG_KEY_FINGERPRINT="EE3C5D41EA963E896F310EC3CBBFA54B20D33446"
-GPG_KEYSERVER="keyserver.ubuntu.com"
 BIN_DIR="${TEMPO_BIN_DIR:-$HOME/.tempo/bin}"
 TEMPOUP_BIN_URL="https://raw.githubusercontent.com/tempoxyz/tempo/main/tempoup/tempoup"
 TEMPOUP_BIN_PATH="$BIN_DIR/tempoup"
@@ -94,6 +93,34 @@ compute_sha256() {
 # Check if command exists
 check_cmd() {
     command -v "$1" >/dev/null 2>&1
+}
+
+preflight_dependencies() {
+    if ! check_cmd curl; then
+        error "curl not found. Please install curl."
+    fi
+
+    if ! check_cmd sha256sum && ! check_cmd shasum; then
+        error "sha256sum or shasum not found. Please install one of them."
+    fi
+
+    info "Install prerequisites: curl found, checksum tool found"
+
+    if [[ "$UNSAFE_SKIP_VERIFY" == "1" ]]; then
+        warn "Skipping GPG signature verification (--unsafe-skip-verify)."
+    elif check_cmd gpg; then
+        info "gpg found; release signature verification enabled"
+    else
+        error "gpg not found. Install gpg, or re-run with --unsafe-skip-verify to bypass signature verification."
+    fi
+
+    if check_cmd gh && gh auth status >/dev/null 2>&1; then
+        info "gh found and authenticated; SLSA attestation verification enabled"
+    elif check_cmd gh; then
+        warn "gh found but not authenticated; optional SLSA attestation verification will be skipped"
+    else
+        info "gh not found; optional SLSA attestation verification will be skipped"
+    fi
 }
 
 # Check if tempoup installer is up to date
@@ -194,7 +221,7 @@ while [[ $# -gt 0 ]]; do
             echo "  -v, --version           Print tempoup installer version"
             echo "  -i, --install <VER>     Install specific tempo version (e.g., v1.0.0)"
             echo "  -U, --update            Update tempoup to the latest version"
-            echo "  --unsafe-skip-verify    Skip verification when gpg/gh are missing or unauthenticated"
+            echo "  --unsafe-skip-verify    Skip GPG signature verification (checksum still required)"
             echo "  -h, --help              Show this help message"
             echo ""
             echo "Examples:"
@@ -202,7 +229,7 @@ while [[ $# -gt 0 ]]; do
             echo "  tempoup -i v1.0.0         # Install specific version"
             echo "  tempoup -v                # Print installer version"
             echo "  tempoup --update          # Update tempoup itself"
-            echo "  tempoup --unsafe-skip-verify  # Install without gpg/gh verification"
+            echo "  tempoup --unsafe-skip-verify  # Install without GPG signature verification"
             exit 0
             ;;
         *)
@@ -314,6 +341,7 @@ main() {
     check_installer_up_to_date
 
     info "Installing tempo..."
+    preflight_dependencies
 
     # Ensure BIN_DIR exists
     mkdir -p "$BIN_DIR"
@@ -377,7 +405,9 @@ main() {
     info "Checksum verified ✓"
 
     # GPG signature verification (only for versions >= 1.1.3, as earlier releases lack .asc files)
-    if version_gt "$VERSION_TAG" "1.1.2"; then
+    if [[ "$UNSAFE_SKIP_VERIFY" == "1" ]]; then
+        warn "GPG signature verification skipped (--unsafe-skip-verify)."
+    elif version_gt "$VERSION_TAG" "1.1.2"; then
         if command -v gpg >/dev/null 2>&1; then
             info "Verifying GPG signature..."
             download_file "$VERSION_TAG" "${ARCHIVE_NAME}.asc" "$TMP_DIR"
@@ -388,10 +418,8 @@ main() {
                 info "Fetching Tempo release signing key..."
                 if curl -sSfL "$GPG_KEY_URL" 2>/dev/null | gpg --import 2>/dev/null; then
                     : # key imported via HTTPS
-                elif [[ "$UNSAFE_SKIP_VERIFY" == "1" ]]; then
-                    warn "Failed to fetch GPG key. Skipping signature verification (--unsafe-skip-verify)."
                 else
-                    error "Failed to fetch GPG key. Re-run with --unsafe-skip-verify to bypass."
+                    error "Failed to fetch GPG key. Re-run with --unsafe-skip-verify to bypass signature verification."
                 fi
             fi
 
@@ -401,22 +429,24 @@ main() {
                 else
                     error "GPG signature verification failed. The binary may have been tampered with."
                 fi
+            else
+                error "GPG key is not available. Re-run with --unsafe-skip-verify to bypass signature verification."
             fi
-        elif [[ "$UNSAFE_SKIP_VERIFY" == "1" ]]; then
-            warn "gpg not found. Skipping signature verification (--unsafe-skip-verify)."
         else
-            error "gpg not found. Install gpg, or re-run with --unsafe-skip-verify to bypass."
+            error "gpg not found. Install gpg, or re-run with --unsafe-skip-verify to bypass signature verification."
         fi
     else
         info "Skipping GPG signature verification (not available for versions <= 1.1.1)"
     fi
 
     # SLSA build provenance verification (Sigstore-signed via GitHub OIDC at
-    # release time). Requires the `gh` CLI with authentication; fall back to
-    # a warning so the installer still works on minimal containers /
-    # `curl | sh` flows. Older releases predate the attestations, so we just
-    # try and skip on absence.
-    if check_cmd gh && gh auth status >/dev/null 2>&1; then
+    # release time). Requires the `gh` CLI with authentication. Keep this
+    # best-effort: GPG is the required release verification by default, while
+    # attestation verification should not make installs fail on clean machines
+    # or for older releases that predate attestations.
+    if [[ "$UNSAFE_SKIP_VERIFY" == "1" ]]; then
+        warn "Skipping SLSA attestation verification (--unsafe-skip-verify)."
+    elif check_cmd gh && gh auth status >/dev/null 2>&1; then
         info "Verifying SLSA build provenance..."
         if gh attestation verify "$ARCHIVE_PATH" --repo "$REPO" \
                 --predicate-type https://slsa.dev/provenance/v1 >/dev/null 2>&1; then
@@ -425,18 +455,11 @@ main() {
             warn "SLSA provenance attestation not found or failed verification."
             warn "(Older releases may not carry attestations.)"
         fi
+    elif check_cmd gh; then
+        warn "gh is not authenticated; skipping optional SLSA attestation verification."
+        warn "Run 'gh auth login' to enable attestation verification."
     else
-        if ! check_cmd gh; then
-            GH_MSG="gh not found"
-        else
-            GH_MSG="gh not authenticated (run 'gh auth login')"
-        fi
-
-        if [[ "$UNSAFE_SKIP_VERIFY" == "1" ]]; then
-            warn "$GH_MSG. Skipping SLSA attestation verification (--unsafe-skip-verify)."
-        else
-            error "$GH_MSG. Re-run with --unsafe-skip-verify to bypass attestation verification."
-        fi
+        info "gh not found; skipping optional SLSA attestation verification."
     fi
 
     # Extract archive

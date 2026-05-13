@@ -41,9 +41,9 @@ on:
         default: "5000"
         type: string
       warmup:
-        description: "Number of warmup blocks"
+        description: "Number of warmup blocks (default: one-quarter of blocks)"
         required: false
-        default: "1000"
+        default: ""
         type: string
       samply:
         description: "Enable samply profiling"
@@ -86,7 +86,7 @@ jobs:
           INPUT_CHAIN: ${{ inputs.chain || '' }}
           EVENT_SCHEDULE: ${{ github.event.schedule || '' }}
           INPUT_BLOCKS: ${{ inputs.blocks || '5000' }}
-          INPUT_WARMUP: ${{ inputs.warmup || '1000' }}
+          INPUT_WARMUP: ${{ inputs.warmup || '' }}
           INPUT_SAMPLY: ${{ inputs.samply || 'false' }}
         run: |
           if [ -z "$INPUT_CHAIN" ]; then
@@ -112,9 +112,12 @@ jobs:
             echo "::error::blocks must be a non-negative integer"
             exit 1
           fi
-          if ! [[ "$INPUT_WARMUP" =~ ^[0-9]+$ ]]; then
+          if [ -n "$INPUT_WARMUP" ] && ! [[ "$INPUT_WARMUP" =~ ^[0-9]+$ ]]; then
             echo "::error::warmup must be a non-negative integer"
             exit 1
+          fi
+          if [ -z "$INPUT_WARMUP" ]; then
+            INPUT_WARMUP=$(( INPUT_BLOCKS / 4 ))
           fi
 
           if [ "$INPUT_SAMPLY" = "true" ]; then
