@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import { ISignatureVerifier } from "./interfaces/ISignatureVerifier.sol";
-import { ITIP20 } from "./interfaces/ITIP20.sol";
+import { ISignatureVerifier } from "tempo-std/interfaces/ISignatureVerifier.sol";
+import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 import { ITIP20ChannelEscrow } from "./interfaces/ITIP20ChannelEscrow.sol";
 
 /// @title TIP20ChannelEscrow
