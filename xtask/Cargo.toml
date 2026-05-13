@@ -42,7 +42,6 @@ alloy-consensus.workspace = true
 alloy-json-abi.workspace = true
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
 bytes.workspace = true
-coins-bip32.workspace = true
 clap = { workspace = true, features = ["derive"] }
 commonware-codec.workspace = true
 commonware-consensus.workspace = true

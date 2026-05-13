@@ -5,7 +5,7 @@ use crate::{
     bootstrap_shadowfork::BootstrapShadowfork, check_abi::CheckAbi,
     generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
     generate_localnet::GenerateLocalnet, generate_shadowfork::GenerateShadowfork,
-    generate_state_bloat::GenerateStateBloat, get_dkg_outcome::GetDkgOutcome,
+    get_dkg_outcome::GetDkgOutcome,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -19,7 +19,6 @@ mod generate_devnet;
 mod generate_genesis;
 mod generate_localnet;
 mod generate_shadowfork;
-mod generate_state_bloat;
 mod genesis_args;
 mod get_dkg_outcome;
 mod shadowfork;
@@ -47,10 +46,6 @@ async fn main() -> eyre::Result<()> {
             .run()
             .wrap_err("failed to bootstrap shadow fork configs"),
         Action::GenerateAddPeer(cfg) => generate_config_to_add_peer(cfg),
-        Action::GenerateStateBloat(args) => args
-            .run()
-            .await
-            .wrap_err("failed to generate state bloat file"),
     }
 }
 
@@ -74,7 +69,6 @@ enum Action {
     GenerateShadowfork(GenerateShadowfork),
     BootstrapShadowfork(BootstrapShadowfork),
     GenerateAddPeer(GenerateAddPeer),
-    GenerateStateBloat(GenerateStateBloat),
 }
 
 #[derive(Debug, clap::Args)]
