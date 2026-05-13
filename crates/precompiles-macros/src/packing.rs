@@ -457,6 +457,7 @@ pub(crate) fn gen_collision_check_fn(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::utils::extract_mapping_types;
     use syn::parse_quote;
 
     fn field(name: &str, ty: Type, slot: Option<u64>, base_slot: Option<u64>) -> FieldInfo {
@@ -689,5 +690,4 @@ mod tests {
         );
     }
 
-    use crate::utils::extract_mapping_types;
 }
