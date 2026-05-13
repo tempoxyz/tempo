@@ -586,35 +586,24 @@ mod tests {
 
     #[test]
     fn classify_field_type_variations() {
+        let assert_direct = |ty: Type| {
+            assert!(matches!(classify_field_type(&ty).unwrap(), FieldKind::Direct(_)));
+        };
+        let assert_mapping = |ty: Type| {
+            assert!(matches!(classify_field_type(&ty).unwrap(), FieldKind::Mapping { .. }));
+        };
+
         // primitive → Direct
-        assert!(matches!(
-            classify_field_type(&parse_quote!(u64)).unwrap(),
-            FieldKind::Direct(_)
-        ));
-        assert!(matches!(
-            classify_field_type(&parse_quote!(U256)).unwrap(),
-            FieldKind::Direct(_)
-        ));
-        assert!(matches!(
-            classify_field_type(&parse_quote!(String)).unwrap(),
-            FieldKind::Direct(_)
-        ));
+        assert_direct(parse_quote!(u64));
+        assert_direct(parse_quote!(U256));
+        assert_direct(parse_quote!(String));
 
         // non-mapping generic → Direct
-        assert!(matches!(
-            classify_field_type(&parse_quote!(Vec<u8>)).unwrap(),
-            FieldKind::Direct(_)
-        ));
-        assert!(matches!(
-            classify_field_type(&parse_quote!(Option<u32>)).unwrap(),
-            FieldKind::Direct(_)
-        ));
+        assert_direct(parse_quote!(Vec<u8>));
+        assert_direct(parse_quote!(Option<u32>));
 
         // simple mapping → Mapping
-        assert!(matches!(
-            classify_field_type(&parse_quote!(Mapping<Address, U256>)).unwrap(),
-            FieldKind::Mapping { .. }
-        ));
+        assert_mapping(parse_quote!(Mapping<Address, U256>));
 
         // nested mapping → Mapping with Mapping value
         if let FieldKind::Mapping { value, .. } =
@@ -655,39 +644,19 @@ mod tests {
 
     #[test]
     fn slot_assignment_ref_slot_variations() {
+        let assert_ref_slot = |assignment: SlotAssignment, expected: U256| {
+            assert_eq!(*assignment.ref_slot(), expected);
+        };
+
         // Manual: typical, zero, large
-        assert_eq!(
-            *SlotAssignment::Manual(U256::from(42)).ref_slot(),
-            U256::from(42)
-        );
-        assert_eq!(*SlotAssignment::Manual(U256::ZERO).ref_slot(), U256::ZERO);
-        assert_eq!(
-            *SlotAssignment::Manual(U256::from(u64::MAX)).ref_slot(),
-            U256::from(u64::MAX)
-        );
+        assert_ref_slot(SlotAssignment::Manual(U256::from(42)), U256::from(42));
+        assert_ref_slot(SlotAssignment::Manual(U256::ZERO), U256::ZERO);
+        assert_ref_slot(SlotAssignment::Manual(U256::from(u64::MAX)), U256::from(u64::MAX));
 
         // Auto: typical, zero, large
-        assert_eq!(
-            *SlotAssignment::Auto {
-                base_slot: U256::from(7)
-            }
-            .ref_slot(),
-            U256::from(7)
-        );
-        assert_eq!(
-            *SlotAssignment::Auto {
-                base_slot: U256::ZERO
-            }
-            .ref_slot(),
-            U256::ZERO
-        );
-        assert_eq!(
-            *SlotAssignment::Auto {
-                base_slot: U256::from(u64::MAX)
-            }
-            .ref_slot(),
-            U256::from(u64::MAX)
-        );
+        assert_ref_slot(SlotAssignment::Auto { base_slot: U256::from(7) }, U256::from(7));
+        assert_ref_slot(SlotAssignment::Auto { base_slot: U256::ZERO }, U256::ZERO);
+        assert_ref_slot(SlotAssignment::Auto { base_slot: U256::from(u64::MAX) }, U256::from(u64::MAX));
     }
 
 }
