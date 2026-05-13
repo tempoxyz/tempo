@@ -299,7 +299,7 @@ jobs:
             });
 
       - uses: dtolnay/rust-toolchain@stable
-      - uses: mozilla-actions/sccache-action@v0.0.9
+      - uses: mozilla-actions/sccache-action@v0.0.10
         continue-on-error: true
 
       - name: Install uv
