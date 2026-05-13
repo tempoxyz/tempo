@@ -1474,7 +1474,6 @@ def "main follower" [
     }
 
     let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
-
     if not $skip_build {
         build-tempo ["tempo"] $profile $features
     }
@@ -1500,41 +1499,40 @@ def "main follower" [
         $"enode://($identity)@($ip):($port + 1)"
     } | str join ",")
 
-    let follower_dir = $"($LOCALNET_DIR)/follower"
-
-    if $reset and ($follower_dir | path exists) {
+    let node_dir = $"($LOCALNET_DIR)/follower"
+    if $reset and ($node_dir | path exists) {
         print "Resetting follower data..."
-        rm -rf $follower_dir
+        rm -rf $node_dir
     }
 
-    mkdir $follower_dir
+    mkdir $node_dir
+
+    let log_dir = $"($LOGS_DIR)/follower"
+    mkdir $log_dir
 
     # Use the slot after the last validator and mirror consensus node port formulas.
-    let follower_index = (($validator_dirs | each { |d|
+    let node_index = (($validator_dirs | each { |d|
         let addr = ($d | path basename)
         let port = ($addr | split row ":" | get 1 | into int)
         port-to-node-index $port
     } | math max) + 1)
 
-    let consensus_port = ($follower_index * 100) + 8000
-    let consensus_ip = $"127.0.0.($follower_index + 1)"
-    let http_port = 8545 + $follower_index
-    let reth_metrics_port = 9001 + $follower_index
-    let el_p2p_port = $consensus_port + 1
+    let consensus_port = ($node_index * 100) + 8000
+
+    let http_port = 8545 + $node_index
+    let reth_metrics_port = 9001 + $node_index
+    let execution_p2p_port = $consensus_port + 1
     let consensus_metrics_port = $consensus_port + 2
     let authrpc_port = $consensus_port + 3
     let discv5_port = $consensus_port + 4
-    let log_dir = $"($LOGS_DIR)/follower"
-    mkdir $log_dir
 
-    let args = (build-base-args $genesis_path $follower_dir $log_dir "0.0.0.0" $http_port $reth_metrics_port)
+    let args = (build-base-args $genesis_path $node_dir $log_dir "0.0.0.0" $http_port $reth_metrics_port)
         | append [
             "--follow" $"ws://127.0.0.1:8545"
-            "--consensus.listen-address" $"($consensus_ip):($consensus_port)"
             "--consensus.metrics-address" $"0.0.0.0:($consensus_metrics_port)"
             "--trusted-peers" $trusted_peers
-            "--port" $"($el_p2p_port)"
-            "--discovery.port" $"($el_p2p_port)"
+            "--port" $"($execution_p2p_port)"
+            "--discovery.port" $"($execution_p2p_port)"
             "--discovery.v5.port" $"($discv5_port)"
             "--authrpc.port" $"($authrpc_port)"
             "--consensus.use-local-defaults"
