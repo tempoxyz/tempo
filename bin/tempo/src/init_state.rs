@@ -11,6 +11,7 @@ use coins_bip32::prelude::*;
 use eyre::{Context as _, ensure};
 use rayon::prelude::*;
 use reth_chainspec::EthereumHardforks;
+use reth_cli::chainspec::ChainSpecParser;
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, EnvironmentArgs};
 use reth_db_api::{
     cursor::{DbCursorRO, DbDupCursorRO, DbDupCursorRW},
@@ -25,8 +26,7 @@ use reth_trie::{
     BranchNodeCompact, HashBuilder, HashedPostState, Nibbles,
     updates::{StorageTrieUpdates, StorageTrieUpdatesSorted},
 };
-use reth_trie_db::DatabaseStateRoot;
-use reth_trie_db::{StorageTrieEntryLike, TrieTableAdapter};
+use reth_trie_db::{DatabaseStateRoot, StorageTrieEntryLike, TrieTableAdapter};
 use tempo_chainspec::spec::TempoChainSpecParser;
 use tempo_precompiles::tip20::tip20_slots;
 use tempo_primitives::transaction::TIP20_PAYMENT_PREFIX;
@@ -66,9 +66,7 @@ pub(crate) struct InitStateBloat<C: reth_cli::chainspec::ChainSpecParser = Tempo
     signable_count: usize,
 }
 
-impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>>
-    InitStateBloat<C>
-{
+impl<C: ChainSpecParser<ChainSpec: EthChainSpec + EthereumHardforks>> InitStateBloat<C> {
     /// Execute the init-state-bloat command.
     pub(crate) async fn execute<N>(self, runtime: Runtime) -> eyre::Result<()>
     where
@@ -76,62 +74,188 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
     {
         info!(target: "tempo::cli", "Tempo init-state-bloat starting");
 
-        let Self {
-            env,
-            mnemonic,
-            size,
-            token,
-            balance,
-            signable_count,
-        } = self;
-
-        let environment = env.init::<N>(AccessRights::RW, runtime)?;
+        let environment = self.env.init::<N>(AccessRights::RW, runtime)?;
         let provider_factory = environment.provider_factory;
         let provider_rw = provider_factory.database_provider_rw()?;
 
-        ensure_at_genesis(&provider_rw, "init-state-bloat")?;
+        let last_block = provider_rw.last_block_number()?;
+        ensure!(
+            last_block == 0,
+            "must be run on a freshly initialized database at block 0, but found block {last_block}"
+        );
+        ensure!(
+            provider_rw.cached_storage_settings().use_hashed_state(),
+            "only supports storage v2 hashed state"
+        );
 
-        let cfg = GeneratedStateBloatConfig {
-            mnemonic,
-            size_mib: size,
-            tokens: token,
-            balance,
-            signable_count,
-        };
+        let ctx = self.context()?;
+        let balance_value = U256::from(self.balance);
+        let total_supply = balance_value * U256::from(ctx.accounts_per_token);
+        let hashed_total_supply_slot =
+            keccak256(B256::from(tip20_slots::TOTAL_SUPPLY.to_be_bytes::<32>()));
 
-        ensure_storage_v2(&provider_rw, "init-state-bloat")?;
+        info!(
+            target: "tempo::cli",
+            size_mib = self.size,
+            tokens = ctx.num_tokens,
+            accounts_per_token = ctx.accounts_per_token,
+            signable_accounts = ctx.actual_signable,
+            "Generating state bloat"
+        );
 
-        let stats = init_generated_state_bloat_v2(&provider_rw, cfg)?;
+        for (id, address) in ctx.token_ids.iter().zip(&ctx.token_addresses) {
+            info!(target: "tempo::cli", token_id = id, %address, "Using TIP20 token address");
+        }
+
+        let slots_started = Instant::now();
+        let hashed_balance_slots = generate_hashed_balance_slots(&self.mnemonic, &ctx)?;
+        info!(
+            target: "tempo::cli",
+            slots = hashed_balance_slots.len(),
+            elapsed = ?slots_started.elapsed(),
+            "Generated and sorted hashed balance slots"
+        );
+
+        let targets = load_token_targets(provider_rw.tx_ref(), &ctx)?;
+        let token_set: B256Set = targets.iter().map(|target| target.hashed_address).collect();
+        let non_token_storage = read_non_token_hashed_storage(provider_rw.tx_ref(), &token_set)?;
+
+        info!(
+            target: "tempo::cli",
+            token_storage_blocks = targets.len(),
+            preserved_storage_entries = non_token_storage.len(),
+            "Writing hashed storage and storage trie nodes"
+        );
+
+        let storage_write_started = Instant::now();
+        let (total_token_entries, storage_trie_writes) =
+            reth_trie_db::with_adapter!(provider_rw, |A| {
+                write_v2_hashed_storage_and_tries::<_, A>(
+                    provider_rw.tx_ref(),
+                    &targets,
+                    non_token_storage,
+                    &token_set,
+                    &hashed_balance_slots,
+                    balance_value,
+                    hashed_total_supply_slot,
+                    total_supply,
+                )
+            })?;
+
+        for target in &targets {
+            provider_rw
+                .tx_ref()
+                .put::<tables::HashedAccounts>(target.hashed_address, target.account)?;
+        }
+
+        info!(
+            target: "tempo::cli",
+            total_token_entries,
+            storage_trie_writes,
+            elapsed = ?storage_write_started.elapsed(),
+            "Hashed storage and storage tries written"
+        );
+
+        let state_root_started = Instant::now();
+        let mut post_state = HashedPostState::with_capacity(targets.len());
+        for target in &targets {
+            post_state
+                .accounts
+                .insert(target.hashed_address, Some(target.account));
+        }
+        let post_state = post_state.into_sorted();
+
+        let (state_root, account_updates) = reth_trie_db::with_adapter!(provider_rw, |A| {
+            use reth_trie_db::{DatabaseHashedCursorFactory, DatabaseTrieCursorFactory};
+            type DbStateRoot<'a, TX, Adapter> = reth_trie::StateRoot<
+                DatabaseTrieCursorFactory<&'a TX, Adapter>,
+                DatabaseHashedCursorFactory<&'a TX>,
+            >;
+
+            <DbStateRoot<'_, _, A> as DatabaseStateRoot<_>>::overlay_root_with_updates(
+                provider_rw.tx_ref(),
+                &post_state,
+            )?
+        });
+        let account_trie_writes = provider_rw.write_trie_updates(account_updates)?;
+
+        info!(
+            target: "tempo::cli",
+            %state_root,
+            account_trie_writes,
+            elapsed = ?state_root_started.elapsed(),
+            "State root computed from storage-v2 bloat"
+        );
 
         provider_rw.commit()?;
 
         info!(
             target: "tempo::cli",
-            total_blocks = stats.total_blocks,
-            total_entries = stats.total_entries,
-            state_root = %stats.state_root,
+            total_blocks = ctx.num_tokens,
+            total_entries = total_token_entries,
+            %state_root,
             "Generated state bloat loaded successfully"
         );
 
         Ok(())
     }
+
+    fn context(&self) -> eyre::Result<GeneratedStateBloatContext> {
+        ensure!(
+            !self.token.is_empty(),
+            "at least one token ID must be specified"
+        );
+        ensure!(self.size > 0, "size must be greater than 0");
+        ensure!(self.balance > 0, "balance must be greater than 0");
+
+        let mut unique_tokens = self.token.clone();
+        unique_tokens.sort_unstable();
+        unique_tokens.dedup();
+        let num_tokens = self.token.len() as u64;
+        ensure!(
+            unique_tokens.len() as u64 == num_tokens,
+            "token IDs must be unique"
+        );
+
+        let target_bytes = self
+            .size
+            .checked_mul(1024 * 1024)
+            .ok_or_else(|| eyre::eyre!("target size overflows u64"))?;
+
+        // Keep a small per-token metadata allowance so the generated payload stays
+        // just under the requested target size.
+        let metadata_size = 40u64;
+        let entry_size = 64u64;
+        let overhead_per_token = metadata_size + entry_size;
+        let available_for_balances = target_bytes.saturating_sub(num_tokens * overhead_per_token);
+        let total_balance_entries = available_for_balances / entry_size;
+        let accounts_per_token = total_balance_entries / num_tokens;
+        ensure!(
+            accounts_per_token > 0,
+            "target size too small for the number of tokens"
+        );
+
+        let total_accounts = usize::try_from(accounts_per_token)
+            .wrap_err("target size produces too many accounts for this platform")?;
+        let actual_signable = self
+            .signable_count
+            .min(total_accounts)
+            .min(u32::MAX as usize);
+        let token_addresses: Vec<Address> =
+            self.token.iter().map(|&id| token_address(id)).collect();
+
+        Ok(GeneratedStateBloatContext {
+            num_tokens,
+            accounts_per_token,
+            total_accounts,
+            actual_signable,
+            token_ids: self.token.clone(),
+            token_addresses,
+        })
+    }
 }
 
-struct GeneratedStateBloatConfig {
-    mnemonic: String,
-    size_mib: u64,
-    tokens: Vec<u64>,
-    balance: u64,
-    signable_count: usize,
-}
-
-struct StateBloatImportStats {
-    total_blocks: u64,
-    total_entries: u64,
-    state_root: B256,
-}
-
-struct GeneratedStateBloatSizing {
+struct GeneratedStateBloatContext {
     num_tokens: u64,
     accounts_per_token: u64,
     total_accounts: usize,
@@ -154,180 +278,12 @@ struct StorageTrieRow {
     node: BranchNodeCompact,
 }
 
-fn init_generated_state_bloat_v2<Provider>(
-    provider_rw: &Provider,
-    cfg: GeneratedStateBloatConfig,
-) -> eyre::Result<StateBloatImportStats>
-where
-    Provider: DBProvider<Tx: DbTx + DbTxMut> + StorageSettingsCache + TrieWriter,
-{
-    let sizing = compute_generated_state_bloat_sizing(&cfg)?;
-    let balance_value = U256::from(cfg.balance);
-    let total_supply = balance_value * U256::from(sizing.accounts_per_token);
-    let hashed_total_supply_slot =
-        keccak256(B256::from(tip20_slots::TOTAL_SUPPLY.to_be_bytes::<32>()));
-
-    info!(
-        target: "tempo::cli",
-        size_mib = cfg.size_mib,
-        tokens = sizing.num_tokens,
-        accounts_per_token = sizing.accounts_per_token,
-        signable_accounts = sizing.actual_signable,
-        "Generating state bloat directly into storage-v2 hashed state"
-    );
-
-    for (id, address) in sizing.token_ids.iter().zip(&sizing.token_addresses) {
-        info!(target: "tempo::cli", token_id = id, %address, "Using TIP20 token address");
-    }
-
-    let slots_started = Instant::now();
-    let hashed_balance_slots = generate_hashed_balance_slots(&cfg, &sizing)?;
-    info!(
-        target: "tempo::cli",
-        slots = hashed_balance_slots.len(),
-        elapsed = ?slots_started.elapsed(),
-        "Generated and sorted hashed balance slots"
-    );
-
-    let targets = load_token_targets(provider_rw.tx_ref(), &sizing)?;
-    let token_set: B256Set = targets.iter().map(|target| target.hashed_address).collect();
-    let non_token_storage = read_non_token_hashed_storage(provider_rw.tx_ref(), &token_set)?;
-
-    info!(
-        target: "tempo::cli",
-        token_storage_blocks = targets.len(),
-        preserved_storage_entries = non_token_storage.len(),
-        "Writing hashed storage and storage trie nodes"
-    );
-
-    let storage_write_started = Instant::now();
-    let (total_token_entries, storage_trie_writes) =
-        reth_trie_db::with_adapter!(provider_rw, |A| {
-            write_v2_hashed_storage_and_tries::<_, A>(
-                provider_rw.tx_ref(),
-                &targets,
-                non_token_storage,
-                &token_set,
-                &hashed_balance_slots,
-                balance_value,
-                hashed_total_supply_slot,
-                total_supply,
-            )
-        })?;
-
-    for target in &targets {
-        provider_rw
-            .tx_ref()
-            .put::<tables::HashedAccounts>(target.hashed_address, target.account)?;
-    }
-
-    info!(
-        target: "tempo::cli",
-        total_token_entries,
-        storage_trie_writes,
-        elapsed = ?storage_write_started.elapsed(),
-        "Hashed storage and storage tries written"
-    );
-
-    let state_root_started = Instant::now();
-    let mut post_state = HashedPostState::with_capacity(targets.len());
-    for target in &targets {
-        post_state
-            .accounts
-            .insert(target.hashed_address, Some(target.account));
-    }
-    let post_state = post_state.into_sorted();
-
-    let (state_root, account_updates) = reth_trie_db::with_adapter!(provider_rw, |A| {
-        use reth_trie_db::{DatabaseHashedCursorFactory, DatabaseTrieCursorFactory};
-        type DbStateRoot<'a, TX, Adapter> = reth_trie::StateRoot<
-            DatabaseTrieCursorFactory<&'a TX, Adapter>,
-            DatabaseHashedCursorFactory<&'a TX>,
-        >;
-
-        <DbStateRoot<'_, _, A> as DatabaseStateRoot<_>>::overlay_root_with_updates(
-            provider_rw.tx_ref(),
-            &post_state,
-        )?
-    });
-    let account_trie_writes = provider_rw.write_trie_updates(account_updates)?;
-
-    info!(
-        target: "tempo::cli",
-        %state_root,
-        account_trie_writes,
-        elapsed = ?state_root_started.elapsed(),
-        "State root computed from storage-v2 bloat"
-    );
-
-    Ok(StateBloatImportStats {
-        total_blocks: sizing.num_tokens,
-        total_entries: total_token_entries,
-        state_root,
-    })
-}
-
-fn compute_generated_state_bloat_sizing(
-    cfg: &GeneratedStateBloatConfig,
-) -> eyre::Result<GeneratedStateBloatSizing> {
-    ensure!(
-        !cfg.tokens.is_empty(),
-        "at least one token ID must be specified"
-    );
-    ensure!(cfg.size_mib > 0, "size must be greater than 0");
-    ensure!(cfg.balance > 0, "balance must be greater than 0");
-
-    let mut unique_tokens = cfg.tokens.clone();
-    unique_tokens.sort_unstable();
-    unique_tokens.dedup();
-    ensure!(
-        unique_tokens.len() == cfg.tokens.len(),
-        "token IDs must be unique"
-    );
-
-    let target_bytes = cfg
-        .size_mib
-        .checked_mul(1024 * 1024)
-        .ok_or_else(|| eyre::eyre!("target size overflows u64"))?;
-    let num_tokens = cfg.tokens.len() as u64;
-
-    // Keep a small per-token metadata allowance so the generated payload stays
-    // just under the requested target size.
-    let metadata_size = 40u64;
-    let entry_size = 64u64;
-    let overhead_per_token = metadata_size + entry_size;
-    let available_for_balances = target_bytes.saturating_sub(num_tokens * overhead_per_token);
-    let total_balance_entries = available_for_balances / entry_size;
-    let accounts_per_token = total_balance_entries / num_tokens;
-    ensure!(
-        accounts_per_token > 0,
-        "target size too small for the number of tokens"
-    );
-
-    let total_accounts = usize::try_from(accounts_per_token)
-        .wrap_err("target size produces too many accounts for this platform")?;
-    let actual_signable = cfg
-        .signable_count
-        .min(total_accounts)
-        .min(u32::MAX as usize);
-    let token_addresses: Vec<Address> = cfg.tokens.iter().map(|&id| token_address(id)).collect();
-
-    Ok(GeneratedStateBloatSizing {
-        num_tokens,
-        accounts_per_token,
-        total_accounts,
-        actual_signable,
-        token_ids: cfg.tokens.clone(),
-        token_addresses,
-    })
-}
-
 fn generate_hashed_balance_slots(
-    cfg: &GeneratedStateBloatConfig,
-    sizing: &GeneratedStateBloatSizing,
+    mnemonic: &str,
+    sizing: &GeneratedStateBloatContext,
 ) -> eyre::Result<Vec<B256>> {
-    let parent_key = Arc::new(derive_parent_key(&cfg.mnemonic)?);
-    let seed = keccak256(cfg.mnemonic.as_bytes());
+    let parent_key = Arc::new(derive_parent_key(mnemonic)?);
+    let seed = keccak256(mnemonic.as_bytes());
 
     let mut slots: Vec<B256> = (0..sizing.total_accounts)
         .into_par_iter()
@@ -351,7 +307,7 @@ fn generate_hashed_balance_slots(
 
 fn load_token_targets<TX: DbTx + DbTxMut>(
     tx: &TX,
-    sizing: &GeneratedStateBloatSizing,
+    sizing: &GeneratedStateBloatContext,
 ) -> eyre::Result<Vec<TokenTarget>> {
     let mut targets = Vec::with_capacity(sizing.token_addresses.len());
     for (&id, &address) in sizing.token_ids.iter().zip(&sizing.token_addresses) {
@@ -653,9 +609,7 @@ fn build_token_storage_trie_v2(
             extra_index += 1;
         }
 
-        if let Some(extra) = extras.get(extra_index).copied()
-            && extra.key == slot
-        {
+        if let Some(extra) = extras.get(extra_index).copied() {
             let value = if extra.key == hashed_total_supply_slot {
                 extra.value
             } else {
@@ -772,30 +726,6 @@ fn token_extra_storage_entries(
     extras
 }
 
-fn ensure_at_genesis<Provider: BlockNumReader>(
-    provider: &Provider,
-    command: &str,
-) -> eyre::Result<()> {
-    let last_block = provider.last_block_number()?;
-    ensure!(
-        last_block == 0,
-        "{command} must be run on a freshly initialized database at block 0, \
-         but found block {last_block}"
-    );
-    Ok(())
-}
-
-fn ensure_storage_v2<Provider: StorageSettingsCache>(
-    provider: &Provider,
-    command: &str,
-) -> eyre::Result<()> {
-    ensure!(
-        provider.cached_storage_settings().use_hashed_state(),
-        "{command} only supports storage-v2 hashed state"
-    );
-    Ok(())
-}
-
 /// Compute a reserved TIP20 token address from a token ID.
 fn token_address(token_id: u64) -> Address {
     let mut bytes = [0u8; 20];
@@ -821,7 +751,7 @@ fn derive_signable_address(parent_key: &XPriv, index: u32) -> Address {
     secret_key_to_address(key)
 }
 
-/// Derive the parent key for BIP44 Ethereum path: m/44'/60'/0'/0.
+/// Derive the parent key for BIP44 Ethereum path: `m/44'/60'/0'/0`.
 fn derive_parent_key(mnemonic_phrase: &str) -> eyre::Result<XPriv> {
     let mnemonic = Mnemonic::<English>::new_from_phrase(mnemonic_phrase)
         .map_err(|e| eyre::eyre!("invalid mnemonic: {e}"))?;
@@ -830,7 +760,7 @@ fn derive_parent_key(mnemonic_phrase: &str) -> eyre::Result<XPriv> {
         .map_err(|e| eyre::eyre!("key derivation failed: {e}"))
 }
 
-/// Compute a Solidity mapping slot: keccak256(pad32(key) || pad32(base_slot)).
+/// Compute a Solidity mapping slot: `keccak256(pad32(key) || pad32(base_slot))`.
 fn compute_mapping_slot(key: Address, base_slot: U256) -> U256 {
     let mut buf = [0u8; 64];
     buf[12..32].copy_from_slice(key.as_slice());
