@@ -16,12 +16,12 @@ use crate::{
 };
 use alloy::primitives::{Address, B256, U256};
 
-/// Capacity of the expiring nonce seen set (supports 10k TPS for 30 seconds).
+/// Capacity of the expiring nonce seen set (supports 30k TPS for 10 seconds).
 pub const EXPIRING_NONCE_SET_CAPACITY: u32 = 300_000;
 
-/// Maximum allowed skew for expiring nonce transactions (30 seconds).
+/// Maximum allowed skew for expiring nonce transactions (10 seconds).
 /// Transactions must have valid_before in (now, now + MAX_EXPIRY_SECS].
-pub const EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
+pub const EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 10;
 
 /// NonceManager contract for managing 2D nonces as per the AA spec
 ///
@@ -306,7 +306,7 @@ mod tests {
             let mut mgr = NonceManager::new();
 
             let tx_hash = B256::repeat_byte(0x11);
-            let valid_before = now + 20; // 20s in future, within 30s window
+            let valid_before = now + 5; // 5s in future, within 10s window
 
             // First tx should succeed
             mgr.check_and_mark_expiring_nonce(tx_hash, valid_before)?;
@@ -346,15 +346,15 @@ mod tests {
                 TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
             );
 
-            // valid_before too far in future should fail (uses EXPIRING_NONCE_MAX_EXPIRY_SECS = 30)
-            let result = mgr.check_and_mark_expiring_nonce(tx_hash, now + 31);
+            // valid_before too far in future should fail (uses EXPIRING_NONCE_MAX_EXPIRY_SECS = 10)
+            let result = mgr.check_and_mark_expiring_nonce(tx_hash, now + 11);
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::NonceError(NonceError::invalid_expiring_nonce_expiry())
             );
 
             // valid_before at exactly EXPIRING_NONCE_MAX_EXPIRY_SECS should succeed
-            mgr.check_and_mark_expiring_nonce(tx_hash, now + 30)?;
+            mgr.check_and_mark_expiring_nonce(tx_hash, now + 10)?;
 
             Ok(())
         })
@@ -364,7 +364,7 @@ mod tests {
     fn test_expiring_nonce_expired_entry_eviction() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let now = 1000u64;
-        let valid_before = now + 20;
+        let valid_before = now + 5;
         storage.set_timestamp(U256::from(now));
         StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
@@ -385,7 +385,7 @@ mod tests {
 
         // Insert second tx after first has expired - should evict first
         let new_now = valid_before + 1;
-        let new_valid_before = new_now + 20;
+        let new_valid_before = new_now + 5;
         storage.set_timestamp(U256::from(new_now));
         StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
@@ -415,7 +415,7 @@ mod tests {
 
             // Insert a tx - pointer should wrap to 0
             let tx_hash = B256::repeat_byte(0x77);
-            let valid_before = now + 20;
+            let valid_before = now + 5;
             mgr.check_and_mark_expiring_nonce(tx_hash, valid_before)?;
 
             // Pointer should now be 0 (wrapped at capacity)

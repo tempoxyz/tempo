@@ -28,8 +28,8 @@ pub const MAX_WEBAUTHN_SIGNATURE_LENGTH: usize = 2048; // 2KB max
 /// Nonce key marking an expiring nonce transaction (uses tx hash for replay protection).
 pub const TEMPO_EXPIRING_NONCE_KEY: U256 = U256::MAX;
 
-/// Maximum allowed expiry window for expiring nonce transactions (30 seconds).
-pub const TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
+/// Maximum allowed expiry window for expiring nonce transactions (10 seconds).
+pub const TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 10;
 
 /// Signature type enumeration
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
