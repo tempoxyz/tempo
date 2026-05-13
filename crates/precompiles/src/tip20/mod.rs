@@ -1211,11 +1211,11 @@ impl TIP20Token {
             return Err(TIP1028EscrowError::escrow_address_reserved().into());
         }
         let registry = TIP403Registry::new();
-        let Some(reason) = registry.validate_receive_policy(self.address, originator, to.target)?
+        let Some((reason, recovery)) =
+            registry.check_receive_policy(self.address, originator, to.target)?
         else {
             return Ok(false);
         };
-        let recovery = registry.receive_policy_recovery(to.target)?;
 
         match kind {
             InboundKind::TRANSFER => {

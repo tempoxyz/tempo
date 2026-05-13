@@ -266,17 +266,36 @@ impl TIP403Registry {
         sender: Address,
         receiver: Address,
     ) -> Result<Option<ITIP403Registry::BlockedReason>> {
+        Ok(self
+            .check_receive_policy(token, sender, receiver)?
+            .map(|(reason, _)| reason))
+    }
+
+    /// Checks the receive policy. If valid, returns `None`. Otherwise returns the
+    /// blocking reason and recovery address.
+    pub(crate) fn check_receive_policy(
+        &self,
+        token: Address,
+        sender: Address,
+        receiver: Address,
+    ) -> Result<Option<(ITIP403Registry::BlockedReason, Address)>> {
         let config = self.receive_policy_config[receiver].read()?;
         if !config.has_receive_policy {
             return Ok(None);
         }
 
         if !self.is_authorized_simple(config.token_filter_id, token)? {
-            return Ok(Some(ITIP403Registry::BlockedReason::TOKEN_FILTER));
+            return Ok(Some((
+                ITIP403Registry::BlockedReason::TOKEN_FILTER,
+                config.recovery_address,
+            )));
         }
 
         if !self.is_authorized_simple(config.sender_policy_id, sender)? {
-            return Ok(Some(ITIP403Registry::BlockedReason::RECEIVE_POLICY));
+            return Ok(Some((
+                ITIP403Registry::BlockedReason::RECEIVE_POLICY,
+                config.recovery_address,
+            )));
         }
 
         Ok(None)
