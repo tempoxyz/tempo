@@ -324,12 +324,18 @@ run_single() {
   # Benchmark
   local bench_to=$(( from_block + BLOCKS - 1 ))
   echo "Running benchmark ($BLOCKS blocks: $from_block..$bench_to)..."
+  local clickhouse_report=()
+  if [ -n "${CLICKHOUSE_URL:-}" ]; then
+    clickhouse_report=(--report "clickhouse:$CLICKHOUSE_URL")
+  fi
+
   "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$bench_to" \
     | "$TXGEN_BENCH_BIN" send-blocks \
       --engine http://127.0.0.1:8551 \
       --jwt-secret "$DATADIR/jwt.hex" \
       --metrics-url http://localhost:9001 \
       --report "json:$output_dir/report.json" \
+      "${clickhouse_report[@]}" \
       -m "git-sha=$git_sha" \
       -m "git-ref=$git_ref" \
       -m "platform=tempo" \
