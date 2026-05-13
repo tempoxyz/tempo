@@ -588,54 +588,26 @@ fn build_token_storage_trie_v2(
     hashed_total_supply_slot: B256,
     total_supply: U256,
 ) -> eyre::Result<(B256, StorageTrieUpdatesSorted, u64)> {
-    let extras =
-        token_extra_storage_entries(existing_storage, hashed_total_supply_slot, total_supply);
     let balance_rlp = alloy_rlp::encode_fixed_size(&balance_value);
-    let mut extra_index = 0usize;
     let mut hash_builder = HashBuilder::default().with_updates(true);
-    let mut entries = 0u64;
 
-    for &slot in hashed_balance_slots {
-        while let Some(extra) = extras.get(extra_index).copied()
-            && extra.key < slot
-        {
-            if !extra.value.is_zero() {
-                hash_builder.add_leaf_unchecked(
-                    Nibbles::unpack_array(&extra.key.0),
-                    alloy_rlp::encode_fixed_size(&extra.value).as_ref(),
-                );
-                entries += 1;
-            }
-            extra_index += 1;
-        }
-
-        if let Some(extra) = extras.get(extra_index).copied() {
-            let value = if extra.key == hashed_total_supply_slot {
-                extra.value
+    let entries = for_each_token_storage_entry(
+        existing_storage,
+        hashed_balance_slots,
+        balance_value,
+        hashed_total_supply_slot,
+        total_supply,
+        |key, value| {
+            if value == balance_value {
+                hash_builder
+                    .add_leaf_unchecked(Nibbles::unpack_array(&key.0), balance_rlp.as_ref());
             } else {
-                balance_value
-            };
-            if !value.is_zero() {
                 let encoded = alloy_rlp::encode_fixed_size(&value);
-                hash_builder.add_leaf_unchecked(Nibbles::unpack_array(&slot.0), encoded.as_ref());
-                entries += 1;
+                hash_builder.add_leaf_unchecked(Nibbles::unpack_array(&key.0), encoded.as_ref());
             }
-            extra_index += 1;
-        } else {
-            hash_builder.add_leaf_unchecked(Nibbles::unpack_array(&slot.0), balance_rlp.as_ref());
-            entries += 1;
-        }
-    }
-
-    for extra in &extras[extra_index..] {
-        if !extra.value.is_zero() {
-            hash_builder.add_leaf_unchecked(
-                Nibbles::unpack_array(&extra.key.0),
-                alloy_rlp::encode_fixed_size(&extra.value).as_ref(),
-            );
-            entries += 1;
-        }
-    }
+            Ok(())
+        },
+    )?;
 
     let storage_root = hash_builder.root();
     let mut updates = StorageTrieUpdates::deleted();
