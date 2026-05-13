@@ -315,12 +315,8 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         // Rebuild the merkle trie from scratch so the sparse trie cache on
         // block 1 doesn't hit stale genesis nodes and stall on a full rebuild.
         let trie_start = Instant::now();
-        provider_rw
-            .tx_ref()
-            .clear::<reth_trie_db::PackedAccountsTrie>()?;
-        provider_rw
-            .tx_ref()
-            .clear::<reth_trie_db::PackedStoragesTrie>()?;
+        provider_rw.tx_ref().clear::<tables::AccountsTrie>()?;
+        provider_rw.tx_ref().clear::<tables::StoragesTrie>()?;
 
         let mut resume: Option<IntermediateStateRootState> = None;
         let mut trie_writes = 0usize;
@@ -396,7 +392,7 @@ where
     let mut num_entries = 0;
 
     {
-        let mut account_cursor = tx.cursor_write::<reth_trie_db::PackedAccountsTrie>()?;
+        let mut account_cursor = tx.cursor_write::<reth_db::PackedAccountsTrie>()?;
         for (key, updated_node) in updates.account_nodes_ref() {
             let nibbles = reth_trie::PackedStoredNibbles::from(*key);
             match updated_node {
