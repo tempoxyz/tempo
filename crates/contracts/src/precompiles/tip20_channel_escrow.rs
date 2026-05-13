@@ -240,11 +240,7 @@ impl ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls {
     ///
     /// [TIP-20 channel escrow payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment(input: &[u8]) -> bool {
-        fn is_call<C: SolCall>(input: &[u8]) -> bool {
-            if input.first_chunk::<4>() != Some(&C::SELECTOR) {
-                return false;
-            }
-
+        fn has_valid_params<C: SolCall>(input: &[u8]) -> bool {
             if let Some(canonical_size) = <C::Parameters<'_> as SolType>::ENCODED_SIZE {
                 input.len() == 4 + canonical_size
             } else {
@@ -252,12 +248,31 @@ impl ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls {
             }
         }
 
-        is_call::<ITIP20ChannelEscrow::openCall>(input)
-            || is_call::<ITIP20ChannelEscrow::topUpCall>(input)
-            || is_call::<ITIP20ChannelEscrow::closeCall>(input)
-            || is_call::<ITIP20ChannelEscrow::settleCall>(input)
-            || is_call::<ITIP20ChannelEscrow::requestCloseCall>(input)
-            || is_call::<ITIP20ChannelEscrow::withdrawCall>(input)
+        let Some(selector) = input.first_chunk::<4>() else {
+            return false;
+        };
+
+        match *selector {
+            ITIP20ChannelEscrow::openCall::SELECTOR => {
+                has_valid_params::<ITIP20ChannelEscrow::openCall>(input)
+            }
+            ITIP20ChannelEscrow::topUpCall::SELECTOR => {
+                has_valid_params::<ITIP20ChannelEscrow::topUpCall>(input)
+            }
+            ITIP20ChannelEscrow::closeCall::SELECTOR => {
+                has_valid_params::<ITIP20ChannelEscrow::closeCall>(input)
+            }
+            ITIP20ChannelEscrow::settleCall::SELECTOR => {
+                has_valid_params::<ITIP20ChannelEscrow::settleCall>(input)
+            }
+            ITIP20ChannelEscrow::requestCloseCall::SELECTOR => {
+                has_valid_params::<ITIP20ChannelEscrow::requestCloseCall>(input)
+            }
+            ITIP20ChannelEscrow::withdrawCall::SELECTOR => {
+                has_valid_params::<ITIP20ChannelEscrow::withdrawCall>(input)
+            }
+            _ => false,
+        }
     }
 }
 
