@@ -764,7 +764,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --benchmark-id $ctx.benchmark_id
                 --benchmark-run $phase
                 --run-type $run_type
-                --reference-epoch $ctx.reference_epoch
                 --victoriametrics-url $ctx.victoriametrics_url)
             if not $bench_result.ok {
                 $bench_result.exit_code

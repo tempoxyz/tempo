@@ -194,7 +194,6 @@ def txgen-run-preset-pipeline [
     --benchmark-id: string = ""
     --benchmark-run: string = ""
     --run-type: string = ""
-    --reference-epoch: int = 0
     --victoriametrics-url: string = ""
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
@@ -245,7 +244,6 @@ def txgen-run-preset-pipeline [
         | append (if $benchmark_id != "" { ["-m" $"benchmark_id=($benchmark_id)"] } else { [] })
         | append (if $benchmark_run != "" { ["-m" $"benchmark_run=($benchmark_run)"] } else { [] })
         | append (if $run_type != "" { ["-m" $"run_type=($run_type)"] } else { [] })
-        | append (if $reference_epoch > 0 { ["-m" $"reference_epoch=($reference_epoch)"] } else { [] })
     let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
