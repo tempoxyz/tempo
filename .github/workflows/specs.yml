@@ -182,22 +182,40 @@ jobs:
           workspaces: foundry
 
       - name: Install llvm-tools
+        if: github.event_name != 'merge_group'
         run: rustup component add llvm-tools-preview
 
       - name: Patch foundry to use checked-out tempo crates
         run: tempo/scripts/foundry-patch.sh "$GITHUB_WORKSPACE/tempo" "$GITHUB_WORKSPACE/foundry"
 
+      # Build and run WITH coverage (pull_request and main push)
       - name: Build foundry forge with coverage instrumentation
+        if: github.event_name != 'merge_group'
         working-directory: foundry
         run: RUSTFLAGS="-C instrument-coverage" cargo build -p forge --profile release --no-default-features
 
       - name: Run Forge tests with Rust precompiles (with coverage)
+        if: github.event_name != 'merge_group'
         working-directory: tempo/tips/verify
         run: |
           echo "Running forge test with Rust precompiles"
           LLVM_PROFILE_FILE="$(pwd)/forge-coverage-%p.profraw" ../../../foundry/target/release/forge test -vvv
 
+      # Build and run WITHOUT coverage (merge_group)
+      - name: Build foundry forge
+        if: github.event_name == 'merge_group'
+        working-directory: foundry
+        run: cargo build -p forge --profile release --no-default-features
+
+      - name: Run Forge tests with Rust precompiles
+        if: github.event_name == 'merge_group'
+        working-directory: tempo/tips/verify
+        run: |
+          echo "Running forge test with Rust precompiles"
+          ../../../foundry/target/release/forge test -vvv
+
       - name: Generate coverage data
+        if: github.event_name != 'merge_group'
         run: |
           LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin"
           mkdir -p coverage
