@@ -287,6 +287,13 @@ run_single() {
 
   local from_block=$(( SNAPSHOT_BLOCK + 1 ))
 
+  # Resolve git ref for this run label
+  local git_ref=""
+  case "$label" in
+    baseline*) git_ref="${BASELINE_REF:-}" ;;
+    feature*)  git_ref="${FEATURE_REF:-}" ;;
+  esac
+
   # Warmup
   if [ "$WARMUP" -gt 0 ]; then
     local warmup_to=$(( from_block + WARMUP - 1 ))
@@ -306,7 +313,11 @@ run_single() {
       --engine http://127.0.0.1:8551 \
       --jwt-secret "$DATADIR/jwt.hex" \
       --metrics-url http://localhost:9001 \
-      --report "json:$output_dir/report.json" 2>&1 | sed -u "s/^/[bench] /"
+      --report "json:$output_dir/report.json" \
+      -m "git_sha=$git_ref" \
+      -m "git_ref=$git_ref" \
+      -m "chain=$CHAIN_NAME" \
+      -m "blocks=$BLOCKS" 2>&1 | sed -u "s/^/[bench] /"
 
   # Cleanup
   kill "$tail_pid" 2>/dev/null || true
