@@ -146,7 +146,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             false
         };
 
-        let mut account = self
+        let account = self
             .internals
             .load_account_mut_skip_cold_load(address, insufficient_gas_for_cold_load)?;
 
@@ -161,8 +161,6 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         if account.is_cold {
             deduct_gas(&mut self.gas_tracker, additional_cost)?;
         }
-
-        account.load_code()?;
 
         f(&account.data.account().info);
         Ok(())
