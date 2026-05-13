@@ -330,10 +330,10 @@ run_single() {
       --jwt-secret "$DATADIR/jwt.hex" \
       --metrics-url http://localhost:9001 \
       --report "json:$output_dir/report.json" \
-      -m "git_sha=$git_sha" \
-      -m "git_ref=$git_ref" \
+      -m "git-sha=$git_sha" \
+      -m "git-ref=$git_ref" \
       -m "platform=tempo" \
-      -m "scenario=nightly" \
+      -m "scenario=replay" \
       -m "chain=$CHAIN_NAME" \
       -m "blocks=$BLOCKS" 2>&1 | sed -u "s/^/[bench] /"
 
