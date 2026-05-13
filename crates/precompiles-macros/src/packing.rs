@@ -476,7 +476,9 @@ mod tests {
         // single auto → base=0
         let f = [field("a", parse_quote!(U256), None, None)];
         let r = allocate_slots(&f).unwrap();
-        assert!(matches!(r[0].assigned_slot, SlotAssignment::Auto { base_slot } if base_slot == U256::ZERO));
+        assert!(
+            matches!(r[0].assigned_slot, SlotAssignment::Auto { base_slot } if base_slot == U256::ZERO)
+        );
 
         // single manual
         let f = [field("a", parse_quote!(U256), Some(5), None)];
@@ -584,19 +586,39 @@ mod tests {
     #[test]
     fn classify_field_type_variations() {
         // primitive → Direct
-        assert!(matches!(classify_field_type(&parse_quote!(u64)).unwrap(), FieldKind::Direct(_)));
-        assert!(matches!(classify_field_type(&parse_quote!(U256)).unwrap(), FieldKind::Direct(_)));
-        assert!(matches!(classify_field_type(&parse_quote!(String)).unwrap(), FieldKind::Direct(_)));
+        assert!(matches!(
+            classify_field_type(&parse_quote!(u64)).unwrap(),
+            FieldKind::Direct(_)
+        ));
+        assert!(matches!(
+            classify_field_type(&parse_quote!(U256)).unwrap(),
+            FieldKind::Direct(_)
+        ));
+        assert!(matches!(
+            classify_field_type(&parse_quote!(String)).unwrap(),
+            FieldKind::Direct(_)
+        ));
 
         // non-mapping generic → Direct
-        assert!(matches!(classify_field_type(&parse_quote!(Vec<u8>)).unwrap(), FieldKind::Direct(_)));
-        assert!(matches!(classify_field_type(&parse_quote!(Option<u32>)).unwrap(), FieldKind::Direct(_)));
+        assert!(matches!(
+            classify_field_type(&parse_quote!(Vec<u8>)).unwrap(),
+            FieldKind::Direct(_)
+        ));
+        assert!(matches!(
+            classify_field_type(&parse_quote!(Option<u32>)).unwrap(),
+            FieldKind::Direct(_)
+        ));
 
         // simple mapping → Mapping
-        assert!(matches!(classify_field_type(&parse_quote!(Mapping<Address, U256>)).unwrap(), FieldKind::Mapping { .. }));
+        assert!(matches!(
+            classify_field_type(&parse_quote!(Mapping<Address, U256>)).unwrap(),
+            FieldKind::Mapping { .. }
+        ));
 
         // nested mapping → Mapping with Mapping value
-        if let FieldKind::Mapping { value, .. } = classify_field_type(&parse_quote!(Mapping<Address, Mapping<Address, U256>>)).unwrap() {
+        if let FieldKind::Mapping { value, .. } =
+            classify_field_type(&parse_quote!(Mapping<Address, Mapping<Address, U256>>)).unwrap()
+        {
             assert!(extract_mapping_types(value).is_some());
         } else {
             panic!("expected nested Mapping");
@@ -633,14 +655,38 @@ mod tests {
     #[test]
     fn slot_assignment_ref_slot_variations() {
         // Manual: typical, zero, large
-        assert_eq!(*SlotAssignment::Manual(U256::from(42)).ref_slot(), U256::from(42));
+        assert_eq!(
+            *SlotAssignment::Manual(U256::from(42)).ref_slot(),
+            U256::from(42)
+        );
         assert_eq!(*SlotAssignment::Manual(U256::ZERO).ref_slot(), U256::ZERO);
-        assert_eq!(*SlotAssignment::Manual(U256::from(u64::MAX)).ref_slot(), U256::from(u64::MAX));
+        assert_eq!(
+            *SlotAssignment::Manual(U256::from(u64::MAX)).ref_slot(),
+            U256::from(u64::MAX)
+        );
 
         // Auto: typical, zero, large
-        assert_eq!(*SlotAssignment::Auto { base_slot: U256::from(7) }.ref_slot(), U256::from(7));
-        assert_eq!(*SlotAssignment::Auto { base_slot: U256::ZERO }.ref_slot(), U256::ZERO);
-        assert_eq!(*SlotAssignment::Auto { base_slot: U256::from(u64::MAX) }.ref_slot(), U256::from(u64::MAX));
+        assert_eq!(
+            *SlotAssignment::Auto {
+                base_slot: U256::from(7)
+            }
+            .ref_slot(),
+            U256::from(7)
+        );
+        assert_eq!(
+            *SlotAssignment::Auto {
+                base_slot: U256::ZERO
+            }
+            .ref_slot(),
+            U256::ZERO
+        );
+        assert_eq!(
+            *SlotAssignment::Auto {
+                base_slot: U256::from(u64::MAX)
+            }
+            .ref_slot(),
+            U256::from(u64::MAX)
+        );
     }
 
     use crate::utils::extract_mapping_types;
