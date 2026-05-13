@@ -1006,13 +1006,19 @@ def "main e2e" [
     let effective_features = $tbc.features
     let effective_extra_rustflags = $tbc.extra_rustflags
     let effective_no_cache = $no_cache or ($tracy != "off")
-    if $effective_no_cache {
-        build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $effective_extra_rustflags --bench-features $features $baseline_wt $baseline $profile $effective_features $baseline
-        build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $effective_extra_rustflags --bench-features $features $feature_wt $feature $profile $effective_features $feature
-    } else {
-        build-in-worktree --no-default-features=$no_default_features $baseline_wt $baseline $profile $effective_features $baseline
-        build-in-worktree --no-default-features=$no_default_features $feature_wt $feature $profile $effective_features $feature
-    }
+    # Build baseline and feature in parallel — they use separate worktrees
+    # with independent target/ directories, so cargo invocations don't collide.
+    let builds = [
+        { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline" }
+        { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature" }
+    ]
+    $builds | par-each { |b|
+        if $effective_no_cache {
+            build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $effective_extra_rustflags --bench-features $features $b.wt $b.ref_name $profile $effective_features $b.sha
+        } else {
+            build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $effective_features $b.sha
+        }
+    } | ignore
     let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
     let feature_tempo = (worktree-bin $feature_wt $profile "tempo")
     let txgen = txgen-resolve-binaries
