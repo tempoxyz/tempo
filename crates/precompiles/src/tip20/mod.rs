@@ -499,13 +499,7 @@ impl TIP20Token {
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
         let (to, total_supply) = self.validate_mint(msg_sender, call.to)?;
 
-        if self.validate_or_escrow(
-            Address::ZERO,
-            &to,
-            call.amount,
-            InboundKind::MINT,
-            B256::ZERO,
-        )? {
+        if self.validate_or_escrow(msg_sender, &to, call.amount, InboundKind::MINT, B256::ZERO)? {
             return Ok(());
         }
 
@@ -529,13 +523,7 @@ impl TIP20Token {
     ) -> Result<()> {
         let (to, total_supply) = self.validate_mint(msg_sender, call.to)?;
 
-        if self.validate_or_escrow(
-            Address::ZERO,
-            &to,
-            call.amount,
-            InboundKind::MINT,
-            call.memo,
-        )? {
+        if self.validate_or_escrow(msg_sender, &to, call.amount, InboundKind::MINT, call.memo)? {
             return Ok(());
         }
 
@@ -2119,7 +2107,7 @@ pub(crate) mod tests {
                 TIP1028Escrow::new().assert_emitted_events(vec![
                     TIP1028EscrowEvent::TransferBlocked(ITIP1028Escrow::TransferBlocked {
                         token: token.address,
-                        from: Address::ZERO,
+                        from: admin,
                         receiver,
                         receiptVersion: BLOCKED_RECEIPT_VERSION,
                         blockedNonce: 1,
@@ -2133,7 +2121,7 @@ pub(crate) mod tests {
                 ]);
 
                 let receipt = receipt_v1(
-                    Address::ZERO,
+                    admin,
                     receiver,
                     1,
                     ITIP403Registry::BlockedReason::RECEIVE_POLICY,
