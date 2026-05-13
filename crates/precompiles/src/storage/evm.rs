@@ -19,7 +19,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
-    gas_params: GasParams,
+    gas_params: &'a GasParams,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
@@ -34,7 +34,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         spec: TempoHardfork,
         amsterdam_eip8037_enabled: bool,
         is_static: bool,
-        gas_params: GasParams,
+        gas_params: &'a GasParams,
     ) -> Self {
         Self {
             internals,
@@ -49,7 +49,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 
     /// Creates a new storage provider with maximum gas limit and non-static context.
-    pub fn new_max_gas(internals: EvmInternals<'a>, cfg: &CfgEnv<TempoHardfork>) -> Self {
+    pub fn new_max_gas(internals: EvmInternals<'a>, cfg: &'a CfgEnv<TempoHardfork>) -> Self {
         Self::new(
             internals,
             u64::MAX,
@@ -57,14 +57,14 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             cfg.spec,
             cfg.enable_amsterdam_eip8037,
             false,
-            cfg.gas_params.clone(),
+            &cfg.gas_params,
         )
     }
 
     /// Creates a new storage provider with the given gas limit, deriving spec from `cfg`.
     pub fn new_with_gas_limit(
         internals: EvmInternals<'a>,
-        cfg: &CfgEnv<TempoHardfork>,
+        cfg: &'a CfgEnv<TempoHardfork>,
         gas_limit: u64,
         reservoir: u64,
     ) -> Self {
@@ -75,7 +75,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             cfg.spec,
             cfg.enable_amsterdam_eip8037,
             false,
-            cfg.gas_params.clone(),
+            &cfg.gas_params,
         )
     }
 
@@ -445,7 +445,6 @@ mod tests {
             let ctx = self.0.ctx_mut();
             let spec = ctx.cfg.spec;
             let amsterdam_eip8037_enabled = ctx.cfg.enable_amsterdam_eip8037;
-            let gas_params = ctx.cfg.gas_params.clone();
             let evm_internals =
                 EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
 
@@ -456,7 +455,7 @@ mod tests {
                 spec,
                 amsterdam_eip8037_enabled,
                 false,
-                gas_params,
+                &ctx.cfg.gas_params,
             )
         }
 

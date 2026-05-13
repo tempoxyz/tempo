@@ -1318,7 +1318,7 @@ where
                 cfg.spec,
                 amsterdam_eip8037_enabled,
                 false,
-                gas_params,
+                &gas_params,
             );
 
             // The core logic of setting up thread-local storage is here.
