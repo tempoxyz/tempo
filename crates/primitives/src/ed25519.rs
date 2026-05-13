@@ -84,3 +84,43 @@ impl<'a> arbitrary::Arbitrary<'a> for PublicKey {
         Ok(Self::from_seed(u.arbitrary()?))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use alloy_rlp::{Decodable, Encodable};
+
+    #[test]
+    fn public_key_conversions_and_rlp() {
+        let pk = PublicKey::from_seed([0xab; 32]);
+        let pk2 = PublicKey::from_seed([0xcd; 32]);
+
+        // different seeds produce different keys
+        assert_ne!(pk, pk2);
+
+        // PublicKey → B256 roundtrip (ref and owned)
+        let b256: B256 = B256::from(&pk);
+        let b256_owned: B256 = B256::from(pk);
+        assert_eq!(b256, b256_owned);
+        let recovered = PublicKey::try_from(b256).unwrap();
+        assert_eq!(pk, recovered);
+
+        // get() returns the inner key
+        let _ = pk.get();
+
+        // RLP encode → decode roundtrip
+        let mut buf = Vec::new();
+        pk.encode(&mut buf);
+        assert_eq!(buf.len(), pk.length());
+        let decoded = PublicKey::decode(&mut buf.as_slice()).unwrap();
+        assert_eq!(pk, decoded);
+
+        // truncated RLP fails
+        let short_buf = &buf[..buf.len() - 1];
+        assert!(PublicKey::decode(&mut &short_buf[..]).is_err());
+
+        // Hash + Eq: same seed → same key
+        let pk_dup = PublicKey::from_seed([0xab; 32]);
+        assert_eq!(pk, pk_dup);
+    }
+}
