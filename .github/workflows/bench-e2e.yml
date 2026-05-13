@@ -683,7 +683,7 @@ jobs:
               if (refEpoch && benchId) {
                 const fromMs = refEpoch * 1000;
                 const toMs = Date.now();
-                const grafanaUrl = `https://tempoxyz.grafana.net/d/tikv2tn/tempo-bench?orgId=1&from=${fromMs}&to=${toMs}&var-benchmark_id=${benchId}&var-job=tempo-bench`;
+                const grafanaUrl = `https://tempoxyz.grafana.net/d/tikv2tn/tempo-bench?orgId=1&from=${fromMs}&to=${toMs}&var-benchmark_id=${benchId}&var-job=github-tempo-bench-e2e`;
                 const logsPane = JSON.stringify({
                   pw4: {
                     datasource: 'ffdsfozmb3eo0e',
