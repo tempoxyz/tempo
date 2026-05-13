@@ -52,11 +52,17 @@ pub struct TIP403Registry {
     receive_policy_config: Mapping<Address, ReceivePolicyConfig>,
 }
 
+/// Per-account TIP-1028 receive policy configuration.
 #[derive(Debug, Clone, Default, Storable)]
 struct ReceivePolicyConfig {
+    /// Whether the account has configured a receive policy.
     has_receive_policy: bool,
+    /// Policy ID authorizing senders for inbound transfers.
     sender_policy_id: u64,
+    /// Policy ID filtering which tokens may be received.
     token_filter_id: u64,
+    /// Recovery authority for blocked inbound funds. `0x0` denotes the originator,
+    /// `0x1` denotes the receiver, any other address denotes a third-party contract.
     recovery_address: Address,
 }
 
