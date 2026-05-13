@@ -20,9 +20,8 @@ use clap::Parser;
 use eyre::{Context as _, ensure};
 use reth_chainspec::EthereumHardforks;
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, EnvironmentArgs};
-use reth_db::cursor::DbCursorRW;
 use reth_db_api::{
-    cursor::{DbCursorRO, DbDupCursorRW},
+    cursor::{DbCursorRO, DbCursorRW, DbDupCursorRW},
     models::CompactU256,
     table::Decompress,
     tables,
@@ -31,8 +30,9 @@ use reth_db_api::{
 use reth_ethereum::{chainspec::EthChainSpec, tasks::Runtime};
 use reth_etl::Collector;
 use reth_primitives_traits::{Account, StorageEntry};
-use reth_provider::{BlockNumReader, DatabaseProviderFactory, HashingWriter, TrieWriter};
-use reth_storage_api::DBProvider;
+use reth_provider::{
+    BlockNumReader, DBProvider, DatabaseProviderFactory, HashingWriter, TrieWriter,
+};
 use reth_trie::{IntermediateStateRootState, StateRootProgress};
 use reth_trie_db::DatabaseStateRoot;
 use tempo_chainspec::spec::TempoChainSpecParser;
@@ -330,8 +330,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut resume: Option<IntermediateStateRootState> = None;
         let mut trie_writes = 0usize;
 
-        // Incrementally compute the merkle root over all hashed accounts/storage using the v2
-        // packed trie adapter.
+        // Incrementally compute the merkle root over all hashed accounts/storages.
         let state_root = {
             use reth_trie_db::{
                 DatabaseHashedCursorFactory, DatabaseTrieCursorFactory, PackedKeyAdapter,
