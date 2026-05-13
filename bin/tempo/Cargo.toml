@@ -80,7 +80,6 @@ reth-eth-wire-types.workspace = true
 rustls.workspace = true
 reth-db.workspace = true
 reth-db-api.workspace = true
-reth-etl.workspace = true
 reth-ethereum = { workspace = true, features = ["full", "cli", "network"] }
 reth-ethereum-cli.workspace = true
 reth-metrics.workspace = true
