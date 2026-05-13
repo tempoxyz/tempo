@@ -192,21 +192,36 @@ impl ITIP20::ITIP20Calls {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment(input: &[u8]) -> bool {
-        fn is_call<C: SolCall>(input: &[u8]) -> bool {
-            input.first_chunk::<4>() == Some(&C::SELECTOR)
-                && input.len()
-                    == 4 + <C::Parameters<'_> as SolType>::ENCODED_SIZE.unwrap_or_default()
+        fn has_static_len<C: SolCall>(input: &[u8]) -> bool {
+            input.len() == 4 + <C::Parameters<'_> as SolType>::ENCODED_SIZE.unwrap_or_default()
         }
 
-        is_call::<ITIP20::transferCall>(input)
-            || is_call::<ITIP20::transferWithMemoCall>(input)
-            || is_call::<ITIP20::transferFromCall>(input)
-            || is_call::<ITIP20::transferFromWithMemoCall>(input)
-            || is_call::<ITIP20::approveCall>(input)
-            || is_call::<ITIP20::mintCall>(input)
-            || is_call::<ITIP20::mintWithMemoCall>(input)
-            || is_call::<ITIP20::burnCall>(input)
-            || is_call::<ITIP20::burnWithMemoCall>(input)
+        let Some(selector) = input.first_chunk::<4>() else {
+            return false;
+        };
+
+        match *selector {
+            ITIP20::transferCall::SELECTOR => has_static_len::<ITIP20::transferCall>(input),
+            ITIP20::transferWithMemoCall::SELECTOR => {
+                has_static_len::<ITIP20::transferWithMemoCall>(input)
+            }
+            ITIP20::transferFromCall::SELECTOR => {
+                has_static_len::<ITIP20::transferFromCall>(input)
+            }
+            ITIP20::transferFromWithMemoCall::SELECTOR => {
+                has_static_len::<ITIP20::transferFromWithMemoCall>(input)
+            }
+            ITIP20::approveCall::SELECTOR => has_static_len::<ITIP20::approveCall>(input),
+            ITIP20::mintCall::SELECTOR => has_static_len::<ITIP20::mintCall>(input),
+            ITIP20::mintWithMemoCall::SELECTOR => {
+                has_static_len::<ITIP20::mintWithMemoCall>(input)
+            }
+            ITIP20::burnCall::SELECTOR => has_static_len::<ITIP20::burnCall>(input),
+            ITIP20::burnWithMemoCall::SELECTOR => {
+                has_static_len::<ITIP20::burnWithMemoCall>(input)
+            }
+            _ => false,
+        }
     }
 }
 
