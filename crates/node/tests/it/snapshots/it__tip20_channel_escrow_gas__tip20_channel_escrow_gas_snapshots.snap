@@ -2,12 +2,12 @@
 source: crates/node/tests/it/tip20_channel_escrow_gas.rs
 expression: gas
 ---
-close_existing_channel_after_settlement: 58673
-close_existing_channel_no_prior_settlement: 58661
-open_new_channel_existing_escrow_balance: 292225
-open_new_channel_first_escrow_balance: 789425
+close_existing_channel_after_settlement: 67073
+close_existing_channel_no_prior_settlement: 67061
+open_new_channel_existing_escrow_balance: 296425
+open_new_channel_first_escrow_balance: 793625
 request_close_existing_channel: 30123
-settle_existing_channel_existing_payee_balance: 299503
-settle_existing_channel_new_payee_balance: 557731
-top_up_existing_channel: 44605
-top_up_existing_channel_cancel_close_request: 46480
+settle_existing_channel_existing_payee_balance: 303703
+settle_existing_channel_new_payee_balance: 561931
+top_up_existing_channel: 48805
+top_up_existing_channel_cancel_close_request: 50680
