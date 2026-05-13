@@ -50,7 +50,7 @@ jsonrpsee = { workspace = true, features = ["http-client", "ws-client"] }
 indexmap.workspace = true
 jiff = { workspace = true, features = ["std"] }
 parking_lot.workspace = true
-pin-project = "1.1.10"
+pin-project = "1.1.12"
 prometheus-client.workspace = true
 rand_08.workspace = true
 
