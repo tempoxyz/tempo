@@ -228,6 +228,7 @@ def txgen-run-preset-pipeline [
     let report_args = ["--report" $"json:($report_path)"]
         | append (if $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
     let metadata_args = [
+        "-m" "job=github-tempo-bench-e2e"
         "-m" $"chain_id=($chain_id)"
         "-m" $"target_tps=($tps)"
         "-m" $"run_duration_secs=($duration)"
