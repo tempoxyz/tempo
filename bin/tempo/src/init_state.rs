@@ -20,6 +20,7 @@ use clap::Parser;
 use eyre::{Context as _, ensure};
 use reth_chainspec::EthereumHardforks;
 use reth_cli_commands::common::{AccessRights, CliNodeTypes, EnvironmentArgs};
+use reth_db::cursor::DbCursorRW;
 use reth_db_api::{
     cursor::{DbCursorRO, DbDupCursorRW},
     models::CompactU256,
@@ -181,10 +182,18 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             // set during genesis, and overwriting with Account::default() would clear the
             // code hash, making the token appear uninitialized.
             if let Entry::Vacant(e) = accounts_seen.entry(address) {
-                let tx = provider_rw.tx_ref();
-                let account = tx
-                    .get::<tables::HashedAccounts>(keccak256(address))?
-                    .unwrap_or_default();
+                let address = keccak256(address);
+                let mut account_cursor = provider_rw
+                    .tx_ref()
+                    .cursor_write::<tables::HashedAccounts>()?;
+                let account = match account_cursor.seek_exact(address)? {
+                    Some((_, account)) => account,
+                    None => {
+                        let account = Account::default();
+                        account_cursor.upsert(address, &account)?;
+                        account
+                    }
+                };
                 e.insert(account);
             }
 
