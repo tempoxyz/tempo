@@ -29,7 +29,7 @@ use crate::{
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
-    tip1028_escrow::{InboundKind, TIP1028Escrow},
+    tip1028_escrow::InboundKind,
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
@@ -499,7 +499,14 @@ impl TIP20Token {
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
         let (to, total_supply) = self.validate_mint(msg_sender, call.to)?;
 
-        if self.validate_or_escrow(msg_sender, &to, call.amount, InboundKind::MINT, B256::ZERO)? {
+        if TIP403Registry::new().validate_or_escrow(
+            self.address,
+            msg_sender,
+            &to,
+            call.amount,
+            InboundKind::MINT,
+            B256::ZERO,
+        )? {
             return Ok(());
         }
 
@@ -523,7 +530,14 @@ impl TIP20Token {
     ) -> Result<()> {
         let (to, total_supply) = self.validate_mint(msg_sender, call.to)?;
 
-        if self.validate_or_escrow(msg_sender, &to, call.amount, InboundKind::MINT, call.memo)? {
+        if TIP403Registry::new().validate_or_escrow(
+            self.address,
+            msg_sender,
+            &to,
+            call.amount,
+            InboundKind::MINT,
+            call.memo,
+        )? {
             return Ok(());
         }
 
@@ -548,7 +562,12 @@ impl TIP20Token {
     ///
     /// Accepts an optional pre-fetched `total_supply` to preserve re-execution behavior (pre-T6).
     /// If `None`, reads from storage.
-    fn _mint(&mut self, to: &Recipient, amount: U256, total_supply: Option<U256>) -> Result<()> {
+    pub(crate) fn _mint(
+        &mut self,
+        to: &Recipient,
+        amount: U256,
+        total_supply: Option<U256>,
+    ) -> Result<()> {
         let new_supply = total_supply
             .map(Ok)
             .unwrap_or_else(|| self.total_supply())?
@@ -815,7 +834,8 @@ impl TIP20Token {
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        if self.validate_or_escrow(
+        if TIP403Registry::new().validate_or_escrow(
+            self.address,
             msg_sender,
             &to,
             call.amount,
@@ -851,7 +871,8 @@ impl TIP20Token {
         self.validate_transfer(call.from, &to)?;
         self.consume_allowance(call.from, msg_sender, call.amount)?;
 
-        if self.validate_or_escrow(
+        if TIP403Registry::new().validate_or_escrow(
+            self.address,
             call.from,
             &to,
             call.amount,
@@ -878,7 +899,8 @@ impl TIP20Token {
         self.validate_transfer(call.from, &to)?;
         self.consume_allowance(call.from, msg_sender, call.amount)?;
 
-        if self.validate_or_escrow(
+        if TIP403Registry::new().validate_or_escrow(
+            self.address,
             call.from,
             &to,
             call.amount,
@@ -936,7 +958,14 @@ impl TIP20Token {
         self.validate_transfer(from, &to)?;
         self.check_and_update_spending_limit(from, amount)?;
 
-        if self.validate_or_escrow(from, &to, amount, InboundKind::TRANSFER, B256::ZERO)? {
+        if TIP403Registry::new().validate_or_escrow(
+            self.address,
+            from,
+            &to,
+            amount,
+            InboundKind::TRANSFER,
+            B256::ZERO,
+        )? {
             return Ok(true);
         }
 
@@ -974,7 +1003,8 @@ impl TIP20Token {
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        if self.validate_or_escrow(
+        if TIP403Registry::new().validate_or_escrow(
+            self.address,
             msg_sender,
             &to,
             call.amount,
@@ -1162,7 +1192,7 @@ impl TIP20Token {
     ///
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
-    fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
+    pub(crate) fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
             return Err(
@@ -1189,54 +1219,6 @@ impl TIP20Token {
         }
 
         self.emit_event(to.build_transfer_event(from, amount))
-    }
-
-    /// Validates the TIP-1028 receive-policy check for the destination address. If the receive
-    /// policy prohibits the action, the funds are escrowed.
-    ///
-    /// Returns `true` when receive-policies block the inbound and this function escrows the funds.
-    /// Callers must ONLY move funds when `false` is returned.
-    fn validate_or_escrow(
-        &mut self,
-        originator: Address,
-        to: &Recipient,
-        amount: U256,
-        kind: InboundKind,
-        memo: B256,
-    ) -> Result<bool> {
-        if !self.storage.spec().is_t6() {
-            return Ok(false);
-        }
-        if to.target == ESCROW_ADDRESS {
-            return Err(TIP1028EscrowError::escrow_address_reserved().into());
-        }
-        let registry = TIP403Registry::new();
-        let Some((reason, recovery)) =
-            registry.check_receive_policy(self.address, originator, to.target)?
-        else {
-            return Ok(false);
-        };
-
-        match kind {
-            InboundKind::TRANSFER => {
-                self._transfer(originator, &Recipient::direct(ESCROW_ADDRESS), amount)?
-            }
-            InboundKind::MINT => self._mint(&Recipient::direct(ESCROW_ADDRESS), amount, None)?,
-            InboundKind::__Invalid => {
-                return Err(TIP1028EscrowError::invalid_receipt_claim().into());
-            }
-        }
-        TIP1028Escrow::new().store_blocked(
-            self.address,
-            originator,
-            to,
-            recovery,
-            amount,
-            reason,
-            kind,
-            memo,
-        )?;
-        Ok(true)
     }
 
     /// Releases escrowed funds to `to`. Resumes skip policy checks. Reroutes
@@ -1624,6 +1606,7 @@ pub(crate) mod tests {
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master, setup_storage},
+        tip1028_escrow::TIP1028Escrow,
     };
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
     use tempo_chainspec::hardfork::TempoHardfork;

@@ -18,8 +18,11 @@ use crate::{
     ESCROW_ADDRESS, TIP403_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
+    tip20::{Recipient, TIP20Token},
+    tip1028_escrow::{InboundKind, TIP1028Escrow},
 };
-use alloy::primitives::Address;
+use alloy::primitives::{Address, B256, U256};
+use tempo_contracts::precompiles::TIP1028EscrowError;
 use tempo_primitives::TempoAddressExt;
 
 /// Built-in policy ID that always rejects authorization.
@@ -299,6 +302,44 @@ impl TIP403Registry {
         }
 
         Ok(None)
+    }
+
+    /// Validates the receive policy of `to.target`. If blocked, moves the funds into
+    /// the escrow account and stores a claim receipt; returns `true`. Returns `false`
+    /// when the inbound is authorized and the caller should proceed with the normal
+    /// transfer or mint.
+    pub(crate) fn validate_or_escrow(
+        &mut self,
+        token: Address,
+        originator: Address,
+        to: &Recipient,
+        amount: U256,
+        kind: InboundKind,
+        memo: B256,
+    ) -> Result<bool> {
+        if !self.storage.spec().is_t6() {
+            return Ok(false);
+        }
+        if to.target == ESCROW_ADDRESS {
+            return Err(TIP1028EscrowError::escrow_address_reserved().into());
+        }
+        let Some((reason, recovery)) = self.check_receive_policy(token, originator, to.target)?
+        else {
+            return Ok(false);
+        };
+
+        let mut tip20 = TIP20Token::from_address(token)?;
+        let escrow_to = Recipient::direct(ESCROW_ADDRESS);
+        match kind {
+            InboundKind::TRANSFER => tip20._transfer(originator, &escrow_to, amount)?,
+            InboundKind::MINT => tip20._mint(&escrow_to, amount, None)?,
+            InboundKind::__Invalid => {
+                return Err(TIP1028EscrowError::invalid_receipt_claim().into());
+            }
+        }
+        TIP1028Escrow::new()
+            .store_blocked(token, originator, to, recovery, amount, reason, kind, memo)?;
+        Ok(true)
     }
 
     /// Returns `receiver`'s configured recovery address, or zero if no receive policy is set.
