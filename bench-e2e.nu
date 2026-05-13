@@ -95,6 +95,17 @@ def bench-restore-at [state_path: string, mount_point: string, datadir: string] 
     }
 }
 
+# Restore both a and b snapshots in parallel — they operate on independent
+# NVMe volumes so there is no contention.
+def bench-restore-both [a_state: string, a_mount: string, a_datadir: string, b_state: string, b_mount: string, b_datadir: string] {
+    [
+        { state: $a_state, mount: $a_mount, datadir: $a_datadir }
+        { state: $b_state, mount: $b_mount, datadir: $b_datadir }
+    ] | par-each { |r|
+        bench-restore-at $r.state $r.mount $r.datadir
+    } | ignore
+}
+
 # Promote a specific schelk scratch volume as the new virgin baseline.
 def bench-promote-at [state_path: string, datadir: string] {
     if (has-schelk) {
@@ -635,8 +646,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let extra_args = if $side_args == "" { [] } else { $side_args | split row " " }
 
     cleanup-local-e2e-processes
-    bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
-    bench-restore-at $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
+    bench-restore-both $ctx.a.state_path $ctx.a.mount $ctx.a.datadir $ctx.b.state_path $ctx.b.mount $ctx.b.datadir
 
     for path in [$genesis $ctx.a.node_dir $ctx.b.node_dir] {
         if not ($path | path exists) {
@@ -892,8 +902,7 @@ def "main e2e" [
     validate-schelk-state $E2E_A_STATE_PATH $E2E_B_STATE_PATH
     cleanup-local-e2e-processes
 
-    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+    bench-restore-both $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
 
     let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
     let should_init_snapshots = $force_bloat or (not $snapshots_ready)
@@ -956,8 +965,7 @@ def "main e2e" [
         }
         bench-promote-at $E2E_A_STATE_PATH $a_db
         bench-promote-at $E2E_B_STATE_PATH $b_db
-        bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-        bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+        bench-restore-both $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
     }
 
     if $init_only {
@@ -1122,8 +1130,7 @@ def "main e2e" [
     try { git worktree remove --force $baseline_wt } catch { }
     try { git worktree remove --force $feature_wt } catch { }
     cleanup-local-e2e-processes
-    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
+    bench-restore-both $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
     if $e2e_exit != 0 {
         exit $e2e_exit
     }
