@@ -287,12 +287,28 @@ run_single() {
 
   local from_block=$(( SNAPSHOT_BLOCK + 1 ))
 
-  # Resolve git ref for this run label
-  local git_ref=""
+  # Resolve git SHA for this run label
+  local git_sha=""
   case "$label" in
-    baseline*) git_ref="${BASELINE_REF:-}" ;;
-    feature*)  git_ref="${FEATURE_REF:-}" ;;
+    baseline*) git_sha="${BASELINE_REF:-}" ;;
+    feature*)  git_sha="${FEATURE_REF:-}" ;;
   esac
+
+  # Resolve git_ref: tag if tagged, otherwise branch name, otherwise raw SHA
+  local git_ref="$git_sha"
+  if [ -n "$git_sha" ]; then
+    local tag_name
+    tag_name=$(git tag --points-at "$git_sha" 2>/dev/null | head -1)
+    if [ -n "$tag_name" ]; then
+      git_ref="$tag_name"
+    else
+      local branch_name
+      branch_name=$(git branch -r --points-at "$git_sha" 2>/dev/null | sed 's|^ *origin/||' | head -1)
+      if [ -n "$branch_name" ]; then
+        git_ref="$branch_name"
+      fi
+    fi
+  fi
 
   # Warmup
   if [ "$WARMUP" -gt 0 ]; then
@@ -314,8 +330,10 @@ run_single() {
       --jwt-secret "$DATADIR/jwt.hex" \
       --metrics-url http://localhost:9001 \
       --report "json:$output_dir/report.json" \
-      -m "git_sha=$git_ref" \
+      -m "git_sha=$git_sha" \
       -m "git_ref=$git_ref" \
+      -m "platform=tempo" \
+      -m "scenario=nightly" \
       -m "chain=$CHAIN_NAME" \
       -m "blocks=$BLOCKS" 2>&1 | sed -u "s/^/[bench] /"
 

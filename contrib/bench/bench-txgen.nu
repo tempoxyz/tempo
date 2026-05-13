@@ -44,9 +44,12 @@ def run-txgen-bench-single [
     --bench-env: string = ""
     --bloat: int = 0
     --git-ref: string = ""
+    --git-ref-label: string = ""
     --build-profile: string = ""
     --benchmark-mode: string = ""
     --benchmark-id: string = ""
+    --platform: string = ""
+    --scenario: string = ""
     --reference-epoch: int = 0
     --samply
     --samply-args: list<string> = []
@@ -147,7 +150,10 @@ def run-txgen-bench-single [
         --bench-env $bench_env
         --git-ref $git_ref
         --build-profile $build_profile
-        --benchmark-mode $benchmark_mode)
+        --benchmark-mode $benchmark_mode
+        --git-ref-label $git_ref_label
+        --platform $platform
+        --scenario $scenario)
     if not $bench_result.ok {
         error make { msg: $"txgen benchmark run ($run_label) failed with exit code ($bench_result.exit_code)" }
     }
@@ -253,12 +259,20 @@ def "main run" [
     --baseline-hardfork: string = ""
     --feature-hardfork: string = ""
     --gas-limit: string = ""
+    --platform: string = "tempo"
+    --scenario: string = ""
 ] {
     let runtime_mode = (resolved-runtime-mode $mode)
     if $runtime_mode != "dev" {
         error make { msg: $"txgen benchmark path currently supports only dev/e2e mode \(got ($mode)\)" }
     }
     let preset_path = (txgen-preset-path $preset)
+    let resolved_scenario = if $scenario != "" {
+        $scenario
+    } else {
+        let tps_k = ($tps / 1000)
+        $"($preset)-($tps_k)k"
+    }
     txgen-validate-bench-args $bench_args
     if ($baseline != "" and $feature == "") or ($baseline == "" and $feature != "") {
         error make { msg: "--baseline and --feature must both be provided for txgen comparison mode" }
@@ -525,17 +539,17 @@ def "main run" [
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
     let runs = if $dual_hardfork {
         [
-            { label: "baseline-1", tempo: $baseline_tempo, git_ref: $baseline_sha, genesis: $"($abs_localnet)/genesis-baseline.json", datadir: $"($datadir)/baseline-db" }
-            { label: "feature-1", tempo: $feature_tempo, git_ref: $feature_sha, genesis: $"($abs_localnet)/genesis-feature.json", datadir: $"($datadir)/feature-db" }
-            { label: "feature-2", tempo: $feature_tempo, git_ref: $feature_sha, genesis: $"($abs_localnet)/genesis-feature.json", datadir: $"($datadir)/feature-db" }
-            { label: "baseline-2", tempo: $baseline_tempo, git_ref: $baseline_sha, genesis: $"($abs_localnet)/genesis-baseline.json", datadir: $"($datadir)/baseline-db" }
+            { label: "baseline-1", tempo: $baseline_tempo, git_ref: $baseline_sha, git_ref_label: $baseline, genesis: $"($abs_localnet)/genesis-baseline.json", datadir: $"($datadir)/baseline-db" }
+            { label: "feature-1", tempo: $feature_tempo, git_ref: $feature_sha, git_ref_label: $feature, genesis: $"($abs_localnet)/genesis-feature.json", datadir: $"($datadir)/feature-db" }
+            { label: "feature-2", tempo: $feature_tempo, git_ref: $feature_sha, git_ref_label: $feature, genesis: $"($abs_localnet)/genesis-feature.json", datadir: $"($datadir)/feature-db" }
+            { label: "baseline-2", tempo: $baseline_tempo, git_ref: $baseline_sha, git_ref_label: $baseline, genesis: $"($abs_localnet)/genesis-baseline.json", datadir: $"($datadir)/baseline-db" }
         ]
     } else {
         [
-            { label: "baseline-1", tempo: $baseline_tempo, git_ref: $baseline_sha, genesis: $genesis_path, datadir: $datadir }
-            { label: "feature-1", tempo: $feature_tempo, git_ref: $feature_sha, genesis: $genesis_path, datadir: $datadir }
-            { label: "feature-2", tempo: $feature_tempo, git_ref: $feature_sha, genesis: $genesis_path, datadir: $datadir }
-            { label: "baseline-2", tempo: $baseline_tempo, git_ref: $baseline_sha, genesis: $genesis_path, datadir: $datadir }
+            { label: "baseline-1", tempo: $baseline_tempo, git_ref: $baseline_sha, git_ref_label: $baseline, genesis: $genesis_path, datadir: $datadir }
+            { label: "feature-1", tempo: $feature_tempo, git_ref: $feature_sha, git_ref_label: $feature, genesis: $genesis_path, datadir: $datadir }
+            { label: "feature-2", tempo: $feature_tempo, git_ref: $feature_sha, git_ref_label: $feature, genesis: $genesis_path, datadir: $datadir }
+            { label: "baseline-2", tempo: $baseline_tempo, git_ref: $baseline_sha, git_ref_label: $baseline, genesis: $genesis_path, datadir: $datadir }
         ]
     }
 
@@ -566,6 +580,7 @@ def "main run" [
             --extra-env $side_env
             --bench-env $bench_env
             --git-ref $run.git_ref
+            --git-ref-label $run.git_ref_label
             --build-profile $profile
             --benchmark-mode $mode
             --benchmark-id $benchmark_id
@@ -576,7 +591,9 @@ def "main run" [
             --tracy-filter $tracy_filter
             --tracy-seconds $tracy_seconds
             --tracy-offset $tracy_offset
-            --tracing-otlp $tracing_otlp)
+            --tracing-otlp $tracing_otlp
+            --platform $platform
+            --scenario $resolved_scenario)
     }
 
     let summary_baseline = if $dual_hardfork { $"($baseline) \(($baseline_hardfork | str upcase)\)" } else { $baseline }

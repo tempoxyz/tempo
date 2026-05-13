@@ -189,12 +189,15 @@ def txgen-run-preset-pipeline [
     --max-concurrent-requests: int
     --bench-env: string = ""
     --git-ref: string = ""
+    --git-ref-label: string = ""
     --build-profile: string = ""
     --benchmark-mode: string = ""
     --benchmark-id: string = ""
     --benchmark-run: string = ""
     --run-type: string = ""
     --benchmark-start: int = 0
+    --platform: string = ""
+    --scenario: string = ""
     --victoriametrics-url: string = ""
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
@@ -241,12 +244,16 @@ def txgen-run-preset-pipeline [
         "-m" "swap_weight=0.0"
         "-m" "erc20_weight=0.0"
         "-m" $"node_commit_sha=($git_ref)"
+        "-m" $"git-sha=($git_ref)"
+        "-m" $"git-ref=($git_ref_label)"
         "-m" $"build_profile=($build_profile)"
         "-m" $"mode=($benchmark_mode)"
     ]
         | append (if $benchmark_id != "" { ["-m" $"benchmark_id=($benchmark_id)"] } else { [] })
         | append (if $benchmark_run != "" { ["-m" $"benchmark_run=($benchmark_run)"] } else { [] })
         | append (if $run_type != "" { ["-m" $"run_type=($run_type)"] } else { [] })
+        | append (if $platform != "" { ["-m" $"platform=($platform)"] } else { [] })
+        | append (if $scenario != "" { ["-m" $"scenario=($scenario)"] } else { [] })
     let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
