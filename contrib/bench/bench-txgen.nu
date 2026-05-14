@@ -271,7 +271,7 @@ def "main run" [
     let resolved_scenario = if $scenario != "" {
         $scenario
     } else {
-        let tps_k = ($tps / 1000)
+        let tps_k = ($tps // 1000)
         $"($preset)-($tps_k)k"
     }
     txgen-validate-bench-args $bench_args

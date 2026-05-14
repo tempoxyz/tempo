@@ -742,7 +742,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         $tracy_capture_started = true
     }
 
-    let tps_k = ($ctx.tps / 1000)
+    let tps_k = ($ctx.tps // 1000)
     let scenario = $"($ctx.preset)-($tps_k)k"
 
     if $phase_exit == 0 {
