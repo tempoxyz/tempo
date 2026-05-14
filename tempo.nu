@@ -881,11 +881,24 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         let run_tps = do $compute_tps_stats $block_tps_samples
         let run_bt = do $compute_block_time_stats $block_intervals
 
-        # Count nullifications from validator logs for this run
+        # Count nullifications from validator logs during the measurement window only.
+        # Log lines start with an ISO-8601 timestamp (e.g. "2026-05-13T14:49:33.325930Z").
+        # We compare against the first/last block timestamp from the report to exclude warm-up.
+        let first_block_ts = ($sorted_blocks | first | get timestamp)
+        let last_block_ts = ($sorted_blocks | last | get timestamp)
         let run_nullifications = (["a" "b"] | each { |role|
             let log_path = $"($results_dir)/logs-($label)-($role)/dev/reth.log"
             if ($log_path | path exists) {
-                (open $log_path | lines | where { |l| $l | str contains "broadcasting nullification" } | length)
+                (open $log_path | lines
+                    | where { |l| $l | str contains "broadcasting nullification" }
+                    | where { |l|
+                        let ts_str = ($l | str substring 0..30 | str trim)
+                        try {
+                            let ts_ms = ($ts_str | into datetime | into int) / 1_000_000
+                            $ts_ms >= $first_block_ts and $ts_ms <= $last_block_ts
+                        } catch { false }
+                    }
+                    | length)
             } else { 0 }
         } | math sum)
 
