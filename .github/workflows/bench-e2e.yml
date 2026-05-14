@@ -2,10 +2,16 @@
 #
 # Called by bench.yml when mode=e2e. Runs `nu bench-e2e.nu e2e`
 # for an interleaved baseline-feature-feature-baseline comparison using two local validators.
+# Also runs nightly and on version tag pushes using the workflow defaults.
 
 name: bench-e2e
 
 on:
+  schedule:
+    - cron: "0 2 * * *"
+  push:
+    tags:
+      - "v*.*.*"
   workflow_dispatch:
     inputs:
       baseline:
@@ -305,17 +311,17 @@ jobs:
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor || github.actor }}
       BENCH_MODE: ${{ inputs.mode || 'e2e' }}
-      BENCH_PRESET: ${{ inputs.preset }}
-      BENCH_DURATION: ${{ inputs.duration }}
-      BENCH_BLOAT: ${{ inputs.bloat }}
-      BENCH_TPS: ${{ inputs.tps }}
+      BENCH_PRESET: ${{ inputs.preset || 'tip20' }}
+      BENCH_DURATION: ${{ inputs.duration || '300' }}
+      BENCH_BLOAT: ${{ inputs.bloat || '100' }}
+      BENCH_TPS: ${{ inputs.tps || '20000' }}
       BENCH_ACCOUNTS: ${{ inputs.accounts || '1000' }}
       BENCH_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests || '100' }}
-      BENCH_BASELINE_HARDFORK: ${{ inputs.baseline-hardfork }}
-      BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
+      BENCH_BASELINE_HARDFORK: ${{ inputs.baseline-hardfork || ((github.event_name == 'schedule' || github.ref_type == 'tag') && 'T6' || '') }}
+      BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork || ((github.event_name == 'schedule' || github.ref_type == 'tag') && 'T6' || '') }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
       BENCH_SAMPLY: ${{ inputs.profiling == 'Samply' || inputs.profiling == 'Both' || inputs.samply == true || inputs.samply == 'true' }}
-      BENCH_TRACY: ${{ (inputs.profiling == 'Tracy' || inputs.profiling == 'Both') && 'on' || ((inputs.profiling == 'Off' || inputs.profiling == 'Samply') && 'off' || inputs.tracy) }}
+      BENCH_TRACY: ${{ (inputs.profiling == 'Tracy' || inputs.profiling == 'Both') && 'on' || ((inputs.profiling == 'Off' || inputs.profiling == 'Samply') && 'off' || inputs.tracy || 'off') }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '30' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset || '120' }}
       BENCH_OTLP: ${{ inputs.otlp == true || inputs.otlp == 'true' }}
@@ -323,10 +329,10 @@ jobs:
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
       BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '500000000' }}
-      BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
-      BENCH_FORCE_BLOAT: ${{ inputs.force-bloat }}
+      BENCH_RUN_TYPE: ${{ inputs.run-type || (github.event_name == 'schedule' && 'nightly' || (github.ref_type == 'tag' && 'release' || 'dispatch')) }}
+      BENCH_FORCE_BLOAT: ${{ inputs.force-bloat || 'false' }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
-      BENCH_NO_SLACK: ${{ inputs.no-slack }}
+      BENCH_NO_SLACK: ${{ inputs.no-slack || ((github.event_name == 'schedule' || github.ref_type == 'tag') && 'true' || '') }}
       BENCH_BENCH_ARGS: ${{ inputs.bench-args }}
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
