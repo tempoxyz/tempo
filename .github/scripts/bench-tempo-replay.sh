@@ -257,7 +257,7 @@ run_single() {
     samply_bin="$(which samply)"
     sudo systemd-run --quiet --scope --collect --unit="$TEMPO_SCOPE" \
       --uid="$run_uid" --gid="$run_gid" \
-      -p MemoryMax="$mem_limit" -p CPUWeight=100 \
+      -p MemoryMax="$mem_limit" \
       "${scope_env[@]}" \
       "$samply_bin" record --save-only --presymbolicate --rate 10000 \
       --output "$output_dir/samply-profile.json.gz" \
@@ -266,7 +266,7 @@ run_single() {
   else
     sudo systemd-run --quiet --scope --collect --unit="$TEMPO_SCOPE" \
       --uid="$run_uid" --gid="$run_gid" \
-      -p MemoryMax="$mem_limit" -p CPUWeight=100 \
+      -p MemoryMax="$mem_limit" \
       "${scope_env[@]}" "$binary" "${NODE_ARGS[@]}" \
       > "$log" 2>&1 &
   fi
