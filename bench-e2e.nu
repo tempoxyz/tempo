@@ -308,7 +308,6 @@ def systemd-scope-command [unit: string, cpus: string, memory: string, script: s
         "--uid" $uid
         "--gid" $gid
         ...$telemetry_env
-        "-p" "CPUWeight=100"
         ...$memory_args
         "bash"
         "-lc"
