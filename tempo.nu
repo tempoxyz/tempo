@@ -30,7 +30,7 @@ def port-to-node-index [port: int] {
 
 # Build log filter args based on --loud flag
 def log-filter-args [loud: bool] {
-    if $loud { [] } else { ["--log.stdout.filter" "warn"] }
+    if $loud { [] } else { ["--log.stdout.filter" "info"] }
 }
 
 # Wrap command with samply if enabled
