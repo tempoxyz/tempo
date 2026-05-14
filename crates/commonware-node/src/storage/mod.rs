@@ -25,7 +25,7 @@ use commonware_storage::{
     translator::TwoCap,
 };
 use commonware_utils::{NZU16, NZU64, NZUsize};
-use eyre::{WrapErr as _, eyre};
+use eyre::{WrapErr as _, ensure};
 use tracing::{info, instrument};
 
 use crate::{
@@ -137,7 +137,7 @@ where
 /// see [`legacy`] for the rollback-safety rationale. When
 /// `dual_write_to_legacy` is `false` the legacy archive is left untouched
 /// on disk and the [`Hybrid`] only writes to the prunable archive.
-#[instrument(skip_all, fields(partition_prefix, retetion_blocks), err(Display))]
+#[instrument(skip_all, fields(partition_prefix, retention_blocks), err(Display))]
 pub(crate) async fn init_hybrid_finalized_blocks<TContext, P>(
     context: &TContext,
     partition_prefix: &str,
@@ -150,11 +150,10 @@ where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
     P: FinalizedBlocksProvider + 'static,
 {
-    if retention_blocks == 0 {
-        return Err(eyre!(
-            "finalized blocks retention must be greater than zero"
-        ));
-    }
+    ensure!(
+        retention_blocks > 0,
+        "finalized blocks retention must be greater than zero",
+    );
 
     let mut prunable =
         init_prunable_finalized_blocks_archive(context, partition_prefix, page_cache.clone())
