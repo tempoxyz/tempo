@@ -223,45 +223,137 @@ def e2e-snapshot-state-hardfork [datadir: string] {
     normalize-hardfork $state_hardfork
 }
 
-def e2e-update-snapshot-hardfork-marker [datadir: string, hardfork: string] {
-    let fork = (normalize-hardfork $hardfork)
-    let marker_path = $"($datadir)/($BENCH_META_SUBDIR)/marker.json"
-    let marker = (open $marker_path)
-    $marker | upsert state_hardfork $fork | to json | save -f $marker_path
+def normalize-gas-limit [gas_limit: string] {
+    if $gas_limit == "" {
+        return ""
+    }
+    $gas_limit | into int | into string
 }
 
-def e2e-synthesize-hardfork-genesis [source_genesis: string, target_genesis: string, hardfork: string] {
-    let fork = (normalize-hardfork $hardfork)
+def gas-limit-quantity [gas_limit: string] {
+    let normalized = (normalize-gas-limit $gas_limit)
+    if $normalized == "" {
+        return ""
+    }
+    $normalized | into int | format number | get lowerhex
+}
+
+def e2e-snapshot-state-gas-limit [datadir: string] {
+    let marker = (read-bench-marker $datadir)
+    if $marker != null {
+        let marker_gas_limit = ($marker | get -o gas_limit | default "")
+        if $marker_gas_limit != "" {
+            return (normalize-gas-limit $marker_gas_limit)
+        }
+    }
+
+    let genesis_path = $"($datadir)/($BENCH_META_SUBDIR)/genesis.json"
+    if ($genesis_path | path exists) {
+        let genesis_gas_limit = (open $genesis_path | get -o gasLimit | default "")
+        if $genesis_gas_limit != "" {
+            return (normalize-gas-limit $genesis_gas_limit)
+        }
+    }
+
+    ""
+}
+
+def e2e-update-snapshot-genesis-marker [
+    datadir: string,
+    hardfork: string,
+    gas_limit: string,
+] {
+    let marker_path = $"($datadir)/($BENCH_META_SUBDIR)/marker.json"
+    mut marker = (open $marker_path)
+    if $hardfork != "" {
+        let fork = (normalize-hardfork $hardfork)
+        $marker = ($marker | upsert state_hardfork $fork)
+    }
+    if $gas_limit != "" {
+        $marker = ($marker | upsert gas_limit (normalize-gas-limit $gas_limit))
+    }
+    $marker | to json | save -f $marker_path
+}
+
+def e2e-synthesize-genesis [
+    source_genesis: string,
+    target_genesis: string,
+    hardfork: string,
+    gas_limit: string,
+] {
     let source = (open $source_genesis)
     mut config = ($source | get config)
-    for field in (hardfork-genesis-config-fields $fork) {
-        $config = ($config | upsert $field.name $field.value)
+    mut patch_labels = []
+    if $hardfork != "" {
+        let fork = (normalize-hardfork $hardfork)
+        for field in (hardfork-genesis-config-fields $fork) {
+            $config = ($config | upsert $field.name $field.value)
+        }
+        $patch_labels = ($patch_labels | append $"hardfork=($fork)")
     }
-    let genesis = ($source | upsert config $config)
+    mut genesis = ($source | upsert config $config)
+    if $gas_limit != "" {
+        let normalized_gas_limit = (normalize-gas-limit $gas_limit)
+        $genesis = ($genesis | upsert gasLimit (gas-limit-quantity $normalized_gas_limit))
+        $patch_labels = ($patch_labels | append $"gas_limit=($normalized_gas_limit)")
+    }
     let target_dir = ($target_genesis | path dirname)
     mkdir $target_dir
     $genesis | to json | save -f $target_genesis
-    print $"Synthesized ($fork) genesis at ($target_genesis)"
+    let patch_label = if ($patch_labels | length) > 0 {
+        $patch_labels | str join ", "
+    } else {
+        "unchanged"
+    }
+    print $"Synthesized genesis \(($patch_label)\) at ($target_genesis)"
 }
 
-def e2e-regenesis [tempo_bin: string, genesis: string, datadir: string, hardfork: string] {
-    let fork = (normalize-hardfork $hardfork)
+def e2e-regenesis [
+    tempo_bin: string,
+    genesis: string,
+    datadir: string,
+    hardfork: string,
+    gas_limit: string,
+] {
+    let target_hardfork = if $hardfork != "" { normalize-hardfork $hardfork } else { "" }
+    let target_gas_limit = if $gas_limit != "" { normalize-gas-limit $gas_limit } else { "" }
     let current_hardfork = (e2e-snapshot-state-hardfork $datadir)
-    if $current_hardfork == $fork {
-        print $"Skipping tempo regenesis for ($datadir); marker state_hardfork already matches ($fork)"
+    let current_gas_limit = (e2e-snapshot-state-gas-limit $datadir)
+    let hardfork_matches = $target_hardfork == "" or $current_hardfork == $target_hardfork
+    let gas_limit_matches = $target_gas_limit == "" or $current_gas_limit == $target_gas_limit
+    if $hardfork_matches and $gas_limit_matches {
+        mut matches = []
+        if $target_hardfork != "" {
+            $matches = ($matches | append $"state_hardfork=($target_hardfork)")
+        }
+        if $target_gas_limit != "" {
+            $matches = ($matches | append $"gas_limit=($target_gas_limit)")
+        }
+        print $"Skipping tempo regenesis for ($datadir); marker already matches (($matches | str join ', '))"
         return
     }
 
-    print $"Running tempo regenesis for ($datadir): state_hardfork=($current_hardfork) -> ($fork) with ($genesis)..."
-    let result = (run-external $tempo_bin "regenesis" "--chain" $genesis "--datadir" $datadir | complete)
+    let target_genesis = $"($datadir)/($BENCH_META_SUBDIR)/regenesis-target.json"
+    e2e-synthesize-genesis $genesis $target_genesis $target_hardfork $target_gas_limit
+
+    mut changes = []
+    if not $hardfork_matches {
+        $changes = ($changes | append $"state_hardfork=($current_hardfork) -> ($target_hardfork)")
+    }
+    if not $gas_limit_matches {
+        $changes = ($changes | append $"gas_limit=($current_gas_limit) -> ($target_gas_limit)")
+    }
+    print $"Running tempo regenesis for ($datadir): ($changes | str join ', ') with ($target_genesis)..."
+    let result = (run-external $tempo_bin "regenesis" "--chain" $target_genesis "--datadir" $datadir | complete)
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }
     if $result.exit_code != 0 {
         print $"Error: tempo regenesis failed for ($datadir) with exit code ($result.exit_code)"
         exit $result.exit_code
     }
-    e2e-synthesize-hardfork-genesis $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $fork
-    e2e-update-snapshot-hardfork-marker $datadir $fork
+    e2e-synthesize-genesis $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $target_hardfork $target_gas_limit
+    e2e-update-snapshot-genesis-marker $datadir $target_hardfork $target_gas_limit
+    rm $target_genesis
 }
 
 def derive-tracing-otlp [tracing_otlp: string] {
@@ -643,9 +735,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
             exit 1
         }
     }
-    if $hardfork != "" {
-        e2e-regenesis $run.tempo $genesis $ctx.a.datadir $hardfork
-        e2e-regenesis $run.tempo $genesis $ctx.b.datadir $hardfork
+    if $hardfork != "" or $ctx.gas_limit != "" {
+        e2e-regenesis $run.tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit
+        e2e-regenesis $run.tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit
     }
     for role_info in [
         { role: "a", node_dir: $ctx.a.node_dir }
@@ -975,8 +1067,8 @@ def "main e2e" [
     if $hardfork_mode {
         if ($hardfork_genesis_dir | path exists) { rm -rf $hardfork_genesis_dir }
         mkdir $hardfork_genesis_dir
-        e2e-synthesize-hardfork-genesis $genesis_path $baseline_genesis_path $baseline_hardfork_name
-        e2e-synthesize-hardfork-genesis $genesis_path $feature_genesis_path $feature_hardfork_name
+        e2e-synthesize-genesis $genesis_path $baseline_genesis_path $baseline_hardfork_name $gas_limit
+        e2e-synthesize-genesis $genesis_path $feature_genesis_path $feature_hardfork_name $gas_limit
     }
     let trusted_peers = if ($a_trusted_peers_path | path exists) {
         open $a_trusted_peers_path | str trim
