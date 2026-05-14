@@ -20,7 +20,7 @@ use revm::{
     precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
 use tempo_contracts::precompiles::{
-    AccountKeychainError, AddrRegistryError, BlockTransferError, FeeManagerError, NonceError,
+    AccountKeychainError, AddrRegistryError, TIP1028GuardError, FeeManagerError, NonceError,
     RolesAuthError, SignatureVerifierError, StablecoinDEXError, TIP20ChannelEscrowError,
     TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
     ValidatorConfigError, ValidatorConfigV2Error,
@@ -93,7 +93,7 @@ pub enum TempoPrecompileError {
 
     /// Error from TIP-1028 blocked transfers precompile
     #[error("TIP1028 blocked transfers error: {0:?}")]
-    BlockTransferError(BlockTransferError),
+    TIP1028GuardError(TIP1028GuardError),
 
     /// Gas limit exceeded during precompile execution.
     #[error("Gas limit exceeded")]
@@ -158,7 +158,7 @@ impl TempoPrecompileError {
             | Self::ValidatorConfigV2Error(_)
             | Self::AccountKeychainError(_)
             | Self::SignatureVerifierError(_)
-            | Self::BlockTransferError(_)
+            | Self::TIP1028GuardError(_)
             | Self::UnknownFunctionSelector(_) => false,
         }
     }
@@ -206,7 +206,7 @@ impl TempoPrecompileError {
             Self::ValidatorConfigV2Error(e) => e.abi_encode().into(),
             Self::AccountKeychainError(e) => e.abi_encode().into(),
             Self::SignatureVerifierError(e) => e.abi_encode().into(),
-            Self::BlockTransferError(e) => e.abi_encode().into(),
+            Self::TIP1028GuardError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
             }
@@ -275,7 +275,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigV2Error);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AccountKeychainError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::SignatureVerifierError);
-    add_errors_to_registry(&mut registry, TempoPrecompileError::BlockTransferError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::TIP1028GuardError);
 
     registry
 }

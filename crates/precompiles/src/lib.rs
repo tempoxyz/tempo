@@ -53,7 +53,7 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, BLOCKED_TRANSFERS_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, TIP1028_GUARD_ADDRESS,
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS,
     TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
@@ -144,7 +144,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(ValidatorConfigV2::create_precompile(&cfg))
         } else if *address == SIGNATURE_VERIFIER_ADDRESS && cfg.spec.is_t3() {
             Some(SignatureVerifier::create_precompile(&cfg))
-        } else if *address == BLOCKED_TRANSFERS_ADDRESS && cfg.spec.is_t6() {
+        } else if *address == TIP1028_GUARD_ADDRESS && cfg.spec.is_t6() {
             Some(TIP1028Guard::create_precompile(&cfg))
         } else {
             None

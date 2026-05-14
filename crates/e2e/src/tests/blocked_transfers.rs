@@ -17,13 +17,13 @@ use eyre::OptionExt as _;
 use futures::future::join_all;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::{
-    BLOCKED_TRANSFERS_ADDRESS, PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    TIP1028_GUARD_ADDRESS, PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     tip20::{IRolesAuth, ISSUER_ROLE, ITIP20},
     tip20_factory::ITIP20Factory,
     tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID},
     tip1028_guard::{
         BLOCKED_PROOF_VERSION,
-        ITIP1028Guard::{self, ITIP1028GuardErrors as BlockTransferError},
+        ITIP1028Guard::{self, ITIP1028GuardErrors as TIP1028GuardError},
         InboundKind, RECOVERY_RECEIVER,
     },
 };
@@ -59,7 +59,7 @@ fn test_blocked_transfer_claim_no_recovery() {
             .wallet(other_wallet)
             .connect_http(http_url.clone());
         let other_tip1028 =
-            ITIP1028Guard::new(BLOCKED_TRANSFERS_ADDRESS, other_provider);
+            ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, other_provider);
         let Err(result) = other_tip1028
             .claim(
                 blocked.token,
@@ -74,12 +74,12 @@ fn test_blocked_transfer_claim_no_recovery() {
             panic!("expected recovery claim without recovery address to fail");
         };
         assert_eq!(
-            result.as_decoded_interface_error::<BlockTransferError>(),
-            Some(BlockTransferError::unauthorized_claimer())
+            result.as_decoded_interface_error::<TIP1028GuardError>(),
+            Some(TIP1028GuardError::unauthorized_claimer())
         );
         assert_eq!(
             token_view(http_url.clone(), blocked.token)
-                .balanceOf(BLOCKED_TRANSFERS_ADDRESS)
+                .balanceOf(TIP1028_GUARD_ADDRESS)
                 .call()
                 .await?,
             amount
@@ -90,7 +90,7 @@ fn test_blocked_transfer_claim_no_recovery() {
             .wallet(receiver_wallet)
             .connect_http(http_url.clone());
         let receiver_tip1028 =
-            ITIP1028Guard::new(BLOCKED_TRANSFERS_ADDRESS, receiver_provider);
+            ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, receiver_provider);
         let claim = receiver_tip1028
             .claim(
                 blocked.token,
@@ -110,7 +110,7 @@ fn test_blocked_transfer_claim_no_recovery() {
         let token = token_view(http_url, blocked.token);
         assert_eq!(token.balanceOf(blocked.receiver).call().await?, amount);
         assert_eq!(
-            token.balanceOf(BLOCKED_TRANSFERS_ADDRESS).call().await?,
+            token.balanceOf(TIP1028_GUARD_ADDRESS).call().await?,
             U256::ZERO
         );
 
@@ -138,7 +138,7 @@ fn test_tip1028_claim_with_recovery() {
             .wallet(wallet(22)?)
             .connect_http(http_url.clone());
         let recovery_tip1028 =
-            ITIP1028Guard::new(BLOCKED_TRANSFERS_ADDRESS, recovery_provider);
+            ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, recovery_provider);
         let claim = recovery_tip1028
             .claim(
                 blocked.token,
@@ -159,7 +159,7 @@ fn test_tip1028_claim_with_recovery() {
         assert_eq!(token.balanceOf(blocked.receiver).call().await?, U256::ZERO);
         assert_eq!(token.balanceOf(destination).call().await?, amount);
         assert_eq!(
-            token.balanceOf(BLOCKED_TRANSFERS_ADDRESS).call().await?,
+            token.balanceOf(TIP1028_GUARD_ADDRESS).call().await?,
             U256::ZERO
         );
 
@@ -279,7 +279,7 @@ async fn create_blocked_transfer(
     .into();
 
     let tip1028 = ITIP1028Guard::new(
-        BLOCKED_TRANSFERS_ADDRESS,
+        TIP1028_GUARD_ADDRESS,
         ProviderBuilder::new().connect_http(http_url.clone()),
     );
     assert_eq!(
@@ -296,7 +296,7 @@ async fn create_blocked_transfer(
     assert_eq!(token_view.balanceOf(receiver).call().await?, U256::ZERO);
     assert_eq!(
         token_view
-            .balanceOf(BLOCKED_TRANSFERS_ADDRESS)
+            .balanceOf(TIP1028_GUARD_ADDRESS)
             .call()
             .await?,
         amount

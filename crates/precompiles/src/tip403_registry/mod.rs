@@ -15,7 +15,7 @@ pub use tempo_contracts::precompiles::{
 use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
-    BLOCKED_TRANSFERS_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    TIP1028_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
@@ -360,7 +360,7 @@ impl TIP403Registry {
         msg_sender: Address,
         call: ITIP403Registry::setReceivePolicyCall,
     ) -> Result<()> {
-        if msg_sender == BLOCKED_TRANSFERS_ADDRESS {
+        if msg_sender == TIP1028_GUARD_ADDRESS {
             return Err(TIP403RegistryError::invalid_recovery_authority().into());
         }
         if msg_sender.is_virtual() {
@@ -368,7 +368,7 @@ impl TIP403Registry {
         }
 
         let recovery_address = call.recoveryAuthority;
-        if recovery_address == BLOCKED_TRANSFERS_ADDRESS
+        if recovery_address == TIP1028_GUARD_ADDRESS
             || recovery_address == msg_sender
             || recovery_address.is_tip20()
             || recovery_address.is_virtual()
@@ -1157,7 +1157,7 @@ mod tests {
             let mut registry = TIP403Registry::new();
 
             let block_result = registry.set_receive_policy(
-                BLOCKED_TRANSFERS_ADDRESS,
+                TIP1028_GUARD_ADDRESS,
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: REJECT_ALL_POLICY_ID,
                     tokenFilterId: ALLOW_ALL_POLICY_ID,
@@ -1200,7 +1200,7 @@ mod tests {
             let mut registry = TIP403Registry::new();
 
             for recovery_address in [
-                BLOCKED_TRANSFERS_ADDRESS,
+                TIP1028_GUARD_ADDRESS,
                 PATH_USD_ADDRESS,
                 virtual_addr,
                 account,

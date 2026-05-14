@@ -12,7 +12,7 @@ pub mod dispatch;
 pub mod rewards;
 pub mod roles;
 
-use tempo_contracts::precompiles::{BlockTransferError, STABLECOIN_DEX_ADDRESS};
+use tempo_contracts::precompiles::{TIP1028GuardError, STABLECOIN_DEX_ADDRESS};
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event, USD_CURRENCY,
 };
@@ -21,7 +21,7 @@ pub use tempo_contracts::precompiles::{
 pub use slots as tip20_slots;
 
 use crate::{
-    BLOCKED_TRANSFERS_ADDRESS, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    TIP1028_GUARD_ADDRESS, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
@@ -134,7 +134,7 @@ pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN
 /// System custody addresses added to burn-blocked protection at each hardfork.
 pub const PROTECTED: &[(TempoHardfork, &[Address])] = &[
     (TempoHardfork::Genesis, &[TIP_FEE_MANAGER_ADDRESS, STABLECOIN_DEX_ADDRESS]),
-    (TempoHardfork::T6, &[BLOCKED_TRANSFERS_ADDRESS]),
+    (TempoHardfork::T6, &[TIP1028_GUARD_ADDRESS]),
 ];
 
 impl TIP20Token {
@@ -1222,8 +1222,8 @@ impl TIP20Token {
         if !self.storage.spec().is_t6() {
             return Ok(false);
         }
-        if to.target == BLOCKED_TRANSFERS_ADDRESS {
-            return Err(BlockTransferError::block_address_reserved().into());
+        if to.target == TIP1028_GUARD_ADDRESS {
+            return Err(TIP1028GuardError::block_address_reserved().into());
         }
 
         let token = self.address;
@@ -1233,12 +1233,12 @@ impl TIP20Token {
             return Ok(false);
         };
 
-        let blocked = Recipient::direct(BLOCKED_TRANSFERS_ADDRESS);
+        let blocked = Recipient::direct(TIP1028_GUARD_ADDRESS);
         match kind {
             InboundKind::TRANSFER => self._transfer(originator, &blocked, amount)?,
             InboundKind::MINT => self._mint(&blocked, amount, None)?,
             InboundKind::__Invalid => {
-                return Err(BlockTransferError::invalid_proof().into());
+                return Err(TIP1028GuardError::invalid_proof().into());
             }
         }
         TIP1028Guard::new()
@@ -1259,8 +1259,8 @@ impl TIP20Token {
     ) -> Result<()> {
         self.check_not_paused()?;
 
-        if to == BLOCKED_TRANSFERS_ADDRESS {
-            return Err(BlockTransferError::block_address_reserved().into());
+        if to == TIP1028_GUARD_ADDRESS {
+            return Err(TIP1028GuardError::block_address_reserved().into());
         }
 
         let destination = Recipient::resolve(to)?;
@@ -1283,15 +1283,15 @@ impl TIP20Token {
             }
         }
 
-        let blocked_balance = self.get_balance(BLOCKED_TRANSFERS_ADDRESS)?;
+        let blocked_balance = self.get_balance(TIP1028_GUARD_ADDRESS)?;
         if amount > blocked_balance {
-            return Err(BlockTransferError::insufficient_balance().into());
+            return Err(TIP1028GuardError::insufficient_balance().into());
         }
 
-        self.handle_rewards_on_transfer(BLOCKED_TRANSFERS_ADDRESS, destination.target, amount)?;
+        self.handle_rewards_on_transfer(TIP1028_GUARD_ADDRESS, destination.target, amount)?;
 
         self.set_balance(
-            BLOCKED_TRANSFERS_ADDRESS,
+            TIP1028_GUARD_ADDRESS,
             blocked_balance
                 .checked_sub(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?,
@@ -1305,7 +1305,7 @@ impl TIP20Token {
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
-        self.emit_event(destination.build_transfer_event(BLOCKED_TRANSFERS_ADDRESS, amount))?;
+        self.emit_event(destination.build_transfer_event(TIP1028_GUARD_ADDRESS, amount))?;
         if let Some(hop) = destination.build_virtual_transfer_event(amount) {
             self.emit_event(hop)?;
         }
@@ -1788,10 +1788,10 @@ pub(crate) mod tests {
 
                 assert_eq!(token.get_balance(sender)?, U256::ZERO);
                 assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                assert_eq!(token.get_balance(BLOCKED_TRANSFERS_ADDRESS)?, amount);
+                assert_eq!(token.get_balance(TIP1028_GUARD_ADDRESS)?, amount);
                 token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
                     from: sender,
-                    to: BLOCKED_TRANSFERS_ADDRESS,
+                    to: TIP1028_GUARD_ADDRESS,
                     amount,
                 })]);
 
@@ -1902,16 +1902,16 @@ pub(crate) mod tests {
                 let result = token.transfer(
                     sender,
                     ITIP20::transferCall {
-                        to: BLOCKED_TRANSFERS_ADDRESS,
+                        to: TIP1028_GUARD_ADDRESS,
                         amount,
                     },
                 );
                 assert!(matches!(
                     result,
-                    Err(e) if e == BlockTransferError::block_address_reserved().into()
+                    Err(e) if e == TIP1028GuardError::block_address_reserved().into()
                 ));
                 assert_eq!(token.get_balance(sender)?, amount);
-                assert_eq!(token.get_balance(BLOCKED_TRANSFERS_ADDRESS)?, U256::ZERO);
+                assert_eq!(token.get_balance(TIP1028_GUARD_ADDRESS)?, U256::ZERO);
 
                 Ok(())
             })
@@ -1949,7 +1949,7 @@ pub(crate) mod tests {
 
                 assert_eq!(token.get_balance(sender)?, U256::ZERO);
                 assert_eq!(token.get_balance(receiver)?, amount);
-                assert_eq!(token.get_balance(BLOCKED_TRANSFERS_ADDRESS)?, U256::ZERO);
+                assert_eq!(token.get_balance(TIP1028_GUARD_ADDRESS)?, U256::ZERO);
                 token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
                     from: sender,
                     to: receiver,
@@ -2014,7 +2014,7 @@ pub(crate) mod tests {
                 );
                 assert_eq!(token.get_balance(owner)?, U256::ZERO);
                 assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                assert_eq!(token.get_balance(BLOCKED_TRANSFERS_ADDRESS)?, amount);
+                assert_eq!(token.get_balance(TIP1028_GUARD_ADDRESS)?, amount);
 
                 Ok(())
             })
@@ -2054,7 +2054,7 @@ pub(crate) mod tests {
 
                 token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
                     from: sender,
-                    to: BLOCKED_TRANSFERS_ADDRESS,
+                    to: TIP1028_GUARD_ADDRESS,
                     amount,
                 })]);
                 let proof = proof_v1(
@@ -2102,10 +2102,10 @@ pub(crate) mod tests {
 
                 assert_eq!(token.total_supply()?, amount);
                 assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                assert_eq!(token.get_balance(BLOCKED_TRANSFERS_ADDRESS)?, amount);
+                assert_eq!(token.get_balance(TIP1028_GUARD_ADDRESS)?, amount);
                 token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
                     from: Address::ZERO,
-                    to: BLOCKED_TRANSFERS_ADDRESS,
+                    to: TIP1028_GUARD_ADDRESS,
                     amount,
                 })]);
                 TIP1028Guard::new().assert_emitted_events(vec![
@@ -3289,7 +3289,7 @@ pub(crate) mod tests {
             for protected in [
                 TIP_FEE_MANAGER_ADDRESS,
                 STABLECOIN_DEX_ADDRESS,
-                BLOCKED_TRANSFERS_ADDRESS,
+                TIP1028_GUARD_ADDRESS,
             ] {
                 let result = token.burn_blocked(
                     burner,
@@ -3316,7 +3316,7 @@ pub(crate) mod tests {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
                 .with_role(burner, *BURN_BLOCKED_ROLE)
-                .with_mint(BLOCKED_TRANSFERS_ADDRESS, amount)
+                .with_mint(TIP1028_GUARD_ADDRESS, amount)
                 .apply()?;
 
             token.change_transfer_policy_id(
@@ -3329,13 +3329,13 @@ pub(crate) mod tests {
             token.burn_blocked(
                 burner,
                 ITIP20::burnBlockedCall {
-                    from: BLOCKED_TRANSFERS_ADDRESS,
+                    from: TIP1028_GUARD_ADDRESS,
                     amount: burn_amount,
                 },
             )?;
 
             let balance = token.balance_of(ITIP20::balanceOfCall {
-                account: BLOCKED_TRANSFERS_ADDRESS,
+                account: TIP1028_GUARD_ADDRESS,
             })?;
             assert_eq!(balance, amount - burn_amount);
 

@@ -1,5 +1,5 @@
 pub use ITIP1028Guard::{
-    ITIP1028GuardErrors as BlockTransferError,
+    ITIP1028GuardErrors as TIP1028GuardError,
     ITIP1028GuardEvents as BlockTransferEvent,
 };
 
@@ -37,7 +37,7 @@ crate::sol! {
     }
 }
 
-impl BlockTransferError {
+impl TIP1028GuardError {
     pub const fn unauthorized_claimer() -> Self {
         Self::UnauthorizedClaimer(ITIP1028Guard::UnauthorizedClaimer {})
     }

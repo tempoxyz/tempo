@@ -4,12 +4,12 @@ pub mod dispatch;
 
 pub use tempo_contracts::precompiles::ITIP1028Guard::{self, InboundKind};
 use tempo_contracts::precompiles::{
-    BlockTransferError, BlockTransferEvent,
+    TIP1028GuardError, BlockTransferEvent,
     ITIP403Registry::{self, BlockedReason},
 };
 
 use crate::{
-    BLOCKED_TRANSFERS_ADDRESS,
+    TIP1028_GUARD_ADDRESS,
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
@@ -32,7 +32,7 @@ pub const RECOVERY_ORIGINATOR: Address = Address::ZERO;
 pub const RECOVERY_RECEIVER: Address = Address::with_last_byte(1);
 
 /// TIP-1028 precompile holding blocked inbound transfers and mints until claimed.
-#[contract(addr = BLOCKED_TRANSFERS_ADDRESS)]
+#[contract(addr = TIP1028_GUARD_ADDRESS)]
 pub struct TIP1028Guard {
     nonce: u64,
     balances: Mapping<B256, U256>,
@@ -47,7 +47,7 @@ impl TIP1028Guard {
     /// Returns the unclaimed amount for a proof, or zero if unknown or already claimed.
     pub fn balance_of(&self, call: ITIP1028Guard::balanceOfCall) -> Result<U256> {
         if !call.token.is_tip20() {
-            return Err(BlockTransferError::invalid_token().into());
+            return Err(TIP1028GuardError::invalid_token().into());
         }
 
         let proof = Self::decode_v1(call.proofVersion, &call.proof)?;
@@ -75,7 +75,7 @@ impl TIP1028Guard {
         memo: B256,
     ) -> Result<(u64, u64)> {
         if !token.is_tip20() {
-            return Err(BlockTransferError::invalid_token().into());
+            return Err(TIP1028GuardError::invalid_token().into());
         }
 
         if matches!(
@@ -83,7 +83,7 @@ impl TIP1028Guard {
             ITIP403Registry::BlockedReason::NONE | ITIP403Registry::BlockedReason::__Invalid
         ) || kind == ITIP1028Guard::InboundKind::__Invalid
         {
-            return Err(BlockTransferError::invalid_proof().into());
+            return Err(TIP1028GuardError::invalid_proof().into());
         }
 
         let receiver = to.target;
@@ -129,17 +129,17 @@ impl TIP1028Guard {
         call: ITIP1028Guard::claimCall,
     ) -> Result<()> {
         if !call.token.is_tip20() {
-            return Err(BlockTransferError::invalid_token().into());
+            return Err(TIP1028GuardError::invalid_token().into());
         }
 
-        if call.to == BLOCKED_TRANSFERS_ADDRESS {
-            return Err(BlockTransferError::invalid_claim_address().into());
+        if call.to == TIP1028_GUARD_ADDRESS {
+            return Err(TIP1028GuardError::invalid_claim_address().into());
         }
 
         let proof = Self::decode_v1(call.proofVersion, &call.proof)?;
         let receiver = AddressRegistry::new()
             .resolve_recipient(proof.recipient)
-            .map_err(|_| BlockTransferError::invalid_claim_address())?;
+            .map_err(|_| TIP1028GuardError::invalid_claim_address())?;
 
         let recovery_address = call.recoveryAuthority;
         let recovery_authority =
@@ -149,7 +149,7 @@ impl TIP1028Guard {
         let key = self.proof_key(call.proofVersion, call.token, recovery_address, &proof)?;
         let amount = self.balances[key].read()?;
         if amount.is_zero() {
-            return Err(BlockTransferError::invalid_proof().into());
+            return Err(TIP1028GuardError::invalid_proof().into());
         }
 
         let guard = self.storage.checkpoint();
@@ -208,10 +208,10 @@ impl TIP1028Guard {
         proof: &[u8],
     ) -> Result<ITIP1028Guard::ClaimProofV1> {
         if proof_version != BLOCKED_PROOF_VERSION {
-            return Err(BlockTransferError::invalid_proof().into());
+            return Err(TIP1028GuardError::invalid_proof().into());
         }
         ITIP1028Guard::ClaimProofV1::abi_decode(proof)
-            .map_err(|_| BlockTransferError::invalid_proof().into())
+            .map_err(|_| TIP1028GuardError::invalid_proof().into())
     }
 
     /// Content hash over every proof field. Any mutation yields a different empty slot.
@@ -266,7 +266,7 @@ impl RecoveryAuthority {
             }
         };
         if msg_sender != authorized_claimer {
-            return Err(BlockTransferError::unauthorized_claimer().into());
+            return Err(TIP1028GuardError::unauthorized_claimer().into());
         }
         Ok(())
     }
@@ -368,14 +368,14 @@ mod tests {
     fn assert_invalid_proof(result: Result<()>) {
         assert!(matches!(
             result,
-            Err(e) if e == BlockTransferError::invalid_proof().into()
+            Err(e) if e == TIP1028GuardError::invalid_proof().into()
         ));
     }
 
     fn assert_unauthorized(result: Result<()>) {
         assert!(matches!(
             result,
-            Err(e) if e == BlockTransferError::unauthorized_claimer().into()
+            Err(e) if e == TIP1028GuardError::unauthorized_claimer().into()
         ));
     }
 
@@ -470,7 +470,7 @@ mod tests {
                 );
                 assert_eq!(
                     token.balance_of(ITIP20::balanceOfCall {
-                        account: BLOCKED_TRANSFERS_ADDRESS
+                        account: TIP1028_GUARD_ADDRESS
                     })?,
                     U256::ZERO
                 );
@@ -537,7 +537,7 @@ mod tests {
             );
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall {
-                    account: BLOCKED_TRANSFERS_ADDRESS
+                    account: TIP1028_GUARD_ADDRESS
                 })?,
                 amount
             );
@@ -632,14 +632,14 @@ mod tests {
             let precompile = TIP1028Guard::new();
             assert_eq!(
                 token_a.balance_of(ITIP20::balanceOfCall {
-                    account: BLOCKED_TRANSFERS_ADDRESS
+                    account: TIP1028_GUARD_ADDRESS
                 })?,
                 proof_balance(&precompile, token_a.address(), RECOVERY_RECEIVER, &proof_a)?
                     + proof_balance(&precompile, token_a.address(), recovery, &proof_b)?
             );
             assert_eq!(
                 token_b.balance_of(ITIP20::balanceOfCall {
-                    account: BLOCKED_TRANSFERS_ADDRESS
+                    account: TIP1028_GUARD_ADDRESS
                 })?,
                 proof_balance(&precompile, token_b.address(), RECOVERY_RECEIVER, &proof_c)?
             );
@@ -650,13 +650,13 @@ mod tests {
             )?;
             assert_eq!(
                 token_a.balance_of(ITIP20::balanceOfCall {
-                    account: BLOCKED_TRANSFERS_ADDRESS
+                    account: TIP1028_GUARD_ADDRESS
                 })?,
                 proof_balance(&precompile, token_a.address(), recovery, &proof_b)?
             );
             assert_eq!(
                 token_b.balance_of(ITIP20::balanceOfCall {
-                    account: BLOCKED_TRANSFERS_ADDRESS
+                    account: TIP1028_GUARD_ADDRESS
                 })?,
                 proof_balance(&precompile, token_b.address(), RECOVERY_RECEIVER, &proof_c)?
             );
@@ -667,13 +667,13 @@ mod tests {
             )?;
             assert_eq!(
                 token_a.balance_of(ITIP20::balanceOfCall {
-                    account: BLOCKED_TRANSFERS_ADDRESS
+                    account: TIP1028_GUARD_ADDRESS
                 })?,
                 U256::ZERO
             );
             assert_eq!(
                 token_b.balance_of(ITIP20::balanceOfCall {
-                    account: BLOCKED_TRANSFERS_ADDRESS
+                    account: TIP1028_GUARD_ADDRESS
                 })?,
                 proof_balance(&precompile, token_b.address(), RECOVERY_RECEIVER, &proof_c)?
             );
@@ -712,7 +712,7 @@ mod tests {
                 });
                 assert!(matches!(
                     result,
-                    Err(e) if e == BlockTransferError::invalid_proof().into()
+                    Err(e) if e == TIP1028GuardError::invalid_proof().into()
                 ));
             }
 
@@ -745,7 +745,7 @@ mod tests {
                 );
                 assert!(matches!(
                     result,
-                    Err(e) if e == BlockTransferError::invalid_proof().into()
+                    Err(e) if e == TIP1028GuardError::invalid_proof().into()
                 ));
             }
 
@@ -1113,7 +1113,7 @@ mod tests {
             );
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall {
-                    account: BLOCKED_TRANSFERS_ADDRESS
+                    account: TIP1028_GUARD_ADDRESS
                 })?,
                 U256::ZERO
             );
@@ -1195,7 +1195,7 @@ mod tests {
             );
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall {
-                    account: BLOCKED_TRANSFERS_ADDRESS
+                    account: TIP1028_GUARD_ADDRESS
                 })?,
                 U256::ZERO
             );
@@ -1255,7 +1255,7 @@ mod tests {
             );
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall {
-                    account: BLOCKED_TRANSFERS_ADDRESS
+                    account: TIP1028_GUARD_ADDRESS
                 })?,
                 amount
             );
@@ -1464,7 +1464,7 @@ mod tests {
                 assert_eq!(token.total_supply()?, amount);
                 assert_eq!(
                     token.balance_of(ITIP20::balanceOfCall {
-                        account: BLOCKED_TRANSFERS_ADDRESS
+                        account: TIP1028_GUARD_ADDRESS
                     })?,
                     amount
                 );
@@ -1504,7 +1504,7 @@ mod tests {
 
                 assert_eq!(
                     token.balance_of(ITIP20::balanceOfCall {
-                        account: BLOCKED_TRANSFERS_ADDRESS
+                        account: TIP1028_GUARD_ADDRESS
                     })?,
                     U256::ZERO
                 );
