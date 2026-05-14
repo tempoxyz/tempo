@@ -186,8 +186,7 @@ pub(crate) mod marshal {
             .get_finalized_num_hash()
             .map(|nh| nh.number)
             .unwrap_or(0);
-        let last_finalized_height =
-            marshal_stored_height.max(Height::new(reth_finalized_height));
+        let last_finalized_height = marshal_stored_height.max(Height::new(reth_finalized_height));
         if last_finalized_height > marshal_stored_height {
             info!(
                 marshal_stored = %marshal_stored_height,

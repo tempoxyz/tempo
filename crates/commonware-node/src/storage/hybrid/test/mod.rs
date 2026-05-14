@@ -267,10 +267,9 @@ fn put_dual_writes_to_legacy_when_present_and_get_skips_legacy() {
         // hybrid's own legacy field.
         let legacy_ref = hybrid.legacy.as_ref().expect("legacy still attached");
         for block in &blocks {
-            let stored =
-                archive::Archive::get(legacy_ref, Identifier::Index(block.height().get()))
-                    .await
-                    .expect("legacy get");
+            let stored = archive::Archive::get(legacy_ref, Identifier::Index(block.height().get()))
+                .await
+                .expect("legacy get");
             assert_eq!(stored.as_ref(), Some(block));
         }
 
@@ -317,7 +316,10 @@ fn sync_flushes_both_archives() {
         for block in &blocks {
             hybrid.put(block.clone()).await.expect("put");
         }
-        hybrid.sync().await.expect("sync should flush both archives");
+        hybrid
+            .sync()
+            .await
+            .expect("sync should flush both archives");
     });
 }
 

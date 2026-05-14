@@ -172,9 +172,7 @@ where
         .await
         .wrap_err("failed to open legacy immutable finalized blocks archive for dual-write")?
     } else {
-        info!(
-            "legacy archive dual-write disabled by configuration; skipping legacy archive open"
-        );
+        info!("legacy archive dual-write disabled by configuration; skipping legacy archive open");
         None
     };
 
@@ -224,5 +222,3 @@ where
 
     archive
 }
-
-

@@ -24,9 +24,7 @@
 
 use std::time::Instant;
 
-use commonware_runtime::{
-    BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef,
-};
+use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
 use commonware_storage::archive::Identifier;
 use eyre::{WrapErr as _, eyre};
 use tracing::{debug, info, instrument, warn};
@@ -295,12 +293,10 @@ mod tests {
 
             // Heights 3..=6 must now be present in prunable.
             for height in 3..=6 {
-                let stored = commonware_storage::archive::Archive::get(
-                    &prunable,
-                    Identifier::Index(height),
-                )
-                .await
-                .expect("get backfilled");
+                let stored =
+                    commonware_storage::archive::Archive::get(&prunable, Identifier::Index(height))
+                        .await
+                        .expect("get backfilled");
                 let expected = &chain[(height - 1) as usize];
                 assert_eq!(stored.as_ref(), Some(expected));
             }
@@ -308,12 +304,10 @@ mod tests {
             // Heights 1..=2 (below the retention floor) must NOT have been
             // copied.
             for height in 1..=2 {
-                let stored = commonware_storage::archive::Archive::get(
-                    &prunable,
-                    Identifier::Index(height),
-                )
-                .await
-                .expect("get below retention");
+                let stored =
+                    commonware_storage::archive::Archive::get(&prunable, Identifier::Index(height))
+                        .await
+                        .expect("get below retention");
                 assert!(
                     stored.is_none(),
                     "height {height} below retention floor should not be backfilled"
@@ -388,21 +382,17 @@ mod tests {
             // Heights 1, 3, 5 are present; 2 and 4 are gaps and must be
             // missing in prunable too.
             for height in [1u64, 3, 5] {
-                let stored = commonware_storage::archive::Archive::get(
-                    &prunable,
-                    Identifier::Index(height),
-                )
-                .await
-                .expect("get");
+                let stored =
+                    commonware_storage::archive::Archive::get(&prunable, Identifier::Index(height))
+                        .await
+                        .expect("get");
                 assert!(stored.is_some(), "height {height} should be present");
             }
             for height in [2u64, 4] {
-                let stored = commonware_storage::archive::Archive::get(
-                    &prunable,
-                    Identifier::Index(height),
-                )
-                .await
-                .expect("get gap");
+                let stored =
+                    commonware_storage::archive::Archive::get(&prunable, Identifier::Index(height))
+                        .await
+                        .expect("get gap");
                 assert!(
                     stored.is_none(),
                     "gap height {height} must not appear in prunable"

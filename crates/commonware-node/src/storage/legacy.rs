@@ -7,9 +7,7 @@
 //! [`super::hybrid`]'s rollback-safety dual-write path) lives elsewhere and
 //! depends on this module, not the other way around.
 
-use commonware_runtime::{
-    BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef,
-};
+use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
 use commonware_storage::archive::immutable;
 
 use super::{
