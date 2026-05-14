@@ -1,5 +1,5 @@
-//! Rollback-safety bootstrap glue between the [`Legacy`] archive and the
-//! [`Hybrid`] store's prunable archive.
+//! Adopts an existing [`Legacy`] archive into the [`Hybrid`] store on
+//! startup, preserving the rollback-safety contract.
 //!
 //! On every restart this module:
 //!
@@ -29,7 +29,7 @@ use commonware_runtime::{
 };
 use commonware_storage::archive::Identifier;
 use eyre::{WrapErr as _, eyre};
-use tracing::{info, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use super::Prunable;
 use crate::storage::legacy::{
@@ -136,12 +136,27 @@ where
             .wrap_err_with(|| format!("reading height {height} from legacy archive"))?
         {
             Some(block) => {
-                commonware_consensus::marshal::store::Blocks::put(prunable, block)
-                    .await
-                    .wrap_err_with(|| {
-                        format!("backfilling height {height} into prunable archive")
-                    })?;
-                copied += 1;
+                match commonware_consensus::marshal::store::Blocks::put(prunable, block).await {
+                    Ok(()) => copied += 1,
+                    // The prunable archive rounds its prune floor *down*
+                    // to a section boundary, so `oldest_allowed` may sit
+                    // above the height we computed `copy_from` from. Any
+                    // legacy entry that lands below it has already been
+                    // pruned out of the working window and the copy is a
+                    // no-op; treat it as covered and continue.
+                    Err(commonware_storage::archive::Error::AlreadyPrunedTo(oldest_allowed)) => {
+                        debug!(
+                            height,
+                            oldest_allowed,
+                            "skipping legacy backfill: height is below prunable's oldest_allowed"
+                        );
+                    }
+                    Err(err) => {
+                        return Err(err).wrap_err_with(|| {
+                            format!("backfilling height {height} into prunable archive")
+                        });
+                    }
+                }
             }
             None => {
                 // The legacy archive's `last_index` reports the highest
@@ -190,7 +205,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    //! Tests for the rollback-safety bootstrap.
+    //! Tests for the legacy-archive adoption logic.
     //!
     //! Cover the guarantees described in the module header:
     //!

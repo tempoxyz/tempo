@@ -30,7 +30,7 @@ const LEGACY_FINALIZED_BLOCKS: &str = "finalized_blocks";
 /// Build the partition names of the legacy immutable finalized blocks
 /// archive for the provided prefix.
 ///
-/// Used by [`super::hybrid`]'s rollback-safety bootstrap to detect whether
+/// Used by [`super::hybrid`]'s legacy-archive adoption to detect whether
 /// the legacy archive is present on disk.
 pub(in crate::storage) fn legacy_finalized_blocks_partitions(
     partition_prefix: &str,

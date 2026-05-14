@@ -12613,7 +12613,6 @@ name = "tempo-commonware-node"
 version = "1.6.0"
 dependencies = [
  "alloy-consensus",
- "alloy-eips 2.0.4",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-engine",
@@ -12643,9 +12642,7 @@ dependencies = [
  "prometheus-client",
  "rand 0.8.6",
  "rand_core 0.6.4",
- "reth-chainspec",
  "reth-consensus-common",
- "reth-db-api",
  "reth-ethereum",
  "reth-evm",
  "reth-node-builder",
@@ -12663,6 +12660,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-telemetry-util",
+ "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
  "tracing",

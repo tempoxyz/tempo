@@ -26,7 +26,6 @@ use commonware_storage::{
 };
 use commonware_utils::{NZU16, NZU64, NZUsize};
 use eyre::{WrapErr as _, eyre};
-use reth_provider::BlockReader;
 use tracing::{info, instrument};
 
 use crate::{
@@ -37,7 +36,7 @@ use crate::{
 pub(crate) mod hybrid;
 pub(in crate::storage) mod legacy;
 
-pub(crate) use hybrid::Hybrid;
+pub(crate) use hybrid::{FinalizedBlocksProvider, Hybrid};
 
 const FINALIZATIONS_BY_HEIGHT: &str = "finalizations-by-height";
 const PRUNABLE_FINALIZED_BLOCKS: &str = "finalized-blocks-prunable";
@@ -55,11 +54,26 @@ pub(crate) const MAX_REPAIR: std::num::NonZeroUsize = NZUsize!(20);
 pub(crate) const BUFFER_POOL_PAGE_SIZE: std::num::NonZeroU16 = NZU16!(4_096); // 4KB
 pub(crate) const BUFFER_POOL_CAPACITY: std::num::NonZeroUsize = NZUsize!(8_192); // 32MB (8k page slots)
 
-/// Default number of finalized blocks to retain in the prunable archive.
+/// Default number of finalized blocks (relative to reth's finalized
+/// watermark) to keep cached in the prunable archive.
 ///
 /// Beyond this depth, [`Hybrid`] falls back to looking up blocks from
 /// reth's storage via the [`TempoFullNode`] provider.
+///
+/// The prunable archive evicts in `PRUNABLE_ITEMS_PER_SECTION`-sized
+/// batches (see [`hybrid`]'s "Section-rounding" docs). When reth is
+/// caught up to the marshal's tip the cache holds between `RETENTION`
+/// and `RETENTION + PRUNABLE_ITEMS_PER_SECTION − 1` items; if reth is
+/// lagging the marshal, the cache can hold more (it never drops blocks
+/// reth doesn't yet have). The assertion below keeps the section
+/// overshoot small relative to `RETENTION` (current ratio: 4×).
 pub(crate) const DEFAULT_FINALIZED_BLOCKS_RETENTION: u64 = 16_384;
+
+const _: () = assert!(
+    DEFAULT_FINALIZED_BLOCKS_RETENTION >= 2 * PRUNABLE_ITEMS_PER_SECTION.get(),
+    "DEFAULT_FINALIZED_BLOCKS_RETENTION must be at least 2 * PRUNABLE_ITEMS_PER_SECTION; \
+     otherwise the section-rounding overshoot dominates the working set",
+);
 
 pub(crate) async fn init_finalizations_archive<TContext>(
     context: &TContext,
@@ -134,7 +148,7 @@ pub(crate) async fn init_hybrid_finalized_blocks<TContext, P>(
 ) -> eyre::Result<Hybrid<TContext, P>>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
-    P: BlockReader<Block = tempo_primitives::Block> + Sync + 'static,
+    P: FinalizedBlocksProvider + 'static,
 {
     if retention_blocks == 0 {
         return Err(eyre!(
