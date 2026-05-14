@@ -2,7 +2,7 @@
 
 use crate::{
     Precompile, charge_input_cost, dispatch_call, mutate_void,
-    tip1028_blocked_transfers::TIP1028Guard, view,
+    tip1028_guard::TIP1028Guard, view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;

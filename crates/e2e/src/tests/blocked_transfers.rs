@@ -21,7 +21,7 @@ use tempo_precompiles::{
     tip20::{IRolesAuth, ISSUER_ROLE, ITIP20},
     tip20_factory::ITIP20Factory,
     tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID},
-    tip1028_blocked_transfers::{
+    tip1028_guard::{
         BLOCKED_PROOF_VERSION,
         ITIP1028Guard::{self, ITIP1028GuardErrors as BlockTransferError},
         InboundKind, RECOVERY_RECEIVER,

@@ -14,7 +14,7 @@ pub mod address_registry;
 pub mod nonce;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
-pub mod tip1028_blocked_transfers;
+pub mod tip1028_guard;
 pub mod tip20;
 pub mod tip20_channel_escrow;
 pub mod tip20_factory;
@@ -31,7 +31,7 @@ use crate::{
     signature_verifier::SignatureVerifier, stablecoin_dex::StablecoinDEX, storage::StorageCtx,
     tip_fee_manager::TipFeeManager, tip20::TIP20Token, tip20_channel_escrow::TIP20ChannelEscrow,
     tip20_factory::TIP20Factory, tip403_registry::TIP403Registry,
-    tip1028_blocked_transfers::TIP1028Guard, validator_config::ValidatorConfig,
+    tip1028_guard::TIP1028Guard, validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
 };
 use tempo_chainspec::hardfork::TempoHardfork;

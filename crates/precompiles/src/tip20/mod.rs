@@ -29,7 +29,7 @@ use crate::{
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
-    tip1028_blocked_transfers::{InboundKind, TIP1028Guard},
+    tip1028_guard::{InboundKind, TIP1028Guard},
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
@@ -1634,7 +1634,7 @@ pub(crate) mod tests {
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master, setup_storage},
-        tip1028_blocked_transfers::TIP1028Guard,
+        tip1028_guard::TIP1028Guard,
     };
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -1703,7 +1703,7 @@ pub(crate) mod tests {
         use super::*;
         use crate::{
             tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
-            tip1028_blocked_transfers::BLOCKED_PROOF_VERSION,
+            tip1028_guard::BLOCKED_PROOF_VERSION,
         };
 
         const BLOCKED_AT: u64 = 1_728_100;

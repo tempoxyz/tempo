@@ -4,7 +4,7 @@ pub mod common_errors;
 pub mod nonce;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
-pub mod tip1028_blocked_transfers;
+pub mod tip1028_guard;
 pub mod tip20;
 pub mod tip20_channel_escrow;
 pub mod tip20_factory;
@@ -25,7 +25,7 @@ pub use tip20::*;
 pub use tip20_channel_escrow::*;
 pub use tip20_factory::*;
 pub use tip403_registry::*;
-pub use tip1028_blocked_transfers::*;
+pub use tip1028_guard::*;
 pub use validator_config::*;
 pub use validator_config_v2::*;
 
