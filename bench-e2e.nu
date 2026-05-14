@@ -742,6 +742,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
         $tracy_capture_started = true
     }
 
+    let tps_k = ($ctx.tps / 1000)
+    let scenario = $"($ctx.preset)-($tps_k)k"
+
     if $phase_exit == 0 {
         let sender_exit = (try {
             let bench_result = (txgen-run-preset-pipeline
@@ -758,13 +761,17 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --max-concurrent-requests $ctx.max_concurrent_requests
                 --bench-env $ctx.bench_env
                 --git-ref $run.ref
+                --git-ref-label ($run | get -o ref_label | default $run.ref)
                 --build-profile $ctx.profile
                 --benchmark-mode "e2e"
                 --benchmark-id $ctx.benchmark_id
                 --benchmark-run $phase
-                --run-type $run_type
+                --run-type $ctx.run_type
                 --benchmark-start $ctx.reference_epoch
+                --platform "tempo"
+                --scenario $scenario
                 --victoriametrics-url $ctx.victoriametrics_url
+                --clickhouse-url $ctx.clickhouse_url
                 --skip-funding=($ctx.bloat > 0))
             if not $bench_result.ok {
                 $bench_result.exit_code
@@ -820,6 +827,8 @@ def "main e2e" [
     --tracy-offset: int = 120                           # Seconds to wait before starting tracy capture
     --tracing-otlp: string = ""                         # OTLP endpoint for tracing (auto-derived from GRAFANA_TEMPO/TEMPO_TELEMETRY_URL)
     --victoriametrics-url: string = ""                  # VictoriaMetrics base URL for txgen metric sample import
+    --clickhouse-url: string = ""                       # ClickHouse HTTP endpoint for txgen result upload
+    --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
     --bench-args: string = ""                           # Additional txgen bench args
@@ -1075,6 +1084,8 @@ def "main e2e" [
         feature_env: $feature_env
         bench_env: $bench_env
         victoriametrics_url: $victoriametrics_url
+        clickhouse_url: $clickhouse_url
+        run_type: $run_type
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
         tune: $tune
@@ -1082,11 +1093,14 @@ def "main e2e" [
         gas_limit: $gas_limit
     }
 
+    let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
+    let feature_base_label = if $feature_name != "" { $feature_name } else { $feature }
+
     let runs = [
-        { phase: "baseline-1", ref: $baseline, tempo: $baseline_tempo, genesis: $baseline_genesis_path, hardfork: $baseline_hardfork_name }
-        { phase: "feature-1", ref: $feature, tempo: $feature_tempo, genesis: $feature_genesis_path, hardfork: $feature_hardfork_name }
-        { phase: "feature-2", ref: $feature, tempo: $feature_tempo, genesis: $feature_genesis_path, hardfork: $feature_hardfork_name }
-        { phase: "baseline-2", ref: $baseline, tempo: $baseline_tempo, genesis: $baseline_genesis_path, hardfork: $baseline_hardfork_name }
+        { phase: "baseline-1", ref: $baseline, ref_label: $baseline_base_label, tempo: $baseline_tempo, genesis: $baseline_genesis_path, hardfork: $baseline_hardfork_name }
+        { phase: "feature-1", ref: $feature, ref_label: $feature_base_label, tempo: $feature_tempo, genesis: $feature_genesis_path, hardfork: $feature_hardfork_name }
+        { phase: "feature-2", ref: $feature, ref_label: $feature_base_label, tempo: $feature_tempo, genesis: $feature_genesis_path, hardfork: $feature_hardfork_name }
+        { phase: "baseline-2", ref: $baseline, ref_label: $baseline_base_label, tempo: $baseline_tempo, genesis: $baseline_genesis_path, hardfork: $baseline_hardfork_name }
     ]
     let num_phases = ($runs | length)
     mut e2e_exit = 0
@@ -1124,8 +1138,6 @@ def "main e2e" [
         }
     }
 
-    let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
-    let feature_base_label = if $feature_name != "" { $feature_name } else { $feature }
     let baseline_label = if $hardfork_mode { $"($baseline_base_label) \(($baseline_hardfork_name)\)" } else { $baseline_base_label }
     let feature_label = if $hardfork_mode { $"($feature_base_label) \(($feature_hardfork_name)\)" } else { $feature_base_label }
     if $e2e_exit == 0 {

@@ -653,6 +653,8 @@ jobs:
           [ -n "$BENCH_BASELINE_ENV" ] && cmd+=(--baseline-env="$BENCH_BASELINE_ENV")
           [ -n "$BENCH_FEATURE_ENV" ] && cmd+=(--feature-env="$BENCH_FEATURE_ENV")
           [ -n "$BENCH_VICTORIAMETRICS_URL" ] && cmd+=(--victoriametrics-url "$BENCH_VICTORIAMETRICS_URL")
+          [ -n "$CLICKHOUSE_URL" ] && cmd+=(--clickhouse-url "$CLICKHOUSE_URL")
+          [ -n "$BENCH_RUN_TYPE" ] && cmd+=(--run-type "$BENCH_RUN_TYPE")
           "${cmd[@]}"
 
       - name: Find results directory
