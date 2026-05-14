@@ -1,19 +1,22 @@
-//! Adopts an existing [`Legacy`] archive into the [`Hybrid`] store on
-//! startup, preserving the rollback-safety contract.
+//! Opens (or creates) the [`Legacy`] archive for dual-write into the
+//! [`Hybrid`] store on startup, preserving the rollback-safety contract.
 //!
 //! On every restart this module:
 //!
-//! 1. Detects whether the legacy archive is present on disk.
-//! 2. If so, opens it and copies any of the most-recent `retention_blocks`
-//!    heights that are not yet present in the prunable archive (idempotent).
+//! 1. Opens the legacy immutable finalized blocks archive — creating its
+//!    partitions on disk if they don't yet exist.
+//! 2. Copies any of the most-recent `retention_blocks` heights from
+//!    legacy into the prunable archive that aren't already there
+//!    (idempotent; a no-op against an empty legacy archive).
 //! 3. Returns the open legacy archive so the [`Hybrid`] store can keep
 //!    writing every newly finalized block to it as well (dual-write).
 //!
-//! The legacy archive is **never** destroyed automatically — it is up to the
-//! operator to remove the legacy partitions once they are confident they
-//! will not need to roll back. On the next restart the absence of the
-//! legacy partitions causes this module to short-circuit and the node will
-//! run in single-write mode against the prunable archive only.
+//! Whether the legacy archive is opened at all is the operator's choice
+//! via the `--no-legacy-archive` flag (see [`crate::args`]); this module
+//! is only invoked when dual-write is enabled. The legacy archive is
+//! **never** destroyed automatically — an operator removes the legacy
+//! partitions manually once they are confident they will not need to
+//! roll back.
 //!
 //! Living in [`super`] (the `hybrid` module) keeps the dependency direction
 //! clean: `legacy` knows nothing about hybrid, but hybrid knows about both
@@ -26,24 +29,26 @@ use std::time::Instant;
 
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
 use commonware_storage::archive::Identifier;
-use eyre::{WrapErr as _, eyre};
+use eyre::WrapErr as _;
 use tracing::{debug, info, instrument, warn};
 
 use super::Prunable;
-use crate::storage::legacy::{
-    Legacy, init_legacy_finalized_blocks_archive, legacy_finalized_blocks_partitions,
-};
+use crate::storage::legacy::{Legacy, init_legacy_finalized_blocks_archive};
 
-/// Open the legacy immutable finalized blocks archive (if it exists on disk),
-/// backfill any missing recent heights into the prunable archive, and return
-/// the legacy archive so the caller can keep dual-writing into it.
+/// Open (or create) the legacy immutable finalized blocks archive,
+/// backfill any missing recent heights into the prunable archive, and
+/// return the legacy archive so the caller can keep dual-writing into
+/// it.
 ///
-/// Returns `None` when no legacy partitions are present (fresh database, or
-/// an operator-driven cleanup has happened).
+/// Always opens the archive when called — the decision of whether to
+/// keep a legacy archive at all is made by the operator via the
+/// `--no-legacy-archive` flag in [`crate::args`], not by probing the
+/// disk for prior state. On a fresh node this creates empty legacy
+/// partitions; the backfill step is then a no-op.
 ///
 /// This step is idempotent: rerunning it after a successful boot only
-/// re-checks the most recent `retention_blocks` heights and skips entries
-/// that are already in the prunable archive.
+/// re-checks the most recent `retention_blocks` heights and skips
+/// entries that are already in the prunable archive.
 #[instrument(skip_all, err)]
 pub(in crate::storage) async fn open_legacy_for_dual_write<TContext>(
     context: &TContext,
@@ -51,17 +56,13 @@ pub(in crate::storage) async fn open_legacy_for_dual_write<TContext>(
     page_cache: CacheRef,
     prunable: &mut Prunable<TContext>,
     retention_blocks: u64,
-) -> eyre::Result<Option<Legacy<TContext>>>
+) -> eyre::Result<Legacy<TContext>>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
 {
-    if !legacy_partitions_exist(context, partition_prefix).await? {
-        return Ok(None);
-    }
-
     info!(
-        "legacy immutable finalized blocks archive detected; opening for \
-         dual-write and backfilling prunable archive with recent heights"
+        "opening legacy immutable finalized blocks archive for dual-write \
+         and backfilling prunable archive with any missing recent heights"
     );
     let started = Instant::now();
 
@@ -79,7 +80,7 @@ where
         "legacy archive ready for dual-write",
     );
 
-    Ok(Some(legacy))
+    Ok(legacy)
 }
 
 /// Copy any of the most recent `retention_blocks` heights from `legacy`
@@ -173,42 +174,14 @@ where
     Ok(copied)
 }
 
-/// Returns `true` if any of the legacy partitions appear on disk.
-async fn legacy_partitions_exist<TContext>(
-    context: &TContext,
-    partition_prefix: &str,
-) -> eyre::Result<bool>
-where
-    TContext: Storage + Clone + Send + 'static,
-{
-    for partition in legacy_finalized_blocks_partitions(partition_prefix) {
-        match context.scan(&partition).await {
-            Ok(blobs) => {
-                if !blobs.is_empty() {
-                    return Ok(true);
-                }
-            }
-            Err(commonware_runtime::Error::PartitionMissing(_)) => {
-                // Expected on a fresh database or after an operator-driven
-                // cleanup of the legacy partitions.
-            }
-            Err(err) => {
-                return Err(eyre!(err))
-                    .wrap_err_with(|| format!("failed scanning legacy partition `{partition}`"));
-            }
-        }
-    }
-    Ok(false)
-}
-
 #[cfg(test)]
 mod tests {
     //! Tests for the legacy-archive adoption logic.
     //!
     //! Cover the guarantees described in the module header:
     //!
-    //! - [`open_legacy_for_dual_write`] short-circuits when no legacy
-    //!   partitions exist on disk (fresh node / post-cleanup operator).
+    //! - [`open_legacy_for_dual_write`] always returns an open archive,
+    //!   creating empty partitions on a fresh node.
     //! - [`backfill_recent_into_prunable`]:
     //!     - copies only the newest `retention_blocks` heights from legacy,
     //!     - skips heights already present in prunable (idempotent),
@@ -244,7 +217,7 @@ mod tests {
     }
 
     #[test_traced]
-    fn open_legacy_for_dual_write_returns_none_when_partitions_missing() {
+    fn open_legacy_for_dual_write_creates_empty_archive_on_fresh_node() {
         let executor = deterministic::Runner::default();
         executor.start(|context| async move {
             let mut prunable = fresh_prunable(&context).await;
@@ -254,19 +227,19 @@ mod tests {
                 commonware_utils::NZUsize!(64),
             );
 
-            let opened = open_legacy_for_dual_write(
+            let legacy = open_legacy_for_dual_write(
                 &context,
-                "no_legacy",
+                "fresh_node",
                 cache,
                 &mut prunable,
                 /* retention */ 4,
             )
             .await
-            .expect("legacy open should succeed when partitions are absent");
+            .expect("legacy open should succeed on a fresh node");
 
             assert!(
-                opened.is_none(),
-                "no legacy partitions on disk → no archive returned"
+                commonware_storage::archive::Archive::last_index(&legacy).is_none(),
+                "freshly-created legacy archive must be empty"
             );
         });
     }

@@ -25,23 +25,6 @@ pub(crate) type Legacy<TContext> = immutable::Archive<TContext, Digest, Block>;
 /// the legacy archive.
 const LEGACY_FINALIZED_BLOCKS: &str = "finalized_blocks";
 
-/// Build the partition names of the legacy immutable finalized blocks
-/// archive for the provided prefix.
-///
-/// Used by [`super::hybrid`]'s legacy-archive adoption to detect whether
-/// the legacy archive is present on disk.
-pub(in crate::storage) fn legacy_finalized_blocks_partitions(
-    partition_prefix: &str,
-) -> [String; 5] {
-    [
-        format!("{partition_prefix}-{LEGACY_FINALIZED_BLOCKS}-metadata"),
-        format!("{partition_prefix}-{LEGACY_FINALIZED_BLOCKS}-freezer-table"),
-        format!("{partition_prefix}-{LEGACY_FINALIZED_BLOCKS}-freezer-key"),
-        format!("{partition_prefix}-{LEGACY_FINALIZED_BLOCKS}-freezer-value"),
-        format!("{partition_prefix}-{LEGACY_FINALIZED_BLOCKS}-ordinal"),
-    ]
-}
-
 /// Initialize the legacy immutable finalized blocks archive.
 pub(in crate::storage) async fn init_legacy_finalized_blocks_archive<TContext>(
     context: &TContext,

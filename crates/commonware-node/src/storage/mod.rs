@@ -5,13 +5,15 @@
 //! a lookup into reth (used for blocks below the prunable retention window).
 //!
 //! Older deployments stored finalized blocks in an immutable archive. To
-//! preserve the ability to roll back to one of those releases, the [`legacy`]
-//! module detects the legacy archive on existing nodes, backfills any of the
-//! most recent `retention_blocks` heights into the prunable archive, and
-//! returns the legacy archive so [`hybrid::Hybrid`] can keep dual-writing
-//! every newly finalized block to it. The legacy partitions are never
-//! removed automatically; an operator deletes them manually once they are
-//! confident a rollback is no longer needed.
+//! preserve the ability to roll back to one of those releases, the
+//! [`legacy`] module is opened on every restart (unless the operator
+//! passes `--no-legacy-archive`), backfills any of the most recent
+//! `retention_blocks` heights into the prunable archive, and returns
+//! the legacy archive so [`hybrid::Hybrid`] can keep dual-writing every
+//! newly finalized block to it. On a fresh node this just creates an
+//! empty legacy archive; the backfill is a no-op. The legacy partitions
+//! are never removed automatically; an operator deletes them manually
+//! once they are confident a rollback is no longer needed.
 
 use std::time::Instant;
 
@@ -129,14 +131,15 @@ where
 /// archive (for `retention_blocks` recent items) and a reth provider lookup
 /// (for everything older).
 ///
-/// When `dual_write_to_legacy` is `true` (the default for the consensus
-/// layer) and the legacy immutable finalized-blocks partitions are present
-/// on disk, this also opens the legacy archive for write-through and
+/// When `dual_write_to_legacy` is `true` (the default), this also opens
+/// the legacy immutable finalized-blocks archive for write-through —
+/// creating its partitions on disk if they don't yet exist — and
 /// backfills any of the most recent `retention_blocks` heights that the
-/// prunable archive is missing. The legacy archive is **not** destroyed —
-/// see [`legacy`] for the rollback-safety rationale. When
-/// `dual_write_to_legacy` is `false` the legacy archive is left untouched
-/// on disk and the [`Hybrid`] only writes to the prunable archive.
+/// prunable archive is missing. The legacy archive is **not** destroyed
+/// — see [`legacy`] for the rollback-safety rationale. When
+/// `dual_write_to_legacy` is `false` (operator passes
+/// `--no-legacy-archive`) the legacy archive is left untouched on disk
+/// and the [`Hybrid`] only writes to the prunable archive.
 #[instrument(skip_all, fields(partition_prefix, retention_blocks), err(Display))]
 pub(crate) async fn init_hybrid_finalized_blocks<TContext, P>(
     context: &TContext,
@@ -161,7 +164,7 @@ where
             .wrap_err("failed to initialize prunable finalized blocks archive")?;
 
     let legacy = if dual_write_to_legacy {
-        hybrid::open_legacy_for_dual_write(
+        let legacy = hybrid::open_legacy_for_dual_write(
             context,
             partition_prefix,
             page_cache,
@@ -169,7 +172,8 @@ where
             retention_blocks,
         )
         .await
-        .wrap_err("failed to open legacy immutable finalized blocks archive for dual-write")?
+        .wrap_err("failed to open legacy immutable finalized blocks archive for dual-write")?;
+        Some(legacy)
     } else {
         info!("legacy archive dual-write disabled by configuration; skipping legacy archive open");
         None
