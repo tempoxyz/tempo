@@ -49,17 +49,16 @@ setup:
         from:
           pool: users
           select: { index: 0 }
-        gas_limit: 2000000
+        gas_limit: 8000000
         call:
           to: "0xdec0000000000000000000000000000000000000"
           abi: StablecoinDEX
-          function: placeFlip
+          function: place
           args:
             - "0x20c0000000000000000000000000000000000001"
             - 100000000000
             - true
             - 0
-            - 10
 
 templates:
   tip20_transfer:
@@ -115,7 +114,7 @@ templates:
     from:
       pool: users
       select: random
-    gas_limit: 3000000
+    gas_limit: 5000000
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
     fee_token: "0x20c0000000000000000000000000000000000000"
