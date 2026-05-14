@@ -1,5 +1,4 @@
-//! [`Hybrid`] — a finalized-block store that treats a prunable archive as
-//! a cache on top of reth's block storage.
+//! [`Hybrid`] is a prunable archive of finalizeld blocks in front of reth.
 //!
 //! Reth is the source of truth for finalized blocks. The prunable archive
 //! is a hot cache for the most recently finalized blocks, sized so that
@@ -10,7 +9,7 @@
 //!
 //! # Eviction
 //!
-//! The cache is evicted as **reth's finalized watermark rises**, not on
+//! The cache is evicted as reth's finalized watermark rises, not on
 //! the height the marshal happens to put. Each [`Blocks::put`] queries
 //! [`BlockIdReader::finalized_block_number`] and asks the prunable
 //! archive to drop everything below
