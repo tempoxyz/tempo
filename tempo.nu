@@ -622,6 +622,7 @@ def run-bench-single [
             --duration $duration
             --accounts $accounts
             --max-concurrent-requests $max_concurrent_requests
+            --bench-args $bench_args
             --bench-env $bench_env
             --git-ref $git_ref
             --build-profile $build_profile
@@ -1799,7 +1800,7 @@ def "main bench" [
     --node-args: string = ""                        # Additional node arguments (space-separated, applied to all runs)
     --baseline-args: string = ""                    # Additional node arguments for baseline runs only (space-separated)
     --feature-args: string = ""                     # Additional node arguments for feature runs only (space-separated)
-    --bench-args: string = ""                       # Legacy benchmark arguments; only --existing-recipients is ignored for txgen
+    --bench-args: string = ""                       # Additional txgen generate arguments
     --baseline-env: string = ""                     # Environment variables for baseline node runs (KEY=VAL KEY2=VAL2)
     --feature-env: string = ""                      # Environment variables for feature node runs (KEY=VAL KEY2=VAL2)
     --bench-env: string = ""                        # Environment variables for txgen/bench (KEY=VAL KEY2=VAL2)
@@ -1829,7 +1830,6 @@ def "main bench" [
     }
 
     let preset_path = (txgen-preset-path $preset)
-    txgen-validate-bench-args $bench_args
     let txgen = (txgen-resolve-binaries)
 
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
@@ -2376,6 +2376,7 @@ def "main bench" [
             --duration $duration
             --accounts $accounts
             --max-concurrent-requests $max_concurrent_requests
+            --bench-args $bench_args
             --bench-env $bench_env
             --git-ref $current_sha
             --build-profile $profile
@@ -2882,7 +2883,7 @@ def main [] {
     print "  --node-args <ARGS>       Additional node arguments (space-separated, all runs)"
     print "  --baseline-args <ARGS>       Additional node arguments for baseline runs only"
     print "  --feature-args <ARGS>        Additional node arguments for feature runs only"
-    print "  --bench-args <ARGS>      Legacy benchmark arguments (only --existing-recipients is ignored)"
+    print "  --bench-args <ARGS>      Additional txgen generate arguments"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
     print "  --gas-limit <N>          Block gas limit for genesis (raw number, default: 1000000000000)"
     print ""
