@@ -153,7 +153,8 @@ def run-txgen-bench-single [
         --benchmark-mode $benchmark_mode
         --git-ref-label $git_ref_label
         --platform $platform
-        --scenario $scenario)
+        --scenario $scenario
+        --skip-funding=($bloat > 0))
     if not $bench_result.ok {
         error make { msg: $"txgen benchmark run ($run_label) failed with exit code ($bench_result.exit_code)" }
     }

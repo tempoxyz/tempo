@@ -648,7 +648,8 @@ def run-bench-single [
             --bench-env $bench_env
             --git-ref $git_ref
             --build-profile $build_profile
-            --benchmark-mode $benchmark_mode)
+            --benchmark-mode $benchmark_mode
+            --skip-funding=($bloat > 0))
         if not $result.ok {
             print $"  Benchmark run ($run_label) failed with exit code ($result.exit_code)"
         }
@@ -2317,7 +2318,8 @@ def "main bench" [
             --bench-env $bench_env
             --git-ref $current_sha
             --build-profile $profile
-            --benchmark-mode $mode)
+            --benchmark-mode $mode
+            --skip-funding=($bloat > 0))
         $result
     } catch { |e|
         print $"Benchmark interrupted or failed: ($e.msg)"

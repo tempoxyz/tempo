@@ -199,6 +199,7 @@ def txgen-run-preset-pipeline [
     --platform: string = ""
     --scenario: string = ""
     --victoriametrics-url: string = ""
+    --skip-funding                                   # Skip faucet funding (accounts already funded at genesis via state bloat)
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
     $env.TXGEN_ACCOUNTS = ($accounts | into string)
@@ -206,7 +207,9 @@ def txgen-run-preset-pipeline [
     if not ($spec_path | path exists) {
         error make { msg: $"txgen preset file not found: ($spec_path)" }
     }
-    txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
+    if not $skip_funding {
+        txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
+    }
 
     let tx_count = [($tps * $duration) 1] | math max
     let txgen_duration = $"($duration)s"
