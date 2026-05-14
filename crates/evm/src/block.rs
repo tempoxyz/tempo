@@ -28,7 +28,7 @@ use reth_revm::{
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, ESCROW_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, BLOCKED_TRANSFERS_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     TIP20_CHANNEL_ESCROW_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
@@ -488,7 +488,7 @@ where
             self.deploy_precompile_at_boundary(TIP20_CHANNEL_ESCROW_ADDRESS)?;
         }
         if self.inner.spec.is_t6_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(ESCROW_ADDRESS)?;
+            self.deploy_precompile_at_boundary(BLOCKED_TRANSFERS_ADDRESS)?;
         }
 
         Ok(())
@@ -1664,7 +1664,7 @@ mod tests {
 
         executor.apply_pre_execution_changes().unwrap();
 
-        let acc = db.load_cache_account(ESCROW_ADDRESS).unwrap();
+        let acc = db.load_cache_account(BLOCKED_TRANSFERS_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
     }

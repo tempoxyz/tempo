@@ -12,16 +12,16 @@ pub mod dispatch;
 pub mod rewards;
 pub mod roles;
 
+use tempo_contracts::precompiles::{BlockTransferError, STABLECOIN_DEX_ADDRESS};
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event, USD_CURRENCY,
 };
-use tempo_contracts::precompiles::{STABLECOIN_DEX_ADDRESS, TIP1028EscrowError};
 
 // Re-export the generated slots module for external access to storage slot constants
 pub use slots as tip20_slots;
 
 use crate::{
-    ESCROW_ADDRESS, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    BLOCKED_TRANSFERS_ADDRESS, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
@@ -29,7 +29,7 @@ use crate::{
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
-    tip1028_escrow::{InboundKind, TIP1028Escrow},
+    tip1028_blocked_transfers::{InboundKind, TIP1028BlockedTransfers},
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
@@ -134,7 +134,7 @@ pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN
 /// System custody addresses added to burn-blocked protection at each hardfork.
 pub const PROTECTED: &[(TempoHardfork, &[Address])] = &[
     (TempoHardfork::Genesis, &[TIP_FEE_MANAGER_ADDRESS, STABLECOIN_DEX_ADDRESS]),
-    (TempoHardfork::T6, &[ESCROW_ADDRESS]),
+    (TempoHardfork::T6, &[BLOCKED_TRANSFERS_ADDRESS]),
 ];
 
 impl TIP20Token {
@@ -499,7 +499,7 @@ impl TIP20Token {
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
         let (to, total_supply) = self.validate_mint(msg_sender, call.to)?;
 
-        if self.validate_inbound_or_escrow(
+        if self.validate_inbound_or_block(
             msg_sender,
             &to,
             call.amount,
@@ -529,7 +529,7 @@ impl TIP20Token {
     ) -> Result<()> {
         let (to, total_supply) = self.validate_mint(msg_sender, call.to)?;
 
-        if self.validate_inbound_or_escrow(
+        if self.validate_inbound_or_block(
             msg_sender,
             &to,
             call.amount,
@@ -832,7 +832,7 @@ impl TIP20Token {
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        if self.validate_inbound_or_escrow(
+        if self.validate_inbound_or_block(
             msg_sender,
             &to,
             call.amount,
@@ -868,7 +868,7 @@ impl TIP20Token {
         self.validate_transfer(call.from, &to)?;
         self.consume_allowance(call.from, msg_sender, call.amount)?;
 
-        if self.validate_inbound_or_escrow(
+        if self.validate_inbound_or_block(
             call.from,
             &to,
             call.amount,
@@ -895,7 +895,7 @@ impl TIP20Token {
         self.validate_transfer(call.from, &to)?;
         self.consume_allowance(call.from, msg_sender, call.amount)?;
 
-        if self.validate_inbound_or_escrow(
+        if self.validate_inbound_or_block(
             call.from,
             &to,
             call.amount,
@@ -953,7 +953,7 @@ impl TIP20Token {
         self.validate_transfer(from, &to)?;
         self.check_and_update_spending_limit(from, amount)?;
 
-        if self.validate_inbound_or_escrow(from, &to, amount, InboundKind::TRANSFER, B256::ZERO)? {
+        if self.validate_inbound_or_block(from, &to, amount, InboundKind::TRANSFER, B256::ZERO)? {
             return Ok(true);
         }
 
@@ -991,7 +991,7 @@ impl TIP20Token {
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        if self.validate_inbound_or_escrow(
+        if self.validate_inbound_or_block(
             msg_sender,
             &to,
             call.amount,
@@ -1208,10 +1208,10 @@ impl TIP20Token {
         self.emit_event(to.build_transfer_event(from, amount))
     }
 
-    /// Validates the receive policy of `to.target`. If blocked, moves the funds into the escrow
-    /// account and stores a claim receipt; returns `true`. Returns `false` when the inbound is
-    /// authorized and the caller should proceed with the normal transfer or mint.
-    pub(crate) fn validate_inbound_or_escrow(
+    /// Validates the receive policy of `to.target`. If blocked, moves the funds into the blocked
+    /// transfer account and stores a claim proof; returns `true`. Returns `false` when the inbound
+    /// is authorized and the caller should proceed with the normal transfer or mint.
+    pub(crate) fn validate_inbound_or_block(
         &mut self,
         originator: Address,
         to: &Recipient,
@@ -1222,8 +1222,8 @@ impl TIP20Token {
         if !self.storage.spec().is_t6() {
             return Ok(false);
         }
-        if to.target == ESCROW_ADDRESS {
-            return Err(TIP1028EscrowError::escrow_address_reserved().into());
+        if to.target == BLOCKED_TRANSFERS_ADDRESS {
+            return Err(BlockTransferError::block_address_reserved().into());
         }
 
         let token = self.address;
@@ -1233,23 +1233,23 @@ impl TIP20Token {
             return Ok(false);
         };
 
-        let escrow = Recipient::direct(ESCROW_ADDRESS);
+        let blocked = Recipient::direct(BLOCKED_TRANSFERS_ADDRESS);
         match kind {
-            InboundKind::TRANSFER => self._transfer(originator, &escrow, amount)?,
-            InboundKind::MINT => self._mint(&escrow, amount, None)?,
+            InboundKind::TRANSFER => self._transfer(originator, &blocked, amount)?,
+            InboundKind::MINT => self._mint(&blocked, amount, None)?,
             InboundKind::__Invalid => {
-                return Err(TIP1028EscrowError::invalid_receipt_claim().into());
+                return Err(BlockTransferError::invalid_proof().into());
             }
         }
-        TIP1028Escrow::new()
+        TIP1028BlockedTransfers::new()
             .store_blocked(token, originator, to, recovery, amount, reason, kind, memo)?;
 
         Ok(true)
     }
 
-    /// Releases escrowed funds to `to`. Resumes skip policy checks. Reroutes
-    /// revalidate the transfer and receive policies and meter the spending limit.
-    pub(crate) fn release_from_escrow(
+    /// Releases TIP-1028 blocked funds to `to`. Resumes skip policy checks. Reroutes revalidate
+    /// the transfer and receive policies and meter the spending limit.
+    pub(crate) fn release_blocked_funds(
         &mut self,
         originator: Address,
         to: Address,
@@ -1259,8 +1259,8 @@ impl TIP20Token {
     ) -> Result<()> {
         self.check_not_paused()?;
 
-        if to == ESCROW_ADDRESS {
-            return Err(TIP1028EscrowError::escrow_address_reserved().into());
+        if to == BLOCKED_TRANSFERS_ADDRESS {
+            return Err(BlockTransferError::block_address_reserved().into());
         }
 
         let destination = Recipient::resolve(to)?;
@@ -1283,16 +1283,16 @@ impl TIP20Token {
             }
         }
 
-        let escrow_balance = self.get_balance(ESCROW_ADDRESS)?;
-        if amount > escrow_balance {
-            return Err(TIP1028EscrowError::insufficient_escrow_balance().into());
+        let blocked_balance = self.get_balance(BLOCKED_TRANSFERS_ADDRESS)?;
+        if amount > blocked_balance {
+            return Err(BlockTransferError::insufficient_balance().into());
         }
 
-        self.handle_rewards_on_transfer(ESCROW_ADDRESS, destination.target, amount)?;
+        self.handle_rewards_on_transfer(BLOCKED_TRANSFERS_ADDRESS, destination.target, amount)?;
 
         self.set_balance(
-            ESCROW_ADDRESS,
-            escrow_balance
+            BLOCKED_TRANSFERS_ADDRESS,
+            blocked_balance
                 .checked_sub(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
@@ -1305,7 +1305,7 @@ impl TIP20Token {
                 .ok_or(TempoPrecompileError::under_overflow())?,
         )?;
 
-        self.emit_event(destination.build_transfer_event(ESCROW_ADDRESS, amount))?;
+        self.emit_event(destination.build_transfer_event(BLOCKED_TRANSFERS_ADDRESS, amount))?;
         if let Some(hop) = destination.build_virtual_transfer_event(amount) {
             self.emit_event(hop)?;
         }
@@ -1620,7 +1620,9 @@ mod recipient_tests {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
-    use tempo_contracts::precompiles::{ITIP1028Escrow, TIP1028EscrowEvent, createTokenCall};
+    use tempo_contracts::precompiles::{
+        BlockTransferEvent, ITIP1028BlockedTransfers, createTokenCall,
+    };
 
     use super::*;
     use crate::{
@@ -1632,7 +1634,7 @@ pub(crate) mod tests {
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master, setup_storage},
-        tip1028_escrow::TIP1028Escrow,
+        tip1028_blocked_transfers::TIP1028BlockedTransfers,
     };
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -1701,7 +1703,7 @@ pub(crate) mod tests {
         use super::*;
         use crate::{
             tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
-            tip1028_escrow::BLOCKED_RECEIPT_VERSION,
+            tip1028_blocked_transfers::BLOCKED_PROOF_VERSION,
         };
 
         const BLOCKED_AT: u64 = 1_728_100;
@@ -1722,15 +1724,15 @@ pub(crate) mod tests {
             )
         }
 
-        fn receipt_v1(
+        fn proof_v1(
             originator: Address,
             recipient: Address,
             blocked_nonce: u64,
             blocked_reason: ITIP403Registry::BlockedReason,
             kind: InboundKind,
             memo: B256,
-        ) -> ITIP1028Escrow::ClaimReceiptV1 {
-            ITIP1028Escrow::ClaimReceiptV1 {
+        ) -> ITIP1028BlockedTransfers::ClaimProofV1 {
+            ITIP1028BlockedTransfers::ClaimProofV1 {
                 originator,
                 recipient,
                 blockedAt: BLOCKED_AT,
@@ -1741,23 +1743,21 @@ pub(crate) mod tests {
             }
         }
 
-        fn receipt_balance(
+        fn proof_balance(
             token: Address,
             recovery_contract: Address,
-            receipt: &ITIP1028Escrow::ClaimReceiptV1,
+            proof: &ITIP1028BlockedTransfers::ClaimProofV1,
         ) -> Result<U256> {
-            TIP1028Escrow::new().blocked_receipt_balance(
-                ITIP1028Escrow::blockedReceiptBalanceCall {
-                    token,
-                    recoveryAuthority: recovery_contract,
-                    receiptVersion: BLOCKED_RECEIPT_VERSION,
-                    receipt: receipt.abi_encode().into(),
-                },
-            )
+            TIP1028BlockedTransfers::new().balance_of(ITIP1028BlockedTransfers::balanceOfCall {
+                token,
+                recoveryAuthority: recovery_contract,
+                proofVersion: BLOCKED_PROOF_VERSION,
+                proof: proof.abi_encode().into(),
+            })
         }
 
         #[test]
-        fn test_transfer_blocked_by_receive_policy_escrows_funds() -> eyre::Result<()> {
+        fn test_transfer_blocked_by_receive_policy_freezes_funds() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             storage.set_timestamp(U256::from(BLOCKED_AT));
             let admin = Address::random();
@@ -1788,14 +1788,14 @@ pub(crate) mod tests {
 
                 assert_eq!(token.get_balance(sender)?, U256::ZERO);
                 assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                assert_eq!(token.get_balance(ESCROW_ADDRESS)?, amount);
+                assert_eq!(token.get_balance(BLOCKED_TRANSFERS_ADDRESS)?, amount);
                 token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
                     from: sender,
-                    to: ESCROW_ADDRESS,
+                    to: BLOCKED_TRANSFERS_ADDRESS,
                     amount,
                 })]);
 
-                let receipt = receipt_v1(
+                let proof = proof_v1(
                     sender,
                     receiver,
                     1,
@@ -1803,24 +1803,23 @@ pub(crate) mod tests {
                     InboundKind::TRANSFER,
                     B256::ZERO,
                 );
-                assert_eq!(
-                    receipt_balance(token.address, Address::ZERO, &receipt)?,
-                    amount
-                );
-                TIP1028Escrow::new().assert_emitted_events(vec![
-                    TIP1028EscrowEvent::TransferBlocked(ITIP1028Escrow::TransferBlocked {
-                        token: token.address,
-                        from: sender,
-                        receiver,
-                        receiptVersion: BLOCKED_RECEIPT_VERSION,
-                        blockedNonce: 1,
-                        blockedAt: BLOCKED_AT,
-                        recipient: receiver,
-                        amount,
-                        blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
-                        recoveryAuthority: Address::ZERO,
-                        memo: B256::ZERO,
-                    }),
+                assert_eq!(proof_balance(token.address, Address::ZERO, &proof)?, amount);
+                TIP1028BlockedTransfers::new().assert_emitted_events(vec![
+                    BlockTransferEvent::TransferBlocked(
+                        ITIP1028BlockedTransfers::TransferBlocked {
+                            token: token.address,
+                            from: sender,
+                            receiver,
+                            proofVersion: BLOCKED_PROOF_VERSION,
+                            blockedNonce: 1,
+                            blockedAt: BLOCKED_AT,
+                            recipient: receiver,
+                            amount,
+                            blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
+                            recoveryAuthority: Address::ZERO,
+                            memo: B256::ZERO,
+                        },
+                    ),
                 ]);
 
                 Ok(())
@@ -1856,7 +1855,7 @@ pub(crate) mod tests {
                     },
                 )?;
 
-                let receipt = receipt_v1(
+                let proof = proof_v1(
                     sender,
                     receiver,
                     1,
@@ -1864,24 +1863,23 @@ pub(crate) mod tests {
                     InboundKind::TRANSFER,
                     B256::ZERO,
                 );
-                assert_eq!(
-                    receipt_balance(token.address, Address::ZERO, &receipt)?,
-                    amount
-                );
-                TIP1028Escrow::new().assert_emitted_events(vec![
-                    TIP1028EscrowEvent::TransferBlocked(ITIP1028Escrow::TransferBlocked {
-                        token: token.address,
-                        from: sender,
-                        receiver,
-                        receiptVersion: BLOCKED_RECEIPT_VERSION,
-                        blockedNonce: 1,
-                        blockedAt: BLOCKED_AT,
-                        recipient: receiver,
-                        amount,
-                        blockedReason: ITIP403Registry::BlockedReason::TOKEN_FILTER as u8,
-                        recoveryAuthority: Address::ZERO,
-                        memo: B256::ZERO,
-                    }),
+                assert_eq!(proof_balance(token.address, Address::ZERO, &proof)?, amount);
+                TIP1028BlockedTransfers::new().assert_emitted_events(vec![
+                    BlockTransferEvent::TransferBlocked(
+                        ITIP1028BlockedTransfers::TransferBlocked {
+                            token: token.address,
+                            from: sender,
+                            receiver,
+                            proofVersion: BLOCKED_PROOF_VERSION,
+                            blockedNonce: 1,
+                            blockedAt: BLOCKED_AT,
+                            recipient: receiver,
+                            amount,
+                            blockedReason: ITIP403Registry::BlockedReason::TOKEN_FILTER as u8,
+                            recoveryAuthority: Address::ZERO,
+                            memo: B256::ZERO,
+                        },
+                    ),
                 ]);
 
                 Ok(())
@@ -1889,7 +1887,7 @@ pub(crate) mod tests {
         }
 
         #[test]
-        fn test_transfer_to_escrow_address_rejects() -> eyre::Result<()> {
+        fn test_transfer_to_tip1028_precompile_address_rejects() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             let admin = Address::random();
             let sender = Address::random();
@@ -1904,23 +1902,23 @@ pub(crate) mod tests {
                 let result = token.transfer(
                     sender,
                     ITIP20::transferCall {
-                        to: ESCROW_ADDRESS,
+                        to: BLOCKED_TRANSFERS_ADDRESS,
                         amount,
                     },
                 );
                 assert!(matches!(
                     result,
-                    Err(e) if e == TIP1028EscrowError::escrow_address_reserved().into()
+                    Err(e) if e == BlockTransferError::block_address_reserved().into()
                 ));
                 assert_eq!(token.get_balance(sender)?, amount);
-                assert_eq!(token.get_balance(ESCROW_ADDRESS)?, U256::ZERO);
+                assert_eq!(token.get_balance(BLOCKED_TRANSFERS_ADDRESS)?, U256::ZERO);
 
                 Ok(())
             })
         }
 
         #[test]
-        fn test_pre_t6_receive_policy_does_not_escrow() -> eyre::Result<()> {
+        fn test_pre_t6_receive_policy_does_not_block() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
             storage.set_timestamp(U256::from(BLOCKED_AT));
             let admin = Address::random();
@@ -1951,17 +1949,17 @@ pub(crate) mod tests {
 
                 assert_eq!(token.get_balance(sender)?, U256::ZERO);
                 assert_eq!(token.get_balance(receiver)?, amount);
-                assert_eq!(token.get_balance(ESCROW_ADDRESS)?, U256::ZERO);
+                assert_eq!(token.get_balance(BLOCKED_TRANSFERS_ADDRESS)?, U256::ZERO);
                 token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
                     from: sender,
                     to: receiver,
                     amount,
                 })]);
                 assert_eq!(
-                    receipt_balance(
+                    proof_balance(
                         token.address,
                         Address::ZERO,
-                        &receipt_v1(
+                        &proof_v1(
                             sender,
                             receiver,
                             1,
@@ -2016,7 +2014,7 @@ pub(crate) mod tests {
                 );
                 assert_eq!(token.get_balance(owner)?, U256::ZERO);
                 assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                assert_eq!(token.get_balance(ESCROW_ADDRESS)?, amount);
+                assert_eq!(token.get_balance(BLOCKED_TRANSFERS_ADDRESS)?, amount);
 
                 Ok(())
             })
@@ -2056,10 +2054,10 @@ pub(crate) mod tests {
 
                 token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
                     from: sender,
-                    to: ESCROW_ADDRESS,
+                    to: BLOCKED_TRANSFERS_ADDRESS,
                     amount,
                 })]);
-                let receipt = receipt_v1(
+                let proof = proof_v1(
                     sender,
                     receiver,
                     1,
@@ -2067,17 +2065,14 @@ pub(crate) mod tests {
                     InboundKind::TRANSFER,
                     memo,
                 );
-                assert_eq!(
-                    receipt_balance(token.address, Address::ZERO, &receipt)?,
-                    amount
-                );
+                assert_eq!(proof_balance(token.address, Address::ZERO, &proof)?, amount);
 
                 Ok(())
             })
         }
 
         #[test]
-        fn test_mint_blocked_credits_escrow() -> eyre::Result<()> {
+        fn test_mint_blocked_credits_tip1028_precompile() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             storage.set_timestamp(U256::from(BLOCKED_AT));
             let admin = Address::random();
@@ -2096,7 +2091,7 @@ pub(crate) mod tests {
                     Address::ZERO,
                 )?;
 
-                TIP1028Escrow::new().clear_emitted_events();
+                TIP1028BlockedTransfers::new().clear_emitted_events();
                 token.mint(
                     admin,
                     ITIP20::mintCall {
@@ -2107,29 +2102,31 @@ pub(crate) mod tests {
 
                 assert_eq!(token.total_supply()?, amount);
                 assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                assert_eq!(token.get_balance(ESCROW_ADDRESS)?, amount);
+                assert_eq!(token.get_balance(BLOCKED_TRANSFERS_ADDRESS)?, amount);
                 token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
                     from: Address::ZERO,
-                    to: ESCROW_ADDRESS,
+                    to: BLOCKED_TRANSFERS_ADDRESS,
                     amount,
                 })]);
-                TIP1028Escrow::new().assert_emitted_events(vec![
-                    TIP1028EscrowEvent::TransferBlocked(ITIP1028Escrow::TransferBlocked {
-                        token: token.address,
-                        from: admin,
-                        receiver,
-                        receiptVersion: BLOCKED_RECEIPT_VERSION,
-                        blockedNonce: 1,
-                        blockedAt: BLOCKED_AT,
-                        recipient: receiver,
-                        amount,
-                        blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
-                        recoveryAuthority: Address::ZERO,
-                        memo: B256::ZERO,
-                    }),
+                TIP1028BlockedTransfers::new().assert_emitted_events(vec![
+                    BlockTransferEvent::TransferBlocked(
+                        ITIP1028BlockedTransfers::TransferBlocked {
+                            token: token.address,
+                            from: admin,
+                            receiver,
+                            proofVersion: BLOCKED_PROOF_VERSION,
+                            blockedNonce: 1,
+                            blockedAt: BLOCKED_AT,
+                            recipient: receiver,
+                            amount,
+                            blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
+                            recoveryAuthority: Address::ZERO,
+                            memo: B256::ZERO,
+                        },
+                    ),
                 ]);
 
-                let receipt = receipt_v1(
+                let proof = proof_v1(
                     admin,
                     receiver,
                     1,
@@ -2137,10 +2134,7 @@ pub(crate) mod tests {
                     InboundKind::MINT,
                     B256::ZERO,
                 );
-                assert_eq!(
-                    receipt_balance(token.address, Address::ZERO, &receipt)?,
-                    amount
-                );
+                assert_eq!(proof_balance(token.address, Address::ZERO, &proof)?, amount);
 
                 Ok(())
             })
@@ -3295,7 +3289,7 @@ pub(crate) mod tests {
             for protected in [
                 TIP_FEE_MANAGER_ADDRESS,
                 STABLECOIN_DEX_ADDRESS,
-                ESCROW_ADDRESS,
+                BLOCKED_TRANSFERS_ADDRESS,
             ] {
                 let result = token.burn_blocked(
                     burner,
@@ -3315,14 +3309,14 @@ pub(crate) mod tests {
             Ok::<_, TempoPrecompileError>(())
         })?;
 
-        // Pre-T6: ESCROW_ADDRESS is not yet in PROTECTED, so burn_blocked
+        // Pre-T6: TIP1028_BLOCKED_TRANSFERS_ADDRESS is not yet in PROTECTED, so burn_blocked
         // actually burns from it (REJECT_ALL satisfies the sender-policy gate).
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
                 .with_role(burner, *BURN_BLOCKED_ROLE)
-                .with_mint(ESCROW_ADDRESS, amount)
+                .with_mint(BLOCKED_TRANSFERS_ADDRESS, amount)
                 .apply()?;
 
             token.change_transfer_policy_id(
@@ -3335,13 +3329,13 @@ pub(crate) mod tests {
             token.burn_blocked(
                 burner,
                 ITIP20::burnBlockedCall {
-                    from: ESCROW_ADDRESS,
+                    from: BLOCKED_TRANSFERS_ADDRESS,
                     amount: burn_amount,
                 },
             )?;
 
             let balance = token.balance_of(ITIP20::balanceOfCall {
-                account: ESCROW_ADDRESS,
+                account: BLOCKED_TRANSFERS_ADDRESS,
             })?;
             assert_eq!(balance, amount - burn_amount);
 

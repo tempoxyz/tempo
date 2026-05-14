@@ -14,7 +14,7 @@ pub mod address_registry;
 pub mod nonce;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
-pub mod tip1028_escrow;
+pub mod tip1028_blocked_transfers;
 pub mod tip20;
 pub mod tip20_channel_escrow;
 pub mod tip20_factory;
@@ -30,8 +30,9 @@ use crate::{
     account_keychain::AccountKeychain, address_registry::AddressRegistry, nonce::NonceManager,
     signature_verifier::SignatureVerifier, stablecoin_dex::StablecoinDEX, storage::StorageCtx,
     tip_fee_manager::TipFeeManager, tip20::TIP20Token, tip20_channel_escrow::TIP20ChannelEscrow,
-    tip20_factory::TIP20Factory, tip403_registry::TIP403Registry, tip1028_escrow::TIP1028Escrow,
-    validator_config::ValidatorConfig, validator_config_v2::ValidatorConfigV2,
+    tip20_factory::TIP20Factory, tip403_registry::TIP403Registry,
+    tip1028_blocked_transfers::TIP1028BlockedTransfers, validator_config::ValidatorConfig,
+    validator_config_v2::ValidatorConfigV2,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
@@ -52,10 +53,11 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, DEFAULT_FEE_TOKEN, ESCROW_ADDRESS,
-    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS,
-    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS, TIP20_FACTORY_ADDRESS,
-    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, BLOCKED_TRANSFERS_ADDRESS,
+    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
+    STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS,
+    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -142,8 +144,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(ValidatorConfigV2::create_precompile(&cfg))
         } else if *address == SIGNATURE_VERIFIER_ADDRESS && cfg.spec.is_t3() {
             Some(SignatureVerifier::create_precompile(&cfg))
-        } else if *address == ESCROW_ADDRESS && cfg.spec.is_t6() {
-            Some(TIP1028Escrow::create_precompile(&cfg))
+        } else if *address == BLOCKED_TRANSFERS_ADDRESS && cfg.spec.is_t6() {
+            Some(TIP1028BlockedTransfers::create_precompile(&cfg))
         } else {
             None
         }
@@ -270,10 +272,10 @@ impl TIP20ChannelEscrow {
     }
 }
 
-impl TIP1028Escrow {
+impl TIP1028BlockedTransfers {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TIP1028Escrow", cfg, |input| { Self::new() })
+        tempo_precompile!("TIP1028BlockedTransfers", cfg, |input| { Self::new() })
     }
 }
 
