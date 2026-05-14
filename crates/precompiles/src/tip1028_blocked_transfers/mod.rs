@@ -22,7 +22,7 @@ use alloy::{
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
 
-/// Version tag for the v1 [`ITIP1028BlockedTransfers::ProofV1`] layout.
+/// Version tag for the v1 [`ITIP1028BlockedTransfers::ClaimProofV1`] layout.
 pub const BLOCKED_PROOF_VERSION: u8 = 1;
 
 /// Recovery-authority sentinel: originator/sender is authorized to claim (`address(0)`).
@@ -51,7 +51,7 @@ impl TIP1028BlockedTransfers {
         }
 
         let proof = Self::decode_v1(call.proofVersion, &call.proof)?;
-        self.balances[self.proof(
+        self.balances[self.proof_key(
             call.proofVersion,
             call.token,
             call.recoveryAuthority,
@@ -100,7 +100,7 @@ impl TIP1028BlockedTransfers {
             kind,
             memo,
         };
-        let key = self.proof(BLOCKED_PROOF_VERSION, token, recovery_address, &proof)?;
+        let key = self.proof_key(BLOCKED_PROOF_VERSION, token, recovery_address, &proof)?;
         self.balances[key].write(amount)?;
 
         self.emit_event(BlockTransferEvent::TransferBlocked(
@@ -146,7 +146,7 @@ impl TIP1028BlockedTransfers {
             RecoveryAuthority::from_address(recovery_address, receiver, proof.originator);
         recovery_authority.validate_auth(msg_sender)?;
 
-        let key = self.proof(call.proofVersion, call.token, recovery_address, &proof)?;
+        let key = self.proof_key(call.proofVersion, call.token, recovery_address, &proof)?;
         let amount = self.balances[key].read()?;
         if amount.is_zero() {
             return Err(BlockTransferError::invalid_proof().into());
@@ -215,7 +215,7 @@ impl TIP1028BlockedTransfers {
     }
 
     /// Content hash over every proof field. Any mutation yields a different empty slot.
-    fn proof(
+    fn proof_key(
         &self,
         proof_version: u8,
         token: Address,
