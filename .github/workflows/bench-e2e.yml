@@ -73,7 +73,7 @@ on:
         description: Target transactions per second.
         type: string
         required: true
-        default: "10000"
+        default: "20000"
       accounts:
         description: Number of benchmark accounts.
         type: string
@@ -118,7 +118,7 @@ on:
         description: Builder gas limit.
         type: string
         required: true
-        default: "1000000000000"
+        default: "500000000"
       force-bloat:
         description: Force regeneration of local benchmark state.
         type: boolean
@@ -322,7 +322,7 @@ jobs:
       BENCH_FEATURES: ${{ (inputs.otlp == true || inputs.otlp == 'true') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
-      BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '1000000000000' }}
+      BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '500000000' }}
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
