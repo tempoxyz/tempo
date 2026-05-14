@@ -101,16 +101,12 @@ def txgen-account-mnemonic [] {
 }
 
 def txgen-validate-bench-args [bench_args: string] {
-    if $bench_args == "" {
+    let unsupported = ($bench_args | str trim)
+    if $unsupported == "" {
         return
     }
 
-    let unsupported = ($bench_args
-        | str replace --all --regex '--existing-recipients(=(true|false))?' ''
-        | str trim)
-    if $unsupported != "" {
-        error make { msg: $"txgen path does not support custom --bench-args yet: ($unsupported)" }
-    }
+    error make { msg: $"txgen path does not support custom --bench-args yet: ($unsupported)" }
 }
 
 def txgen-rpc-call [rpc_url: string, payload: string] {
