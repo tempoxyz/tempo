@@ -249,7 +249,7 @@ mod tests {
     fn open_legacy_for_dual_write_returns_none_when_partitions_missing() {
         let executor = deterministic::Runner::default();
         executor.start(|context| async move {
-            let mut prunable = fresh_prunable(&context, "no_legacy_prunable").await;
+            let mut prunable = fresh_prunable(&context).await;
             let cache = commonware_runtime::buffer::paged::CacheRef::from_pooler(
                 &context,
                 commonware_utils::NZU16!(4_096),
@@ -277,8 +277,8 @@ mod tests {
     fn backfill_copies_recent_heights_into_prunable() {
         let executor = deterministic::Runner::default();
         executor.start(|context| async move {
-            let mut legacy = fresh_legacy(&context, "backfill_legacy").await;
-            let mut prunable = fresh_prunable(&context, "backfill_prunable").await;
+            let mut legacy = fresh_legacy(&context).await;
+            let mut prunable = fresh_prunable(&context).await;
 
             // Seed legacy with 6 contiguous blocks at heights 1..=6.
             let chain = make_chain(1, 6);
@@ -326,8 +326,8 @@ mod tests {
     fn backfill_is_idempotent_and_skips_existing_heights() {
         let executor = deterministic::Runner::default();
         executor.start(|context| async move {
-            let mut legacy = fresh_legacy(&context, "idem_legacy").await;
-            let mut prunable = fresh_prunable(&context, "idem_prunable").await;
+            let mut legacy = fresh_legacy(&context).await;
+            let mut prunable = fresh_prunable(&context).await;
 
             // Seed legacy with 3 blocks.
             let chain = make_chain(1, 3);
@@ -355,8 +355,8 @@ mod tests {
     fn backfill_tolerates_gaps_in_legacy_archive() {
         let executor = deterministic::Runner::default();
         executor.start(|context| async move {
-            let mut legacy = fresh_legacy(&context, "gap_legacy").await;
-            let mut prunable = fresh_prunable(&context, "gap_prunable").await;
+            let mut legacy = fresh_legacy(&context).await;
+            let mut prunable = fresh_prunable(&context).await;
 
             // Seed legacy with non-contiguous heights {1, 3, 5}. The
             // immutable archive accepts arbitrary indices.
@@ -415,8 +415,8 @@ mod tests {
     fn backfill_returns_zero_for_empty_legacy() {
         let executor = deterministic::Runner::default();
         executor.start(|context| async move {
-            let legacy = fresh_legacy(&context, "empty_legacy").await;
-            let mut prunable = fresh_prunable(&context, "empty_prunable").await;
+            let legacy = fresh_legacy(&context).await;
+            let mut prunable = fresh_prunable(&context).await;
 
             let copied = backfill_recent_into_prunable(&legacy, &mut prunable, 16)
                 .await

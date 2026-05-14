@@ -47,6 +47,15 @@ const TEST_PAGE_SIZE: std::num::NonZeroU16 = NZU16!(4_096);
 /// of blocks at a time.
 const TEST_POOL_CAPACITY: std::num::NonZeroUsize = NZUsize!(64);
 
+/// Partition prefix shared by every test's prunable and legacy archives.
+/// Each test runs against its own [`commonware_runtime::deterministic`]
+/// context, so the in-memory storage is already isolated per test — there
+/// is no need to disambiguate partitions across tests. Within a single
+/// test the prunable and legacy archives use distinct internal suffixes
+/// (`-prunable-*` vs `-{LEGACY_FINALIZED_BLOCKS}-*`), so sharing the
+/// prefix between them is also safe.
+const TEST_PARTITION_PREFIX: &str = "test";
+
 /// Build a deterministic [`Block`] at `height` whose parent points at
 /// `parent_hash`.
 ///
@@ -172,12 +181,11 @@ where
 /// pruning happens for the small chains used in most tests).
 pub(in crate::storage::hybrid) async fn fresh_prunable<TContext>(
     context: &TContext,
-    partition_prefix: &str,
 ) -> Prunable<TContext>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
 {
-    fresh_prunable_with_section_size(context, partition_prefix, PRUNABLE_ITEMS_PER_SECTION).await
+    fresh_prunable_with_section_size(context, PRUNABLE_ITEMS_PER_SECTION).await
 }
 
 /// Initialize a fresh prunable finalized blocks archive against `context`
@@ -190,7 +198,6 @@ where
 /// drop a handful of low-numbered test heights.
 pub(in crate::storage::hybrid) async fn fresh_prunable_with_section_size<TContext>(
     context: &TContext,
-    partition_prefix: &str,
     items_per_section: std::num::NonZeroU64,
 ) -> Prunable<TContext>
 where
@@ -201,9 +208,9 @@ where
         context.with_label("finalized_blocks_prunable"),
         prunable::Config {
             translator: TwoCap,
-            key_partition: format!("{partition_prefix}-prunable-key"),
+            key_partition: format!("{TEST_PARTITION_PREFIX}-prunable-key"),
             key_page_cache: cache,
-            value_partition: format!("{partition_prefix}-prunable-value"),
+            value_partition: format!("{TEST_PARTITION_PREFIX}-prunable-value"),
             // Tests use blocks small enough that compression overhead would
             // dominate; mirror production's compression to keep the codec
             // path identical.
@@ -223,13 +230,12 @@ where
 /// `context`.
 pub(in crate::storage::hybrid) async fn fresh_legacy<TContext>(
     context: &TContext,
-    partition_prefix: &str,
 ) -> Legacy<TContext>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
 {
     let cache = fresh_page_cache(context);
-    init_legacy_finalized_blocks_archive(context, partition_prefix, cache)
+    init_legacy_finalized_blocks_archive(context, TEST_PARTITION_PREFIX, cache)
         .await
         .expect("init legacy archive")
 }

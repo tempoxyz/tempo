@@ -17,14 +17,12 @@
 pub(in crate::storage) mod utils;
 
 use commonware_macros::test_traced;
-use commonware_runtime::{Runner as _, deterministic};
+use commonware_runtime::{Runner as _, Spawner, deterministic};
 use commonware_utils::NZU64;
 
 use super::*;
-use utils::{
-    StubProvider, fresh_legacy, fresh_prunable, fresh_prunable_with_section_size, make_block,
-    make_chain,
-};
+use crate::storage::PRUNABLE_ITEMS_PER_SECTION;
+use utils::{StubProvider, fresh_legacy, fresh_prunable_with_section_size, make_block, make_chain};
 
 /// Force every height into its own section so the prunable archive's
 /// `prune(min)` (which rounds down to the nearest section boundary) acts
@@ -37,32 +35,50 @@ const PER_HEIGHT_SECTION: std::num::NonZeroU64 = NZU64!(1);
 /// observe pre-prune behavior.
 const RETENTION: u64 = 4;
 
-fn build_hybrid<TContext>(
-    prunable: Prunable<TContext>,
-    legacy: Option<Legacy<TContext>>,
-    provider: StubProvider,
-    retention_blocks: u64,
-) -> Hybrid<TContext, StubProvider>
+struct SetupHybrid<TContext>
 where
-    TContext: BufferPooler + Storage + Metrics + Clock + Send + Sync + 'static,
+    TContext: BufferPooler + Storage + Metrics + Clock + Spawner + Clone + Send + Sync + 'static,
 {
-    Hybrid::new(Config {
-        prunable,
-        legacy,
-        provider,
-        retention_blocks,
-    })
+    retention: u64,
+    section_size: std::num::NonZeroU64,
+    legacy: Option<Legacy<TContext>>,
 }
 
-/// Round-trip: a freshly-put block is reachable via [`Blocks::get`] both
-/// by index and by digest, without consulting the reth provider.
+impl<TContext> Default for SetupHybrid<TContext>
+where
+    TContext: BufferPooler + Storage + Metrics + Clock + Spawner + Clone + Send + Sync + 'static,
+{
+    fn default() -> Self {
+        Self {
+            retention: RETENTION,
+            section_size: PRUNABLE_ITEMS_PER_SECTION,
+            legacy: None,
+        }
+    }
+}
+
+impl<TContext> SetupHybrid<TContext>
+where
+    TContext: BufferPooler + Storage + Metrics + Clock + Spawner + Clone + Send + Sync + 'static,
+{
+    async fn build(self, context: &TContext) -> (Hybrid<TContext, StubProvider>, StubProvider) {
+        let prunable = fresh_prunable_with_section_size(context, self.section_size).await;
+        let provider = StubProvider::new();
+        let hybrid = Hybrid::new(Config {
+            prunable,
+            legacy: self.legacy,
+            provider: provider.clone(),
+            retention_blocks: self.retention,
+        });
+        (hybrid, provider)
+    }
+}
+
 #[test_traced]
 fn get_returns_block_from_prunable_archive() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
-        let prunable = fresh_prunable(&context, "get_prunable_hit").await;
-        let provider = StubProvider::new();
-        let mut hybrid = build_hybrid(prunable, None, provider.clone(), RETENTION);
+        let (mut hybrid, _) = SetupHybrid::default().build(&context).await;
 
         let blocks = make_chain(1, 3);
         for block in &blocks {
@@ -88,18 +104,11 @@ fn get_returns_block_from_prunable_archive() {
     });
 }
 
-/// On a prunable miss the read falls back to reth, both for index and
-/// digest lookups. The "canonical only" restriction on hash lookups is
-/// enforced inside the [`super::FinalizedBlocksProvider`] blanket impl
-/// (see [`super`]); the test stub doesn't model `BlockSource` at all
-/// because [`Hybrid`] never sees that detail any more.
 #[test_traced]
 fn get_falls_back_to_reth_on_prunable_miss() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
-        let prunable = fresh_prunable(&context, "get_reth_miss").await;
-        let provider = StubProvider::new();
-        let mut hybrid = build_hybrid(prunable, None, provider.clone(), RETENTION);
+        let (mut hybrid, provider) = SetupHybrid::default().build(&context).await;
 
         // Seed reth with an "old" block that the prunable archive will
         // never know about.
@@ -132,15 +141,11 @@ fn get_falls_back_to_reth_on_prunable_miss() {
     });
 }
 
-/// When neither the prunable archive nor reth has the block, [`Blocks::get`]
-/// returns `Ok(None)` — never an error.
 #[test_traced]
 fn get_returns_none_when_neither_archive_nor_reth_has_block() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
-        let prunable = fresh_prunable(&context, "get_full_miss").await;
-        let provider = StubProvider::new();
-        let hybrid = build_hybrid(prunable, None, provider, RETENTION);
+        let (hybrid, _) = SetupHybrid::default().build(&context).await;
 
         let result = hybrid.get(Identifier::Index(7)).await.expect("get");
         assert!(result.is_none());
@@ -151,20 +156,16 @@ fn get_returns_none_when_neither_archive_nor_reth_has_block() {
     });
 }
 
-/// A `put` past the retention window evicts the oldest entries from the
-/// prunable cache once reth's finalized watermark advances past them.
-/// Eviction is triggered on each `put`, so we seed the cache, advance
-/// reth's watermark, and then drive one more put to trigger eviction.
-/// The evicted blocks then transparently roll over to the reth fallback
-/// (see [`get_falls_back_to_reth_on_prunable_miss`]).
 #[test_traced]
 fn put_trims_prunable_archive_to_retention() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
-        let prunable =
-            fresh_prunable_with_section_size(&context, "put_trim", PER_HEIGHT_SECTION).await;
-        let provider = StubProvider::new();
-        let mut hybrid = build_hybrid(prunable, None, provider.clone(), RETENTION);
+        let (mut hybrid, provider) = SetupHybrid {
+            section_size: PER_HEIGHT_SECTION,
+            ..Default::default()
+        }
+        .build(&context)
+        .await;
 
         // Phase 1: seed heights 1..=N. With reth's finalized watermark
         // unset, no eviction happens.
@@ -206,16 +207,16 @@ fn put_trims_prunable_archive_to_retention() {
     });
 }
 
-/// Index-, gap-, and last-index-reporting must reflect the prunable
-/// archive only. Reth is treated as opaque to the marshal's gap repair
-/// logic.
 #[test_traced]
 fn missing_items_next_gap_and_last_index_reflect_prunable_only() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
-        let prunable = fresh_prunable(&context, "gaps").await;
-        let provider = StubProvider::new();
-        let mut hybrid = build_hybrid(prunable, None, provider.clone(), 32);
+        let (mut hybrid, provider) = SetupHybrid {
+            retention: 32,
+            ..Default::default()
+        }
+        .build(&context)
+        .await;
 
         // Seed reth with a contiguous low-height chain so we can confirm
         // these methods do NOT see it.
@@ -244,23 +245,18 @@ fn missing_items_next_gap_and_last_index_reflect_prunable_only() {
     });
 }
 
-/// When a legacy archive is configured, every successful [`Blocks::put`]
-/// is also written to it. Reads must still come from prunable/reth
-/// (legacy is purely a write-through ledger for the previous binary's
-/// sake).
 #[test_traced]
 fn put_dual_writes_to_legacy_when_present_and_get_skips_legacy() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
-        let prunable = fresh_prunable_with_section_size(
-            &context,
-            "dual_write_prunable",
-            PER_HEIGHT_SECTION,
-        )
+        let legacy = fresh_legacy(&context).await;
+        let (mut hybrid, provider) = SetupHybrid {
+            section_size: PER_HEIGHT_SECTION,
+            legacy: Some(legacy),
+            ..Default::default()
+        }
+        .build(&context)
         .await;
-        let legacy = fresh_legacy(&context, "dual_write_legacy").await;
-        let provider = StubProvider::new();
-        let mut hybrid = build_hybrid(prunable, Some(legacy), provider.clone(), RETENTION);
 
         let blocks = make_chain(1, 3);
         for block in &blocks {
@@ -305,17 +301,17 @@ fn put_dual_writes_to_legacy_when_present_and_get_skips_legacy() {
     });
 }
 
-/// `Hybrid::sync` must flush legacy too — otherwise a crash could leave
-/// the previous binary's view inconsistent with what the new binary
-/// reports as finalized.
 #[test_traced]
 fn sync_flushes_both_archives() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
-        let prunable = fresh_prunable(&context, "sync_prunable").await;
-        let legacy = fresh_legacy(&context, "sync_legacy").await;
-        let provider = StubProvider::new();
-        let mut hybrid = build_hybrid(prunable, Some(legacy), provider, RETENTION);
+        let legacy = fresh_legacy(&context).await;
+        let (mut hybrid, _) = SetupHybrid {
+            legacy: Some(legacy),
+            ..Default::default()
+        }
+        .build(&context)
+        .await;
 
         let blocks = make_chain(1, 2);
         for block in &blocks {
@@ -325,19 +321,11 @@ fn sync_flushes_both_archives() {
     });
 }
 
-/// A repeated `put` at an existing index is silently no-op'd by the
-/// prunable archive (it uses `skip_if_index_exists = true` internally).
-/// This is intentional — the marshal calls `put` whenever it observes a
-/// finalization, including replays — and we document the behavior here
-/// so a future regression that started returning an error would be
-/// caught immediately.
 #[test_traced]
 fn put_at_existing_index_is_idempotent() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
-        let prunable = fresh_prunable(&context, "idempotent").await;
-        let provider = StubProvider::new();
-        let mut hybrid = build_hybrid(prunable, None, provider, RETENTION);
+        let (mut hybrid, _) = SetupHybrid::default().build(&context).await;
 
         let blocks = make_chain(1, 1);
         hybrid.put(blocks[0].clone()).await.expect("first put");
@@ -352,28 +340,17 @@ fn put_at_existing_index_is_idempotent() {
     });
 }
 
-/// Putting a block at a height below the prunable cache's
-/// `oldest_allowed` floor must succeed as a silent no-op rather than
-/// surfacing the prunable archive's `AlreadyPrunedTo` error. The cache
-/// is just a cache; below its window reth is authoritative, so the
-/// block is already durably persisted there (by reth's finality
-/// contract that anything `≤ reth.finalized` cannot be reorged) and
-/// the marshal's subsequent `get` will be served from the reth
-/// fallback. Failing the put would crash the node via marshal's
-/// `panic!("failed to finalize")` on a perfectly recoverable
-/// condition. See the put implementation in [`super::Hybrid::put`].
-///
-/// Eviction is reth-driven, so the cache only collapses past height 1
-/// once reth's finalized watermark advances; we pin it before putting.
 #[test_traced]
 fn put_below_retention_silently_succeeds_when_reth_covers_the_height() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
-        let prunable =
-            fresh_prunable_with_section_size(&context, "below_retention", PER_HEIGHT_SECTION)
-                .await;
-        let provider = StubProvider::new();
-        let mut hybrid = build_hybrid(prunable, None, provider.clone(), /* retention */ 2);
+        let (mut hybrid, provider) = SetupHybrid {
+            retention: 2,
+            section_size: PER_HEIGHT_SECTION,
+            ..Default::default()
+        }
+        .build(&context)
+        .await;
 
         // Phase 1: seed heights 1..=6 with reth's watermark unset
         // (no eviction yet).
@@ -412,19 +389,6 @@ fn put_below_retention_silently_succeeds_when_reth_covers_the_height() {
     });
 }
 
-/// The prunable cache evicts in section-aligned batches, so the retained
-/// window oscillates in `[R, R + S − 1]` rather than collapsing exactly
-/// to `R` after every reth-watermark advance. With `S = 8` and `R = 16`
-/// the test pins down both the maximum overshoot at
-/// `reth_finalized = 30` (window of size `R + S − 1 = 23`) and the
-/// immediate snap back to exactly `R` at `reth_finalized = 31`, where
-/// the next section becomes evictable.
-///
-/// Stale puts (heights below the section-aligned `oldest_allowed`)
-/// silently succeed because the corresponding block is already durable
-/// in reth — see [`put_below_retention_silently_succeeds_when_reth_covers_the_height`]
-/// for the rationale and the module docs ("Section-rounding") for the
-/// eviction story.
 #[test_traced]
 fn prune_respects_section_boundary() {
     const SECTION: u64 = 8;
@@ -432,14 +396,13 @@ fn prune_respects_section_boundary() {
 
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
-        let prunable = fresh_prunable_with_section_size(
-            &context,
-            "section_boundary",
-            std::num::NonZeroU64::new(SECTION).unwrap(),
-        )
+        let (mut hybrid, provider) = SetupHybrid {
+            retention: RETENTION,
+            section_size: std::num::NonZeroU64::new(SECTION).unwrap(),
+            ..Default::default()
+        }
+        .build(&context)
         .await;
-        let provider = StubProvider::new();
-        let mut hybrid = build_hybrid(prunable, None, provider.clone(), RETENTION);
 
         // Phase 0: seed heights 1..=30 with reth's watermark unset
         // (no eviction yet).
@@ -528,22 +491,211 @@ fn prune_respects_section_boundary() {
     });
 }
 
-/// A failure on the reth fallback path must propagate up as
-/// [`Error::Provider`] from [`Blocks::get`] — the marshal turns this
-/// into a panic (see this module's "Marshal panic behavior" docs), so
-/// hiding it behind a silent `Ok(None)` would let a corrupted reth
-/// database drive the marshal into resolver-driven gap repair against
-/// data the operator probably needs to know is broken.
-///
-/// We assert both the index and digest paths because they go through
-/// distinct provider methods.
+#[test_traced]
+fn mid_section_prune_floor_keeps_live_tail_in_cache() {
+    const SECTION: u64 = 4;
+    const RETENTION: u64 = 5;
+
+    let executor = deterministic::Runner::default();
+    executor.start(|context| async move {
+        let (mut hybrid, provider) = SetupHybrid {
+            retention: RETENTION,
+            section_size: std::num::NonZeroU64::new(SECTION).unwrap(),
+            ..Default::default()
+        }
+        .build(&context)
+        .await;
+
+        // Phase 0: seed heights 1..=10 with reth's watermark unset
+        // (no eviction yet).
+        let blocks = make_chain(1, 10);
+        for block in &blocks {
+            hybrid.put(block.clone()).await.expect("put");
+        }
+
+        // Phase 1: advance reth to 10 → requested floor = 6, which sits
+        // inside section [4, 7]. Archive rounds 6 down to 4 and drops
+        // only section [0, 3]. Trigger eviction with one more put.
+        provider.set_reth_finalized(10);
+        let trigger = make_block(11, blocks.last().unwrap().block_hash());
+        hybrid.put(trigger).await.expect("put trigger");
+
+        // Make the reth fallback fail loudly so we can distinguish
+        // prunable hits from reth hits — anything that survives the
+        // eviction must be served from the cache, not from reth.
+        provider.set_fail(true);
+
+        // Heights 4..=11 must come from the prunable cache. Heights 4
+        // and 5 are the "live tail": below the requested retention
+        // floor (6) but at or above the section-aligned oldest_allowed
+        // (4).
+        for height in 4..=11 {
+            let block = hybrid
+                .get(Identifier::Index(height))
+                .await
+                .unwrap_or_else(|err| {
+                    panic!("height {height} should hit prunable cache, got {err:?}")
+                })
+                .unwrap_or_else(|| panic!("height {height} should be present in cache"));
+            assert_eq!(block.height().get(), height);
+        }
+
+        // Heights 1..=3 sat in the dropped section [0, 3] and now fall
+        // through to reth, which is failing — confirms the eviction
+        // boundary is exactly the section start, not the requested
+        // floor.
+        for height in 1..=3 {
+            let result = hybrid.get(Identifier::Index(height)).await;
+            assert!(
+                matches!(result, Err(Error::Provider(_))),
+                "height {height} should fall through to reth fallback, got {result:?}"
+            );
+        }
+    });
+}
+
+#[test_traced]
+fn mid_section_silent_no_op_floor_is_section_aligned_not_requested() {
+    const SECTION: u64 = 4;
+    const RETENTION: u64 = 5;
+
+    let executor = deterministic::Runner::default();
+    executor.start(|context| async move {
+        let (mut hybrid, provider) = SetupHybrid {
+            retention: RETENTION,
+            section_size: std::num::NonZeroU64::new(SECTION).unwrap(),
+            ..Default::default()
+        }
+        .build(&context)
+        .await;
+
+        // Same setup as the live-tail test: seed 1..=10, advance reth
+        // to 10, trigger eviction. After this oldest_allowed=4 and
+        // requested_floor=6.
+        let blocks = make_chain(1, 10);
+        for block in &blocks {
+            hybrid.put(block.clone()).await.expect("put");
+        }
+        provider.set_reth_finalized(10);
+        let trigger = make_block(11, blocks.last().unwrap().block_hash());
+        hybrid.put(trigger).await.expect("put trigger");
+
+        // Heights 1..=3 sit below the section-aligned `oldest_allowed`
+        // (4) and must silently no-op — surfacing the prunable's
+        // `AlreadyPrunedTo` here would crash the marshal on a
+        // perfectly recoverable condition.
+        for height in 1..=3 {
+            hybrid
+                .put(blocks[(height - 1) as usize].clone())
+                .await
+                .unwrap_or_else(|err| {
+                    panic!("stale put at height {height} must succeed silently, got {err:?}")
+                });
+        }
+
+        // Heights 4 and 5 sit in the live tail of the partially-evicted
+        // section. The archive accepts these puts directly (4 ≥
+        // oldest_allowed=4); they do NOT take the `AlreadyPrunedTo`
+        // branch even though they are below the requested retention
+        // floor of 6.
+        for height in 4..=5 {
+            hybrid
+                .put(blocks[(height - 1) as usize].clone())
+                .await
+                .unwrap_or_else(|err| {
+                    panic!("re-put at live-tail height {height} must dedupe, got {err:?}")
+                });
+        }
+    });
+}
+
+#[test_traced]
+fn eviction_no_op_when_advancing_reth_within_same_section() {
+    const SECTION: u64 = 4;
+    const RETENTION: u64 = 5;
+
+    let executor = deterministic::Runner::default();
+    executor.start(|context| async move {
+        let (mut hybrid, provider) = SetupHybrid {
+            retention: RETENTION,
+            section_size: std::num::NonZeroU64::new(SECTION).unwrap(),
+            ..Default::default()
+        }
+        .build(&context)
+        .await;
+
+        // Phase 0: seed heights 1..=15 with reth's watermark unset.
+        let blocks = make_chain(1, 15);
+        for block in &blocks {
+            hybrid.put(block.clone()).await.expect("put");
+        }
+
+        // Phase 1: reth=10 → rounded floor = 4 → drop section [0, 3].
+        // Trigger eviction with put at 16; cache now spans 4..=16.
+        provider.set_reth_finalized(10);
+        let next16 = make_block(16, blocks.last().unwrap().block_hash());
+        hybrid.put(next16.clone()).await.expect("put 16");
+        for height in 4..=16 {
+            assert!(
+                hybrid
+                    .get(Identifier::Index(height))
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "height {height} should remain after first eviction"
+            );
+        }
+
+        // Phase 2: reth=11 → requested floor = 7, still rounded to 4 →
+        // no further eviction. Trigger with put at 17; section [4, 7]
+        // must still be in the cache.
+        provider.set_reth_finalized(11);
+        let next17 = make_block(17, next16.block_hash());
+        hybrid.put(next17.clone()).await.expect("put 17");
+        for height in 4..=17 {
+            assert!(
+                hybrid
+                    .get(Identifier::Index(height))
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "height {height} should remain after intra-section reth advance"
+            );
+        }
+
+        // Phase 3: reth=12 → rounded floor = 8 → drop section [4, 7].
+        // Trigger with put at 18; cache snaps to 8..=18.
+        provider.set_reth_finalized(12);
+        let next18 = make_block(18, next17.block_hash());
+        hybrid.put(next18).await.expect("put 18");
+        for height in 8..=18 {
+            assert!(
+                hybrid
+                    .get(Identifier::Index(height))
+                    .await
+                    .unwrap()
+                    .is_some(),
+                "height {height} should remain after section roll"
+            );
+        }
+        for height in 4..=7 {
+            assert!(
+                hybrid
+                    .get(Identifier::Index(height))
+                    .await
+                    .unwrap()
+                    .is_none(),
+                "height {height} should be dropped after section [4, 7] is evicted"
+            );
+        }
+    });
+}
+
 #[test_traced]
 fn reth_provider_errors_propagate_to_caller() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
-        let prunable = fresh_prunable(&context, "reth_err").await;
-        let provider = StubProvider::new();
-        let hybrid = build_hybrid(prunable, None, provider.clone(), RETENTION);
+        let (hybrid, provider) = SetupHybrid::default().build(&context).await;
 
         provider.set_fail(true);
 
