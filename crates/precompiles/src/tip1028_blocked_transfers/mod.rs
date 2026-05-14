@@ -217,14 +217,14 @@ impl TIP1028BlockedTransfers {
     /// Content hash over every proof field. Any mutation yields a different empty slot.
     fn proof(
         &self,
-        proof_vesion: u8,
+        proof_version: u8,
         token: Address,
         recovery_address: Address,
         proof: &ITIP1028BlockedTransfers::ClaimProofV1,
     ) -> Result<B256> {
         self.storage.keccak256(
             (
-                U256::from(proof_vesion),
+                U256::from(proof_version),
                 token,
                 proof.originator,
                 proof.recipient,
