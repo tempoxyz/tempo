@@ -31,7 +31,7 @@ use crate::{
     signature_verifier::SignatureVerifier, stablecoin_dex::StablecoinDEX, storage::StorageCtx,
     tip_fee_manager::TipFeeManager, tip20::TIP20Token, tip20_channel_escrow::TIP20ChannelEscrow,
     tip20_factory::TIP20Factory, tip403_registry::TIP403Registry,
-    tip1028_blocked_transfers::TIP1028BlockedTransfers, validator_config::ValidatorConfig,
+    tip1028_blocked_transfers::TIP1028Guard, validator_config::ValidatorConfig,
     validator_config_v2::ValidatorConfigV2,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -145,7 +145,7 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
         } else if *address == SIGNATURE_VERIFIER_ADDRESS && cfg.spec.is_t3() {
             Some(SignatureVerifier::create_precompile(&cfg))
         } else if *address == BLOCKED_TRANSFERS_ADDRESS && cfg.spec.is_t6() {
-            Some(TIP1028BlockedTransfers::create_precompile(&cfg))
+            Some(TIP1028Guard::create_precompile(&cfg))
         } else {
             None
         }
@@ -272,10 +272,10 @@ impl TIP20ChannelEscrow {
     }
 }
 
-impl TIP1028BlockedTransfers {
+impl TIP1028Guard {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TIP1028BlockedTransfers", cfg, |input| { Self::new() })
+        tempo_precompile!("TIP1028Guard", cfg, |input| { Self::new() })
     }
 }
 

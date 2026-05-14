@@ -59,7 +59,7 @@ use tempo_precompiles::{
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
-    tip1028_blocked_transfers::TIP1028BlockedTransfers,
+    tip1028_blocked_transfers::TIP1028Guard,
     validator_config_v2::ValidatorConfigV2,
 };
 
@@ -943,7 +943,7 @@ fn initialize_tip1028_blocked_transfers(evm: &mut TempoEvm<CacheDB<EmptyDB>>) ->
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
-        || TIP1028BlockedTransfers::new().initialize(),
+        || TIP1028Guard::new().initialize(),
     )?;
 
     Ok(())

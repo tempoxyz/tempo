@@ -2,7 +2,7 @@
 
 pub mod dispatch;
 
-pub use tempo_contracts::precompiles::ITIP1028BlockedTransfers::{self, InboundKind};
+pub use tempo_contracts::precompiles::ITIP1028Guard::{self, InboundKind};
 use tempo_contracts::precompiles::{
     BlockTransferError, BlockTransferEvent,
     ITIP403Registry::{self, BlockedReason},
@@ -22,7 +22,7 @@ use alloy::{
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
 
-/// Version tag for the v1 [`ITIP1028BlockedTransfers::ClaimProofV1`] layout.
+/// Version tag for the v1 [`ITIP1028Guard::ClaimProofV1`] layout.
 pub const BLOCKED_PROOF_VERSION: u8 = 1;
 
 /// Recovery-authority sentinel: originator/sender is authorized to claim (`address(0)`).
@@ -33,19 +33,19 @@ pub const RECOVERY_RECEIVER: Address = Address::with_last_byte(1);
 
 /// TIP-1028 precompile holding blocked inbound transfers and mints until claimed.
 #[contract(addr = BLOCKED_TRANSFERS_ADDRESS)]
-pub struct TIP1028BlockedTransfers {
+pub struct TIP1028Guard {
     nonce: u64,
     balances: Mapping<B256, U256>,
 }
 
-impl TIP1028BlockedTransfers {
+impl TIP1028Guard {
     /// One-time storage initialization.
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
 
     /// Returns the unclaimed amount for a proof, or zero if unknown or already claimed.
-    pub fn balance_of(&self, call: ITIP1028BlockedTransfers::balanceOfCall) -> Result<U256> {
+    pub fn balance_of(&self, call: ITIP1028Guard::balanceOfCall) -> Result<U256> {
         if !call.token.is_tip20() {
             return Err(BlockTransferError::invalid_token().into());
         }
@@ -81,7 +81,7 @@ impl TIP1028BlockedTransfers {
         if matches!(
             blocked_reason,
             ITIP403Registry::BlockedReason::NONE | ITIP403Registry::BlockedReason::__Invalid
-        ) || kind == ITIP1028BlockedTransfers::InboundKind::__Invalid
+        ) || kind == ITIP1028Guard::InboundKind::__Invalid
         {
             return Err(BlockTransferError::invalid_proof().into());
         }
@@ -91,7 +91,7 @@ impl TIP1028BlockedTransfers {
 
         let blocked_nonce = self.next_proof_nonce()?;
         let blocked_at = self.storage.timestamp().saturating_to::<u64>();
-        let proof = ITIP1028BlockedTransfers::ClaimProofV1 {
+        let proof = ITIP1028Guard::ClaimProofV1 {
             originator,
             recipient,
             blockedAt: blocked_at,
@@ -104,7 +104,7 @@ impl TIP1028BlockedTransfers {
         self.balances[key].write(amount)?;
 
         self.emit_event(BlockTransferEvent::TransferBlocked(
-            ITIP1028BlockedTransfers::TransferBlocked {
+            ITIP1028Guard::TransferBlocked {
                 token,
                 from: originator,
                 receiver,
@@ -126,7 +126,7 @@ impl TIP1028BlockedTransfers {
     pub fn claim(
         &mut self,
         msg_sender: Address,
-        call: ITIP1028BlockedTransfers::claimCall,
+        call: ITIP1028Guard::claimCall,
     ) -> Result<()> {
         if !call.token.is_tip20() {
             return Err(BlockTransferError::invalid_token().into());
@@ -172,7 +172,7 @@ impl TIP1028BlockedTransfers {
         )?;
 
         self.emit_event(BlockTransferEvent::ProofClaimed(
-            ITIP1028BlockedTransfers::ProofClaimed {
+            ITIP1028Guard::ProofClaimed {
                 token: call.token,
                 receiver,
                 proofVersion: call.proofVersion,
@@ -206,11 +206,11 @@ impl TIP1028BlockedTransfers {
     fn decode_v1(
         proof_version: u8,
         proof: &[u8],
-    ) -> Result<ITIP1028BlockedTransfers::ClaimProofV1> {
+    ) -> Result<ITIP1028Guard::ClaimProofV1> {
         if proof_version != BLOCKED_PROOF_VERSION {
             return Err(BlockTransferError::invalid_proof().into());
         }
-        ITIP1028BlockedTransfers::ClaimProofV1::abi_decode(proof)
+        ITIP1028Guard::ClaimProofV1::abi_decode(proof)
             .map_err(|_| BlockTransferError::invalid_proof().into())
     }
 
@@ -220,7 +220,7 @@ impl TIP1028BlockedTransfers {
         proof_version: u8,
         token: Address,
         recovery_address: Address,
-        proof: &ITIP1028BlockedTransfers::ClaimProofV1,
+        proof: &ITIP1028Guard::ClaimProofV1,
     ) -> Result<B256> {
         self.storage.keccak256(
             (
@@ -313,8 +313,8 @@ mod tests {
         blocked_reason: BlockedReason,
         kind: InboundKind,
         memo: B256,
-    ) -> ITIP1028BlockedTransfers::ClaimProofV1 {
-        ITIP1028BlockedTransfers::ClaimProofV1 {
+    ) -> ITIP1028Guard::ClaimProofV1 {
+        ITIP1028Guard::ClaimProofV1 {
             originator,
             recipient,
             blockedAt: blocked_at,
@@ -337,12 +337,12 @@ mod tests {
     }
 
     fn proof_balance(
-        precompile: &TIP1028BlockedTransfers,
+        precompile: &TIP1028Guard,
         token: Address,
         recovery_contract: Address,
-        proof: &ITIP1028BlockedTransfers::ClaimProofV1,
+        proof: &ITIP1028Guard::ClaimProofV1,
     ) -> Result<U256> {
-        precompile.balance_of(ITIP1028BlockedTransfers::balanceOfCall {
+        precompile.balance_of(ITIP1028Guard::balanceOfCall {
             token,
             recoveryAuthority: recovery_contract,
             proofVersion: BLOCKED_PROOF_VERSION,
@@ -353,10 +353,10 @@ mod tests {
     fn claim_call(
         token: Address,
         recovery_contract: Address,
-        proof: &ITIP1028BlockedTransfers::ClaimProofV1,
+        proof: &ITIP1028Guard::ClaimProofV1,
         to: Address,
-    ) -> ITIP1028BlockedTransfers::claimCall {
-        ITIP1028BlockedTransfers::claimCall {
+    ) -> ITIP1028Guard::claimCall {
+        ITIP1028Guard::claimCall {
             token,
             recoveryAuthority: recovery_contract,
             proofVersion: BLOCKED_PROOF_VERSION,
@@ -411,7 +411,7 @@ mod tests {
                     InboundKind::TRANSFER,
                     B256::ZERO,
                 );
-                let precompile = TIP1028BlockedTransfers::new();
+                let precompile = TIP1028Guard::new();
                 assert_eq!(
                     proof_balance(
                         &precompile,
@@ -449,7 +449,7 @@ mod tests {
                     amount
                 );
 
-                TIP1028BlockedTransfers::new().claim(
+                TIP1028Guard::new().claim(
                     recovery_auth.claimer(),
                     claim_call(
                         token.address(),
@@ -525,7 +525,7 @@ mod tests {
                 InboundKind::TRANSFER,
                 B256::ZERO,
             );
-            let mut precompile = TIP1028BlockedTransfers::new();
+            let mut precompile = TIP1028Guard::new();
             let result = precompile.claim(
                 receiver,
                 claim_call(token.address(), RECOVERY_RECEIVER, &proof, receiver),
@@ -629,7 +629,7 @@ mod tests {
                 B256::ZERO,
             );
 
-            let precompile = TIP1028BlockedTransfers::new();
+            let precompile = TIP1028Guard::new();
             assert_eq!(
                 token_a.balance_of(ITIP20::balanceOfCall {
                     account: BLOCKED_TRANSFERS_ADDRESS
@@ -644,7 +644,7 @@ mod tests {
                 proof_balance(&precompile, token_b.address(), RECOVERY_RECEIVER, &proof_c)?
             );
 
-            TIP1028BlockedTransfers::new().claim(
+            TIP1028Guard::new().claim(
                 receiver_a,
                 claim_call(token_a.address(), RECOVERY_RECEIVER, &proof_a, receiver_a),
             )?;
@@ -661,7 +661,7 @@ mod tests {
                 proof_balance(&precompile, token_b.address(), RECOVERY_RECEIVER, &proof_c)?
             );
 
-            TIP1028BlockedTransfers::new().claim(
+            TIP1028Guard::new().claim(
                 recovery,
                 claim_call(token_a.address(), recovery, &proof_b, receiver_b),
             )?;
@@ -689,7 +689,7 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::create("T", "T", admin).apply()?;
-            let precompile = TIP1028BlockedTransfers::new();
+            let precompile = TIP1028Guard::new();
             let proof = proof_v1(
                 Address::random(),
                 Address::random(),
@@ -704,7 +704,7 @@ mod tests {
                 (BLOCKED_PROOF_VERSION + 1, proof.abi_encode().into()),
                 (BLOCKED_PROOF_VERSION, vec![0xde, 0xad, 0xbe, 0xef].into()),
             ] {
-                let result = precompile.balance_of(ITIP1028BlockedTransfers::balanceOfCall {
+                let result = precompile.balance_of(ITIP1028Guard::balanceOfCall {
                     token: token.address(),
                     recoveryAuthority: Address::ZERO,
                     proofVersion: proof_version,
@@ -733,7 +733,7 @@ mod tests {
                 (BlockedReason::__Invalid, InboundKind::TRANSFER),
                 (BlockedReason::RECEIVE_POLICY, InboundKind::__Invalid),
             ] {
-                let result = TIP1028BlockedTransfers::new().store_blocked(
+                let result = TIP1028Guard::new().store_blocked(
                     token.address(),
                     Address::random(),
                     &Recipient::direct(Address::random()),
@@ -770,7 +770,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let token_a = TIP20Setup::create("A", "A", admin).apply()?;
             let token_b = TIP20Setup::create("B", "B", admin).apply()?;
-            let mut precompile = TIP1028BlockedTransfers::new();
+            let mut precompile = TIP1028Guard::new();
 
             let (nonce_a, blocked_at_a) = precompile.store_blocked(
                 token_a.address(),
@@ -931,7 +931,7 @@ mod tests {
                 .with_mint(originator, amount)
                 .apply()?;
 
-            assert_invalid_proof(TIP1028BlockedTransfers::new().claim(
+            assert_invalid_proof(TIP1028Guard::new().claim(
                 receiver,
                 claim_call(token.address(), RECOVERY_RECEIVER, &proof, receiver),
             ));
@@ -944,11 +944,11 @@ mod tests {
                     amount,
                 },
             )?;
-            TIP1028BlockedTransfers::new().claim(
+            TIP1028Guard::new().claim(
                 receiver,
                 claim_call(token.address(), RECOVERY_RECEIVER, &proof, receiver),
             )?;
-            assert_invalid_proof(TIP1028BlockedTransfers::new().claim(
+            assert_invalid_proof(TIP1028Guard::new().claim(
                 receiver,
                 claim_call(token.address(), RECOVERY_RECEIVER, &proof, receiver),
             ));
@@ -1012,12 +1012,12 @@ mod tests {
                 B256::ZERO,
             );
 
-            assert_unauthorized(TIP1028BlockedTransfers::new().claim(
+            assert_unauthorized(TIP1028Guard::new().claim(
                 stranger,
                 claim_call(token.address(), RECOVERY_RECEIVER, &self_proof, receiver),
             ));
             for caller in [recovery_receiver, stranger] {
-                assert_unauthorized(TIP1028BlockedTransfers::new().claim(
+                assert_unauthorized(TIP1028Guard::new().claim(
                     caller,
                     claim_call(
                         token.address(),
@@ -1030,7 +1030,7 @@ mod tests {
 
             assert_eq!(
                 proof_balance(
-                    &TIP1028BlockedTransfers::new(),
+                    &TIP1028Guard::new(),
                     token.address(),
                     RECOVERY_RECEIVER,
                     &self_proof
@@ -1039,7 +1039,7 @@ mod tests {
             );
             assert_eq!(
                 proof_balance(
-                    &TIP1028BlockedTransfers::new(),
+                    &TIP1028Guard::new(),
                     token.address(),
                     recovery,
                     &recovery_proof
@@ -1085,7 +1085,7 @@ mod tests {
                 B256::ZERO,
             );
 
-            let mut precompile = TIP1028BlockedTransfers::new();
+            let mut precompile = TIP1028Guard::new();
             precompile.clear_emitted_events();
             precompile.claim(
                 receiver,
@@ -1093,7 +1093,7 @@ mod tests {
             )?;
 
             precompile.assert_emitted_events(vec![BlockTransferEvent::ProofClaimed(
-                ITIP1028BlockedTransfers::ProofClaimed {
+                ITIP1028Guard::ProofClaimed {
                     token: token.address(),
                     receiver,
                     proofVersion: BLOCKED_PROOF_VERSION,
@@ -1161,7 +1161,7 @@ mod tests {
                 InboundKind::TRANSFER,
                 B256::ZERO,
             );
-            let mut precompile = TIP1028BlockedTransfers::new();
+            let mut precompile = TIP1028Guard::new();
             precompile.clear_emitted_events();
             precompile.claim(
                 recovery,
@@ -1169,7 +1169,7 @@ mod tests {
             )?;
 
             precompile.assert_emitted_events(vec![BlockTransferEvent::ProofClaimed(
-                ITIP1028BlockedTransfers::ProofClaimed {
+                ITIP1028Guard::ProofClaimed {
                     token: token.address(),
                     receiver,
                     proofVersion: BLOCKED_PROOF_VERSION,
@@ -1239,8 +1239,8 @@ mod tests {
                 InboundKind::TRANSFER,
                 B256::ZERO,
             );
-            let precompile = TIP1028BlockedTransfers::new();
-            let result = TIP1028BlockedTransfers::new().claim(
+            let precompile = TIP1028Guard::new();
+            let result = TIP1028Guard::new().claim(
                 receiver,
                 claim_call(token.address(), RECOVERY_RECEIVER, &proof, destination),
             );
@@ -1309,7 +1309,7 @@ mod tests {
                 InboundKind::TRANSFER,
                 B256::ZERO,
             );
-            let precompile = TIP1028BlockedTransfers::new();
+            let precompile = TIP1028Guard::new();
             assert_eq!(
                 proof_balance(&precompile, token.address(), recovery, &proof)?,
                 amount
@@ -1323,15 +1323,15 @@ mod tests {
                 U256::ZERO
             );
 
-            assert_unauthorized(TIP1028BlockedTransfers::new().claim(
+            assert_unauthorized(TIP1028Guard::new().claim(
                 receiver,
                 claim_call(token.address(), Address::ZERO, &proof, receiver),
             ));
-            assert_invalid_proof(TIP1028BlockedTransfers::new().claim(
+            assert_invalid_proof(TIP1028Guard::new().claim(
                 other_recovery,
                 claim_call(token.address(), other_recovery, &proof, receiver),
             ));
-            TIP1028BlockedTransfers::new().claim(
+            TIP1028Guard::new().claim(
                 recovery,
                 claim_call(token.address(), recovery, &proof, receiver),
             )?;
@@ -1377,7 +1377,7 @@ mod tests {
                 InboundKind::TRANSFER,
                 B256::ZERO,
             );
-            let mut precompile = TIP1028BlockedTransfers::new();
+            let mut precompile = TIP1028Guard::new();
             precompile.clear_emitted_events();
             precompile.claim(
                 VIRTUAL_MASTER,
@@ -1385,7 +1385,7 @@ mod tests {
             )?;
 
             precompile.assert_emitted_events(vec![BlockTransferEvent::ProofClaimed(
-                ITIP1028BlockedTransfers::ProofClaimed {
+                ITIP1028Guard::ProofClaimed {
                     token: token.address(),
                     receiver: VIRTUAL_MASTER,
                     proofVersion: BLOCKED_PROOF_VERSION,
@@ -1437,7 +1437,7 @@ mod tests {
                     .apply()?;
                 block_all_senders(receiver, recovery_auth.address())?;
 
-                let mut precompile = TIP1028BlockedTransfers::new();
+                let mut precompile = TIP1028Guard::new();
                 precompile.clear_emitted_events();
                 token.mint(
                     admin,
@@ -1447,7 +1447,7 @@ mod tests {
                     },
                 )?;
                 precompile.assert_emitted_events(vec![BlockTransferEvent::TransferBlocked(
-                    ITIP1028BlockedTransfers::TransferBlocked {
+                    ITIP1028Guard::TransferBlocked {
                         token: token.address(),
                         from: admin,
                         receiver,

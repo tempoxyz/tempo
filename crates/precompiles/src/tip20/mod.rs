@@ -29,7 +29,7 @@ use crate::{
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
-    tip1028_blocked_transfers::{InboundKind, TIP1028BlockedTransfers},
+    tip1028_blocked_transfers::{InboundKind, TIP1028Guard},
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
@@ -1241,7 +1241,7 @@ impl TIP20Token {
                 return Err(BlockTransferError::invalid_proof().into());
             }
         }
-        TIP1028BlockedTransfers::new()
+        TIP1028Guard::new()
             .store_blocked(token, originator, to, recovery, amount, reason, kind, memo)?;
 
         Ok(true)
@@ -1621,7 +1621,7 @@ mod recipient_tests {
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
     use tempo_contracts::precompiles::{
-        BlockTransferEvent, ITIP1028BlockedTransfers, createTokenCall,
+        BlockTransferEvent, ITIP1028Guard, createTokenCall,
     };
 
     use super::*;
@@ -1634,7 +1634,7 @@ pub(crate) mod tests {
         error::TempoPrecompileError,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master, setup_storage},
-        tip1028_blocked_transfers::TIP1028BlockedTransfers,
+        tip1028_blocked_transfers::TIP1028Guard,
     };
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -1731,8 +1731,8 @@ pub(crate) mod tests {
             blocked_reason: ITIP403Registry::BlockedReason,
             kind: InboundKind,
             memo: B256,
-        ) -> ITIP1028BlockedTransfers::ClaimProofV1 {
-            ITIP1028BlockedTransfers::ClaimProofV1 {
+        ) -> ITIP1028Guard::ClaimProofV1 {
+            ITIP1028Guard::ClaimProofV1 {
                 originator,
                 recipient,
                 blockedAt: BLOCKED_AT,
@@ -1746,9 +1746,9 @@ pub(crate) mod tests {
         fn proof_balance(
             token: Address,
             recovery_contract: Address,
-            proof: &ITIP1028BlockedTransfers::ClaimProofV1,
+            proof: &ITIP1028Guard::ClaimProofV1,
         ) -> Result<U256> {
-            TIP1028BlockedTransfers::new().balance_of(ITIP1028BlockedTransfers::balanceOfCall {
+            TIP1028Guard::new().balance_of(ITIP1028Guard::balanceOfCall {
                 token,
                 recoveryAuthority: recovery_contract,
                 proofVersion: BLOCKED_PROOF_VERSION,
@@ -1804,9 +1804,9 @@ pub(crate) mod tests {
                     B256::ZERO,
                 );
                 assert_eq!(proof_balance(token.address, Address::ZERO, &proof)?, amount);
-                TIP1028BlockedTransfers::new().assert_emitted_events(vec![
+                TIP1028Guard::new().assert_emitted_events(vec![
                     BlockTransferEvent::TransferBlocked(
-                        ITIP1028BlockedTransfers::TransferBlocked {
+                        ITIP1028Guard::TransferBlocked {
                             token: token.address,
                             from: sender,
                             receiver,
@@ -1864,9 +1864,9 @@ pub(crate) mod tests {
                     B256::ZERO,
                 );
                 assert_eq!(proof_balance(token.address, Address::ZERO, &proof)?, amount);
-                TIP1028BlockedTransfers::new().assert_emitted_events(vec![
+                TIP1028Guard::new().assert_emitted_events(vec![
                     BlockTransferEvent::TransferBlocked(
-                        ITIP1028BlockedTransfers::TransferBlocked {
+                        ITIP1028Guard::TransferBlocked {
                             token: token.address,
                             from: sender,
                             receiver,
@@ -2091,7 +2091,7 @@ pub(crate) mod tests {
                     Address::ZERO,
                 )?;
 
-                TIP1028BlockedTransfers::new().clear_emitted_events();
+                TIP1028Guard::new().clear_emitted_events();
                 token.mint(
                     admin,
                     ITIP20::mintCall {
@@ -2108,9 +2108,9 @@ pub(crate) mod tests {
                     to: BLOCKED_TRANSFERS_ADDRESS,
                     amount,
                 })]);
-                TIP1028BlockedTransfers::new().assert_emitted_events(vec![
+                TIP1028Guard::new().assert_emitted_events(vec![
                     BlockTransferEvent::TransferBlocked(
-                        ITIP1028BlockedTransfers::TransferBlocked {
+                        ITIP1028Guard::TransferBlocked {
                             token: token.address,
                             from: admin,
                             receiver,
@@ -3309,7 +3309,7 @@ pub(crate) mod tests {
             Ok::<_, TempoPrecompileError>(())
         })?;
 
-        // Pre-T6: TIP1028_BLOCKED_TRANSFERS_ADDRESS is not yet in PROTECTED, so burn_blocked
+        // Pre-T6: TIP1028_GUARD_ADDRESS is not yet in PROTECTED, so burn_blocked
         // actually burns from it (REJECT_ALL satisfies the sender-policy gate).
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         StorageCtx::enter(&mut storage, || {

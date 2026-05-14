@@ -1,12 +1,12 @@
-pub use ITIP1028BlockedTransfers::{
-    ITIP1028BlockedTransfersErrors as BlockTransferError,
-    ITIP1028BlockedTransfersEvents as BlockTransferEvent,
+pub use ITIP1028Guard::{
+    ITIP1028GuardErrors as BlockTransferError,
+    ITIP1028GuardEvents as BlockTransferEvent,
 };
 
 crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
-    interface ITIP1028BlockedTransfers {
+    interface ITIP1028Guard {
         enum InboundKind {
             TRANSFER,
             MINT
@@ -39,26 +39,26 @@ crate::sol! {
 
 impl BlockTransferError {
     pub const fn unauthorized_claimer() -> Self {
-        Self::UnauthorizedClaimer(ITIP1028BlockedTransfers::UnauthorizedClaimer {})
+        Self::UnauthorizedClaimer(ITIP1028Guard::UnauthorizedClaimer {})
     }
 
     pub const fn invalid_proof() -> Self {
-        Self::InvalidProof(ITIP1028BlockedTransfers::InvalidProof {})
+        Self::InvalidProof(ITIP1028Guard::InvalidProof {})
     }
 
     pub const fn insufficient_balance() -> Self {
-        Self::InsufficientBalance(ITIP1028BlockedTransfers::InsufficientBalance {})
+        Self::InsufficientBalance(ITIP1028Guard::InsufficientBalance {})
     }
 
     pub const fn block_address_reserved() -> Self {
-        Self::BlockAddressReserved(ITIP1028BlockedTransfers::BlockAddressReserved {})
+        Self::BlockAddressReserved(ITIP1028Guard::BlockAddressReserved {})
     }
 
     pub const fn invalid_claim_address() -> Self {
-        Self::InvalidClaimAddress(ITIP1028BlockedTransfers::InvalidClaimAddress {})
+        Self::InvalidClaimAddress(ITIP1028Guard::InvalidClaimAddress {})
     }
 
     pub const fn invalid_token() -> Self {
-        Self::InvalidToken(ITIP1028BlockedTransfers::InvalidToken {})
+        Self::InvalidToken(ITIP1028Guard::InvalidToken {})
     }
 }

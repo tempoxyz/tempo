@@ -23,7 +23,7 @@ use tempo_precompiles::{
     tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID},
     tip1028_blocked_transfers::{
         BLOCKED_PROOF_VERSION,
-        ITIP1028BlockedTransfers::{self, ITIP1028BlockedTransfersErrors as BlockTransferError},
+        ITIP1028Guard::{self, ITIP1028GuardErrors as BlockTransferError},
         InboundKind, RECOVERY_RECEIVER,
     },
 };
@@ -59,7 +59,7 @@ fn test_blocked_transfer_claim_no_recovery() {
             .wallet(other_wallet)
             .connect_http(http_url.clone());
         let other_tip1028 =
-            ITIP1028BlockedTransfers::new(BLOCKED_TRANSFERS_ADDRESS, other_provider);
+            ITIP1028Guard::new(BLOCKED_TRANSFERS_ADDRESS, other_provider);
         let Err(result) = other_tip1028
             .claim(
                 blocked.token,
@@ -90,7 +90,7 @@ fn test_blocked_transfer_claim_no_recovery() {
             .wallet(receiver_wallet)
             .connect_http(http_url.clone());
         let receiver_tip1028 =
-            ITIP1028BlockedTransfers::new(BLOCKED_TRANSFERS_ADDRESS, receiver_provider);
+            ITIP1028Guard::new(BLOCKED_TRANSFERS_ADDRESS, receiver_provider);
         let claim = receiver_tip1028
             .claim(
                 blocked.token,
@@ -138,7 +138,7 @@ fn test_tip1028_claim_with_recovery() {
             .wallet(wallet(22)?)
             .connect_http(http_url.clone());
         let recovery_tip1028 =
-            ITIP1028BlockedTransfers::new(BLOCKED_TRANSFERS_ADDRESS, recovery_provider);
+            ITIP1028Guard::new(BLOCKED_TRANSFERS_ADDRESS, recovery_provider);
         let claim = recovery_tip1028
             .claim(
                 blocked.token,
@@ -266,7 +266,7 @@ async fn create_blocked_transfer(
         ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8
     );
 
-    let proof: Bytes = ITIP1028BlockedTransfers::ClaimProofV1 {
+    let proof: Bytes = ITIP1028Guard::ClaimProofV1 {
         originator: blocked.from,
         recipient: blocked.recipient,
         blockedAt: blocked.blockedAt,
@@ -278,7 +278,7 @@ async fn create_blocked_transfer(
     .abi_encode()
     .into();
 
-    let tip1028 = ITIP1028BlockedTransfers::new(
+    let tip1028 = ITIP1028Guard::new(
         BLOCKED_TRANSFERS_ADDRESS,
         ProviderBuilder::new().connect_http(http_url.clone()),
     );
@@ -361,11 +361,11 @@ fn token_view(http_url: Url, token: Address) -> ITIP20::ITIP20Instance<impl Clon
 
 fn transfer_blocked(
     receipt: &TransactionReceipt,
-) -> eyre::Result<ITIP1028BlockedTransfers::TransferBlocked> {
+) -> eyre::Result<ITIP1028Guard::TransferBlocked> {
     receipt
         .logs()
         .iter()
-        .filter_map(|log| ITIP1028BlockedTransfers::TransferBlocked::decode_log(&log.inner).ok())
+        .filter_map(|log| ITIP1028Guard::TransferBlocked::decode_log(&log.inner).ok())
         .map(|event| event.data)
         .next()
         .ok_or_eyre("TransferBlocked event missing")
