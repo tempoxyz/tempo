@@ -251,7 +251,7 @@ base64 = { version = "0.22", features = ["alloc"], default-features = false }
 bytes = "1.11.1"
 clap = { version = "4.5.57", features = ["derive", "env"] }
 coins-bip32 = "0.12"
-const-hex = { version = "1.17.0" }
+const-hex = { version = "1.19.0" }
 criterion = "0.8.2"
 dashmap = "6"
 dirs-next = "2.0.0"
@@ -291,7 +291,7 @@ sha2 = { version = "0.10", default-features = false }
 tempfile = "3.24.0"
 thiserror = "2.0.18"
 # TODO: restrict this to only the required features
-tokio = { version = "1.49.0", features = ["full"] }
+tokio = { version = "1.52.2", features = ["full"] }
 tokio-stream = { version = "0.1.18" }
 tokio-util = "0.7.18"
 tracy-client = "0.18.4"
