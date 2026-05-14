@@ -247,21 +247,27 @@ run_single() {
     fi
   done
 
-  # Start tempo node
+  # Start tempo node (drop back to runner user, matching bench-e2e.nu)
+  local run_uid run_gid
+  run_uid="$(id -u)"
+  run_gid="$(id -g)"
+
   if [ "${BENCH_SAMPLY:-false}" = "true" ]; then
     local samply_bin
     samply_bin="$(which samply)"
     sudo systemd-run --quiet --scope --collect --unit="$TEMPO_SCOPE" \
-      -p MemoryMax="$mem_limit" \
-      "${scope_env[@]}" nice -n -20 \
+      --uid="$run_uid" --gid="$run_gid" \
+      -p MemoryMax="$mem_limit" -p CPUWeight=100 \
+      "${scope_env[@]}" \
       "$samply_bin" record --save-only --presymbolicate --rate 10000 \
       --output "$output_dir/samply-profile.json.gz" \
       -- "$binary" "${NODE_ARGS[@]}" \
       > "$log" 2>&1 &
   else
     sudo systemd-run --quiet --scope --collect --unit="$TEMPO_SCOPE" \
-      -p MemoryMax="$mem_limit" \
-      "${scope_env[@]}" nice -n -20 "$binary" "${NODE_ARGS[@]}" \
+      --uid="$run_uid" --gid="$run_gid" \
+      -p MemoryMax="$mem_limit" -p CPUWeight=100 \
+      "${scope_env[@]}" "$binary" "${NODE_ARGS[@]}" \
       > "$log" 2>&1 &
   fi
   stdbuf -oL tail -f "$log" | sed -u "s/^/[$label] /" &
