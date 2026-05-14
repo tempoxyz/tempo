@@ -1,7 +1,7 @@
 [
   {
     "type": "function",
-    "name": "place",
+    "name": "placeFlip",
     "inputs": [
       {
         "name": "token",
@@ -20,6 +20,11 @@
       },
       {
         "name": "tick",
+        "type": "int16",
+        "internalType": "int16"
+      },
+      {
+        "name": "flipTick",
         "type": "int16",
         "internalType": "int16"
       }
