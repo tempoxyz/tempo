@@ -30,15 +30,12 @@ pub(crate) mod marshal {
         storage::{self, Hybrid},
     };
 
-    /// Concrete reth provider used by [`tempo_node::TempoFullNode`].
-    type TempoProvider = BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>;
-
     pub(crate) type Actor<TContext> = core::Actor<
         TContext,
         Standard<Block>,
         SchemeProvider,
         immutable::Archive<TContext, Digest, Finalization<Scheme<PublicKey, MinSig>, Digest>>,
-        Hybrid<TContext, TempoProvider>,
+        Hybrid<TContext, BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>>,
         FixedEpocher,
         Sequential,
         Exact,
