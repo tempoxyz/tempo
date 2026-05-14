@@ -807,6 +807,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     mut feature_intervals = []
     mut baseline_tps_samples = []
     mut feature_tps_samples = []
+    mut baseline_nullifications = 0
+    mut feature_nullifications = 0
 
     let compute_tps_stats = { |samples: list<any>|
         let sorted_samples = ($samples | sort)
@@ -879,15 +881,25 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         let run_tps = do $compute_tps_stats $block_tps_samples
         let run_bt = do $compute_block_time_stats $block_intervals
 
+        # Count nullifications from validator logs for this run
+        let run_nullifications = (["a" "b"] | each { |role|
+            let log_path = $"($results_dir)/logs-($label)-($role)/dev/reth.log"
+            if ($log_path | path exists) {
+                (open $log_path | lines | where { |l| $l | str contains "broadcasting nullification" } | length)
+            } else { 0 }
+        } | math sum)
+
         # Collect blocks into baseline/feature groups
         if ($label | str starts-with "baseline") {
             $baseline_blocks = ($baseline_blocks | append $blocks)
             $baseline_intervals = ($baseline_intervals | append $block_intervals)
             $baseline_tps_samples = ($baseline_tps_samples | append $block_tps_samples)
+            $baseline_nullifications = $baseline_nullifications + $run_nullifications
         } else {
             $feature_blocks = ($feature_blocks | append $blocks)
             $feature_intervals = ($feature_intervals | append $block_intervals)
             $feature_tps_samples = ($feature_tps_samples | append $block_tps_samples)
+            $feature_nullifications = $feature_nullifications + $run_nullifications
         }
 
         let total_tx = ($blocks | get tx_count | math sum)
@@ -931,6 +943,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             block_time_p90: $run_bt.p90
             block_time_p99: $run_bt.p99
             success_rate: $success_rate
+            nullifications: $run_nullifications
         }])
     }
 
@@ -997,6 +1010,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         $"| Block Time P50 [ms] | ($b_bt.p50) | ($f_bt.p50) | (do $delta $b_bt.p50 $f_bt.p50)% |"
         $"| Block Time P90 [ms] | ($b_bt.p90) | ($f_bt.p90) | (do $delta $b_bt.p90 $f_bt.p90)% |"
         $"| Block Time P99 [ms] | ($b_bt.p99) | ($f_bt.p99) | (do $delta $b_bt.p99 $f_bt.p99)% |"
+        $"| Nullifications | ($baseline_nullifications) | ($feature_nullifications) | (if $baseline_nullifications > 0 { (do $delta ($baseline_nullifications | into float) ($feature_nullifications | into float)) } else if $feature_nullifications > 0 { 'N/A' } else { '0.0' })% |"
         ""
         "## Latency (Secondary)"
         ""
@@ -1010,13 +1024,13 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         ""
         "## Per-Run Details"
         ""
-        "| Run | Blocks | Total Tx | Success | Failed | Avg TPS | Block P50 | Mgas/s |"
-        "|-----|--------|----------|---------|--------|---------|-----------|--------|"
+        "| Run | Blocks | Total Tx | Success | Failed | Avg TPS | Block P50 | Mgas/s | Nullifications |"
+        "|-----|--------|----------|---------|--------|---------|-----------|--------|----------------|"
     ] | str join "\n")
 
     mut per_run_rows = ""
     for row in $run_data {
-        $per_run_rows = $"($per_run_rows)| ($row.label) | ($row.blocks) | ($row.total_tx) | ($row.ok) | ($row.err) | ($row.tps) | ($row.block_time_p50) | ($row.mgas_s) |\n"
+        $per_run_rows = $"($per_run_rows)| ($row.label) | ($row.blocks) | ($row.total_tx) | ($row.ok) | ($row.err) | ($row.tps) | ($row.block_time_p50) | ($row.mgas_s) | ($row.nullifications) |\n"
     }
 
     let full_summary = $"($summary)\n($per_run_rows)"
@@ -1052,6 +1066,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 block_time_p90: $b_bt.p90
                 block_time_p99: $b_bt.p99
                 blocks: $b_lat.n
+                nullifications: $baseline_nullifications
             }
             feature: {
                 latency_mean: $f_lat.mean
@@ -1068,6 +1083,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 block_time_p90: $f_bt.p90
                 block_time_p99: $f_bt.p99
                 blocks: $f_lat.n
+                nullifications: $feature_nullifications
             }
             deltas: {
                 latency_mean: (do $delta $b_lat.mean $f_lat.mean)
