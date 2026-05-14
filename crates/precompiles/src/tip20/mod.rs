@@ -29,7 +29,7 @@ use crate::{
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
-    tip1028_escrow::InboundKind,
+    tip1028_escrow::{InboundKind, TIP1028Escrow},
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
@@ -499,8 +499,7 @@ impl TIP20Token {
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
         let (to, total_supply) = self.validate_mint(msg_sender, call.to)?;
 
-        if TIP403Registry::new().validate_or_escrow(
-            self.address,
+        if self.validate_inbound_or_escrow(
             msg_sender,
             &to,
             call.amount,
@@ -530,8 +529,7 @@ impl TIP20Token {
     ) -> Result<()> {
         let (to, total_supply) = self.validate_mint(msg_sender, call.to)?;
 
-        if TIP403Registry::new().validate_or_escrow(
-            self.address,
+        if self.validate_inbound_or_escrow(
             msg_sender,
             &to,
             call.amount,
@@ -834,8 +832,7 @@ impl TIP20Token {
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        if TIP403Registry::new().validate_or_escrow(
-            self.address,
+        if self.validate_inbound_or_escrow(
             msg_sender,
             &to,
             call.amount,
@@ -871,8 +868,7 @@ impl TIP20Token {
         self.validate_transfer(call.from, &to)?;
         self.consume_allowance(call.from, msg_sender, call.amount)?;
 
-        if TIP403Registry::new().validate_or_escrow(
-            self.address,
+        if self.validate_inbound_or_escrow(
             call.from,
             &to,
             call.amount,
@@ -899,8 +895,7 @@ impl TIP20Token {
         self.validate_transfer(call.from, &to)?;
         self.consume_allowance(call.from, msg_sender, call.amount)?;
 
-        if TIP403Registry::new().validate_or_escrow(
-            self.address,
+        if self.validate_inbound_or_escrow(
             call.from,
             &to,
             call.amount,
@@ -958,14 +953,7 @@ impl TIP20Token {
         self.validate_transfer(from, &to)?;
         self.check_and_update_spending_limit(from, amount)?;
 
-        if TIP403Registry::new().validate_or_escrow(
-            self.address,
-            from,
-            &to,
-            amount,
-            InboundKind::TRANSFER,
-            B256::ZERO,
-        )? {
+        if self.validate_inbound_or_escrow(from, &to, amount, InboundKind::TRANSFER, B256::ZERO)? {
             return Ok(true);
         }
 
@@ -1003,8 +991,7 @@ impl TIP20Token {
         self.validate_transfer(msg_sender, &to)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        if TIP403Registry::new().validate_or_escrow(
-            self.address,
+        if self.validate_inbound_or_escrow(
             msg_sender,
             &to,
             call.amount,
@@ -1219,6 +1206,45 @@ impl TIP20Token {
         }
 
         self.emit_event(to.build_transfer_event(from, amount))
+    }
+
+    /// Validates the receive policy of `to.target`. If blocked, moves the funds into the escrow
+    /// account and stores a claim receipt; returns `true`. Returns `false` when the inbound is
+    /// authorized and the caller should proceed with the normal transfer or mint.
+    pub(crate) fn validate_inbound_or_escrow(
+        &mut self,
+        originator: Address,
+        to: &Recipient,
+        amount: U256,
+        kind: InboundKind,
+        memo: B256,
+    ) -> Result<bool> {
+        if !self.storage.spec().is_t6() {
+            return Ok(false);
+        }
+        if to.target == ESCROW_ADDRESS {
+            return Err(TIP1028EscrowError::escrow_address_reserved().into());
+        }
+
+        let token = self.address;
+        let Some((reason, recovery)) =
+            TIP403Registry::new().check_receive_policy(token, originator, to.target)?
+        else {
+            return Ok(false);
+        };
+
+        let escrow = Recipient::direct(ESCROW_ADDRESS);
+        match kind {
+            InboundKind::TRANSFER => self._transfer(originator, &escrow, amount)?,
+            InboundKind::MINT => self._mint(&escrow, amount, None)?,
+            InboundKind::__Invalid => {
+                return Err(TIP1028EscrowError::invalid_receipt_claim().into());
+            }
+        }
+        TIP1028Escrow::new()
+            .store_blocked(token, originator, to, recovery, amount, reason, kind, memo)?;
+
+        Ok(true)
     }
 
     /// Releases escrowed funds to `to`. Resumes skip policy checks. Reroutes
