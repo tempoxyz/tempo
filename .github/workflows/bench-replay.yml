@@ -424,6 +424,12 @@ jobs:
           FEATURE_JSONS="$BENCH_WORK_DIR/feature-1/report.json $BENCH_WORK_DIR/feature-2/report.json"
           SUMMARY_ARGS="$SUMMARY_ARGS --baseline-json $BASELINE_JSONS"
           SUMMARY_ARGS="$SUMMARY_ARGS --feature-json $FEATURE_JSONS"
+          if [ -n "${BENCH_BENCHMARK_ID:-}" ] && [ -n "${BENCH_REFERENCE_EPOCH:-}" ]; then
+            FROM_MS=$(( BENCH_REFERENCE_EPOCH * 1000 ))
+            TO_MS=$(( $(date +%s) * 1000 ))
+            GRAFANA_URL="https://tempoxyz.grafana.net/d/dffj6qf1o30oowe/performance?orgId=1&from=${FROM_MS}&to=${TO_MS}&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=${BENCH_BENCHMARK_ID}&var-group_by=benchmark_run"
+            SUMMARY_ARGS="$SUMMARY_ARGS --grafana-url ${GRAFANA_URL}"
+          fi
           # shellcheck disable=SC2086
           python3 .github/scripts/bench-replay-summary.py $SUMMARY_ARGS
 

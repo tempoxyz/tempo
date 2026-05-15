@@ -51,6 +51,12 @@ WARMUP="${BENCH_WARMUP_BLOCKS:-1000}"
 
 mkdir -p "$BENCH_WORK_DIR"
 
+# Generate benchmark ID and reference epoch for Grafana dashboard links
+BENCH_BENCHMARK_ID="bench-replay-${CHAIN_NAME}-$(date -u +%Y%m%d-%H%M%S)"
+BENCH_REFERENCE_EPOCH=$(date +%s)
+echo "BENCH_BENCHMARK_ID=$BENCH_BENCHMARK_ID" >> "${GITHUB_ENV:-/dev/null}"
+echo "BENCH_REFERENCE_EPOCH=$BENCH_REFERENCE_EPOCH" >> "${GITHUB_ENV:-/dev/null}"
+
 # `cargo install` writes binaries to CARGO_HOME/bin, but self-hosted runner
 # services do not necessarily inherit a login-shell PATH for the runner user.
 CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
@@ -239,14 +245,26 @@ run_single() {
   total_mem_kb=$(awk '/^MemTotal:/ {print $2}' /proc/meminfo)
   local mem_limit=$(( total_mem_kb * 95 / 100 * 1024 ))
 
+  # Build OTEL_RESOURCE_ATTRIBUTES with benchmark_id and benchmark_run labels
+  local run_type="" run_git_ref=""
+  case "$label" in
+    baseline*) run_type="baseline"; run_git_ref="${BASELINE_REF:-}" ;;
+    feature*)  run_type="feature"; run_git_ref="${FEATURE_REF:-}" ;;
+  esac
+  local otel_attrs="benchmark_id=${BENCH_BENCHMARK_ID},benchmark_run=${label},run_type=${run_type},git_ref=${run_git_ref}"
+  if [ -n "${OTEL_RESOURCE_ATTRIBUTES:-}" ]; then
+    otel_attrs="${OTEL_RESOURCE_ATTRIBUTES},${otel_attrs}"
+  fi
+
   local scope_env=(env)
   local env_name env_value
-  for env_name in TEMPO_TELEMETRY_URL OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OTEL_RESOURCE_ATTRIBUTES OTEL_BSP_MAX_QUEUE_SIZE OTEL_BLRP_MAX_QUEUE_SIZE; do
+  for env_name in TEMPO_TELEMETRY_URL OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OTEL_BSP_MAX_QUEUE_SIZE OTEL_BLRP_MAX_QUEUE_SIZE; do
     env_value="${!env_name:-}"
     if [ -n "$env_value" ]; then
       scope_env+=("${env_name}=${env_value}")
     fi
   done
+  scope_env+=("OTEL_RESOURCE_ATTRIBUTES=${otel_attrs}")
 
   # Start tempo node (drop back to runner user, matching bench-e2e.nu)
   local run_uid run_gid

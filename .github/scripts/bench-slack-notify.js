@@ -119,6 +119,13 @@ function repoLink(repo) {
   return `<https://github.com/${repo}|Tempo>`;
 }
 
+function buildGrafanaUrl(benchmarkId, referenceEpoch) {
+  if (!benchmarkId || !referenceEpoch) return null;
+  const fromMs = referenceEpoch * 1000;
+  const toMs = Date.now();
+  return `https://tempoxyz.grafana.net/d/dffj6qf1o30oowe/performance?orgId=1&from=${fromMs}&to=${toMs}&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=${benchmarkId}&var-group_by=benchmark_run`;
+}
+
 function fmtBlockCount(baselineBlocks, featureBlocks) {
   if (baselineBlocks == null && featureBlocks == null) return '-';
   if (baselineBlocks === featureBlocks) return `\`${baselineBlocks}\``;
@@ -196,6 +203,15 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
       text: { type: 'plain_text', text: 'Diff :github:', emoji: true },
       url: diffUrl,
       action_id: 'diff_button',
+    });
+  }
+  const grafanaUrl = buildGrafanaUrl(summary.benchmark_id, summary.reference_epoch);
+  if (grafanaUrl) {
+    buttons.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'Grafana :chart_with_upwards_trend:', emoji: true },
+      url: grafanaUrl,
+      action_id: 'grafana_button',
     });
   }
 
@@ -440,6 +456,15 @@ function buildReplaySuccessBlocks({ summary, prNumber, actor, actorSlackId, jobU
           url: diffUrl,
           action_id: 'diff_button',
         },
+        ...((() => {
+          const gUrl = buildGrafanaUrl(process.env.BENCH_BENCHMARK_ID, Number(process.env.BENCH_REFERENCE_EPOCH));
+          return gUrl ? [{
+            type: 'button',
+            text: { type: 'plain_text', text: 'Grafana :chart_with_upwards_trend:', emoji: true },
+            url: gUrl,
+            action_id: 'grafana_button',
+          }] : [];
+        })()),
       ],
     },
   ];
