@@ -151,7 +151,6 @@ impl TIP1028Escrow {
             return Err(TIP1028EscrowError::invalid_receipt_claim().into());
         }
 
-        let guard = self.storage.checkpoint();
         self.blocked_receipt_amount[key].write(U256::ZERO)?;
 
         let reroute = match recovery_authority {
@@ -184,10 +183,7 @@ impl TIP1028Escrow {
                 to: call.to,
                 amount,
             },
-        ))?;
-
-        guard.commit();
-        Ok(())
+        ))
     }
 
     /// Allocates the next nonzero receipt nonce.
