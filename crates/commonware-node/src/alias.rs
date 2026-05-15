@@ -66,6 +66,10 @@ pub(crate) mod marshal {
         /// archive. Older blocks are served from reth via [`Hybrid`].
         pub finalized_blocks_retention: u64,
 
+        /// Whether to dual-write finalized block to the legacy
+        /// immutable archive in addition to the prunable archive.
+        pub with_legacy: bool,
+
         /// Epoch length / boundary configuration.
         pub epoch_strategy: FixedEpocher,
 
@@ -140,6 +144,7 @@ pub(crate) mod marshal {
             page_cache.clone(),
             execution_node.provider.clone(),
             config.finalized_blocks_retention,
+            config.with_legacy,
         )
         .await
         .wrap_err("failed to initialize hybrid finalized blocks store")?;

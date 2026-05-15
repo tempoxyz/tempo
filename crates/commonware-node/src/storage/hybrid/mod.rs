@@ -77,9 +77,9 @@
 //!   condition (e.g. follow-mode catching up while the EL has
 //!   independently synced past the cache window).
 //!
-//! The legacy archive accepts arbitrary heights and has already
-//! captured the block before the prunable write is attempted, so a
-//! future rollback also still sees it.
+//! The legacy archive (when present) accepts arbitrary heights and
+//! has already captured the block before the prunable write is
+//! attempted, so a future rollback also still sees it.
 //!
 //! # Why execution layer pruning is not a concern
 //!
@@ -220,11 +220,8 @@ where
     /// Prunable archive backing the most recently finalized blocks.
     pub(crate) prunable: Prunable<TContext>,
 
-    /// Legacy immutable archive opened for write-through. Always
-    /// present so the previous binary can still serve traffic if an
-    /// operator rolls back. The whole legacy code path is slated for
-    /// removal in an upcoming release.
-    pub(crate) legacy: immutable::Archive<TContext, Digest, Block>,
+    /// Legacy immutable archive opened for write-through.
+    pub(crate) legacy: Option<immutable::Archive<TContext, Digest, Block>>,
 
     /// Execution layer block provider used to look up finalized blocks below
     /// the cache window and to read reth's finalized watermark for cache
@@ -247,8 +244,8 @@ where
 /// the most recently finalized blocks) and reth (the source of truth for
 /// finalized blocks).
 ///
-/// Also write-throughs to a legacy immutable archive for rollback
-/// safety. The legacy archive is never read from or pruned by
+/// Optionally also write-throughs to a legacy immutable archive for
+/// rollback safety. The legacy archive is never read from or pruned by
 /// [`Hybrid`]; it is purely a backup ledger maintained for the previous
 /// binary's sake until an operator cleans it up. The whole legacy code
 /// path is slated for removal in an upcoming release.
@@ -261,8 +258,9 @@ where
     /// [`Self::evict_below_execution_finalized_floor`].
     prunable: Prunable<TContext>,
 
-    /// Legacy immutable archive opened for write-through.
-    legacy: immutable::Archive<TContext, Digest, Block>,
+    /// Legacy immutable archive opened for write-through. `None` when
+    /// the operator opts out of dual-writing (see [`Config::legacy`]).
+    legacy: Option<immutable::Archive<TContext, Digest, Block>>,
 
     /// Execution layer block provider used to look up finalized blocks below
     /// the cache window and to read reth's finalized watermark for cache
@@ -338,12 +336,14 @@ where
     async fn put(&mut self, block: Self::Block) -> Result<(), Self::Error> {
         let height = block.height();
         let digest = block.digest();
-        // Dual-write to the legacy archive first. Failing here before
-        // the prunable write keeps the rollback contract intact: if the
-        // legacy write fails we never advance the prunable side past
-        // what's in legacy, so the previous binary keeps a consistent
-        // view.
-        archive::Archive::put(&mut self.legacy, height.get(), digest, block.clone()).await?;
+        // Dual-write to the legacy archive first when present. Failing
+        // here before the prunable write keeps the rollback contract
+        // intact: if the legacy write fails we never advance the
+        // prunable side past what's in legacy, so the previous binary
+        // keeps a consistent view.
+        if let Some(legacy) = self.legacy.as_mut() {
+            archive::Archive::put(legacy, height.get(), digest, block.clone()).await?;
+        }
         match archive::Archive::put(&mut self.prunable, height.get(), digest, block).await {
             Ok(()) => {}
             // The prunable cache has already evicted this height — but
@@ -360,9 +360,9 @@ where
             // we don't trip the marshal's "failed to finalize" panic
             // on a perfectly recoverable condition.
             //
-            // The legacy archive accepts arbitrary heights and will
-            // already have captured the block above, so a future
-            // rollback also still sees it.
+            // The legacy archive (when present) accepts arbitrary
+            // heights and will already have captured the block above,
+            // so a future rollback also still sees it.
             Err(archive::Error::AlreadyPrunedTo(oldest_allowed)) => {
                 debug!(
                     %height,
@@ -390,7 +390,9 @@ where
     }
 
     async fn sync(&mut self) -> Result<(), Self::Error> {
-        archive::Archive::sync(&mut self.legacy).await?;
+        if let Some(legacy) = self.legacy.as_mut() {
+            archive::Archive::sync(legacy).await?;
+        }
         archive::Archive::sync(&mut self.prunable).await?;
         Ok(())
     }

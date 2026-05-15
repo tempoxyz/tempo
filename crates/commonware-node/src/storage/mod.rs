@@ -130,18 +130,20 @@ where
 /// archive (for `retention_blocks` recent items) and a reth provider lookup
 /// (for everything older).
 ///
-/// Always opens the legacy immutable finalized-blocks archive for
-/// write-through, creating its partitions on disk if they don't yet
-/// exist. The legacy archive is **not** destroyed — see [`legacy`] for
-/// the rollback-safety rationale. The whole legacy code path is slated
-/// for removal in an upcoming release.
-#[instrument(skip_all, fields(partition_prefix, retention_blocks), err(Display))]
+/// If `with_legacy`, also opens the legacy immutable finalized-blocks archive
+/// for write-through, creating its partitions on disk if they don't yet exist.
+#[instrument(
+    skip_all,
+    fields(partition_prefix, retention_blocks, with_legacy),
+    err(Display)
+)]
 pub(crate) async fn init_finalized_blocks<TContext, P>(
     context: &TContext,
     partition_prefix: &str,
     page_cache: CacheRef,
     provider: P,
     retention_blocks: u64,
+    with_legacy: bool,
 ) -> eyre::Result<Hybrid<TContext, P>>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
@@ -157,10 +159,15 @@ where
             .await
             .wrap_err("failed to initialize prunable finalized blocks archive")?;
 
-    let legacy =
-        legacy::init_legacy_finalized_blocks_archive(context, partition_prefix, page_cache)
-            .await
-            .wrap_err("failed to initialize legacy immutable finalized blocks archive")?;
+    let legacy = if with_legacy {
+        Some(
+            legacy::init_legacy_finalized_blocks_archive(context, partition_prefix, page_cache)
+                .await
+                .wrap_err("failed to initialize legacy immutable finalized blocks archive")?,
+        )
+    } else {
+        None
+    };
 
     Ok(Hybrid::new(hybrid::Config {
         prunable,

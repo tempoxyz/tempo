@@ -148,6 +148,11 @@ pub struct Setup {
 
     /// The fee recipient written into the V2 contract for each validator.
     pub fee_recipient: Address,
+
+    /// Whether to disable dual-writing finalized blocks to the legacy
+    /// immutable archive. When `true`, validators rely solely on the
+    /// prunable archive plus reth fallback for restart recovery.
+    pub no_legacy_archive: bool,
 }
 
 impl Setup {
@@ -166,6 +171,7 @@ impl Setup {
             t4_time: None,
             with_subblocks: false,
             fee_recipient: Address::ZERO,
+            no_legacy_archive: false,
         }
     }
 
@@ -225,6 +231,13 @@ impl Setup {
             ..self
         }
     }
+
+    pub fn no_legacy_archive(self, no_legacy_archive: bool) -> Self {
+        Self {
+            no_legacy_archive,
+            ..self
+        }
+    }
 }
 
 impl Default for Setup {
@@ -250,6 +263,7 @@ pub async fn setup_validators(
         t4_time,
         with_subblocks,
         fee_recipient,
+        no_legacy_archive,
         ..
     }: Setup,
 ) -> (Vec<TestingNode<Context>>, ExecutionRuntime) {
@@ -326,6 +340,7 @@ pub async fn setup_validators(
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
             finalized_blocks_retention: 1024,
+            with_legacy: !no_legacy_archive,
         };
 
         nodes.push(TestingNode::new(

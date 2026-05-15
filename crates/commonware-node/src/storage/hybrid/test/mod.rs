@@ -59,7 +59,7 @@ impl SetupHybrid {
             BufferPooler + Storage + Metrics + Clock + Spawner + Clone + Send + Sync + 'static,
     {
         let prunable = fresh_prunable_with_section_size(context, self.section_size).await;
-        let legacy = fresh_legacy(context).await;
+        let legacy = Some(fresh_legacy(context).await);
         let provider = StubProvider::new();
         let hybrid = Hybrid::new(Config {
             prunable,
@@ -260,11 +260,14 @@ fn put_dual_writes_to_legacy_and_get_skips_legacy() {
 
         // The dual-write put-into-legacy is observable through the
         // hybrid's own legacy field.
+        let legacy = hybrid
+            .legacy
+            .as_ref()
+            .expect("SetupHybrid initializes legacy as Some");
         for block in &blocks {
-            let stored =
-                archive::Archive::get(&hybrid.legacy, Identifier::Index(block.height().get()))
-                    .await
-                    .expect("legacy get");
+            let stored = archive::Archive::get(legacy, Identifier::Index(block.height().get()))
+                .await
+                .expect("legacy get");
             assert_eq!(stored.as_ref(), Some(block));
         }
 

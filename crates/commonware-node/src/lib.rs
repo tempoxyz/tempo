@@ -124,6 +124,7 @@ pub async fn run_consensus_stack(
         feed_state,
 
         finalized_blocks_retention: config.finalized_blocks_retention,
+        with_legacy: !config.no_legacy_archive,
     }
     .try_init(context.with_label("engine"))
     .await
@@ -187,6 +188,7 @@ pub async fn run_follow_stack(
         mailbox_size: config.mailbox_size,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
         finalized_blocks_retention: config.finalized_blocks_retention,
+        with_legacy: !config.no_legacy_archive,
     };
 
     let ret = config
