@@ -29,6 +29,7 @@ use rand_08::{CryptoRng, Rng};
 use eyre::{OptionExt as _, Report, WrapErr as _};
 use reth_node_core::primitives::SealedBlock;
 use reth_provider::HeaderProvider as _;
+use tempo_chainspec::NetworkIdentity;
 use tempo_node::{TempoFullNode, rpc::consensus::Event};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, instrument, warn, warn_span};
@@ -92,6 +93,19 @@ pub(super) fn try_init<TContext>(
     )
     .wrap_err("the genesis header did not contain a DKG outcome")?;
 
+    if let Some(network_identity) = config.network_identity.as_ref()
+        && onchain_outcome.epoch.get() >= network_identity.from_epoch
+        && network_identity.identity != *onchain_outcome.network_identity()
+    {
+        warn!(
+            compiled_from_epoch = network_identity.from_epoch,
+            onchain_epoch = %onchain_outcome.epoch,
+            compiled_network_identity = %network_identity.identity,
+            onchain_network_identity = %onchain_outcome.network_identity(),
+            "Network identity differs from the on-chain DKG outcome!!! update the binary with the latest network identity"
+        );
+    }
+
     config.scheme_provider.register(
         onchain_outcome.epoch,
         Scheme::certificate_verifier(
@@ -113,6 +127,7 @@ pub(super) fn try_init<TContext>(
 pub(super) struct Config {
     pub(super) execution_node: Arc<TempoFullNode>,
     pub(super) scheme_provider: SchemeProvider,
+    pub(super) network_identity: Option<NetworkIdentity>,
 
     // TODO: What to do with this information?
     pub(super) last_finalized_height: Height,
@@ -267,6 +282,19 @@ where
                 )
             })?;
 
+            if let Some(network_identity) = self.config.network_identity.as_ref()
+                && onchain_outcome.epoch.get() >= network_identity.from_epoch
+                && network_identity.identity != *onchain_outcome.network_identity()
+            {
+                warn!(
+                    compiled_from_epoch = network_identity.from_epoch,
+                    onchain_epoch = %onchain_outcome.epoch,
+                    compiled_network_identity = %network_identity.identity,
+                    onchain_network_identity = %onchain_outcome.network_identity(),
+                    "Network identity differs from the on-chain DKG outcome!!! update the binary with the latest network identity"
+                );
+            }
+
             self.config.scheme_provider.register(
                 onchain_outcome.epoch,
                 Scheme::certificate_verifier(
@@ -356,6 +384,18 @@ where
                 &mut block.header().extra_data().as_ref(),
             )
             .expect("boundary blocks must contain DKG outcomes");
+            if let Some(network_identity) = self.config.network_identity.as_ref()
+                && onchain_outcome.epoch.get() >= network_identity.from_epoch
+                && network_identity.identity != *onchain_outcome.network_identity()
+            {
+                warn!(
+                    compiled_from_epoch = network_identity.from_epoch,
+                    onchain_epoch = %onchain_outcome.epoch,
+                    compiled_network_identity = %network_identity.identity,
+                    onchain_network_identity = %onchain_outcome.network_identity(),
+                    "Network identity differs from the on-chain DKG outcome!!! update the binary with the latest network identity"
+                );
+            }
             self.config.scheme_provider.register(
                 onchain_outcome.epoch,
                 Scheme::certificate_verifier(

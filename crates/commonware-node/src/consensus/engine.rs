@@ -129,6 +129,7 @@ where
         );
 
         let scheme_provider = SchemeProvider::new();
+        let network_identity = execution_node.chain_spec().network_identity().cloned();
 
         let finalizations_by_height = storage::init_finalizations_archive(
             &context,
@@ -277,6 +278,7 @@ where
                 marshal: marshal_mailbox.clone(),
                 feed: feed_mailbox.clone(),
                 scheme_provider: scheme_provider.clone(),
+                network_identity: network_identity.clone(),
                 time_to_collect_notarizations: self.time_to_collect_notarizations,
                 time_to_retry_nullify_broadcast: self.time_to_retry_nullify_broadcast,
                 partition_prefix: format!("{}_epoch_manager", self.partition_prefix),
@@ -292,6 +294,7 @@ where
                 epoch_strategy: epoch_strategy.clone(),
                 execution_node,
                 initial_share: self.share.clone(),
+                network_identity,
                 mailbox_size: self.mailbox_size,
                 marshal: marshal_mailbox,
                 namespace: crate::config::NAMESPACE.to_vec(),

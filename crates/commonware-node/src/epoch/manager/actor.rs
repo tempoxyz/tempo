@@ -472,10 +472,25 @@ where
                 .await
                 .await
                 .map_err(|_| eyre!("marshal never returned the block"))?;
+
             let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
                 &mut block.header().extra_data().as_ref(),
             )
             .expect("boundary blocks must contain DKG outcomes");
+
+            if let Some(network_identity) = self.config.network_identity.as_ref()
+                && onchain_outcome.epoch.get() >= network_identity.from_epoch
+                && network_identity.identity != *onchain_outcome.network_identity()
+            {
+                warn!(
+                    compiled_from_epoch = network_identity.from_epoch,
+                    onchain_epoch = %onchain_outcome.epoch,
+                    compiled_network_identity = %network_identity.identity,
+                    onchain_network_identity = %onchain_outcome.network_identity(),
+                    "Network identity differs from the on-chain DKG outcome!!! update the binary with the latest network identity"
+                );
+            }
+
             self.config.scheme_provider.register(
                 onchain_outcome.epoch,
                 Scheme::verifier(

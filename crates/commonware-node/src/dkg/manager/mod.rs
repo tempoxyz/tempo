@@ -6,6 +6,7 @@ use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage};
 use eyre::WrapErr as _;
 use futures::channel::mpsc;
 use rand_core::CryptoRngCore;
+use tempo_chainspec::NetworkIdentity;
 use tempo_node::TempoFullNode;
 
 mod actor;
@@ -64,4 +65,6 @@ pub(crate) struct Config {
 
     /// This node's initial share of the bls12381 private key.
     pub(crate) initial_share: Option<Share>,
+
+    pub(crate) network_identity: Option<NetworkIdentity>,
 }

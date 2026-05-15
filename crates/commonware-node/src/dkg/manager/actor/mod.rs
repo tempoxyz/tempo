@@ -37,6 +37,7 @@ use prometheus_client::metrics::{counter::Counter, gauge::Gauge};
 use rand_core::CryptoRngCore;
 use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
 use reth_provider::{BlockIdReader as _, HeaderProvider as _};
+use tempo_chainspec::NetworkIdentity;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
@@ -175,6 +176,7 @@ where
                 let mut context = self.context.clone();
                 let execution_node = self.config.execution_node.clone();
                 let initial_share = self.config.initial_share.clone();
+                let network_identity = self.config.network_identity.clone();
                 let epoch_strategy = self.config.epoch_strategy.clone();
                 let mut marshal = self.config.marshal.clone();
                 async move {
@@ -182,6 +184,7 @@ where
                         &mut context,
                         &execution_node,
                         initial_share.clone(),
+                        network_identity.as_ref(),
                         &epoch_strategy,
                         &mut marshal,
                     )
@@ -712,6 +715,18 @@ where
             &mut block.header().extra_data().as_ref(),
         )
         .expect("the last block of an epoch must contain the DKG outcome");
+        if let Some(network_identity) = self.config.network_identity.as_ref()
+            && onchain_outcome.epoch.get() >= network_identity.from_epoch
+            && network_identity.identity != *onchain_outcome.network_identity()
+        {
+            warn!(
+                compiled_from_epoch = network_identity.from_epoch,
+                onchain_epoch = %onchain_outcome.epoch,
+                compiled_network_identity = %network_identity.identity,
+                onchain_network_identity = %onchain_outcome.network_identity(),
+                "Network identity differs from the on-chain DKG outcome!!! update the binary with the latest network identity"
+            );
+        }
 
         info!("reading validator from contract");
 
@@ -877,6 +892,18 @@ where
             &mut block.header().extra_data().as_ref(),
         )
         .expect("the last block of an epoch must contain the DKG outcome");
+        if let Some(network_identity) = self.config.network_identity.as_ref()
+            && onchain_outcome.epoch.get() >= network_identity.from_epoch
+            && network_identity.identity != *onchain_outcome.network_identity()
+        {
+            warn!(
+                compiled_from_epoch = network_identity.from_epoch,
+                onchain_epoch = %onchain_outcome.epoch,
+                compiled_network_identity = %network_identity.identity,
+                onchain_network_identity = %onchain_outcome.network_identity(),
+                "Network identity differs from the on-chain DKG outcome!!! update the binary with the latest network identity"
+            );
+        }
 
         info!("reading validators from contract");
 
@@ -1247,6 +1274,7 @@ async fn read_initial_state_and_set_floor<TContext>(
     context: &mut TContext,
     node: &TempoFullNode,
     share: Option<Share>,
+    network_identity: Option<&NetworkIdentity>,
     epoch_strategy: &FixedEpocher,
     marshal: &mut crate::alias::marshal::Mailbox,
 ) -> eyre::Result<State>
@@ -1300,6 +1328,18 @@ where
         &mut boundary_header.extra_data().as_ref(),
     )
     .wrap_err("the boundary header did not contain the on-chain DKG outcome")?;
+    if let Some(network_identity) = network_identity
+        && onchain_outcome.epoch.get() >= network_identity.from_epoch
+        && network_identity.identity != *onchain_outcome.network_identity()
+    {
+        warn!(
+            compiled_from_epoch = network_identity.from_epoch,
+            onchain_epoch = %onchain_outcome.epoch,
+            compiled_network_identity = %network_identity.identity,
+            onchain_network_identity = %onchain_outcome.network_identity(),
+            "Network identity differs from the on-chain DKG outcome!!! update the binary with the latest network identity"
+        );
+    }
 
     let share = state::ShareState::Plaintext('verify_initial_share: {
         let Some(share) = share else {

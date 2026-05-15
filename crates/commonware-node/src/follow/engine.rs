@@ -181,6 +181,7 @@ impl<TUpstream> Config<TUpstream> {
             driver::Config {
                 execution_node: self.execution_node.clone(),
                 scheme_provider: scheme_provider.clone(),
+                network_identity: self.execution_node.chain_spec().network_identity().cloned(),
                 last_finalized_height,
                 marshal: marshal_mailbox,
                 feed: feed_mailbox,

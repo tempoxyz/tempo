@@ -13,6 +13,7 @@ use commonware_runtime::{
     BufferPooler, Clock, Metrics, Network, Spawner, Storage, buffer::paged::CacheRef,
 };
 use rand_08::{CryptoRng, Rng};
+use tempo_chainspec::NetworkIdentity;
 
 use crate::{epoch::scheme_provider::SchemeProvider, feed, subblocks};
 
@@ -28,6 +29,7 @@ pub(crate) struct Config<TBlocker> {
     pub(crate) marshal: crate::alias::marshal::Mailbox,
     pub(crate) feed: feed::Mailbox,
     pub(crate) scheme_provider: SchemeProvider,
+    pub(crate) network_identity: Option<NetworkIdentity>,
     pub(crate) time_to_collect_notarizations: Duration,
     pub(crate) time_to_retry_nullify_broadcast: Duration,
     pub(crate) partition_prefix: String,
