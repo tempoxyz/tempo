@@ -1,29 +1,30 @@
-//! [`Hybrid`] is a prunable archive of finalizeld blocks in front of reth.
+//! [`Hybrid`] is a prunable archive of finalizeld blocks in front of the
+//! execution layer/reth.
 //!
-//! Reth is the source of truth for finalized blocks. The prunable archive
+//! The  EL is the source of truth for finalized blocks. The prunable archive
 //! is a hot cache for the most recently finalized blocks, sized so that
 //! the marshal can serve gap-repair traffic without round-tripping to
-//! reth for every read. The marshal actor only ever interacts with the
+//! the EL for every read. The marshal actor only ever interacts with the
 //! [`Blocks`] interface so it is unaware whether a given block is served
-//! from the cache or from reth.
+//! from the cache or from the EL.
 //!
 //! # Eviction
 //!
-//! The cache is evicted as reth's finalized watermark rises, not on
-//! the height the marshal happens to put. Each [`Blocks::put`] queries
+//! The cache is evicted as the execution layer's finalized watermark rises, not
+//! on the height the marshal happens to put. Each [`Blocks::put`] queries
 //! [`BlockIdReader::finalized_block_number`] and asks the prunable
 //! archive to drop everything below
-//! `reth_finalized − retention_blocks + 1`. Two consequences:
+//! `execution_finalized − retention_blocks + 1`. Two consequences:
 //!
-//! - The cache never drops a block reth doesn't yet have. If reth is
-//!   lagging the marshal, the cache may temporarily hold more than
+//! - The cache never drops a block the EL doesn't yet have. If the EL is
+//!   lagging marshal, the cache may temporarily hold more than
 //!   `retention_blocks` items — that's safe and intentional.
 //! - The cache eviction floor is decoupled from the marshal's view of
 //!   "tip". An explicit [`Blocks::prune`] call from the marshal is
 //!   intentionally a **no-op** ([`Hybrid::prune`]) — eviction is
-//!   reth-driven only. The trait contract ("`min` must remain") is
+//!   EL-driven only. The trait contract ("`min` must remain") is
 //!   trivially satisfied because we keep at least `retention_blocks`
-//!   items above reth's finalized boundary.
+//!   items above EL's finalized boundary.
 //!
 //! # Section-rounding
 //!
@@ -37,7 +38,7 @@
 //!   `retention_blocks` and `retention_blocks + items_per_section − 1`
 //!   items. Pruning fires roughly once per `items_per_section` puts, in
 //!   one-section batches.
-//! - The "prunable holds recent, reth holds old" boundary is the
+//! - The "prunable holds recent, EL holds old" boundary is the
 //!   archive's section-aligned `oldest_allowed`, not `tip − retention`.
 //!   Reads in `[oldest_allowed, tip − retention)` still hit prunable.
 //!   Same finalized block, same correctness; just a slightly wasteful
@@ -60,30 +61,30 @@
 //! [`Hybrid::put`] turns the prunable archive's
 //! [`archive::Error::AlreadyPrunedTo`] into a *silent success* rather
 //! than propagating it. The reasoning, which also explains why we
-//! don't worry about reth pruning the same height (next section):
+//! don't worry about EL pruning the same height (next section):
 //!
 //! - The cache eviction invariant is
-//!   `oldest_allowed ≤ section_aligned(reth_finalized − retention + 1)
-//!   ≤ reth_finalized`.
-//! - So a put at `H < oldest_allowed` implies `H ≤ reth_finalized`.
-//! - Reth's finality contract guarantees every block at or below
-//!   `reth_finalized` is durably persisted in reth's storage and
+//!   `oldest_allowed ≤ section_aligned(execution_finalized − retention + 1)
+//!   ≤ execution_finalized`.
+//! - So a put at `H < oldest_allowed` implies `H ≤ execution_finalized`.
+//! - The EL's finality contract guarantees every block at or below
+//!   `execution_finalized` is durably persisted in the EL's storage and
 //!   cannot be reorged.
-//! - We can't write to reth's storage ourselves, but we don't have to:
+//! - We can't write to the EL's storage ourselves, but we don't have to:
 //!   the marshal's subsequent [`Blocks::get`] hits the prunable miss
-//!   path and is served from the reth fallback.
+//!   path and is served from EL fallback.
 //! - Surfacing the error instead would crash the node via marshal's
 //!   `panic!("failed to finalize")` on a perfectly recoverable
-//!   condition (e.g. follow-mode catching up while reth has
+//!   condition (e.g. follow-mode catching up while the EL has
 //!   independently synced past the cache window).
 //!
 //! The legacy archive accepts arbitrary heights and has already
 //! captured the block before the prunable write is attempted, so a
 //! future rollback also still sees it.
 //!
-//! # Why reth pruning is not a concern
+//! # Why execution layer pruning is not a concern
 //!
-//! Reth has its own pruning configuration; an operator can configure
+//! The EL/reth has its own pruning configuration; an operator can configure
 //! it to retain only a window of recent history. That introduces a
 //! `reth.pruned_below` watermark below which reth has discarded block
 //! data. By construction reth never prunes above `reth.finalized`, so
@@ -325,16 +326,15 @@ where
         }
     }
 
-    /// Ask the prunable archive to drop entries below reth's finalized
-    /// watermark minus `retention_blocks`.
+    /// Drops blocks below the execution layer's finalized watermark.
     ///
-    /// The cache is sized relative to reth's finalized boundary, not to
+    /// The cache is sized relative to the EL's finalized boundary, not to
     /// the height the marshal happens to put. This keeps two invariants:
     ///
-    /// - We never evict a block reth doesn't yet have. If reth is lagging
-    ///   the marshal, `reth_finalized` is small (or zero) and no eviction
+    /// - We never evict a block the EL doesn't yet have. If the EL is lagging
+    ///   the marshal, `execution_finalized` is small (or zero) and no eviction
     ///   happens; the cache temporarily grows past `retention_blocks`.
-    /// - Eviction tracks reth's progress monotonically. Once reth
+    /// - Eviction tracks the EL's progress monotonically. Once the EL
     ///   finalizes height `H`, the cache may drop everything below
     ///   `H - retention_blocks + 1` on the next put.
     ///
@@ -342,13 +342,13 @@ where
     /// *down* to a section boundary, so the actual retained window can
     /// exceed `retention_blocks` by up to `items_per_section − 1` items.
     /// See the module docs ("Section-rounding") for the full story.
-    async fn evict_below_reth_finalized_floor(&mut self) -> Result<(), archive::Error> {
+    async fn evict_below_execution_finalized_floor(&mut self) -> Result<(), archive::Error> {
         // Reth hasn't finalized anything yet (fresh chain) — nothing is
         // safe to evict.
-        let Some(reth_finalized) = self.provider.finalized_height() else {
+        let Some(execution_finalized) = self.provider.finalized_height() else {
             return Ok(());
         };
-        let Some(min_to_keep) = reth_finalized.checked_sub(self.retention_blocks) else {
+        let Some(min_to_keep) = execution_finalized.checked_sub(self.retention_blocks) else {
             return Ok(());
         };
         let prune_floor = min_to_keep.saturating_add(1);
@@ -378,13 +378,13 @@ where
             Ok(()) => {}
             // The prunable cache has already evicted this height — but
             // by the cache's eviction invariant
-            // (`oldest_allowed ≤ section_aligned(reth_finalized − retention + 1)
-            // ≤ reth_finalized`), `height < oldest_allowed` implies
-            // `height ≤ reth_finalized`. Reth's finality contract
-            // guarantees every block at or below `reth_finalized` is
+            // (`oldest_allowed ≤ section_aligned(execution_finalized − retention + 1)
+            // ≤ execution_finalized`), `height < oldest_allowed` implies
+            // `height ≤ execution_finalized`. The EL's finality contract
+            // guarantees every block at or below `execution_finalized` is
             // durably persisted, so the marshal's subsequent
-            // `Blocks::get(height)` will be served out of the reth
-            // fallback path. We can't write to reth ourselves (it owns
+            // `Blocks::get(height)` will be served out of the execution
+            // layer fallback path. We can't write to EL ourselves (it owns
             // its own storage), but we don't have to — the block is
             // already durable. Treat the put as a successful no-op so
             // we don't trip the marshal's "failed to finalize" panic
@@ -397,15 +397,16 @@ where
                 debug!(
                     %height,
                     oldest_allowed,
-                    reth_finalized = ?self.provider.finalized_height(),
-                    "finalized block below prunable cache window; trusting reth's \
-                     finalized storage and treating put as a no-op"
+                    execution_finalized = ?self.provider.finalized_height(),
+                    "finalized block below prunable cache window; trusting the \
+                    execution layer's finalized storage and treating put as a \
+                    no-op"
                 );
             }
             Err(other) => return Err(other.into()),
         }
 
-        if let Err(err) = self.evict_below_reth_finalized_floor().await {
+        if let Err(err) = self.evict_below_execution_finalized_floor().await {
             // Eviction failures are not fatal; the next put will retry.
             // We log because they may indicate disk-level issues.
             warn!(
@@ -425,8 +426,10 @@ where
     }
 
     async fn get(&self, id: Identifier<'_, Digest>) -> Result<Option<Self::Block>, Self::Error> {
-        // Try the prunable archive first; on miss, fall back to reth.
-        // Reth read errors propagate to the marshal — see this module's
+        // Try the prunable archive first; on miss, fall back to the execution
+        // layer.
+        //
+        // EL read errors propagate to the marshal — see this module's
         // doc comment ("Marshal panic behavior") for what happens then.
         match id {
             Identifier::Index(height) => {
@@ -437,7 +440,7 @@ where
                 }
                 debug!(
                     height,
-                    "finalized block missing from prunable archive, falling back to reth"
+                    "finalized block missing from prunable archive, falling back to execution layer"
                 );
                 Ok(self.provider.block_by_height(height)?)
             }
@@ -447,25 +450,25 @@ where
                 {
                     return Ok(Some(block));
                 }
-                debug!(%digest, "finalized block missing from prunable archive, falling back to reth");
+                debug!(%digest, "finalized block missing from prunable archive, falling back to execution layer");
                 Ok(self.provider.block_by_hash(digest.0)?)
             }
         }
     }
 
     async fn prune(&mut self, min: Height) -> Result<(), Self::Error> {
-        // Cache eviction is reth-driven (see [`Self::evict_below_reth_finalized_floor`]),
+        // Cache eviction is EL-driven (see [`Self::evict_below_execution_finalized_floor`]),
         // not marshal-driven, so we ignore explicit prune requests from
         // the marshal. The `Blocks::prune` contract ("`min` must remain")
         // is trivially satisfied by doing nothing — we only ever keep
         // *more* than the marshal asks. See the module docs ("Eviction")
         // for the rationale.
-        debug!(%min, "ignoring marshal prune request; cache eviction is reth-driven");
+        debug!(%min, "ignoring marshal prune request; cache eviction is execution-layer-driven");
         Ok(())
     }
 
     fn missing_items(&self, start: Height, max: usize) -> Vec<Height> {
-        // Reth is treated as a contiguous source; gaps can only exist in the
+        // EL is treated as a contiguous source; gaps can only exist in the
         // prunable archive. The marshal only ever asks about heights at or
         // above `last_processed_height`, which the prunable archive must
         // cover.
@@ -483,7 +486,7 @@ where
     fn last_index(&self) -> Option<Height> {
         // Only report what lives in the prunable archive. The marshal uses
         // this to drive repair against the certificates archive; reflecting
-        // reth here would mask gaps the marshal needs to fill via the
+        // EL here would mask gaps the marshal needs to fill via the
         // resolver.
         archive::Archive::last_index(&self.prunable).map(Height::new)
     }
