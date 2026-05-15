@@ -243,7 +243,7 @@ pub(crate) enum Error {
 pub(crate) type Prunable<TContext> = prunable::Archive<TwoCap, TContext, Digest, Block>;
 
 /// Configuration for [`Hybrid`].
-pub(crate) struct Config<TContext, P>
+pub(crate) struct Config<TContext, TExecutionBlockProvider>
 where
     TContext: BufferPooler + Storage + Metrics + Clock,
 {
@@ -258,9 +258,10 @@ where
     /// removal in an upcoming release.
     pub(crate) legacy: Legacy<TContext>,
 
-    /// Reth provider used to look up finalized blocks below the cache
-    /// window and to read reth's finalized watermark for cache eviction.
-    pub(crate) provider: P,
+    /// Execution layer block provider used to look up finalized blocks below
+    /// the cache window and to read reth's finalized watermark for cache
+    /// eviction.
+    pub(crate) execution_block_provider: TExecutionBlockProvider,
 
     /// Target number of most-recently-finalized blocks (relative to
     /// reth's finalized watermark) to keep in the prunable cache. The
@@ -283,7 +284,7 @@ where
 /// [`Hybrid`]; it is purely a backup ledger maintained for the previous
 /// binary's sake until an operator cleans it up. The whole legacy code
 /// path is slated for removal in an upcoming release.
-pub(crate) struct Hybrid<TContext, P>
+pub(crate) struct Hybrid<TContext, TExecutionBlockProvider>
 where
     TContext: BufferPooler + Storage + Metrics + Clock,
 {
@@ -295,9 +296,10 @@ where
     /// Legacy immutable archive opened for write-through.
     legacy: Legacy<TContext>,
 
-    /// Reth provider used to look up finalized blocks below the cache
-    /// window and to read reth's finalized watermark for cache eviction.
-    provider: P,
+    /// Execution layer block provider used to look up finalized blocks below
+    /// the cache window and to read reth's finalized watermark for cache
+    /// eviction.
+    execution_block_provider: TExecutionBlockProvider,
 
     /// Number of most-recently-finalized blocks (relative to reth's
     /// finalized watermark) to keep in the prunable cache. Anything
@@ -315,13 +317,13 @@ where
         let Config {
             prunable,
             legacy,
-            provider,
+            execution_block_provider: provider,
             retention_blocks,
         } = config;
         Self {
             prunable,
             legacy,
-            provider,
+            execution_block_provider: provider,
             retention_blocks,
         }
     }
@@ -345,7 +347,7 @@ where
     async fn evict_below_execution_finalized_floor(&mut self) -> Result<(), archive::Error> {
         // Reth hasn't finalized anything yet (fresh chain) — nothing is
         // safe to evict.
-        let Some(execution_finalized) = self.provider.finalized_height() else {
+        let Some(execution_finalized) = self.execution_block_provider.finalized_height() else {
             return Ok(());
         };
         let Some(min_to_keep) = execution_finalized.checked_sub(self.retention_blocks) else {
@@ -356,10 +358,10 @@ where
     }
 }
 
-impl<TContext, P> Blocks for Hybrid<TContext, P>
+impl<TContext, TExecutionBlockProvider> Blocks for Hybrid<TContext, TExecutionBlockProvider>
 where
     TContext: BufferPooler + Storage + Metrics + Clock + Send + Sync + 'static,
-    P: FinalizedBlocksProvider + 'static,
+    TExecutionBlockProvider: FinalizedBlocksProvider + 'static,
 {
     type Block = Block;
     type Error = Error;
@@ -397,7 +399,7 @@ where
                 debug!(
                     %height,
                     oldest_allowed,
-                    execution_finalized = ?self.provider.finalized_height(),
+                    execution_finalized = ?self.execution_block_provider.finalized_height(),
                     "finalized block below prunable cache window; trusting the \
                     execution layer's finalized storage and treating put as a \
                     no-op"
@@ -442,7 +444,7 @@ where
                     height,
                     "finalized block missing from prunable archive, falling back to execution layer"
                 );
-                Ok(self.provider.block_by_height(height)?)
+                Ok(self.execution_block_provider.block_by_height(height)?)
             }
             Identifier::Key(digest) => {
                 if let Some(block) =
@@ -451,7 +453,7 @@ where
                     return Ok(Some(block));
                 }
                 debug!(%digest, "finalized block missing from prunable archive, falling back to execution layer");
-                Ok(self.provider.block_by_hash(digest.0)?)
+                Ok(self.execution_block_provider.block_by_hash(digest.0)?)
             }
         }
     }

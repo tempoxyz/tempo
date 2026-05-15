@@ -164,7 +164,7 @@ where
     Ok(Hybrid::new(hybrid::Config {
         prunable,
         legacy,
-        provider,
+        execution_block_provider: provider,
         retention_blocks,
     }))
 }
