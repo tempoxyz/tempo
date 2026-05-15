@@ -616,17 +616,29 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
     let fee_beneficiary = Address::ZERO;
 
     // Create a two-hop fee route: user_fee_token -> hop_fee_token -> PATH_USD.
-    let hop_fee_token =
-        setup_token_manual(&mut setup.node, &user_provider, &user_signer, chain_id).await?;
+    // Track the next available nonce so CodeQL doesn't flag sequential test nonces as
+    // hard-coded cryptographic values.
+    let mut nonce = 0u64;
+    let hop_fee_token = setup_token_manual_with_quote_and_nonce(
+        &mut setup.node,
+        &user_provider,
+        &user_signer,
+        chain_id,
+        PATH_USD_ADDRESS,
+        nonce,
+    )
+    .await?;
+    nonce += 3; // setup_token_manual uses 3 txs (create, grantRole, mint)
     let user_fee_token = setup_token_manual_with_quote_and_nonce(
         &mut setup.node,
         &user_provider,
         &user_signer,
         chain_id,
         *hop_fee_token.address(),
-        3,
+        nonce,
     )
     .await?;
+    nonce += 3;
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, user_provider.clone());
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, user_provider.clone());
@@ -645,9 +657,10 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
                 user_address,
             )
             .into_transaction_request(),
-        6,
+        nonce,
     )
     .await?;
+    nonce += 1;
     setup.node.advance_block().await?;
     sign_and_inject(
         &mut setup.node,
@@ -661,9 +674,10 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
                 user_address,
             )
             .into_transaction_request(),
-        7,
+        nonce,
     )
     .await?;
+    nonce += 1;
     setup.node.advance_block().await?;
 
     // Set the user's fee token preference to the custom token
@@ -674,9 +688,10 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         fee_manager
             .setUserToken(*user_fee_token.address())
             .into_transaction_request(),
-        8,
+        nonce,
     )
     .await?;
+    nonce += 1;
     setup.node.advance_block().await?;
 
     // Record collected fees before the attack block
@@ -693,7 +708,7 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         ITIP20::new(PATH_USD_ADDRESS, user_provider.clone())
             .transfer(Address::random(), U256::from(1))
             .into_transaction_request(),
-        9,
+        nonce,
     )
     .await?;
 
