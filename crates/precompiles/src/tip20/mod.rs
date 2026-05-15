@@ -817,9 +817,7 @@ impl TIP20Token {
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         let Some(to) =
-            self.validate_transfer(msg_sender, call.to, call.amount, B256::ZERO, |this| {
-                this.check_and_update_spending_limit(msg_sender, call.amount)
-            })?
+            self.validate_transfer(msg_sender, msg_sender, call.to, call.amount, B256::ZERO)?
         else {
             return Ok(true);
         };
@@ -847,9 +845,7 @@ impl TIP20Token {
         call: ITIP20::transferFromCall,
     ) -> Result<bool> {
         let Some(to) =
-            self.validate_transfer(call.from, call.to, call.amount, B256::ZERO, |this| {
-                this.consume_allowance(call.from, msg_sender, call.amount)
-            })?
+            self.validate_transfer(msg_sender, call.from, call.to, call.amount, B256::ZERO)?
         else {
             return Ok(true);
         };
@@ -869,9 +865,7 @@ impl TIP20Token {
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool> {
         let Some(to) =
-            self.validate_transfer(call.from, call.to, call.amount, call.memo, |this| {
-                this.consume_allowance(call.from, msg_sender, call.amount)
-            })?
+            self.validate_transfer(msg_sender, call.from, call.to, call.amount, call.memo)?
         else {
             return Ok(true);
         };
@@ -920,10 +914,7 @@ impl TIP20Token {
             return Err(TIP20Error::unauthorized().into());
         }
 
-        let Some(to) = self.validate_transfer(from, caller, amount, B256::ZERO, |this| {
-            this.check_and_update_spending_limit(from, amount)
-        })?
-        else {
+        let Some(to) = self.validate_transfer(from, from, caller, amount, B256::ZERO)? else {
             return Ok(true);
         };
 
@@ -958,9 +949,7 @@ impl TIP20Token {
         call: ITIP20::transferWithMemoCall,
     ) -> Result<()> {
         let Some(to) =
-            self.validate_transfer(msg_sender, call.to, call.amount, call.memo, |this| {
-                this.check_and_update_spending_limit(msg_sender, call.amount)
-            })?
+            self.validate_transfer(msg_sender, msg_sender, call.to, call.amount, call.memo)?
         else {
             return Ok(());
         };
@@ -1066,27 +1055,29 @@ impl TIP20Token {
     /// authorization, and runs the caller-specific spend check. Additionally (+T6) applies
     /// TIP-1028 address-level receive policies.
     ///
-    /// `validate_spend` updates the sender's [`AccountKeychain`] spending limit for direct
-    /// transfers, or consumes allowance for `transfer_from` style calls.
+    /// Updates the sender's [`AccountKeychain`] spending limit for direct transfers, and
+    /// consumes allowance for `transfer_from` style calls.
     ///
     /// Returns `Some(to)` when the caller should perform the normal transfer.
     /// Returns `None` when funds were escrowed, and the caller should return immediately.
-    fn validate_transfer<F>(
+    fn validate_transfer(
         &mut self,
+        msg_sender: Address,
         from: Address,
         to: Address,
         amount: U256,
         memo: B256,
-        validate_spend: F,
-    ) -> Result<Option<Recipient>>
-    where
-        F: FnOnce(&mut Self) -> Result<()>,
-    {
+    ) -> Result<Option<Recipient>> {
         let to = Recipient::resolve(to)?;
         self.check_not_paused()?;
         to.validate()?;
         self.ensure_transfer_authorized(from, to.target)?;
-        validate_spend(self)?;
+
+        if msg_sender == from {
+            self.check_and_update_spending_limit(msg_sender, amount)?;
+        } else {
+            self.consume_allowance(from, msg_sender, amount)?;
+        }
 
         if self.validate_inbound_or_escrow(from, &to, amount, InboundKind::TRANSFER, memo)? {
             return Ok(None);
