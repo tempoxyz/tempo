@@ -45,8 +45,9 @@ serde.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-alloy = { workspace = true, features = ["providers", "rpc-types-eth", "sol-types", "transport-http"] }
+alloy = { workspace = true, features = ["providers", "reqwest", "rpc-client", "rpc-types-eth", "signers", "signer-local", "sol-types", "transport-http"] }
 alloy-signer.workspace = true
+reqwest.workspace = true
 eyre.workspace = true
 serde_json.workspace = true
 test-case.workspace = true
