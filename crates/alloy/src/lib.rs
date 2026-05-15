@@ -13,6 +13,9 @@ pub mod rpc;
 /// Transaction fillers.
 pub mod fillers;
 
+/// Relay transport for fee payer / sponsor support.
+pub mod transport;
+
 #[doc(inline)]
 pub use tempo_primitives as primitives;
 
