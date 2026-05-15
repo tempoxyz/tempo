@@ -144,7 +144,9 @@ pub fn chainspec_from_chain_id(chain_id: u64) -> Option<Arc<TempoChainSpec>> {
 pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/moderato.json"))
         .expect("`./genesis/moderato.json` must be present and deserializable");
+
     TempoChainSpec::from_genesis(genesis)
+        .with_network_identity(NetworkIdentity::moderato())
         .with_default_follow_url("wss://rpc.moderato.tempo.xyz")
         .into()
 });
@@ -152,7 +154,9 @@ pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 pub static PRESTO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/presto.json"))
         .expect("`./genesis/presto.json` must be present and deserializable");
+
     TempoChainSpec::from_genesis(genesis)
+        .with_network_identity(NetworkIdentity::presto())
         .with_default_follow_url("wss://rpc.presto.tempo.xyz")
         .into()
 });
@@ -163,6 +167,7 @@ pub static PRESTO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
     let genesis: Genesis = serde_json::from_str(include_str!("./genesis/dev.json"))
         .expect("`./genesis/dev.json` must be present and deserializable");
+
     TempoChainSpec::from_genesis(genesis).into()
 });
 
@@ -210,6 +215,7 @@ impl TempoChainSpec {
             consensus_context: None,
             inner,
         });
+
         let network_identity = NetworkIdentity::from_genesis_extra_data(
             inner.genesis_header().inner.extra_data.as_ref(),
         );
@@ -370,6 +376,7 @@ impl TempoHardforks for TempoChainSpec {
 #[cfg(test)]
 mod tests {
     use crate::hardfork::{TempoHardfork, TempoHardforks};
+    use alloy_primitives::hex;
     use commonware_codec::Encode as _;
     use reth_chainspec::{ForkCondition, Hardforks};
     use reth_cli::chainspec::ChainSpecParser as _;
@@ -412,14 +419,60 @@ mod tests {
 
     #[test]
     fn network_identity_defaults_to_genesis_extra_data() {
-        let chainspec = super::TempoChainSpecParser::parse("mainnet")
-            .expect("the mainnet chainspec must always be well formed");
+        let genesis: alloy_genesis::Genesis =
+            serde_json::from_str(include_str!("./genesis/presto.json"))
+                .expect("the mainnet genesis must always be well formed");
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
         let identity = chainspec
             .network_identity()
             .expect("mainnet genesis should contain a DKG outcome");
 
         assert_eq!(identity.from_epoch, 0);
-        assert!(!identity.identity.encode().is_empty());
+        assert_eq!(
+            identity.identity.encode().as_ref(),
+            &hex!(
+                "0xa217bb85001d4dcf8e5c50136f77af88cb2cab1857279b91c6240f41cca95c4f"
+                "43f6dcab3e0dfb87dafb3ecbeb6251e90a5df2e6c47432482821cd8b84665ee4"
+                "642589d2d9628a92b03e2bbfb00e006d038cd98def76d2a41b7c228c05f5a193"
+            )
+        );
+    }
+
+    #[test]
+    fn named_network_identities_are_hardcoded() {
+        let moderato = super::TempoChainSpecParser::parse("moderato")
+            .expect("the moderato chainspec must always be well formed");
+        let moderato_identity = moderato
+            .network_identity()
+            .expect("moderato should have a compiled network identity");
+        assert_eq!(moderato_identity.from_epoch, 51);
+        assert_eq!(
+            moderato_identity.identity.encode().as_ref(),
+            &hex!(
+                "0x84591ad702a9ee67c0c64add2ff166c19a4666a1dc636cc530a810052957d34c"
+                "185bb1d2c7f5569983485a5af49baed70166ba17ae782bc8c75701099c704747"
+                "98ccc181d03b0c12054f1d01c7817b27b425bae4bfcf936218c0d097cccf3242"
+            )
+        );
+
+        let testnet = super::TempoChainSpecParser::parse("testnet")
+            .expect("the testnet chainspec must always be well formed");
+        assert_eq!(testnet.network_identity(), moderato.network_identity());
+
+        let presto = super::TempoChainSpecParser::parse("mainnet")
+            .expect("the mainnet chainspec must always be well formed");
+        let presto_identity = presto
+            .network_identity()
+            .expect("mainnet should have a compiled network identity");
+        assert_eq!(presto_identity.from_epoch, 0);
+        assert_eq!(
+            presto_identity.identity.encode().as_ref(),
+            &hex!(
+                "0xa217bb85001d4dcf8e5c50136f77af88cb2cab1857279b91c6240f41cca95c4f"
+                "43f6dcab3e0dfb87dafb3ecbeb6251e90a5df2e6c47432482821cd8b84665ee4"
+                "642589d2d9628a92b03e2bbfb00e006d038cd98def76d2a41b7c228c05f5a193"
+            )
+        );
     }
 
     #[test]
