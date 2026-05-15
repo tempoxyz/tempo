@@ -68,10 +68,16 @@ IS_STALE="false"
 AGE_HOURS="0"
 CREATED_AT=""
 
-if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+if [ -n "${INPUT_REF:-}" ] || [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
   RUN_TYPE="release"
   ACTOR="e2e-release"
-  CURRENT_TAG="${GITHUB_REF_NAME:-}"
+
+  if [ -n "${INPUT_REF:-}" ]; then
+    CURRENT_TAG="$INPUT_REF"
+    echo "Using manually provided ref: $CURRENT_TAG"
+  else
+    CURRENT_TAG="${GITHUB_REF_NAME:-}"
+  fi
 
   if [ -z "$CURRENT_TAG" ]; then
     echo "::error::GITHUB_REF_NAME is not set for tag run"

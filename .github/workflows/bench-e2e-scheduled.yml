@@ -16,6 +16,11 @@ on:
       - "v*.*.*"
   workflow_dispatch:
     inputs:
+      ref:
+        description: "Git ref (tag or branch) to benchmark as a release run. When set, the workflow runs as a release comparison (ref vs. previous tag) without needing `--ref`."
+        required: false
+        default: ""
+        type: string
       force:
         description: "Force run even if no new nightly commit is available"
         required: false
@@ -51,6 +56,7 @@ jobs:
           DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           INPUT_FORCE: ${{ inputs.force || 'false' }}
+          INPUT_REF: ${{ inputs.ref || '' }}
         run: |
           presets=(tip20 mix)
           bench_entries=()
