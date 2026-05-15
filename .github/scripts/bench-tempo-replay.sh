@@ -337,6 +337,7 @@ run_single() {
   # Resolve git_ref: tag if tagged, otherwise branch name, otherwise raw SHA
   local git_ref="$git_sha"
   if [ -n "$git_sha" ]; then
+    git fetch --tags --quiet 2>/dev/null || true
     local tag_name
     tag_name=$(git tag --points-at "$git_sha" 2>/dev/null | head -1)
     if [ -n "$tag_name" ]; then
