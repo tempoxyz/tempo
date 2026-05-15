@@ -118,11 +118,15 @@ impl AssertJoinsLate {
 
             // Verify that the node is still progressing after sync
             let last_block = last.execution_provider().last_block_number().unwrap();
-            context.sleep(Duration::from_secs(10)).await;
-            assert!(
-                last.execution_provider().last_block_number().unwrap() > last_block,
-                "node should still be progressing after sync"
-            );
+            let mut progressed = false;
+            for _ in 0..100 {
+                context.sleep(Duration::from_millis(100)).await;
+                if last.execution_provider().last_block_number().unwrap() > last_block {
+                    progressed = true;
+                    break;
+                }
+            }
+            assert!(progressed, "node should still be progressing after sync");
         });
     }
 }
