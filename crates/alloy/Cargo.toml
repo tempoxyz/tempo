@@ -28,6 +28,7 @@ alloy-rpc-types-eth.workspace = true
 alloy-serde.workspace = true
 alloy-signer-local.workspace = true
 alloy-sol-types.workspace = true
+alloy-json-rpc.workspace = true
 alloy-transport.workspace = true
 
 reth-evm = { workspace = true, optional = true }
@@ -35,6 +36,7 @@ reth-primitives-traits = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
 reth-rpc-eth-types = { workspace = true, optional = true }
 
+tower.workspace = true
 dashmap.workspace = true
 derive_more.workspace = true
 futures.workspace = true
@@ -43,7 +45,7 @@ serde.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-alloy = { workspace = true, features = ["providers", "rpc-types-eth", "sol-types"] }
+alloy = { workspace = true, features = ["providers", "rpc-types-eth", "sol-types", "transport-http"] }
 alloy-signer.workspace = true
 eyre.workspace = true
 serde_json.workspace = true
