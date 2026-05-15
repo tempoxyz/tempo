@@ -34,7 +34,7 @@ use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 use crate::{
     consensus::block::Block,
     storage::{
-        PRUNABLE_ITEMS_PER_SECTION, REPLAY_BUFFER, WRITE_BUFFER,
+        REPLAY_BUFFER, WRITE_BUFFER,
         hybrid::{FinalizedBlocksProvider, Prunable},
         legacy::{Legacy, init_legacy_finalized_blocks_archive},
     },
@@ -174,18 +174,6 @@ where
     TContext: BufferPooler,
 {
     CacheRef::from_pooler(context, TEST_PAGE_SIZE, TEST_POOL_CAPACITY)
-}
-
-/// Initialize a fresh prunable finalized blocks archive against `context`
-/// with the production-default `items_per_section` (large enough that no
-/// pruning happens for the small chains used in most tests).
-pub(in crate::storage::hybrid) async fn fresh_prunable<TContext>(
-    context: &TContext,
-) -> Prunable<TContext>
-where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
-{
-    fresh_prunable_with_section_size(context, PRUNABLE_ITEMS_PER_SECTION).await
 }
 
 /// Initialize a fresh prunable finalized blocks archive against `context`

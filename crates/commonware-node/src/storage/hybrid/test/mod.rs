@@ -35,38 +35,35 @@ const PER_HEIGHT_SECTION: std::num::NonZeroU64 = NZU64!(1);
 /// observe pre-prune behavior.
 const RETENTION: u64 = 4;
 
-struct SetupHybrid<TContext>
-where
-    TContext: BufferPooler + Storage + Metrics + Clock + Spawner + Clone + Send + Sync + 'static,
-{
+struct SetupHybrid {
     retention: u64,
     section_size: std::num::NonZeroU64,
-    legacy: Option<Legacy<TContext>>,
 }
 
-impl<TContext> Default for SetupHybrid<TContext>
-where
-    TContext: BufferPooler + Storage + Metrics + Clock + Spawner + Clone + Send + Sync + 'static,
-{
+impl Default for SetupHybrid {
     fn default() -> Self {
         Self {
             retention: RETENTION,
             section_size: PRUNABLE_ITEMS_PER_SECTION,
-            legacy: None,
         }
     }
 }
 
-impl<TContext> SetupHybrid<TContext>
-where
-    TContext: BufferPooler + Storage + Metrics + Clock + Spawner + Clone + Send + Sync + 'static,
-{
-    async fn build(self, context: &TContext) -> (Hybrid<TContext, StubProvider>, StubProvider) {
+impl SetupHybrid {
+    async fn build<TContext>(
+        self,
+        context: &TContext,
+    ) -> (Hybrid<TContext, StubProvider>, StubProvider)
+    where
+        TContext:
+            BufferPooler + Storage + Metrics + Clock + Spawner + Clone + Send + Sync + 'static,
+    {
         let prunable = fresh_prunable_with_section_size(context, self.section_size).await;
+        let legacy = fresh_legacy(context).await;
         let provider = StubProvider::new();
         let hybrid = Hybrid::new(Config {
             prunable,
-            legacy: self.legacy,
+            legacy,
             provider: provider.clone(),
             retention_blocks: self.retention,
         });
@@ -246,13 +243,11 @@ fn missing_items_next_gap_and_last_index_reflect_prunable_only() {
 }
 
 #[test_traced]
-fn put_dual_writes_to_legacy_when_present_and_get_skips_legacy() {
+fn put_dual_writes_to_legacy_and_get_skips_legacy() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
-        let legacy = fresh_legacy(&context).await;
         let (mut hybrid, provider) = SetupHybrid {
             section_size: PER_HEIGHT_SECTION,
-            legacy: Some(legacy),
             ..Default::default()
         }
         .build(&context)
@@ -265,11 +260,11 @@ fn put_dual_writes_to_legacy_when_present_and_get_skips_legacy() {
 
         // The dual-write put-into-legacy is observable through the
         // hybrid's own legacy field.
-        let legacy_ref = hybrid.legacy.as_ref().expect("legacy still attached");
         for block in &blocks {
-            let stored = archive::Archive::get(legacy_ref, Identifier::Index(block.height().get()))
-                .await
-                .expect("legacy get");
+            let stored =
+                archive::Archive::get(&hybrid.legacy, Identifier::Index(block.height().get()))
+                    .await
+                    .expect("legacy get");
             assert_eq!(stored.as_ref(), Some(block));
         }
 
@@ -304,13 +299,7 @@ fn put_dual_writes_to_legacy_when_present_and_get_skips_legacy() {
 fn sync_flushes_both_archives() {
     let executor = deterministic::Runner::default();
     executor.start(|context| async move {
-        let legacy = fresh_legacy(&context).await;
-        let (mut hybrid, _) = SetupHybrid {
-            legacy: Some(legacy),
-            ..Default::default()
-        }
-        .build(&context)
-        .await;
+        let (mut hybrid, _) = SetupHybrid::default().build(&context).await;
 
         let blocks = make_chain(1, 2);
         for block in &blocks {
@@ -349,7 +338,6 @@ fn put_below_retention_silently_succeeds_when_reth_covers_the_height() {
         let (mut hybrid, provider) = SetupHybrid {
             retention: 2,
             section_size: PER_HEIGHT_SECTION,
-            ..Default::default()
         }
         .build(&context)
         .await;
@@ -401,7 +389,6 @@ fn prune_respects_section_boundary() {
         let (mut hybrid, provider) = SetupHybrid {
             retention: RETENTION,
             section_size: std::num::NonZeroU64::new(SECTION).unwrap(),
-            ..Default::default()
         }
         .build(&context)
         .await;
@@ -503,7 +490,6 @@ fn mid_section_prune_floor_keeps_live_tail_in_cache() {
         let (mut hybrid, provider) = SetupHybrid {
             retention: RETENTION,
             section_size: std::num::NonZeroU64::new(SECTION).unwrap(),
-            ..Default::default()
         }
         .build(&context)
         .await;
@@ -566,7 +552,6 @@ fn mid_section_silent_no_op_floor_is_section_aligned_not_requested() {
         let (mut hybrid, provider) = SetupHybrid {
             retention: RETENTION,
             section_size: std::num::NonZeroU64::new(SECTION).unwrap(),
-            ..Default::default()
         }
         .build(&context)
         .await;
@@ -621,7 +606,6 @@ fn eviction_no_op_when_advancing_reth_within_same_section() {
         let (mut hybrid, provider) = SetupHybrid {
             retention: RETENTION,
             section_size: std::num::NonZeroU64::new(SECTION).unwrap(),
-            ..Default::default()
         }
         .build(&context)
         .await;

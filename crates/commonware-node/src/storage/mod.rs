@@ -6,14 +6,12 @@
 //!
 //! Older deployments stored finalized blocks in an immutable archive. To
 //! preserve the ability to roll back to one of those releases, the
-//! [`legacy`] module is opened on every restart (unless the operator
-//! passes `--no-legacy-archive`), backfills any of the most recent
-//! `retention_blocks` heights into the prunable archive, and returns
-//! the legacy archive so [`hybrid::Hybrid`] can keep dual-writing every
-//! newly finalized block to it. On a fresh node this just creates an
-//! empty legacy archive; the backfill is a no-op. The legacy partitions
-//! are never removed automatically; an operator deletes them manually
-//! once they are confident a rollback is no longer needed.
+//! [`legacy`] module is opened on every restart and every newly
+//! finalized block is dual-written to it from [`hybrid::Hybrid`]. The
+//! legacy archive is read-only from this binary's perspective; it
+//! exists purely so the previous binary can still serve traffic if an
+//! operator rolls back. The whole legacy code path is slated for
+//! removal in an upcoming release.
 
 use std::time::Instant;
 
@@ -131,15 +129,11 @@ where
 /// archive (for `retention_blocks` recent items) and a reth provider lookup
 /// (for everything older).
 ///
-/// When `dual_write_to_legacy` is `true` (the default), this also opens
-/// the legacy immutable finalized-blocks archive for write-through —
-/// creating its partitions on disk if they don't yet exist — and
-/// backfills any of the most recent `retention_blocks` heights that the
-/// prunable archive is missing. The legacy archive is **not** destroyed
-/// — see [`legacy`] for the rollback-safety rationale. When
-/// `dual_write_to_legacy` is `false` (operator passes
-/// `--no-legacy-archive`) the legacy archive is left untouched on disk
-/// and the [`Hybrid`] only writes to the prunable archive.
+/// Always opens the legacy immutable finalized-blocks archive for
+/// write-through, creating its partitions on disk if they don't yet
+/// exist. The legacy archive is **not** destroyed — see [`legacy`] for
+/// the rollback-safety rationale. The whole legacy code path is slated
+/// for removal in an upcoming release.
 #[instrument(skip_all, fields(partition_prefix, retention_blocks), err(Display))]
 pub(crate) async fn init_hybrid_finalized_blocks<TContext, P>(
     context: &TContext,
@@ -147,7 +141,6 @@ pub(crate) async fn init_hybrid_finalized_blocks<TContext, P>(
     page_cache: CacheRef,
     provider: P,
     retention_blocks: u64,
-    dual_write_to_legacy: bool,
 ) -> eyre::Result<Hybrid<TContext, P>>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
@@ -158,26 +151,14 @@ where
         "finalized blocks retention must be greater than zero",
     );
 
-    let mut prunable =
+    let prunable =
         init_prunable_finalized_blocks_archive(context, partition_prefix, page_cache.clone())
             .await
             .wrap_err("failed to initialize prunable finalized blocks archive")?;
 
-    let legacy = if dual_write_to_legacy {
-        let legacy = hybrid::open_legacy_for_dual_write(
-            context,
-            partition_prefix,
-            page_cache,
-            &mut prunable,
-            retention_blocks,
-        )
+    let legacy = legacy::init_legacy_finalized_blocks_archive(context, partition_prefix, page_cache)
         .await
-        .wrap_err("failed to open legacy immutable finalized blocks archive for dual-write")?;
-        Some(legacy)
-    } else {
-        info!("legacy archive dual-write disabled by configuration; skipping legacy archive open");
-        None
-    };
+        .wrap_err("failed to initialize legacy immutable finalized blocks archive")?;
 
     Ok(Hybrid::new(hybrid::Config {
         prunable,

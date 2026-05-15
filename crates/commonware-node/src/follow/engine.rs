@@ -67,11 +67,6 @@ pub struct Config<TUpstream> {
     /// Number of recently finalized blocks retained in the prunable archive
     /// passed to the marshal actor. Older blocks are served from reth.
     pub finalized_blocks_retention: u64,
-
-    /// Whether to skip dual-writing finalized blocks to the legacy immutable
-    /// archive. See [`crate::storage::init_hybrid_finalized_blocks`] for the
-    /// rollback-safety implications.
-    pub no_legacy_archive: bool,
 }
 
 impl<TUpstream> Config<TUpstream> {
@@ -117,7 +112,6 @@ impl<TUpstream> Config<TUpstream> {
                 view_retention_timeout: commonware_consensus::types::ViewDelta::new(1),
                 max_pending_acks: NZUsize!(1),
                 finalized_blocks_retention: self.finalized_blocks_retention,
-                no_legacy_archive: self.no_legacy_archive,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
             },

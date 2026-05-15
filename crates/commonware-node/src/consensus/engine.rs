@@ -80,11 +80,6 @@ pub struct Builder<TBlocker, TPeerManager> {
     /// Number of recently finalized blocks retained in the prunable archive
     /// passed to the marshal actor. Older blocks are served from reth.
     pub finalized_blocks_retention: u64,
-
-    /// Whether to skip dual-writing finalized blocks to the legacy immutable
-    /// archive. See [`crate::storage::init_hybrid_finalized_blocks`] for the
-    /// rollback-safety implications.
-    pub no_legacy_archive: bool,
 }
 
 impl<TBlocker, TPeerManager> Builder<TBlocker, TPeerManager>
@@ -156,7 +151,6 @@ where
                 ),
                 max_pending_acks: MAX_PENDING_ACKS,
                 finalized_blocks_retention: self.finalized_blocks_retention,
-                no_legacy_archive: self.no_legacy_archive,
                 epoch_strategy: epoch_strategy.clone(),
                 scheme_provider: scheme_provider.clone(),
             },
