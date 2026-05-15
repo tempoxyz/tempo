@@ -59,6 +59,7 @@ jobs:
           INPUT_REF: ${{ inputs.ref || '' }}
         run: |
           presets=(tip20 mix)
+          tps_values=(10000 20000)
           bench_entries=()
           save_entries=()
           stale_presets=()
@@ -88,19 +89,31 @@ jobs:
             fi
 
             if [ "$should_skip" != "true" ] && [ "$is_stale" != "true" ]; then
-              entry="$(jq -cn \
-                --arg preset "$preset" \
-                --arg actor "$actor" \
-                --arg baseline_ref "$baseline_ref" \
-                --arg feature_ref "$feature_ref" \
-                --arg baseline_name "$baseline_name" \
-                --arg feature_name "$feature_name" \
-                --arg run_type "$run_type" \
-                --arg state_file "$state_file" \
-                '{preset:$preset, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, state_file:$state_file}')"
-              bench_entries+=("$entry")
+              for tps in "${tps_values[@]}"; do
+                entry="$(jq -cn \
+                  --arg preset "$preset" \
+                  --arg tps "$tps" \
+                  --arg actor "$actor" \
+                  --arg baseline_ref "$baseline_ref" \
+                  --arg feature_ref "$feature_ref" \
+                  --arg baseline_name "$baseline_name" \
+                  --arg feature_name "$feature_name" \
+                  --arg run_type "$run_type" \
+                  --arg state_file "$state_file" \
+                  '{preset:$preset, tps:$tps, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, state_file:$state_file}')"
+                bench_entries+=("$entry")
+              done
               if [ "$run_type" = "nightly" ]; then
-                save_entries+=("$entry")
+                save_entries+=("$(jq -cn \
+                  --arg preset "$preset" \
+                  --arg actor "$actor" \
+                  --arg baseline_ref "$baseline_ref" \
+                  --arg feature_ref "$feature_ref" \
+                  --arg baseline_name "$baseline_name" \
+                  --arg feature_name "$feature_name" \
+                  --arg run_type "$run_type" \
+                  --arg state_file "$state_file" \
+                  '{preset:$preset, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, state_file:$state_file}')")
               fi
             fi
 
@@ -138,7 +151,7 @@ jobs:
   bench-e2e:
     needs: resolve-refs
     if: needs.resolve-refs.outputs.has-benchmarks == 'true'
-    name: bench-e2e (${{ matrix.preset }}, ${{ matrix.feature_name }})
+    name: bench-e2e (${{ matrix.preset }}, ${{ matrix.tps }} tps, ${{ matrix.feature_name }})
     uses: ./.github/workflows/bench-e2e.yml
     strategy:
       fail-fast: false
@@ -153,7 +166,7 @@ jobs:
       baseline-name: ${{ matrix.baseline_name }}
       feature-name: ${{ matrix.feature_name }}
       preset: ${{ matrix.preset }}
-      tps: "20000"
+      tps: ${{ matrix.tps }}
       run-type: ${{ matrix.run_type }}
       disable-abba: "true"
       clickhouse-run: feature-1
