@@ -497,17 +497,11 @@ impl TIP20Token {
     /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
-        let (to, total_supply) = self.validate_mint(msg_sender, call.to)?;
-
-        if self.validate_inbound_or_escrow(
-            msg_sender,
-            &to,
-            call.amount,
-            InboundKind::MINT,
-            B256::ZERO,
-        )? {
+        let Some((to, total_supply)) =
+            self.validate_mint(msg_sender, call.to, call.amount, B256::ZERO)?
+        else {
             return Ok(());
-        }
+        };
 
         self._mint(&to, call.amount, total_supply)?;
         self.emit_event(TIP20Event::Mint(ITIP20::Mint {
@@ -527,17 +521,11 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
-        let (to, total_supply) = self.validate_mint(msg_sender, call.to)?;
-
-        if self.validate_inbound_or_escrow(
-            msg_sender,
-            &to,
-            call.amount,
-            InboundKind::MINT,
-            call.memo,
-        )? {
+        let Some((to, total_supply)) =
+            self.validate_mint(msg_sender, call.to, call.amount, call.memo)?
+        else {
             return Ok(());
-        }
+        };
 
         self._mint(&to, call.amount, total_supply)?;
         self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
@@ -828,12 +816,13 @@ impl TIP20Token {
     /// - `InsufficientBalance` — sender balance lower than transfer amount
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
-        let to = Recipient::resolve(call.to)?;
-        if self.validate_transfer(msg_sender, &to, call.amount, B256::ZERO, |this| {
-            this.check_and_update_spending_limit(msg_sender, call.amount)
-        })? {
+        let Some(to) =
+            self.validate_transfer(msg_sender, call.to, call.amount, B256::ZERO, |this| {
+                this.check_and_update_spending_limit(msg_sender, call.amount)
+            })?
+        else {
             return Ok(true);
-        }
+        };
 
         self._transfer(msg_sender, &to, call.amount)?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
@@ -857,12 +846,13 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::transferFromCall,
     ) -> Result<bool> {
-        let to = Recipient::resolve(call.to)?;
-        if self.validate_transfer(call.from, &to, call.amount, B256::ZERO, |this| {
-            this.consume_allowance(call.from, msg_sender, call.amount)
-        })? {
+        let Some(to) =
+            self.validate_transfer(call.from, call.to, call.amount, B256::ZERO, |this| {
+                this.consume_allowance(call.from, msg_sender, call.amount)
+            })?
+        else {
             return Ok(true);
-        }
+        };
 
         self._transfer(call.from, &to, call.amount)?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
@@ -878,12 +868,13 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool> {
-        let to = Recipient::resolve(call.to)?;
-        if self.validate_transfer(call.from, &to, call.amount, call.memo, |this| {
-            this.consume_allowance(call.from, msg_sender, call.amount)
-        })? {
+        let Some(to) =
+            self.validate_transfer(call.from, call.to, call.amount, call.memo, |this| {
+                this.consume_allowance(call.from, msg_sender, call.amount)
+            })?
+        else {
             return Ok(true);
-        }
+        };
 
         self._transfer(call.from, &to, call.amount)?;
         self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
@@ -929,12 +920,12 @@ impl TIP20Token {
             return Err(TIP20Error::unauthorized().into());
         }
 
-        let to = Recipient::resolve(caller)?;
-        if self.validate_transfer(from, &to, amount, B256::ZERO, |this| {
+        let Some(to) = self.validate_transfer(from, caller, amount, B256::ZERO, |this| {
             this.check_and_update_spending_limit(from, amount)
-        })? {
+        })?
+        else {
             return Ok(true);
-        }
+        };
 
         self._transfer(from, &to, amount)?;
         if let Some(hop) = to.build_virtual_transfer_event(amount) {
@@ -966,12 +957,13 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::transferWithMemoCall,
     ) -> Result<()> {
-        let to = Recipient::resolve(call.to)?;
-        if self.validate_transfer(msg_sender, &to, call.amount, call.memo, |this| {
-            this.check_and_update_spending_limit(msg_sender, call.amount)
-        })? {
+        let Some(to) =
+            self.validate_transfer(msg_sender, call.to, call.amount, call.memo, |this| {
+                this.check_and_update_spending_limit(msg_sender, call.amount)
+            })?
+        else {
             return Ok(());
-        }
+        };
 
         self._transfer(msg_sender, &to, call.amount)?;
         self.emit_event(TIP20Event::TransferWithMemo(ITIP20::TransferWithMemo {
@@ -1070,32 +1062,53 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Checks pause state, validates the effective recipient, and ensures the transfer
-    /// is authorized. Shared by public entrypoints that resolve a [`Recipient`] up front.
+    /// Resolves `to`, checks pause state and recipient validity, ensures TIP-403 transfer
+    /// authorization, and runs the caller-specific spend check. Additionally (+T6) applies
+    /// TIP-1028 address-level receive policies.
+    ///
+    /// `validate_spend` updates the sender's [`AccountKeychain`] spending limit for direct
+    /// transfers, or consumes allowance for `transfer_from` style calls.
+    ///
+    /// Returns `Some(to)` when the caller should perform the normal transfer.
+    /// Returns `None` when funds were escrowed, and the caller should return immediately.
     fn validate_transfer<F>(
         &mut self,
         from: Address,
-        to: &Recipient,
+        to: Address,
         amount: U256,
         memo: B256,
         validate_spend: F,
-    ) -> Result<bool>
+    ) -> Result<Option<Recipient>>
     where
         F: FnOnce(&mut Self) -> Result<()>,
     {
+        let to = Recipient::resolve(to)?;
         self.check_not_paused()?;
         to.validate()?;
         self.ensure_transfer_authorized(from, to.target)?;
         validate_spend(self)?;
-        self.validate_inbound_or_escrow(from, to, amount, InboundKind::TRANSFER, memo)
+
+        if self.validate_inbound_or_escrow(from, &to, amount, InboundKind::TRANSFER, memo)? {
+            return Ok(None);
+        }
+
+        Ok(Some(to))
     }
 
-    /// Resolves the effective recipient and verifies that `msg_sender` has the issuer role.
+    /// Resolves `to`, checks the issuer role, and ensures TIP-403 mint-recipient authorization.
     /// To preserve re-execution of old transactions (pre-T6), also reads total_supply.
-    /// Additionally (+T3) checks pause state and validates the effective recipient.
+    /// Additionally (+T3) checks pause state and validates the effective recipient; also
+    /// (+T6) applies TIP-1028 address-level receive policies.
     ///
-    /// Returns the resolved [`Recipient`] and, pre-T6, the total_supply.
-    fn validate_mint(&self, msg_sender: Address, to: Address) -> Result<(Recipient, Option<U256>)> {
+    /// Returns `Some((to, total_supply))` when the caller should proceed with the regular mint.
+    /// Returns `None` when funds were minted and escrowed, and the caller should return immediately.
+    fn validate_mint(
+        &mut self,
+        msg_sender: Address,
+        to: Address,
+        amount: U256,
+        memo: B256,
+    ) -> Result<Option<(Recipient, Option<U256>)>> {
         let to = Recipient::resolve(to)?;
         self.check_role(msg_sender, *ISSUER_ROLE)?;
 
@@ -1119,7 +1132,11 @@ impl TIP20Token {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        Ok((to, total_supply))
+        if self.validate_inbound_or_escrow(msg_sender, &to, amount, InboundKind::MINT, memo)? {
+            return Ok(None);
+        }
+
+        Ok(Some((to, total_supply)))
     }
 
     /// Check whether a transfer is authorized by the token's [`TIP403Registry`] policy.
