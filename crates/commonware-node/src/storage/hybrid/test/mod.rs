@@ -64,7 +64,7 @@ impl SetupHybrid {
         let hybrid = Hybrid::new(Config {
             prunable,
             legacy,
-            provider: provider.clone(),
+            execution_block_provider: provider.clone(),
             retention_blocks: self.retention,
         });
         (hybrid, provider)

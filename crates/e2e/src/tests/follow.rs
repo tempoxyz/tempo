@@ -188,9 +188,6 @@ impl FollowerBuilder {
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
             finalized_blocks_retention: 1024,
-            // Tests start from a fresh database with no legacy partitions, so
-            // this is a no-op either way; match the production default.
-            no_legacy_archive: false,
         };
 
         let handle = config
