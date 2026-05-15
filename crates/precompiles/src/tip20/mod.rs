@@ -2644,8 +2644,6 @@ pub(crate) mod tests {
 
     #[test]
     fn test_unable_to_burn_blocked_from_protected_address() -> eyre::Result<()> {
-        use crate::tip403_registry::REJECT_ALL_POLICY_ID;
-
         let admin = Address::random();
         let burner = Address::random();
         let amount = (U256::random() % U256::from(u128::MAX)) / U256::from(2);
@@ -2696,7 +2694,7 @@ pub(crate) mod tests {
             token.change_transfer_policy_id(
                 admin,
                 ITIP20::changeTransferPolicyIdCall {
-                    newPolicyId: REJECT_ALL_POLICY_ID,
+                    newPolicyId: crate::tip403_registry::REJECT_ALL_POLICY_ID,
                 },
             )?;
 
