@@ -5,11 +5,13 @@ use crate::{
     hardfork::{TempoHardfork, TempoHardforks},
     network_identity::NetworkIdentity,
 };
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, string::String, sync::Arc, vec::Vec};
 use alloy_eips::eip7840::BlobParams;
 use alloy_evm::eth::spec::EthExecutorSpec;
 use alloy_genesis::Genesis;
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, U256, hex};
+use commonware_codec::ReadExt as _;
+use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use once_cell as _;
 #[cfg(not(feature = "std"))]
 use once_cell::sync::Lazy as LazyLock;
@@ -64,20 +66,65 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T6 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t6_time: Option<u64>,
+    /// Consensus network identity override for non-named networks.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    network_identity: Option<String>,
+    /// First epoch for which `network_identity` is expected to verify finalizations.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    network_identity_from_epoch: Option<u64>,
 }
 
 impl TempoGenesisInfo {
     /// Extract Tempo genesis info from genesis extra_fields
     fn extract_from(genesis: &Genesis) -> Self {
-        genesis
-            .config
-            .extra_fields
-            .deserialize_as::<Self>()
-            .unwrap_or_default()
+        let extra_fields = &genesis.config.extra_fields;
+        let mut info = extra_fields.deserialize_as::<Self>().unwrap_or_default();
+
+        if let Some(network_identity) = extra_fields.get_deserialized::<String>("networkIdentity") {
+            info.network_identity =
+                Some(network_identity.expect("networkIdentity must be a string"));
+        }
+
+        if let Some(from_epoch) = extra_fields.get_deserialized::<u64>("networkIdentityFromEpoch") {
+            info.network_identity_from_epoch =
+                Some(from_epoch.expect("networkIdentityFromEpoch must be a u64"));
+        }
+
+        info
     }
 
     pub fn epoch_length(&self) -> Option<u64> {
         self.epoch_length
+    }
+
+    fn network_identity(&self) -> Option<NetworkIdentity> {
+        match (&self.network_identity, self.network_identity_from_epoch) {
+            // Fallback to the genesis outcome
+            (None, None) => None,
+
+            // Supplied Network Identity
+            (Some(encoded), Some(from_epoch)) => {
+                let encoded = encoded
+                    .strip_prefix("0x")
+                    .or_else(|| encoded.strip_prefix("0X"))
+                    .unwrap_or(encoded);
+
+                let mut bytes = [0u8; 96];
+                hex::decode_to_slice(encoded, &mut bytes)
+                    .expect("networkIdentity must be a 96-byte hex-encoded BLS public key");
+
+                let identity = <MinSig as Variant>::Public::read(&mut bytes.as_ref())
+                    .expect("invalid networkIdentity");
+
+                Some(NetworkIdentity {
+                    identity,
+                    from_epoch,
+                })
+            }
+
+            // TODO: proper error propogation
+            _ => panic!("networkIdentity and networkIdentityFromEpoch must be supplied together"),
+        }
     }
 
     /// Returns the activation timestamp for a given hardfork, or `None` if not scheduled.
@@ -206,6 +253,7 @@ impl TempoChainSpec {
             info.fork_time(fork)
                 .map(|time| (fork, ForkCondition::Timestamp(time)))
         });
+
         base_spec.hardforks.extend(tempo_forks);
 
         let inner = base_spec.map_header(|inner| TempoHeader {
@@ -216,9 +264,11 @@ impl TempoChainSpec {
             inner,
         });
 
-        let network_identity = NetworkIdentity::from_genesis_extra_data(
-            inner.genesis_header().inner.extra_data.as_ref(),
-        );
+        let network_identity = info.network_identity().or_else(|| {
+            NetworkIdentity::from_genesis_extra_data(
+                inner.genesis_header().inner.extra_data.as_ref(),
+            )
+        });
 
         Self {
             inner,
@@ -485,6 +535,59 @@ mod tests {
         let chainspec = super::TempoChainSpec::from_genesis(genesis);
 
         assert!(chainspec.network_identity().is_none());
+    }
+
+    #[test]
+    fn network_identity_can_be_supplied_in_extra_fields() {
+        let network_identity = concat!(
+            "0x84591ad702a9ee67c0c64add2ff166c19a4666a1dc636cc530a810052957d34c",
+            "185bb1d2c7f5569983485a5af49baed70166ba17ae782bc8c75701099c704747",
+            "98ccc181d03b0c12054f1d01c7817b27b425bae4bfcf936218c0d097cccf3242"
+        );
+        let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
+            "config": {
+                "chainId": 1234,
+                "networkIdentity": network_identity,
+                "networkIdentityFromEpoch": 51
+            },
+            "alloc": {}
+        }))
+        .unwrap();
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+        let identity = chainspec
+            .network_identity()
+            .expect("extra fields should provide a network identity");
+
+        assert_eq!(identity.from_epoch, 51);
+        assert_eq!(
+            identity.identity.encode().as_ref(),
+            &hex!(
+                "0x84591ad702a9ee67c0c64add2ff166c19a4666a1dc636cc530a810052957d34c"
+                "185bb1d2c7f5569983485a5af49baed70166ba17ae782bc8c75701099c704747"
+                "98ccc181d03b0c12054f1d01c7817b27b425bae4bfcf936218c0d097cccf3242"
+            )
+        );
+    }
+
+    #[test]
+    #[should_panic(
+        expected = "networkIdentity and networkIdentityFromEpoch must be supplied together"
+    )]
+    fn network_identity_extra_fields_require_from_epoch() {
+        let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
+            "config": {
+                "chainId": 1234,
+                "networkIdentity": concat!(
+                    "0x84591ad702a9ee67c0c64add2ff166c19a4666a1dc636cc530a810052957d34c",
+                    "185bb1d2c7f5569983485a5af49baed70166ba17ae782bc8c75701099c704747",
+                    "98ccc181d03b0c12054f1d01c7817b27b425bae4bfcf936218c0d097cccf3242"
+                )
+            },
+            "alloc": {}
+        }))
+        .unwrap();
+
+        let _ = super::TempoChainSpec::from_genesis(genesis);
     }
 
     #[test]

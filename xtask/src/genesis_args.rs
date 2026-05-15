@@ -93,6 +93,14 @@ pub(crate) struct GenesisArgs {
     #[arg(long, default_value_t = 302_400)]
     epoch_length: u64,
 
+    /// Consensus network identity override for generated non-named chains.
+    #[arg(long, requires = "network_identity_from_epoch")]
+    network_identity: Option<String>,
+
+    /// First epoch for which --network-identity verifies finalizations.
+    #[arg(long, requires = "network_identity")]
+    network_identity_from_epoch: Option<u64>,
+
     /// A comma-separated list of `<ip>:<port>`.
     #[arg(
         long,
@@ -525,6 +533,16 @@ impl GenesisArgs {
         chain_config
             .extra_fields
             .insert_value("epochLength".to_string(), self.epoch_length)?;
+        if let Some(network_identity) = &self.network_identity {
+            chain_config
+                .extra_fields
+                .insert_value("networkIdentity".to_string(), network_identity)?;
+        }
+        if let Some(from_epoch) = self.network_identity_from_epoch {
+            chain_config
+                .extra_fields
+                .insert_value("networkIdentityFromEpoch".to_string(), from_epoch)?;
+        }
         chain_config
             .extra_fields
             .insert_value("t0Time".to_string(), self.t0_time)?;
