@@ -161,63 +161,79 @@ on:
         required: false
       actor:
         type: string
-        required: true
+        required: false
       mode:
         type: string
-        required: true
+        required: false
+        default: e2e
       preset:
         type: string
-        required: true
+        required: false
+        default: tip20
       duration:
         type: string
-        required: true
+        required: false
+        default: "300"
       bloat:
         type: string
-        required: true
+        required: false
+        default: "100"
       tps:
         type: string
-        required: true
+        required: false
+        default: "20000"
       accounts:
         type: string
-        required: true
+        required: false
+        default: "1000"
       max-concurrent-requests:
         type: string
-        required: true
+        required: false
+        default: "100"
       baseline:
         type: string
-        required: true
+        required: false
+        default: ""
       feature:
         type: string
-        required: true
+        required: false
+        default: ""
       baseline-hardfork:
         type: string
         required: false
-        default: ""
+        default: T6
       feature-hardfork:
         type: string
         required: false
-        default: ""
+        default: T6
       txgen-ref:
         type: string
         required: false
+        default: ""
       baseline-name:
         type: string
-        required: true
+        required: false
+        default: ""
       feature-name:
         type: string
-        required: true
+        required: false
+        default: ""
       samply:
         type: string
-        required: true
+        required: false
+        default: "false"
       tracy:
         type: string
-        required: true
+        required: false
+        default: "off"
       tracy-seconds:
         type: string
-        required: true
+        required: false
+        default: "30"
       tracy-offset:
         type: string
-        required: true
+        required: false
+        default: "120"
       otlp:
         type: string
         required: false
@@ -225,39 +241,51 @@ on:
       baseline-args:
         type: string
         required: false
+        default: ""
       feature-args:
         type: string
         required: false
+        default: ""
       gas-limit:
         type: string
-        required: true
+        required: false
+        default: "500000000"
       run-type:
         type: string
-        required: true
+        required: false
+        default: dispatch
       force-bloat:
         type: string
-        required: true
+        required: false
+        default: "false"
       no-cache:
         type: string
-        required: true
+        required: false
+        default: "false"
       no-slack:
         type: string
-        required: true
+        required: false
+        default: "true"
       bench-args:
         type: string
         required: false
+        default: ""
       bench-env:
         type: string
         required: false
+        default: ""
       baseline-env:
         type: string
         required: false
+        default: ""
       feature-env:
         type: string
         required: false
+        default: ""
       comment-id:
         type: string
         required: false
+        default: ""
       pr-head-sha:
         description: Pinned PR head SHA from the ack job.
         type: string

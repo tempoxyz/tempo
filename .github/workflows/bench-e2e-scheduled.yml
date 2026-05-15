@@ -1,0 +1,123 @@
+# Scheduled e2e regression benchmarks.
+#
+# Runs nightly at 02:00 UTC and on v*.*.* tag pushes.
+# Nightly runs compare the latest successful nightly Docker commit against the
+# last commit that completed this scheduled e2e workflow successfully.
+# Tag runs compare the pushed release tag against the previous release tag.
+
+name: bench-e2e-scheduled
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force run even if no new nightly commit is available"
+        required: false
+        default: false
+        type: boolean
+
+permissions: {}
+
+jobs:
+  resolve-refs:
+    name: resolve-refs
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
+    outputs:
+      baseline-ref: ${{ steps.refs.outputs.baseline-ref }}
+      baseline-name: ${{ steps.refs.outputs.baseline-name }}
+      feature-ref: ${{ steps.refs.outputs.feature-ref }}
+      feature-name: ${{ steps.refs.outputs.feature-name }}
+      should-skip: ${{ steps.refs.outputs.should-skip }}
+      run-type: ${{ steps.refs.outputs.run-type }}
+      actor: ${{ steps.refs.outputs.actor }}
+      is-stale: ${{ steps.refs.outputs.is-stale }}
+      stale-age-hours: ${{ steps.refs.outputs.stale-age-hours }}
+      nightly-created: ${{ steps.refs.outputs.nightly-created }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+          sparse-checkout: .github/scripts
+          sparse-checkout-cone-mode: true
+
+      - name: Resolve refs
+        id: refs
+        env:
+          GH_TOKEN: ${{ github.token }}
+          DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          INPUT_FORCE: ${{ inputs.force || 'false' }}
+        run: bash .github/scripts/bench-e2e-scheduled-refs.sh "$INPUT_FORCE"
+
+      - name: Fail on stale nightly
+        if: steps.refs.outputs.is-stale == 'true'
+        run: |
+          echo "::error::Nightly Docker build is stale (>24h old). Aborting e2e benchmark."
+          exit 1
+
+  bench-e2e:
+    needs: resolve-refs
+    if: |
+      needs.resolve-refs.outputs.should-skip != 'true' &&
+      needs.resolve-refs.outputs.is-stale != 'true'
+    name: bench-e2e (${{ needs.resolve-refs.outputs.feature-name }})
+    uses: ./.github/workflows/bench-e2e.yml
+    permissions:
+      contents: read
+      pull-requests: write
+    with:
+      actor: ${{ needs.resolve-refs.outputs.actor }}
+      baseline: ${{ needs.resolve-refs.outputs.baseline-ref }}
+      feature: ${{ needs.resolve-refs.outputs.feature-ref }}
+      baseline-name: ${{ needs.resolve-refs.outputs.baseline-name }}
+      feature-name: ${{ needs.resolve-refs.outputs.feature-name }}
+      run-type: ${{ needs.resolve-refs.outputs.run-type }}
+    secrets:
+      DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
+      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
+      GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
+      CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+      CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+      CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+      SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
+      SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
+
+  save-state:
+    needs: [resolve-refs, bench-e2e]
+    if: success() && needs.resolve-refs.outputs.run-type == 'nightly'
+    name: save-state
+    runs-on: ubuntu-latest
+    steps:
+      - name: Push state to charts repo
+        env:
+          DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
+          FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}
+        run: |
+          CHARTS_REPO="https://x-access-token:${DEREK_TOKEN}@github.com/decofe/tempo-bench-charts.git"
+          TMP_DIR=$(mktemp -d)
+
+          if git clone --depth 1 --branch state "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then
+            true
+          else
+            git init "${TMP_DIR}"
+            git -C "${TMP_DIR}" remote add origin "${CHARTS_REPO}"
+          fi
+
+          mkdir -p "${TMP_DIR}/state"
+          echo "${FEATURE_REF}" > "${TMP_DIR}/state/e2e-nightly-last-feature-ref"
+          git -C "${TMP_DIR}" add state/
+          git -C "${TMP_DIR}" diff --cached --quiet && echo "No state change" && exit 0
+          git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
+            commit -m "bench: update e2e nightly state to ${FEATURE_REF}"
+          git -C "${TMP_DIR}" push origin HEAD:state
+          rm -rf "${TMP_DIR}"
