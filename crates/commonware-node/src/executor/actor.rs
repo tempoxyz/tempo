@@ -468,7 +468,7 @@ where
         if new_canonicalized == self.last_canonicalized
             && let JustCanonicalizeOrAlsoBuild::JustCanonicalize { response } = maybe_build
         {
-            info!("would not change forkchoice state; not sending it to the execution layer");
+            debug!("would not change forkchoice state; not sending it to the execution layer");
             let _ = response.send(Ok(()));
             return;
         }
