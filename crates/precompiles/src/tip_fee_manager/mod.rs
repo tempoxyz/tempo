@@ -568,14 +568,14 @@ mod tests {
             )?;
 
             // Call collect_fee_post_tx directly
-            let result = fee_manager.collect_fee_post_tx(
+            let credited = fee_manager.collect_fee_post_tx(
                 user,
                 actual_used,
                 refund_amount,
                 token.address(),
                 validator,
-            );
-            assert!(result.is_ok());
+            )?;
+            assert_eq!(credited, actual_used);
 
             // Verify fees were tracked
             let tracked_amount = fee_manager.collected_fees[validator][token.address()].read()?;
@@ -756,7 +756,7 @@ mod tests {
             )?;
 
             // Then call collect_fee_post_tx (executes swap immediately)
-            fee_manager.collect_fee_post_tx(
+            let credited = fee_manager.collect_fee_post_tx(
                 user,
                 actual_spending,
                 refund_amount,
@@ -766,6 +766,7 @@ mod tests {
 
             // Expected output: 800 * 9970 / 10000 = 797
             let expected_fee_amount = (actual_spending * U256::from(9970)) / U256::from(10000);
+            assert_eq!(credited, expected_fee_amount);
             let collected =
                 fee_manager.collected_fees[validator][validator_token.address()].read()?;
             assert_eq!(collected, expected_fee_amount);
@@ -1222,7 +1223,13 @@ mod tests {
 
                     let amount_u = U256::from(amount);
                     fm.collect_fee_pre_tx(user, t.user, amount_u, validator, false)?;
-                    fm.collect_fee_post_tx(user, amount_u, U256::ZERO, t.user, validator)?;
+                    let credited =
+                        fm.collect_fee_post_tx(user, amount_u, U256::ZERO, t.user, validator)?;
+                    let one_hop_amount = compute_amount_out(amount_u)?;
+                    assert!(
+                        credited < one_hop_amount,
+                        "amount={amount}: two-hop credit ({credited}) should be less than one-hop credit ({one_hop_amount})",
+                    );
 
                     assert_eq!(
                         fm.collected_fees[validator][t.validator].read()?,

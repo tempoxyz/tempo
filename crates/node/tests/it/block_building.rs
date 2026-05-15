@@ -33,6 +33,28 @@ async fn setup_token_manual<P>(
 where
     P: Provider + Clone,
 {
+    setup_token_manual_with_quote_and_nonce(
+        node,
+        provider,
+        sender,
+        chain_id,
+        PATH_USD_ADDRESS,
+        0,
+    )
+    .await
+}
+
+async fn setup_token_manual_with_quote_and_nonce<P>(
+    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    provider: &P,
+    sender: &alloy::signers::local::PrivateKeySigner,
+    chain_id: u64,
+    quote_token: Address,
+    nonce_start: u64,
+) -> eyre::Result<ITIP20::ITIP20Instance<P>>
+where
+    P: Provider + Clone,
+{
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
     let sender_address = sender.address();
     let signer = EthereumWallet::from(sender.clone());
@@ -64,11 +86,11 @@ where
         "Test".to_string(),
         "TEST".to_string(),
         "USD".to_string(),
-        PATH_USD_ADDRESS,
+        quote_token,
         sender_address,
         salt,
     );
-    let create_bytes = sign_and_encode(create_tx.into_transaction_request(), 0).await?;
+    let create_bytes = sign_and_encode(create_tx.into_transaction_request(), nonce_start).await?;
     node.rpc.inject_tx(create_bytes).await?;
     node.advance_block().await?;
 
@@ -89,14 +111,14 @@ where
     // Grant issuer role
     let roles = IRolesAuth::new(token_addr, provider.clone());
     let grant_tx = roles.grantRole(*ISSUER_ROLE, sender_address);
-    let grant_bytes = sign_and_encode(grant_tx.into_transaction_request(), 1).await?;
+    let grant_bytes = sign_and_encode(grant_tx.into_transaction_request(), nonce_start + 1).await?;
     node.rpc.inject_tx(grant_bytes).await?;
     node.advance_block().await?;
 
     // Mint tokens
     let token = ITIP20::ITIP20Instance::new(token_addr, provider.clone());
     let mint_tx = token.mint(sender_address, U256::from(1_000_000));
-    let mint_bytes = sign_and_encode(mint_tx.into_transaction_request(), 2).await?;
+    let mint_bytes = sign_and_encode(mint_tx.into_transaction_request(), nonce_start + 2).await?;
     node.rpc.inject_tx(mint_bytes).await?;
     node.advance_block().await?;
 
@@ -600,14 +622,23 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
 
     let fee_beneficiary = Address::ZERO;
 
-    // Create a custom fee token for the user
-    let user_fee_token =
+    // Create a two-hop fee route: user_fee_token -> hop_fee_token -> PATH_USD.
+    let hop_fee_token =
         setup_token_manual(&mut setup.node, &user_provider, &user_signer, chain_id).await?;
+    let user_fee_token = setup_token_manual_with_quote_and_nonce(
+        &mut setup.node,
+        &user_provider,
+        &user_signer,
+        chain_id,
+        *hop_fee_token.address(),
+        3,
+    )
+    .await?;
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, user_provider.clone());
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, user_provider.clone());
 
-    // Seed AMM liquidity for user_token <-> PATH_USD
+    // Seed AMM liquidity for user_token <-> hop_token <-> PATH_USD.
     let liquidity = U256::from(500_000u64);
     sign_and_inject(
         &mut setup.node,
@@ -616,12 +647,28 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         fee_amm
             .mint(
                 *user_fee_token.address(),
+                *hop_fee_token.address(),
+                liquidity,
+                user_address,
+            )
+            .into_transaction_request(),
+        6,
+    )
+    .await?;
+    setup.node.advance_block().await?;
+    sign_and_inject(
+        &mut setup.node,
+        &user_signer,
+        chain_id,
+        fee_amm
+            .mint(
+                *hop_fee_token.address(),
                 PATH_USD_ADDRESS,
                 liquidity,
                 user_address,
             )
             .into_transaction_request(),
-        3,
+        7,
     )
     .await?;
     setup.node.advance_block().await?;
@@ -634,7 +681,7 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         fee_manager
             .setUserToken(*user_fee_token.address())
             .into_transaction_request(),
-        4,
+        8,
     )
     .await?;
     setup.node.advance_block().await?;
@@ -645,7 +692,7 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         .call()
         .await?;
 
-    // Submit a transaction that pays fees in user_fee_token (not validator's PATH_USD)
+    // Submit a transaction that pays fees in user_fee_token and settles through the two-hop route.
     let attack_tx_hash = sign_and_inject(
         &mut setup.node,
         &user_signer,
@@ -653,7 +700,7 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         ITIP20::new(PATH_USD_ADDRESS, user_provider.clone())
             .transfer(Address::random(), U256::from(1))
             .into_transaction_request(),
-        5,
+        9,
     )
     .await?;
 
@@ -669,7 +716,8 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         attack_receipt.gas_used,
         attack_receipt.effective_gas_price(),
     );
-    let expected_post_swap = compute_amount_out(nominal_spending)?;
+    let one_hop_post_swap = compute_amount_out(nominal_spending)?;
+    let expected_post_swap = compute_amount_out(one_hop_post_swap)?;
 
     // Verify collected fees reflect the haircut
     let collected_after = fee_manager
@@ -678,6 +726,10 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         .await?;
     let collected_delta = collected_after - collected_before;
 
+    assert!(
+        collected_delta < one_hop_post_swap,
+        "two-hop validator accrual ({collected_delta}) should be less than one-hop accrual ({one_hop_post_swap})"
+    );
     // The payload fee score must not exceed the actual validator revenue
     assert!(
         payload_fees <= nominal_spending,
@@ -687,9 +739,9 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         collected_delta, expected_post_swap,
         "validator accrual should reflect AMM haircut"
     );
-    assert!(
-        payload_fees <= collected_delta,
-        "payload fee score ({payload_fees}) should not overstate actual validator revenue ({collected_delta})"
+    assert_eq!(
+        payload_fees, collected_delta,
+        "payload fee score should match actual validator revenue"
     );
 
     Ok(())
