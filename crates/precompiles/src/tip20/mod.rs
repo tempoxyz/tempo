@@ -817,7 +817,7 @@ impl TIP20Token {
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         let Some(to) =
-            self.validate_transfer(msg_sender, msg_sender, call.to, call.amount, B256::ZERO)?
+            self.validate_transfer(None, msg_sender, call.to, call.amount, B256::ZERO)?
         else {
             return Ok(true);
         };
@@ -844,8 +844,13 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::transferFromCall,
     ) -> Result<bool> {
-        let Some(to) =
-            self.validate_transfer(msg_sender, call.from, call.to, call.amount, B256::ZERO)?
+        let Some(to) = self.validate_transfer(
+            Some(msg_sender),
+            call.from,
+            call.to,
+            call.amount,
+            B256::ZERO,
+        )?
         else {
             return Ok(true);
         };
@@ -865,7 +870,7 @@ impl TIP20Token {
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool> {
         let Some(to) =
-            self.validate_transfer(msg_sender, call.from, call.to, call.amount, call.memo)?
+            self.validate_transfer(Some(msg_sender), call.from, call.to, call.amount, call.memo)?
         else {
             return Ok(true);
         };
@@ -914,7 +919,7 @@ impl TIP20Token {
             return Err(TIP20Error::unauthorized().into());
         }
 
-        let Some(to) = self.validate_transfer(from, from, caller, amount, B256::ZERO)? else {
+        let Some(to) = self.validate_transfer(None, from, caller, amount, B256::ZERO)? else {
             return Ok(true);
         };
 
@@ -948,8 +953,7 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::transferWithMemoCall,
     ) -> Result<()> {
-        let Some(to) =
-            self.validate_transfer(msg_sender, msg_sender, call.to, call.amount, call.memo)?
+        let Some(to) = self.validate_transfer(None, msg_sender, call.to, call.amount, call.memo)?
         else {
             return Ok(());
         };
@@ -1062,7 +1066,7 @@ impl TIP20Token {
     /// Returns `None` when funds were escrowed, and the caller should return immediately.
     fn validate_transfer(
         &mut self,
-        msg_sender: Address,
+        spender: Option<Address>,
         from: Address,
         to: Address,
         amount: U256,
@@ -1073,10 +1077,10 @@ impl TIP20Token {
         to.validate()?;
         self.ensure_transfer_authorized(from, to.target)?;
 
-        if msg_sender == from {
-            self.check_and_update_spending_limit(msg_sender, amount)?;
+        if let Some(spender) = spender {
+            self.consume_allowance(from, spender, amount)?;
         } else {
-            self.consume_allowance(from, msg_sender, amount)?;
+            self.check_and_update_spending_limit(from, amount)?;
         }
 
         if self.validate_inbound_or_escrow(from, &to, amount, InboundKind::TRANSFER, memo)? {
