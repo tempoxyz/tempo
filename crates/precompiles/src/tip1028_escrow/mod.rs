@@ -499,7 +499,7 @@ mod tests {
             assert_eq!(result.unwrap_err(), TIP20Error::contract_paused().into());
             assert_eq!(
                 receipt_balance(&escrow, token.address(), RECOVERY_RECEIVER, &receipt)?,
-                amount
+                U256::ZERO
             );
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall {
