@@ -17,10 +17,6 @@ use super::{
 };
 use crate::consensus::{Digest, block::Block};
 
-/// Backing legacy immutable archive type, retained on existing nodes for
-/// rollback safety; written-through by [`super::Hybrid::put`] when present.
-pub(crate) type Legacy<TContext> = immutable::Archive<TContext, Digest, Block>;
-
 /// Partition-name prefix used by every blob/journal/freezer file backing
 /// the legacy archive.
 const LEGACY_FINALIZED_BLOCKS: &str = "finalized_blocks";
@@ -30,7 +26,7 @@ pub(in crate::storage) async fn init_legacy_finalized_blocks_archive<TContext>(
     context: &TContext,
     partition_prefix: &str,
     page_cache: CacheRef,
-) -> Result<Legacy<TContext>, commonware_storage::archive::Error>
+) -> Result<immutable::Archive<TContext, Digest, Block>, commonware_storage::archive::Error>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
 {

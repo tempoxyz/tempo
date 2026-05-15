@@ -24,7 +24,10 @@ use alloy_consensus::Header;
 use alloy_primitives::B256;
 use commonware_consensus::Heightable as _;
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
-use commonware_storage::{archive::prunable, translator::TwoCap};
+use commonware_storage::{
+    archive::{immutable, prunable},
+    translator::TwoCap,
+};
 use commonware_utils::{NZU16, NZUsize};
 use parking_lot::Mutex;
 use reth_node_core::primitives::SealedBlock;
@@ -32,11 +35,11 @@ use reth_provider::{ProviderError, ProviderResult};
 use tempo_primitives::{Block as TempoBlock, BlockBody, TempoHeader};
 
 use crate::{
-    consensus::block::Block,
+    consensus::{Digest, block::Block},
     storage::{
         REPLAY_BUFFER, WRITE_BUFFER,
         hybrid::{FinalizedBlocksProvider, Prunable},
-        legacy::{Legacy, init_legacy_finalized_blocks_archive},
+        legacy::init_legacy_finalized_blocks_archive,
     },
 };
 
@@ -218,7 +221,7 @@ where
 /// `context`.
 pub(in crate::storage::hybrid) async fn fresh_legacy<TContext>(
     context: &TContext,
-) -> Legacy<TContext>
+) -> immutable::Archive<TContext, Digest, Block>
 where
     TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
 {

@@ -11,26 +11,25 @@
 //! # Eviction
 //!
 //! The cache is evicted as the execution layer's finalized watermark rises, not
-//! on the height the marshal happens to put. Each [`Blocks::put`] queries
-//! [`BlockIdReader::finalized_block_number`] and asks the prunable
+//! on the height the marshal happens to put. Each [`Blocks::put`] checks the
+//! execution layer for its finalized block number and asks the prunable
 //! archive to drop everything below
 //! `execution_finalized − retention_blocks + 1`. Two consequences:
 //!
 //! - The cache never drops a block the EL doesn't yet have. If the EL is
 //!   lagging marshal, the cache may temporarily hold more than
-//!   `retention_blocks` items — that's safe and intentional.
+//!   `retention_blocks` items.
 //! - The cache eviction floor is decoupled from the marshal's view of
-//!   "tip". An explicit [`Blocks::prune`] call from the marshal is
-//!   intentionally a **no-op** ([`Hybrid::prune`]) — eviction is
+//!   "tip". [`Blocks::prune`] calls from marshal are a no-op. Eviction is
 //!   EL-driven only. The trait contract ("`min` must remain") is
 //!   trivially satisfied because we keep at least `retention_blocks`
 //!   items above EL's finalized boundary.
 //!
 //! # Section-rounding
 //!
-//! The prunable archive groups items into fixed-size *sections* of
+//! The prunable archive groups items into fixed-size sections of
 //! `items_per_section` consecutive indices (production default 4096).
-//! [`prunable::Archive::prune`] silently rounds its `min` argument *down*
+//! [`prunable::Archive::prune`] silently rounds its `min` argument down
 //! to the nearest section boundary; only entire sections are dropped. As
 //! a consequence:
 //!
@@ -59,7 +58,7 @@
 //! # Stale puts
 //!
 //! [`Hybrid::put`] turns the prunable archive's
-//! [`archive::Error::AlreadyPrunedTo`] into a *silent success* rather
+//! [`archive::Error::AlreadyPrunedTo`] into a silent success rather
 //! than propagating it. The reasoning, which also explains why we
 //! don't worry about EL pruning the same height (next section):
 //!
@@ -125,7 +124,7 @@ use alloy_primitives::B256;
 use commonware_consensus::{Heightable as _, marshal::store::Blocks, types::Height};
 use commonware_runtime::{BufferPooler, Clock, Metrics, Storage};
 use commonware_storage::{
-    archive::{self, Identifier, prunable},
+    archive::{self, Identifier, immutable, prunable},
     translator::TwoCap,
 };
 use reth_node_core::primitives::SealedBlock;
@@ -135,10 +134,7 @@ use reth_provider::{
 };
 use tracing::{debug, instrument, warn};
 
-use crate::{
-    consensus::{Digest, block::Block},
-    storage::legacy::Legacy,
-};
+use crate::consensus::{Digest, block::Block};
 
 #[cfg(test)]
 mod test;
@@ -146,21 +142,8 @@ mod test;
 /// Narrow view of reth that [`Hybrid`] needs: a finalized watermark and
 /// canonical-by-height / canonical-by-hash block reads.
 ///
-/// Used instead of the corresponding reth "provider" traits
-/// (`BlockIdReader`, `BlockReader`):
-///
-/// - [`Self::finalized_height`] is genuinely infallible on
-///   [`BlockchainProvider`] (it reads `canonical_in_memory_state`), so
-///   returning `Option<u64>` here removes a `Result<Option<_>>`
-///   ceremony that never fires.
-/// - [`Self::block_by_height`] / [`Self::block_by_hash`] still go
-///   through reth's database via `ConsistentProvider` and *can* fail.
-///   We surface that as [`ProviderResult`] rather than swallowing it
-///   silently — the marshal needs to see read failures so it can
-///   decide between resolver-driven repair and a hard panic (see the
-///   call-site notes in [`super::Hybrid::get`]).
-///
-/// [`BlockchainProvider`]: reth_provider::providers::BlockchainProvider
+/// Exists to make unit testing easier. [`BlockchainProvider`] is used in
+/// production.
 pub(crate) trait FinalizedBlocksProvider: Send + Sync {
     /// Reth's last finalized block height, or `None` if reth has not yet
     /// finalized anything (fresh chain).
@@ -215,19 +198,6 @@ where
 }
 
 /// Error returned by [`Hybrid`]'s [`Blocks`] impl.
-///
-/// Distinguishes the two failure domains so callers (and operators
-/// reading panic logs) can tell them apart:
-///
-/// - [`Self::Archive`]: the prunable cache or the legacy archive
-///   failed.
-/// - [`Self::Provider`]: reth's database read failed on the fallback
-///   path. These are typically transient (disk IO, snapshot
-///   contention).
-///
-/// Both variants implement `std::error::Error`, satisfying
-/// [`Blocks::Error`]'s bound. See the module-level "Marshal panic
-/// behavior" notes for what the marshal does with each.
 #[derive(Debug, thiserror::Error)]
 pub(crate) enum Error {
     #[error(transparent)]
@@ -247,16 +217,14 @@ pub(crate) struct Config<TContext, TExecutionBlockProvider>
 where
     TContext: BufferPooler + Storage + Metrics + Clock,
 {
-    /// Prunable archive backing the most recently finalized blocks. The
-    /// archive is expected to already be opened by the caller; see
-    /// [`super::init_hybrid_finalized_blocks`].
+    /// Prunable archive backing the most recently finalized blocks.
     pub(crate) prunable: Prunable<TContext>,
 
     /// Legacy immutable archive opened for write-through. Always
     /// present so the previous binary can still serve traffic if an
     /// operator rolls back. The whole legacy code path is slated for
     /// removal in an upcoming release.
-    pub(crate) legacy: Legacy<TContext>,
+    pub(crate) legacy: immutable::Archive<TContext, Digest, Block>,
 
     /// Execution layer block provider used to look up finalized blocks below
     /// the cache window and to read reth's finalized watermark for cache
@@ -269,7 +237,7 @@ where
     /// archive's section-aligned pruning — see the module docs
     /// ("Section-rounding") for the exact bounds. Anything older is
     /// dropped from the cache on each [`put`] and served out of
-    /// [`Self::provider`] instead.
+    /// [`Self::execution_block_provider`] instead.
     ///
     /// [`put`]: commonware_consensus::marshal::store::Blocks::put
     pub(crate) retention_blocks: u64,
@@ -290,11 +258,11 @@ where
 {
     /// Hot cache of recently finalized blocks. Bounded to roughly
     /// `retention_blocks` items above reth's finalized watermark via
-    /// [`Self::evict_below_reth_finalized_floor`].
+    /// [`Self::evict_below_execution_finalized_floor`].
     prunable: Prunable<TContext>,
 
     /// Legacy immutable archive opened for write-through.
-    legacy: Legacy<TContext>,
+    legacy: immutable::Archive<TContext, Digest, Block>,
 
     /// Execution layer block provider used to look up finalized blocks below
     /// the cache window and to read reth's finalized watermark for cache
@@ -427,10 +395,8 @@ where
         Ok(())
     }
 
+    /// Attempts to read `id` from the prunable archive, falling back to EL on miss.
     async fn get(&self, id: Identifier<'_, Digest>) -> Result<Option<Self::Block>, Self::Error> {
-        // Try the prunable archive first; on miss, fall back to the execution
-        // layer.
-        //
         // EL read errors propagate to the marshal — see this module's
         // doc comment ("Marshal panic behavior") for what happens then.
         match id {
@@ -458,14 +424,9 @@ where
         }
     }
 
+    /// No-op: Cache eviction is EL-driven (see [`Self::evict_below_execution_finalized_floor`]).
     async fn prune(&mut self, min: Height) -> Result<(), Self::Error> {
-        // Cache eviction is EL-driven (see [`Self::evict_below_execution_finalized_floor`]),
-        // not marshal-driven, so we ignore explicit prune requests from
-        // the marshal. The `Blocks::prune` contract ("`min` must remain")
-        // is trivially satisfied by doing nothing — we only ever keep
-        // *more* than the marshal asks. See the module docs ("Eviction")
-        // for the rationale.
-        debug!(%min, "ignoring marshal prune request; cache eviction is execution-layer-driven");
+        debug!(%min, "ignoring prune request; cache eviction is execution-layer-driven");
         Ok(())
     }
 
