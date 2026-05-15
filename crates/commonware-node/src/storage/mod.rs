@@ -2,7 +2,8 @@
 //!
 //! Finalized blocks are stored in a [`hybrid::Hybrid`] store which
 //! merges a prunable archive (holding the most recently finalized blocks) with
-//! a lookup into reth (used for blocks below the prunable retention window).
+//! a lookup into the execution layer (used for blocks below the prunable
+//! retention window).
 //!
 //! Older deployments stored finalized blocks in an immutable archive. To
 //! preserve the ability to roll back to one of those releases, the
@@ -57,8 +58,8 @@ pub(crate) const BUFFER_POOL_CAPACITY: std::num::NonZeroUsize = NZUsize!(8_192);
 /// Default number of finalized blocks (relative to reth's finalized
 /// watermark) to keep cached in the prunable archive.
 ///
-/// Beyond this depth, [`Hybrid`] falls back to looking up blocks from
-/// reth's storage via the [`TempoFullNode`] provider.
+/// Beyond this depth, [`Hybrid`] falls back to looking up blocks from the
+/// execution layer.
 ///
 /// The prunable archive evicts in `PRUNABLE_ITEMS_PER_SECTION`-sized
 /// batches (see [`hybrid`]'s "Section-rounding" docs). When reth is
