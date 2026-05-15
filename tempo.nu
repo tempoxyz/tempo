@@ -800,7 +800,8 @@ def percentile [sorted_vals: list<any>, pct: int] {
 
 
 def generate-summary [results_dir: string, baseline_ref: string, feature_ref: string, bloat: int, preset: string, tps: int, duration: int, --benchmark-id: string = "", --reference-epoch: int = 0] {
-    let run_labels = ["baseline-1" "feature-1" "feature-2" "baseline-2"]
+    let candidate_run_labels = ["baseline-1" "feature-1" "feature-2" "baseline-2"]
+    let run_labels = ($candidate_run_labels | where { |label| ($"($results_dir)/report-($label).json" | path exists) })
     mut run_data = []
     mut baseline_blocks = []
     mut feature_blocks = []
