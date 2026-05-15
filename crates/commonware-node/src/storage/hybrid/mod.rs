@@ -239,7 +239,7 @@ pub(crate) enum Error {
 
 /// Backing prunable archive type.
 // TODO: Look into whether to take TwoCap or another translator. TwoCap is used
-// by commonwar itself, but higher caps can reduce the likehood of collisions.
+// by commonware itself, but higher caps can reduce the likelihood of collisions.
 pub(crate) type Prunable<TContext> = prunable::Archive<TwoCap, TContext, Digest, Block>;
 
 /// Configuration for [`Hybrid`].
