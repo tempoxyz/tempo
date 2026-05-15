@@ -370,14 +370,6 @@ function buildReplayMetricRows(summary) {
   ];
 }
 
-function buildReplayWaitRows(summary) {
-  return Object.values(summary.wait_times || {}).map(wt => ({
-    title: wt.title,
-    baseline: fmtMs(wt.baseline?.mean_ms),
-    feature: fmtMs(wt.feature?.mean_ms),
-  }));
-}
-
 function replayRunLabel() {
   return (process.env.BENCH_RUN_LABEL || 'Replay Bench').trim() || 'Replay Bench';
 }
@@ -444,20 +436,7 @@ function buildReplaySuccessBlocks({ summary, prNumber, actor, actorSlackId, jobU
     },
   ];
 
-  const threadBlocks = [];
-  const waitRows = buildReplayWaitRows(summary);
-  if (waitRows.length > 0) {
-    threadBlocks.push({
-      type: 'table',
-      column_settings: [{ align: 'left' }, { align: 'right' }, { align: 'right' }],
-      rows: [
-        [cell('Wait Time'), cell('Baseline'), cell('Feature')],
-        ...waitRows.map(row => [cell(row.title), cell(row.baseline), cell(row.feature)]),
-      ],
-    });
-  }
-
-  return { blocks: blocksPayload, threadBlocks };
+  return blocksPayload;
 }
 
 function buildReplayFailureBlocks({ prNumber, actor, actorSlackId, jobUrl, repo, chain, failedStep, runLabel }) {
@@ -519,7 +498,7 @@ async function replaySuccess({ core, context }) {
 
   const slackUsers = loadSlackUsers(process.env.GITHUB_WORKSPACE || '.');
   const actorSlackId = slackUsers[actor];
-  const { blocks: slackBlocks, threadBlocks } = buildReplaySuccessBlocks({
+  const slackBlocks = buildReplaySuccessBlocks({
     summary,
     prNumber,
     actor,
@@ -533,20 +512,11 @@ async function replaySuccess({ core, context }) {
   });
   const text = `Tempo ${runLabel.toLowerCase()}: ${summary.baseline?.name || 'baseline'} vs ${summary.feature?.name || 'feature'} (${chain})`;
 
-  async function sendWithThread(channel) {
-    const res = await postToSlack(token, channel, slackBlocks, text, core);
-    if (res.ok && res.ts && threadBlocks.length > 0) {
-      for (const threadBlock of threadBlocks) {
-        await postToSlack(token, channel, [threadBlock], 'Replay wait time breakdown', core, res.ts);
-      }
-    }
-  }
-
   const slackMode = process.env.BENCH_SLACK || 'always';
   const channel = process.env.SLACK_BENCH_CHANNEL;
   let postedToChannel = false;
   if (channel && hasImprovement(summary.changes || {})) {
-    await sendWithThread(channel);
+    await postToSlack(token, channel, slackBlocks, text, core);
     postedToChannel = true;
   } else if (channel) {
     core.info('No significant replay improvement, skipping public channel notification');
@@ -561,7 +531,7 @@ async function replaySuccess({ core, context }) {
 
   if (!postedToChannel) {
     if (actorSlackId) {
-      await sendWithThread(actorSlackId);
+      await postToSlack(token, actorSlackId, slackBlocks, text, core);
     } else {
       core.info(`No Slack user mapping for GitHub user '${actor}', skipping DM`);
     }
