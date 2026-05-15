@@ -1,7 +1,7 @@
 use alloy_consensus::{Signed, TxEip1559, TxEip2930, TxEip7702, TxLegacy, error::ValueError};
 use alloy_contract::{CallBuilder, CallDecoder};
 use alloy_eips::Typed2718;
-use alloy_primitives::{Address, Bytes, U256};
+use alloy_primitives::{Address, Bytes, Signature, U256};
 use alloy_provider::Provider;
 use alloy_rpc_types_eth::{Transaction, TransactionRequest, TransactionTrait};
 use core::num::NonZeroU64;
@@ -15,6 +15,12 @@ use tempo_primitives::{
 };
 
 use crate::TempoNetwork;
+
+/// Placeholder fee-payer signature used to mark a transaction for remote sponsorship.
+///
+/// The placeholder forces Tempo signing semantics that reserve the fee-payer slot. A sponsor
+/// service replaces it with a real fee-payer signature before broadcasting.
+pub const SPONSOR_SIGNATURE_PLACEHOLDER: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
 
 /// An Ethereum [`TransactionRequest`] extended with Tempo-specific fields.
 #[derive(
@@ -225,6 +231,20 @@ impl TempoTransactionRequest {
     /// Builder-pattern method for setting fee payer signature.
     pub fn with_fee_payer_signature(mut self, signature: alloy_primitives::Signature) -> Self {
         self.fee_payer_signature = Some(signature);
+        self
+    }
+
+    /// Mark this request for remote sponsorship.
+    ///
+    /// The sponsor provider layer will route the signed raw transaction through the configured
+    /// sponsor service, which replaces the placeholder with its fee-payer signature.
+    pub fn sponsor(&mut self) {
+        self.fee_payer_signature = Some(SPONSOR_SIGNATURE_PLACEHOLDER);
+    }
+
+    /// Builder-pattern method for remote sponsorship.
+    pub fn with_sponsor(mut self) -> Self {
+        self.sponsor();
         self
     }
 
