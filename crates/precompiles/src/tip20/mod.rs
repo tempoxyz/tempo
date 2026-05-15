@@ -829,16 +829,9 @@ impl TIP20Token {
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         let to = Recipient::resolve(call.to)?;
-        self.validate_transfer(msg_sender, &to)?;
-        self.check_and_update_spending_limit(msg_sender, call.amount)?;
-
-        if self.validate_inbound_or_escrow(
-            msg_sender,
-            &to,
-            call.amount,
-            InboundKind::TRANSFER,
-            B256::ZERO,
-        )? {
+        if self.validate_transfer(msg_sender, &to, call.amount, B256::ZERO, |this| {
+            this.check_and_update_spending_limit(msg_sender, call.amount)
+        })? {
             return Ok(true);
         }
 
@@ -865,16 +858,9 @@ impl TIP20Token {
         call: ITIP20::transferFromCall,
     ) -> Result<bool> {
         let to = Recipient::resolve(call.to)?;
-        self.validate_transfer(call.from, &to)?;
-        self.consume_allowance(call.from, msg_sender, call.amount)?;
-
-        if self.validate_inbound_or_escrow(
-            call.from,
-            &to,
-            call.amount,
-            InboundKind::TRANSFER,
-            B256::ZERO,
-        )? {
+        if self.validate_transfer(call.from, &to, call.amount, B256::ZERO, |this| {
+            this.consume_allowance(call.from, msg_sender, call.amount)
+        })? {
             return Ok(true);
         }
 
@@ -882,6 +868,7 @@ impl TIP20Token {
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
         }
+
         Ok(true)
     }
 
@@ -892,16 +879,9 @@ impl TIP20Token {
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool> {
         let to = Recipient::resolve(call.to)?;
-        self.validate_transfer(call.from, &to)?;
-        self.consume_allowance(call.from, msg_sender, call.amount)?;
-
-        if self.validate_inbound_or_escrow(
-            call.from,
-            &to,
-            call.amount,
-            InboundKind::TRANSFER,
-            call.memo,
-        )? {
+        if self.validate_transfer(call.from, &to, call.amount, call.memo, |this| {
+            this.consume_allowance(call.from, msg_sender, call.amount)
+        })? {
             return Ok(true);
         }
 
@@ -950,10 +930,9 @@ impl TIP20Token {
         }
 
         let to = Recipient::resolve(caller)?;
-        self.validate_transfer(from, &to)?;
-        self.check_and_update_spending_limit(from, amount)?;
-
-        if self.validate_inbound_or_escrow(from, &to, amount, InboundKind::TRANSFER, B256::ZERO)? {
+        if self.validate_transfer(from, &to, amount, B256::ZERO, |this| {
+            this.check_and_update_spending_limit(from, amount)
+        })? {
             return Ok(true);
         }
 
@@ -988,16 +967,9 @@ impl TIP20Token {
         call: ITIP20::transferWithMemoCall,
     ) -> Result<()> {
         let to = Recipient::resolve(call.to)?;
-        self.validate_transfer(msg_sender, &to)?;
-        self.check_and_update_spending_limit(msg_sender, call.amount)?;
-
-        if self.validate_inbound_or_escrow(
-            msg_sender,
-            &to,
-            call.amount,
-            InboundKind::TRANSFER,
-            call.memo,
-        )? {
+        if self.validate_transfer(msg_sender, &to, call.amount, call.memo, |this| {
+            this.check_and_update_spending_limit(msg_sender, call.amount)
+        })? {
             return Ok(());
         }
 
@@ -1100,10 +1072,22 @@ impl TIP20Token {
 
     /// Checks pause state, validates the effective recipient, and ensures the transfer
     /// is authorized. Shared by public entrypoints that resolve a [`Recipient`] up front.
-    fn validate_transfer(&self, from: Address, to: &Recipient) -> Result<()> {
+    fn validate_transfer<F>(
+        &mut self,
+        from: Address,
+        to: &Recipient,
+        amount: U256,
+        memo: B256,
+        validate_spend: F,
+    ) -> Result<bool>
+    where
+        F: FnOnce(&mut Self) -> Result<()>,
+    {
         self.check_not_paused()?;
         to.validate()?;
-        self.ensure_transfer_authorized(from, to.target)
+        self.ensure_transfer_authorized(from, to.target)?;
+        validate_spend(self)?;
+        self.validate_inbound_or_escrow(from, to, amount, InboundKind::TRANSFER, memo)
     }
 
     /// Resolves the effective recipient and verifies that `msg_sender` has the issuer role.
