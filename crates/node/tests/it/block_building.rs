@@ -33,15 +33,8 @@ async fn setup_token_manual<P>(
 where
     P: Provider + Clone,
 {
-    setup_token_manual_with_quote_and_nonce(
-        node,
-        provider,
-        sender,
-        chain_id,
-        PATH_USD_ADDRESS,
-        0,
-    )
-    .await
+    setup_token_manual_with_quote_and_nonce(node, provider, sender, chain_id, PATH_USD_ADDRESS, 0)
+        .await
 }
 
 async fn setup_token_manual_with_quote_and_nonce<P>(

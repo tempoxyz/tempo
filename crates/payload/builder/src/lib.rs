@@ -537,9 +537,6 @@ where
 
                     // Score payload value by the validator-credited fee amount that the
                     // FeeManager precompile actually wrote during this transaction.
-                    if pool_tx.transaction.resolved_fee_token().is_none() {
-                        warn!("no resolved fee token for a pool transaction");
-                    }
                     total_fees += result.validator_fee();
 
                     // Notify transactions iterator about the new state.
