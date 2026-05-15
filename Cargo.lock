@@ -12480,6 +12480,7 @@ dependencies = [
  "derive_more",
  "eyre",
  "futures",
+ "reqwest 0.13.2",
  "reth-evm",
  "reth-primitives-traits",
  "reth-rpc-convert",

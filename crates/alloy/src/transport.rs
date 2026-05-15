@@ -27,8 +27,9 @@
 use alloy_json_rpc::{RequestPacket, ResponsePacket};
 use alloy_transport::{TransportError, TransportFut};
 
-/// The RPC method routed to the relay transport.
+/// RPC methods routed to the relay transport.
 const SEND_RAW_TX: &str = "eth_sendRawTransaction";
+const SEND_RAW_TX_SYNC: &str = "eth_sendRawTransactionSync";
 
 /// A transport that routes `eth_sendRawTransaction` to a relay (sponsor) transport
 /// and all other RPC methods to a default transport.
@@ -90,9 +91,11 @@ where
     }
 
     fn call(&mut self, request: RequestPacket) -> Self::Future {
+        let is_relay_method =
+            |m: &str| -> bool { m == SEND_RAW_TX || m == SEND_RAW_TX_SYNC };
         let use_relay = match &request {
-            RequestPacket::Single(req) => req.method() == SEND_RAW_TX,
-            RequestPacket::Batch(reqs) => reqs.iter().all(|r| r.method() == SEND_RAW_TX),
+            RequestPacket::Single(req) => is_relay_method(req.method()),
+            RequestPacket::Batch(reqs) => reqs.iter().all(|r| is_relay_method(r.method())),
         };
 
         if use_relay {
