@@ -32,7 +32,6 @@ crate::sol! {
         error InsufficientEscrowBalance();
         error EscrowAddressReserved();
         error InvalidClaimAddress();
-        error InvalidToken();
     }
 }
 
@@ -55,9 +54,5 @@ impl TIP1028EscrowError {
 
     pub const fn invalid_claim_address() -> Self {
         Self::InvalidClaimAddress(ITIP1028Escrow::InvalidClaimAddress {})
-    }
-
-    pub const fn invalid_token() -> Self {
-        Self::InvalidToken(ITIP1028Escrow::InvalidToken {})
     }
 }

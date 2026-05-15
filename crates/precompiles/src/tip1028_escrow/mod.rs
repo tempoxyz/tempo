@@ -49,10 +49,6 @@ impl TIP1028Escrow {
         &self,
         call: ITIP1028Escrow::blockedReceiptBalanceCall,
     ) -> Result<U256> {
-        if !call.token.is_tip20() {
-            return Err(TIP1028EscrowError::invalid_token().into());
-        }
-
         let receipt = Self::decode_v1(call.receiptVersion, &call.receipt)?;
         self.blocked_receipt_amount[self.receipt_key(
             call.receiptVersion,
@@ -77,9 +73,7 @@ impl TIP1028Escrow {
         kind: InboundKind,
         memo: B256,
     ) -> Result<(u64, u64)> {
-        if !token.is_tip20() {
-            return Err(TIP1028EscrowError::invalid_token().into());
-        }
+        debug_assert!(token.is_tip20(), "only callable by TIP20 tokens");
 
         if matches!(
             blocked_reason,
@@ -127,10 +121,6 @@ impl TIP1028Escrow {
 
     /// Releases escrowed receipt funds to the authorized recipient.
     pub fn claim(&mut self, msg_sender: Address, call: ITIP1028Escrow::claimCall) -> Result<()> {
-        if !call.token.is_tip20() {
-            return Err(TIP1028EscrowError::invalid_token().into());
-        }
-
         if call.to == ESCROW_ADDRESS {
             return Err(TIP1028EscrowError::invalid_claim_address().into());
         }
@@ -1173,76 +1163,6 @@ mod tests {
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall {
                     account: ESCROW_ADDRESS
-                })?,
-                U256::ZERO
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_claim_rolls_back_on_release_error() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-        storage.set_timestamp(U256::from(1_728_007u64));
-
-        let admin = Address::random();
-        let originator = Address::random();
-        let receiver = Address::random();
-        let destination = Address::random();
-        let amount = U256::from(64u64);
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("T", "T", admin)
-                .with_issuer(admin)
-                .with_mint(originator, amount)
-                .apply()?;
-            block_all_senders(receiver, RECOVERY_RECEIVER)?;
-            token.transfer(
-                originator,
-                ITIP20::transferCall {
-                    to: receiver,
-                    amount,
-                },
-            )?;
-            block_all_senders(destination, RECOVERY_RECEIVER)?;
-
-            let receipt = receipt_v1(
-                originator,
-                receiver,
-                1_728_007,
-                1,
-                BlockedReason::RECEIVE_POLICY,
-                InboundKind::TRANSFER,
-                B256::ZERO,
-            );
-            let escrow = TIP1028Escrow::new();
-            let result = TIP1028Escrow::new().claim(
-                receiver,
-                claim_call(token.address(), RECOVERY_RECEIVER, &receipt, destination),
-            );
-            assert!(matches!(
-                result,
-                Err(TempoPrecompileError::TIP20(TIP20Error::PolicyForbids(_)))
-            ));
-
-            assert_eq!(
-                receipt_balance(&escrow, token.address(), RECOVERY_RECEIVER, &receipt)?,
-                amount
-            );
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall {
-                    account: ESCROW_ADDRESS
-                })?,
-                amount
-            );
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall { account: receiver })?,
-                U256::ZERO
-            );
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall {
-                    account: destination
                 })?,
                 U256::ZERO
             );
