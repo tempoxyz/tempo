@@ -758,7 +758,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --preset-path $ctx.preset_path
                 --generate-rpc-url $a_rpc
                 --submit-rpc-url $a_rpc
-                --metrics-url "http://127.0.0.1:9001/metrics"
+                --metrics-url ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
                 --report-path $"($ctx.results_dir)/report-($phase).json"
                 --tps $ctx.tps
                 --duration $ctx.duration

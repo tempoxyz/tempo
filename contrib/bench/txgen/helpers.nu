@@ -181,7 +181,7 @@ def txgen-run-preset-pipeline [
     --preset-path: string
     --generate-rpc-url: string
     --submit-rpc-url: string
-    --metrics-url: string
+    --metrics-url: list<string>
     --report-path: string
     --tps: int
     --duration: int
@@ -223,13 +223,14 @@ def txgen-run-preset-pipeline [
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
     ]
+    let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
     let bench_base_cmd = [
         $txgen_bench_bin
         "send"
         "--rpc-url" $submit_rpc_url
         "--tps" $tps
         "--max-concurrent" $max_concurrent_requests
-        "--metrics-url" $metrics_url
+        ...$metrics_url_args
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
         "--drain-timeout" $TXGEN_HELPER_DRAIN_TIMEOUT_SECS
     ]
