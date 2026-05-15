@@ -12,6 +12,7 @@ use crate::{
     signature_verifier::SignatureVerifier,
     storage::{Handler, Mapping},
     tip20::{ITIP20, TIP20Token, is_tip20_prefix},
+    tip403_registry::AuthRole,
 };
 use alloy::{
     primitives::{Address, B256, U256, aliases::U96, keccak256},
@@ -113,9 +114,8 @@ impl TIP20ChannelEscrow {
         if call.payee == Address::ZERO || is_tip20_prefix(call.payee) {
             return Err(TIP20ChannelEscrowError::invalid_payee().into());
         }
-        if !is_tip20_prefix(call.token) {
-            return Err(TIP20ChannelEscrowError::invalid_token().into());
-        }
+
+        let mut token = TIP20Token::from_address(call.token)?;
 
         let deposit = call.deposit;
         if deposit.is_zero() {
@@ -138,17 +138,16 @@ impl TIP20ChannelEscrow {
             return Err(TIP20ChannelEscrowError::channel_already_exists().into());
         }
 
+        token.ensure_authorized_as(call.payee, AuthRole::Recipient)?;
+        token.system_transfer_from(self.address, msg_sender, U256::from(call.deposit))?;
+
         self.channel_states[channel_id].write(PackedChannelState {
             settled: U96::ZERO,
             deposit,
             close_requested_at: 0,
         })?;
-        TIP20Token::from_address(call.token)?.system_transfer_from(
-            self.address,
-            msg_sender,
-            U256::from(call.deposit),
-        )?;
         self.opened_this_tx[channel_id].t_write(true)?;
+
         self.emit_event(TIP20ChannelEscrowEvent::ChannelOpened(
             ITIP20ChannelEscrow::ChannelOpened {
                 channelId: channel_id,
@@ -199,15 +198,20 @@ impl TIP20ChannelEscrow {
             .checked_sub(state.settled)
             .expect("cumulative amount already checked to be increasing");
 
+        let mut token = TIP20Token::from_address(call.descriptor.token)?;
+        token.ensure_authorized_as(call.descriptor.payer, AuthRole::Sender)?;
+
         state.settled = cumulative;
         self.channel_states[channel_id].write(state)?;
-        TIP20Token::from_address(call.descriptor.token)?.transfer(
+
+        token.transfer(
             self.address,
             ITIP20::transferCall {
                 to: call.descriptor.payee,
                 amount: U256::from(delta),
             },
         )?;
+
         self.emit_event(TIP20ChannelEscrowEvent::Settled(
             ITIP20ChannelEscrow::Settled {
                 channelId: channel_id,
@@ -247,7 +251,9 @@ impl TIP20ChannelEscrow {
 
         if !additional.is_zero() {
             state.deposit = next_deposit;
-            TIP20Token::from_address(call.descriptor.token)?.system_transfer_from(
+            let mut token = TIP20Token::from_address(call.descriptor.token)?;
+            token.ensure_authorized_as(call.descriptor.payee, AuthRole::Recipient)?;
+            token.system_transfer_from(
                 self.address,
                 msg_sender,
                 U256::from(call.additionalDeposit),
@@ -359,6 +365,7 @@ impl TIP20ChannelEscrow {
 
         let mut token = TIP20Token::from_address(call.descriptor.token)?;
         if !delta.is_zero() {
+            token.ensure_authorized_as(call.descriptor.payer, AuthRole::Sender)?;
             token.transfer(
                 self.address,
                 ITIP20::transferCall {
