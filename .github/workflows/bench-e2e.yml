@@ -545,50 +545,54 @@ jobs:
         id: refs
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          INPUT_BASELINE: ${{ inputs.baseline }}
-          INPUT_FEATURE: ${{ inputs.feature }}
-          INPUT_SHA: ${{ github.sha }}
-          INPUT_PR_HEAD_SHA: ${{ steps.pr-info.outputs.head-sha }}
-          INPUT_PR_HEAD_REF: ${{ steps.pr-info.outputs.head-ref }}
+         INPUT_BASELINE: ${{ inputs.baseline }}
+         INPUT_FEATURE: ${{ inputs.feature }}
+         INPUT_BASELINE_NAME: ${{ inputs.baseline-name }}
+         INPUT_FEATURE_NAME: ${{ inputs.feature-name }}
+         INPUT_SHA: ${{ github.sha }}
+         INPUT_PR_HEAD_SHA: ${{ steps.pr-info.outputs.head-sha }}
+         INPUT_PR_HEAD_REF: ${{ steps.pr-info.outputs.head-ref }}
         with:
-          script: |
-            const { execSync } = require('child_process');
-            const run = (cmd) => execSync(cmd, { encoding: 'utf8' }).trim();
+         script: |
+           const { execSync } = require('child_process');
+           const run = (cmd) => execSync(cmd, { encoding: 'utf8' }).trim();
 
-            const baselineArg = process.env.INPUT_BASELINE;
-            const featureArg = process.env.INPUT_FEATURE;
+           const baselineArg = process.env.INPUT_BASELINE;
+           const featureArg = process.env.INPUT_FEATURE;
+           const baselineNameArg = process.env.INPUT_BASELINE_NAME;
+           const featureNameArg = process.env.INPUT_FEATURE_NAME;
 
-            let baselineRef, baselineName, featureRef, featureName;
+           let baselineRef, baselineName, featureRef, featureName;
 
-            if (baselineArg) {
-              try { run(`git fetch origin "${baselineArg}" --quiet`); } catch {}
-              try {
-                baselineRef = run(`git rev-parse "${baselineArg}"`);
-              } catch {
-                baselineRef = run(`git rev-parse "origin/${baselineArg}"`);
-              }
-              baselineName = baselineArg;
-            } else {
-              try {
-                baselineRef = run('git merge-base HEAD origin/main');
-              } catch {
-                baselineRef = process.env.INPUT_SHA;
-              }
-              baselineName = 'main';
-            }
+           if (baselineArg) {
+             try { run(`git fetch origin "${baselineArg}" --quiet`); } catch {}
+             try {
+               baselineRef = run(`git rev-parse "${baselineArg}"`);
+             } catch {
+               baselineRef = run(`git rev-parse "origin/${baselineArg}"`);
+             }
+             baselineName = baselineNameArg || baselineArg;
+           } else {
+             try {
+               baselineRef = run('git merge-base HEAD origin/main');
+             } catch {
+               baselineRef = process.env.INPUT_SHA;
+             }
+             baselineName = baselineNameArg || 'main';
+           }
 
-            if (featureArg) {
-              try { run(`git fetch origin "${featureArg}" --quiet`); } catch {}
-              try {
-                featureRef = run(`git rev-parse "${featureArg}"`);
-              } catch {
-                featureRef = run(`git rev-parse "origin/${featureArg}"`);
-              }
-              featureName = featureArg;
-            } else {
-              featureRef = process.env.INPUT_PR_HEAD_SHA;
-              featureName = process.env.INPUT_PR_HEAD_REF;
-            }
+           if (featureArg) {
+             try { run(`git fetch origin "${featureArg}" --quiet`); } catch {}
+             try {
+               featureRef = run(`git rev-parse "${featureArg}"`);
+             } catch {
+               featureRef = run(`git rev-parse "origin/${featureArg}"`);
+             }
+             featureName = featureNameArg || featureArg;
+           } else {
+             featureRef = process.env.INPUT_PR_HEAD_SHA;
+             featureName = featureNameArg || process.env.INPUT_PR_HEAD_REF;
+           }
 
             core.setOutput('baseline-ref', baselineRef);
             core.setOutput('baseline-name', baselineName);
