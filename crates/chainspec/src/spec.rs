@@ -3,6 +3,7 @@ pub use crate::constants::gas::*;
 use crate::{
     bootnodes::{moderato_nodes, presto_nodes},
     hardfork::{TempoHardfork, TempoHardforks},
+    network_identity::NetworkIdentity,
 };
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
 use alloy_eips::eip7840::BlobParams;
@@ -171,11 +172,18 @@ pub struct TempoChainSpec {
     /// [`ChainSpec`].
     pub inner: ChainSpec<TempoHeader>,
     pub info: TempoGenesisInfo,
+    /// Compiled consensus network identity for this chain.
+    pub network_identity: Option<NetworkIdentity>,
     /// Default RPC URL for following this chain.
     pub default_follow_url: Option<&'static str>,
 }
 
 impl TempoChainSpec {
+    /// Returns the compiled consensus network identity for this chain.
+    pub fn network_identity(&self) -> Option<&NetworkIdentity> {
+        self.network_identity.as_ref()
+    }
+
     /// Returns the default RPC URL for following this chain.
     pub fn default_follow_url(&self) -> Option<&'static str> {
         self.default_follow_url
@@ -195,17 +203,29 @@ impl TempoChainSpec {
         });
         base_spec.hardforks.extend(tempo_forks);
 
+        let inner = base_spec.map_header(|inner| TempoHeader {
+            general_gas_limit: 0,
+            timestamp_millis_part: inner.timestamp % 1000,
+            shared_gas_limit: 0,
+            consensus_context: None,
+            inner,
+        });
+        let network_identity = NetworkIdentity::from_genesis_extra_data(
+            inner.genesis_header().inner.extra_data.as_ref(),
+        );
+
         Self {
-            inner: base_spec.map_header(|inner| TempoHeader {
-                general_gas_limit: 0,
-                timestamp_millis_part: inner.timestamp % 1000,
-                shared_gas_limit: 0,
-                consensus_context: None,
-                inner,
-            }),
+            inner,
             info,
+            network_identity,
             default_follow_url: None,
         }
+    }
+
+    /// Sets the compiled consensus network identity for this chain.
+    pub fn with_network_identity(mut self, identity: NetworkIdentity) -> Self {
+        self.network_identity = Some(identity);
+        self
     }
 
     /// Sets the default follow URL for this chain spec.
@@ -238,6 +258,7 @@ impl From<ChainSpec> for TempoChainSpec {
                 inner,
             }),
             info: TempoGenesisInfo::default(),
+            network_identity: None,
             default_follow_url: None,
         }
     }
@@ -349,6 +370,7 @@ impl TempoHardforks for TempoChainSpec {
 #[cfg(test)]
 mod tests {
     use crate::hardfork::{TempoHardfork, TempoHardforks};
+    use commonware_codec::Encode as _;
     use reth_chainspec::{ForkCondition, Hardforks};
     use reth_cli::chainspec::ChainSpecParser as _;
 
@@ -386,6 +408,30 @@ mod tests {
         // Should be able to query Tempo hardfork activation through trait
         let activation = chainspec.tempo_fork_activation(TempoHardfork::T0);
         assert_eq!(activation, ForkCondition::Timestamp(0));
+    }
+
+    #[test]
+    fn network_identity_defaults_to_genesis_extra_data() {
+        let chainspec = super::TempoChainSpecParser::parse("mainnet")
+            .expect("the mainnet chainspec must always be well formed");
+        let identity = chainspec
+            .network_identity()
+            .expect("mainnet genesis should contain a DKG outcome");
+
+        assert_eq!(identity.from_epoch, 0);
+        assert!(!identity.identity.encode().is_empty());
+    }
+
+    #[test]
+    fn network_identity_is_absent_without_genesis_dkg() {
+        let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
+            "config": { "chainId": 1234 },
+            "alloc": {}
+        }))
+        .unwrap();
+        let chainspec = super::TempoChainSpec::from_genesis(genesis);
+
+        assert!(chainspec.network_identity().is_none());
     }
 
     #[test]
