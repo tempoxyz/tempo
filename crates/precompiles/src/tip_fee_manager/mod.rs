@@ -226,7 +226,9 @@ impl TipFeeManager {
     /// Finalizes fee collection after transaction execution.
     ///
     /// Refunds unused `user_token` to `fee_payer` via [`TIP20Token`], executes the fee swap
-    /// through the AMM pool if tokens differ, and accumulates fees for the validator.
+    /// through the AMM pool if tokens differ, and accumulates fees for the validator. Returns
+    /// the validator-credited amount (post-feeAMM haircut, in the validator's fee token), which
+    /// is used by the payload builder to score blocks by actual proposer revenue.
     ///
     /// # Errors
     /// - `InvalidToken` — `fee_token` does not have a valid TIP-20 prefix
@@ -239,7 +241,7 @@ impl TipFeeManager {
         refund_amount: U256,
         fee_token: Address,
         beneficiary: Address,
-    ) -> Result<()> {
+    ) -> Result<U256> {
         // Refund unused tokens to user
         let mut tip20_token = TIP20Token::from_address(fee_token)?;
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
@@ -267,7 +269,7 @@ impl TipFeeManager {
 
         self.increment_collected_fees(beneficiary, validator_token, amount)?;
 
-        Ok(())
+        Ok(amount)
     }
 
     /// Increment collected fees for a specific validator and token combination.
