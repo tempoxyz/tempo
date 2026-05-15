@@ -1,11 +1,7 @@
 //! The legacy immutable finalized blocks archive.
 //!
 //! Older deployments stored finalized blocks in an immutable archive. This
-//! module owns the on-disk shape of that archive — the partition naming
-//! scheme, the open/init function, and the [`Legacy`] type alias — but is
-//! deliberately unaware of how it is consumed: every consumer (today only
-//! [`super::hybrid`]'s rollback-safety dual-write path) lives elsewhere and
-//! depends on this module, not the other way around.
+//! module owns the on-disk shape of that archive.
 
 use commonware_runtime::{BufferPooler, Clock, Metrics, Spawner, Storage, buffer::paged::CacheRef};
 use commonware_storage::archive::immutable;

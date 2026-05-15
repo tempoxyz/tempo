@@ -228,15 +228,10 @@ where
     /// eviction.
     pub(crate) execution_block_provider: TExecutionBlockProvider,
 
-    /// Target number of most-recently-finalized blocks (relative to
-    /// reth's finalized watermark) to keep in the prunable cache. The
-    /// actual retained window is approximate due to the prunable
-    /// archive's section-aligned pruning — see the module docs
-    /// ("Section-rounding") for the exact bounds. Anything older is
-    /// dropped from the cache on each [`put`] and served out of
+    /// Number of most-recently-finalized blocks (relative to the EL's
+    /// finalized watermark) to keep in the prunable cache. Anything
+    /// older is dropped from the cache and served out of
     /// [`Self::execution_block_provider`] instead.
-    ///
-    /// [`put`]: commonware_consensus::marshal::store::Blocks::put
     pub(crate) retention_blocks: u64,
 }
 
@@ -267,10 +262,10 @@ where
     /// eviction.
     execution_block_provider: TExecutionBlockProvider,
 
-    /// Number of most-recently-finalized blocks (relative to reth's
+    /// Number of most-recently-finalized blocks (relative to the EL's
     /// finalized watermark) to keep in the prunable cache. Anything
     /// older is dropped from the cache and served out of
-    /// [`Self::provider`] instead.
+    /// [`Self::execution_block_provider`] instead.
     retention_blocks: u64,
 }
 
