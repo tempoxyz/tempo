@@ -744,6 +744,11 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     let tps_k = ($ctx.tps // 1000)
     let scenario = $"($ctx.preset)-($tps_k)k"
+    let phase_clickhouse_url = if $ctx.clickhouse_url != "" and ($ctx.clickhouse_run == "" or $ctx.clickhouse_run == $phase) {
+        $ctx.clickhouse_url
+    } else {
+        ""
+    }
 
     if $phase_exit == 0 {
         let sender_exit = (try {
@@ -771,7 +776,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --platform "tempo"
                 --scenario $scenario
                 --victoriametrics-url $ctx.victoriametrics_url
-                --clickhouse-url $ctx.clickhouse_url
+                --clickhouse-url $phase_clickhouse_url
                 --skip-funding=($ctx.bloat > 0))
             if not $bench_result.ok {
                 $bench_result.exit_code
@@ -803,7 +808,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     return 0
 }
 
-# Run the baseline-feature-feature-baseline e2e sequence on one runner.
+# Run the e2e sequence on one runner.
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
@@ -828,6 +833,8 @@ def "main e2e" [
     --tracing-otlp: string = ""                         # OTLP endpoint for tracing (auto-derived from GRAFANA_TEMPO/TEMPO_TELEMETRY_URL)
     --victoriametrics-url: string = ""                  # VictoriaMetrics base URL for txgen metric sample import
     --clickhouse-url: string = ""                       # ClickHouse HTTP endpoint for txgen result upload
+    --clickhouse-run: string = "feature-1"              # Run label allowed to use the ClickHouse reporter; empty = every run
+    --disable-abba                                      # Run only baseline-1 and feature-1
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
@@ -847,6 +854,11 @@ def "main e2e" [
     txgen-validate-bench-args $bench_args
     if $tracy not-in ["off" "on" "full"] {
         print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
+        exit 1
+    }
+    let valid_run_labels = ["baseline-1" "feature-1" "feature-2" "baseline-2"]
+    if $clickhouse_run != "" and $clickhouse_run not-in $valid_run_labels {
+        print $"Error: --clickhouse-run must be one of: ($valid_run_labels | str join ', ') \(got '($clickhouse_run)'\)"
         exit 1
     }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
@@ -1085,6 +1097,7 @@ def "main e2e" [
         bench_env: $bench_env
         victoriametrics_url: $victoriametrics_url
         clickhouse_url: $clickhouse_url
+        clickhouse_run: $clickhouse_run
         run_type: $run_type
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
@@ -1096,12 +1109,17 @@ def "main e2e" [
     let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
     let feature_base_label = if $feature_name != "" { $feature_name } else { $feature }
 
-    let runs = [
+    let abba_runs = [
         { phase: "baseline-1", ref: $baseline, ref_label: $baseline_base_label, tempo: $baseline_tempo, genesis: $baseline_genesis_path, hardfork: $baseline_hardfork_name }
         { phase: "feature-1", ref: $feature, ref_label: $feature_base_label, tempo: $feature_tempo, genesis: $feature_genesis_path, hardfork: $feature_hardfork_name }
         { phase: "feature-2", ref: $feature, ref_label: $feature_base_label, tempo: $feature_tempo, genesis: $feature_genesis_path, hardfork: $feature_hardfork_name }
         { phase: "baseline-2", ref: $baseline, ref_label: $baseline_base_label, tempo: $baseline_tempo, genesis: $baseline_genesis_path, hardfork: $baseline_hardfork_name }
     ]
+    let runs = if $disable_abba {
+        $abba_runs | where { |run| $run.phase in ["baseline-1" "feature-1"] }
+    } else {
+        $abba_runs
+    }
     let num_phases = ($runs | length)
     mut e2e_exit = 0
     for idx in 0..<$num_phases {

@@ -81,6 +81,8 @@ jobs:
       baseline-name: ${{ needs.resolve-refs.outputs.baseline-name }}
       feature-name: ${{ needs.resolve-refs.outputs.feature-name }}
       run-type: ${{ needs.resolve-refs.outputs.run-type }}
+      disable-abba: "true"
+      clickhouse-run: feature-1
     secrets:
       DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
