@@ -616,8 +616,6 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
     let fee_beneficiary = Address::ZERO;
 
     // Create a two-hop fee route: user_fee_token -> hop_fee_token -> PATH_USD.
-    // Track the next available nonce so CodeQL doesn't flag sequential test nonces as
-    // hard-coded cryptographic values.
     let mut nonce = 0u64;
     let hop_fee_token = setup_token_manual_with_quote_and_nonce(
         &mut setup.node,
