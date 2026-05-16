@@ -29,7 +29,6 @@ crate::sol! {
 
         error UnauthorizedClaimer();
         error InvalidReceiptClaim();
-        error InsufficientEscrowBalance();
         error EscrowAddressReserved();
         error InvalidClaimAddress();
     }
@@ -42,10 +41,6 @@ impl TIP1028EscrowError {
 
     pub const fn invalid_receipt_claim() -> Self {
         Self::InvalidReceiptClaim(ITIP1028Escrow::InvalidReceiptClaim {})
-    }
-
-    pub const fn insufficient_escrow_balance() -> Self {
-        Self::InsufficientEscrowBalance(ITIP1028Escrow::InsufficientEscrowBalance {})
     }
 
     pub const fn escrow_address_reserved() -> Self {

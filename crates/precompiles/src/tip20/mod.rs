@@ -1279,29 +1279,7 @@ impl TIP20Token {
             }
         }
 
-        let escrow_balance = self.get_balance(ESCROW_ADDRESS)?;
-        if amount > escrow_balance {
-            return Err(TIP1028EscrowError::insufficient_escrow_balance().into());
-        }
-
-        self.handle_rewards_on_transfer(ESCROW_ADDRESS, destination.target, amount)?;
-
-        self.set_balance(
-            ESCROW_ADDRESS,
-            escrow_balance
-                .checked_sub(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
-
-        let to_balance = self.get_balance(destination.target)?;
-        self.set_balance(
-            destination.target,
-            to_balance
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
-
-        self.emit_event(destination.build_transfer_event(ESCROW_ADDRESS, amount))?;
+        self._transfer(ESCROW_ADDRESS, &destination, amount)?;
         if let Some(hop) = destination.build_virtual_transfer_event(amount) {
             self.emit_event(hop)?;
         }
