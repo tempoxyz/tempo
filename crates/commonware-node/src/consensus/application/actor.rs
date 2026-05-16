@@ -24,7 +24,7 @@ use commonware_consensus::{
     simplex::Plan,
     types::{Epoch, Epocher as _, FixedEpocher, Height, HeightDelta, Round, View},
 };
-use commonware_cryptography::{certificate::Provider as _, ed25519::PublicKey};
+use commonware_cryptography::ed25519::PublicKey;
 use commonware_macros::select;
 use commonware_p2p::Recipients;
 use commonware_runtime::{
@@ -882,7 +882,7 @@ async fn verify_block<TContext: Pacer>(
 
     // Scheme registration precedes engine creation, so the scheme must exist
     let scheme = scheme_provider
-        .scoped(epoch)
+        .full_scheme(epoch)
         .ok_or_eyre("cannot determine participants in the current epoch")?;
 
     let validator_set = Some(

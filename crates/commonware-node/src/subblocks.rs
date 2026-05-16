@@ -15,7 +15,6 @@ use commonware_consensus::{
 use commonware_cryptography::{
     Signer, Verifier,
     bls12381::primitives::variant::MinSig,
-    certificate::Provider,
     ed25519,
     ed25519::{PrivateKey, PublicKey},
 };
@@ -308,7 +307,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
         //
         // TODO(hamdi): When finalizing a boundary block, the scheme for the next epoch is not yet registered meaning
         // we skip the subblock building task. This issue is scoped to the boundary and will be fixed.
-        let Some(scheme) = self.scheme_provider.scoped(epoch_of_next_block) else {
+        let Some(scheme) = self.scheme_provider.full_scheme(epoch_of_next_block) else {
             debug!(%epoch_of_next_block, "scheme not found for epoch");
             return;
         };
@@ -836,7 +835,7 @@ async fn validate_subblock(
         .expect("epoch strategy covers all epochs")
         .epoch();
     let scheme = scheme_provider
-        .scoped(epoch)
+        .full_scheme(epoch)
         .ok_or_eyre("scheme not found")?;
     let participants = scheme.participants().len() as usize;
 

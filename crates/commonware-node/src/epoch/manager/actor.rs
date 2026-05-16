@@ -543,6 +543,41 @@ where
             return;
         }
 
+        if let Some(target_epoch) = their_epoch.previous()
+            && target_epoch > reference_epoch
+            && let Some(network_identity) = self.config.network_identity.as_ref()
+            && target_epoch.get() >= network_identity.from_epoch
+        {
+            self.config
+                .scheme_provider
+                .register_network_identity_certificate_verifier(target_epoch, network_identity);
+
+            let boundary_height = self
+                .config
+                .epoch_strategy
+                .last(target_epoch)
+                .expect("our epoch strategy should cover all epochs");
+
+            tracing::debug!(
+                %reference_epoch,
+                %target_epoch,
+                %boundary_height,
+                "hinting to sync system that a finalization certificate might be \
+                available for a future boundary with the compiled network identity",
+            );
+
+            if let Some(one_before_boundary) = boundary_height.previous() {
+                self.config.marshal.set_floor(one_before_boundary).await;
+            }
+
+            self.config
+                .marshal
+                .hint_finalized(boundary_height, NonEmptyVec::new(from))
+                .await;
+
+            return;
+        }
+
         let boundary_height = self
             .config
             .epoch_strategy
@@ -555,6 +590,7 @@ where
             "hinting to sync system that a finalization certificate might be \
             available for our reference epoch",
         );
+
         self.config
             .marshal
             .hint_finalized(boundary_height, NonEmptyVec::new(from))

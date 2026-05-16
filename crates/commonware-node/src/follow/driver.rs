@@ -14,7 +14,7 @@ use commonware_consensus::{
         scheme::bls12381_threshold::vrf::Scheme,
         types::{Activity, Finalization},
     },
-    types::{Epoch, Epocher as _, FixedEpocher, Height, Round, View},
+    types::{Epoch, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
     Signer as _,
@@ -22,6 +22,7 @@ use commonware_cryptography::{
     ed25519::{self, PublicKey},
 };
 use commonware_math::algebra::Random as _;
+use commonware_parallel::Sequential;
 use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, vec::NonEmptyVec};
 use rand_08::{CryptoRng, Rng};
@@ -328,35 +329,77 @@ where
             })
             .wrap_err("event contained a malformed finalization certificate")?;
 
-        if finalization.epoch() > self.current_epoch {
-            let boundary_height = self
-                .config
-                .epoch_strategy
-                .last(self.current_epoch)
-                .expect("strategy is valid for all epochs and heights");
+        let finalization_epoch = finalization.epoch();
+        let height = certified.block.number();
+        if finalization_epoch > self.current_epoch {
+            let fast_forwarded = if let Some(network_identity) =
+                self.config.network_identity.clone()
+                && finalization_epoch.get() >= network_identity.from_epoch
+            {
+                let scheme = Scheme::certificate_verifier(
+                    crate::config::NAMESPACE,
+                    network_identity.identity.clone(),
+                );
+                if finalization.verify(&mut self.context, &scheme, &Sequential) {
+                    self.config
+                        .scheme_provider
+                        .register_network_identity_certificate_verifier(
+                            finalization_epoch,
+                            &network_identity,
+                        );
+                    if let Some(one_before_finalized) = Height::new(height).previous() {
+                        self.config.marshal.set_floor(one_before_finalized).await;
+                    }
+                    self.current_epoch = finalization_epoch;
+                    debug!(
+                        %finalization_epoch,
+                        %height,
+                        "fast-forwarding follower epoch with compiled network identity"
+                    );
+                    true
+                } else {
+                    debug!(
+                        %finalization_epoch,
+                        %height,
+                        "future finalization did not verify with compiled network identity"
+                    );
+                    false
+                }
+            } else {
+                false
+            };
 
-            self.config
-                .marshal
-                .hint_finalized(
-                    boundary_height,
-                    // XXX: we know for a fact that the resolver used by the marshal
-                    // actor ignores the target, so we just give it a dummy key.
-                    NonEmptyVec::new(ed25519::PrivateKey::random(&mut self.context).public_key()),
-                )
-                .await;
+            if !fast_forwarded {
+                let boundary_height = self
+                    .config
+                    .epoch_strategy
+                    .last(self.current_epoch)
+                    .expect("strategy is valid for all epochs and heights");
 
-            if let Some(one_before_boundary) = boundary_height.previous() {
-                self.config.marshal.set_floor(one_before_boundary).await;
+                self.config
+                    .marshal
+                    .hint_finalized(
+                        boundary_height,
+                        // XXX: we know for a fact that the resolver used by the marshal
+                        // actor ignores the target, so we just give it a dummy key.
+                        NonEmptyVec::new(
+                            ed25519::PrivateKey::random(&mut self.context).public_key(),
+                        ),
+                    )
+                    .await;
+
+                if let Some(one_before_boundary) = boundary_height.previous() {
+                    self.config.marshal.set_floor(one_before_boundary).await;
+                }
+
+                return Ok(());
             }
-
-            return Ok(());
         }
 
-        let height = certified.block.number();
         let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(certified.block));
 
         // Store the Finalized Block
-        let round = Round::new(Epoch::new(certified.epoch), View::new(certified.view));
+        let round = finalization.round();
         let activity = Activity::Finalization(finalization);
         if !self.config.marshal.verified(round, consensus_block).await {
             warn_span!("follow_driver").in_scope(
