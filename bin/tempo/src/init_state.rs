@@ -30,8 +30,9 @@ use reth_db_api::{
 use reth_ethereum::{chainspec::EthChainSpec, tasks::Runtime};
 use reth_etl::Collector;
 use reth_primitives_traits::{Account, StorageEntry};
-use reth_provider::{BlockNumReader, DatabaseProviderFactory, HashingWriter};
-use reth_storage_api::{DBProvider, StorageSettingsCache, TrieWriter};
+use reth_provider::{
+    BlockNumReader, DBProvider, DatabaseProviderFactory, HashingWriter, TrieWriter,
+};
 use reth_trie::{IntermediateStateRootState, StateRootProgress};
 use reth_trie_db::DatabaseStateRoot;
 use tempo_chainspec::spec::TempoChainSpecParser;
@@ -102,8 +103,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut accounts_seen: AddressMap<Account> = AddressMap::default();
 
         // ETL collectors: accumulate entries sorted, spill to disk when full
-        let mut plain_collector: Collector<Vec<u8>, CompactU256> =
-            Collector::new(ETL_FILE_SIZE, None);
         let mut hash_chunk: Vec<(alloy_primitives::Address, B256, CompactU256)> =
             Vec::with_capacity(WORKER_CHUNK_SIZE);
 
@@ -175,7 +174,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 "Processing token storage block"
             );
 
-            // Ensure account exists in plain state (only on first encounter).
+            // Ensure the account exists in the canonical state table (only on first encounter).
             // The binary dump is chunked: generate-state-bloat writes one block per token
             // per chunk, so the same token address appears in multiple blocks. This entry
             // is Vacant on the first chunk and Occupied on subsequent ones.
@@ -183,8 +182,10 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             // set during genesis, and overwriting with Account::default() would clear the
             // code hash, making the token appear uninitialized.
             if let Entry::Vacant(e) = accounts_seen.entry(address) {
-                let tx = provider_rw.tx_ref();
-                let mut account_cursor = tx.cursor_write::<tables::PlainAccountState>()?;
+                let address = keccak256(address);
+                let mut account_cursor = provider_rw
+                    .tx_ref()
+                    .cursor_write::<tables::HashedAccounts>()?;
                 let account = match account_cursor.seek_exact(address)? {
                     Some((_, account)) => account,
                     None => {
@@ -196,7 +197,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 e.insert(account);
             }
 
-            // Read entries into both ETL collectors
+            // Read entries into the hashed ETL collector.
             let mut entry_buf = [0u8; 64];
             let start = Instant::now();
             let mut last_log = start;
@@ -215,14 +216,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                 }
 
                 let compact_value = CompactU256::from(value);
-
-                // Collect plain entry: key = address ++ slot
-                let mut plain_key = Vec::with_capacity(52);
-                plain_key.extend_from_slice(address.as_slice());
-                plain_key.extend_from_slice(slot.as_slice());
-                plain_collector
-                    .insert(plain_key, compact_value.clone())
-                    .wrap_err("ETL insert failed")?;
 
                 // Queue raw data for parallel hashing
                 hash_chunk.push((address, slot, compact_value));
@@ -257,32 +250,8 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
             target: "tempo::cli",
             total_blocks,
             total_entries,
-            "Entries collected, merging genesis storage into ETL collectors..."
+            "Entries collected, merging genesis hashed storage into ETL collector..."
         );
-
-        // Merge existing genesis plain storage into the collector so it survives
-        // the clear + append_dup bulk load.
-        {
-            let tx = provider_rw.tx_ref();
-            let mut cursor = tx.cursor_read::<tables::PlainStorageState>()?;
-            let mut genesis_count = 0usize;
-            let walker = cursor.walk(None)?;
-            for row in walker {
-                let (address, entry) = row?;
-                let mut key = Vec::with_capacity(52);
-                key.extend_from_slice(address.as_slice());
-                key.extend_from_slice(entry.key.as_slice());
-                plain_collector
-                    .insert(key, CompactU256::from(entry.value))
-                    .wrap_err("ETL insert of genesis plain storage failed")?;
-                genesis_count += 1;
-            }
-            info!(
-                target: "tempo::cli",
-                genesis_count,
-                "Genesis plain storage entries merged into collector"
-            );
-        }
 
         // Merge existing genesis hashed storage into the collector.
         {
@@ -311,33 +280,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         // Strategy: iterate the sorted collector, deduplicate consecutive entries with
         // the same composite key, and bulk-insert via append_dup.
         // The table is cleared first so append_dup ordering is guaranteed.
-        let total_plain = plain_collector.len();
-        provider_rw.tx_ref().clear::<tables::PlainStorageState>()?;
-        let mut plain_cursor = provider_rw
-            .tx_ref()
-            .cursor_dup_write::<tables::PlainStorageState>()?;
-        load_etl_to_cursor(
-            &mut plain_collector,
-            total_plain,
-            "plain storage",
-            |k, v| {
-                plain_cursor.append_dup(
-                    alloy_primitives::Address::from_slice(&k[..20]),
-                    StorageEntry {
-                        key: B256::from_slice(&k[20..]),
-                        value: v,
-                    },
-                )
-            },
-        )?;
-        drop(plain_cursor);
-
-        info!(
-            target: "tempo::cli",
-            total_plain,
-            "Plain storage written, loading hashed storage from ETL..."
-        );
-
         let total_hashes = hashed_collector.len();
         provider_rw.tx_ref().clear::<tables::HashedStorages>()?;
         let mut hashed_cursor = provider_rw
@@ -361,7 +303,6 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
 
         info!(
             target: "tempo::cli",
-            total_plain,
             total_hashes,
             "Storage written, writing hashed accounts..."
         );
@@ -389,18 +330,19 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
         let mut resume: Option<IntermediateStateRootState> = None;
         let mut trie_writes = 0usize;
 
-        // Incrementally compute the merkle root over all hashed accounts/storage,
-        // using the correct DB adapter (v2 vs legacy) resolved at runtime by the macro.
-        let state_root = reth_trie_db::with_adapter!(provider_rw, |A| {
-            use reth_trie_db::{DatabaseHashedCursorFactory, DatabaseTrieCursorFactory};
-            type DbStateRoot<'a, TX, Adapter> = reth_trie::StateRoot<
-                DatabaseTrieCursorFactory<&'a TX, Adapter>,
+        // Incrementally compute the merkle root over all hashed accounts/storages.
+        let state_root = {
+            use reth_trie_db::{
+                DatabaseHashedCursorFactory, DatabaseTrieCursorFactory, PackedKeyAdapter,
+            };
+            type DbStateRoot<'a, TX> = reth_trie::StateRoot<
+                DatabaseTrieCursorFactory<&'a TX, PackedKeyAdapter>,
                 DatabaseHashedCursorFactory<&'a TX>,
             >;
 
             // Compute state root in chunks, flushing trie nodes to disk between iterations.
             loop {
-                match DbStateRoot::<_, A>::from_tx(provider_rw.tx_ref())
+                match DbStateRoot::<_>::from_tx(provider_rw.tx_ref())
                     .with_intermediate_state(resume)
                     .root_with_progress()?
                 {
@@ -421,7 +363,7 @@ impl<C: reth_cli::chainspec::ChainSpecParser<ChainSpec: EthChainSpec + EthereumH
                     }
                 }
             }
-        });
+        };
 
         info!(
             target: "tempo::cli",
