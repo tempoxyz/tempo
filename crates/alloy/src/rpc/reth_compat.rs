@@ -13,7 +13,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::TempoBlockEnv;
 use tempo_primitives::{
     SignatureType, TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType,
-    transaction::{Call, FEE_PAYER_SIGNATURE_MARKER, RecoveredTempoAuthorization},
+    transaction::{Call, RecoveredTempoAuthorization},
 };
 use tempo_revm::{TempoBatchCallEnv, TempoTxEnv};
 
@@ -345,14 +345,14 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{TxKind, U256, address};
+    use alloy_primitives::{TxKind, address};
     use alloy_rpc_types_eth::TransactionRequest;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use reth_rpc_convert::TryIntoTxEnv;
     use tempo_primitives::{
         TempoTransaction,
-        transaction::{Call, tt_signature::PrimitiveSignature},
+        transaction::{Call, FEE_PAYER_SIGNATURE_MARKER, tt_signature::PrimitiveSignature},
     };
 
     #[test]

@@ -1,4 +1,4 @@
-//! Send a Tempo transaction through the sponsor relay transport.
+//! Send a Tempo transaction through the sponsor transport.
 //!
 //! Run with:
 //! ```sh
@@ -7,6 +7,9 @@
 //! PRIVATE_KEY=0x... \
 //! cargo run -p tempo-alloy --example sponsored_transaction
 //! ```
+//!
+//! Set `SPONSOR_MODE=sign-only` to have the sponsor sign the transaction and broadcast through
+//! `RPC_URL`. The default is sign-and-relay, where the sponsor signs and broadcasts.
 
 use alloy::{
     network::{EthereumWallet, ReceiptResponse, TransactionBuilder},
@@ -15,7 +18,7 @@ use alloy::{
 };
 use tempo_alloy::{
     TempoNetwork, fillers::Random2DNonceFiller, provider::ext::TempoProviderBuilderExt,
-    rpc::TempoTransactionRequest,
+    rpc::TempoTransactionRequest, transport::SponsorshipMode,
 };
 
 #[tokio::main]
@@ -27,11 +30,17 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .expect("PRIVATE_KEY must be a hex private key");
     let sender = signer.address();
 
+    let mode = match std::env::var("SPONSOR_MODE").as_deref() {
+        Ok("sign-only") => SponsorshipMode::SignOnly,
+        Ok("sign-and-relay") | Err(_) => SponsorshipMode::SignAndRelay,
+        Ok(other) => return Err(format!("unsupported SPONSOR_MODE: {other}").into()),
+    };
+
     let provider = ProviderBuilder::<_, _, TempoNetwork>::default()
         .filler(Random2DNonceFiller)
         .filler(<TempoNetwork as RecommendedFillers>::recommended_fillers())
         .wallet(EthereumWallet::from(signer))
-        .sponsor(sponsor_url)
+        .sponsor_with_mode(sponsor_url, mode)
         .connect(&rpc_url)
         .await?;
 

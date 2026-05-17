@@ -1,19 +1,20 @@
 //! Relay transport for routing sponsored transactions through a fee payer service.
 //!
 //! [`RelayTransport`] wraps two transports:
-//! - a default Tempo RPC transport for ordinary requests;
-//! - a sponsor relay transport for `eth_sendRawTransaction`.
+//! - a default Tempo RPC transport for ordinary requests and sign-only broadcasts.
+//! - a sponsor transport for signing or sign-and-relay `eth_sendRawTransaction` submissions.
 //!
 //! When a single `eth_sendRawTransaction` request is submitted, the raw unsigned Tempo AA
-//! transaction is locally preflighted and then forwarded unchanged to the sponsor relay. The relay
-//! applies policy, adds the Tempo `fee_payer_signature`, broadcasts, and returns the transaction
-//! hash. Non-transaction requests are forwarded unchanged to the default transport. JSON-RPC
-//! batches containing `eth_sendRawTransaction` are rejected; use Tempo AA native call batching
-//! instead.
+//! transaction is locally preflighted. In [`SponsorshipMode::SignAndRelay`] it is forwarded
+//! unchanged to the sponsor service, which signs, broadcasts, and returns the transaction hash. In
+//! [`SponsorshipMode::SignOnly`] the sponsor signs via `eth_signRawTransaction`, then the signed raw
+//! transaction is broadcast through the default transport. Non-transaction requests are forwarded
+//! unchanged to the default transport. JSON-RPC batches containing `eth_sendRawTransaction` are
+//! rejected; use Tempo AA native call batching instead.
 
 use alloy_consensus::transaction::SignerRecoverable;
 use alloy_eips::Decodable2718;
-use alloy_json_rpc::{RequestPacket, ResponsePacket, SerializedRequest};
+use alloy_json_rpc::{Request, RequestPacket, ResponsePacket, ResponsePayload, SerializedRequest};
 use alloy_primitives::hex;
 use alloy_rpc_client::BuiltInConnectionString;
 use alloy_transport::{
@@ -34,30 +35,49 @@ impl TransportErrorKindNonRetryableExt for TransportErrorKind {
     }
 }
 
+/// How sponsored raw transactions are handled by [`RelayTransport`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum SponsorshipMode {
+    /// Forward marked `eth_sendRawTransaction` requests to the sponsor, which signs and broadcasts.
+    #[default]
+    SignAndRelay,
+    /// Ask the sponsor to sign with `eth_signRawTransaction`, then broadcast through default RPC.
+    SignOnly,
+}
+
 /// A Tempo transport that routes sponsored `eth_sendRawTransaction` requests.
 ///
-/// Single `eth_sendRawTransaction` requests are validated as unsigned Tempo AA transactions and
-/// forwarded unchanged to the sponsor relay. All other RPC methods go directly to the default
+/// Single `eth_sendRawTransaction` requests are validated as unsigned Tempo AA transactions. In
+/// [`SponsorshipMode::SignAndRelay`] they are forwarded unchanged to the sponsor relay. In
+/// [`SponsorshipMode::SignOnly`] the sponsor returns a fee-payer signed raw transaction which is
+/// then broadcast through the default transport. All other RPC methods go directly to the default
 /// transport. Batched requests containing `eth_sendRawTransaction` are rejected; use Tempo AA native
 /// batching instead.
 ///
-/// The relay transport should point to a Tempo sponsor relay service.
+/// The relay transport MUST point to a sponsor service.
 #[derive(Debug, Clone)]
 pub struct RelayTransport<D, R> {
     default: D,
     relay: R,
+    mode: SponsorshipMode,
 }
 
 /// Tower layer that wraps a default transport with sponsor relay support.
 #[derive(Debug, Clone)]
 pub struct RelayLayer<R> {
     relay: R,
+    mode: SponsorshipMode,
 }
 
 impl<R> RelayLayer<R> {
     /// Create a relay layer.
     pub fn new(relay: R) -> Self {
-        Self { relay }
+        Self::with_mode(relay, SponsorshipMode::default())
+    }
+
+    /// Create a relay layer with an explicit sponsorship mode.
+    pub fn with_mode(relay: R, mode: SponsorshipMode) -> Self {
+        Self { relay, mode }
     }
 }
 
@@ -68,7 +88,7 @@ where
     type Service = RelayTransport<D, R>;
 
     fn layer(&self, default: D) -> Self::Service {
-        RelayTransport::new(default, self.relay.clone())
+        RelayTransport::with_mode(default, self.relay.clone(), self.mode)
     }
 }
 
@@ -77,12 +97,22 @@ where
 pub struct RelayConnector<D, R> {
     default: D,
     relay: R,
+    mode: SponsorshipMode,
 }
 
 impl<D, R> RelayConnector<D, R> {
     /// Create a connector from default RPC and sponsor relay connectors.
     pub fn new(default: D, relay: R) -> Self {
-        Self { default, relay }
+        Self::with_mode(default, relay, SponsorshipMode::default())
+    }
+
+    /// Create a connector from default RPC and sponsor relay connectors with an explicit mode.
+    pub fn with_mode(default: D, relay: R, mode: SponsorshipMode) -> Self {
+        Self {
+            default,
+            relay,
+            mode,
+        }
     }
 }
 
@@ -113,38 +143,43 @@ where
     async fn get_transport(&self) -> Result<BoxTransport, TransportError> {
         let default = self.default.get_transport().await?;
         let relay = self.relay.get_transport().await?;
-        Ok(BoxTransport::new(RelayTransport::new(default, relay)))
+        Ok(BoxTransport::new(RelayTransport::with_mode(
+            default, relay, self.mode,
+        )))
     }
 }
 
 impl<D, R> RelayTransport<D, R> {
     /// Create a new Tempo relay transport.
     pub fn new(default: D, relay: R) -> Self {
-        Self { default, relay }
+        Self::with_mode(default, relay, SponsorshipMode::default())
+    }
+
+    /// Create a new Tempo relay transport with an explicit sponsorship mode.
+    pub fn with_mode(default: D, relay: R, mode: SponsorshipMode) -> Self {
+        Self {
+            default,
+            relay,
+            mode,
+        }
     }
 }
 
 const SEND_RAW_TX: &str = "eth_sendRawTransaction";
+const SIGN_RAW_TX: &str = "eth_signRawTransaction";
+
+#[rustfmt::skip]
+trait RpcService: tower::Service<RequestPacket, Response = ResponsePacket, Error = TransportError, Future = TransportFut<'static>>
+    + Send + 'static {}
+
+#[rustfmt::skip]
+impl<T: Send + 'static> RpcService for T where
+    T: tower::Service<RequestPacket, Response = ResponsePacket, Error = TransportError, Future = TransportFut<'static>> {}
+
 impl<D, R> tower::Service<RequestPacket> for RelayTransport<D, R>
 where
-    D: tower::Service<
-            RequestPacket,
-            Response = ResponsePacket,
-            Error = TransportError,
-            Future = TransportFut<'static>,
-        > + Clone
-        + Send
-        + Sync
-        + 'static,
-    R: tower::Service<
-            RequestPacket,
-            Response = ResponsePacket,
-            Error = TransportError,
-            Future = TransportFut<'static>,
-        > + Clone
-        + Send
-        + Sync
-        + 'static,
+    D: RpcService + Clone + Sync,
+    R: RpcService + Clone + Sync,
 {
     type Response = ResponsePacket;
     type Error = TransportError;
@@ -162,10 +197,11 @@ where
     fn call(&mut self, request: RequestPacket) -> Self::Future {
         match request {
             RequestPacket::Single(req) if req.method() == SEND_RAW_TX => {
-                let mut relay = self.relay.clone();
+                let (mut default, mut relay) = (self.default.clone(), self.relay.clone());
+                let mode = self.mode;
+
                 Box::pin(async move {
-                    validate_send_raw_request(&req)?;
-                    relay.call(RequestPacket::Single(req)).await
+                    handle_sponsored_send_raw_transaction(&mut default, &mut relay, mode, req).await
                 })
             }
             RequestPacket::Batch(reqs) if reqs.iter().any(|req| req.method() == SEND_RAW_TX) => {
@@ -180,10 +216,62 @@ where
     }
 }
 
-fn validate_send_raw_request(request: &SerializedRequest) -> Result<(), TransportError> {
+fn validate_send_raw_request(request: &SerializedRequest) -> Result<&str, TransportError> {
     let raw_tx = extract_raw_transaction(request.serialized().get())?;
     decode_unsigned_tempo_aa(raw_tx)?;
-    Ok(())
+    Ok(raw_tx)
+}
+
+async fn handle_sponsored_send_raw_transaction<D, R>(
+    default: &mut D,
+    relay: &mut R,
+    mode: SponsorshipMode,
+    request: SerializedRequest,
+) -> Result<ResponsePacket, TransportError>
+where
+    D: RpcService,
+    R: RpcService,
+{
+    let raw_tx = validate_send_raw_request(&request)?;
+
+    match mode {
+        SponsorshipMode::SignAndRelay => relay.call(RequestPacket::Single(request)).await,
+        SponsorshipMode::SignOnly => {
+            let sign_request = tx_request_with_metadata(SIGN_RAW_TX, raw_tx, &request)?;
+            let signed_tx: String = match relay.call(RequestPacket::Single(sign_request)).await? {
+                ResponsePacket::Single(response) => match response.payload {
+                    ResponsePayload::Success(payload) => serde_json::from_str(payload.get())
+                        .map_err(TransportErrorKind::non_retryable)?,
+                    ResponsePayload::Failure(err) => {
+                        return Err(TransportErrorKind::custom_str(&err.message));
+                    }
+                },
+                ResponsePacket::Batch(_) => {
+                    return Err(TransportErrorKind::custom_str(
+                        "sponsor returned a batch response to eth_signRawTransaction",
+                    ));
+                }
+            };
+
+            validate_signed_tempo_aa(&signed_tx)?;
+            let send_request = tx_request_with_metadata(SEND_RAW_TX, &signed_tx, &request)?;
+            default.call(RequestPacket::Single(send_request)).await
+        }
+    }
+}
+
+fn tx_request_with_metadata(
+    method: &'static str,
+    tx: &str,
+    original: &SerializedRequest,
+) -> Result<SerializedRequest, TransportError> {
+    let mut request: SerializedRequest = Request::new(method, original.id().clone(), Some([tx]))
+        .try_into()
+        .map_err(TransportErrorKind::non_retryable)?;
+    if let Some(headers) = original.headers() {
+        request.headers_mut().extend(headers.clone());
+    }
+    Ok(request)
 }
 
 fn extract_raw_transaction(serialized_request: &str) -> Result<&str, TransportError> {
@@ -206,31 +294,43 @@ fn decode_tempo_envelope(raw_tx: &str) -> Result<TempoTxEnvelope, TransportError
     TempoTxEnvelope::decode_2718(&mut bytes.as_slice()).map_err(TransportErrorKind::non_retryable)
 }
 
-fn decode_unsigned_tempo_aa(raw_tx: &str) -> Result<AASigned, TransportError> {
-    match decode_tempo_envelope(raw_tx)? {
-        TempoTxEnvelope::AA(tx)
-            if tx
-                .tx()
-                .fee_payer_signature
-                .as_ref()
-                .is_some_and(|sig| *sig == FEE_PAYER_SIGNATURE_MARKER) =>
-        {
-            tx.recover_signer()
-                .map_err(TransportErrorKind::non_retryable)?;
-            Ok(tx)
-        }
-        TempoTxEnvelope::AA(tx) if tx.tx().fee_payer_signature.is_none() => {
-            Err(TransportErrorKind::custom_str(
-                "raw transaction is missing fee-payer signature placeholder",
-            ))
-        }
-        TempoTxEnvelope::AA(_) => Err(TransportErrorKind::custom_str(
-            "raw transaction is already fee-payer signed",
+fn validate_signed_tempo_aa(raw_tx: &str) -> Result<AASigned, TransportError> {
+    let tx = decode_tempo_aa(raw_tx, "sponsor returned non-Tempo AA transaction")?;
+    match tx.tx().fee_payer_signature.as_ref() {
+        Some(sig) if *sig == FEE_PAYER_SIGNATURE_MARKER => Err(TransportErrorKind::custom_str(
+            "sponsor returned transaction with fee-payer signature placeholder",
         )),
-        _ => Err(TransportErrorKind::custom_str(
-            "raw transaction is not a Tempo AA transaction",
+        Some(_) => recover_tempo_aa_signer(tx),
+        None => Err(TransportErrorKind::custom_str(
+            "sponsor returned transaction without fee-payer signature",
         )),
     }
+}
+
+fn decode_unsigned_tempo_aa(raw_tx: &str) -> Result<AASigned, TransportError> {
+    let tx = decode_tempo_aa(raw_tx, "raw transaction is not a Tempo AA transaction")?;
+    match tx.tx().fee_payer_signature.as_ref() {
+        Some(sig) if *sig == FEE_PAYER_SIGNATURE_MARKER => recover_tempo_aa_signer(tx),
+        Some(_) => Err(TransportErrorKind::custom_str(
+            "raw transaction is already fee-payer signed",
+        )),
+        None => Err(TransportErrorKind::custom_str(
+            "raw transaction is missing fee-payer signature placeholder",
+        )),
+    }
+}
+
+fn decode_tempo_aa(raw_tx: &str, non_aa_error: &'static str) -> Result<AASigned, TransportError> {
+    match decode_tempo_envelope(raw_tx)? {
+        TempoTxEnvelope::AA(tx) => Ok(tx),
+        _ => Err(TransportErrorKind::custom_str(non_aa_error)),
+    }
+}
+
+fn recover_tempo_aa_signer(tx: AASigned) -> Result<AASigned, TransportError> {
+    tx.recover_signer()
+        .map_err(TransportErrorKind::non_retryable)?;
+    Ok(tx)
 }
 
 #[cfg(test)]
@@ -528,6 +628,47 @@ mod tests {
         );
         assert!(default.methods().is_empty());
         assert!(relay.methods().is_empty());
+    }
+
+    #[tokio::test]
+    async fn sign_only_gets_sponsor_signature_then_broadcasts_to_default() {
+        let unsigned_raw_tx = signed_tempo_aa_raw_tx(false);
+        let signed_raw_tx = signed_tempo_aa_raw_tx(true);
+        let default = RecordingTransport::default();
+        let relay = RecordingTransport::default();
+        relay.push_success(&signed_raw_tx);
+        default.push_success(&alloy_primitives::B256::ZERO);
+        let mut transport =
+            RelayTransport::with_mode(default.clone(), relay.clone(), SponsorshipMode::SignOnly);
+
+        assert!(
+            tower::Service::call(&mut transport, make_send_raw_tx_request(&unsigned_raw_tx))
+                .await
+                .is_ok()
+        );
+
+        assert_eq!(relay.methods(), vec![SIGN_RAW_TX]);
+        assert_eq!(relay.params(0), serde_json::json!([unsigned_raw_tx]));
+        assert_eq!(default.methods(), vec![SEND_RAW_TX]);
+        assert_eq!(default.params(0), serde_json::json!([signed_raw_tx]));
+    }
+
+    #[tokio::test]
+    async fn sign_only_rejects_sponsor_response_without_fee_payer_signature() {
+        let unsigned_raw_tx = signed_tempo_aa_raw_tx(false);
+        let default = RecordingTransport::default();
+        let relay = RecordingTransport::default();
+        relay.push_success(&unsigned_raw_tx);
+        let mut transport =
+            RelayTransport::with_mode(default.clone(), relay.clone(), SponsorshipMode::SignOnly);
+
+        let err = tower::Service::call(&mut transport, make_send_raw_tx_request(&unsigned_raw_tx))
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("fee-payer signature placeholder"));
+        assert_eq!(relay.methods(), vec![SIGN_RAW_TX]);
+        assert!(default.methods().is_empty());
     }
 
     #[tokio::test]

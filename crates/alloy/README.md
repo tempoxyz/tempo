@@ -134,19 +134,38 @@ async fn sponsored_provider(
 }
 ```
 
+By default, `.sponsor(sponsor_url)` uses sign-and-relay sponsorship: sponsored
+`eth_sendRawTransaction` submissions are sent to the sponsor service, which signs and broadcasts
+them. To have the sponsor sign only and broadcast the fee-payer-signed transaction through the
+default Tempo RPC, use `sponsor_with_mode`:
+
+```rust,ignore
+use tempo_alloy::transport::SponsorshipMode;
+
+ProviderBuilder::<_, _, TempoNetwork>::default()
+    // fillers and wallet omitted
+    .sponsor_with_mode(sponsor_url, SponsorshipMode::SignOnly)
+    .connect(rpc_url)
+    .await?;
+```
+
 For advanced users, `tempo_alloy::transport::RelayTransport` wraps two transports:
 
-- the default Tempo RPC transport for ordinary requests and reads;
-- the sponsor relay transport for sponsored `eth_sendRawTransaction` submissions.
+- the default Tempo RPC transport for ordinary requests, reads, and sign-only broadcasts;
+- the sponsor transport for signing or sign-and-relay `eth_sendRawTransaction` submissions.
 
-Single `eth_sendRawTransaction` requests are locally preflighted as unsigned Tempo AA transactions
-and then forwarded unchanged to the sponsor relay. Other methods are forwarded unchanged to the
-default RPC.
+Single `eth_sendRawTransaction` requests are locally preflighted as unsigned Tempo AA transactions.
+In the default sign-and-relay mode, they are forwarded unchanged to the sponsor service. In
+sign-only mode, `RelayTransport` calls `eth_signRawTransaction` on the sponsor service and then
+broadcasts the returned fee-payer-signed raw transaction through the default RPC. Other methods are
+forwarded unchanged to the default RPC.
 
 Lower-level entry points are available for advanced construction:
 
 - `RelayConnector::http(default_rpc, sponsor_rpc)` implements Alloy's `TransportConnect`;
+- `RelayConnector::with_mode(default, sponsor, mode)` builds from explicit connectors;
 - `RelayTransport::new(default_transport, sponsor_transport)` wraps existing transports directly;
+- `RelayTransport::with_mode(default_transport, sponsor_transport, mode)` selects an explicit mode;
 - `RelayLayer::new(sponsor_transport)` supports Tower-style composition.
 
 Runtime policy is intentionally strict:

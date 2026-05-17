@@ -5,7 +5,9 @@ use alloy_provider::{
     Identity, Provider, ProviderBuilder, ProviderLayer, RootProvider,
     fillers::{JoinFill, TxFiller},
 };
-use alloy_transport::TransportError;
+use alloy_rpc_client::BuiltInConnectionString;
+use alloy_transport::{TransportError, TransportErrorKind};
+use std::str::FromStr;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS,
@@ -18,7 +20,7 @@ use tempo_primitives::transaction::{CallScope, TEMPO_EXPIRING_NONCE_KEY};
 use crate::{
     TempoFillers, TempoNetwork,
     fillers::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller, SponsorFiller},
-    transport::RelayConnector,
+    transport::{RelayConnector, SponsorshipMode},
 };
 
 /// Extension trait for [`Provider`] with Tempo-specific functionality.
@@ -170,6 +172,7 @@ impl<P> TempoProviderExt for P where P: Provider<TempoNetwork> {}
 pub struct SponsoredProviderBuilder<L, F, N = TempoNetwork> {
     inner: ProviderBuilder<L, F, N>,
     sponsor_rpc: String,
+    mode: SponsorshipMode,
 }
 
 impl<L, F, N> SponsoredProviderBuilder<L, F, N> {
@@ -180,7 +183,11 @@ impl<L, F, N> SponsoredProviderBuilder<L, F, N> {
         F: TxFiller<N> + ProviderLayer<L::Provider, N>,
         N: Network,
     {
-        let connect = RelayConnector::http(default_rpc, &self.sponsor_rpc)?;
+        let default =
+            BuiltInConnectionString::from_str(default_rpc).map_err(TransportErrorKind::custom)?;
+        let sponsor = BuiltInConnectionString::from_str(&self.sponsor_rpc)
+            .map_err(TransportErrorKind::custom)?;
+        let connect = RelayConnector::with_mode(default, sponsor, self.mode);
         self.inner.connect_with(&connect).await
     }
 }
@@ -195,6 +202,13 @@ pub trait TempoProviderBuilderExt<L, F>: Sized {
     fn sponsor(
         self,
         sponsor_rpc: impl Into<String>,
+    ) -> SponsoredProviderBuilder<L, JoinFill<F, SponsorFiller>, TempoNetwork>;
+
+    /// Enable Tempo transaction sponsorship with an explicit mode.
+    fn sponsor_with_mode(
+        self,
+        sponsor_rpc: impl Into<String>,
+        mode: SponsorshipMode,
     ) -> SponsoredProviderBuilder<L, JoinFill<F, SponsorFiller>, TempoNetwork>;
 
     /// Returns a provider builder with the recommended Tempo fillers and the random 2D nonce filler.
@@ -240,9 +254,18 @@ where
         self,
         sponsor_rpc: impl Into<String>,
     ) -> SponsoredProviderBuilder<L, JoinFill<F, SponsorFiller>, TempoNetwork> {
+        self.sponsor_with_mode(sponsor_rpc, SponsorshipMode::default())
+    }
+
+    fn sponsor_with_mode(
+        self,
+        sponsor_rpc: impl Into<String>,
+        mode: SponsorshipMode,
+    ) -> SponsoredProviderBuilder<L, JoinFill<F, SponsorFiller>, TempoNetwork> {
         SponsoredProviderBuilder {
             inner: self.filler(SponsorFiller),
             sponsor_rpc: sponsor_rpc.into(),
+            mode,
         }
     }
 
@@ -294,6 +317,7 @@ mod tests {
         TempoFillers, TempoNetwork,
         fillers::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller},
         provider::ext::{TempoProviderBuilderExt, TempoProviderExt},
+        transport::SponsorshipMode,
     };
 
     fn mock_provider(asserter: Asserter) -> impl alloy_provider::Provider<TempoNetwork> {
@@ -304,6 +328,10 @@ mod tests {
     fn test_sponsor_builder_extension() {
         let _ = ProviderBuilder::<_, _, TempoNetwork>::default()
             .sponsor("https://sponsor.testnet.tempo.xyz");
+        let _ = ProviderBuilder::<_, _, TempoNetwork>::default().sponsor_with_mode(
+            "https://sponsor.testnet.tempo.xyz",
+            SponsorshipMode::SignOnly,
+        );
     }
 
     #[test]
