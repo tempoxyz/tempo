@@ -1,13 +1,13 @@
 //! Relay transport for routing sponsored transactions through a fee payer service.
 //!
-//! [`RelayTransport`] wraps two transports:
+//! `RelayTransport` wraps two transports:
 //! - a default Tempo RPC transport for ordinary requests and sign-only broadcasts.
 //! - a sponsor transport for signing or sign-and-relay `eth_sendRawTransaction` submissions.
 //!
 //! When a single `eth_sendRawTransaction` request is submitted, the raw unsigned Tempo AA
-//! transaction is locally preflighted. In [`SponsorshipMode::SignAndRelay`] it is forwarded
+//! transaction is locally preflighted. In `SponsorshipMode::SignAndRelay` it is forwarded
 //! unchanged to the sponsor service, which signs, broadcasts, and returns the transaction hash. In
-//! [`SponsorshipMode::SignOnly`] the sponsor signs via `eth_signRawTransaction`, then the signed raw
+//! `SponsorshipMode::SignOnly` the sponsor signs via `eth_signRawTransaction`, then the signed raw
 //! transaction is broadcast through the default transport. Non-transaction requests are forwarded
 //! unchanged to the default transport. JSON-RPC batches containing `eth_sendRawTransaction` are
 //! rejected; use Tempo AA native call batching instead.
