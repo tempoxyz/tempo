@@ -24,6 +24,7 @@ alloy-eips.workspace = true
 alloy-network.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-provider.workspace = true
+alloy-rpc-client.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy-serde.workspace = true
 alloy-signer-local.workspace = true
@@ -48,7 +49,6 @@ tracing.workspace = true
 [dev-dependencies]
 alloy = { workspace = true, features = ["providers", "reqwest", "rpc-client", "rpc-types-eth", "signers", "signer-local", "sol-types", "transport-http"] }
 alloy-signer.workspace = true
-reqwest.workspace = true
 eyre.workspace = true
 serde_json.workspace = true
 test-case.workspace = true
