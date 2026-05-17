@@ -27,8 +27,9 @@ use tempo_precompiles::tip20::ITIP20::{self, transferCall};
 use tempo_primitives::{
     SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        CallScope, KeyAuthorization, SelectorRule, SignedKeyAuthorization,
-        TEMPO_EXPIRING_NONCE_KEY, TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS, TokenLimit,
+        CallScope, FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, SelectorRule,
+        SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY, TEMPO_EXPIRING_NONCE_MAX_EXPIRY_SECS,
+        TokenLimit,
         tempo_transaction::Call,
         tt_signature::{
             KeychainSignature, P256SignatureWithPreHash, PrimitiveSignature, TempoSignature,
@@ -979,7 +980,7 @@ pub(crate) fn sign_fee_payer(
     signer_addr: Address,
     fee_payer: &(impl SignerSync + ?Sized),
 ) -> eyre::Result<()> {
-    tx.fee_payer_signature = Some(Signature::new(U256::ZERO, U256::ZERO, false));
+    tx.fee_payer_signature = Some(FEE_PAYER_SIGNATURE_MARKER);
     let fee_payer_sig_hash = tx.fee_payer_signature_hash(signer_addr);
     let fee_payer_signature = fee_payer.sign_hash_sync(&fee_payer_sig_hash)?;
     tx.fee_payer_signature = Some(fee_payer_signature);

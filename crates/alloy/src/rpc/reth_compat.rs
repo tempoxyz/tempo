@@ -13,7 +13,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::TempoBlockEnv;
 use tempo_primitives::{
     SignatureType, TempoHeader, TempoSignature, TempoTxEnvelope, TempoTxType,
-    transaction::{Call, RecoveredTempoAuthorization},
+    transaction::{Call, FEE_PAYER_SIGNATURE_MARKER, RecoveredTempoAuthorization},
 };
 use tempo_revm::{TempoBatchCallEnv, TempoTxEnv};
 
@@ -589,7 +589,7 @@ mod tests {
                 chain_id: Some(4217),
                 ..Default::default()
             },
-            fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
+            fee_payer_signature: Some(FEE_PAYER_SIGNATURE_MARKER),
             ..Default::default()
         };
 

@@ -11,15 +11,14 @@
 use alloy::{
     network::{EthereumWallet, ReceiptResponse, TransactionBuilder},
     primitives::{TxKind, U256},
-    providers::{Provider, ProviderBuilder, RootProvider, fillers::RecommendedFillers},
-    rpc::client::ClientBuilder,
+    providers::{Provider, ProviderBuilder, fillers::RecommendedFillers},
 };
 use tempo_alloy::{
-    TempoNetwork, fillers::Random2DNonceFiller, rpc::TempoTransactionRequest,
-    transport::RelayTransport,
+    TempoNetwork, fillers::Random2DNonceFiller, provider::TempoProviderBuilderExt,
+    rpc::TempoTransactionRequest,
 };
 
-const SPONSOR_URL: &str = "https://sponsor.testnet.tempo.xyz";
+const SPONSOR_URL: &str = "https://sponsor.moderato.tempo.xyz";
 
 /// Account index 9 from "test test test ... junk" mnemonic.
 const TEST_PRIVATE_KEY: &str = "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6";
@@ -42,13 +41,6 @@ async fn relay_transport_sponsors_tx_on_testnet() -> eyre::Result<()> {
         }
     };
 
-    let rpc_client = ClientBuilder::default().http(rpc_url.parse()?);
-    let relay_client = ClientBuilder::default().http(sponsor_url.parse()?);
-    let transport = RelayTransport::new(
-        rpc_client.transport().clone(),
-        relay_client.transport().clone(),
-    );
-
     let signer: alloy_signer_local::PrivateKeySigner = TEST_PRIVATE_KEY.parse()?;
     let sender = signer.address();
 
@@ -56,18 +48,14 @@ async fn relay_transport_sponsors_tx_on_testnet() -> eyre::Result<()> {
         .filler(Random2DNonceFiller)
         .filler(<TempoNetwork as RecommendedFillers>::recommended_fillers())
         .wallet(EthereumWallet::from(signer))
-        .connect_provider(RootProvider::new(alloy::rpc::client::RpcClient::new(
-            transport, false,
-        )));
+        .sponsor(sponsor_url)
+        .connect(&rpc_url)
+        .await?;
 
     // Reads should work via the default transport.
     let chain_id = provider.get_chain_id().await?;
     println!("Connected to chain {chain_id}");
     assert!(chain_id == 42431 || chain_id == 42069);
-
-    let balance = provider.get_balance(sender).await?;
-    println!("Sender {sender} balance: {balance}");
-    assert!(balance > U256::ZERO, "test account needs balance");
 
     // Send a tx — the sponsor relay adds fee_payer_signature and broadcasts.
     let mut tx = TempoTransactionRequest::default();
@@ -96,14 +84,10 @@ async fn relay_transport_sponsors_tx_on_testnet() -> eyre::Result<()> {
         }
         Err(e) => {
             let err_str = e.to_string();
-            // If the sponsor relay's fee payer account has no balance, broadcast
-            // can fail with "insufficient funds". This is a deployment funding issue,
-            // not a code bug.
             if err_str.contains("insufficient funds") {
                 println!(
                     "Sponsor relay broadcast failed because the sponsor's fee payer account is unfunded: {err_str}"
                 );
-                println!("This is expected when the testnet sponsor account has no balance.");
             } else {
                 return Err(e.into());
             }

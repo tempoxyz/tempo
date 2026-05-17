@@ -17,7 +17,7 @@ use tempo_primitives::transaction::{CallScope, TEMPO_EXPIRING_NONCE_KEY};
 
 use crate::{
     TempoFillers, TempoNetwork,
-    fillers::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller},
+    fillers::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller, SponsorFiller},
     transport::RelayConnector,
 };
 
@@ -186,11 +186,16 @@ impl<L, F, N> SponsoredProviderBuilder<L, F, N> {
 }
 
 /// Extension trait for [`ProviderBuilder`] with Tempo-specific functionality.
-pub trait TempoProviderBuilderExt<L, F, N>: Sized {
+pub trait TempoProviderBuilderExt<L, F>: Sized {
     /// Enable Tempo transaction sponsorship for the provider built by this builder.
     ///
-    /// After calling this, use [`SponsoredProviderBuilder::connect`] with the default Tempo RPC URL.
-    fn sponsor(self, sponsor_rpc: impl Into<String>) -> SponsoredProviderBuilder<L, F, N>;
+    /// This injects [`SponsorFiller`] so outgoing transactions are marked for sponsorship before
+    /// user signing. After calling this, use [`SponsoredProviderBuilder::connect`] with the default
+    /// Tempo RPC URL.
+    fn sponsor(
+        self,
+        sponsor_rpc: impl Into<String>,
+    ) -> SponsoredProviderBuilder<L, JoinFill<F, SponsorFiller>, TempoNetwork>;
 
     /// Returns a provider builder with the recommended Tempo fillers and the random 2D nonce filler.
     ///
@@ -227,10 +232,16 @@ pub trait TempoProviderBuilderExt<L, F, N>: Sized {
     ) -> ProviderBuilder<Identity, JoinFill<Identity, TempoFillers<NonceKeyFiller>>, TempoNetwork>;
 }
 
-impl<L, F, N> TempoProviderBuilderExt<L, F, N> for ProviderBuilder<L, F, N> {
-    fn sponsor(self, sponsor_rpc: impl Into<String>) -> SponsoredProviderBuilder<L, F, N> {
+impl<L, F> TempoProviderBuilderExt<L, F> for ProviderBuilder<L, F, TempoNetwork>
+where
+    F: TxFiller<TempoNetwork>,
+{
+    fn sponsor(
+        self,
+        sponsor_rpc: impl Into<String>,
+    ) -> SponsoredProviderBuilder<L, JoinFill<F, SponsorFiller>, TempoNetwork> {
         SponsoredProviderBuilder {
-            inner: self,
+            inner: self.filler(SponsorFiller),
             sponsor_rpc: sponsor_rpc.into(),
         }
     }

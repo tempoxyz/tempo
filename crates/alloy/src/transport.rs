@@ -20,7 +20,7 @@ use alloy_transport::{
     BoxTransport, TransportConnect, TransportError, TransportErrorKind, TransportFut,
 };
 use std::str::FromStr;
-use tempo_primitives::{AASigned, TempoTxEnvelope};
+use tempo_primitives::{AASigned, TempoTxEnvelope, transaction::FEE_PAYER_SIGNATURE_MARKER};
 
 // TODO(rusowsky): Remove once alloy-transport publishes `TransportErrorKind::NonRetryable`
 trait TransportErrorKindNonRetryableExt {
@@ -208,10 +208,21 @@ fn decode_tempo_envelope(raw_tx: &str) -> Result<TempoTxEnvelope, TransportError
 
 fn decode_unsigned_tempo_aa(raw_tx: &str) -> Result<AASigned, TransportError> {
     match decode_tempo_envelope(raw_tx)? {
-        TempoTxEnvelope::AA(tx) if tx.tx().fee_payer_signature.is_none() => {
+        TempoTxEnvelope::AA(tx)
+            if tx
+                .tx()
+                .fee_payer_signature
+                .as_ref()
+                .is_some_and(|sig| *sig == FEE_PAYER_SIGNATURE_MARKER) =>
+        {
             tx.recover_signer()
                 .map_err(TransportErrorKind::non_retryable)?;
             Ok(tx)
+        }
+        TempoTxEnvelope::AA(tx) if tx.tx().fee_payer_signature.is_none() => {
+            Err(TransportErrorKind::custom_str(
+                "raw transaction is missing fee-payer signature placeholder",
+            ))
         }
         TempoTxEnvelope::AA(_) => Err(TransportErrorKind::custom_str(
             "raw transaction is already fee-payer signed",
@@ -236,7 +247,7 @@ mod tests {
     };
     use tempo_primitives::{
         TempoSignature, TempoTransaction, TempoTxEnvelope,
-        transaction::{Call, PrimitiveSignature},
+        transaction::{Call, FEE_PAYER_SIGNATURE_MARKER, PrimitiveSignature},
     };
     use tower::Layer;
 
@@ -398,6 +409,7 @@ mod tests {
                 input: Bytes::new(),
             }],
             nonce: 1,
+            fee_payer_signature: Some(FEE_PAYER_SIGNATURE_MARKER),
             ..Default::default()
         };
         let user_sig = user.sign_hash_sync(&tx.signature_hash()).unwrap();
@@ -425,7 +437,10 @@ mod tests {
         let signer = tx.recover_signer().unwrap();
 
         assert_eq!(signer, user.address());
-        assert!(tx.tx().fee_payer_signature.is_none());
+        assert_eq!(
+            tx.tx().fee_payer_signature,
+            Some(FEE_PAYER_SIGNATURE_MARKER)
+        );
     }
 
     #[test]
