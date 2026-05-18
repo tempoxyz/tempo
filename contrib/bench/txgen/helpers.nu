@@ -45,6 +45,15 @@ def txgen-resolve-binaries [] {
     }
 }
 
+def txgen-bench-supports-metrics-align [txgen_bench_bin: string] {
+    let help = (^$txgen_bench_bin send --help | complete)
+    if $help.exit_code != 0 {
+        return false
+    }
+
+    $help.stdout | str contains "--metrics-align"
+}
+
 def txgen-repo-root [] {
     let result = (git rev-parse --show-toplevel | complete)
     if $result.exit_code == 0 {
@@ -224,6 +233,16 @@ def txgen-run-preset-pipeline [
         "--rpc" $generate_rpc_url
     ]
     let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
+    let metrics_align_args = if $victoriametrics_url != "" and $benchmark_start > 0 {
+        if (txgen-bench-supports-metrics-align $txgen_bench_bin) {
+            ["--metrics-align" $"($benchmark_start)"]
+        } else {
+            print "  Skipping --metrics-align: txgen bench binary does not support it"
+            []
+        }
+    } else {
+        []
+    }
     let bench_base_cmd = [
         $txgen_bench_bin
         "send"
@@ -234,7 +253,7 @@ def txgen-run-preset-pipeline [
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
         "--drain-timeout" $TXGEN_HELPER_DRAIN_TIMEOUT_SECS
     ]
-        | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
+        | append $metrics_align_args
     let report_args = ["--report" $"json:($report_path)"]
         | append (if $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
         | append (if $clickhouse_url != "" { ["--report" $"clickhouse:($clickhouse_url)"] } else { [] })
