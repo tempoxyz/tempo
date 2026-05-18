@@ -123,6 +123,9 @@ sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
 # without falling back to a blanket `cargo update`. Bail out if the same crate
 # conflicts twice in a row (i.e. `cargo update` made no progress).
 pushd "$FOUNDRY_ROOT" >/dev/null
+# Disable cargo color output so the error-parsing regex below isn't tripped up
+# by ANSI escape codes when the workflow exports CARGO_TERM_COLOR=always.
+export CARGO_TERM_COLOR=never
 prev_conflict_pkg=""
 while true; do
   err="$(cargo metadata --format-version=1 --no-default-features 2>&1 >/dev/null)" && break
