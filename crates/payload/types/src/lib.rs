@@ -32,6 +32,8 @@ pub struct TempoPayloadTypes;
 pub struct TempoBuiltPayload {
     /// The inner built payload.
     inner: EthBuiltPayload<TempoPrimitives>,
+    /// RLP-encoded EIP-7928 block access list, when generated for this payload.
+    block_access_list: Option<Bytes>,
     /// The executed block data, used to skip re-execution in the engine tree.
     executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
 }
@@ -40,19 +42,30 @@ impl TempoBuiltPayload {
     /// Creates a new [`TempoBuiltPayload`].
     pub fn new(
         inner: EthBuiltPayload<TempoPrimitives>,
+        block_access_list: Option<Bytes>,
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
     ) -> Self {
         Self {
             inner,
+            block_access_list,
             executed_block,
         }
     }
 
+    /// Converts the built payload into owned execution payload parts.
+    pub fn into_execution_payload(self) -> (SealedBlock<Block>, Option<Bytes>) {
+        (
+            Arc::unwrap_or_clone(self.inner.block_arc().clone()),
+            self.block_access_list,
+        )
+    }
+
     /// Converts the built payload into [`TempoExecutionData`].
     pub fn into_execution_data(self) -> TempoExecutionData {
+        let (block, block_access_list) = self.into_execution_payload();
         TempoExecutionData {
-            block: Arc::new(self.inner.block().clone()),
-            block_access_list: self.inner.block_access_list().cloned(),
+            block: Arc::new(block),
+            block_access_list,
             validator_set: None,
         }
     }
@@ -75,6 +88,10 @@ impl BuiltPayload for TempoBuiltPayload {
 
     fn requests(&self) -> Option<Requests> {
         self.inner.requests()
+    }
+
+    fn block_access_list(&self) -> Option<&Bytes> {
+        self.block_access_list.as_ref()
     }
 }
 

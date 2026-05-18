@@ -41,7 +41,7 @@ use futures::{
 };
 use rand_08::{CryptoRng, Rng};
 use reth_ethereum::chainspec::EthChainSpec as _;
-use reth_node_builder::{Block as _, BuiltPayload, ConsensusEngineHandle, PayloadKind};
+use reth_node_builder::{Block as _, ConsensusEngineHandle, PayloadKind};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
@@ -662,10 +662,8 @@ impl Inner<Init> {
             .and_then(|rsp| rsp.map_err(Into::<eyre::Report>::into))
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
 
-        let proposal = Block::from_execution_payload(
-            payload.block().clone(),
-            payload.block_access_list().cloned(),
-        );
+        let (block, block_access_list) = payload.into_execution_payload();
+        let proposal = Block::from_execution_payload(block, block_access_list);
         let digest = proposal.digest();
         if !self.marshal.proposed(round, proposal).await {
             bail!("marshal actor rejected persisting proposal");
