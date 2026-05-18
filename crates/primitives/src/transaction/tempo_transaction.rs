@@ -20,9 +20,6 @@ pub const TEMPO_TX_TYPE_ID: u8 = 0x76;
 /// Magic byte for the fee payer signature
 pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
 
-/// In-memory sentinel for transactions that need a sponsor signature.
-pub const FEE_PAYER_SIGNATURE_MARKER: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
-
 /// Signature type constants
 pub const SECP256K1_SIGNATURE_LENGTH: usize = 65;
 pub const P256_SIGNATURE_LENGTH: usize = 129;
@@ -1115,7 +1112,7 @@ mod tests {
         assert_eq!(service_encoded[0], TEMPO_TX_TYPE_ID);
 
         let mut signing_tx = tx.clone();
-        signing_tx.fee_payer_signature = Some(FEE_PAYER_SIGNATURE_MARKER);
+        signing_tx.fee_payer_signature = Some(Signature::new(U256::ZERO, U256::ZERO, false));
         let mut signing_encoded = Vec::new();
         signing_tx.encode_for_signing(&mut signing_encoded);
         assert_eq!(service_encoded, signing_encoded);

@@ -668,7 +668,7 @@ mod tests {
     use tempo_primitives::{
         Block, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType,
         transaction::{
-            FEE_PAYER_SIGNATURE_MARKER, TempoTransaction,
+            TempoTransaction,
             envelope::TEMPO_SYSTEM_TX_SIGNATURE,
             tempo_transaction::Call,
             tt_signature::{PrimitiveSignature, TempoSignature},
@@ -915,7 +915,7 @@ mod tests {
             nonce_key: U256::ZERO,
             nonce: 0,
             fee_token: Some(PATH_USD_ADDRESS),
-            fee_payer_signature: Some(FEE_PAYER_SIGNATURE_MARKER),
+            fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
             ..Default::default()
         };
 
@@ -966,7 +966,7 @@ mod tests {
             nonce_key: U256::ZERO,
             nonce: 0,
             fee_token: Some(PATH_USD_ADDRESS),
-            fee_payer_signature: Some(FEE_PAYER_SIGNATURE_MARKER),
+            fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
             ..Default::default()
         };
 

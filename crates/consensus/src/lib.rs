@@ -257,7 +257,6 @@ mod tests {
         hardfork::TempoHardfork,
         spec::{DEV, MODERATO, TempoChainSpec},
     };
-    use tempo_primitives::transaction::envelope::TEMPO_SYSTEM_TX_SIGNATURE;
 
     fn current_timestamp_millis() -> u64 {
         SystemTime::now()
@@ -382,7 +381,8 @@ mod tests {
             value: U256::ZERO,
             input: Default::default(),
         };
-        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE))
+        let signature = Signature::new(U256::ZERO, U256::ZERO, false);
+        TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature))
     }
 
     fn create_tx(chain_id: u64) -> TempoTxEnvelope {
@@ -809,8 +809,8 @@ mod tests {
             value: U256::ZERO,
             input: Default::default(),
         };
-        let invalid_system_tx =
-            TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, TEMPO_SYSTEM_TX_SIGNATURE));
+        let signature = Signature::new(U256::ZERO, U256::ZERO, false);
+        let invalid_system_tx = TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, signature));
         let tx_hash = *invalid_system_tx.tx_hash();
 
         let header = TestHeaderBuilder::default()
