@@ -136,6 +136,19 @@ impl AASigned {
         self.signature.encode(out);
     }
 
+    /// Encodes this signed transaction for submission to a fee-payer service.
+    pub fn encode_for_fee_payer_service(&self, out: &mut dyn BufMut) {
+        out.put_u8(TEMPO_TX_TYPE_ID);
+        alloy_rlp::Header {
+            list: true,
+            payload_length: self.tx.rlp_encoded_fields_length_for_fee_payer_service()
+                + self.signature.length(),
+        }
+        .encode(out);
+        self.tx.rlp_encode_fields_for_fee_payer_service(out);
+        self.signature.encode(out);
+    }
+
     /// Splits the transaction into parts.
     pub fn into_parts(self) -> (TempoTransaction, TempoSignature, B256) {
         let hash = *self.hash();

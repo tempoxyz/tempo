@@ -20,6 +20,9 @@ pub const TEMPO_TX_TYPE_ID: u8 = 0x76;
 /// Magic byte for the fee payer signature.
 pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
 
+/// In-memory sentinel for transactions that need a sponsor signature.
+pub const FEE_PAYER_SIGNATURE_MARKER: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
+
 /// Signature type constants
 pub const SECP256K1_SIGNATURE_LENGTH: usize = 65;
 pub const P256_SIGNATURE_LENGTH: usize = 129;
@@ -517,12 +520,20 @@ impl TempoTransaction {
     ///
     /// Fee-payer services accept an unsigned sponsorship request with `0x00` fee-payer signature.
     /// This is a placeholder that tells the sponsor where to insert the real fee-payer signature.
+    pub(crate) fn rlp_encoded_fields_length_for_fee_payer_service(&self) -> usize {
+        self.rlp_encoded_fields_length(|_| 1, true)
+    }
+
+    pub(crate) fn rlp_encode_fields_for_fee_payer_service(&self, out: &mut dyn BufMut) {
+        self.rlp_encode_fields(out, |_, out| out.put_u8(0x00), true);
+    }
+
     pub fn encode_for_fee_payer_service(&self, out: &mut dyn BufMut) {
         out.put_u8(Self::tx_type());
 
-        let payload_length = self.rlp_encoded_fields_length(|_| 1, true);
+        let payload_length = self.rlp_encoded_fields_length_for_fee_payer_service();
         rlp_header(payload_length).encode(out);
-        self.rlp_encode_fields(out, |_, out| out.put_u8(0x00), true);
+        self.rlp_encode_fields_for_fee_payer_service(out);
     }
 
     /// Decodes the inner TempoTransaction fields from RLP bytes

@@ -235,12 +235,16 @@ where
     R: RpcService,
 {
     let raw_tx = validate_send_raw_request(&request)?;
+    let unsigned_tx = decode_unsigned_tempo_aa(raw_tx)?;
+    let sponsor_raw_tx = encode_for_fee_payer_service(&unsigned_tx);
 
     match mode {
-        SponsorshipMode::SignAndRelay => relay.call(RequestPacket::Single(request)).await,
+        SponsorshipMode::SignAndRelay => {
+            let relay_request = tx_request_with_metadata(SEND_RAW_TX, &sponsor_raw_tx, &request)?;
+            relay.call(RequestPacket::Single(relay_request)).await
+        }
         SponsorshipMode::SignOnly => {
-            let unsigned_tx = decode_unsigned_tempo_aa(raw_tx)?;
-            let sign_request = tx_request_with_metadata(SIGN_RAW_TX, raw_tx, &request)?;
+            let sign_request = tx_request_with_metadata(SIGN_RAW_TX, &sponsor_raw_tx, &request)?;
             let signed_tx: String = match relay.call(RequestPacket::Single(sign_request)).await? {
                 ResponsePacket::Single(response) => match response.payload {
                     ResponsePayload::Success(payload) => serde_json::from_str(payload.get())
@@ -262,6 +266,12 @@ where
             default.call(RequestPacket::Single(send_request)).await
         }
     }
+}
+
+fn encode_for_fee_payer_service(tx: &AASigned) -> String {
+    let mut buf = Vec::new();
+    tx.encode_for_fee_payer_service(&mut buf);
+    hex::encode_prefixed(buf)
 }
 
 fn tx_request_with_metadata(
@@ -610,8 +620,10 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn send_raw_tx_forwards_original_to_relay_only() {
+    async fn send_raw_tx_forwards_to_relay_with_fee_payer_service_encoding() {
         let raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
+        let sponsor_raw_tx =
+            encode_for_fee_payer_service(&decode_unsigned_tempo_aa(&raw_tx).unwrap());
         let default = RecordingTransport::default();
         let relay = RecordingTransport::default();
         relay.push_success(&alloy_primitives::B256::ZERO);
@@ -622,7 +634,7 @@ mod tests {
                 .is_ok()
         );
         assert_eq!(relay.methods(), vec![SEND_RAW_TX]);
-        assert_eq!(relay.params(0), serde_json::json!([raw_tx]));
+        assert_eq!(relay.params(0), serde_json::json!([sponsor_raw_tx]));
         assert!(default.methods().is_empty());
     }
 
@@ -674,8 +686,10 @@ mod tests {
                 .is_ok()
         );
 
+        let sponsor_raw_tx =
+            encode_for_fee_payer_service(&decode_unsigned_tempo_aa(&unsigned_raw_tx).unwrap());
         assert_eq!(relay.methods(), vec![SIGN_RAW_TX]);
-        assert_eq!(relay.params(0), serde_json::json!([unsigned_raw_tx]));
+        assert_eq!(relay.params(0), serde_json::json!([sponsor_raw_tx]));
         assert_eq!(default.methods(), vec![SEND_RAW_TX]);
         assert_eq!(default.params(0), serde_json::json!([signed_raw_tx]));
     }
