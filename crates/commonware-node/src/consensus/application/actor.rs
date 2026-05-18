@@ -1029,7 +1029,9 @@ async fn get_parent(
 ) -> eyre::Result<Block> {
     let genesis_digest = execution_node.chain_spec().genesis_hash();
     if parent_digest == Digest(genesis_digest) {
-        let genesis_block = Block::from_execution_block(
+        // Genesis is loaded from the EL database, which persists only the block.
+        // There is no commonware p2p BAL side data for this local reconstruction.
+        let genesis_block = Block::from_execution_payload(
             execution_node
                 .provider
                 .block_by_number(0)
@@ -1039,6 +1041,7 @@ async fn get_parent(
                 )
                 .wrap_err("execution layer did not have the genesis block")?
                 .seal(),
+            None,
         );
         Ok(genesis_block)
     } else {

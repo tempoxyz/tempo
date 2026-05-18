@@ -325,7 +325,10 @@ where
         }
 
         let height = certified.block.number();
-        let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(certified.block));
+        // Upstream finalization responses carry persisted EL blocks only; no p2p BAL
+        // is available when reconstructing this consensus payload.
+        let consensus_block =
+            Block::from_execution_payload(SealedBlock::seal_slow(certified.block), None);
 
         // Store the Finalized Block
         let round = Round::new(Epoch::new(certified.epoch), View::new(certified.view));
