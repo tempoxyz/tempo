@@ -570,7 +570,7 @@ where
             .wrap_err("executor dropped channel")
             .and_then(|res| res)?;
 
-        let block = block.into_inner();
+        let (block, block_access_list) = block.into_parts();
         let consensus_context = block.header().consensus_context;
         let payload_status = self
             .execution_node
@@ -578,7 +578,7 @@ where
             .beacon_engine_handle
             .new_payload(TempoExecutionData {
                 block: Arc::new(block),
-                block_access_list: None,
+                block_access_list,
                 // can be omitted for finalized blocks
                 validator_set: None,
             })

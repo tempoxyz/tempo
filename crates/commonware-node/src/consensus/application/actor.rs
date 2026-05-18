@@ -734,7 +734,10 @@ impl Inner<Init> {
             .and_then(|rsp| rsp.map_err(Into::<eyre::Report>::into))
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
 
-        let proposal = Block::from_execution_block(payload.block().clone());
+        let proposal = Block::from_execution_payload(
+            payload.block().clone(),
+            payload.block_access_list().cloned(),
+        );
 
         Ok((proposal, Some(payload_return_time)))
     }
@@ -957,10 +960,10 @@ async fn verify_block<TContext: Pacer>(
             .map(|p| B256::from_slice(p))
             .collect(),
     );
-    let block = block.clone().into_inner();
+    let (block, block_access_list) = block.clone().into_parts();
     let execution_data = TempoExecutionData {
         block: Arc::new(block),
-        block_access_list: None,
+        block_access_list,
         validator_set,
     };
     let payload_status = engine
