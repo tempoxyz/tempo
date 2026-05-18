@@ -156,8 +156,15 @@ def _add_regression(ax, x, y, color, label):
     """Add a linear regression line to the axes."""
     if len(x) < 2:
         return
-    xa, ya = np.array(x), np.array(y)
-    m, b = np.polyfit(xa, ya, 1)
+    xa, ya = np.array(x, dtype=float), np.array(y, dtype=float)
+    finite = np.isfinite(xa) & np.isfinite(ya)
+    xa, ya = xa[finite], ya[finite]
+    if len(xa) < 2 or np.allclose(xa, xa[0]):
+        return
+    try:
+        m, b = np.polyfit(xa, ya, 1)
+    except np.linalg.LinAlgError:
+        return
     x_range = np.linspace(xa.min(), xa.max(), 100)
     ax.plot(x_range, m * x_range + b, color=color, linewidth=1.5, alpha=0.8,
             label=label)
