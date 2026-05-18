@@ -767,6 +767,28 @@ def percentile [sorted_vals: list<any>, pct: int] {
     $sorted_vals | get $clamped
 }
 
+def iso-from-epoch-ms [epoch_ms: int] {
+    let seconds = ($epoch_ms / 1000 | into int)
+    let millis = ($epoch_ms mod 1000 | into int)
+    let base = (^date -u -d $"@($seconds)" "+%Y-%m-%dT%H:%M:%S")
+    $"($base).($millis | into string | fill --alignment right --character '0' --width 3)Z"
+}
+
+def grafana-performance-url [benchmark_id: string, reference_epoch: int, duration: int] {
+    if $benchmark_id == "" or $reference_epoch <= 0 {
+        return ""
+    }
+
+    let range = {
+        from: ($reference_epoch * 1000)
+        to: (($reference_epoch + $duration) * 1000)
+    }
+
+    let from = (iso-from-epoch-ms $range.from)
+    let to = (iso-from-epoch-ms $range.to)
+    $"https://tempoxyz.grafana.net/d/dffj6qf1o30oowe/performance?orgId=1&from=($from)&to=($to)&timezone=browser&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=($benchmark_id)&var-group_by=benchmark_run"
+}
+
 
 def generate-summary [results_dir: string, baseline_ref: string, feature_ref: string, bloat: int, preset: string, tps: int, duration: int, --benchmark-id: string = "", --reference-epoch: int = 0] {
     let candidate_run_labels = ["baseline-1" "feature-1" "feature-2" "baseline-2"]
@@ -944,7 +966,16 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let delta = { |base: float, feat: float| if $base != 0.0 { ((($feat - $base) / $base) * 100) | math round --precision 1 } else { 0.0 } }
 
     # Build summary markdown
-    let summary = ([
+    let grafana_url = (grafana-performance-url $benchmark_id $reference_epoch $duration)
+    let observability_lines = if $grafana_url != "" {
+        [
+            "## Observability"
+            ""
+            $"- Grafana: [Performance dashboard]\(($grafana_url)\)"
+            ""
+        ]
+    } else { [] }
+    let summary_lines = ([
         $"# Bench Comparison: ($baseline_ref) vs ($feature_ref)"
         ""
         "## Configuration"
@@ -956,6 +987,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         $"- Baseline blocks: ($b_lat.n)"
         $"- Feature blocks: ($f_lat.n)"
         ""
+    ] | append $observability_lines | append [
         "## Tempo Metrics"
         ""
         "| Metric | Baseline | Feature | Delta |"
@@ -983,7 +1015,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         ""
         "| Run | Blocks | Total Tx | Success | Failed | Avg TPS | Block P50 | Mgas/s |"
         "|-----|--------|----------|---------|--------|---------|-----------|--------|"
-    ] | str join "\n")
+    ])
+    let summary = ($summary_lines | str join "\n")
 
     mut per_run_rows = ""
     for row in $run_data {
@@ -999,6 +1032,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let summary_json = {
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
+        grafana_url: $grafana_url
         baseline_ref: $baseline_ref
         feature_ref: $feature_ref
         config: {
