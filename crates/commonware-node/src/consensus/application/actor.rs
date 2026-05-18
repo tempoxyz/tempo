@@ -1027,8 +1027,7 @@ async fn get_parent(
 ) -> eyre::Result<Block> {
     let genesis_digest = execution_node.chain_spec().genesis_hash();
     if parent_digest == Digest(genesis_digest) {
-        // Genesis is loaded from the EL database, which persists only the block.
-        // There is no commonware p2p BAL side data for this local reconstruction.
+        // It is fine to omit BAL for the genesis block.
         let genesis_block = Block::from_execution_payload(
             execution_node
                 .provider
