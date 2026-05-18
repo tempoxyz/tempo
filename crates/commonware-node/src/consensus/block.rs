@@ -5,9 +5,9 @@
 
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{B256, Bytes};
-use alloy_rlp::{Decodable, Encodable as _, Header};
+use alloy_rlp::{Decodable, Encodable as _};
 use bytes::{Buf, BufMut, Bytes as WireBytes};
-use commonware_codec::{EncodeSize, Error, Read, Write};
+use commonware_codec::{EncodeSize, Error, RangeCfg, Read, Write};
 use commonware_consensus::{
     Heightable,
     simplex::types::Context,
@@ -87,7 +87,9 @@ impl std::ops::Deref for ConsensusPayload {
 
 impl Write for ConsensusPayload {
     fn write(&self, buf: &mut impl BufMut) {
-        self.execution_block.encode(buf);
+        let mut encoded_block = Vec::with_capacity(self.execution_block.length());
+        self.execution_block.encode(&mut encoded_block);
+        WireBytes::from(encoded_block).write(buf);
         self.block_access_list.write(buf);
     }
 }
@@ -97,33 +99,15 @@ impl Read for ConsensusPayload {
     type Cfg = ();
 
     fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
-        // XXX: this does not advance `buf`. Also, it assumes that the rlp
-        // header is fully contained in the first chunk of `buf`. As per
-        // `Buf::chunk`'s documentation, the first slice should never be
-        // empty is there are remaining bytes. We hence don't worry about edge
-        // cases where the very tiny rlp header is spread over more than one
-        // chunk.
-        let header = Header::decode(&mut buf.chunk())
-            .map_err(|rlp_err| Error::Wrapped("reading RLP header", rlp_err.into()))?;
-
-        if header.length_with_payload() > buf.remaining() {
-            // TODO: it would be nice to report more information here, but commonware_codex::Error does not
-            // have the fidelity for it (outside abusing Error::Wrapped).
-            return Err(Error::EndOfBuffer);
-        }
-        let bytes = buf.copy_to_bytes(header.length_with_payload());
+        let encoded_block = WireBytes::read_cfg(buf, &RangeCfg::from(..))?;
 
         // TODO: decode straight to a reth SealedBlock once released:
         // https://github.com/paradigmxyz/reth/pull/18003
         // For now relies on `Decodable for alloy_consensus::Block`.
-        let inner = Decodable::decode(&mut bytes.as_ref())
+        let inner = Decodable::decode(&mut encoded_block.as_ref())
             .map_err(|rlp_err| Error::Wrapped("reading RLP encoded block", rlp_err.into()))?;
 
-        let block_access_list = if buf.remaining() == 0 {
-            None
-        } else {
-            Option::<WireBytes>::read_cfg(buf, &(..).into())?
-        };
+        let block_access_list = Option::<WireBytes>::read_cfg(buf, &RangeCfg::from(..))?;
 
         Ok(Self {
             execution_block: inner,
@@ -134,7 +118,8 @@ impl Read for ConsensusPayload {
 
 impl EncodeSize for ConsensusPayload {
     fn encode_size(&self) -> usize {
-        self.execution_block.length() + self.block_access_list.encode_size()
+        let block_len = self.execution_block.length();
+        block_len.encode_size() + block_len + self.block_access_list.encode_size()
     }
 }
 
