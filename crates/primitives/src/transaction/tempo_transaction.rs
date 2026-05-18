@@ -527,9 +527,6 @@ impl TempoTransaction {
     /// real fee-payer signature. Keeping this path separate avoids changing canonical transaction
     /// encoding and therefore avoids changing transaction hashes for transactions that contain an
     /// actual all-zero fee-payer signature (which are invalid, but still have a canonical encoding).
-    ///
-    /// The fee token is omitted from this request encoding so the user does not commit to a specific
-    /// sponsorship token before the fee payer signs.
     pub fn encode_for_fee_payer_service(&self, out: &mut dyn BufMut) {
         out.put_u8(Self::tx_type());
 
