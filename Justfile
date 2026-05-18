@@ -1,12 +1,3 @@
-[doc('Install local development hooks')]
-default: setup
-
-[group('dev')]
-[doc('Configure local development hooks')]
-setup:
-    git config core.hooksPath .githooks
-    @echo "Configured git hooks from .githooks"
-
 [group('deps')]
 [doc('Bump all reth dependencies to a specific commit hash')]
 bump-reth commit:

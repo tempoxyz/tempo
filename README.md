@@ -118,7 +118,11 @@ Install the dependencies:
 just
 ```
 
-This also configures Git to run the repository hooks from `.githooks`.
+Configure Git to run the repository hooks:
+
+```bash
+./scripts/setup-hooks.sh
+```
 
 Build Tempo:
 
