@@ -118,6 +118,8 @@ Install the dependencies:
 just
 ```
 
+This also configures Git to run the repository hooks from `.githooks`.
+
 Build Tempo:
 
 ```bash
