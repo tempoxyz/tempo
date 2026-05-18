@@ -210,9 +210,9 @@ alloy-evm = { version = "0.34.0", default-features = false }
 revm-inspectors = "0.39.0"
 alloy-genesis = { version = "2.0.4", default-features = false }
 alloy-hardforks = "0.4.7"
-alloy-json-abi = { version = "1.5.7", default-features = false }
+alloy-json-abi = { version = "1.6.0", default-features = false }
 alloy-network = { version = "2.0.4", default-features = false }
-alloy-primitives = { version = "1.5.7", default-features = false }
+alloy-primitives = { version = "1.6.0", default-features = false }
 alloy-provider = { version = "2.0.4", default-features = false }
 alloy-rlp = { version = "0.3.15", default-features = false }
 alloy-rpc-types-admin = "2.0.4"
@@ -226,7 +226,7 @@ alloy-signer-ledger = "2.0.4"
 alloy-signer-local = "2.0.4"
 alloy-signer-trezor = "2.0.4"
 
-alloy-sol-types = { version = "1.5.7", default-features = false }
+alloy-sol-types = { version = "1.6.0", default-features = false }
 alloy-transport = "2.0.4"
 
 commonware-broadcast = "2026.4.0"
