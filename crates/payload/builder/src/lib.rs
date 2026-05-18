@@ -304,10 +304,12 @@ where
         }
 
         let state = StateProviderDatabase::new(&state_provider);
+        let chain_spec = self.provider.chain_spec();
+        let is_amsterdam = chain_spec.is_amsterdam_active_at_timestamp(attributes.timestamp);
         let mut db = State::builder()
             .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
             .with_bundle_update()
-            .with_bal_builder_if(self.enable_bal)
+            .with_bal_builder_if(self.enable_bal && is_amsterdam)
             .build();
         drop(_state_setup_span);
         self.metrics
@@ -316,7 +318,6 @@ where
 
         check_cancel!();
 
-        let chain_spec = self.provider.chain_spec();
         let is_osaka = self
             .provider
             .chain_spec()

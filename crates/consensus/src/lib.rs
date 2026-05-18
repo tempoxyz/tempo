@@ -8,7 +8,7 @@ mod error;
 use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
 use alloy_evm::block::BlockExecutionResult;
 pub use error::TempoConsensusError;
-use reth_chainspec::EthChainSpec;
+use reth_chainspec::{EthChainSpec, EthereumHardforks};
 use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
 use reth_consensus_common::validation::{
     validate_against_parent_4844, validate_against_parent_eip1559_base_fee,
@@ -100,6 +100,15 @@ impl TempoConsensus {
                 actual: header.general_gas_limit,
             }
             .into());
+        }
+
+        if header.block_access_list_hash().is_some()
+            && !self
+                .inner
+                .chain_spec()
+                .is_amsterdam_active_at_timestamp(header.timestamp())
+        {
+            return Err(TempoConsensusError::BlockAccessListHashPreAmsterdam.into());
         }
 
         Ok(())

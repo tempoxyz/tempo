@@ -16,6 +16,10 @@ pub enum TempoConsensusError {
     #[error("general gas limit {actual} does not match expected {expected}")]
     GeneralGasLimitMismatch { expected: u64, actual: u64 },
 
+    /// Block access list hash is present before Amsterdam.
+    #[error("block access list hash is only allowed after Amsterdam")]
+    BlockAccessListHashPreAmsterdam,
+
     /// A system transaction in the block is invalid.
     #[error("invalid system transaction: {tx_hash}")]
     InvalidSystemTransaction { tx_hash: B256 },
