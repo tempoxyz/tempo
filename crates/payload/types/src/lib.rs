@@ -5,7 +5,7 @@
 
 mod attrs;
 
-use alloy_primitives::B256;
+use alloy_primitives::{B256, Bytes};
 pub use attrs::{InterruptHandle, TempoPayloadAttributes};
 use std::sync::Arc;
 
@@ -52,6 +52,7 @@ impl TempoBuiltPayload {
     pub fn into_execution_data(self) -> TempoExecutionData {
         TempoExecutionData {
             block: Arc::new(self.inner.block().clone()),
+            block_access_list: self.inner.block_access_list().cloned(),
             validator_set: None,
         }
     }
@@ -82,6 +83,8 @@ impl BuiltPayload for TempoBuiltPayload {
 pub struct TempoExecutionData {
     /// The built block.
     pub block: Arc<SealedBlock<Block>>,
+    /// RLP-encoded EIP-7928 block access list, when supplied with the payload.
+    pub block_access_list: Option<Bytes>,
     /// Validator set active at the time this block was built.
     pub validator_set: Option<Vec<B256>>,
 }
@@ -131,8 +134,8 @@ impl ExecutionPayload for TempoExecutionData {
         self.block.slot_number()
     }
 
-    fn block_access_list(&self) -> Option<&alloy_primitives::Bytes> {
-        None
+    fn block_access_list(&self) -> Option<&Bytes> {
+        self.block_access_list.as_ref()
     }
 }
 
@@ -147,12 +150,10 @@ impl PayloadTypes for TempoPayloadTypes {
     type BuiltPayload = TempoBuiltPayload;
     type PayloadAttributes = TempoPayloadAttributes;
 
-    fn block_to_payload(
-        block: SealedBlock<Block>,
-        _bal: Option<alloy_primitives::Bytes>,
-    ) -> Self::ExecutionData {
+    fn block_to_payload(block: SealedBlock<Block>, bal: Option<Bytes>) -> Self::ExecutionData {
         TempoExecutionData {
             block: Arc::new(block),
+            block_access_list: bal,
             validator_set: None,
         }
     }

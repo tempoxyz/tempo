@@ -11,7 +11,7 @@ use crate::{
     prewarming::BestTransactionsPrewarming,
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, Bytes, U256};
 use alloy_rlp::{Decodable, Encodable};
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -97,6 +97,10 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     enable_prewarming: bool,
+    /// Whether to disable state cache.
+    disable_state_cache: bool,
+    /// Whether to include block access lists in built execution payloads.
+    enable_bal: bool,
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
@@ -108,6 +112,8 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         is_dev: bool,
         state_provider_metrics: bool,
         enable_prewarming: bool,
+        disable_state_cache: bool,
+        enable_bal: bool,
     ) -> Self {
         Self {
             pool,
@@ -120,6 +126,8 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             is_dev,
             state_provider_metrics,
             enable_prewarming,
+            disable_state_cache,
+            enable_bal,
         }
     }
 }
@@ -284,7 +292,7 @@ where
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
         let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
-        if let Some(execution_cache) = &execution_cache {
+        if !self.disable_state_cache && let Some(execution_cache) = &execution_cache {
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
                 execution_cache.cache().clone(),
@@ -299,6 +307,7 @@ where
         let mut db = State::builder()
             .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
             .with_bundle_update()
+            .with_bal_builder_if(self.enable_bal)
             .build();
         drop(_state_setup_span);
         self.metrics
@@ -762,7 +771,7 @@ where
             block,
             hashed_state,
             trie_updates,
-            ..
+            block_access_list,
         } = if let Some(mut handle) = trie_handle {
             // Dropping the hook signals that execution is complete and the sparse trie task can
             // finalize the state root it has been updating incrementally.
@@ -917,7 +926,10 @@ where
             "Built payload"
         );
 
-        let eth_payload = EthBuiltPayload::new(sealed_block, total_fees, requests, None);
+        let block_access_list: Option<Bytes> =
+            block_access_list.map(|block_access_list| alloy_rlp::encode(&block_access_list).into());
+        let eth_payload =
+            EthBuiltPayload::new(sealed_block, total_fees, requests, block_access_list);
 
         let execution_output = BlockExecutionOutput {
             result: execution_result,
