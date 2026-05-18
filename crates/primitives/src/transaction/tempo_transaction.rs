@@ -518,7 +518,7 @@ impl TempoTransaction {
 
     /// Encodes this transaction for submission to a fee-payer service.
     ///
-    /// Fee-payer services accept an unsigned sponsorship request with fee-payer signature is `0x00`.
+    /// Fee-payer services accept an unsigned sponsorship request with `0x00` fee-payer signature.
     /// This is a placeholder that tells the sponsor where to insert the real fee-payer signature.
     pub fn encode_for_fee_payer_service(&self, out: &mut dyn BufMut) {
         out.put_u8(Self::tx_type());
@@ -1082,6 +1082,50 @@ mod tests {
         assert_eq!(decoded.valid_before, tx.valid_before);
         assert_eq!(decoded.valid_after, tx.valid_after);
         assert_eq!(decoded.fee_payer_signature, tx.fee_payer_signature);
+    }
+
+    #[test]
+    fn test_encode_for_fee_payer_service_uses_signature_placeholder_and_skips_fee_token() {
+        let call = Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::from(vec![1, 2, 3, 4]),
+        };
+
+        let tx = TempoTransaction {
+            chain_id: 1,
+            fee_token: None,
+            max_priority_fee_per_gas: 1000000000,
+            max_fee_per_gas: 2000000000,
+            gas_limit: 21000,
+            calls: vec![call.clone()],
+            access_list: Default::default(),
+            nonce_key: U256::ZERO,
+            nonce: 1,
+            fee_payer_signature: None,
+            valid_before: Some(nz(1000000)),
+            valid_after: Some(nz(500000)),
+            key_authorization: None,
+            tempo_authorization_list: vec![],
+        };
+
+        let mut service_encoded = Vec::new();
+        tx.encode_for_fee_payer_service(&mut service_encoded);
+
+        assert_eq!(service_encoded[0], TEMPO_TX_TYPE_ID);
+
+        let mut signing_tx = tx.clone();
+        signing_tx.fee_payer_signature = Some(FEE_PAYER_SIGNATURE_MARKER);
+        let mut signing_encoded = Vec::new();
+        signing_tx.encode_for_signing(&mut signing_encoded);
+        assert_eq!(service_encoded, signing_encoded);
+
+        let mut tx_with_different_fee_token = tx;
+        tx_with_different_fee_token.fee_token =
+            Some(Address::random());
+        let mut different_fee_token_encoded = Vec::new();
+        tx_with_different_fee_token.encode_for_fee_payer_service(&mut different_fee_token_encoded);
+        assert_eq!(service_encoded, different_fee_token_encoded);
     }
 
     #[test]
