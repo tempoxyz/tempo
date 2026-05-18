@@ -584,6 +584,7 @@ where
             .beacon_engine_handle
             .new_payload(TempoExecutionData {
                 block: Arc::new(block),
+                block_access_list: None,
                 // can be omitted for finalized blocks
                 validator_set: None,
             })

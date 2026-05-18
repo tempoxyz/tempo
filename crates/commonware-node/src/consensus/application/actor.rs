@@ -895,6 +895,7 @@ async fn verify_block<TContext: Pacer>(
     let block = block.clone().into_inner();
     let execution_data = TempoExecutionData {
         block: Arc::new(block),
+        block_access_list: None,
         validator_set,
     };
     let payload_status = engine
