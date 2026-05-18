@@ -928,8 +928,7 @@ where
 
         let block_access_list: Option<Bytes> =
             block_access_list.map(|block_access_list| alloy_rlp::encode(&block_access_list).into());
-        let eth_payload =
-            EthBuiltPayload::new(sealed_block, total_fees, requests, block_access_list);
+        let eth_payload = EthBuiltPayload::new(sealed_block, total_fees, requests, None);
 
         let execution_output = BlockExecutionOutput {
             result: execution_result,
@@ -943,7 +942,7 @@ where
             trie_updates: Arc::new(trie_updates),
         };
 
-        let payload = TempoBuiltPayload::new(eth_payload, Some(executed_block));
+        let payload = TempoBuiltPayload::new(eth_payload, block_access_list, Some(executed_block));
 
         drop(db);
         if build_until_interrupt {
@@ -1120,7 +1119,7 @@ mod tests {
         };
         let sealed = Arc::new(SealedBlock::seal_slow(block));
         let eth = EthBuiltPayload::new(sealed, U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None)
+        TempoBuiltPayload::new(eth, None, None)
     }
 
     #[test]
