@@ -6,7 +6,7 @@ set -e
 
 # NOTE: if you make modifications to this script, please increment the version number.
 # WARNING: the SemVer pattern: major.minor.patch must be followed as we use it to determine if the script is up to date.
-TEMPOUP_INSTALLER_VERSION="0.0.10"
+TEMPOUP_INSTALLER_VERSION="0.0.11"
 
 REPO="tempoxyz/tempo"
 # GPG key fingerprint for release signing verification
@@ -95,6 +95,37 @@ check_cmd() {
     command -v "$1" >/dev/null 2>&1
 }
 
+# Returns true only when gh is installed and can access GitHub APIs.
+gh_authenticated() {
+    check_cmd gh && gh auth status >/dev/null 2>&1
+}
+
+# Verifies GitHub's SLSA provenance, failing hard only when it is required.
+verify_slsa_attestation() {
+    local archive_path="$1"
+    local mode="$2"
+
+    if [[ "$mode" == "required" ]]; then
+        info "gpg not found; verifying SLSA build provenance with gh..."
+    else
+        info "Verifying SLSA build provenance..."
+    fi
+
+    if gh attestation verify "$archive_path" --repo "$REPO" \
+            --predicate-type https://slsa.dev/provenance/v1 >/dev/null 2>&1; then
+        info "SLSA provenance verified ✓"
+        return 0
+    fi
+
+    if [[ "$mode" == "required" ]]; then
+        error "SLSA provenance attestation not found or failed verification. Install gpg, or re-run with --unsafe-skip-verify to bypass signature verification."
+    fi
+
+    warn "SLSA provenance attestation not found or failed verification."
+    warn "(Older releases may not carry attestations.)"
+    return 1
+}
+
 preflight_dependencies() {
     if ! check_cmd curl; then
         error "curl not found. Please install curl."
@@ -107,14 +138,16 @@ preflight_dependencies() {
     info "Install prerequisites: curl found, checksum tool found"
 
     if [[ "$UNSAFE_SKIP_VERIFY" == "1" ]]; then
-        warn "Skipping GPG signature verification (--unsafe-skip-verify)."
+        warn "Skipping release signature and SLSA attestation verification (--unsafe-skip-verify)."
     elif check_cmd gpg; then
         info "gpg found; release signature verification enabled"
+    elif gh_authenticated; then
+        info "gpg not found; authenticated gh found, SLSA attestation verification enabled"
     else
-        error "gpg not found. Install gpg, or re-run with --unsafe-skip-verify to bypass signature verification."
+        error "gpg not found and gh is unavailable or unauthenticated. Install gpg, run 'gh auth login', or re-run with --unsafe-skip-verify to bypass signature verification."
     fi
 
-    if check_cmd gh && gh auth status >/dev/null 2>&1; then
+    if gh_authenticated; then
         info "gh found and authenticated; SLSA attestation verification enabled"
     elif check_cmd gh; then
         warn "gh found but not authenticated; optional SLSA attestation verification will be skipped"
@@ -404,7 +437,10 @@ main() {
 
     info "Checksum verified ✓"
 
-    # GPG signature verification (only for versions >= 1.1.3, as earlier releases lack .asc files)
+    GPG_VERIFIED=0
+    SLSA_VERIFIED=0
+
+    # GPG signature verification (only for versions >= 1.1.3, as earlier releases lack .asc files).
     if [[ "$UNSAFE_SKIP_VERIFY" == "1" ]]; then
         warn "GPG signature verification skipped (--unsafe-skip-verify)."
     elif version_gt "$VERSION_TAG" "1.1.2"; then
@@ -426,17 +462,26 @@ main() {
             if gpg --list-keys "$GPG_KEY_FINGERPRINT" >/dev/null 2>&1; then
                 if gpg --batch --verify "$TMP_DIR/${ARCHIVE_NAME}.asc" "$ARCHIVE_PATH" 2>/dev/null; then
                     info "GPG signature verified ✓"
+                    GPG_VERIFIED=1
                 else
                     error "GPG signature verification failed. The binary may have been tampered with."
                 fi
             else
                 error "GPG key is not available. Re-run with --unsafe-skip-verify to bypass signature verification."
             fi
+        elif gh_authenticated; then
+            verify_slsa_attestation "$ARCHIVE_PATH" required
+            SLSA_VERIFIED=1
         else
-            error "gpg not found. Install gpg, or re-run with --unsafe-skip-verify to bypass signature verification."
+            error "gpg not found and gh is unavailable or unauthenticated. Install gpg, run 'gh auth login', or re-run with --unsafe-skip-verify to bypass signature verification."
         fi
     else
         info "Skipping GPG signature verification (not available for versions <= 1.1.1)"
+    fi
+
+    if [[ "$UNSAFE_SKIP_VERIFY" != "1" ]] && ! check_cmd gpg && [[ "$SLSA_VERIFIED" != "1" ]]; then
+        verify_slsa_attestation "$ARCHIVE_PATH" required
+        SLSA_VERIFIED=1
     fi
 
     # SLSA build provenance verification (Sigstore-signed via GitHub OIDC at
@@ -446,14 +491,11 @@ main() {
     # or for older releases that predate attestations.
     if [[ "$UNSAFE_SKIP_VERIFY" == "1" ]]; then
         warn "Skipping SLSA attestation verification (--unsafe-skip-verify)."
-    elif check_cmd gh && gh auth status >/dev/null 2>&1; then
-        info "Verifying SLSA build provenance..."
-        if gh attestation verify "$ARCHIVE_PATH" --repo "$REPO" \
-                --predicate-type https://slsa.dev/provenance/v1 >/dev/null 2>&1; then
-            info "SLSA provenance verified ✓"
-        else
-            warn "SLSA provenance attestation not found or failed verification."
-            warn "(Older releases may not carry attestations.)"
+    elif [[ "$SLSA_VERIFIED" == "1" ]]; then
+        : # SLSA was already verified above because gpg was unavailable.
+    elif gh_authenticated; then
+        if verify_slsa_attestation "$ARCHIVE_PATH" optional; then
+            SLSA_VERIFIED=1
         fi
     elif check_cmd gh; then
         warn "gh is not authenticated; skipping optional SLSA attestation verification."
