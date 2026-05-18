@@ -20,9 +20,6 @@ pub const TEMPO_TX_TYPE_ID: u8 = 0x76;
 /// Magic byte for the fee payer signature
 pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
 
-/// Fee-payer service marker for transactions that need a sponsor signature.
-pub const FEE_PAYER_SIGNATURE_MARKER_RLP: u8 = 0x00;
-
 /// In-memory sentinel for transactions that need a sponsor signature.
 pub const FEE_PAYER_SIGNATURE_MARKER: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
 
@@ -521,22 +518,14 @@ impl TempoTransaction {
 
     /// Encodes this transaction for submission to a fee-payer service.
     ///
-    /// Fee-payer services accept an unsigned sponsorship request whose fee-payer signature field is
-    /// the single byte `0x00`. This is not the canonical transaction RLP encoding for a zero-valued
-    /// secp256k1 signature; it is a service-level marker that tells the sponsor where to insert the
-    /// real fee-payer signature. Keeping this path separate avoids changing canonical transaction
-    /// encoding and therefore avoids changing transaction hashes for transactions that contain an
-    /// actual all-zero fee-payer signature (which are invalid, but still have a canonical encoding).
+    /// Fee-payer services accept an unsigned sponsorship request with fee-payer signature is `0x00`.
+    /// This is a placeholder that tells the sponsor where to insert the real fee-payer signature.
     pub fn encode_for_fee_payer_service(&self, out: &mut dyn BufMut) {
         out.put_u8(Self::tx_type());
 
         let payload_length = self.rlp_encoded_fields_length(|_| 1, true);
         rlp_header(payload_length).encode(out);
-        self.rlp_encode_fields(
-            out,
-            |_, out| out.put_u8(FEE_PAYER_SIGNATURE_MARKER_RLP),
-            true,
-        );
+        self.rlp_encode_fields(out, |_, out| out.put_u8(0x00), true);
     }
 
     /// Decodes the inner TempoTransaction fields from RLP bytes
@@ -568,9 +557,6 @@ impl TempoTransaction {
             if *first == EMPTY_STRING_CODE {
                 buf.advance(1);
                 None
-            } else if *first == FEE_PAYER_SIGNATURE_MARKER_RLP {
-                buf.advance(1);
-                Some(FEE_PAYER_SIGNATURE_MARKER)
             } else {
                 let header = alloy_rlp::Header::decode(buf)?;
                 if buf.len() < header.payload_length {
