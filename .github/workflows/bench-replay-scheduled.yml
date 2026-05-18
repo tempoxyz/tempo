@@ -237,6 +237,8 @@ jobs:
     secrets:
       DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
+      BENCH_MAINNET_RPC_URL: ${{ secrets.BENCH_MAINNET_RPC_URL }}
+      BENCH_TESTNET_RPC_URL: ${{ secrets.BENCH_TESTNET_RPC_URL }}
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
