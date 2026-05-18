@@ -403,10 +403,6 @@ where
                 {
                     return Ok(Some(block));
                 }
-                debug!(
-                    height,
-                    "finalized block missing from prunable archive, falling back to execution layer"
-                );
                 Ok(self.execution_block_provider.block_by_height(height)?)
             }
             Identifier::Key(digest) => {
@@ -415,7 +411,6 @@ where
                 {
                     return Ok(Some(block));
                 }
-                debug!(%digest, "finalized block missing from prunable archive, falling back to execution layer");
                 Ok(self.execution_block_provider.block_by_hash(digest.0)?)
             }
         }
