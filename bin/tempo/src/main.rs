@@ -357,6 +357,13 @@ fn main() -> eyre::Result<()> {
         );
     }
 
+    if let Commands::Node(node_cmd) = &mut cli.command
+        && node_cmd.engine.share_sparse_trie_with_payload_builder
+    {
+        node_cmd.ext.consensus.time_to_prepare_proposal_transactions =
+            "400ms".parse().expect("400ms is a valid positive duration");
+    }
+
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
     let mut telemetry_config = None;
     if let Commands::Node(node_cmd) = &cli.command
