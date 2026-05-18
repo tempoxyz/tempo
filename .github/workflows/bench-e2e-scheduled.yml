@@ -1,8 +1,9 @@
 # Scheduled e2e regression benchmarks.
 #
-# Runs nightly at 02:00 UTC and on v*.*.* tag pushes.
+# Runs nightly at 02:00 UTC and on v*.*.* tag pushes for the tip20 preset.
 # Nightly runs compare the latest successful nightly Docker commit against the
-# last commit that completed this scheduled e2e workflow successfully.
+# last commit that completed this scheduled e2e workflow successfully for the
+# same preset.
 # Tag runs compare the pushed release tag against the previous release tag.
 
 name: bench-e2e-scheduled
@@ -15,6 +16,11 @@ on:
       - "v*.*.*"
   workflow_dispatch:
     inputs:
+      ref:
+        description: "Git ref (tag or branch) to benchmark as a release run. When set, the workflow runs as a release comparison (ref vs. previous tag) without needing `--ref`."
+        required: false
+        default: ""
+        type: string
       force:
         description: "Force run even if no new nightly commit is available"
         required: false
@@ -31,16 +37,10 @@ jobs:
       actions: read
       contents: read
     outputs:
-      baseline-ref: ${{ steps.refs.outputs.baseline-ref }}
-      baseline-name: ${{ steps.refs.outputs.baseline-name }}
-      feature-ref: ${{ steps.refs.outputs.feature-ref }}
-      feature-name: ${{ steps.refs.outputs.feature-name }}
-      should-skip: ${{ steps.refs.outputs.should-skip }}
-      run-type: ${{ steps.refs.outputs.run-type }}
-      actor: ${{ steps.refs.outputs.actor }}
-      is-stale: ${{ steps.refs.outputs.is-stale }}
-      stale-age-hours: ${{ steps.refs.outputs.stale-age-hours }}
-      nightly-created: ${{ steps.refs.outputs.nightly-created }}
+      bench-matrix: ${{ steps.refs.outputs.bench-matrix }}
+      save-matrix: ${{ steps.refs.outputs.save-matrix }}
+      has-benchmarks: ${{ steps.refs.outputs.has-benchmarks }}
+      has-nightly-benchmarks: ${{ steps.refs.outputs.has-nightly-benchmarks }}
     steps:
       - uses: actions/checkout@v6
         with:
@@ -56,31 +56,107 @@ jobs:
           DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           INPUT_FORCE: ${{ inputs.force || 'false' }}
-        run: bash .github/scripts/bench-e2e-scheduled-refs.sh "$INPUT_FORCE"
-
-      - name: Fail on stale nightly
-        if: steps.refs.outputs.is-stale == 'true'
+          INPUT_REF: ${{ inputs.ref || '' }}
         run: |
-          echo "::error::Nightly Docker build is stale (>24h old). Aborting e2e benchmark."
-          exit 1
+          presets=(tip20)
+          bench_entries=()
+          save_entries=()
+          stale_presets=()
+
+          get_output() {
+            local file="$1"
+            local key="$2"
+            grep -E "^${key}=" "$file" | tail -1 | sed "s/^${key}=//"
+          }
+
+          for preset in "${presets[@]}"; do
+            out="$(mktemp)"
+            GITHUB_OUTPUT="$out" bash .github/scripts/bench-e2e-scheduled-refs.sh "$INPUT_FORCE" "$preset"
+
+            baseline_ref="$(get_output "$out" baseline-ref)"
+            baseline_name="$(get_output "$out" baseline-name)"
+            feature_ref="$(get_output "$out" feature-ref)"
+            feature_name="$(get_output "$out" feature-name)"
+            should_skip="$(get_output "$out" should-skip)"
+            run_type="$(get_output "$out" run-type)"
+            actor="$(get_output "$out" actor)"
+            is_stale="$(get_output "$out" is-stale)"
+            state_file="$(get_output "$out" state-file)"
+
+            if [ "$is_stale" = "true" ]; then
+              stale_presets+=("$preset")
+            fi
+
+            if [ "$should_skip" != "true" ] && [ "$is_stale" != "true" ]; then
+              entry="$(jq -cn \
+                --arg preset "$preset" \
+                --arg actor "$actor" \
+                --arg baseline_ref "$baseline_ref" \
+                --arg feature_ref "$feature_ref" \
+                --arg baseline_name "$baseline_name" \
+                --arg feature_name "$feature_name" \
+                --arg run_type "$run_type" \
+                --arg state_file "$state_file" \
+                '{preset:$preset, actor:$actor, baseline_ref:$baseline_ref, feature_ref:$feature_ref, baseline_name:$baseline_name, feature_name:$feature_name, run_type:$run_type, state_file:$state_file}')"
+              bench_entries+=("$entry")
+              if [ "$run_type" = "nightly" ]; then
+                save_entries+=("$entry")
+              fi
+            fi
+
+            rm -f "$out"
+          done
+
+          if [ "${#stale_presets[@]}" -gt 0 ]; then
+            echo "::error::Nightly Docker build is stale (>24h old). Aborting e2e benchmark for preset(s): ${stale_presets[*]}."
+            exit 1
+          fi
+
+          if [ "${#bench_entries[@]}" -gt 0 ]; then
+            bench_matrix="$(printf '%s\n' "${bench_entries[@]}" | jq -cs '{include:.}')"
+            has_benchmarks="true"
+          else
+            bench_matrix='{"include":[]}'
+            has_benchmarks="false"
+          fi
+
+          if [ "${#save_entries[@]}" -gt 0 ]; then
+            save_matrix="$(printf '%s\n' "${save_entries[@]}" | jq -cs '{include:.}')"
+            has_nightly_benchmarks="true"
+          else
+            save_matrix='{"include":[]}'
+            has_nightly_benchmarks="false"
+          fi
+
+          {
+            echo "bench-matrix=$bench_matrix"
+            echo "save-matrix=$save_matrix"
+            echo "has-benchmarks=$has_benchmarks"
+            echo "has-nightly-benchmarks=$has_nightly_benchmarks"
+          } >> "$GITHUB_OUTPUT"
 
   bench-e2e:
     needs: resolve-refs
-    if: |
-      needs.resolve-refs.outputs.should-skip != 'true' &&
-      needs.resolve-refs.outputs.is-stale != 'true'
-    name: bench-e2e (${{ needs.resolve-refs.outputs.feature-name }})
+    if: needs.resolve-refs.outputs.has-benchmarks == 'true'
+    name: bench-e2e (${{ matrix.preset }}, ${{ matrix.feature_name }})
     uses: ./.github/workflows/bench-e2e.yml
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.resolve-refs.outputs.bench-matrix) }}
     permissions:
       contents: read
       pull-requests: write
     with:
-      actor: ${{ needs.resolve-refs.outputs.actor }}
-      baseline: ${{ needs.resolve-refs.outputs.baseline-ref }}
-      feature: ${{ needs.resolve-refs.outputs.feature-ref }}
-      baseline-name: ${{ needs.resolve-refs.outputs.baseline-name }}
-      feature-name: ${{ needs.resolve-refs.outputs.feature-name }}
-      run-type: ${{ needs.resolve-refs.outputs.run-type }}
+      actor: ${{ matrix.actor }}
+      baseline: ${{ matrix.baseline_ref }}
+      feature: ${{ matrix.feature_ref }}
+      baseline-name: ${{ matrix.baseline_name }}
+      feature-name: ${{ matrix.feature_name }}
+      preset: ${{ matrix.preset }}
+      tps: "20000"
+      run-type: ${{ matrix.run_type }}
+      disable-abba: "true"
+      clickhouse-run: feature-1
     secrets:
       DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
@@ -94,14 +170,17 @@ jobs:
 
   save-state:
     needs: [resolve-refs, bench-e2e]
-    if: success() && needs.resolve-refs.outputs.run-type == 'nightly'
+    if: |
+      always() &&
+      needs.resolve-refs.outputs.has-nightly-benchmarks == 'true' &&
+      needs.bench-e2e.result == 'success'
     name: save-state
     runs-on: ubuntu-latest
     steps:
       - name: Push state to charts repo
         env:
           DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
-          FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}
+          SAVE_MATRIX: ${{ needs.resolve-refs.outputs.save-matrix }}
         run: |
           CHARTS_REPO="https://x-access-token:${DEREK_TOKEN}@github.com/decofe/tempo-bench-charts.git"
           TMP_DIR=$(mktemp -d)
@@ -113,11 +192,16 @@ jobs:
             git -C "${TMP_DIR}" remote add origin "${CHARTS_REPO}"
           fi
 
-          mkdir -p "${TMP_DIR}/state"
-          echo "${FEATURE_REF}" > "${TMP_DIR}/state/e2e-nightly-last-feature-ref"
-          git -C "${TMP_DIR}" add state/
+          echo "$SAVE_MATRIX" | jq -c '.include[]' | while read -r entry; do
+            state_file="$(echo "$entry" | jq -r '.state_file')"
+            feature_ref="$(echo "$entry" | jq -r '.feature_ref')"
+            mkdir -p "$(dirname "${TMP_DIR}/${state_file}")"
+            echo "${feature_ref}" > "${TMP_DIR}/${state_file}"
+            git -C "${TMP_DIR}" add "${state_file}"
+          done
+
           git -C "${TMP_DIR}" diff --cached --quiet && echo "No state change" && exit 0
           git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
-            commit -m "bench: update e2e nightly state to ${FEATURE_REF}"
+            commit -m "bench: update e2e nightly state"
           git -C "${TMP_DIR}" push origin HEAD:state
           rm -rf "${TMP_DIR}"

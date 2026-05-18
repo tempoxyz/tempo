@@ -518,7 +518,7 @@ def run-bench-single [
     --txgen-tempo-bin: string
     --txgen-bench-bin: string
     --rpc-urls: string
-    --metrics-url: string
+    --metrics-url: list<string>
     --genesis-path: string
     --datadir: string
     --run-label: string
@@ -800,7 +800,8 @@ def percentile [sorted_vals: list<any>, pct: int] {
 
 
 def generate-summary [results_dir: string, baseline_ref: string, feature_ref: string, bloat: int, preset: string, tps: int, duration: int, --benchmark-id: string = "", --reference-epoch: int = 0] {
-    let run_labels = ["baseline-1" "feature-1" "feature-2" "baseline-2"]
+    let candidate_run_labels = ["baseline-1" "feature-1" "feature-2" "baseline-2"]
+    let run_labels = ($candidate_run_labels | where { |label| ($"($results_dir)/report-($label).json" | path exists) })
     mut run_data = []
     mut baseline_blocks = []
     mut feature_blocks = []
@@ -2184,7 +2185,7 @@ def "main bench" [
                 --txgen-tempo-bin $txgen.txgen_tempo_bin
                 --txgen-bench-bin $txgen.txgen_bench_bin
                 --rpc-urls "http://localhost:8545"
-                --metrics-url "http://127.0.0.1:9090/metrics"
+                --metrics-url ["http://127.0.0.1:9090/metrics"]
                 --genesis-path $run.genesis --datadir $run.datadir
                 --run-label $run.label --results-dir $results_dir
                 --tps $tps --duration $duration --accounts $accounts
@@ -2309,7 +2310,7 @@ def "main bench" [
             --preset-path $preset_path
             --generate-rpc-url $primary_rpc_url
             --submit-rpc-url $submit_rpc_url
-            --metrics-url "http://127.0.0.1:9001/metrics"
+            --metrics-url ["http://127.0.0.1:9001/metrics"]
             --report-path "report.json"
             --tps $tps
             --duration $duration
@@ -2724,7 +2725,7 @@ tempo-precompiles = { path = '($tempo_root)/crates/precompiles' }
                         --preset-path $live_preset_path
                         --generate-rpc-url "http://localhost:8545"
                         --submit-rpc-url "http://localhost:8545"
-                        --metrics-url "http://127.0.0.1:9001/metrics"
+                        --metrics-url ["http://127.0.0.1:9001/metrics"]
                         --report-path "report.json"
                         --tps $tps
                         --duration $duration

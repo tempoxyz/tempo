@@ -141,7 +141,7 @@ def run-txgen-bench-single [
         --preset-path $preset_path
         --generate-rpc-url "http://localhost:8545"
         --submit-rpc-url "http://localhost:8545"
-        --metrics-url "http://127.0.0.1:9090/metrics"
+        --metrics-url ["http://127.0.0.1:9090/metrics"]
         --report-path $report_path
         --tps $tps
         --duration $duration
@@ -271,7 +271,7 @@ def "main run" [
     let resolved_scenario = if $scenario != "" {
         $scenario
     } else {
-        let tps_k = ($tps / 1000)
+        let tps_k = ($tps // 1000)
         $"($preset)-($tps_k)k"
     }
     txgen-validate-bench-args $bench_args

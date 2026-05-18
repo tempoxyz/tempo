@@ -6,8 +6,9 @@
 # the last commit that completed this scheduled e2e workflow successfully.
 # Release tag runs compare the pushed v*.*.* tag against the previous v*.*.* tag.
 #
-# Usage: bench-e2e-scheduled-refs.sh <force>
+# Usage: bench-e2e-scheduled-refs.sh <force> [preset]
 #   force - "true" to run even if no new nightly commit is available
+#   preset - txgen preset name used to scope persisted nightly state
 #
 # Outputs (via GITHUB_OUTPUT):
 #   baseline-ref
@@ -20,16 +21,26 @@
 #   is-stale
 #   stale-age-hours
 #   nightly-created
+#   state-file
 set -euo pipefail
 
 FORCE="${1:-false}"
+PRESET="${2:-${BENCH_E2E_PRESET:-tip20}}"
 REPO="${GITHUB_REPOSITORY:-tempoxyz/tempo}"
 STATE_REPO="${BENCH_E2E_STATE_REPO:-decofe/tempo-bench-charts}"
-STATE_FILE="${BENCH_E2E_STATE_FILE:-state/e2e-nightly-last-feature-ref}"
 STALE_THRESHOLD_HOURS="${BENCH_E2E_STALE_THRESHOLD_HOURS:-24}"
 
+if [[ ! "$PRESET" =~ ^[A-Za-z0-9_-]+$ ]]; then
+  echo "::error::Invalid preset name: $PRESET"
+  exit 1
+fi
+
+STATE_FILE="${BENCH_E2E_STATE_FILE:-state/e2e-nightly-${PRESET}-last-feature-ref}"
+
 echo "Force: $FORCE"
+echo "Preset: $PRESET"
 echo "Repository: $REPO"
+echo "State file: $STATE_FILE"
 
 short_sha() {
   printf "%.8s" "$1"
@@ -47,6 +58,8 @@ write_outputs() {
     echo "is-stale=$IS_STALE"
     echo "stale-age-hours=$AGE_HOURS"
     echo "nightly-created=$CREATED_AT"
+    echo "preset=$PRESET"
+    echo "state-file=$STATE_FILE"
   } >> "$GITHUB_OUTPUT"
 }
 
@@ -55,10 +68,16 @@ IS_STALE="false"
 AGE_HOURS="0"
 CREATED_AT=""
 
-if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+if [ -n "${INPUT_REF:-}" ] || [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
   RUN_TYPE="release"
   ACTOR="e2e-release"
-  CURRENT_TAG="${GITHUB_REF_NAME:-}"
+
+  if [ -n "${INPUT_REF:-}" ]; then
+    CURRENT_TAG="$INPUT_REF"
+    echo "Using manually provided ref: $CURRENT_TAG"
+  else
+    CURRENT_TAG="${GITHUB_REF_NAME:-}"
+  fi
 
   if [ -z "$CURRENT_TAG" ]; then
     echo "::error::GITHUB_REF_NAME is not set for tag run"
@@ -154,9 +173,9 @@ LAST_FEATURE_REF=""
 STATE_URL="https://raw.githubusercontent.com/${STATE_REPO}/state/${STATE_FILE}"
 if RAW="$(curl -sfL -H "Authorization: token ${DEREK_TOKEN:-}" "$STATE_URL")"; then
   LAST_FEATURE_REF="$(echo "$RAW" | tr -d '[:space:]')"
-  echo "Previous e2e feature ref: $LAST_FEATURE_REF"
+  echo "Previous e2e feature ref for $PRESET: $LAST_FEATURE_REF"
 else
-  echo "No persisted e2e state found"
+  echo "No persisted e2e state found for $PRESET"
 fi
 echo "::endgroup::"
 

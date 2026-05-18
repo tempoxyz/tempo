@@ -181,7 +181,7 @@ def txgen-run-preset-pipeline [
     --preset-path: string
     --generate-rpc-url: string
     --submit-rpc-url: string
-    --metrics-url: string
+    --metrics-url: list<string>
     --report-path: string
     --tps: int
     --duration: int
@@ -199,6 +199,7 @@ def txgen-run-preset-pipeline [
     --platform: string = ""
     --scenario: string = ""
     --victoriametrics-url: string = ""
+    --clickhouse-url: string = ""
     --skip-funding                                   # Skip faucet funding (accounts already funded at genesis via state bloat)
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
@@ -222,19 +223,21 @@ def txgen-run-preset-pipeline [
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
     ]
+    let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
     let bench_base_cmd = [
         $txgen_bench_bin
         "send"
         "--rpc-url" $submit_rpc_url
         "--tps" $tps
         "--max-concurrent" $max_concurrent_requests
-        "--metrics-url" $metrics_url
+        ...$metrics_url_args
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
         "--drain-timeout" $TXGEN_HELPER_DRAIN_TIMEOUT_SECS
     ]
         | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
     let report_args = ["--report" $"json:($report_path)"]
         | append (if $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
+        | append (if $clickhouse_url != "" { ["--report" $"clickhouse:($clickhouse_url)"] } else { [] })
     let metadata_args = [
         "-m" "job=github-tempo-bench-e2e"
         "-m" $"chain_id=($chain_id)"

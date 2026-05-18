@@ -1,7 +1,7 @@
 # E2E benchmark job.
 #
 # Called by bench.yml when mode=e2e. Runs `nu bench-e2e.nu e2e`
-# for an interleaved baseline-feature-feature-baseline comparison using two local validators.
+# for a baseline/feature comparison using two local validators.
 
 name: bench-e2e
 
@@ -154,6 +154,16 @@ on:
         type: string
         required: false
         default: ""
+      disable-abba:
+        description: Run only baseline-1 and feature-1 instead of the full baseline-feature-feature-baseline sequence.
+        type: boolean
+        required: true
+        default: false
+      clickhouse-run:
+        description: Benchmark phase that may use the direct ClickHouse reporter.
+        type: string
+        required: false
+        default: "feature-1"
   workflow_call:
     inputs:
       pr:
@@ -282,6 +292,14 @@ on:
         type: string
         required: false
         default: ""
+      disable-abba:
+        type: string
+        required: false
+        default: "false"
+      clickhouse-run:
+        type: string
+        required: false
+        default: "feature-1"
       comment-id:
         type: string
         required: false
@@ -359,6 +377,8 @@ jobs:
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
+      BENCH_DISABLE_ABBA: ${{ (inputs.disable-abba == true || inputs.disable-abba == 'true' || inputs.run-type == 'nightly') && 'true' || 'false' }}
+      BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
       BENCH_PR_HEAD_REF: ${{ inputs.pr-head-ref }}
@@ -525,50 +545,54 @@ jobs:
         id: refs
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
-          INPUT_BASELINE: ${{ inputs.baseline }}
-          INPUT_FEATURE: ${{ inputs.feature }}
-          INPUT_SHA: ${{ github.sha }}
-          INPUT_PR_HEAD_SHA: ${{ steps.pr-info.outputs.head-sha }}
-          INPUT_PR_HEAD_REF: ${{ steps.pr-info.outputs.head-ref }}
+         INPUT_BASELINE: ${{ inputs.baseline }}
+         INPUT_FEATURE: ${{ inputs.feature }}
+         INPUT_BASELINE_NAME: ${{ inputs.baseline-name }}
+         INPUT_FEATURE_NAME: ${{ inputs.feature-name }}
+         INPUT_SHA: ${{ github.sha }}
+         INPUT_PR_HEAD_SHA: ${{ steps.pr-info.outputs.head-sha }}
+         INPUT_PR_HEAD_REF: ${{ steps.pr-info.outputs.head-ref }}
         with:
-          script: |
-            const { execSync } = require('child_process');
-            const run = (cmd) => execSync(cmd, { encoding: 'utf8' }).trim();
+         script: |
+           const { execSync } = require('child_process');
+           const run = (cmd) => execSync(cmd, { encoding: 'utf8' }).trim();
 
-            const baselineArg = process.env.INPUT_BASELINE;
-            const featureArg = process.env.INPUT_FEATURE;
+           const baselineArg = process.env.INPUT_BASELINE;
+           const featureArg = process.env.INPUT_FEATURE;
+           const baselineNameArg = process.env.INPUT_BASELINE_NAME;
+           const featureNameArg = process.env.INPUT_FEATURE_NAME;
 
-            let baselineRef, baselineName, featureRef, featureName;
+           let baselineRef, baselineName, featureRef, featureName;
 
-            if (baselineArg) {
-              try { run(`git fetch origin "${baselineArg}" --quiet`); } catch {}
-              try {
-                baselineRef = run(`git rev-parse "${baselineArg}"`);
-              } catch {
-                baselineRef = run(`git rev-parse "origin/${baselineArg}"`);
-              }
-              baselineName = baselineArg;
-            } else {
-              try {
-                baselineRef = run('git merge-base HEAD origin/main');
-              } catch {
-                baselineRef = process.env.INPUT_SHA;
-              }
-              baselineName = 'main';
-            }
+           if (baselineArg) {
+             try { run(`git fetch origin "${baselineArg}" --quiet`); } catch {}
+             try {
+               baselineRef = run(`git rev-parse "${baselineArg}"`);
+             } catch {
+               baselineRef = run(`git rev-parse "origin/${baselineArg}"`);
+             }
+             baselineName = baselineNameArg || baselineArg;
+           } else {
+             try {
+               baselineRef = run('git merge-base HEAD origin/main');
+             } catch {
+               baselineRef = process.env.INPUT_SHA;
+             }
+             baselineName = baselineNameArg || 'main';
+           }
 
-            if (featureArg) {
-              try { run(`git fetch origin "${featureArg}" --quiet`); } catch {}
-              try {
-                featureRef = run(`git rev-parse "${featureArg}"`);
-              } catch {
-                featureRef = run(`git rev-parse "origin/${featureArg}"`);
-              }
-              featureName = featureArg;
-            } else {
-              featureRef = process.env.INPUT_PR_HEAD_SHA;
-              featureName = process.env.INPUT_PR_HEAD_REF;
-            }
+           if (featureArg) {
+             try { run(`git fetch origin "${featureArg}" --quiet`); } catch {}
+             try {
+               featureRef = run(`git rev-parse "${featureArg}"`);
+             } catch {
+               featureRef = run(`git rev-parse "origin/${featureArg}"`);
+             }
+             featureName = featureNameArg || featureArg;
+           } else {
+             featureRef = process.env.INPUT_PR_HEAD_SHA;
+             featureName = featureNameArg || process.env.INPUT_PR_HEAD_REF;
+           }
 
             core.setOutput('baseline-ref', baselineRef);
             core.setOutput('baseline-name', baselineName);
@@ -653,6 +677,10 @@ jobs:
           [ -n "$BENCH_BASELINE_ENV" ] && cmd+=(--baseline-env="$BENCH_BASELINE_ENV")
           [ -n "$BENCH_FEATURE_ENV" ] && cmd+=(--feature-env="$BENCH_FEATURE_ENV")
           [ -n "$BENCH_VICTORIAMETRICS_URL" ] && cmd+=(--victoriametrics-url "$BENCH_VICTORIAMETRICS_URL")
+          [ -n "$CLICKHOUSE_URL" ] && cmd+=(--clickhouse-url "$CLICKHOUSE_URL")
+          [ -n "$BENCH_RUN_TYPE" ] && cmd+=(--run-type "$BENCH_RUN_TYPE")
+          [ "$BENCH_DISABLE_ABBA" = "true" ] && cmd+=(--disable-abba)
+          [ -n "$BENCH_CLICKHOUSE_RUN" ] && cmd+=(--clickhouse-run "$BENCH_CLICKHOUSE_RUN")
           "${cmd[@]}"
 
       - name: Find results directory
@@ -673,16 +701,6 @@ jobs:
         with:
           name: tempo-bench-results
           path: bench-results/
-
-      - name: Upload results to ClickHouse
-        if: success()
-        env:
-          BENCH_BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
-          BENCH_FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
-          BENCH_RUN_TYPE: ${{ env.BENCH_RUN_TYPE }}
-          BENCH_JOB_URL: ${{ env.BENCH_JOB_URL }}
-          BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
-        run: bash contrib/bench/upload-clickhouse-txgen.sh "$BENCH_RESULTS_DIR"
 
       - name: Post results to PR
         if: success()
@@ -753,7 +771,8 @@ jobs:
               }
             } catch (e) {}
 
-            const runs = ['baseline-1', 'feature-1', 'feature-2', 'baseline-2'];
+            const runs = ['baseline-1', 'feature-1', 'feature-2', 'baseline-2']
+              .filter(run => fs.existsSync(`${resultsDir}/report-${run}.json`));
 
             // Samply profile links (URLs produced by tempo.nu upload-samply-profile)
             let samplySection = '';
