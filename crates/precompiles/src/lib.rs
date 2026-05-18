@@ -30,9 +30,8 @@ use crate::{
     account_keychain::AccountKeychain, address_registry::AddressRegistry, nonce::NonceManager,
     signature_verifier::SignatureVerifier, stablecoin_dex::StablecoinDEX, storage::StorageCtx,
     tip_fee_manager::TipFeeManager, tip20::TIP20Token, tip20_channel_escrow::TIP20ChannelEscrow,
-    tip20_factory::TIP20Factory, tip403_registry::TIP403Registry,
-    tip1028_guard::TIP1028Guard, validator_config::ValidatorConfig,
-    validator_config_v2::ValidatorConfigV2,
+    tip20_factory::TIP20Factory, tip403_registry::TIP403Registry, tip1028_guard::TIP1028Guard,
+    validator_config::ValidatorConfig, validator_config_v2::ValidatorConfigV2,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
@@ -53,10 +52,10 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, TIP1028_GUARD_ADDRESS,
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS,
-    TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
+    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, DEFAULT_FEE_TOKEN,
+    NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS, TIP20_FACTORY_ADDRESS,
+    TIP403_REGISTRY_ADDRESS, TIP1028_GUARD_ADDRESS, VALIDATOR_CONFIG_ADDRESS,
     VALIDATOR_CONFIG_V2_ADDRESS,
 };
 

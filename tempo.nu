@@ -30,7 +30,7 @@ def port-to-node-index [port: int] {
 
 # Build log filter args based on --loud flag
 def log-filter-args [loud: bool] {
-    if $loud { [] } else { ["--log.stdout.filter" "warn"] }
+    if $loud { [] } else { ["--log.stdout.filter" "info"] }
 }
 
 # Wrap command with samply if enabled
@@ -342,6 +342,19 @@ def resolve-git-ref [ref: string] {
     git rev-parse $ref | str trim
 }
 
+# Resolve a SHA to a human-readable label: tag > branch > fallback.
+def resolve-git-ref-label [sha: string, fallback: string] {
+    let tag = (git tag --points-at $sha | lines | first | default "")
+    if $tag != "" {
+        return $tag
+    }
+    let branch = (git branch -r --points-at $sha | lines | first | default "" | str replace -r '^\s*origin/' '')
+    if $branch != "" {
+        return $branch
+    }
+    $fallback
+}
+
 def bench-cache-key [commit_sha: string, features: string, no_default_features: bool] {
     if not $no_default_features {
         return $commit_sha
@@ -635,7 +648,8 @@ def run-bench-single [
             --bench-env $bench_env
             --git-ref $git_ref
             --build-profile $build_profile
-            --benchmark-mode $benchmark_mode)
+            --benchmark-mode $benchmark_mode
+            --skip-funding=($bloat > 0))
         if not $result.ok {
             print $"  Benchmark run ($run_label) failed with exit code ($result.exit_code)"
         }
@@ -708,11 +722,6 @@ def run-bench-single [
         for pid in $proxy_pids {
             kill -s 2 $pid
         }
-    }
-
-    # Remove stale IPC socket
-    if ("/tmp/reth.ipc" | path exists) {
-        rm --force /tmp/reth.ipc
     }
 
     print $"=== Run ($run_label) complete ==="
@@ -791,7 +800,8 @@ def percentile [sorted_vals: list<any>, pct: int] {
 
 
 def generate-summary [results_dir: string, baseline_ref: string, feature_ref: string, bloat: int, preset: string, tps: int, duration: int, --benchmark-id: string = "", --reference-epoch: int = 0] {
-    let run_labels = ["baseline-1" "feature-1" "feature-2" "baseline-2"]
+    let candidate_run_labels = ["baseline-1" "feature-1" "feature-2" "baseline-2"]
+    let run_labels = ($candidate_run_labels | where { |label| ($"($results_dir)/report-($label).json" | path exists) })
     mut run_data = []
     mut baseline_blocks = []
     mut feature_blocks = []
@@ -1110,19 +1120,13 @@ def "main kill" [
     --prompt    # Prompt before killing (for interactive use)
 ] {
     let pids = (find-tempo-pids)
-    let has_stale_ipc = ("/tmp/reth.ipc" | path exists)
 
-    if ($pids | length) == 0 and not $has_stale_ipc {
-        print "No tempo processes or stale IPC socket found."
+    if ($pids | length) == 0 {
+        print "No tempo processes found."
         return
     }
 
-    if ($pids | length) > 0 {
-        print $"Found ($pids | length) running tempo process\(es\)."
-    }
-    if $has_stale_ipc {
-        print "Found stale /tmp/reth.ipc socket."
-    }
+    print $"Found ($pids | length) running tempo process\(es\)."
 
     let should_kill = if $prompt {
         let answer = (input "Clean up? [Y/n] " | str trim | str downcase)
@@ -1143,11 +1147,6 @@ def "main kill" [
         }
     }
 
-    # Remove stale IPC socket
-    if $has_stale_ipc {
-        rm --force /tmp/reth.ipc
-        print "Removed /tmp/reth.ipc"
-    }
     print "Done."
 }
 
@@ -1157,27 +1156,31 @@ def "main kill" [
 
 # Run Tempo localnet
 def "main localnet" [
-    --mode: string = "dev"      # Mode: "dev" or "consensus"
-    --nodes: int = 3            # Number of validators (consensus mode)
-    --accounts: int = 1000      # Number of genesis accounts
-    --genesis: string = ""      # Custom genesis file path (skips generation)
-    --samply                    # Enable samply profiling (foreground node only)
-    --samply-args: string = ""  # Additional samply arguments (space-separated)
-    --reset                     # Wipe and regenerate localnet data
-    --profile: string = $DEFAULT_PROFILE # Cargo build profile
+    --mode: string = "dev"                 # Mode: "dev" or "consensus"
+    --nodes: int = 3                       # Number of validators (consensus mode)
+    --accounts: int = 1000                 # Number of genesis accounts
+    --epoch-length: int = 302400           # Epoch length in blocks for generated genesis/localnet
+    --genesis: string = ""                 # Custom genesis file path (skips generation)
+    --samply                               # Enable samply profiling (foreground node only)
+    --samply-args: string = ""             # Additional samply arguments (space-separated)
+    --reset                                # Wipe and regenerate localnet data
+    --profile: string = $DEFAULT_PROFILE   # Cargo build profile
     --features: string = $DEFAULT_FEATURES # Cargo features
-    --loud                      # Show all node logs (WARN/ERROR shown by default)
-    --node-args: string = ""    # Additional node arguments (space-separated)
-    --skip-build                # Skip building (assumes binary is already built)
-    --force                     # Kill dangling processes without prompting
-    --bloat: int = 0            # Generate state bloat (size in MiB) for TIP20 tokens
+    --loud                                 # Show all node logs (WARN/ERROR shown by default)
+    --node-args: string = ""               # Additional node arguments (space-separated)
+    --skip-build                           # Skip building (assumes binary is already built)
+    --force                                # Kill dangling processes without prompting
+    --bloat: int = 0                       # Generate state bloat (size in MiB) for TIP20 tokens
 ] {
     validate-mode $mode
+    if $epoch_length <= 0 {
+        print "Error: --epoch-length must be greater than 0"
+        exit 1
+    }
 
-    # Check for dangling processes or stale IPC socket
+    # Check for dangling processes
     let pids = (find-tempo-pids)
-    let has_stale_ipc = ("/tmp/reth.ipc" | path exists)
-    if ($pids | length) > 0 or $has_stale_ipc {
+    if ($pids | length) > 0 {
         main kill --prompt=($force | not $in)
     }
 
@@ -1195,9 +1198,9 @@ def "main localnet" [
             print "Error: --nodes is only valid with --mode consensus"
             exit 1
         }
-        run-dev-node $accounts $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat
+        run-dev-node $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat
     } else {
-        run-consensus-nodes $nodes $accounts $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat
+        run-consensus-nodes $nodes $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat
     }
 }
 
@@ -1205,7 +1208,7 @@ def "main localnet" [
 # Dev mode
 # ============================================================================
 
-def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int] {
+def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int] {
     let tempo_bin = if $profile == "dev" {
         "./target/debug/tempo"
     } else {
@@ -1234,7 +1237,7 @@ def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: lis
             rm -rf $LOCALNET_DIR
             mkdir $LOCALNET_DIR
             print $"Generating genesis with ($accounts) accounts..."
-            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $LOCALNET_DIR -a $accounts --no-dkg-in-genesis
+            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $LOCALNET_DIR -a $accounts --epoch-length $epoch_length --no-dkg-in-genesis
         }
 
         # Apply state bloat if requested (requires fresh init)
@@ -1258,6 +1261,8 @@ def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: lis
 
 # Build base node arguments shared between dev and consensus modes
 def build-base-args [genesis_path: string, datadir: string, log_dir: string, bind_ip: string, http_port: int, reth_metrics_port: int] {
+    let ipc_path = $"($datadir)/reth.ipc"
+
     [
         "node"
         "--chain" $genesis_path
@@ -1271,6 +1276,7 @@ def build-base-args [genesis_path: string, datadir: string, log_dir: string, bin
         "--ws.port" $"($http_port)"
         "--ws.api" "all"
         "--metrics" $"($bind_ip):($reth_metrics_port)"
+        "--ipcpath" $ipc_path
         "--log.file.directory" $log_dir
         "--faucet.enabled"
         "--faucet.private-key" "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
@@ -1294,7 +1300,7 @@ def build-dev-args [] {
 # Consensus mode
 # ============================================================================
 
-def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int] {
+def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int] {
     # Check if we need to generate localnet (only if no custom genesis provided)
     if $genesis == "" {
         let needs_generation = $reset or (not ($LOCALNET_DIR | path exists)) or (
@@ -1314,7 +1320,7 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
             let validators = (0..<$nodes | each { |i| $"127.0.0.($i + 1):($i * 100 + 8000)" } | str join ",")
 
             print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
-            cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --validators $validators --force | ignore
+            cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --epoch-length $epoch_length --validators $validators --force | ignore
         }
     }
 
@@ -1444,7 +1450,7 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
         "--consensus.signing-key" $signing_key
         "--consensus.signing-share" $signing_share
         "--consensus.listen-address" $"($ip):($port)"
-        "--consensus.metrics-address" $"($ip):($metrics_port)"
+        "--consensus.metrics-address" $"0.0.0.0:($metrics_port)"
         "--trusted-peers" $trusted_peers
         "--port" $"($execution_p2p_port)"
         "--discovery.port" $"($execution_p2p_port)"
@@ -1468,6 +1474,7 @@ def "main follower" [
     --node-args: string = ""    # Additional node arguments (space-separated)
     --skip-build                # Skip building (assumes binary is already built)
     --reset                     # Wipe follower data before starting
+    --certify                   # Enable experimental consensus certification in follow mode
 ] {
     # Validate localnet exists
     if not ($LOCALNET_DIR | path exists) {
@@ -1482,7 +1489,6 @@ def "main follower" [
     }
 
     let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
-
     if not $skip_build {
         build-tempo ["tempo"] $profile $features
     }
@@ -1495,38 +1501,59 @@ def "main follower" [
 
     # Auto-detect validators from localnet directory structure
     let validator_dirs = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' })
+    if ($validator_dirs | length) == 0 {
+        print "Error: no validator configs found. Run `nu tempo.nu localnet --mode consensus --reset` first."
+        exit 1
+    }
+
     let trusted_peers = ($validator_dirs | each { |d|
         let addr = ($d | path basename)
+        let ip = ($addr | split row ":" | get 0)
         let port = ($addr | split row ":" | get 1 | into int)
         let identity = (open $"($d)/enode.identity" | str trim)
-        $"enode://($identity)@127.0.0.1:($port + 1)"
+        $"enode://($identity)@($ip):($port + 1)"
     } | str join ",")
 
-    let follower_dir = $"($LOCALNET_DIR)/follower"
-
-    if $reset and ($follower_dir | path exists) {
+    let node_dir = $"($LOCALNET_DIR)/follower"
+    if $reset and ($node_dir | path exists) {
         print "Resetting follower data..."
-        rm -rf $follower_dir
+        rm -rf $node_dir
     }
-    mkdir $follower_dir
 
-    # Use ports below the first validator to avoid conflicts
-    let http_port = 8545 - 1
-    let reth_metrics_port = 9001 - 1
-    let el_p2p_port = 30303 - 1
-    let authrpc_port = 8551 - 1
+    mkdir $node_dir
+
     let log_dir = $"($LOGS_DIR)/follower"
     mkdir $log_dir
 
-    let args = (build-base-args $genesis_path $follower_dir $log_dir "0.0.0.0" $http_port $reth_metrics_port)
+    # Use the slot after the last validator and mirror consensus node port formulas.
+    let node_index = (($validator_dirs | each { |d|
+        let addr = ($d | path basename)
+        let port = ($addr | split row ":" | get 1 | into int)
+        port-to-node-index $port
+    } | math max) + 1)
+
+    let consensus_port = ($node_index * 100) + 8000
+
+    let http_port = 8545 + $node_index
+    let reth_metrics_port = 9001 + $node_index
+    let execution_p2p_port = $consensus_port + 1
+    let consensus_metrics_port = $consensus_port + 2
+    let authrpc_port = $consensus_port + 3
+    let discv5_port = $consensus_port + 4
+
+    let args = (build-base-args $genesis_path $node_dir $log_dir "0.0.0.0" $http_port $reth_metrics_port)
         | append [
             "--follow" $"ws://127.0.0.1:8545"
+            "--consensus.metrics-address" $"0.0.0.0:($consensus_metrics_port)"
             "--trusted-peers" $trusted_peers
-            "--port" $"($el_p2p_port)"
-            "--discovery.port" $"($el_p2p_port)"
+            "--port" $"($execution_p2p_port)"
+            "--discovery.port" $"($execution_p2p_port)"
+            "--discovery.v5.port" $"($discv5_port)"
             "--authrpc.port" $"($authrpc_port)"
-            "--ipcdisable"
+            "--consensus.use-local-defaults"
+            "--consensus.bypass-ip-check"
         ]
+        | append (if $certify { ["--follow.experimental.certify"] } else { [] })
         | append (log-filter-args $loud)
         | append $extra_args
 
@@ -2292,7 +2319,8 @@ def "main bench" [
             --bench-env $bench_env
             --git-ref $current_sha
             --build-profile $profile
-            --benchmark-mode $mode)
+            --benchmark-mode $mode
+            --skip-funding=($bloat > 0))
         $result
     } catch { |e|
         print $"Benchmark interrupted or failed: ($e.msg)"
@@ -2802,6 +2830,7 @@ def main [] {
     print "  --mode <dev|consensus>   Mode (default: dev)"
     print "  --nodes <N>              Number of validators for consensus (default: 3)"
     print "  --accounts <N>           Genesis accounts (default: 1000)"
+    print "  --epoch-length <N>       Epoch length in blocks for generated genesis/localnet (default: 302400)"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
     print "  --samply                 Enable samply profiling (foreground node only)"
     print "  --samply-args <ARGS>     Additional samply arguments (space-separated)"
@@ -2829,6 +2858,7 @@ def main [] {
     print "Follower flags:"
     print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
     print "  --reset                  Wipe follower data before starting"
+    print "  --certify                Enable experimental consensus certification in follow mode"
     print $"  --profile <P>            Cargo profile \(default: ($DEFAULT_PROFILE)\)"
     print $"  --features <F>           Cargo features \(default: ($DEFAULT_FEATURES)\)"
     print "  --node-args <ARGS>       Additional node arguments (space-separated)"
@@ -2857,4 +2887,5 @@ def main [] {
     print "  Discv5:        8004 + N*100"
     print "  HTTP RPC:      8545 + N"
     print "  Reth Metrics:  9001 + N"
+    print "  Follower:      uses N = validator count"
 }

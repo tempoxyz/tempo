@@ -1,8 +1,7 @@
 //! ABI dispatch for the [`TIP1028Guard`] precompile.
 
 use crate::{
-    Precompile, charge_input_cost, dispatch_call, mutate_void,
-    tip1028_guard::TIP1028Guard, view,
+    Precompile, charge_input_cost, dispatch_call, mutate_void, tip1028_guard::TIP1028Guard, view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
@@ -19,9 +18,7 @@ impl Precompile for TIP1028Guard {
             &[],
             ITIP1028GuardCalls::abi_decode,
             |call| match call {
-                ITIP1028GuardCalls::balanceOf(call) => {
-                    view(call, |c| self.balance_of(c))
-                }
+                ITIP1028GuardCalls::balanceOf(call) => view(call, |c| self.balance_of(c)),
                 ITIP1028GuardCalls::claim(call) => {
                     mutate_void(call, msg_sender, |s, c| self.claim(s, c))
                 }

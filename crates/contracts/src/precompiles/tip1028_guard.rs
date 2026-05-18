@@ -1,6 +1,5 @@
 pub use ITIP1028Guard::{
-    ITIP1028GuardErrors as TIP1028GuardError,
-    ITIP1028GuardEvents as BlockTransferEvent,
+    ITIP1028GuardErrors as TIP1028GuardError, ITIP1028GuardEvents as BlockTransferEvent,
 };
 
 crate::sol! {

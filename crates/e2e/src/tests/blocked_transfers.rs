@@ -17,7 +17,7 @@ use eyre::OptionExt as _;
 use futures::future::join_all;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::{
-    TIP1028_GUARD_ADDRESS, PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, TIP1028_GUARD_ADDRESS,
     tip20::{IRolesAuth, ISSUER_ROLE, ITIP20},
     tip20_factory::ITIP20Factory,
     tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID},
@@ -58,8 +58,7 @@ fn test_blocked_transfer_claim_no_recovery() {
         let other_provider = ProviderBuilder::new()
             .wallet(other_wallet)
             .connect_http(http_url.clone());
-        let other_tip1028 =
-            ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, other_provider);
+        let other_tip1028 = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, other_provider);
         let Err(result) = other_tip1028
             .claim(
                 blocked.token,
@@ -89,8 +88,7 @@ fn test_blocked_transfer_claim_no_recovery() {
         let receiver_provider = ProviderBuilder::new()
             .wallet(receiver_wallet)
             .connect_http(http_url.clone());
-        let receiver_tip1028 =
-            ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, receiver_provider);
+        let receiver_tip1028 = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, receiver_provider);
         let claim = receiver_tip1028
             .claim(
                 blocked.token,
@@ -137,8 +135,7 @@ fn test_tip1028_claim_with_recovery() {
         let recovery_provider = ProviderBuilder::new()
             .wallet(wallet(22)?)
             .connect_http(http_url.clone());
-        let recovery_tip1028 =
-            ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, recovery_provider);
+        let recovery_tip1028 = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, recovery_provider);
         let claim = recovery_tip1028
             .claim(
                 blocked.token,
@@ -295,10 +292,7 @@ async fn create_blocked_transfer(
     assert_eq!(token_view.balanceOf(sender).call().await?, U256::ZERO);
     assert_eq!(token_view.balanceOf(receiver).call().await?, U256::ZERO);
     assert_eq!(
-        token_view
-            .balanceOf(TIP1028_GUARD_ADDRESS)
-            .call()
-            .await?,
+        token_view.balanceOf(TIP1028_GUARD_ADDRESS).call().await?,
         amount
     );
 
@@ -359,9 +353,7 @@ fn token_view(http_url: Url, token: Address) -> ITIP20::ITIP20Instance<impl Clon
     ITIP20::new(token, ProviderBuilder::new().connect_http(http_url))
 }
 
-fn transfer_blocked(
-    receipt: &TransactionReceipt,
-) -> eyre::Result<ITIP1028Guard::TransferBlocked> {
+fn transfer_blocked(receipt: &TransactionReceipt) -> eyre::Result<ITIP1028Guard::TransferBlocked> {
     receipt
         .logs()
         .iter()

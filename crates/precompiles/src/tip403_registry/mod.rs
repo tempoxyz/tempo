@@ -15,7 +15,7 @@ pub use tempo_contracts::precompiles::{
 use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
-    TIP1028_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    TIP403_REGISTRY_ADDRESS, TIP1028_GUARD_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };

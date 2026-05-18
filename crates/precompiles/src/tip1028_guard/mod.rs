@@ -4,8 +4,9 @@ pub mod dispatch;
 
 pub use tempo_contracts::precompiles::ITIP1028Guard::{self, InboundKind};
 use tempo_contracts::precompiles::{
-    TIP1028GuardError, BlockTransferEvent,
+    BlockTransferEvent,
     ITIP403Registry::{self, BlockedReason},
+    TIP1028GuardError,
 };
 
 use crate::{
@@ -123,11 +124,7 @@ impl TIP1028Guard {
     }
 
     /// Given a valid proof, releases blocked funds to the authorized recipient.
-    pub fn claim(
-        &mut self,
-        msg_sender: Address,
-        call: ITIP1028Guard::claimCall,
-    ) -> Result<()> {
+    pub fn claim(&mut self, msg_sender: Address, call: ITIP1028Guard::claimCall) -> Result<()> {
         if !call.token.is_tip20() {
             return Err(TIP1028GuardError::invalid_token().into());
         }
@@ -203,10 +200,7 @@ impl TIP1028Guard {
     }
 
     /// ABI-decodes a v1 proof.
-    fn decode_v1(
-        proof_version: u8,
-        proof: &[u8],
-    ) -> Result<ITIP1028Guard::ClaimProofV1> {
+    fn decode_v1(proof_version: u8, proof: &[u8]) -> Result<ITIP1028Guard::ClaimProofV1> {
         if proof_version != BLOCKED_PROOF_VERSION {
             return Err(TIP1028GuardError::invalid_proof().into());
         }

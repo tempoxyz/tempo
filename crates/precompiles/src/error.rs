@@ -20,9 +20,9 @@ use revm::{
     precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
 use tempo_contracts::precompiles::{
-    AccountKeychainError, AddrRegistryError, TIP1028GuardError, FeeManagerError, NonceError,
-    RolesAuthError, SignatureVerifierError, StablecoinDEXError, TIP20ChannelEscrowError,
-    TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
+    AccountKeychainError, AddrRegistryError, FeeManagerError, NonceError, RolesAuthError,
+    SignatureVerifierError, StablecoinDEXError, TIP20ChannelEscrowError, TIP20FactoryError,
+    TIP403RegistryError, TIP1028GuardError, TIPFeeAMMError, UnknownFunctionSelector,
     ValidatorConfigError, ValidatorConfigV2Error,
 };
 

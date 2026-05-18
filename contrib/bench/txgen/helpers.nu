@@ -189,8 +189,18 @@ def txgen-run-preset-pipeline [
     --max-concurrent-requests: int
     --bench-env: string = ""
     --git-ref: string = ""
+    --git-ref-label: string = ""
     --build-profile: string = ""
     --benchmark-mode: string = ""
+    --benchmark-id: string = ""
+    --benchmark-run: string = ""
+    --run-type: string = ""
+    --benchmark-start: int = 0
+    --platform: string = ""
+    --scenario: string = ""
+    --victoriametrics-url: string = ""
+    --clickhouse-url: string = ""
+    --skip-funding                                   # Skip faucet funding (accounts already funded at genesis via state bloat)
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
     $env.TXGEN_ACCOUNTS = ($accounts | into string)
@@ -198,7 +208,9 @@ def txgen-run-preset-pipeline [
     if not ($spec_path | path exists) {
         error make { msg: $"txgen preset file not found: ($spec_path)" }
     }
-    txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
+    if not $skip_funding {
+        txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
+    }
 
     let tx_count = [($tps * $duration) 1] | math max
     let txgen_duration = $"($duration)s"
@@ -211,7 +223,7 @@ def txgen-run-preset-pipeline [
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
     ]
-    let bench_cmd = [
+    let bench_base_cmd = [
         $txgen_bench_bin
         "send"
         "--rpc-url" $submit_rpc_url
@@ -220,7 +232,13 @@ def txgen-run-preset-pipeline [
         "--metrics-url" $metrics_url
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
         "--drain-timeout" $TXGEN_HELPER_DRAIN_TIMEOUT_SECS
-        "--report" $"json:($report_path)"
+    ]
+        | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
+    let report_args = ["--report" $"json:($report_path)"]
+        | append (if $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
+        | append (if $clickhouse_url != "" { ["--report" $"clickhouse:($clickhouse_url)"] } else { [] })
+    let metadata_args = [
+        "-m" "job=github-tempo-bench-e2e"
         "-m" $"chain_id=($chain_id)"
         "-m" $"target_tps=($tps)"
         "-m" $"run_duration_secs=($duration)"
@@ -231,9 +249,17 @@ def txgen-run-preset-pipeline [
         "-m" "swap_weight=0.0"
         "-m" "erc20_weight=0.0"
         "-m" $"node_commit_sha=($git_ref)"
+        "-m" $"git-sha=($git_ref)"
+        "-m" $"git-ref=($git_ref_label)"
         "-m" $"build_profile=($build_profile)"
         "-m" $"mode=($benchmark_mode)"
     ]
+        | append (if $benchmark_id != "" { ["-m" $"benchmark_id=($benchmark_id)"] } else { [] })
+        | append (if $benchmark_run != "" { ["-m" $"benchmark_run=($benchmark_run)"] } else { [] })
+        | append (if $run_type != "" { ["-m" $"run_type=($run_type)"] } else { [] })
+        | append (if $platform != "" { ["-m" $"platform=($platform)"] } else { [] })
+        | append (if $scenario != "" { ["-m" $"scenario=($scenario)"] } else { [] })
+    let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
     let txgen_cmd_str = (txgen-shell-join $txgen_cmd)

@@ -61,3 +61,40 @@ pub fn calc_gas_balance_spending(gas_limit: u64, gas_price: u128) -> U256 {
         .saturating_mul(U256::from(gas_price))
         .div_ceil(TEMPO_GAS_PRICE_SCALING_FACTOR)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn calc_gas_balance_spending_variations() {
+        // zero gas → zero spending
+        assert_eq!(calc_gas_balance_spending(0, 1_000_000_000), U256::ZERO);
+
+        // zero price → zero spending
+        assert_eq!(calc_gas_balance_spending(21000, 0), U256::ZERO);
+
+        // both zero
+        assert_eq!(calc_gas_balance_spending(0, 0), U256::ZERO);
+
+        // exact division: 1 gas * 10^12 attodollars = 1 microdollar
+        assert_eq!(
+            calc_gas_balance_spending(1, 1_000_000_000_000),
+            U256::from(1)
+        );
+
+        // rounds up via div_ceil: 1 gas * 1 attodollar → ceil(1 / 10^12) = 1
+        assert_eq!(calc_gas_balance_spending(1, 1), U256::from(1));
+
+        // typical tx: 21000 gas * 1 gwei (10^9 attodollars)
+        // = 21000 * 10^9 / 10^12 = 21000 / 1000 = 21
+        assert_eq!(
+            calc_gas_balance_spending(21000, 1_000_000_000),
+            U256::from(21)
+        );
+
+        // large values don't overflow (saturating_mul)
+        let result = calc_gas_balance_spending(u64::MAX, u128::MAX);
+        assert!(result > U256::ZERO);
+    }
+}
