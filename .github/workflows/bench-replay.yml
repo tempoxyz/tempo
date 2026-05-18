@@ -130,6 +130,10 @@ on:
         required: false
       GRAFANA_TEMPO:
         required: false
+      BENCH_MAINNET_RPC_URL:
+        required: false
+      BENCH_TESTNET_RPC_URL:
+        required: false
       SLACK_BENCH_BOT_TOKEN:
         required: false
       SLACK_BENCH_CHANNEL:
@@ -402,6 +406,7 @@ jobs:
           CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
           CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
           CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+          BENCH_REPLAY_RPC_URL: ${{ env.BENCH_CHAIN == 'mainnet' && secrets.BENCH_MAINNET_RPC_URL || env.BENCH_CHAIN == 'testnet' && secrets.BENCH_TESTNET_RPC_URL || '' }}
         run: bash .github/scripts/bench-tempo-replay.sh
 
       - name: Parse results
