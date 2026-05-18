@@ -110,9 +110,26 @@ function e2eChanges(deltas) {
   };
 }
 
-function refLink(commitUrl, sha, refName, fallbackLabel) {
+function isShaLike(ref) {
+  return /^[0-9a-f]{7,40}$/i.test(ref || '');
+}
+
+function githubRefUrl(repo, ref) {
+  if (!ref || ref === 'unknown') return '';
+  const encodedRef = encodeURI(ref);
+  const kind = isShaLike(ref) ? 'commit' : 'tree';
+  return `https://github.com/${repo}/${kind}/${encodedRef}`;
+}
+
+function githubCompareUrl(repo, baselineRef, featureRef) {
+  if (!baselineRef || !featureRef || baselineRef === 'unknown' || featureRef === 'unknown') return '';
+  return `https://github.com/${repo}/compare/${encodeURI(baselineRef)}...${encodeURI(featureRef)}`;
+}
+
+function refLink(repo, ref, refName, fallbackLabel) {
   const label = refName || fallbackLabel;
-  return sha ? `<${commitUrl}/${sha}|${label}>` : label;
+  const url = githubRefUrl(repo, ref);
+  return url ? `<${url}|${label}>` : label;
 }
 
 function repoLink(repo) {
@@ -151,11 +168,10 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
   const { emoji, label } = verdictFromChanges(e2eChanges(d), 'No Significant Change');
 
   const prUrl = prNumber ? `https://github.com/${repo}/pull/${prNumber}` : '';
-  const commitUrl = `https://github.com/${repo}/commit`;
   const baselineName = process.env.BENCH_BASELINE_NAME || 'baseline';
   const featureName = process.env.BENCH_FEATURE_NAME || 'feature';
-  const baselineLink = refLink(commitUrl, summary.baseline_ref, baselineName, 'baseline');
-  const featureLink = refLink(commitUrl, summary.feature_ref, featureName, 'feature');
+  const baselineLink = refLink(repo, summary.baseline_ref, baselineName, 'baseline');
+  const featureLink = refLink(repo, summary.feature_ref, featureName, 'feature');
 
   const metaParts = [];
   if (prNumber) metaParts.push(`*<${prUrl}|PR #${prNumber}>*`);
@@ -349,8 +365,8 @@ function shortRef(ref) {
 
 function replayRefLink(repo, ref, name) {
   const label = name || shortRef(ref);
-  if (!ref || ref === 'unknown') return label;
-  return `<https://github.com/${repo}/commit/${ref}|${label}>`;
+  const url = githubRefUrl(repo, ref);
+  return url ? `<${url}|${label}>` : label;
 }
 
 function buildReplayMetricRows(summary) {
@@ -389,7 +405,7 @@ function buildReplaySuccessBlocks({ summary, prNumber, actor, actorSlackId, jobU
   const feature = summary.feature || {};
   const baselineLink = replayRefLink(repo, baseline.ref, baseline.name);
   const featureLink = replayRefLink(repo, feature.ref, feature.name);
-  const diffUrl = `https://github.com/${repo}/compare/${baseline.ref || ''}...${feature.ref || ''}`;
+  const diffUrl = githubCompareUrl(repo, baseline.ref, feature.ref);
 
   const metaParts = [`*Repo:* ${repoLink(repo)}`];
   if (prNumber) metaParts.push(`*<${prUrl}|PR #${prNumber}>*`);
@@ -434,12 +450,12 @@ function buildReplaySuccessBlocks({ summary, prNumber, actor, actorSlackId, jobU
           url: jobUrl,
           action_id: 'ci_button',
         },
-        {
+        ...(diffUrl ? [{
           type: 'button',
           text: { type: 'plain_text', text: 'Diff :github:', emoji: true },
           url: diffUrl,
           action_id: 'diff_button',
-        },
+        }] : []),
       ],
     },
   ];
