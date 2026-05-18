@@ -85,7 +85,9 @@ impl std::ops::Deref for Block {
 impl Write for Block {
     fn write(&self, buf: &mut impl BufMut) {
         self.execution_block.encode(buf);
-        self.block_access_list.write(buf);
+        if self.execution_block.block_access_list_hash().is_some() {
+            self.block_access_list.write(buf);
+        }
     }
 }
 
@@ -134,7 +136,12 @@ impl Read for Block {
 
 impl EncodeSize for Block {
     fn encode_size(&self) -> usize {
-        self.execution_block.length() + self.block_access_list.encode_size()
+        self.execution_block.length()
+            + if self.execution_block.block_access_list_hash().is_some() {
+                self.block_access_list.encode_size()
+            } else {
+                0
+            }
     }
 }
 
