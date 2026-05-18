@@ -24,7 +24,7 @@ use crate::{
 };
 
 #[test_traced("WARN")]
-fn committee_of_one() {
+fn committee_of_one_no_legacy_archive() {
     SimpleRestart {
         committee_size: 1,
         epoch_length: 10,
@@ -37,7 +37,7 @@ fn committee_of_one() {
 }
 
 #[test_traced]
-fn committee_of_three() {
+fn committee_of_three_no_legacy_archive() {
     SimpleRestart {
         committee_size: 3,
         epoch_length: 10,
@@ -49,9 +49,6 @@ fn committee_of_three() {
     .run()
 }
 
-/// Same as [`committee_of_one`] but the legacy immutable archive is
-/// disabled. Exercises the prunable-archive-only restart path so we
-/// can land the legacy code removal with confidence.
 #[test_traced("WARN")]
 fn committee_of_one_with_legacy_archive() {
     SimpleRestart {
@@ -65,9 +62,6 @@ fn committee_of_one_with_legacy_archive() {
     .run()
 }
 
-/// Same as [`committee_of_three`] but the legacy immutable archive is
-/// disabled. Exercises the prunable-archive-only restart path so we
-/// can land the legacy code removal with confidence.
 #[test_traced]
 fn committee_of_three_with_legacy_archive() {
     SimpleRestart {
