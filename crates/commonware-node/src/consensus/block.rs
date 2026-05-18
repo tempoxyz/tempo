@@ -5,10 +5,11 @@
 
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{B256, Bytes};
-use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, Read, Write};
+use alloy_rlp::{Decodable, Encodable as _, Header};
+use bytes::{Buf, BufMut, Bytes as WireBytes};
+use commonware_codec::{EncodeSize, Error, Read, Write};
 use commonware_consensus::{
-    Heightable,
+    Block as ConsensusBlockTrait, CertifiableBlock, Heightable,
     simplex::types::Context,
     types::{Epoch, Height, Round, View},
 };
@@ -17,6 +18,8 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use reth_node_core::primitives::SealedBlock;
+use std::ops::Deref;
+use tempo_primitives::Block as ExecutionBlock;
 
 use crate::consensus::Digest;
 
@@ -26,22 +29,15 @@ use crate::consensus::Digest;
 /// that is not persisted as part of the block in reth's database.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct ConsensusPayload {
-    execution_block: SealedBlock<tempo_primitives::Block>,
-    block_access_list: Option<bytes::Bytes>,
+    execution_block: SealedBlock<ExecutionBlock>,
+    block_access_list: Option<WireBytes>,
 }
 
 pub(crate) type Block = ConsensusPayload;
 
 impl ConsensusPayload {
-    pub(crate) fn from_execution_block(block: SealedBlock<tempo_primitives::Block>) -> Self {
-        Self {
-            execution_block: block,
-            block_access_list: None,
-        }
-    }
-
     pub(crate) fn from_execution_payload(
-        block: SealedBlock<tempo_primitives::Block>,
+        block: SealedBlock<ExecutionBlock>,
         block_access_list: Option<Bytes>,
     ) -> Self {
         Self {
@@ -50,16 +46,11 @@ impl ConsensusPayload {
         }
     }
 
-    pub(crate) fn into_inner(self) -> SealedBlock<tempo_primitives::Block> {
+    pub(crate) fn into_inner(self) -> SealedBlock<ExecutionBlock> {
         self.execution_block
     }
 
-    pub(crate) fn into_parts(
-        self,
-    ) -> (
-        SealedBlock<tempo_primitives::Block>,
-        Option<alloy_primitives::Bytes>,
-    ) {
+    pub(crate) fn into_parts(self) -> (SealedBlock<ExecutionBlock>, Option<Bytes>) {
         (self.execution_block, self.block_access_list.map(Into::into))
     }
 
@@ -82,8 +73,8 @@ impl ConsensusPayload {
     }
 }
 
-impl std::ops::Deref for ConsensusPayload {
-    type Target = SealedBlock<tempo_primitives::Block>;
+impl Deref for ConsensusPayload {
+    type Target = SealedBlock<ExecutionBlock>;
 
     fn deref(&self) -> &Self::Target {
         &self.execution_block
@@ -92,7 +83,6 @@ impl std::ops::Deref for ConsensusPayload {
 
 impl Write for ConsensusPayload {
     fn write(&self, buf: &mut impl BufMut) {
-        use alloy_rlp::Encodable as _;
         self.execution_block.encode(buf);
         self.block_access_list.write(buf);
     }
@@ -102,35 +92,33 @@ impl Read for ConsensusPayload {
     // TODO: Figure out what this is for/when to use it. This is () for both alto and summit.
     type Cfg = ();
 
-    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, commonware_codec::Error> {
+    fn read_cfg(buf: &mut impl Buf, _cfg: &Self::Cfg) -> Result<Self, Error> {
         // XXX: this does not advance `buf`. Also, it assumes that the rlp
         // header is fully contained in the first chunk of `buf`. As per
-        // `bytes::Buf::chunk`'s documentation, the first slice should never be
+        // `Buf::chunk`'s documentation, the first slice should never be
         // empty is there are remaining bytes. We hence don't worry about edge
         // cases where the very tiny rlp header is spread over more than one
         // chunk.
-        let header = alloy_rlp::Header::decode(&mut buf.chunk()).map_err(|rlp_err| {
-            commonware_codec::Error::Wrapped("reading RLP header", rlp_err.into())
-        })?;
+        let header = Header::decode(&mut buf.chunk())
+            .map_err(|rlp_err| Error::Wrapped("reading RLP header", rlp_err.into()))?;
 
         if header.length_with_payload() > buf.remaining() {
             // TODO: it would be nice to report more information here, but commonware_codex::Error does not
             // have the fidelity for it (outside abusing Error::Wrapped).
-            return Err(commonware_codec::Error::EndOfBuffer);
+            return Err(Error::EndOfBuffer);
         }
         let bytes = buf.copy_to_bytes(header.length_with_payload());
 
         // TODO: decode straight to a reth SealedBlock once released:
         // https://github.com/paradigmxyz/reth/pull/18003
         // For now relies on `Decodable for alloy_consensus::Block`.
-        let inner = alloy_rlp::Decodable::decode(&mut bytes.as_ref()).map_err(|rlp_err| {
-            commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
-        })?;
+        let inner = Decodable::decode(&mut bytes.as_ref())
+            .map_err(|rlp_err| Error::Wrapped("reading RLP encoded block", rlp_err.into()))?;
 
         let block_access_list = if buf.remaining() == 0 {
             None
         } else {
-            Option::<bytes::Bytes>::read_cfg(buf, &(..).into())?
+            Option::<WireBytes>::read_cfg(buf, &(..).into())?
         };
 
         Ok(Self {
@@ -142,7 +130,6 @@ impl Read for ConsensusPayload {
 
 impl EncodeSize for ConsensusPayload {
     fn encode_size(&self) -> usize {
-        use alloy_rlp::Encodable as _;
         self.execution_block.length() + self.block_access_list.encode_size()
     }
 }
@@ -169,13 +156,13 @@ impl Heightable for ConsensusPayload {
     }
 }
 
-impl commonware_consensus::Block for ConsensusPayload {
+impl ConsensusBlockTrait for ConsensusPayload {
     fn parent(&self) -> Digest {
         self.parent_digest()
     }
 }
 
-impl commonware_consensus::CertifiableBlock for ConsensusPayload {
+impl CertifiableBlock for ConsensusPayload {
     type Context = Context<Digest, PublicKey>;
 
     fn context(&self) -> Self::Context {

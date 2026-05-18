@@ -1099,7 +1099,9 @@ async fn get_parent(
             format!("failed querying execution layer for parent block `{parent_digest}`")
         })?
     {
-        Ok(Block::from_execution_block(parent.seal()))
+        // Blocks loaded from the EL database persist only the block. There is no commonware
+        // p2p BAL side data for this local reconstruction.
+        Ok(Block::from_execution_payload(parent.seal(), None))
     } else {
         marshal
             .subscribe_by_digest(Some(Round::new(round.epoch(), parent_view)), parent_digest)
