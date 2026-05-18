@@ -1063,7 +1063,7 @@ impl TIP20Token {
     /// consumes allowance for `transfer_from` style calls.
     ///
     /// Returns `Some(to)` when the caller should perform the normal transfer.
-    /// Returns `None` when funds were guarded, and the caller should return immediately.
+    /// Returns `None` when funds were blocked, and the caller should return immediately.
     fn validate_transfer(
         &mut self,
         spender: Option<Address>,
@@ -1096,7 +1096,7 @@ impl TIP20Token {
     /// (+T6) applies TIP-1028 address-level receive policies.
     ///
     /// Returns `Some((to, total_supply))` when the caller should proceed with the regular mint.
-    /// Returns `None` when funds were minted and guarded, and the caller should return immediately.
+    /// Returns `None` when funds were minted and blocked, and the caller should return immediately.
     fn validate_mint(
         &mut self,
         msg_sender: Address,
@@ -1219,7 +1219,7 @@ impl TIP20Token {
             return Ok(false);
         }
         if to.target == TIP1028_GUARD_ADDRESS {
-            return Err(TIP1028GuardError::block_address_reserved().into());
+            return Err(TIP1028GuardError::address_reserved().into());
         }
 
         let token = self.address;
@@ -1256,7 +1256,7 @@ impl TIP20Token {
         self.check_not_paused()?;
 
         if to == TIP1028_GUARD_ADDRESS {
-            return Err(TIP1028GuardError::block_address_reserved().into());
+            return Err(TIP1028GuardError::address_reserved().into());
         }
 
         let destination = Recipient::resolve(to)?;
@@ -1594,7 +1594,7 @@ mod recipient_tests {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
-    use tempo_contracts::precompiles::{BlockTransferEvent, ITIP1028Guard, createTokenCall};
+    use tempo_contracts::precompiles::{ITIP1028Guard, TIP1028GuardEvent, createTokenCall};
 
     use super::*;
     use crate::{
@@ -1696,38 +1696,6 @@ pub(crate) mod tests {
             )
         }
 
-        fn proof_v1(
-            originator: Address,
-            recipient: Address,
-            blocked_nonce: u64,
-            blocked_reason: ITIP403Registry::BlockedReason,
-            kind: InboundKind,
-            memo: B256,
-        ) -> ITIP1028Guard::ClaimProofV1 {
-            ITIP1028Guard::ClaimProofV1 {
-                originator,
-                recipient,
-                blockedAt: BLOCKED_AT,
-                blockedNonce: blocked_nonce,
-                blockedReason: blocked_reason as u8,
-                kind,
-                memo,
-            }
-        }
-
-        fn proof_balance(
-            token: Address,
-            recovery_contract: Address,
-            proof: &ITIP1028Guard::ClaimProofV1,
-        ) -> Result<U256> {
-            TIP1028Guard::new().balance_of(ITIP1028Guard::balanceOfCall {
-                token,
-                recoveryAuthority: recovery_contract,
-                proofVersion: BLOCKED_PROOF_VERSION,
-                proof: proof.abi_encode().into(),
-            })
-        }
-
         #[test]
         fn test_transfer_blocked_by_receive_policy_guards_funds() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
@@ -1767,17 +1735,21 @@ pub(crate) mod tests {
                     amount,
                 })]);
 
-                let proof = proof_v1(
+                let proof = ITIP1028Guard::ClaimProofV1::new(
+                    token.address,
+                    Address::ZERO,
                     sender,
                     receiver,
+                    BLOCKED_AT,
                     1,
-                    ITIP403Registry::BlockedReason::RECEIVE_POLICY,
+                    ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
                     InboundKind::TRANSFER,
                     B256::ZERO,
                 );
-                assert_eq!(proof_balance(token.address, Address::ZERO, &proof)?, amount);
-                TIP1028Guard::new().assert_emitted_events(vec![
-                    BlockTransferEvent::TransferBlocked(ITIP1028Guard::TransferBlocked {
+                let guard = TIP1028Guard::new();
+                assert_eq!(guard.balance_of(proof.abi_encode().into())?, amount);
+                guard.assert_emitted_events(vec![TIP1028GuardEvent::TransferBlocked(
+                    ITIP1028Guard::TransferBlocked {
                         token: token.address,
                         from: sender,
                         receiver,
@@ -1789,8 +1761,8 @@ pub(crate) mod tests {
                         blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
                         recoveryAuthority: Address::ZERO,
                         memo: B256::ZERO,
-                    }),
-                ]);
+                    },
+                )]);
 
                 Ok(())
             })
@@ -1825,17 +1797,21 @@ pub(crate) mod tests {
                     },
                 )?;
 
-                let proof = proof_v1(
+                let proof = ITIP1028Guard::ClaimProofV1::new(
+                    token.address,
+                    Address::ZERO,
                     sender,
                     receiver,
+                    BLOCKED_AT,
                     1,
-                    ITIP403Registry::BlockedReason::TOKEN_FILTER,
+                    ITIP403Registry::BlockedReason::TOKEN_FILTER as u8,
                     InboundKind::TRANSFER,
                     B256::ZERO,
                 );
-                assert_eq!(proof_balance(token.address, Address::ZERO, &proof)?, amount);
-                TIP1028Guard::new().assert_emitted_events(vec![
-                    BlockTransferEvent::TransferBlocked(ITIP1028Guard::TransferBlocked {
+                let guard = TIP1028Guard::new();
+                assert_eq!(guard.balance_of(proof.abi_encode().into())?, amount);
+                guard.assert_emitted_events(vec![TIP1028GuardEvent::TransferBlocked(
+                    ITIP1028Guard::TransferBlocked {
                         token: token.address,
                         from: sender,
                         receiver,
@@ -1847,8 +1823,8 @@ pub(crate) mod tests {
                         blockedReason: ITIP403Registry::BlockedReason::TOKEN_FILTER as u8,
                         recoveryAuthority: Address::ZERO,
                         memo: B256::ZERO,
-                    }),
-                ]);
+                    },
+                )]);
 
                 Ok(())
             })
@@ -1876,7 +1852,7 @@ pub(crate) mod tests {
                 );
                 assert!(matches!(
                     result,
-                    Err(e) if e == TIP1028GuardError::block_address_reserved().into()
+                    Err(e) if e == TIP1028GuardError::address_reserved().into()
                 ));
                 assert_eq!(token.get_balance(sender)?, amount);
                 assert_eq!(token.get_balance(TIP1028_GUARD_ADDRESS)?, U256::ZERO);
@@ -1923,19 +1899,19 @@ pub(crate) mod tests {
                     to: receiver,
                     amount,
                 })]);
+                let proof = ITIP1028Guard::ClaimProofV1::new(
+                    token.address,
+                    Address::ZERO,
+                    sender,
+                    receiver,
+                    BLOCKED_AT,
+                    1,
+                    ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
+                    InboundKind::TRANSFER,
+                    B256::ZERO,
+                );
                 assert_eq!(
-                    proof_balance(
-                        token.address,
-                        Address::ZERO,
-                        &proof_v1(
-                            sender,
-                            receiver,
-                            1,
-                            ITIP403Registry::BlockedReason::RECEIVE_POLICY,
-                            InboundKind::TRANSFER,
-                            B256::ZERO,
-                        ),
-                    )?,
+                    TIP1028Guard::new().balance_of(proof.abi_encode().into())?,
                     U256::ZERO
                 );
 
@@ -2025,15 +2001,21 @@ pub(crate) mod tests {
                     to: TIP1028_GUARD_ADDRESS,
                     amount,
                 })]);
-                let proof = proof_v1(
+                let proof = ITIP1028Guard::ClaimProofV1::new(
+                    token.address,
+                    Address::ZERO,
                     sender,
                     receiver,
+                    BLOCKED_AT,
                     1,
-                    ITIP403Registry::BlockedReason::RECEIVE_POLICY,
+                    ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
                     InboundKind::TRANSFER,
                     memo,
                 );
-                assert_eq!(proof_balance(token.address, Address::ZERO, &proof)?, amount);
+                assert_eq!(
+                    TIP1028Guard::new().balance_of(proof.abi_encode().into())?,
+                    amount
+                );
 
                 Ok(())
             })
@@ -2059,7 +2041,8 @@ pub(crate) mod tests {
                     Address::ZERO,
                 )?;
 
-                TIP1028Guard::new().clear_emitted_events();
+                let mut guard = TIP1028Guard::new();
+                guard.clear_emitted_events();
                 token.mint(
                     admin,
                     ITIP20::mintCall {
@@ -2076,8 +2059,8 @@ pub(crate) mod tests {
                     to: TIP1028_GUARD_ADDRESS,
                     amount,
                 })]);
-                TIP1028Guard::new().assert_emitted_events(vec![
-                    BlockTransferEvent::TransferBlocked(ITIP1028Guard::TransferBlocked {
+                guard.assert_emitted_events(vec![TIP1028GuardEvent::TransferBlocked(
+                    ITIP1028Guard::TransferBlocked {
                         token: token.address,
                         from: admin,
                         receiver,
@@ -2089,18 +2072,21 @@ pub(crate) mod tests {
                         blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
                         recoveryAuthority: Address::ZERO,
                         memo: B256::ZERO,
-                    }),
-                ]);
+                    },
+                )]);
 
-                let proof = proof_v1(
+                let proof = ITIP1028Guard::ClaimProofV1::new(
+                    token.address,
+                    Address::ZERO,
                     admin,
                     receiver,
+                    BLOCKED_AT,
                     1,
-                    ITIP403Registry::BlockedReason::RECEIVE_POLICY,
+                    ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
                     InboundKind::MINT,
                     B256::ZERO,
                 );
-                assert_eq!(proof_balance(token.address, Address::ZERO, &proof)?, amount);
+                assert_eq!(guard.balance_of(proof.abi_encode().into())?, amount);
 
                 Ok(())
             })

@@ -18,9 +18,9 @@ impl Precompile for TIP1028Guard {
             &[],
             ITIP1028GuardCalls::abi_decode,
             |call| match call {
-                ITIP1028GuardCalls::balanceOf(call) => view(call, |c| self.balance_of(c)),
+                ITIP1028GuardCalls::balanceOf(call) => view(call, |c| self.balance_of(c.proof)),
                 ITIP1028GuardCalls::claim(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.claim(s, c))
+                    mutate_void(call, msg_sender, |s, c| self.claim(s, c.to, c.proof))
                 }
             },
         )

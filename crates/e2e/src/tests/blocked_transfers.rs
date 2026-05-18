@@ -60,13 +60,7 @@ fn test_blocked_transfer_claim_no_recovery() {
             .connect_http(http_url.clone());
         let other_tip1028 = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, other_provider);
         let Err(result) = other_tip1028
-            .claim(
-                blocked.token,
-                RECOVERY_RECEIVER,
-                BLOCKED_PROOF_VERSION,
-                blocked.proof.clone(),
-                other,
-            )
+            .claim(other, blocked.proof.clone())
             .call()
             .await
         else {
@@ -90,13 +84,7 @@ fn test_blocked_transfer_claim_no_recovery() {
             .connect_http(http_url.clone());
         let receiver_tip1028 = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, receiver_provider);
         let claim = receiver_tip1028
-            .claim(
-                blocked.token,
-                RECOVERY_RECEIVER,
-                BLOCKED_PROOF_VERSION,
-                blocked.proof.clone(),
-                blocked.receiver,
-            )
+            .claim(blocked.receiver, blocked.proof.clone())
             .gas(GAS)
             .gas_price(GAS_PRICE)
             .send()
@@ -137,13 +125,7 @@ fn test_tip1028_claim_with_recovery() {
             .connect_http(http_url.clone());
         let recovery_tip1028 = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, recovery_provider);
         let claim = recovery_tip1028
-            .claim(
-                blocked.token,
-                recovery,
-                BLOCKED_PROOF_VERSION,
-                blocked.proof,
-                destination,
-            )
+            .claim(destination, blocked.proof)
             .gas(GAS)
             .gas_price(GAS_PRICE)
             .send()
@@ -264,6 +246,9 @@ async fn create_blocked_transfer(
     );
 
     let proof: Bytes = ITIP1028Guard::ClaimProofV1 {
+        version: BLOCKED_PROOF_VERSION,
+        token,
+        recoveryAuthority: recovery,
         originator: blocked.from,
         recipient: blocked.recipient,
         blockedAt: blocked.blockedAt,
@@ -280,10 +265,7 @@ async fn create_blocked_transfer(
         ProviderBuilder::new().connect_http(http_url.clone()),
     );
     assert_eq!(
-        tip1028
-            .balanceOf(token, recovery, BLOCKED_PROOF_VERSION, proof.clone())
-            .call()
-            .await?,
+        tip1028.balanceOf(proof.clone()).call().await?,
         amount,
         "blocked event: {blocked:#?}"
     );
