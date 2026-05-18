@@ -12,7 +12,6 @@ const DEFAULT_PROFILE = "profiling"
 const DEFAULT_FEATURES = "jemalloc,asm-keccak"
 const BENCH_WORKTREES_DIR = ".bench-worktrees"
 const BENCH_RESULTS_DIR = "bench-results"
-const METRICS_PROXY_SCRIPT = "contrib/bench/bench-metrics-proxy.py"
 const MINIO_BUCKET = "minio/tempo-binaries"
 const BENCH_META_SUBDIR = ".bench-meta"
 
@@ -552,29 +551,7 @@ def run-bench-single [
     let log_dir = $"($LOCALNET_DIR)/logs-($run_label)"
     mkdir $log_dir
 
-    # Start metrics proxy with labels for this run
     let run_type = if ($run_label | str starts-with "baseline") { "baseline" } else { "feature" }
-    let run_start_epoch = (date now | into int) / 1_000_000_000
-    let labels = {
-        benchmark_run: $run_label
-        run_type: $run_type
-        git_ref: $git_ref
-        benchmark_id: $benchmark_id
-        run_start_epoch: $"($run_start_epoch)"
-        reference_epoch: $"($reference_epoch)"
-    }
-    let labels_file = $"($results_dir)/metrics-labels-($run_label).json"
-    $labels | to json | save -f $labels_file
-
-    let proxy_pid = if ($METRICS_PROXY_SCRIPT | path exists) {
-        let proxy_job = (job spawn {
-            python3 $METRICS_PROXY_SCRIPT --upstream "http://127.0.0.1:9001/" --port 9090 --labels $labels_file
-        })
-        sleep 500ms
-        $proxy_job
-    } else {
-        null
-    }
 
     # Parse extra node args
     let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
@@ -716,14 +693,6 @@ def run-bench-single [
         }
     }
 
-    # Stop metrics proxy
-    if $proxy_pid != null {
-        let proxy_pids = (ps | where name =~ "bench-metrics-proxy" | get pid)
-        for pid in $proxy_pids {
-            kill -s 2 $pid
-        }
-    }
-
     print $"=== Run ($run_label) complete ==="
     if $bench_failed {
         error make { msg: $"Benchmark run ($run_label) failed" }
@@ -796,6 +765,28 @@ def percentile [sorted_vals: list<any>, pct: int] {
     let idx = (($sorted_vals | length) * $pct / 100 | into int)
     let clamped = [($idx) (($sorted_vals | length) - 1)] | math min
     $sorted_vals | get $clamped
+}
+
+def iso-from-epoch-ms [epoch_ms: int] {
+    let seconds = ($epoch_ms / 1000 | into int)
+    let millis = ($epoch_ms mod 1000 | into int)
+    let base = (^date -u -d $"@($seconds)" "+%Y-%m-%dT%H:%M:%S")
+    $"($base).($millis | into string | fill --alignment right --character '0' --width 3)Z"
+}
+
+def grafana-performance-url [benchmark_id: string, reference_epoch: int, duration: int] {
+    if $benchmark_id == "" or $reference_epoch <= 0 {
+        return ""
+    }
+
+    let range = {
+        from: ($reference_epoch * 1000)
+        to: (($reference_epoch + $duration) * 1000)
+    }
+
+    let from = (iso-from-epoch-ms $range.from)
+    let to = (iso-from-epoch-ms $range.to)
+    $"https://tempoxyz.grafana.net/d/dffj6qf1o30oowe/performance?orgId=1&from=($from)&to=($to)&timezone=browser&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=($benchmark_id)&var-group_by=benchmark_run"
 }
 
 
@@ -975,7 +966,16 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let delta = { |base: float, feat: float| if $base != 0.0 { ((($feat - $base) / $base) * 100) | math round --precision 1 } else { 0.0 } }
 
     # Build summary markdown
-    let summary = ([
+    let grafana_url = (grafana-performance-url $benchmark_id $reference_epoch $duration)
+    let observability_lines = if $grafana_url != "" {
+        [
+            "## Observability"
+            ""
+            $"- Grafana: [Performance dashboard]\(($grafana_url)\)"
+            ""
+        ]
+    } else { [] }
+    let summary_lines = ([
         $"# Bench Comparison: ($baseline_ref) vs ($feature_ref)"
         ""
         "## Configuration"
@@ -987,6 +987,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         $"- Baseline blocks: ($b_lat.n)"
         $"- Feature blocks: ($f_lat.n)"
         ""
+    ] | append $observability_lines | append [
         "## Tempo Metrics"
         ""
         "| Metric | Baseline | Feature | Delta |"
@@ -1014,7 +1015,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         ""
         "| Run | Blocks | Total Tx | Success | Failed | Avg TPS | Block P50 | Mgas/s |"
         "|-----|--------|----------|---------|--------|---------|-----------|--------|"
-    ] | str join "\n")
+    ])
+    let summary = ($summary_lines | str join "\n")
 
     mut per_run_rows = ""
     for row in $run_data {
@@ -1030,6 +1032,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let summary_json = {
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
+        grafana_url: $grafana_url
         baseline_ref: $baseline_ref
         feature_ref: $feature_ref
         config: {
@@ -2185,7 +2188,7 @@ def "main bench" [
                 --txgen-tempo-bin $txgen.txgen_tempo_bin
                 --txgen-bench-bin $txgen.txgen_bench_bin
                 --rpc-urls "http://localhost:8545"
-                --metrics-url ["http://127.0.0.1:9090/metrics"]
+                --metrics-url ["http://127.0.0.1:9001/metrics"]
                 --genesis-path $run.genesis --datadir $run.datadir
                 --run-label $run.label --results-dir $results_dir
                 --tps $tps --duration $duration --accounts $accounts
