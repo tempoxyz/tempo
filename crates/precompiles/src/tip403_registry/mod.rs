@@ -257,20 +257,16 @@ impl TIP403Registry {
             admin: call.admin,
         })?;
 
-        self.emit_event(TIP403RegistryEvent::PolicyCreated(
-            ITIP403Registry::PolicyCreated {
-                policyId: new_policy_id,
-                updater: msg_sender,
-                policyType: policy_type.try_into().unwrap_or(PolicyType::__Invalid),
-            },
+        self.emit_event(TIP403RegistryEvent::policy_created(
+            new_policy_id,
+            msg_sender,
+            policy_type.try_into().unwrap_or(PolicyType::__Invalid),
         ))?;
 
-        self.emit_event(TIP403RegistryEvent::PolicyAdminUpdated(
-            ITIP403Registry::PolicyAdminUpdated {
-                policyId: new_policy_id,
-                updater: msg_sender,
-                admin: call.admin,
-            },
+        self.emit_event(TIP403RegistryEvent::policy_admin_updated(
+            new_policy_id,
+            msg_sender,
+            call.admin,
         ))?;
 
         Ok(new_policy_id)
@@ -319,23 +315,19 @@ impl TIP403Registry {
 
             match call.policyType {
                 PolicyType::WHITELIST => {
-                    self.emit_event(TIP403RegistryEvent::WhitelistUpdated(
-                        ITIP403Registry::WhitelistUpdated {
-                            policyId: new_policy_id,
-                            updater: msg_sender,
-                            account: *account,
-                            allowed: true,
-                        },
+                    self.emit_event(TIP403RegistryEvent::whitelist_updated(
+                        new_policy_id,
+                        msg_sender,
+                        *account,
+                        true,
                     ))?;
                 }
                 PolicyType::BLACKLIST => {
-                    self.emit_event(TIP403RegistryEvent::BlacklistUpdated(
-                        ITIP403Registry::BlacklistUpdated {
-                            policyId: new_policy_id,
-                            updater: msg_sender,
-                            account: *account,
-                            restricted: true,
-                        },
+                    self.emit_event(TIP403RegistryEvent::blacklist_updated(
+                        new_policy_id,
+                        msg_sender,
+                        *account,
+                        true,
                     ))?;
                 }
                 ITIP403Registry::PolicyType::COMPOUND | ITIP403Registry::PolicyType::__Invalid => {
@@ -345,20 +337,16 @@ impl TIP403Registry {
             }
         }
 
-        self.emit_event(TIP403RegistryEvent::PolicyCreated(
-            ITIP403Registry::PolicyCreated {
-                policyId: new_policy_id,
-                updater: msg_sender,
-                policyType: policy_type.try_into().unwrap_or(PolicyType::__Invalid),
-            },
+        self.emit_event(TIP403RegistryEvent::policy_created(
+            new_policy_id,
+            msg_sender,
+            policy_type.try_into().unwrap_or(PolicyType::__Invalid),
         ))?;
 
-        self.emit_event(TIP403RegistryEvent::PolicyAdminUpdated(
-            ITIP403Registry::PolicyAdminUpdated {
-                policyId: new_policy_id,
-                updater: msg_sender,
-                admin,
-            },
+        self.emit_event(TIP403RegistryEvent::policy_admin_updated(
+            new_policy_id,
+            msg_sender,
+            admin,
         ))?;
 
         Ok(new_policy_id)
@@ -390,12 +378,10 @@ impl TIP403Registry {
             },
         )?;
 
-        self.emit_event(TIP403RegistryEvent::PolicyAdminUpdated(
-            ITIP403Registry::PolicyAdminUpdated {
-                policyId: call.policyId,
-                updater: msg_sender,
-                admin: call.admin,
-            },
+        self.emit_event(TIP403RegistryEvent::policy_admin_updated(
+            call.policyId,
+            msg_sender,
+            call.admin,
         ))
     }
 
@@ -430,13 +416,11 @@ impl TIP403Registry {
 
         self.set_policy_set(call.policyId, call.account, call.allowed)?;
 
-        self.emit_event(TIP403RegistryEvent::WhitelistUpdated(
-            ITIP403Registry::WhitelistUpdated {
-                policyId: call.policyId,
-                updater: msg_sender,
-                account: call.account,
-                allowed: call.allowed,
-            },
+        self.emit_event(TIP403RegistryEvent::whitelist_updated(
+            call.policyId,
+            msg_sender,
+            call.account,
+            call.allowed,
         ))
     }
 
@@ -471,13 +455,11 @@ impl TIP403Registry {
 
         self.set_policy_set(call.policyId, call.account, call.restricted)?;
 
-        self.emit_event(TIP403RegistryEvent::BlacklistUpdated(
-            ITIP403Registry::BlacklistUpdated {
-                policyId: call.policyId,
-                updater: msg_sender,
-                account: call.account,
-                restricted: call.restricted,
-            },
+        self.emit_event(TIP403RegistryEvent::blacklist_updated(
+            call.policyId,
+            msg_sender,
+            call.account,
+            call.restricted,
         ))
     }
 
@@ -523,14 +505,12 @@ impl TIP403Registry {
         })?;
 
         // Emit event
-        self.emit_event(TIP403RegistryEvent::CompoundPolicyCreated(
-            ITIP403Registry::CompoundPolicyCreated {
-                policyId: new_policy_id,
-                creator: msg_sender,
-                senderPolicyId: call.senderPolicyId,
-                recipientPolicyId: call.recipientPolicyId,
-                mintRecipientPolicyId: call.mintRecipientPolicyId,
-            },
+        self.emit_event(TIP403RegistryEvent::compound_policy_created(
+            new_policy_id,
+            msg_sender,
+            call.senderPolicyId,
+            call.recipientPolicyId,
+            call.mintRecipientPolicyId,
         ))?;
 
         Ok(new_policy_id)
