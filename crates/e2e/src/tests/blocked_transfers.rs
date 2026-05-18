@@ -17,13 +17,13 @@ use eyre::OptionExt as _;
 use futures::future::join_all;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::{
-    ESCROW_ADDRESS, PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, TIP1028_GUARD_ADDRESS,
     tip20::{IRolesAuth, ISSUER_ROLE, ITIP20},
     tip20_factory::ITIP20Factory,
     tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID},
-    tip1028_escrow::{
-        BLOCKED_RECEIPT_VERSION,
-        ITIP1028Escrow::{self, ITIP1028EscrowErrors as TIP1028EscrowError},
+    tip1028_guard::{
+        BLOCKED_PROOF_VERSION,
+        ITIP1028Guard::{self, ITIP1028GuardErrors as TIP1028GuardError},
         InboundKind, RECOVERY_RECEIVER,
     },
 };
@@ -36,12 +36,12 @@ const GAS_PRICE: u128 = TEMPO_T1_BASE_FEE as u128;
 struct BlockedTransfer {
     token: Address,
     receiver: Address,
-    receipt: Bytes,
+    proof: Bytes,
 }
 
 #[test_traced]
-fn test_escrow_claim_no_recovery() {
-    run_escrow_test(1028, |http_url| async move {
+fn test_blocked_transfer_claim_no_recovery() {
+    run_tip1028_test(1028, |http_url| async move {
         let amount = U256::from(250);
         let blocked = create_blocked_transfer(
             http_url.clone(),
@@ -58,13 +58,13 @@ fn test_escrow_claim_no_recovery() {
         let other_provider = ProviderBuilder::new()
             .wallet(other_wallet)
             .connect_http(http_url.clone());
-        let other_escrow = ITIP1028Escrow::new(ESCROW_ADDRESS, other_provider);
-        let Err(result) = other_escrow
+        let other_tip1028 = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, other_provider);
+        let Err(result) = other_tip1028
             .claim(
                 blocked.token,
                 RECOVERY_RECEIVER,
-                BLOCKED_RECEIPT_VERSION,
-                blocked.receipt.clone(),
+                BLOCKED_PROOF_VERSION,
+                blocked.proof.clone(),
                 other,
             )
             .call()
@@ -73,12 +73,12 @@ fn test_escrow_claim_no_recovery() {
             panic!("expected recovery claim without recovery address to fail");
         };
         assert_eq!(
-            result.as_decoded_interface_error::<TIP1028EscrowError>(),
-            Some(TIP1028EscrowError::unauthorized_claimer())
+            result.as_decoded_interface_error::<TIP1028GuardError>(),
+            Some(TIP1028GuardError::unauthorized_claimer())
         );
         assert_eq!(
             token_view(http_url.clone(), blocked.token)
-                .balanceOf(ESCROW_ADDRESS)
+                .balanceOf(TIP1028_GUARD_ADDRESS)
                 .call()
                 .await?,
             amount
@@ -88,13 +88,13 @@ fn test_escrow_claim_no_recovery() {
         let receiver_provider = ProviderBuilder::new()
             .wallet(receiver_wallet)
             .connect_http(http_url.clone());
-        let receiver_escrow = ITIP1028Escrow::new(ESCROW_ADDRESS, receiver_provider);
-        let claim = receiver_escrow
+        let receiver_tip1028 = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, receiver_provider);
+        let claim = receiver_tip1028
             .claim(
                 blocked.token,
                 RECOVERY_RECEIVER,
-                BLOCKED_RECEIPT_VERSION,
-                blocked.receipt.clone(),
+                BLOCKED_PROOF_VERSION,
+                blocked.proof.clone(),
                 blocked.receiver,
             )
             .gas(GAS)
@@ -107,15 +107,18 @@ fn test_escrow_claim_no_recovery() {
 
         let token = token_view(http_url, blocked.token);
         assert_eq!(token.balanceOf(blocked.receiver).call().await?, amount);
-        assert_eq!(token.balanceOf(ESCROW_ADDRESS).call().await?, U256::ZERO);
+        assert_eq!(
+            token.balanceOf(TIP1028_GUARD_ADDRESS).call().await?,
+            U256::ZERO
+        );
 
         Ok(())
     });
 }
 
 #[test_traced]
-fn test_escrow_claim_with_recovery() {
-    run_escrow_test(1029, |http_url| async move {
+fn test_tip1028_claim_with_recovery() {
+    run_tip1028_test(1029, |http_url| async move {
         let amount = U256::from(400);
         let recovery = wallet(22)?.address();
         let destination = wallet(23)?.address();
@@ -132,13 +135,13 @@ fn test_escrow_claim_with_recovery() {
         let recovery_provider = ProviderBuilder::new()
             .wallet(wallet(22)?)
             .connect_http(http_url.clone());
-        let recovery_escrow = ITIP1028Escrow::new(ESCROW_ADDRESS, recovery_provider);
-        let claim = recovery_escrow
+        let recovery_tip1028 = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, recovery_provider);
+        let claim = recovery_tip1028
             .claim(
                 blocked.token,
                 recovery,
-                BLOCKED_RECEIPT_VERSION,
-                blocked.receipt,
+                BLOCKED_PROOF_VERSION,
+                blocked.proof,
                 destination,
             )
             .gas(GAS)
@@ -152,13 +155,16 @@ fn test_escrow_claim_with_recovery() {
         let token = token_view(http_url, blocked.token);
         assert_eq!(token.balanceOf(blocked.receiver).call().await?, U256::ZERO);
         assert_eq!(token.balanceOf(destination).call().await?, amount);
-        assert_eq!(token.balanceOf(ESCROW_ADDRESS).call().await?, U256::ZERO);
+        assert_eq!(
+            token.balanceOf(TIP1028_GUARD_ADDRESS).call().await?,
+            U256::ZERO
+        );
 
         Ok(())
     });
 }
 
-fn run_escrow_test<F, Fut>(seed: u64, test: F)
+fn run_tip1028_test<F, Fut>(seed: u64, test: F)
 where
     F: FnOnce(Url) -> Fut + Send + 'static,
     Fut: Future<Output = eyre::Result<()>> + Send + 'static,
@@ -257,7 +263,7 @@ async fn create_blocked_transfer(
         ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8
     );
 
-    let receipt: Bytes = ITIP1028Escrow::ClaimReceiptV1 {
+    let proof: Bytes = ITIP1028Guard::ClaimProofV1 {
         originator: blocked.from,
         recipient: blocked.recipient,
         blockedAt: blocked.blockedAt,
@@ -269,13 +275,13 @@ async fn create_blocked_transfer(
     .abi_encode()
     .into();
 
-    let escrow = ITIP1028Escrow::new(
-        ESCROW_ADDRESS,
+    let tip1028 = ITIP1028Guard::new(
+        TIP1028_GUARD_ADDRESS,
         ProviderBuilder::new().connect_http(http_url.clone()),
     );
     assert_eq!(
-        escrow
-            .blockedReceiptBalance(token, recovery, BLOCKED_RECEIPT_VERSION, receipt.clone())
+        tip1028
+            .balanceOf(token, recovery, BLOCKED_PROOF_VERSION, proof.clone())
             .call()
             .await?,
         amount,
@@ -285,12 +291,15 @@ async fn create_blocked_transfer(
     let token_view = token_view(http_url.clone(), token);
     assert_eq!(token_view.balanceOf(sender).call().await?, U256::ZERO);
     assert_eq!(token_view.balanceOf(receiver).call().await?, U256::ZERO);
-    assert_eq!(token_view.balanceOf(ESCROW_ADDRESS).call().await?, amount);
+    assert_eq!(
+        token_view.balanceOf(TIP1028_GUARD_ADDRESS).call().await?,
+        amount
+    );
 
     let blocked = BlockedTransfer {
         token,
         receiver,
-        receipt,
+        proof,
     };
 
     Ok(blocked)
@@ -303,8 +312,8 @@ where
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
     let receipt = factory
         .createToken_0(
-            "Escrow Test".to_string(),
-            "ETEST".to_string(),
+            "Token".to_string(),
+            "TKN".to_string(),
             "USD".to_string(),
             PATH_USD_ADDRESS,
             admin,
@@ -344,11 +353,11 @@ fn token_view(http_url: Url, token: Address) -> ITIP20::ITIP20Instance<impl Clon
     ITIP20::new(token, ProviderBuilder::new().connect_http(http_url))
 }
 
-fn transfer_blocked(receipt: &TransactionReceipt) -> eyre::Result<ITIP1028Escrow::TransferBlocked> {
+fn transfer_blocked(receipt: &TransactionReceipt) -> eyre::Result<ITIP1028Guard::TransferBlocked> {
     receipt
         .logs()
         .iter()
-        .filter_map(|log| ITIP1028Escrow::TransferBlocked::decode_log(&log.inner).ok())
+        .filter_map(|log| ITIP1028Guard::TransferBlocked::decode_log(&log.inner).ok())
         .map(|event| event.data)
         .next()
         .ok_or_eyre("TransferBlocked event missing")
