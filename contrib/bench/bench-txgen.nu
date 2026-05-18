@@ -2,111 +2,11 @@
 
 source ../../tempo.nu
 
-const TXGEN_ACCOUNT_MNEMONIC = "test test test test test test test test test test test junk"
-const TXGEN_DEFAULT_SEED = 99
-const TXGEN_SCRAPE_INTERVAL_MS = 500
-const TXGEN_DRAIN_TIMEOUT_SECS = 300
-const TXGEN_FUND_DRAIN_TIMEOUT_SECS = 120
-const TXGEN_TIP20_TEMPLATE = "contrib/bench/txgen/tip20-template.yaml"
-
-def shell-quote [value: any] {
-    let s = ($value | into string)
-    let escaped = ($s | str replace -a "'" "'\"'\"'")
-    $"'($escaped)'"
-}
-
-def shell-join [args: list<any>] {
-    $args | each { |arg| shell-quote $arg } | str join " "
-}
-
-def resolve-command-path [name: string] {
-    let path = (which $name | get -o 0.path | default "")
-    if $path == "" {
-        error make { msg: $"($name) not found in PATH" }
-    }
-    $path
-}
-
 def resolved-runtime-mode [mode: string] {
     if $mode == "e2e" {
         "dev"
     } else {
         $mode
-    }
-}
-
-def sanitize-bench-args [bench_args: string] {
-    if $bench_args == "" {
-        return ""
-    }
-
-    $bench_args
-        | str replace --all --regex '--existing-recipients=(true|false)' ''
-        | str trim
-}
-
-def resolve-bench-binary [repo_dir: string] {
-    let candidates = [
-        $"($repo_dir)/target/release/bench"
-        $"($repo_dir)/target/release/bench-cli"
-    ]
-
-    for candidate in $candidates {
-        if ($candidate | path exists) {
-            return $candidate
-        }
-    }
-
-    error make { msg: $"txgen bench binary not found under ($repo_dir)/target/release/" }
-}
-
-def resolve-txgen-paths [repo_dir: string, txgen_tempo_bin: string, txgen_bench_bin: string] {
-    let env_repo_dir = ($env.TXGEN_REPO_DIR? | default "")
-    let explicit_repo = $repo_dir != "" or $env_repo_dir != ""
-    let configured_repo = if $repo_dir != "" {
-        $repo_dir | path expand
-    } else if $env_repo_dir != "" {
-        $env_repo_dir | path expand
-    } else {
-        "../txgen" | path expand
-    }
-
-    if $explicit_repo and not ($configured_repo | path exists) {
-        error make { msg: $"txgen repo not found: ($configured_repo)" }
-    }
-    let repo = if ($configured_repo | path exists) { $configured_repo } else { "" }
-
-    let generator = if $txgen_tempo_bin != "" {
-        $txgen_tempo_bin | path expand
-    } else if ($env.TXGEN_TEMPO_BIN? | default "") != "" {
-        $env.TXGEN_TEMPO_BIN | path expand
-    } else if $repo != "" and ($"($repo)/target/release/txgen-tempo" | path exists) {
-        $"($repo)/target/release/txgen-tempo"
-    } else {
-        resolve-command-path "txgen-tempo"
-    }
-
-    let bench = if $txgen_bench_bin != "" {
-        $txgen_bench_bin | path expand
-    } else if ($env.TXGEN_BENCH_BIN? | default "") != "" {
-        $env.TXGEN_BENCH_BIN | path expand
-    } else if $repo != "" {
-        resolve-bench-binary $repo
-    } else {
-        resolve-command-path "bench"
-    }
-
-    if not ($generator | path exists) {
-        error make { msg: $"txgen-tempo binary not found: ($generator)" }
-    }
-    if not ($bench | path exists) {
-        error make { msg: $"txgen bench binary not found: ($bench)" }
-    }
-
-    {
-        repo_dir: $repo
-        txgen_tempo_bin: $generator
-        txgen_bench_bin: $bench
     }
 }
 
@@ -124,68 +24,6 @@ def normalize-tracy-mode [value: any] {
     }
 }
 
-def rpc-call [rpc_url: string, payload: string] {
-    let result = (^curl -sf -X POST -H "Content-Type: application/json" -d $payload $rpc_url | complete)
-    if $result.exit_code != 0 {
-        error make { msg: $"RPC call failed: ($payload)" }
-    }
-    let response = ($result.stdout | from json)
-    if (($response | get -o error) != null) {
-        let rpc_error = ($response | get error)
-        error make { msg: $"RPC error: ($rpc_error | to json -r)" }
-    }
-    $response
-}
-
-def fetch-chain-id [rpc_url: string] {
-    let response = (rpc-call $rpc_url '{"jsonrpc":"2.0","method":"eth_chainId","params":[],"id":1}')
-    $response.result | into int
-}
-
-def wait-for-txpool-drain [rpc_url: string, timeout_secs: int] {
-    mut zero_count = 0
-    mut waited = 0
-
-    while $waited < $timeout_secs {
-        let response = (rpc-call $rpc_url '{"jsonrpc":"2.0","method":"txpool_status","params":[],"id":1}')
-        let pending = ($response.result.pending | into int)
-
-        if $pending == 0 {
-            $zero_count = $zero_count + 1
-            if $zero_count >= 3 {
-                return
-            }
-        } else {
-            $zero_count = 0
-        }
-
-        sleep 1sec
-        $waited = $waited + 1
-    }
-
-    print $"  Warning: txpool drain timeout reached after ($timeout_secs)s"
-}
-
-def fund-txgen-accounts [txgen_bin: string, spec_path: string, rpc_url: string] {
-    let result = (^$txgen_bin addresses -s $spec_path -f shell | complete)
-    if $result.exit_code != 0 {
-        error make { msg: $"failed to list txgen addresses for ($spec_path)" }
-    }
-
-    let addresses = ($result.stdout | str trim | split row " " | where { |addr| $addr != "" })
-    if ($addresses | is-empty) {
-        error make { msg: $"txgen spec produced no addresses: ($spec_path)" }
-    }
-
-    print $"  Funding (($addresses | length)) txgen account\(s\)..."
-    $addresses | par-each { |address|
-        rpc-call $rpc_url $"{\"jsonrpc\":\"2.0\",\"method\":\"tempo_fundAddress\",\"params\":[\"($address)\"],\"id\":1}" | ignore
-    } | ignore
-
-    print "  Waiting for faucet transactions to drain..."
-    wait-for-txpool-drain $rpc_url $TXGEN_FUND_DRAIN_TIMEOUT_SECS
-}
-
 def run-txgen-bench-single [
     --tempo-bin: string
     --txgen-tempo-bin: string
@@ -198,7 +36,7 @@ def run-txgen-bench-single [
     --duration: int
     --accounts: int
     --max-concurrent-requests: int
-    --preset: string = ""
+    --preset-path: string
     --bench-args: string = ""
     --loud
     --node-args: string = ""
@@ -206,9 +44,12 @@ def run-txgen-bench-single [
     --bench-env: string = ""
     --bloat: int = 0
     --git-ref: string = ""
+    --git-ref-label: string = ""
     --build-profile: string = ""
     --benchmark-mode: string = ""
     --benchmark-id: string = ""
+    --platform: string = ""
+    --scenario: string = ""
     --reference-epoch: int = 0
     --samply
     --samply-args: list<string> = []
@@ -218,15 +59,6 @@ def run-txgen-bench-single [
     --tracy-offset: int = 0
     --tracing-otlp: string = ""
 ] {
-    if $preset != "tip20" {
-        error make { msg: $"txgen benchmark path currently supports only preset=tip20 \(got ($preset)\)" }
-    }
-
-    let ignored_bench_args = (sanitize-bench-args $bench_args)
-    if $ignored_bench_args != "" {
-        print $"  Warning: txgen path is ignoring unsupported bench args: ($ignored_bench_args)"
-    }
-
     print $"=== Starting txgen run: ($run_label) ==="
 
     let log_dir = $"($LOCALNET_DIR)/logs-($run_label)"
@@ -236,27 +68,6 @@ def run-txgen-bench-single [
     mkdir $log_dir
 
     let run_type = if ($run_label | str starts-with "baseline") { "baseline" } else { "feature" }
-    let run_start_epoch = (date now | into int) / 1_000_000_000
-    let labels = {
-        benchmark_run: $run_label
-        run_type: $run_type
-        git_ref: $git_ref
-        benchmark_id: $benchmark_id
-        run_start_epoch: $"($run_start_epoch)"
-        reference_epoch: $"($reference_epoch)"
-    }
-    let labels_file = $"($results_dir)/metrics-labels-($run_label).json"
-    $labels | to json | save -f $labels_file
-
-    let proxy_pid = if ($METRICS_PROXY_SCRIPT | path exists) {
-        let proxy_job = (job spawn {
-            python3 $METRICS_PROXY_SCRIPT --upstream "http://127.0.0.1:9001/" --port 9090 --labels $labels_file
-        })
-        sleep 500ms
-        $proxy_job
-    } else {
-        null
-    }
 
     let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
     let base_args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
@@ -302,58 +113,30 @@ def run-txgen-bench-single [
         true
     } else { false }
 
-    let chain_id = (fetch-chain-id "http://localhost:8545")
-    $env.TXGEN_ACCOUNTS = ($accounts | into string)
-    let spec_path = ($TXGEN_TIP20_TEMPLATE | path expand)
-    fund-txgen-accounts $txgen_tempo_bin $spec_path "http://localhost:8545"
-
     let report_path = $"($results_dir)/report-($run_label).json"
-    let tx_count = [($tps * $duration) 1] | math max
-    let txgen_cmd = [
-        $txgen_tempo_bin
-        "generate"
-        "-s" $spec_path
-        "-n" $tx_count
-        "--seed" $TXGEN_DEFAULT_SEED
-        "--rpc" "http://localhost:8545"
-    ]
-    let bench_cmd = [
-        $txgen_bench_bin
-        "send"
-        "--rpc-url" "http://localhost:8545"
-        "--tps" $tps
-        "--max-concurrent" $max_concurrent_requests
-        "--metrics-url" "http://127.0.0.1:9090/metrics"
-        "--scrape-interval-ms" $TXGEN_SCRAPE_INTERVAL_MS
-        "--drain-timeout" $TXGEN_DRAIN_TIMEOUT_SECS
-        "--report" $"json:($report_path)"
-        "-m" $"chain_id=($chain_id)"
-        "-m" $"target_tps=($tps)"
-        "-m" $"run_duration_secs=($duration)"
-        "-m" $"accounts=($accounts)"
-        "-m" $"total_connections=($max_concurrent_requests)"
-        "-m" "tip20_weight=1.0"
-        "-m" "place_order_weight=0.0"
-        "-m" "swap_weight=0.0"
-        "-m" "erc20_weight=0.0"
-        "-m" $"node_commit_sha=($git_ref)"
-        "-m" $"build_profile=($build_profile)"
-        "-m" $"mode=($benchmark_mode)"
-    ]
-    let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
-    let txgen_cmd_str = (shell-join $txgen_cmd)
-    let bench_cmd_str = (shell-join $bench_cmd)
-
-    print $"  Streaming ($tx_count) txgen transaction\(s\) into bench send..."
-    let pipeline = $"set -euo pipefail; ($bench_env_export)($txgen_cmd_str) | ($bench_cmd_str)"
-    try {
-        bash -lc $pipeline
-    } catch { |e|
-        print $"  txgen benchmark run ($run_label) failed: ($e.msg)"
-        error make { msg: $"txgen benchmark run ($run_label) failed" }
+    let bench_result = (txgen-run-preset-pipeline
+        --txgen-tempo-bin $txgen_tempo_bin
+        --txgen-bench-bin $txgen_bench_bin
+        --preset-path $preset_path
+        --generate-rpc-url "http://localhost:8545"
+        --submit-rpc-url "http://localhost:8545"
+        --metrics-url ["http://127.0.0.1:9001/metrics"]
+        --report-path $report_path
+        --tps $tps
+        --duration $duration
+        --accounts $accounts
+        --max-concurrent-requests $max_concurrent_requests
+        --bench-env $bench_env
+        --git-ref $git_ref
+        --build-profile $build_profile
+        --benchmark-mode $benchmark_mode
+        --git-ref-label $git_ref_label
+        --platform $platform
+        --scenario $scenario
+        --skip-funding=($bloat > 0))
+    if not $bench_result.ok {
+        error make { msg: $"txgen benchmark run ($run_label) failed with exit code ($bench_result.exit_code)" }
     }
-
-    print $"  Report saved: report-($run_label).json"
 
     if $tracy_capture_started {
         print "  Stopping tracy-capture..."
@@ -407,13 +190,6 @@ def run-txgen-bench-single [
         }
     }
 
-    if $proxy_pid != null {
-        let proxy_pids = (ps | where name =~ "bench-metrics-proxy" | get pid)
-        for pid in $proxy_pids {
-            kill -s 2 $pid
-        }
-    }
-
     if ("/tmp/reth.ipc" | path exists) {
         rm --force /tmp/reth.ipc
     }
@@ -456,17 +232,21 @@ def "main run" [
     --baseline-hardfork: string = ""
     --feature-hardfork: string = ""
     --gas-limit: string = ""
-    --txgen-repo-dir: string = ""
-    --txgen-tempo-bin: string = ""
-    --txgen-bench-bin: string = ""
+    --platform: string = "tempo"
+    --scenario: string = ""
 ] {
     let runtime_mode = (resolved-runtime-mode $mode)
     if $runtime_mode != "dev" {
         error make { msg: $"txgen benchmark path currently supports only dev/e2e mode \(got ($mode)\)" }
     }
-    if $preset != "tip20" {
-        error make { msg: $"txgen benchmark path currently supports only preset=tip20 \(got ($preset)\)" }
+    let preset_path = (txgen-preset-path $preset)
+    let resolved_scenario = if $scenario != "" {
+        $scenario
+    } else {
+        let tps_k = ($tps // 1000)
+        $"($preset)-($tps_k)k"
     }
+    txgen-validate-bench-args $bench_args
     if ($baseline != "" and $feature == "") or ($baseline == "" and $feature != "") {
         error make { msg: "--baseline and --feature must both be provided for txgen comparison mode" }
     }
@@ -474,7 +254,7 @@ def "main run" [
         error make { msg: "txgen benchmark path currently supports comparison mode only" }
     }
 
-    let txgen = (resolve-txgen-paths $txgen_repo_dir $txgen_tempo_bin $txgen_bench_bin)
+    let txgen = (txgen-resolve-binaries)
 
     if $force and ($LOCALNET_DIR | path exists) {
         print "Removing existing localnet data (--force)..."
@@ -499,6 +279,11 @@ def "main run" [
 
     let baseline_sha = if $baseline == "local" { "local" } else { resolve-git-ref $baseline }
     let feature_sha = if $feature == "local" { "local" } else { resolve-git-ref $feature }
+
+    # Resolve git-ref label: tag > branch > original input
+    let baseline_ref_label = if $baseline == "local" { "local" } else { resolve-git-ref-label $baseline_sha $baseline }
+    let feature_ref_label = if $feature == "local" { "local" } else { resolve-git-ref-label $feature_sha $feature }
+
     let baseline_label = if $baseline == "local" { "local (working tree)" } else { $"($baseline) → ($baseline_sha)" }
     let feature_label = if $feature == "local" { "local (working tree)" } else { $"($feature) → ($feature_sha)" }
     print $"Baseline: ($baseline_label)"
@@ -566,7 +351,8 @@ def "main run" [
     let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
     let genesis_accounts = ([$accounts 3] | math max) + 1
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
-    let txgen_genesis_args = ["--mnemonic" $TXGEN_ACCOUNT_MNEMONIC]
+    let txgen_mnemonic = (txgen-account-mnemonic)
+    let txgen_genesis_args = ["--mnemonic" $txgen_mnemonic]
 
     bench-mount
 
@@ -586,7 +372,7 @@ def "main run" [
             and $marker != null
             and ($marker.bloat_mib | into int) == $bloat
             and ($marker.accounts | into int) == $genesis_accounts
-            and ($marker | get -o txgen_mnemonic | default "") == $TXGEN_ACCOUNT_MNEMONIC
+            and ($marker | get -o txgen_mnemonic | default "") == $txgen_mnemonic
             and ($marker | get -o baseline_hardfork | default "") == ($baseline_hardfork | str upcase)
             and ($marker | get -o feature_hardfork | default "") == ($feature_hardfork | str upcase)
             and ($marker | get -o gas_limit | default "") == $gas_limit
@@ -654,7 +440,7 @@ def "main run" [
                 bloat_mib: $bloat
                 accounts: $genesis_accounts
                 bench_datadir: $datadir
-                txgen_mnemonic: $TXGEN_ACCOUNT_MNEMONIC
+                txgen_mnemonic: $txgen_mnemonic
                 baseline_hardfork: ($baseline_hardfork | str upcase)
                 feature_hardfork: ($feature_hardfork | str upcase)
                 gas_limit: $gas_limit
@@ -668,7 +454,7 @@ def "main run" [
             and $marker != null
             and ($marker.bloat_mib | into int) == $bloat
             and ($marker.accounts | into int) == $genesis_accounts
-            and ($marker | get -o txgen_mnemonic | default "") == $TXGEN_ACCOUNT_MNEMONIC
+            and ($marker | get -o txgen_mnemonic | default "") == $txgen_mnemonic
             and ($marker | get -o gas_limit | default "") == $gas_limit
             and ($"($datadir)/db" | path exists)
             and ($"($meta_dir)/genesis.json" | path exists)
@@ -708,7 +494,7 @@ def "main run" [
                 bloat_mib: $bloat
                 accounts: $genesis_accounts
                 bench_datadir: $datadir
-                txgen_mnemonic: $TXGEN_ACCOUNT_MNEMONIC
+                txgen_mnemonic: $txgen_mnemonic
                 gas_limit: $gas_limit
             } [[$genesis_path_std "genesis.json"]] $bloat $bloat_file
         }
@@ -731,17 +517,17 @@ def "main run" [
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
     let runs = if $dual_hardfork {
         [
-            { label: "baseline-1", tempo: $baseline_tempo, git_ref: $baseline_sha, genesis: $"($abs_localnet)/genesis-baseline.json", datadir: $"($datadir)/baseline-db" }
-            { label: "feature-1", tempo: $feature_tempo, git_ref: $feature_sha, genesis: $"($abs_localnet)/genesis-feature.json", datadir: $"($datadir)/feature-db" }
-            { label: "feature-2", tempo: $feature_tempo, git_ref: $feature_sha, genesis: $"($abs_localnet)/genesis-feature.json", datadir: $"($datadir)/feature-db" }
-            { label: "baseline-2", tempo: $baseline_tempo, git_ref: $baseline_sha, genesis: $"($abs_localnet)/genesis-baseline.json", datadir: $"($datadir)/baseline-db" }
+            { label: "baseline-1", tempo: $baseline_tempo, git_ref: $baseline_sha, git_ref_label: $baseline_ref_label, genesis: $"($abs_localnet)/genesis-baseline.json", datadir: $"($datadir)/baseline-db" }
+            { label: "feature-1", tempo: $feature_tempo, git_ref: $feature_sha, git_ref_label: $feature_ref_label, genesis: $"($abs_localnet)/genesis-feature.json", datadir: $"($datadir)/feature-db" }
+            { label: "feature-2", tempo: $feature_tempo, git_ref: $feature_sha, git_ref_label: $feature_ref_label, genesis: $"($abs_localnet)/genesis-feature.json", datadir: $"($datadir)/feature-db" }
+            { label: "baseline-2", tempo: $baseline_tempo, git_ref: $baseline_sha, git_ref_label: $baseline_ref_label, genesis: $"($abs_localnet)/genesis-baseline.json", datadir: $"($datadir)/baseline-db" }
         ]
     } else {
         [
-            { label: "baseline-1", tempo: $baseline_tempo, git_ref: $baseline_sha, genesis: $genesis_path, datadir: $datadir }
-            { label: "feature-1", tempo: $feature_tempo, git_ref: $feature_sha, genesis: $genesis_path, datadir: $datadir }
-            { label: "feature-2", tempo: $feature_tempo, git_ref: $feature_sha, genesis: $genesis_path, datadir: $datadir }
-            { label: "baseline-2", tempo: $baseline_tempo, git_ref: $baseline_sha, genesis: $genesis_path, datadir: $datadir }
+            { label: "baseline-1", tempo: $baseline_tempo, git_ref: $baseline_sha, git_ref_label: $baseline_ref_label, genesis: $genesis_path, datadir: $datadir }
+            { label: "feature-1", tempo: $feature_tempo, git_ref: $feature_sha, git_ref_label: $feature_ref_label, genesis: $genesis_path, datadir: $datadir }
+            { label: "feature-2", tempo: $feature_tempo, git_ref: $feature_sha, git_ref_label: $feature_ref_label, genesis: $genesis_path, datadir: $datadir }
+            { label: "baseline-2", tempo: $baseline_tempo, git_ref: $baseline_sha, git_ref_label: $baseline_ref_label, genesis: $genesis_path, datadir: $datadir }
         ]
     }
 
@@ -764,7 +550,7 @@ def "main run" [
             --duration $duration
             --accounts $accounts
             --max-concurrent-requests $max_concurrent_requests
-            --preset $preset
+            --preset-path $preset_path
             --bench-args $bench_args
             --loud=$loud
             --node-args $effective_node_args
@@ -772,6 +558,7 @@ def "main run" [
             --extra-env $side_env
             --bench-env $bench_env
             --git-ref $run.git_ref
+            --git-ref-label $run.git_ref_label
             --build-profile $profile
             --benchmark-mode $mode
             --benchmark-id $benchmark_id
@@ -782,7 +569,9 @@ def "main run" [
             --tracy-filter $tracy_filter
             --tracy-seconds $tracy_seconds
             --tracy-offset $tracy_offset
-            --tracing-otlp $tracing_otlp)
+            --tracing-otlp $tracing_otlp
+            --platform $platform
+            --scenario $resolved_scenario)
     }
 
     let summary_baseline = if $dual_hardfork { $"($baseline) \(($baseline_hardfork | str upcase)\)" } else { $baseline }

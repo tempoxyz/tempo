@@ -3,8 +3,8 @@
 pub use IAccountKeychain::{
     IAccountKeychainErrors as AccountKeychainError, IAccountKeychainEvents as AccountKeychainEvent,
     authorizeKey_0Call as legacyAuthorizeKeyCall, authorizeKey_1Call as authorizeKeyCall,
-    getAllowedCallsReturn, getRemainingLimitWithPeriodCall,
-    getRemainingLimitWithPeriodReturn as getRemainingLimitReturn,
+    authorizeKey_2Call as authorizeKeyWithWitnessCall, getAllowedCallsReturn,
+    getRemainingLimitWithPeriodCall, getRemainingLimitWithPeriodReturn as getRemainingLimitReturn,
 };
 
 crate::sol! {
@@ -92,6 +92,12 @@ crate::sol! {
             uint256 remainingLimit
         );
 
+        /// Emitted when a key authorization carries a TIP-1053 witness.
+        event KeyAuthorizationWitness(address indexed account, bytes32 indexed witness);
+
+        /// Emitted when a TIP-1053 key-authorization witness is manually burned.
+        event KeyAuthorizationWitnessBurned(address indexed account, bytes32 indexed witness);
+
         /// Legacy authorize-key entrypoint used before T3.
         function authorizeKey(
             address keyId,
@@ -110,6 +116,19 @@ crate::sol! {
             SignatureType signatureType,
             KeyRestrictions calldata config
         ) external;
+
+        /// Authorize a new key with a TIP-1053 witness.
+        /// @dev The witness must not be burned for the caller's account. bytes32(0) is valid.
+        function authorizeKey(
+            address keyId,
+            SignatureType signatureType,
+            KeyRestrictions calldata config,
+            bytes32 witness
+        ) external;
+
+        /// Burn a TIP-1053 key-authorization witness without authorizing a key.
+        /// @dev Callable by the account root key or an active access key.
+        function burnKeyAuthorizationWitness(bytes32 witness) external;
 
         /// Revoke an authorized key
         /// @param publicKey The public key to revoke
@@ -176,6 +195,9 @@ crate::sol! {
             address keyId
         ) external view returns (bool isScoped, CallScope[] memory scopes);
 
+        /// Returns whether a TIP-1053 key-authorization witness has been manually burned.
+        function isKeyAuthorizationWitnessBurned(address account, bytes32 witness) external view returns (bool);
+
         /// Get the key used in the current transaction
         /// @return The keyId used in the current transaction
         function getTransactionKey() external view returns (address);
@@ -194,84 +216,8 @@ crate::sol! {
         error SignatureTypeMismatch(uint8 expected, uint8 actual);
         error CallNotAllowed();
         error InvalidCallScope();
+        error InvalidKeyAuthorizationWitness();
+        error KeyAuthorizationWitnessAlreadyBurned();
         error LegacyAuthorizeKeySelectorChanged(bytes4 newSelector);
-    }
-}
-
-impl AccountKeychainError {
-    /// Creates an error for signature type mismatch.
-    pub const fn signature_type_mismatch(expected: u8, actual: u8) -> Self {
-        Self::SignatureTypeMismatch(IAccountKeychain::SignatureTypeMismatch { expected, actual })
-    }
-
-    /// Creates an error for unauthorized caller.
-    pub const fn unauthorized_caller() -> Self {
-        Self::UnauthorizedCaller(IAccountKeychain::UnauthorizedCaller {})
-    }
-
-    /// Creates an error for key already exists.
-    pub const fn key_already_exists() -> Self {
-        Self::KeyAlreadyExists(IAccountKeychain::KeyAlreadyExists {})
-    }
-
-    /// Creates an error for key not found.
-    pub const fn key_not_found() -> Self {
-        Self::KeyNotFound(IAccountKeychain::KeyNotFound {})
-    }
-
-    /// Creates an error for key expired.
-    pub const fn key_expired() -> Self {
-        Self::KeyExpired(IAccountKeychain::KeyExpired {})
-    }
-
-    /// Creates an error for spending limit exceeded.
-    pub const fn spending_limit_exceeded() -> Self {
-        Self::SpendingLimitExceeded(IAccountKeychain::SpendingLimitExceeded {})
-    }
-
-    /// Creates an error for spending limits that exceed the TIP-20 u128 supply cap.
-    pub const fn invalid_spending_limit() -> Self {
-        Self::InvalidSpendingLimit(IAccountKeychain::InvalidSpendingLimit {})
-    }
-
-    /// Creates an error for invalid signature type.
-    pub const fn invalid_signature_type() -> Self {
-        Self::InvalidSignatureType(IAccountKeychain::InvalidSignatureType {})
-    }
-
-    /// Creates an error for zero public key.
-    pub const fn zero_public_key() -> Self {
-        Self::ZeroPublicKey(IAccountKeychain::ZeroPublicKey {})
-    }
-
-    /// Creates an error for expiry timestamp in the past.
-    pub const fn expiry_in_past() -> Self {
-        Self::ExpiryInPast(IAccountKeychain::ExpiryInPast {})
-    }
-
-    /// Creates an error for when a key_id has already been revoked.
-    /// Once revoked, a key_id can never be re-authorized for the same account.
-    /// This prevents replay attacks where a revoked key's authorization is reused.
-    pub const fn key_already_revoked() -> Self {
-        Self::KeyAlreadyRevoked(IAccountKeychain::KeyAlreadyRevoked {})
-    }
-
-    /// Creates an error for disallowed call attempts by scoped access keys.
-    pub const fn call_not_allowed() -> Self {
-        Self::CallNotAllowed(IAccountKeychain::CallNotAllowed {})
-    }
-
-    /// Creates an error for invalid scope configuration.
-    pub const fn invalid_call_scope() -> Self {
-        Self::InvalidCallScope(IAccountKeychain::InvalidCallScope {})
-    }
-
-    /// Creates an error for the legacy authorize-key selector being unavailable on T3+.
-    pub fn legacy_authorize_key_selector_changed(new_selector: [u8; 4]) -> Self {
-        Self::LegacyAuthorizeKeySelectorChanged(
-            IAccountKeychain::LegacyAuthorizeKeySelectorChanged {
-                newSelector: new_selector.into(),
-            },
-        )
     }
 }

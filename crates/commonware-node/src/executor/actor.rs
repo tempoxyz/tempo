@@ -11,7 +11,7 @@ use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_runtime::{Clock, ContextCell, FutureExt, Handle, Pacer, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
-use eyre::{Report, WrapErr as _, ensure};
+use eyre::{Report, WrapErr as _, ensure, eyre};
 use futures::{
     FutureExt as _, StreamExt as _,
     channel::{
@@ -468,7 +468,7 @@ where
         if new_canonicalized == self.last_canonicalized
             && let JustCanonicalizeOrAlsoBuild::JustCanonicalize { response } = maybe_build
         {
-            info!("would not change forkchoice state; not sending it to the execution layer");
+            debug!("would not change forkchoice state; not sending it to the execution layer");
             let _ = response.send(Ok(()));
             return;
         }
@@ -480,14 +480,13 @@ where
             finalized_block_height = %new_canonicalized.finalized_height,
             "sending forkchoice-update",
         );
+
+        let attrs = maybe_build.attributes().cloned();
         let fcu_response = match self
             .execution_node
             .add_ons_handle
             .beacon_engine_handle
-            .fork_choice_updated(
-                new_canonicalized.forkchoice,
-                maybe_build.attributes().cloned(),
-            )
+            .fork_choice_updated(new_canonicalized.forkchoice, attrs)
             .pace(&self.context, Duration::from_millis(20))
             .await
             .wrap_err("failed requesting execution layer to update forkchoice state")
@@ -519,9 +518,12 @@ where
             JustCanonicalizeOrAlsoBuild::AlsoBuild { response, .. } => {
                 if let Some(payload_id) = fcu_response.payload_id {
                     let _ = response.send(Ok(payload_id));
+                } else {
+                    let _ = response.send(Err(eyre!("no payload id for the build request")));
                 }
             }
         }
+
         self.last_canonicalized = new_canonicalized;
         self.reset_fcu_heartbeat_timer();
     }
