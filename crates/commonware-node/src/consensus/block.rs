@@ -7,7 +7,7 @@ use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{B256, Bytes};
 use alloy_rlp::Encodable as _;
 use bytes::{Buf, BufMut, Bytes as WireBytes};
-use commonware_codec::{EncodeSize, Error, RangeCfg, Read, Write};
+use commonware_codec::{EncodeSize, RangeCfg, Read, Write};
 use commonware_consensus::{
     Heightable,
     simplex::types::Context,
@@ -120,7 +120,7 @@ impl Read for Block {
             })?;
 
         let block_access_list = if inner.block_access_list_hash().is_some() {
-            Option::<WireBytes>::read_cfg(buf, &RangeCfg::from(..))?
+            Some(WireBytes::read_cfg(buf, &RangeCfg::from(..))?)
         } else {
             None
         };
