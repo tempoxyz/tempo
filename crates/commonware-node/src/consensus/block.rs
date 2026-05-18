@@ -86,7 +86,11 @@ impl Write for Block {
     fn write(&self, buf: &mut impl BufMut) {
         self.execution_block.encode(buf);
         if self.execution_block.block_access_list_hash().is_some() {
-            self.block_access_list.write(buf);
+            let block_access_list = self
+                .block_access_list
+                .as_ref()
+                .expect("BAL bytes must be present when header contains a BAL hash");
+            block_access_list.write(buf);
         }
     }
 }
@@ -138,7 +142,10 @@ impl EncodeSize for Block {
     fn encode_size(&self) -> usize {
         self.execution_block.length()
             + if self.execution_block.block_access_list_hash().is_some() {
-                self.block_access_list.encode_size()
+                self.block_access_list
+                    .as_ref()
+                    .expect("BAL bytes must be present when header contains a BAL hash")
+                    .encode_size()
             } else {
                 0
             }
