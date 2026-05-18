@@ -108,10 +108,14 @@ fn get_falls_back_to_reth_on_prunable_miss() {
         let (mut hybrid, provider) = SetupHybrid::default().build(&context).await;
 
         // Seed reth with an "old" block that the prunable archive will
-        // never know about.
+        // never know about. Advance reth's finalized watermark so the
+        // by-height fallback path is allowed to return the seeded
+        // block (the production provider gates `block_by_height` on
+        // the finalized watermark).
         let chain = make_chain(1, 5);
         let only_in_reth = &chain[0];
         provider.add_block(only_in_reth);
+        provider.set_reth_finalized(only_in_reth.height().get());
 
         // Also put one block into the prunable archive so we can assert
         // the prunable hit path was tried first.
@@ -135,6 +139,57 @@ fn get_falls_back_to_reth_on_prunable_miss() {
             .expect("get by digest")
             .expect("present in reth");
         assert_eq!(fetched, *only_in_reth);
+    });
+}
+
+#[test_traced]
+fn get_by_height_skips_reth_blocks_above_reth_finalized_watermark() {
+    // The reth provider seeded a canonical-but-not-yet-finalized
+    // block; the marshal must never see it. `block_by_height` is
+    // gated on reth's finalized watermark — heights above it (and
+    // every height when the watermark is unset) miss, regardless of
+    // what is in reth's canonical chain.
+    let executor = deterministic::Runner::default();
+    executor.start(|context| async move {
+        let (hybrid, provider) = SetupHybrid::default().build(&context).await;
+
+        // Seed reth with a block at height 10 but leave reth's
+        // finalized watermark unset (fresh chain) so the by-height
+        // fallback is not allowed to surface it.
+        let block = make_chain(10, 1).pop().unwrap();
+        provider.add_block(&block);
+
+        let result = hybrid
+            .get(Identifier::Index(block.height().get()))
+            .await
+            .expect("get by index");
+        assert!(
+            result.is_none(),
+            "by-height fallback must miss when reth has not finalized anything",
+        );
+
+        // Now advance reth's finalized watermark, but only up to
+        // height 9 — still below the seeded block. The fallback must
+        // still miss.
+        provider.set_reth_finalized(block.height().get() - 1);
+        let result = hybrid
+            .get(Identifier::Index(block.height().get()))
+            .await
+            .expect("get by index");
+        assert!(
+            result.is_none(),
+            "by-height fallback must miss when reth's finalized watermark is below the requested height",
+        );
+
+        // Finally, advance the watermark to cover the block — now the
+        // fallback is allowed to return it.
+        provider.set_reth_finalized(block.height().get());
+        let fetched = hybrid
+            .get(Identifier::Index(block.height().get()))
+            .await
+            .expect("get by index")
+            .expect("present in reth at or below the finalized watermark");
+        assert_eq!(fetched, block);
     });
 }
 

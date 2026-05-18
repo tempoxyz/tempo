@@ -160,6 +160,17 @@ impl FinalizedBlocksProvider for StubProvider {
         if let Some(err) = self.err_if_failing() {
             return err;
         }
+        // Mirror the production [`BlockchainProvider`] impl: only
+        // blocks at or below reth's finalized watermark are reachable.
+        // Heights above the watermark (or every height when the
+        // watermark is unset) miss, regardless of what was seeded via
+        // [`Self::add_block`].
+        let Some(finalized) = *self.reth_finalized.lock() else {
+            return Ok(None);
+        };
+        if height > finalized {
+            return Ok(None);
+        }
         Ok(self.by_number.lock().get(&height).cloned())
     }
 

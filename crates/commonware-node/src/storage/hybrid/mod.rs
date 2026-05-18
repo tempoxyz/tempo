@@ -150,6 +150,11 @@ pub(crate) trait FinalizedBlocksProvider: Send + Sync {
     fn finalized_height(&self) -> Option<u64>;
 
     /// Look up a finalized block by height in reth.
+    ///
+    /// Implementations MUST return `None` for any `height` above
+    /// [`Self::finalized_height`] (and unconditionally when
+    /// [`Self::finalized_height`] is `None`); the marshal relies on
+    /// [`Hybrid`] only serving blocks reth has marked as finalized.
     fn block_by_height(&self, height: u64) -> ProviderResult<Option<Block>>;
 
     /// Look up a finalized block by hash in reth.
@@ -182,6 +187,20 @@ where
     }
 
     fn block_by_height(&self, height: u64) -> ProviderResult<Option<Block>> {
+        // Gate the lookup on reth's finalized watermark so the marshal can
+        // never be served a block that reth has not yet marked as
+        // finalized. Without this, the canonical-by-number read would
+        // happily return a block that is canonical-but-not-yet-finalized
+        // (or even a block reth has accepted past its finalized tip),
+        // violating [`Blocks`]'s "finalized only" contract.
+        let Some(finalized) = self.finalized_height() else {
+            // Reth has not finalized anything yet — nothing below the
+            // (nonexistent) finalized watermark is reachable.
+            return Ok(None);
+        };
+        if height > finalized {
+            return Ok(None);
+        }
         Ok(self
             .block_by_number(height)?
             .map(|block| Block::from_execution_block(SealedBlock::seal_slow(block))))
