@@ -310,13 +310,11 @@ impl AccountKeychain {
         }
 
         // Emit event
-        self.emit_event(AccountKeychainEvent::KeyAuthorized(
-            IAccountKeychain::KeyAuthorized {
-                account: msg_sender,
-                publicKey: key_id,
-                signatureType: signature_type,
-                expiry: config.expiry,
-            },
+        self.emit_event(AccountKeychainEvent::key_authorized(
+            msg_sender,
+            key_id,
+            signature_type,
+            config.expiry,
         ))?;
 
         Ok(())
@@ -361,12 +359,7 @@ impl AccountKeychain {
         // Note: We don't clear spending limits here - they become inaccessible
 
         // Emit event
-        self.emit_event(AccountKeychainEvent::KeyRevoked(
-            IAccountKeychain::KeyRevoked {
-                account: msg_sender,
-                publicKey: call.keyId,
-            },
-        ))
+        self.emit_event(AccountKeychainEvent::key_revoked(msg_sender, call.keyId))
     }
 
     /// Updates the spending limit for a key-token pair. Can also convert an unlimited key into a
@@ -410,13 +403,11 @@ impl AccountKeychain {
         }
 
         // Emit event
-        self.emit_event(AccountKeychainEvent::SpendingLimitUpdated(
-            IAccountKeychain::SpendingLimitUpdated {
-                account: msg_sender,
-                publicKey: call.keyId,
-                token: call.token,
-                newLimit: call.newLimit,
-            },
+        self.emit_event(AccountKeychainEvent::spending_limit_updated(
+            msg_sender,
+            call.keyId,
+            call.token,
+            call.newLimit,
         ))
     }
 
@@ -1255,14 +1246,12 @@ impl AccountKeychain {
                 .write(new_remaining)?;
         }
 
-        self.emit_event(AccountKeychainEvent::AccessKeySpend(
-            IAccountKeychain::AccessKeySpend {
-                account,
-                publicKey: key_id,
-                token,
-                amount,
-                remainingLimit: new_remaining,
-            },
+        self.emit_event(AccountKeychainEvent::access_key_spend(
+            account,
+            key_id,
+            token,
+            amount,
+            new_remaining,
         ))?;
 
         Ok(())

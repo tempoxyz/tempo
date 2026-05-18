@@ -3,7 +3,10 @@
 #![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+// auto-generated sol! builders for events/errors with many fields trigger this
+#![allow(clippy::too_many_arguments)]
 
+#[cfg(test)]
 extern crate alloc;
 
 use alloy_primitives::{Address, B256, address, b256};
