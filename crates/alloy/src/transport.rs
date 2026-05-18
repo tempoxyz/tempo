@@ -14,7 +14,9 @@
 
 use alloy_consensus::transaction::SignerRecoverable;
 use alloy_eips::Decodable2718;
-use alloy_json_rpc::{Request, RequestPacket, ResponsePacket, ResponsePayload, SerializedRequest};
+use alloy_json_rpc::{
+    Request, RequestPacket, ResponsePacket, ResponsePayload, RpcError, SerializedRequest,
+};
 use alloy_primitives::hex;
 use alloy_rpc_client::BuiltInConnectionString;
 use alloy_transport::{
@@ -237,13 +239,14 @@ where
     match mode {
         SponsorshipMode::SignAndRelay => relay.call(RequestPacket::Single(request)).await,
         SponsorshipMode::SignOnly => {
+            let unsigned_tx = decode_unsigned_tempo_aa(raw_tx)?;
             let sign_request = tx_request_with_metadata(SIGN_RAW_TX, raw_tx, &request)?;
             let signed_tx: String = match relay.call(RequestPacket::Single(sign_request)).await? {
                 ResponsePacket::Single(response) => match response.payload {
                     ResponsePayload::Success(payload) => serde_json::from_str(payload.get())
                         .map_err(TransportErrorKind::non_retryable)?,
                     ResponsePayload::Failure(err) => {
-                        return Err(TransportErrorKind::custom_str(&err.message));
+                        return Err(RpcError::ErrorResp(err));
                     }
                 },
                 ResponsePacket::Batch(_) => {
@@ -253,7 +256,8 @@ where
                 }
             };
 
-            validate_signed_tempo_aa(&signed_tx)?;
+            let signed_tx_envelope = validate_signed_tempo_aa(&signed_tx)?;
+            validate_sponsor_signed_same_payload(&unsigned_tx, &signed_tx_envelope)?;
             let send_request = tx_request_with_metadata(SEND_RAW_TX, &signed_tx, &request)?;
             default.call(RequestPacket::Single(send_request)).await
         }
@@ -318,6 +322,29 @@ fn decode_unsigned_tempo_aa(raw_tx: &str) -> Result<AASigned, TransportError> {
             "raw transaction is missing fee-payer signature placeholder",
         )),
     }
+}
+
+/// Validate that the sponsor only replaced the fee-payer signature.
+fn validate_sponsor_signed_same_payload(
+    unsigned: &AASigned,
+    signed: &AASigned,
+) -> Result<(), TransportError> {
+    if unsigned.signature() != signed.signature() {
+        return Err(TransportErrorKind::custom_str(
+            "sponsor returned transaction with different user signature",
+        ));
+    }
+
+    // Normalize the sponsor response to validate all tx fields.
+    let mut signed_tx = signed.tx().clone();
+    signed_tx.fee_payer_signature = Some(FEE_PAYER_SIGNATURE_MARKER);
+    if unsigned.tx() != &signed_tx {
+        return Err(TransportErrorKind::custom_str(
+            "sponsor returned transaction with different payload",
+        ));
+    }
+
+    Ok(())
 }
 
 fn decode_tempo_aa(raw_tx: &str, non_aa_error: &'static str) -> Result<AASigned, TransportError> {
@@ -495,7 +522,7 @@ mod tests {
     const USER_PK: &str = "0x59c6995e998f97a5a0044966f0945389dc9e86dae88c7a8412f4603b6b78690d";
     const FEE_PAYER_PK: &str = "0x5de4111afa1a4b94908f83103eb1f1706367c2e68ca870fc3fb9a804cdab365a";
 
-    fn signed_tempo_aa_raw_tx(fee_payer_signed: bool) -> String {
+    fn signed_tempo_aa_raw_tx_with_nonce(fee_payer_signed: bool, nonce: u64) -> String {
         let user: alloy_signer_local::PrivateKeySigner = USER_PK.parse().unwrap();
         let fee_payer: alloy_signer_local::PrivateKeySigner = FEE_PAYER_PK.parse().unwrap();
         let mut tx = TempoTransaction {
@@ -508,7 +535,7 @@ mod tests {
                 value: U256::ZERO,
                 input: Bytes::new(),
             }],
-            nonce: 1,
+            nonce,
             fee_payer_signature: Some(FEE_PAYER_SIGNATURE_MARKER),
             ..Default::default()
         };
@@ -530,7 +557,7 @@ mod tests {
 
     #[test]
     fn decodes_unsigned_tempo_aa_raw_transaction_for_sdk_users() {
-        let raw_tx = signed_tempo_aa_raw_tx(false);
+        let raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
         let user: alloy_signer_local::PrivateKeySigner = USER_PK.parse().unwrap();
 
         let tx = decode_unsigned_tempo_aa(&raw_tx).unwrap();
@@ -545,7 +572,7 @@ mod tests {
 
     #[test]
     fn decode_unsigned_tempo_aa_raw_transaction_rejects_fee_payer_signed_tx() {
-        let err = decode_unsigned_tempo_aa(&signed_tempo_aa_raw_tx(true))
+        let err = decode_unsigned_tempo_aa(&signed_tempo_aa_raw_tx_with_nonce(true, 1))
             .expect_err("fee-payer signed tx should be rejected");
 
         assert!(err.to_string().contains("already fee-payer signed"));
@@ -584,7 +611,7 @@ mod tests {
 
     #[tokio::test]
     async fn send_raw_tx_forwards_original_to_relay_only() {
-        let raw_tx = signed_tempo_aa_raw_tx(false);
+        let raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
         let default = RecordingTransport::default();
         let relay = RecordingTransport::default();
         relay.push_success(&alloy_primitives::B256::ZERO);
@@ -621,7 +648,7 @@ mod tests {
         assert!(
             tower::Service::call(
                 &mut transport,
-                make_send_raw_tx_request(&signed_tempo_aa_raw_tx(true))
+                make_send_raw_tx_request(&signed_tempo_aa_raw_tx_with_nonce(true, 1))
             )
             .await
             .is_err()
@@ -632,8 +659,8 @@ mod tests {
 
     #[tokio::test]
     async fn sign_only_gets_sponsor_signature_then_broadcasts_to_default() {
-        let unsigned_raw_tx = signed_tempo_aa_raw_tx(false);
-        let signed_raw_tx = signed_tempo_aa_raw_tx(true);
+        let unsigned_raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
+        let signed_raw_tx = signed_tempo_aa_raw_tx_with_nonce(true, 1);
         let default = RecordingTransport::default();
         let relay = RecordingTransport::default();
         relay.push_success(&signed_raw_tx);
@@ -655,7 +682,7 @@ mod tests {
 
     #[tokio::test]
     async fn sign_only_rejects_sponsor_response_without_fee_payer_signature() {
-        let unsigned_raw_tx = signed_tempo_aa_raw_tx(false);
+        let unsigned_raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
         let default = RecordingTransport::default();
         let relay = RecordingTransport::default();
         relay.push_success(&unsigned_raw_tx);
@@ -672,6 +699,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sign_only_rejects_sponsor_response_with_different_payload() {
+        let unsigned_raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
+        let different_signed_raw_tx = signed_tempo_aa_raw_tx_with_nonce(true, 2);
+        let default = RecordingTransport::default();
+        let relay = RecordingTransport::default();
+        relay.push_success(&different_signed_raw_tx);
+        let mut transport =
+            RelayTransport::with_mode(default.clone(), relay.clone(), SponsorshipMode::SignOnly);
+
+        let err = tower::Service::call(&mut transport, make_send_raw_tx_request(&unsigned_raw_tx))
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("different"));
+        assert_eq!(relay.methods(), vec![SIGN_RAW_TX]);
+        assert!(default.methods().is_empty());
+    }
+
+    #[tokio::test]
     async fn relay_error_propagates_without_default_call() {
         let default = RecordingTransport::default();
         let relay = RecordingTransport::default();
@@ -680,7 +726,7 @@ mod tests {
         assert!(
             tower::Service::call(
                 &mut transport,
-                make_send_raw_tx_request(&signed_tempo_aa_raw_tx(false))
+                make_send_raw_tx_request(&signed_tempo_aa_raw_tx_with_nonce(false, 1))
             )
             .await
             .is_err()
@@ -691,7 +737,7 @@ mod tests {
 
     #[tokio::test]
     async fn preserves_request_id_when_forwarding_to_relay() {
-        let raw_tx = signed_tempo_aa_raw_tx(false);
+        let raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
         let default = RecordingTransport::default();
         let relay = RecordingTransport::default();
         relay.push_success(&alloy_primitives::B256::ZERO);
@@ -703,7 +749,7 @@ mod tests {
 
     #[tokio::test]
     async fn preserves_request_headers_when_forwarding_to_relay() {
-        let raw_tx = signed_tempo_aa_raw_tx(false);
+        let raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
         let default = RecordingTransport::default();
         let relay = RecordingTransport::default();
         relay.push_success(&alloy_primitives::B256::ZERO);
@@ -729,7 +775,7 @@ mod tests {
         let mut transport = RelayTransport::new(default.clone(), relay.clone());
         let err = tower::Service::call(
             &mut transport,
-            make_batch_with_send_raw_tx(&signed_tempo_aa_raw_tx(false)),
+            make_batch_with_send_raw_tx(&signed_tempo_aa_raw_tx_with_nonce(false, 1)),
         )
         .await
         .unwrap_err();

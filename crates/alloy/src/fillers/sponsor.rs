@@ -19,14 +19,11 @@ impl<N: Network<TransactionRequest = TempoTransactionRequest>> TxFiller<N> for S
     type Fillable = ();
 
     fn status(&self, tx: &N::TransactionRequest) -> FillerControlFlow {
-        if tx
-            .fee_payer_signature
-            .as_ref()
-            .is_some_and(|sig| *sig == FEE_PAYER_SIGNATURE_MARKER)
-        {
-            FillerControlFlow::Finished
-        } else {
+        // Only fill absent signatures; never overwrite an existing marker or real signature.
+        if tx.fee_payer_signature.is_none() {
             FillerControlFlow::Ready
+        } else {
+            FillerControlFlow::Finished
         }
     }
 
