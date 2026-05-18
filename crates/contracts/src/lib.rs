@@ -3,7 +3,9 @@
 #![no_std]
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
+#![allow(clippy::too_many_arguments)]
 
+#[allow(unused_extern_crates)]
 extern crate alloc;
 
 use alloy_primitives::{Address, B256, address, b256};
