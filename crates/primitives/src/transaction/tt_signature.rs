@@ -51,6 +51,7 @@ pub const SIGNATURE_TYPE_P256: u8 = 0x01;
 pub const SIGNATURE_TYPE_WEBAUTHN: u8 = 0x02;
 pub const SIGNATURE_TYPE_KEYCHAIN: u8 = 0x03;
 pub const SIGNATURE_TYPE_KEYCHAIN_V2: u8 = 0x04;
+pub const SIGNATURE_TYPE_EIP712_SECP256K1: u8 = 0x05;
 
 // Minimum authenticatorData is 37 bytes (32 rpIdHash + 1 flags + 4 signCount)
 const MIN_AUTH_DATA_LEN: usize = 37;
@@ -111,6 +112,12 @@ pub enum PrimitiveSignature {
     /// Standard secp256k1 ECDSA signature (65 bytes: r, s, v)
     Secp256k1(Signature),
 
+    /// EIP-712 secp256k1 signature for browser-wallet Tempo transaction signing.
+    ///
+    /// The signature is verified against `TempoTransaction::eip712_signature_hash` by the
+    /// transaction envelope recovery path.
+    Eip712Secp256k1(Signature),
+
     /// P256 signature with embedded public key (129 bytes)
     P256(P256SignatureWithPreHash),
 
@@ -145,6 +152,15 @@ impl PrimitiveSignature {
         let sig_data = &data[1..];
 
         match type_id {
+            SIGNATURE_TYPE_EIP712_SECP256K1 => {
+                if sig_data.len() != SECP256K1_SIGNATURE_LENGTH {
+                    return Err("Invalid EIP-712 secp256k1 signature length");
+                }
+                let sig = Signature::try_from(sig_data).map_err(
+                    |_| "Failed to parse EIP-712 secp256k1 signature: invalid signature values",
+                )?;
+                Ok(Self::Eip712Secp256k1(sig))
+            }
             SIGNATURE_TYPE_P256 => {
                 if sig_data.len() != P256_SIGNATURE_LENGTH {
                     return Err("Invalid P256 signature length");
@@ -193,6 +209,18 @@ impl PrimitiveSignature {
                 );
                 Bytes::copy_from_slice(&sig_bytes)
             }
+            Self::Eip712Secp256k1(sig) => {
+                let sig_bytes = sig.as_bytes();
+                assert_eq!(
+                    sig_bytes.len(),
+                    SECP256K1_SIGNATURE_LENGTH,
+                    "EIP-712 secp256k1 signature must be exactly 65 bytes"
+                );
+                let mut bytes = Vec::with_capacity(1 + SECP256K1_SIGNATURE_LENGTH);
+                bytes.push(SIGNATURE_TYPE_EIP712_SECP256K1);
+                bytes.extend_from_slice(&sig_bytes);
+                Bytes::from(bytes)
+            }
             Self::P256(p256_sig) => {
                 let mut bytes = Vec::with_capacity(1 + 129);
                 bytes.push(SIGNATURE_TYPE_P256);
@@ -224,6 +252,7 @@ impl PrimitiveSignature {
     pub fn encoded_length(&self) -> usize {
         match self {
             Self::Secp256k1(_) => SECP256K1_SIGNATURE_LENGTH,
+            Self::Eip712Secp256k1(_) => 1 + SECP256K1_SIGNATURE_LENGTH,
             Self::P256(_) => 1 + P256_SIGNATURE_LENGTH,
             Self::WebAuthn(webauthn_sig) => 1 + webauthn_sig.webauthn_data.len() + 128,
         }
@@ -232,7 +261,7 @@ impl PrimitiveSignature {
     /// Get signature type
     pub fn signature_type(&self) -> SignatureType {
         match self {
-            Self::Secp256k1(_) => SignatureType::Secp256k1,
+            Self::Secp256k1(_) | Self::Eip712Secp256k1(_) => SignatureType::Secp256k1,
             Self::P256(_) => SignatureType::P256,
             Self::WebAuthn(_) => SignatureType::WebAuthn,
         }
@@ -242,7 +271,7 @@ impl PrimitiveSignature {
     pub fn size(&self) -> usize {
         size_of::<Self>()
             + match self {
-                Self::Secp256k1(_) | Self::P256(_) => 0,
+                Self::Secp256k1(_) | Self::Eip712Secp256k1(_) | Self::P256(_) => 0,
                 Self::WebAuthn(webauthn_sig) => webauthn_sig.webauthn_data.len(),
             }
     }
@@ -258,7 +287,7 @@ impl PrimitiveSignature {
         sig_hash: &B256,
     ) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
         match self {
-            Self::Secp256k1(sig) => {
+            Self::Secp256k1(sig) | Self::Eip712Secp256k1(sig) => {
                 // Standard secp256k1 recovery using alloy's built-in methods
                 // This simultaneously verifies the signature AND recovers the address
                 alloy_consensus::crypto::secp256k1::recover_signer(sig, *sig_hash)

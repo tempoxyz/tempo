@@ -7,11 +7,13 @@ use crate::{
         key_authorization::SignedKeyAuthorization,
     },
 };
-use alloc::vec::Vec;
+use alloc::{borrow::Cow, vec::Vec};
 use alloy_consensus::{SignableTransaction, Transaction, crypto::RecoveryError};
+use alloy_dyn_abi::{Resolver, TypedData};
 use alloy_eips::{Typed2718, eip2930::AccessList, eip7702::SignedAuthorization};
 use alloy_primitives::{Address, B256, Bytes, ChainId, Signature, TxKind, U256, keccak256};
 use alloy_rlp::{Buf, BufMut, Decodable, EMPTY_STRING_CODE, Encodable};
+use alloy_sol_types::Eip712Domain;
 use core::num::NonZeroU64;
 
 /// Tempo transaction type byte (0x76)
@@ -19,6 +21,15 @@ pub const TEMPO_TX_TYPE_ID: u8 = 0x76;
 
 /// Magic byte for the fee payer signature
 pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
+
+/// EIP-712 domain name for Tempo transaction sender signing.
+pub const TEMPO_TX_EIP712_DOMAIN_NAME: &str = "Tempo";
+
+/// EIP-712 domain version for Tempo transaction sender signing.
+pub const TEMPO_TX_EIP712_DOMAIN_VERSION: &str = "1";
+
+/// EIP-712 primary type for Tempo transaction sender signing.
+pub const TEMPO_TX_EIP712_PRIMARY_TYPE: &str = "TempoTransaction";
 
 /// Signature type constants
 pub const SECP256K1_SIGNATURE_LENGTH: usize = 65;
@@ -359,6 +370,79 @@ impl TempoTransaction {
         let mut buf = Vec::new();
         self.encode_for_signing(&mut buf);
         keccak256(&buf)
+    }
+
+    /// Calculate the EIP-712 domain separator for browser-wallet sender signing.
+    pub fn eip712_domain_separator(&self) -> B256 {
+        let domain_typehash =
+            keccak256(b"EIP712Domain(string name,string version,uint256 chainId)");
+        let name_hash = keccak256(TEMPO_TX_EIP712_DOMAIN_NAME.as_bytes());
+        let version_hash = keccak256(TEMPO_TX_EIP712_DOMAIN_VERSION.as_bytes());
+
+        let mut encoded = [0u8; 128];
+        encoded[0..32].copy_from_slice(domain_typehash.as_slice());
+        encoded[32..64].copy_from_slice(name_hash.as_slice());
+        encoded[64..96].copy_from_slice(version_hash.as_slice());
+        encoded[96..128].copy_from_slice(U256::from(self.chain_id).to_be_bytes::<32>().as_ref());
+
+        keccak256(encoded)
+    }
+
+    /// Calculate the EIP-712 struct hash for browser-wallet sender signing.
+    ///
+    /// The message commits to the existing Tempo transaction signing hash, preserving the current
+    /// transaction-field encoding while allowing browser wallets to use `eth_signTypedData_v4`.
+    pub fn eip712_struct_hash(&self) -> B256 {
+        let typehash = keccak256(b"TempoTransaction(bytes32 signingHash)");
+        let signing_hash = self.signature_hash();
+
+        let mut encoded = [0u8; 64];
+        encoded[0..32].copy_from_slice(typehash.as_slice());
+        encoded[32..64].copy_from_slice(signing_hash.as_slice());
+
+        keccak256(encoded)
+    }
+
+    /// Build the canonical EIP-712 typed-data payload for browser-wallet sender signing.
+    ///
+    /// This payload is intended for `eth_signTypedData_v4`. The transaction is accepted on-chain
+    /// when paired with an `Eip712Secp256k1` primitive signature.
+    pub fn eip712_typed_data(&self) -> TypedData {
+        let domain = Eip712Domain::new(
+            Some(Cow::Borrowed(TEMPO_TX_EIP712_DOMAIN_NAME)),
+            Some(Cow::Borrowed(TEMPO_TX_EIP712_DOMAIN_VERSION)),
+            Some(U256::from(self.chain_id)),
+            None,
+            None,
+        );
+        let mut resolver = Resolver::default();
+        resolver
+            .ingest_string(domain.encode_type())
+            .expect("Tempo EIP-712 domain type is valid");
+        resolver
+            .ingest_string("TempoTransaction(bytes32 signingHash)")
+            .expect("Tempo transaction EIP-712 type is valid");
+
+        TypedData {
+            domain,
+            resolver,
+            primary_type: TEMPO_TX_EIP712_PRIMARY_TYPE.into(),
+            message: serde_json::json!({ "signingHash": self.signature_hash() }),
+        }
+    }
+
+    /// Calculate the EIP-712 digest for browser-wallet sender signing.
+    pub fn eip712_signature_hash(&self) -> B256 {
+        let domain_separator = self.eip712_domain_separator();
+        let struct_hash = self.eip712_struct_hash();
+
+        let mut encoded = [0u8; 66];
+        encoded[0] = 0x19;
+        encoded[1] = 0x01;
+        encoded[2..34].copy_from_slice(domain_separator.as_slice());
+        encoded[34..66].copy_from_slice(struct_hash.as_slice());
+
+        keccak256(encoded)
     }
 
     /// Calculate the fee payer signature hash.

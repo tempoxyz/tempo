@@ -1,6 +1,6 @@
 use super::{
     tempo_transaction::{TEMPO_TX_TYPE_ID, TempoTransaction},
-    tt_signature::TempoSignature,
+    tt_signature::{PrimitiveSignature, TempoSignature},
     unique_tx_identifier_from_signable,
 };
 use alloc::vec::Vec;
@@ -324,7 +324,14 @@ impl alloy_consensus::transaction::SignerRecoverable for AASigned {
     fn recover_signer(
         &self,
     ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
-        let sig_hash = self.signature_hash();
+        let sig_hash = if matches!(
+            self.signature,
+            TempoSignature::Primitive(PrimitiveSignature::Eip712Secp256k1(_))
+        ) {
+            self.tx.eip712_signature_hash()
+        } else {
+            self.signature_hash()
+        };
         self.signature.recover_signer(&sig_hash)
     }
 
@@ -478,6 +485,7 @@ mod tests {
     };
     use alloy_consensus::transaction::SignerRecoverable;
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
+    use alloy_signer::SignerSync;
 
     fn make_tx() -> TempoTransaction {
         TempoTransaction {
@@ -698,5 +706,31 @@ mod tests {
         let bad_signed = AASigned::new_unhashed(tx, wrong_sig);
         let bad_recovered = bad_signed.recover_signer().unwrap();
         assert_ne!(bad_recovered, expected_address);
+    }
+
+    #[test]
+    fn test_recover_signer_eip712_secp256k1() {
+        let (signing_key, expected_address) = generate_secp256k1_keypair();
+        let tx = make_tx();
+        let eip712_hash = tx.eip712_signature_hash();
+        let typed_data_hash = tx.eip712_typed_data().eip712_signing_hash().unwrap();
+        assert_eq!(typed_data_hash, eip712_hash);
+
+        let raw_sig = signing_key
+            .sign_hash_sync(&eip712_hash)
+            .expect("signing failed");
+        let signature = TempoSignature::Primitive(PrimitiveSignature::Eip712Secp256k1(raw_sig));
+        let signed = AASigned::new_unhashed(tx.clone(), signature.clone());
+
+        assert_eq!(signed.recover_signer().unwrap(), expected_address);
+        assert_ne!(
+            signed.signature_hash(),
+            eip712_hash,
+            "EIP-712 signatures must use the typed-data digest, not the legacy RLP digest"
+        );
+
+        let encoded = signature.to_bytes();
+        let decoded = TempoSignature::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded, signature);
     }
 }

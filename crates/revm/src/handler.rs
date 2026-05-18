@@ -118,7 +118,7 @@ pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_
 #[inline]
 fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
     match signature {
-        PrimitiveSignature::Secp256k1(_) => 0,
+        PrimitiveSignature::Secp256k1(_) | PrimitiveSignature::Eip712Secp256k1(_) => 0,
         PrimitiveSignature::P256(_) => P256_VERIFY_GAS,
         PrimitiveSignature::WebAuthn(webauthn_sig) => {
             let tokens = get_tokens_in_calldata_istanbul(&webauthn_sig.webauthn_data);
