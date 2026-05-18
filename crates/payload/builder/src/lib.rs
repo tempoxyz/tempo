@@ -292,7 +292,9 @@ where
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
         let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
-        if !self.disable_state_cache && let Some(execution_cache) = &execution_cache {
+        if !self.disable_state_cache
+            && let Some(execution_cache) = &execution_cache
+        {
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
                 execution_cache.cache().clone(),

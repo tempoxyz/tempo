@@ -39,8 +39,8 @@ use futures::{
     channel::{mpsc, oneshot},
     future::try_join,
 };
-use reth_node_builder::{Block as _, ConsensusEngineHandle, PayloadKind};
 use rand_08::{CryptoRng, Rng};
+use reth_node_builder::{Block as _, ConsensusEngineHandle, PayloadKind};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
