@@ -1,5 +1,12 @@
 # Changelog
 
+## `tempo-primitives@1.7.0`
+
+### Minor Changes
+
+- Enshrined the stricter TIP-1045 payment classifier (`is_payment_v2`) at the T5 hardfork for consensus-level payment lane validation. Relaxed the v2 classifier to allow bounded `key_authorization` (RLP length ≤ 1024 bytes). (by @DerekCofausper, [#4003](https://github.com/tempoxyz/tempo/pull/4003))
+- Moved TIP-20 and TIP-1022 virtual-address helpers (`is_tip20_prefix`, `is_virtual_address`, `decode_virtual_address`, `make_virtual_address`, `MasterId`, `UserTag`) from `tempo-precompiles` into a new `TempoAddressExt` trait on `Address` in `tempo-primitives`. Updated all consumers to use the new trait methods (`address.is_tip20()`, `address.is_virtual()`, `Address::new_virtual(...)`, etc.). (by @DerekCofausper, [#4003](https://github.com/tempoxyz/tempo/pull/4003))
+
 ## `tempo-primitives@1.6.0`
 
 ### Minor Changes

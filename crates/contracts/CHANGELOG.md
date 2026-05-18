@@ -1,5 +1,15 @@
 # Changelog
 
+## `tempo-contracts@1.7.0`
+
+### Minor Changes
+
+- Added the TIP-20 channel escrow precompile with channel open, settle, top-up, close, request-close, and withdraw flows gated at T5. (by @DerekCofausper, [#4003](https://github.com/tempoxyz/tempo/pull/4003))
+
+### Patch Changes
+
+- Enshrined the stricter TIP-1045 payment classifier (`is_payment_v2`) at the T5 hardfork for consensus-level payment lane validation. Relaxed the v2 classifier to allow bounded `key_authorization` (RLP length ≤ 1024 bytes). (by @DerekCofausper, [#4003](https://github.com/tempoxyz/tempo/pull/4003))
+
 ## `tempo-contracts@1.6.0`
 
 
