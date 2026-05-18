@@ -1079,6 +1079,9 @@ impl TIP20Token {
     }
 
     /// Check whether a user is authorized by the token's [`TIP403Registry`] policy for a given role.
+    ///
+    /// # Errors
+    /// - `PolicyForbids` — user is not authorized for the requested role by the active transfer policy
     pub fn ensure_authorized_as(&self, user: Address, role: AuthRole) -> Result<()> {
         let policy_id = self.transfer_policy_id()?;
         if !TIP403Registry::new().is_authorized_as(policy_id, user, role)? {
