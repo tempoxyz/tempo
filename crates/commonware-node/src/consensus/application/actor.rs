@@ -1097,8 +1097,7 @@ async fn get_parent(
             format!("failed querying execution layer for parent block `{parent_digest}`")
         })?
     {
-        // Blocks loaded from the EL database persist only the block. There is no commonware
-        // p2p BAL side data for this local reconstruction.
+        // It is fine to omit BAL for blocks loaded from the EL database.
         Ok(Block::from_execution_payload(parent.seal(), None))
     } else {
         marshal

@@ -9,7 +9,7 @@ use alloy_rlp::{Decodable, Encodable as _, Header};
 use bytes::{Buf, BufMut, Bytes as WireBytes};
 use commonware_codec::{EncodeSize, Error, Read, Write};
 use commonware_consensus::{
-    Block as ConsensusBlockTrait, CertifiableBlock, Heightable,
+    Heightable,
     simplex::types::Context,
     types::{Epoch, Height, Round, View},
 };
@@ -18,7 +18,6 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use reth_node_core::primitives::SealedBlock;
-use std::ops::Deref;
 use tempo_primitives::Block as ExecutionBlock;
 
 use crate::consensus::Digest;
@@ -36,6 +35,7 @@ pub(crate) struct ConsensusPayload {
 pub(crate) type Block = ConsensusPayload;
 
 impl ConsensusPayload {
+    /// Creates a consensus payload from an execution-layer block and optional BAL.
     pub(crate) fn from_execution_payload(
         block: SealedBlock<ExecutionBlock>,
         block_access_list: Option<Bytes>,
@@ -46,10 +46,12 @@ impl ConsensusPayload {
         }
     }
 
+    /// Consumes the payload and returns only the execution-layer block.
     pub(crate) fn into_inner(self) -> SealedBlock<ExecutionBlock> {
         self.execution_block
     }
 
+    /// Consumes the payload and returns the execution-layer block plus optional BAL.
     pub(crate) fn into_parts(self) -> (SealedBlock<ExecutionBlock>, Option<Bytes>) {
         (self.execution_block, self.block_access_list.map(Into::into))
     }
@@ -64,16 +66,18 @@ impl ConsensusPayload {
         Digest(self.hash())
     }
 
+    /// Returns the parent hash of the wrapped block as a commonware [`Digest`].
     pub(crate) fn parent_digest(&self) -> Digest {
         Digest(self.execution_block.parent_hash())
     }
 
+    /// Returns the timestamp of the wrapped block.
     pub(crate) fn timestamp(&self) -> u64 {
         self.execution_block.timestamp()
     }
 }
 
-impl Deref for ConsensusPayload {
+impl std::ops::Deref for ConsensusPayload {
     type Target = SealedBlock<ExecutionBlock>;
 
     fn deref(&self) -> &Self::Target {
@@ -156,13 +160,13 @@ impl Heightable for ConsensusPayload {
     }
 }
 
-impl ConsensusBlockTrait for ConsensusPayload {
+impl commonware_consensus::Block for ConsensusPayload {
     fn parent(&self) -> Digest {
         self.parent_digest()
     }
 }
 
-impl CertifiableBlock for ConsensusPayload {
+impl commonware_consensus::CertifiableBlock for ConsensusPayload {
     type Context = Context<Digest, PublicKey>;
 
     fn context(&self) -> Self::Context {
