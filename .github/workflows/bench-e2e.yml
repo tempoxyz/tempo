@@ -340,6 +340,7 @@ env:
 
 permissions:
   contents: read
+  issues: write
   pull-requests: write
 
 jobs:
@@ -455,7 +456,7 @@ jobs:
           INPUT_BASELINE_NAME: ${{ inputs.baseline-name }}
           INPUT_FEATURE_NAME: ${{ inputs.feature-name }}
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
             const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({
               owner: context.repo.owner,
@@ -625,11 +626,66 @@ jobs:
             }
             core.exportVariable('BENCH_PR', pr);
 
+      - name: Create dispatch PR comment
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          INPUT_BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
+          INPUT_FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
+        with:
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          script: |
+            if (process.env.BENCH_COMMENT_ID || !process.env.BENCH_PR) {
+              return;
+            }
+
+            const { data: jobs } = await github.rest.actions.listJobsForWorkflowRun({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              run_id: context.runId,
+            });
+            const job = jobs.jobs.find(j => j.name === 'bench-e2e');
+            const jobUrl = job ? job.html_url : `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            core.exportVariable('BENCH_JOB_URL', jobUrl);
+
+            const mode = process.env.BENCH_MODE;
+            const preset = process.env.BENCH_PRESET;
+            const duration = process.env.BENCH_DURATION;
+            const bloat = process.env.BENCH_BLOAT;
+            const tps = process.env.BENCH_TPS;
+            const accounts = process.env.BENCH_ACCOUNTS;
+            const maxConcurrentRequests = process.env.BENCH_MAX_CONCURRENT_REQUESTS;
+            const baselineHardfork = process.env.BENCH_BASELINE_HARDFORK || '';
+            const featureHardfork = process.env.BENCH_FEATURE_HARDFORK || '';
+            const baseline = process.env.INPUT_BASELINE_NAME;
+            const feature = process.env.INPUT_FEATURE_NAME;
+            const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
+            const samply = process.env.BENCH_SAMPLY === 'true';
+            const samplyNote = samply ? ', samply: `enabled`' : '';
+            const tracy = process.env.BENCH_TRACY;
+            const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
+            const otlp = process.env.BENCH_OTLP === 'true';
+            const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
+            const noCache = process.env.BENCH_NO_CACHE === 'true';
+            const noCacheNote = noCache ? ', no-cache: `true`' : '';
+            const gasLimit = process.env.BENCH_GAS_LIMIT;
+            const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
+            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`;
+            core.exportVariable('BENCH_CONFIG', config);
+
+            const { data: comment } = await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: parseInt(process.env.BENCH_PR),
+              body: `cc @${process.env.BENCH_ACTOR}\n\n🚀 Benchmark started! [View job](${jobUrl})\n\n⏳ **Status:** Running benchmark...\n\n${config}`,
+            });
+            core.exportVariable('BENCH_COMMENT_ID', String(comment.id));
+
       - name: Update status (running benchmark)
         if: success() && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
             const s = require('./.github/scripts/bench-update-status.js');
             await s({github, context, status: 'Running benchmark...'});
@@ -708,7 +764,7 @@ jobs:
         env:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
             const fs = require('fs');
             const resultsDir = process.env.BENCH_RESULTS_DIR;
@@ -818,9 +874,9 @@ jobs:
                 comment_id: parseInt(ackCommentId),
                 body,
               });
-            } else {
-              await core.summary.addRaw(body).write();
             }
+
+            await core.summary.addRaw(body).write();
 
       - name: Send Slack notification (success)
         if: success() && steps.results-dir.outputs.path && env.BENCH_NO_SLACK != 'true'
@@ -846,7 +902,7 @@ jobs:
         if: failure() && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({
@@ -860,7 +916,7 @@ jobs:
         if: cancelled() && env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             await github.rest.issues.updateComment({
