@@ -1,0 +1,226 @@
+chain_id: 1337
+
+gas:
+  max_fee_per_gas: 100000000000
+  max_priority_fee_per_gas: 100000000000
+
+accounts:
+  users:
+    mnemonic: "test test test test test test test test test test test junk"
+    range:
+      - 0
+      - ${TXGEN_ACCOUNTS}
+
+artifacts:
+  ERC20: ../erc20.abi.json
+  MPPChannel:
+    abi: ../mpp-channel.json
+    bytecode: ../mpp-channel.json
+  StablecoinDEX: ../stablecoin-dex.abi.json
+
+setup:
+  steps:
+    - id: channel
+      deploy:
+        type: eip1559
+        from:
+          pool: users
+          select: { index: 0 }
+        artifact: MPPChannel
+        gas_limit: 20000000
+        constructor_args: []
+    - id: dex_approve_quote
+      tx:
+        type: eip1559
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 300000
+        call:
+          to: "0x20c0000000000000000000000000000000000000"
+          abi: ERC20
+          function: approve
+          args:
+            - "0xdec0000000000000000000000000000000000000"
+            - "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+    - id: dex_approve_base
+      tx:
+        type: eip1559
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 300000
+        call:
+          to: "0x20c0000000000000000000000000000000000001"
+          abi: ERC20
+          function: approve
+          args:
+            - "0xdec0000000000000000000000000000000000000"
+            - "115792089237316195423570985008687907853269984665640564039457584007913129639935"
+    - id: dex_seed_bid
+      tx:
+        type: eip1559
+        from:
+          pool: users
+          select: { index: 0 }
+        gas_limit: 8000000
+        call:
+          to: "0xdec0000000000000000000000000000000000000"
+          abi: StablecoinDEX
+          function: placeFlip
+          args:
+            - "0x20c0000000000000000000000000000000000001"
+            - 1000000000000
+            - true
+            - -10
+            - 10
+
+templates:
+  tip20_transfer:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 300000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+
+  erc20_transfer:
+    type: eip1559
+    from:
+      pool: users
+      select: random
+    gas_limit: 300000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    call:
+      to: "0x20c0000000000000000000000000000000000000"
+      abi: ERC20
+      function: transfer
+      args:
+        - pool:
+            pool: users
+            select: random
+        - 1
+
+  mpp_channel:
+    type: tempo
+    gas_limit: 8000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+
+  dex_swap:
+    type: tempo
+    from:
+      pool: users
+      select: random
+    gas_limit: 5000000
+    max_fee_per_gas: 100000000000
+    max_priority_fee_per_gas: 100000000000
+    fee_token: "0x20c0000000000000000000000000000000000000"
+    expiring_nonce: true
+    valid_for_secs: 25
+    calls:
+      - to: "0x20c0000000000000000000000000000000000001"
+        abi: ERC20
+        function: approve
+        args:
+          - "0xdec0000000000000000000000000000000000000"
+          - 1
+      - to: "0xdec0000000000000000000000000000000000000"
+        abi: StablecoinDEX
+        function: swapExactAmountIn
+        args:
+          - "0x20c0000000000000000000000000000000000001"
+          - "0x20c0000000000000000000000000000000000000"
+          - 1
+          - 0
+
+sequences:
+  mpp_open_close:
+    bindings:
+      payer:
+        account:
+          pool: users
+          select: random
+      token:
+        address:
+          const: "0x20c0000000000000000000000000000000000001"
+      authorized_signer:
+        address:
+          const: "0x0000000000000000000000000000000000000000"
+      salt:
+        bytes32:
+          random_bytes: 32
+      channel_id:
+        abi_hash:
+          types: [address, address, address, bytes32, address, address, uint256]
+          values:
+            - { var: payer.address }
+            - { var: payer.address }
+            - { var: token }
+            - { var: salt }
+            - { var: authorized_signer }
+            - { var: setup.channel.address }
+            - { var: chain_id }
+      channel_key:
+        abi_encode_packed:
+          types: [bytes32, address, address, bytes32]
+          values:
+            - { var: channel_id }
+            - { var: token }
+            - { var: authorized_signer }
+            - { var: salt }
+    steps:
+      - name: open_close
+        template: mpp_channel
+        with:
+          from: { var: payer.ref }
+          calls:
+            - to: { var: token }
+              abi: ERC20
+              function: approve
+              args:
+                - { var: setup.channel.address }
+                - 1
+            - to: { var: setup.channel.address }
+              abi: MPPChannel
+              function: open
+              args:
+                - { var: payer.address }
+                - { var: token }
+                - 1
+                - { var: salt }
+                - { var: authorized_signer }
+            - to: { var: setup.channel.address }
+              abi: MPPChannel
+              function: close
+              args:
+                - { var: channel_key }
+                - 0
+                - "0x"
+
+mix:
+  - template: tip20_transfer
+    weight: 70
+  - template: erc20_transfer
+    weight: 10
+  - sequence: mpp_open_close
+    weight: 10
+  - template: dex_swap
+    weight: 10

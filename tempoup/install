@@ -87,7 +87,7 @@ ENVEOF
     info "Running tempoup to install tempo..."
     echo ""
 
-    TEMPO_BIN_DIR="$BIN_DIR" "$BIN_DIR/tempoup"
+    TEMPO_BIN_DIR="$BIN_DIR" "$BIN_DIR/tempoup" "$@"
 
     echo ""
     local user_shell
@@ -176,4 +176,4 @@ configure_shell() {
     fi
 }
 
-main
+main "$@"

@@ -198,6 +198,20 @@ contract TIP20ChannelEscrowTest is Test {
         channel.open(address(0), address(0), address(token), DEPOSIT, SALT, address(0));
     }
 
+    function test_open_revert_tip20PrefixPayee() public {
+        _prepareNextExpiringNonceHash();
+        vm.prank(payer);
+        vm.expectRevert(ITIP20ChannelEscrow.InvalidPayee.selector);
+        channel.open(
+            address(0x20C0000000000000000000000000000000000001),
+            address(0),
+            address(token),
+            DEPOSIT,
+            SALT,
+            address(0)
+        );
+    }
+
     function test_open_revert_zeroToken() public {
         _prepareNextExpiringNonceHash();
         vm.prank(payer);
