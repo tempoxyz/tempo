@@ -107,6 +107,12 @@ function e2eChanges(deltas) {
     block_time_p50: changeFromPct(deltas.block_time_p50, true),
     block_time_p90: changeFromPct(deltas.block_time_p90, true),
     block_time_p99: changeFromPct(deltas.block_time_p99, true),
+    builder_latency_p50: changeFromPct(deltas.builder_latency_p50, true),
+    builder_latency_p90: changeFromPct(deltas.builder_latency_p90, true),
+    builder_latency_p99: changeFromPct(deltas.builder_latency_p99, true),
+    validation_latency_p50: changeFromPct(deltas.validation_latency_p50, true),
+    validation_latency_p90: changeFromPct(deltas.validation_latency_p90, true),
+    validation_latency_p99: changeFromPct(deltas.validation_latency_p99, true),
   };
 }
 
@@ -127,7 +133,23 @@ function fmtBlockCount(baselineBlocks, featureBlocks) {
   return `baseline \`${baselineBlocks}\` | feature \`${featureBlocks}\``;
 }
 
-function buildMetricRows(summary) {
+function metricTable(title, rows) {
+  return {
+    type: 'table',
+    column_settings: [
+      { align: 'left' },
+      { align: 'right' },
+      { align: 'right' },
+      { align: 'right' },
+    ],
+    rows: [
+      [cell(title), cell('Baseline'), cell('Feature'), cell('Change')],
+      ...rows.map(r => [cell(r.label), cell(r.baseline), cell(r.feature), cell(r.change || ' ')]),
+    ],
+  };
+}
+
+function buildTempoMetricRows(summary) {
   const b = summary.results.baseline;
   const f = summary.results.feature;
   const d = summary.results.deltas;
@@ -141,6 +163,30 @@ function buildMetricRows(summary) {
     { label: 'Block P50',       baseline: fmtMs(b.block_time_p50),  feature: fmtMs(f.block_time_p50),  change: fmtChange(c.block_time_p50) },
     { label: 'Block P90',       baseline: fmtMs(b.block_time_p90),  feature: fmtMs(f.block_time_p90),  change: fmtChange(c.block_time_p90) },
     { label: 'Block P99',       baseline: fmtMs(b.block_time_p99),  feature: fmtMs(f.block_time_p99),  change: fmtChange(c.block_time_p99) },
+  ];
+}
+
+function buildBuilderLatencyRows(summary) {
+  const b = summary.results.baseline;
+  const f = summary.results.feature;
+  const d = summary.results.deltas;
+  const c = e2eChanges(d);
+  return [
+    { label: 'P50', baseline: fmtMs(b.builder_latency_p50), feature: fmtMs(f.builder_latency_p50), change: fmtChange(c.builder_latency_p50) },
+    { label: 'P90', baseline: fmtMs(b.builder_latency_p90), feature: fmtMs(f.builder_latency_p90), change: fmtChange(c.builder_latency_p90) },
+    { label: 'P99', baseline: fmtMs(b.builder_latency_p99), feature: fmtMs(f.builder_latency_p99), change: fmtChange(c.builder_latency_p99) },
+  ];
+}
+
+function buildValidationLatencyRows(summary) {
+  const b = summary.results.baseline;
+  const f = summary.results.feature;
+  const d = summary.results.deltas;
+  const c = e2eChanges(d);
+  return [
+    { label: 'P50', baseline: fmtMs(b.validation_latency_p50), feature: fmtMs(f.validation_latency_p50), change: fmtChange(c.validation_latency_p50) },
+    { label: 'P90', baseline: fmtMs(b.validation_latency_p90), feature: fmtMs(f.validation_latency_p90), change: fmtChange(c.validation_latency_p90) },
+    { label: 'P99', baseline: fmtMs(b.validation_latency_p99), feature: fmtMs(f.validation_latency_p99), change: fmtChange(c.validation_latency_p99) },
   ];
 }
 
@@ -175,12 +221,6 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
     `*Duration:* \`${config.duration}s\` | *Target TPS:* \`${config.tps}\` | *Blocks:* ${blockCount}`,
   ].join('\n');
 
-  const rows = buildMetricRows(summary);
-  const tableRows = [
-    [cell('Metric'), cell('Baseline'), cell('Feature'), cell('Change')],
-    ...rows.map(r => [cell(r.label), cell(r.baseline), cell(r.feature), cell(r.change || ' ')]),
-  ];
-
   const buttons = [
     {
       type: 'button',
@@ -199,7 +239,7 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
     });
   }
 
-  return [
+  const blocksPayload = [
     {
       type: 'header',
       text: { type: 'plain_text', text: `${emoji} Tempo Bench ${label}`, emoji: true },
@@ -208,21 +248,19 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
       type: 'section',
       text: { type: 'mrkdwn', text: sectionText },
     },
-    {
-      type: 'table',
-      column_settings: [
-        { align: 'left' },
-        { align: 'right' },
-        { align: 'right' },
-        { align: 'right' },
-      ],
-      rows: tableRows,
-    },
+    metricTable('Tempo Metrics', buildTempoMetricRows(summary)),
     {
       type: 'actions',
       elements: buttons,
     },
   ];
+
+  const threadBlocks = [
+    metricTable('Builder Latency', buildBuilderLatencyRows(summary)),
+    metricTable('Validation Latency', buildValidationLatencyRows(summary)),
+  ];
+
+  return { blocks: blocksPayload, threadBlocks };
 }
 
 function buildFailureBlocks({ prNumber, actor, actorSlackId, jobUrl, repo, failedStep }) {
@@ -280,8 +318,17 @@ async function success({ core, context }) {
   const slackUsers = loadSlackUsers(process.env.GITHUB_WORKSPACE || '.');
   const actorSlackId = slackUsers[actor];
 
-  const blocks = buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo });
+  const { blocks, threadBlocks } = buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo });
   const text = `Tempo bench: baseline vs feature`;
+
+  async function sendWithThread(channel) {
+    const res = await postToSlack(token, channel, blocks, text, core);
+    if (res.ok && res.ts) {
+      for (const threadBlock of threadBlocks) {
+        await postToSlack(token, channel, [threadBlock], 'Bench latency details', core, res.ts);
+      }
+    }
+  }
 
   const changes = e2eChanges(summary.results.deltas);
   const channel = process.env.SLACK_BENCH_CHANNEL;
@@ -290,7 +337,7 @@ async function success({ core, context }) {
 
   // Match reth-bench: post to the public channel only for significant improvements.
   if (channel && hasImprovement(changes)) {
-    await postToSlack(token, channel, blocks, text, core);
+    await sendWithThread(channel);
     postedToChannel = true;
   } else if (channel) {
     core.info('No significant improvement, skipping public channel notification');
@@ -306,7 +353,7 @@ async function success({ core, context }) {
   // DM the actor when results were not posted to the public channel
   if (!postedToChannel) {
     if (actorSlackId) {
-      await postToSlack(token, actorSlackId, blocks, text, core);
+      await sendWithThread(actorSlackId);
     } else {
       core.info(`No Slack user mapping for GitHub user '${actor}', skipping DM`);
     }
