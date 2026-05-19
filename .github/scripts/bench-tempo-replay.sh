@@ -13,9 +13,14 @@
 #   BENCH_BASELINE_ARGS           – extra node args for baseline (optional)
 #   BENCH_FEATURE_ARGS            – extra node args for feature (optional)
 #   BENCH_SAMPLY                  – "true" to enable samply profiling (optional)
+#   BENCH_REPLAY_RPC_URL          – RPC URL override for replay extraction (optional)
 set -euxo pipefail
 
 eval "$(nu bench-schelk.nu detect)"
+
+redact_url() {
+  sed -E 's#(https?://|wss?://)([^/@]+)@#\1***@#' <<< "$1"
+}
 
 BENCH_WORK_DIR="${BENCH_WORK_DIR:-bench-results/replay}"
 SNAPSHOT_BUCKET="r2-tempo-snapshots/tempo-node-snapshots"
@@ -27,23 +32,29 @@ case "$CHAIN" in
   mainnet)
     CHAIN_ID=4217
     CHAIN_NAME="mainnet"
-    REPLAY_RPC_URL="https://rpc.tempo.xyz"
+    DEFAULT_REPLAY_RPC_URL="https://rpc.tempo.xyz"
     ;;
   testnet)
     CHAIN_ID=42431
     CHAIN_NAME="moderato"
-    REPLAY_RPC_URL="https://rpc.moderato.tempo.xyz"
+    DEFAULT_REPLAY_RPC_URL="https://rpc.moderato.tempo.xyz"
     ;;
   *)
     echo "::error::Unknown chain: $CHAIN (must be 'mainnet' or 'testnet')"
     exit 1
     ;;
 esac
+set +x
+REPLAY_RPC_URL="${BENCH_REPLAY_RPC_URL:-$DEFAULT_REPLAY_RPC_URL}"
+if [ -n "${BENCH_REPLAY_RPC_URL:-}" ]; then
+  echo "::add-mask::$BENCH_REPLAY_RPC_URL"
+fi
+set -x
 
 DATADIR="$SCHELK_MOUNT/tempo-replay-${CHAIN_NAME}"
 SNAPSHOT_PREFIX="tempo-${CHAIN_ID}-"
 SNAPSHOT_HASH_FILE="$HOME/.tempo-replay-snapshot-hash-${CHAIN_NAME}"
-echo "Chain: $CHAIN_NAME (id=$CHAIN_ID, rpc=$REPLAY_RPC_URL)"
+echo "Chain: $CHAIN_NAME (id=$CHAIN_ID, rpc=$(redact_url "$REPLAY_RPC_URL"))"
 
 MC="mc"
 BLOCKS="${BENCH_BLOCKS:-5000}"

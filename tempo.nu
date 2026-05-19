@@ -12,7 +12,6 @@ const DEFAULT_PROFILE = "profiling"
 const DEFAULT_FEATURES = "jemalloc,asm-keccak"
 const BENCH_WORKTREES_DIR = ".bench-worktrees"
 const BENCH_RESULTS_DIR = "bench-results"
-const METRICS_PROXY_SCRIPT = "contrib/bench/bench-metrics-proxy.py"
 const MINIO_BUCKET = "minio/tempo-binaries"
 const BENCH_META_SUBDIR = ".bench-meta"
 
@@ -518,7 +517,7 @@ def run-bench-single [
     --txgen-tempo-bin: string
     --txgen-bench-bin: string
     --rpc-urls: string
-    --metrics-url: string
+    --metrics-url: list<string>
     --genesis-path: string
     --datadir: string
     --run-label: string
@@ -552,29 +551,7 @@ def run-bench-single [
     let log_dir = $"($LOCALNET_DIR)/logs-($run_label)"
     mkdir $log_dir
 
-    # Start metrics proxy with labels for this run
     let run_type = if ($run_label | str starts-with "baseline") { "baseline" } else { "feature" }
-    let run_start_epoch = (date now | into int) / 1_000_000_000
-    let labels = {
-        benchmark_run: $run_label
-        run_type: $run_type
-        git_ref: $git_ref
-        benchmark_id: $benchmark_id
-        run_start_epoch: $"($run_start_epoch)"
-        reference_epoch: $"($reference_epoch)"
-    }
-    let labels_file = $"($results_dir)/metrics-labels-($run_label).json"
-    $labels | to json | save -f $labels_file
-
-    let proxy_pid = if ($METRICS_PROXY_SCRIPT | path exists) {
-        let proxy_job = (job spawn {
-            python3 $METRICS_PROXY_SCRIPT --upstream "http://127.0.0.1:9001/" --port 9090 --labels $labels_file
-        })
-        sleep 500ms
-        $proxy_job
-    } else {
-        null
-    }
 
     # Parse extra node args
     let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
@@ -716,14 +693,6 @@ def run-bench-single [
         }
     }
 
-    # Stop metrics proxy
-    if $proxy_pid != null {
-        let proxy_pids = (ps | where name =~ "bench-metrics-proxy" | get pid)
-        for pid in $proxy_pids {
-            kill -s 2 $pid
-        }
-    }
-
     print $"=== Run ($run_label) complete ==="
     if $bench_failed {
         error make { msg: $"Benchmark run ($run_label) failed" }
@@ -798,6 +767,28 @@ def percentile [sorted_vals: list<any>, pct: int] {
     $sorted_vals | get $clamped
 }
 
+def iso-from-epoch-ms [epoch_ms: int] {
+    let seconds = ($epoch_ms / 1000 | into int)
+    let millis = ($epoch_ms mod 1000 | into int)
+    let base = (^date -u -d $"@($seconds)" "+%Y-%m-%dT%H:%M:%S")
+    $"($base).($millis | into string | fill --alignment right --character '0' --width 3)Z"
+}
+
+def grafana-performance-url [benchmark_id: string, reference_epoch: int, duration: int] {
+    if $benchmark_id == "" or $reference_epoch <= 0 {
+        return ""
+    }
+
+    let range = {
+        from: ($reference_epoch * 1000)
+        to: (($reference_epoch + $duration) * 1000)
+    }
+
+    let from = (iso-from-epoch-ms $range.from)
+    let to = (iso-from-epoch-ms $range.to)
+    $"https://tempoxyz.grafana.net/d/dffj6qf1o30oowe/performance?orgId=1&from=($from)&to=($to)&timezone=browser&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=($benchmark_id)&var-group_by=benchmark_run"
+}
+
 
 def generate-summary [results_dir: string, baseline_ref: string, feature_ref: string, bloat: int, preset: string, tps: int, duration: int, --benchmark-id: string = "", --reference-epoch: int = 0] {
     let candidate_run_labels = ["baseline-1" "feature-1" "feature-2" "baseline-2"]
@@ -809,6 +800,10 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     mut feature_intervals = []
     mut baseline_tps_samples = []
     mut feature_tps_samples = []
+    mut baseline_builder_samples = []
+    mut feature_builder_samples = []
+    mut baseline_validation_samples = []
+    mut feature_validation_samples = []
 
     let compute_tps_stats = { |samples: list<any>|
         let sorted_samples = ($samples | sort)
@@ -835,6 +830,17 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             continue
         }
         let report = (open $report_path)
+        let samples_path = $"($results_dir)/report-($label).samples.ndjson"
+        let validation_samples = if ($samples_path | path exists) {
+            open --raw $samples_path
+                | lines
+                | where { |line| ($line | str trim) != "" }
+                | each { |line| $line | from json }
+                | where { |sample| $sample.name in ["reth_tempo_payload_builder_payload_build_duration_seconds" "reth_consensus_engine_beacon_new_payload_latency"] }
+                | where { |sample| ($sample.labels | get -o quantile | default "") in ["0.5" "0.9" "0.99"] }
+        } else { [] }
+        let builder_samples = ($validation_samples | where name == "reth_tempo_payload_builder_payload_build_duration_seconds")
+        let validation_samples = ($validation_samples | where name == "reth_consensus_engine_beacon_new_payload_latency")
         let blocks = ($report | get blocks | each { |b|
             let tx_count = ($b | get tx_count)
             let timestamp = if (($b | get -o timestamp | default null) != null) {
@@ -886,10 +892,14 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             $baseline_blocks = ($baseline_blocks | append $blocks)
             $baseline_intervals = ($baseline_intervals | append $block_intervals)
             $baseline_tps_samples = ($baseline_tps_samples | append $block_tps_samples)
+            $baseline_builder_samples = ($baseline_builder_samples | append $builder_samples)
+            $baseline_validation_samples = ($baseline_validation_samples | append $validation_samples)
         } else {
             $feature_blocks = ($feature_blocks | append $blocks)
             $feature_intervals = ($feature_intervals | append $block_intervals)
             $feature_tps_samples = ($feature_tps_samples | append $block_tps_samples)
+            $feature_builder_samples = ($feature_builder_samples | append $builder_samples)
+            $feature_validation_samples = ($feature_validation_samples | append $validation_samples)
         }
 
         let total_tx = ($blocks | get tx_count | math sum)
@@ -957,6 +967,31 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let b_lat = do $compute_latency_stats $baseline_blocks
     let f_lat = do $compute_latency_stats $feature_blocks
 
+    let compute_quantile_metric_stats = { |samples: list<any>|
+        let quantile_ms = { |q: string|
+            let values = (
+                $samples
+                    | where { |sample| ($sample.labels | get -o quantile | default "") == $q }
+                    | get value
+                    | each { |v| $v * 1000.0 }
+            )
+            if ($values | length) > 0 { $values | math avg | math round --precision 1 } else { 0.0 }
+        }
+        {
+            n: ($samples | length)
+            p50: (do $quantile_ms "0.5")
+            p90: (do $quantile_ms "0.9")
+            p99: (do $quantile_ms "0.99")
+        }
+    }
+
+    let b_builder_metric = do $compute_quantile_metric_stats $baseline_builder_samples
+    let f_builder_metric = do $compute_quantile_metric_stats $feature_builder_samples
+    let b_builder = if $b_builder_metric.n > 0 { $b_builder_metric } else { { n: $b_lat.n, p50: $b_lat.p50, p90: $b_lat.p90, p99: $b_lat.p99 } }
+    let f_builder = if $f_builder_metric.n > 0 { $f_builder_metric } else { { n: $f_lat.n, p50: $f_lat.p50, p90: $f_lat.p90, p99: $f_lat.p99 } }
+    let b_validation = do $compute_quantile_metric_stats $baseline_validation_samples
+    let f_validation = do $compute_quantile_metric_stats $feature_validation_samples
+
     let b_bt = do $compute_block_time_stats $baseline_intervals
     let f_bt = do $compute_block_time_stats $feature_intervals
     let b_tps_stats = do $compute_tps_stats $baseline_tps_samples
@@ -975,7 +1010,16 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let delta = { |base: float, feat: float| if $base != 0.0 { ((($feat - $base) / $base) * 100) | math round --precision 1 } else { 0.0 } }
 
     # Build summary markdown
-    let summary = ([
+    let grafana_url = (grafana-performance-url $benchmark_id $reference_epoch $duration)
+    let observability_lines = if $grafana_url != "" {
+        [
+            "## Observability"
+            ""
+            $"- Grafana: [Performance dashboard]\(($grafana_url)\)"
+            ""
+        ]
+    } else { [] }
+    let summary_lines = ([
         $"# Bench Comparison: ($baseline_ref) vs ($feature_ref)"
         ""
         "## Configuration"
@@ -987,6 +1031,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         $"- Baseline blocks: ($b_lat.n)"
         $"- Feature blocks: ($f_lat.n)"
         ""
+    ] | append $observability_lines | append [
         "## Tempo Metrics"
         ""
         "| Metric | Baseline | Feature | Delta |"
@@ -1000,28 +1045,24 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         $"| Block Time P90 [ms] | ($b_bt.p90) | ($f_bt.p90) | (do $delta $b_bt.p90 $f_bt.p90)% |"
         $"| Block Time P99 [ms] | ($b_bt.p99) | ($f_bt.p99) | (do $delta $b_bt.p99 $f_bt.p99)% |"
         ""
-        "## Latency (Secondary)"
+        "## Builder Latency"
         ""
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
-        $"| Latency Mean [ms] | ($b_lat.mean) | ($f_lat.mean) | (do $delta $b_lat.mean $f_lat.mean)% |"
-        $"| Latency Std Dev [ms] | ($b_lat.stddev) | ($f_lat.stddev) | (do $delta $b_lat.stddev $f_lat.stddev)% |"
-        $"| Latency P50 [ms] | ($b_lat.p50) | ($f_lat.p50) | (do $delta $b_lat.p50 $f_lat.p50)% |"
-        $"| Latency P90 [ms] | ($b_lat.p90) | ($f_lat.p90) | (do $delta $b_lat.p90 $f_lat.p90)% |"
-        $"| Latency P99 [ms] | ($b_lat.p99) | ($f_lat.p99) | (do $delta $b_lat.p99 $f_lat.p99)% |"
+        $"| P50 [ms] | ($b_builder.p50) | ($f_builder.p50) | (do $delta $b_builder.p50 $f_builder.p50)% |"
+        $"| P90 [ms] | ($b_builder.p90) | ($f_builder.p90) | (do $delta $b_builder.p90 $f_builder.p90)% |"
+        $"| P99 [ms] | ($b_builder.p99) | ($f_builder.p99) | (do $delta $b_builder.p99 $f_builder.p99)% |"
         ""
-        "## Per-Run Details"
+        "## Validation Latency"
         ""
-        "| Run | Blocks | Total Tx | Success | Failed | Avg TPS | Block P50 | Mgas/s |"
-        "|-----|--------|----------|---------|--------|---------|-----------|--------|"
-    ] | str join "\n")
-
-    mut per_run_rows = ""
-    for row in $run_data {
-        $per_run_rows = $"($per_run_rows)| ($row.label) | ($row.blocks) | ($row.total_tx) | ($row.ok) | ($row.err) | ($row.tps) | ($row.block_time_p50) | ($row.mgas_s) |\n"
-    }
-
-    let full_summary = $"($summary)\n($per_run_rows)"
+        "| Metric | Baseline | Feature | Delta |"
+        "|--------|----------|---------|-------|"
+        $"| P50 [ms] | ($b_validation.p50) | ($f_validation.p50) | (do $delta $b_validation.p50 $f_validation.p50)% |"
+        $"| P90 [ms] | ($b_validation.p90) | ($f_validation.p90) | (do $delta $b_validation.p90 $f_validation.p90)% |"
+        $"| P99 [ms] | ($b_validation.p99) | ($f_validation.p99) | (do $delta $b_validation.p99 $f_validation.p99)% |"
+        ""
+    ])
+    let full_summary = ($summary_lines | str join "\n")
     $full_summary | save -f $"($results_dir)/summary.md"
     print $"Summary saved: ($results_dir)/summary.md"
     print $full_summary
@@ -1030,6 +1071,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let summary_json = {
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
+        grafana_url: $grafana_url
         baseline_ref: $baseline_ref
         feature_ref: $feature_ref
         config: {
@@ -1045,6 +1087,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 latency_p50: $b_lat.p50
                 latency_p90: $b_lat.p90
                 latency_p99: $b_lat.p99
+                builder_latency_p50: $b_builder.p50
+                builder_latency_p90: $b_builder.p90
+                builder_latency_p99: $b_builder.p99
                 tps: $b_tps
                 tps_p50: $b_tps_stats.p50
                 tps_p90: $b_tps_stats.p90
@@ -1053,6 +1098,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 block_time_p50: $b_bt.p50
                 block_time_p90: $b_bt.p90
                 block_time_p99: $b_bt.p99
+                validation_latency_p50: $b_validation.p50
+                validation_latency_p90: $b_validation.p90
+                validation_latency_p99: $b_validation.p99
                 blocks: $b_lat.n
             }
             feature: {
@@ -1061,6 +1109,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 latency_p50: $f_lat.p50
                 latency_p90: $f_lat.p90
                 latency_p99: $f_lat.p99
+                builder_latency_p50: $f_builder.p50
+                builder_latency_p90: $f_builder.p90
+                builder_latency_p99: $f_builder.p99
                 tps: $f_tps
                 tps_p50: $f_tps_stats.p50
                 tps_p90: $f_tps_stats.p90
@@ -1069,6 +1120,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 block_time_p50: $f_bt.p50
                 block_time_p90: $f_bt.p90
                 block_time_p99: $f_bt.p99
+                validation_latency_p50: $f_validation.p50
+                validation_latency_p90: $f_validation.p90
+                validation_latency_p99: $f_validation.p99
                 blocks: $f_lat.n
             }
             deltas: {
@@ -1077,6 +1131,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 latency_p50: (do $delta $b_lat.p50 $f_lat.p50)
                 latency_p90: (do $delta $b_lat.p90 $f_lat.p90)
                 latency_p99: (do $delta $b_lat.p99 $f_lat.p99)
+                builder_latency_p50: (do $delta $b_builder.p50 $f_builder.p50)
+                builder_latency_p90: (do $delta $b_builder.p90 $f_builder.p90)
+                builder_latency_p99: (do $delta $b_builder.p99 $f_builder.p99)
                 tps: (do $delta $b_tps $f_tps)
                 tps_p50: (do $delta $b_tps_stats.p50 $f_tps_stats.p50)
                 tps_p90: (do $delta $b_tps_stats.p90 $f_tps_stats.p90)
@@ -1085,6 +1142,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 block_time_p50: (do $delta $b_bt.p50 $f_bt.p50)
                 block_time_p90: (do $delta $b_bt.p90 $f_bt.p90)
                 block_time_p99: (do $delta $b_bt.p99 $f_bt.p99)
+                validation_latency_p50: (do $delta $b_validation.p50 $f_validation.p50)
+                validation_latency_p90: (do $delta $b_validation.p90 $f_validation.p90)
+                validation_latency_p99: (do $delta $b_validation.p99 $f_validation.p99)
             }
         }
         per_run: $run_data
@@ -2185,7 +2245,7 @@ def "main bench" [
                 --txgen-tempo-bin $txgen.txgen_tempo_bin
                 --txgen-bench-bin $txgen.txgen_bench_bin
                 --rpc-urls "http://localhost:8545"
-                --metrics-url "http://127.0.0.1:9090/metrics"
+                --metrics-url ["http://127.0.0.1:9001/metrics"]
                 --genesis-path $run.genesis --datadir $run.datadir
                 --run-label $run.label --results-dir $results_dir
                 --tps $tps --duration $duration --accounts $accounts
@@ -2310,7 +2370,7 @@ def "main bench" [
             --preset-path $preset_path
             --generate-rpc-url $primary_rpc_url
             --submit-rpc-url $submit_rpc_url
-            --metrics-url "http://127.0.0.1:9001/metrics"
+            --metrics-url ["http://127.0.0.1:9001/metrics"]
             --report-path "report.json"
             --tps $tps
             --duration $duration
@@ -2725,7 +2785,7 @@ tempo-precompiles = { path = '($tempo_root)/crates/precompiles' }
                         --preset-path $live_preset_path
                         --generate-rpc-url "http://localhost:8545"
                         --submit-rpc-url "http://localhost:8545"
-                        --metrics-url "http://127.0.0.1:9001/metrics"
+                        --metrics-url ["http://127.0.0.1:9001/metrics"]
                         --report-path "report.json"
                         --tps $tps
                         --duration $duration
