@@ -787,13 +787,14 @@ jobs:
               if (refEpoch && benchId) {
                 const fromMs = refEpoch * 1000;
                 const toMs = Date.now();
+                const traceqlQuery = `{resource.benchmark_id="${benchId}"}`;
                 const grafanaUrl = `https://tempoxyz.grafana.net/d/tikv2tn/tempo-bench?orgId=1&from=${fromMs}&to=${toMs}&var-benchmark_id=${benchId}&var-job=github-tempo-bench-e2e`;
                 const logsPane = JSON.stringify({
-                  pw4: {
-                    datasource: 'ffdsfozmb3eo0e',
+                  g39: {
+                    datasource: 'cfk1hzy08xekgd',
                     queries: [{
                       refId: 'A',
-                      datasource: { type: 'victoriametrics-logs-datasource', uid: 'ffdsfozmb3eo0e' },
+                      datasource: { type: 'victoriametrics-logs-datasource', uid: 'cfk1hzy08xekgd' },
                       editorMode: 'code',
                       expr: `benchmark_id:${benchId}`,
                       queryType: 'instant',
@@ -806,19 +807,17 @@ jobs:
                 const logsUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(logsPane)}&orgId=1`;
                 const tracesPane = JSON.stringify({
                   g39: {
-                    datasource: 'cf59s9gws8z5se',
+                    datasource: 'dfk1hrnxca9s0a',
                     queries: [{
                       refId: 'A',
-                      datasource: { type: 'tempo', uid: 'cf59s9gws8z5se' },
+                      datasource: { type: 'tempo', uid: 'dfk1hrnxca9s0a' },
                       queryType: 'traceqlSearch',
-                      limit: 20,
-                      tableType: 'traces',
-                      metricsQueryType: 'range',
                       serviceMapUseNativeHistograms: false,
                       filters: [
-                        { id: '0ff61fb0', operator: '=', scope: 'resource', tag: 'benchmark_id', value: [benchId], valueType: 'string', isCustomValue: false },
-                        { id: 'service-name', tag: 'service.name', operator: '=', scope: 'resource', value: ['reth'], valueType: 'string', isCustomValue: false },
+                        { id: 'benchmark-id', operator: '=', scope: 'resource', tag: 'benchmark_id', value: [`"${benchId}"`], isCustomValue: true },
+                        { id: 'span-name', tag: 'name', operator: '=', scope: 'span', value: [], isCustomValue: false },
                       ],
+                      query: traceqlQuery,
                     }],
                     range: { from: String(fromMs), to: String(toMs) },
                     compact: false,
