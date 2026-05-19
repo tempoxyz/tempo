@@ -197,7 +197,7 @@ pub trait TempoStateAccess<M = ()> {
     /// Ensures the given TIP20 token uses USD currency.
     ///
     /// IMPORTANT: Caller must ensure `fee_token` has a valid TIP20 prefix.
-    fn ensure_tip20_used(
+    fn ensure_tip20_usd(
         &mut self,
         spec: TempoHardfork,
         fee_token: Address,
@@ -237,7 +237,7 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        let err = self.ensure_tip20_used(spec, fee_token)?;
+        let err = self.ensure_tip20_usd(spec, fee_token)?;
         Ok((err.is_none(), err))
     }
 

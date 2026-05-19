@@ -910,7 +910,7 @@ where
         // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
         if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
             if let Some(err) = journal
-                .ensure_tip20_used(cfg.spec, fee_token)
+                .ensure_tip20_usd(cfg.spec, fee_token)
                 .map_err(|err| EVMError::Custom(err.to_string()))?
             {
                 return Err(err.into());
