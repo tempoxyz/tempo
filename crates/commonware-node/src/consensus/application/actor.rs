@@ -50,7 +50,7 @@ use tempo_telemetry_util::display_duration;
 use reth_provider::{BlockHashReader as _, BlockReader as _};
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::TempoConsensusContext;
-use tracing::{Level, debug, info, info_span, instrument, warn};
+use tracing::{Instrument as _, Level, debug, debug_span, info, info_span, instrument, warn};
 
 use super::{
     Mailbox,
@@ -442,7 +442,12 @@ impl Inner<Init> {
         //
         // TODO: we are diverging from commonware in that we return the digest
         // here. Is that ok or can that cause problems?
-        if let Some(block) = self.marshal.get_verified(round).await {
+        if let Some(block) = self
+            .marshal
+            .get_verified(round)
+            .instrument(debug_span!("get_verified"))
+            .await
+        {
             debug!("skipping proposal: verified block already exists for round on restart");
             return Ok(block.digest());
         }
@@ -454,6 +459,7 @@ impl Inner<Init> {
             parent_view,
             &self.marshal,
         )
+        .instrument(debug_span!("get_parent"))
         .await?;
 
         debug!(height = %parent.height(), "retrieved parent block",);
@@ -500,6 +506,7 @@ impl Inner<Init> {
                 parent.parent_digest(),
                 &self.scheme_provider,
             )
+            .instrument(debug_span!("verify_parent"))
             .await
             .wrap_err("failed verifying block against execution layer")?
         {
@@ -516,6 +523,7 @@ impl Inner<Init> {
                 .state
                 .dkg_manager
                 .get_dkg_outcome(parent_digest, parent.height())
+                .instrument(debug_span!("get_dkg_outcome"))
                 .await
                 .wrap_err("failed getting public dkg ceremony outcome")?;
             ensure!(
@@ -536,7 +544,13 @@ impl Inner<Init> {
             outcome.encode().into()
         } else {
             // Regular block: try to include DKG dealer log.
-            match self.state.dkg_manager.get_dealer_log(round.epoch()).await {
+            match self
+                .state
+                .dkg_manager
+                .get_dealer_log(round.epoch())
+                .instrument(debug_span!("get_dealer_log"))
+                .await
+            {
                 Err(error) => {
                     warn!(
                         %error,
@@ -613,6 +627,7 @@ impl Inner<Init> {
         let payload_id = payload_id_rx
             .as_mut()
             .expect("just set")
+            .instrument(debug_span!("await_payload_id"))
             .await
             .wrap_err("executor dropped response")?
             .wrap_err("failed requesting a new payload build")?;
@@ -654,6 +669,7 @@ impl Inner<Init> {
             .payload_builder_handle
             .resolve_kind(payload_id, reth_node_builder::PayloadKind::WaitForPending)
             .pace(&context, Duration::from_millis(20))
+            .instrument(debug_span!("resolve_payload"))
             .await
             // XXX: this returns Option<Result<_, _>>; drilling into
             // resolve_kind this really seems to resolve to None if no
@@ -665,7 +681,12 @@ impl Inner<Init> {
         let (block, block_access_list) = payload.into_execution_payload();
         let proposal = Block::from_execution_payload(block, block_access_list);
         let digest = proposal.digest();
-        if !self.marshal.proposed(round, proposal).await {
+        if !self
+            .marshal
+            .proposed(round, proposal)
+            .instrument(debug_span!("marshal_proposed"))
+            .await
+        {
             bail!("marshal actor rejected persisting proposal");
         }
 
@@ -699,7 +720,8 @@ impl Inner<Init> {
                 parent_digest,
                 parent_view,
                 &self.marshal,
-            ),
+            )
+            .instrument(debug_span!("get_parent")),
         )
         .await
         .wrap_err("failed getting required blocks")?;
@@ -716,7 +738,12 @@ impl Inner<Init> {
                 .containing(block.height())
                 .expect("epoch strategy is for all heights");
             if epoch_info.last() == block.height() && epoch_info.epoch() == round.epoch() {
-                if !self.marshal.verified(round, block).await {
+                if !self
+                    .marshal
+                    .verified(round, block)
+                    .instrument(debug_span!("marshal_verified"))
+                    .await
+                {
                     bail!("marshal actor refused to persist verified re-proposed block");
                 }
                 return Ok(true);
@@ -744,6 +771,7 @@ impl Inner<Init> {
             .state
             .executor
             .canonicalize_head(parent.height(), parent.digest())
+            .instrument(debug_span!("canonicalize_head_parent"))
             .await
         {
             tracing::warn!(
@@ -774,7 +802,12 @@ impl Inner<Init> {
 
         if is_good {
             // Persist the block in the marshal actor and execution layer.
-            if !self.marshal.verified(round, block).await {
+            if !self
+                .marshal
+                .verified(round, block)
+                .instrument(debug_span!("marshal_verified"))
+                .await
+            {
                 bail!("marshal actor refused to persist verified block");
             }
 
@@ -782,6 +815,7 @@ impl Inner<Init> {
             self.state
                 .executor
                 .canonicalize_head(block_height, block_digest)
+                .instrument(debug_span!("canonicalize_head"))
                 .await
                 .wrap_err("failed making the verified proposal the head of the canonical chain")?;
         }
