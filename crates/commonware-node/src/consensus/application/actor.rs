@@ -1059,24 +1059,11 @@ async fn get_parent(
         return Ok(Block::from_execution_block(parent.seal()));
     }
 
-    let genesis_digest = execution_node.chain_spec().genesis_hash();
-    if parent_digest == Digest(genesis_digest) {
-        let genesis_block = execution_node
-            .provider
-            .block_by_number(0)
-            .map_or_else(
-                |e| Err(eyre::Report::new(e)),
-                |block| block.ok_or_eyre("execution layer did not have block"),
-            )
-            .wrap_err("execution layer did not have the genesis block")?;
-        Ok(Block::from_execution_block(genesis_block.seal()))
-    } else {
-        marshal
-            .subscribe_by_digest(Some(Round::new(round.epoch(), parent_view)), parent_digest)
-            .await
-            .await
-            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))
-    }
+    marshal
+        .subscribe_by_digest(Some(Round::new(round.epoch(), parent_view)), parent_digest)
+        .await
+        .await
+        .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))
 }
 
 #[derive(Clone)]
