@@ -40,7 +40,6 @@ use futures::{
     future::try_join,
 };
 use rand_08::{CryptoRng, Rng};
-use reth_ethereum::chainspec::EthChainSpec as _;
 use reth_node_builder::{Block as _, BuiltPayload, ConsensusEngineHandle, PayloadKind};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
