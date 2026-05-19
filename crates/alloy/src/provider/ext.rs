@@ -174,16 +174,16 @@ impl<P> TempoProviderExt for P where P: Provider<TempoNetwork> {}
 pub struct SponsorConfig {
     mode: SponsorshipMode,
     config: ConnectionConfig,
-    forward_request_headers: bool,
+    forward_headers: bool,
 }
 
 impl SponsorConfig {
     /// Configure sponsorship mode and whether sponsor requests receive original request headers.
-    pub const fn new(mode: SponsorshipMode, forward_request_headers: bool) -> Self {
+    pub const fn new(mode: SponsorshipMode, forward_headers: bool) -> Self {
         Self {
             mode,
             config: ConnectionConfig::new(),
-            forward_request_headers,
+            forward_headers,
         }
     }
 
@@ -266,17 +266,17 @@ impl<L, F, N> SponsoredProviderBuilder<L, F, N> {
     {
         let default =
             BuiltInConnectionString::from_str(default_rpc).map_err(TransportErrorKind::custom)?;
+        let SponsorConfig {
+            mode,
+            config,
+            forward_headers,
+        } = self.sponsor_config;
         let sponsor = ConfiguredBuiltInConnection {
             connection: BuiltInConnectionString::from_str(&self.sponsor_rpc)
                 .map_err(TransportErrorKind::custom)?,
-            config: self.sponsor_config.config,
+            config,
         };
-        let connect = RelayConnector::with_config(
-            default,
-            sponsor,
-            self.sponsor_config.mode,
-            self.sponsor_config.forward_request_headers,
-        );
+        let connect = RelayConnector::with_config(default, sponsor, mode, forward_headers);
         self.inner.connect_with(&connect).await
     }
 }

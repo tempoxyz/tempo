@@ -334,15 +334,16 @@ impl<D, R> RelayTransport<D, R> {
 
         match self.mode {
             SponsorshipMode::SignAndRelay => {
-                let relay_request = if self.forward_sponsor_request_headers {
-                    tx_request_with_original_headers(SEND_RAW_TX, &sponsor_raw_tx, &request)?
-                } else {
-                    tx_request(SEND_RAW_TX, &sponsor_raw_tx, &request)?
-                };
+                let relay_request = tx_request(
+                    SEND_RAW_TX,
+                    &sponsor_raw_tx,
+                    &request,
+                    self.forward_sponsor_request_headers,
+                )?;
                 self.relay.call(RequestPacket::Single(relay_request)).await
             }
             SponsorshipMode::SignOnly => {
-                let sign_request = tx_request(SIGN_RAW_TX, &sponsor_raw_tx, &request)?;
+                let sign_request = tx_request(SIGN_RAW_TX, &sponsor_raw_tx, &request, false)?;
                 let signed_tx: String =
                     match self.relay.call(RequestPacket::Single(sign_request)).await? {
                         ResponsePacket::Single(response) => match response.payload {
@@ -363,8 +364,7 @@ impl<D, R> RelayTransport<D, R> {
 
                 let signed_tx_envelope = validate_signed_tempo_aa(&signed_tx)?;
                 validate_sponsor_signed_same_payload(&unsigned_tx, &signed_tx_envelope)?;
-                let send_request =
-                    tx_request_with_original_headers(SEND_RAW_TX, &signed_tx, &request)?;
+                let send_request = tx_request(SEND_RAW_TX, &signed_tx, &request, true)?;
                 self.default.call(RequestPacket::Single(send_request)).await
             }
         }
@@ -381,21 +381,16 @@ fn tx_request(
     method: &'static str,
     tx: &str,
     original: &SerializedRequest,
+    forward_headers: bool,
 ) -> Result<SerializedRequest, TransportError> {
-    Request::new(method, original.id().clone(), Some([tx]))
+    let mut request: SerializedRequest = Request::new(method, original.id().clone(), Some([tx]))
         .try_into()
-        .map_err(TransportErrorKind::non_retryable)
-}
+        .map_err(TransportErrorKind::non_retryable)?;
 
-fn tx_request_with_original_headers(
-    method: &'static str,
-    tx: &str,
-    original: &SerializedRequest,
-) -> Result<SerializedRequest, TransportError> {
-    let mut request = tx_request(method, tx, original)?;
-    if let Some(headers) = original.headers() {
+    if forward_headers && let Some(headers) = original.headers() {
         request.headers_mut().extend(headers.clone());
     }
+
     Ok(request)
 }
 
