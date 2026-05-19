@@ -40,6 +40,13 @@ pub enum Layout {
     ///
     /// Used for structs, fixed-size arrays, and dynamic types.
     Slots(usize),
+
+    /// Tagged payload enum: a 1-byte tag plus one full-word payload.
+    ///
+    /// The tag may pack with preceding fields, but the enum is a layout barrier:
+    /// the payload is always stored at `tag_slot + 1`, and following fields start
+    /// at `tag_slot + 2`.
+    TaggedPayload,
 }
 
 impl Layout {
@@ -47,8 +54,29 @@ impl Layout {
     pub const fn is_packable(&self) -> bool {
         match self {
             Self::Bytes(n) => *n < 32,
-            Self::Slots(_) => false,
+            Self::Slots(_) | Self::TaggedPayload => false,
         }
+    }
+
+    /// Returns true if this layout is a tagged payload enum.
+    pub const fn is_tagged_payload(&self) -> bool {
+        matches!(self, Self::TaggedPayload)
+    }
+
+    /// Returns the number of bytes that participate in normal packing decisions.
+    ///
+    /// For tagged payload enums this is only the 1-byte tag. The full logical
+    /// footprint is still reported by [`Self::bytes`].
+    pub const fn packing_head_bytes(&self) -> usize {
+        match self {
+            Self::TaggedPayload => 1,
+            _ => self.bytes(),
+        }
+    }
+
+    /// Returns true if values with this layout can be used as a tagged enum payload.
+    pub const fn is_single_word_payload(&self) -> bool {
+        matches!(self, Self::Bytes(_))
     }
 
     /// Returns the number of storage slots this type occupies.
@@ -56,11 +84,13 @@ impl Layout {
         match self {
             Self::Bytes(_) => 1,
             Self::Slots(n) => *n,
+            Self::TaggedPayload => 2,
         }
     }
 
     /// Returns the number of bytes this type occupies. For `Bytes(n)`, returns n.
     /// For `Slots(n)`, returns n * 32 (each slot is 32 bytes).
+    /// For `TaggedPayload`, returns the worst-case two-slot logical footprint.
     pub const fn bytes(&self) -> usize {
         match self {
             Self::Bytes(n) => *n,
@@ -73,6 +103,7 @@ impl Layout {
                 }
                 result
             }
+            Self::TaggedPayload => 64,
         }
     }
 }
@@ -89,6 +120,7 @@ impl Layout {
 ///    Full,
 ///    Init,
 ///    Packed(usize),
+///    TaggedPayload(usize),
 /// }
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,13 +158,31 @@ impl LayoutCtx {
         Self(offset)
     }
 
-    /// Get the packed offset, returns `None` for `FULL` and `INIT`
+    /// Load/store a tagged payload enum whose tag is packed at the given byte offset.
+    ///
+    /// The tag is stored in the provided slot at `offset`; the payload is stored in
+    /// the following slot. This encoding is intentionally disjoint from primitive
+    /// packed offsets so `packed_offset()` never reports tagged-payload contexts as
+    /// primitive packed contexts.
+    pub const fn tagged_payload(offset: usize) -> Self {
+        debug_assert!(offset < 32);
+        Self(32 + offset)
+    }
+
+    /// Get the primitive packed offset, returns `None` for `FULL`, `INIT`, and
+    /// tagged-payload contexts.
     #[inline]
     pub const fn packed_offset(&self) -> Option<usize> {
-        if self.0 >= usize::MAX - 1 {
-            None
+        if self.0 < 32 { Some(self.0) } else { None }
+    }
+
+    /// Get the tagged payload tag offset, returns `None` for other contexts.
+    #[inline]
+    pub const fn tagged_payload_offset(&self) -> Option<usize> {
+        if self.0 >= 32 && self.0 < 64 {
+            Some(self.0 - 32)
         } else {
-            Some(self.0)
+            None
         }
     }
 
@@ -181,6 +231,15 @@ pub trait StorableType {
     /// slots and need special cleanup. Non-dynamic types just zero their slots.
     const IS_DYNAMIC: bool = false;
 
+    /// Whether this type is stored as a 1-byte tag plus one full-word payload.
+    const IS_TAGGED_PAYLOAD: bool = Self::LAYOUT.is_tagged_payload();
+
+    /// Number of leading bytes used when this value is considered for packing.
+    ///
+    /// For normal values this equals `BYTES`; for tagged payload enums this is the
+    /// 1-byte tag, while `BYTES` still reports the full two-slot logical footprint.
+    const PACKING_HEAD_BYTES: usize = Self::LAYOUT.packing_head_bytes();
+
     /// The handler type that provides storage access for this type.
     ///
     /// For primitives, this is `Slot<Self>`.
@@ -223,6 +282,43 @@ pub trait Storable: StorableType + Sized {
 
     /// Store this type to storage at the given slot.
     fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()>;
+
+    /// Load a tagged-payload enum using an optional cached tag slot word.
+    ///
+    /// This is an optimization hook for generated parent-struct code. Normal types
+    /// fall back to [`Self::load`]; tagged-payload enum derives override it to avoid
+    /// a redundant SLOAD when preceding packed fields already loaded the tag slot.
+    #[doc(hidden)]
+    fn load_tagged_payload<S: StorageOps>(
+        storage: &S,
+        tag_slot: U256,
+        tag_offset: usize,
+        _cached_tag_slot: Option<U256>,
+    ) -> Result<Self> {
+        Self::load(storage, tag_slot, LayoutCtx::tagged_payload(tag_offset))
+    }
+
+    /// Store a tagged-payload enum into an in-memory packed tag slot word.
+    ///
+    /// This is an optimization hook for generated parent-struct code. Normal types
+    /// fall back to [`Self::store`]; tagged-payload enum derives override it to let
+    /// the parent batch the tag with preceding packed fields and commit the tag slot
+    /// once.
+    #[doc(hidden)]
+    fn store_tagged_payload<S: StorageOps>(
+        &self,
+        storage: &mut S,
+        tag_slot: U256,
+        tag_offset: usize,
+        _tag_slot_value: &mut U256,
+    ) -> Result<()> {
+        Self::store(
+            self,
+            storage,
+            tag_slot,
+            LayoutCtx::tagged_payload(tag_offset),
+        )
+    }
 
     /// Delete this type from storage (set to zero).
     ///

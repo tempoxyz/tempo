@@ -180,6 +180,53 @@ struct EnumPacked {
     pub other_status: PackedStatus, // 1 byte (slot 0, offset 4)
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Storable)]
+#[repr(u8)]
+enum RecoveryAuthority {
+    Originator,
+    Receiver,
+    ThirdParty(Address),
+    Nonce(u64),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Storable)]
+struct TaggedEnumPacked {
+    pub enabled: bool,               // 1 byte (slot 0, offset 0)
+    pub policy_id: u64,              // 8 bytes (slot 0, offset 1)
+    pub recovery: RecoveryAuthority, // tag (slot 0, offset 9), payload (slot 1)
+    pub counter: u64,                // 8 bytes (slot 2, offset 0)
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
+#[repr(u8)]
+enum LegacyRecoveryMode {
+    Originator,
+    Receiver,
+    ThirdParty,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Storable)]
+struct LegacyReceivePolicyConfig {
+    pub has_receive_policy: bool,          // 1 byte (slot 0, offset 0)
+    pub sender_policy_id: u64,             // 8 bytes (slot 0, offset 1)
+    pub token_filter_id: u64,              // 8 bytes (slot 0, offset 9)
+    pub recovery_mode: LegacyRecoveryMode, // 1 byte (slot 0, offset 17)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Storable)]
+struct LegacyReceivePolicy {
+    pub config: LegacyReceivePolicyConfig, // slot 0
+    pub recovery_address: Address,         // slot 1
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Storable)]
+struct TaggedReceivePolicy {
+    pub has_receive_policy: bool,    // 1 byte (slot 0, offset 0)
+    pub sender_policy_id: u64,       // 8 bytes (slot 0, offset 1)
+    pub token_filter_id: u64,        // 8 bytes (slot 0, offset 9)
+    pub recovery: RecoveryAuthority, // tag (slot 0, offset 17), payload (slot 1)
+}
+
 #[test]
 fn test_slot_and_byte_counts() {
     // Rule verification
@@ -208,6 +255,15 @@ fn test_slot_and_byte_counts() {
     // Unit enums derive as a single packed byte
     assert_eq!(PackedStatus::LAYOUT, Layout::Bytes(1));
     assert_eq!(EnumPacked::LAYOUT, Layout::Slots(1));
+
+    // Tagged payload enums are two-slot logical values with a one-byte packing head
+    assert_eq!(RecoveryAuthority::LAYOUT, Layout::TaggedPayload);
+    assert_eq!(RecoveryAuthority::SLOTS, 2);
+    assert_eq!(RecoveryAuthority::BYTES, 64);
+    const { assert!(!RecoveryAuthority::IS_PACKABLE) };
+    const { assert!(RecoveryAuthority::IS_TAGGED_PAYLOAD) };
+    assert_eq!(RecoveryAuthority::PACKING_HEAD_BYTES, 1);
+    assert_eq!(TaggedEnumPacked::LAYOUT, Layout::Slots(3));
 }
 
 #[test]
@@ -259,6 +315,331 @@ fn test_unit_enum_storage_rejects_invalid_discriminant() {
             enum_slot.read().unwrap_err(),
             error::TempoPrecompileError::enum_conversion_error()
         );
+    });
+}
+
+#[test]
+fn test_tagged_payload_enum_standalone_storage() {
+    let (mut storage, address) = setup_storage();
+    let base_slot = U256::from(7777);
+    let recovery_address = test_address(0xAB);
+
+    StorageCtx::enter(&mut storage, || {
+        let mut enum_slot = Slot::<RecoveryAuthority>::new(base_slot, address);
+
+        enum_slot
+            .write(RecoveryAuthority::ThirdParty(recovery_address))
+            .unwrap();
+        assert_eq!(
+            enum_slot.read().unwrap(),
+            RecoveryAuthority::ThirdParty(recovery_address)
+        );
+
+        let raw_tag = Slot::<U256>::new(base_slot, address).read().unwrap();
+        assert_eq!(raw_tag, U256::from(2));
+        assert_eq!(
+            Slot::<Address>::new(base_slot + U256::from(1), address)
+                .read()
+                .unwrap(),
+            recovery_address
+        );
+
+        enum_slot.write(RecoveryAuthority::Receiver).unwrap();
+        assert_eq!(enum_slot.read().unwrap(), RecoveryAuthority::Receiver);
+        assert_eq!(
+            Slot::<U256>::new(base_slot + U256::from(1), address)
+                .read()
+                .unwrap(),
+            U256::ZERO,
+            "unit variants clear stale payload"
+        );
+
+        enum_slot.delete().unwrap();
+        assert_eq!(
+            Slot::<U256>::new(base_slot, address).read().unwrap(),
+            U256::ZERO
+        );
+        assert_eq!(
+            Slot::<U256>::new(base_slot + U256::from(1), address)
+                .read()
+                .unwrap(),
+            U256::ZERO
+        );
+    });
+}
+
+#[test]
+fn test_tagged_payload_enum_lazy_payload_load_and_invalid_tags() {
+    let (mut storage, address) = setup_storage();
+    let base_slot = U256::from(8888);
+
+    StorageCtx::enter(&mut storage, || {
+        // Originator is a unit variant, so this must not try to decode the invalid u64 payload.
+        Slot::<u8>::new(base_slot, address).write(0).unwrap();
+        Slot::<U256>::new(base_slot + U256::from(1), address)
+            .write(U256::MAX)
+            .unwrap();
+        assert_eq!(
+            Slot::<RecoveryAuthority>::new(base_slot, address)
+                .read()
+                .unwrap(),
+            RecoveryAuthority::Originator
+        );
+
+        // Nonce is a u64 payload variant, so the same payload word should fail to decode.
+        Slot::<u8>::new(base_slot, address).write(3).unwrap();
+        assert!(
+            Slot::<RecoveryAuthority>::new(base_slot, address)
+                .read()
+                .is_err()
+        );
+
+        Slot::<u8>::new(base_slot, address).write(99).unwrap();
+        assert_eq!(
+            Slot::<RecoveryAuthority>::new(base_slot, address)
+                .read()
+                .unwrap_err(),
+            error::TempoPrecompileError::enum_conversion_error()
+        );
+    });
+}
+
+#[test]
+fn test_tagged_payload_enum_packs_tag_and_barriers_following_fields() {
+    let (mut storage, address) = setup_storage();
+    let base_slot = U256::from(9999);
+    let recovery_address = test_address(0xCD);
+    let value = TaggedEnumPacked {
+        enabled: true,
+        policy_id: 0x0807_0605_0403_0201,
+        recovery: RecoveryAuthority::ThirdParty(recovery_address),
+        counter: 0x1112_1314_1516_1718,
+    };
+
+    StorageCtx::enter(&mut storage, || {
+        let mut struct_slot = Slot::<TaggedEnumPacked>::new(base_slot, address);
+        struct_slot.write(value.clone()).unwrap();
+        assert_eq!(struct_slot.read().unwrap(), value);
+
+        let tag_slot = Slot::<U256>::new(base_slot, address).read().unwrap();
+        let stored_enabled: bool = extract_from_word(tag_slot, 0, 1).unwrap();
+        let stored_policy_id: u64 = extract_from_word(tag_slot, 1, 8).unwrap();
+        let stored_tag: u8 = extract_from_word(tag_slot, 9, 1).unwrap();
+        assert!(stored_enabled);
+        assert_eq!(stored_policy_id, value.policy_id);
+        assert_eq!(stored_tag, 2);
+
+        assert_eq!(
+            Slot::<Address>::new(base_slot + U256::from(1), address)
+                .read()
+                .unwrap(),
+            recovery_address
+        );
+
+        let counter_slot = Slot::<U256>::new(base_slot + U256::from(2), address)
+            .read()
+            .unwrap();
+        let stored_counter: u64 = extract_from_word(counter_slot, 0, 8).unwrap();
+        assert_eq!(stored_counter, value.counter);
+
+        let updated = TaggedEnumPacked {
+            enabled: false,
+            policy_id: 42,
+            recovery: RecoveryAuthority::Receiver,
+            counter: 7,
+        };
+        struct_slot.write(updated.clone()).unwrap();
+        assert_eq!(struct_slot.read().unwrap(), updated);
+
+        let tag_slot = Slot::<U256>::new(base_slot, address).read().unwrap();
+        let stored_enabled: bool = extract_from_word(tag_slot, 0, 1).unwrap();
+        let stored_policy_id: u64 = extract_from_word(tag_slot, 1, 8).unwrap();
+        let stored_tag: u8 = extract_from_word(tag_slot, 9, 1).unwrap();
+        assert!(!stored_enabled);
+        assert_eq!(stored_policy_id, 42);
+        assert_eq!(stored_tag, 1);
+        assert_eq!(
+            Slot::<U256>::new(base_slot + U256::from(1), address)
+                .read()
+                .unwrap(),
+            U256::ZERO,
+            "unit variant clears stale tagged payload in structs"
+        );
+    });
+}
+
+#[test]
+fn test_receive_policy_tagged_payload_matches_legacy_layout_and_io_counts() -> eyre::Result<()> {
+    let address = Address::random();
+    let legacy_base_slot = U256::from(12_000);
+    let tagged_base_slot = U256::from(13_000);
+    let recovery_address = test_address(0x42);
+
+    assert_eq!(LegacyReceivePolicyConfig::LAYOUT, Layout::Slots(1));
+    assert_eq!(LegacyReceivePolicy::LAYOUT, Layout::Slots(2));
+    assert_eq!(TaggedReceivePolicy::LAYOUT, Layout::Slots(2));
+
+    let legacy = LegacyReceivePolicy {
+        config: LegacyReceivePolicyConfig {
+            has_receive_policy: true,
+            sender_policy_id: 0x0807_0605_0403_0201,
+            token_filter_id: 0x1112_1314_1516_1718,
+            recovery_mode: LegacyRecoveryMode::ThirdParty,
+        },
+        recovery_address,
+    };
+    let tagged = TaggedReceivePolicy {
+        has_receive_policy: true,
+        sender_policy_id: legacy.config.sender_policy_id,
+        token_filter_id: legacy.config.token_filter_id,
+        recovery: RecoveryAuthority::ThirdParty(recovery_address),
+    };
+
+    let mut legacy_storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+    let (legacy_store_counts, legacy_slot0, legacy_slot1) =
+        StorageCtx::enter(&mut legacy_storage, || {
+            Slot::<LegacyReceivePolicy>::new(legacy_base_slot, address).write(legacy.clone())?;
+            let counts = (StorageCtx.counter_sload(), StorageCtx.counter_sstore());
+            let slot0 = Slot::<U256>::new(legacy_base_slot, address).read()?;
+            let slot1 = Slot::<U256>::new(legacy_base_slot + U256::ONE, address).read()?;
+            Ok::<_, error::TempoPrecompileError>((counts, slot0, slot1))
+        })?;
+
+    let mut tagged_storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+    let (tagged_store_counts, tagged_slot0, tagged_slot1) =
+        StorageCtx::enter(&mut tagged_storage, || {
+            Slot::<TaggedReceivePolicy>::new(tagged_base_slot, address).write(tagged.clone())?;
+            let counts = (StorageCtx.counter_sload(), StorageCtx.counter_sstore());
+            let slot0 = Slot::<U256>::new(tagged_base_slot, address).read()?;
+            let slot1 = Slot::<U256>::new(tagged_base_slot + U256::ONE, address).read()?;
+            Ok::<_, error::TempoPrecompileError>((counts, slot0, slot1))
+        })?;
+
+    assert_eq!(legacy_store_counts, (0, 2));
+    assert_eq!(tagged_store_counts, legacy_store_counts);
+    assert_eq!(
+        tagged_slot0, legacy_slot0,
+        "tagged enum tag must match legacy config slot layout"
+    );
+    assert_eq!(
+        tagged_slot1, legacy_slot1,
+        "tagged enum payload must match legacy recovery address slot"
+    );
+
+    let legacy_read_counts = StorageCtx::enter(&mut legacy_storage, || {
+        StorageCtx.reset_counters();
+        let policy = LegacyReceivePolicy::handle(legacy_base_slot, LayoutCtx::FULL, address);
+        let config = policy.config.read()?;
+        let recovery = match config.recovery_mode {
+            LegacyRecoveryMode::Originator => RecoveryAuthority::Originator,
+            LegacyRecoveryMode::Receiver => RecoveryAuthority::Receiver,
+            LegacyRecoveryMode::ThirdParty => {
+                RecoveryAuthority::ThirdParty(policy.recovery_address.read()?)
+            }
+        };
+        assert_eq!(recovery, RecoveryAuthority::ThirdParty(recovery_address));
+        Ok::<_, error::TempoPrecompileError>((
+            StorageCtx.counter_sload(),
+            StorageCtx.counter_sstore(),
+        ))
+    })?;
+
+    let tagged_read_counts = StorageCtx::enter(&mut tagged_storage, || {
+        StorageCtx.reset_counters();
+        let policy = Slot::<TaggedReceivePolicy>::new(tagged_base_slot, address).read()?;
+        assert_eq!(policy, tagged);
+        Ok::<_, error::TempoPrecompileError>((
+            StorageCtx.counter_sload(),
+            StorageCtx.counter_sstore(),
+        ))
+    })?;
+
+    assert_eq!(legacy_read_counts, (2, 0));
+    assert_eq!(tagged_read_counts, legacy_read_counts);
+
+    // Unit recovery modes must stay as cheap as the legacy config-only read: one SLOAD
+    // for the packed config/tag slot and no payload read.
+    let legacy_receiver = LegacyReceivePolicy {
+        config: LegacyReceivePolicyConfig {
+            recovery_mode: LegacyRecoveryMode::Receiver,
+            ..legacy.config.clone()
+        },
+        recovery_address: test_address(0x01),
+    };
+    let tagged_receiver = TaggedReceivePolicy {
+        recovery: RecoveryAuthority::Receiver,
+        ..tagged.clone()
+    };
+
+    let mut legacy_storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+    let legacy_receiver_read_counts = StorageCtx::enter(&mut legacy_storage, || {
+        Slot::<LegacyReceivePolicy>::new(legacy_base_slot, address).write(legacy_receiver)?;
+        StorageCtx.reset_counters();
+        let policy = LegacyReceivePolicy::handle(legacy_base_slot, LayoutCtx::FULL, address);
+        let config = policy.config.read()?;
+        assert_eq!(config.recovery_mode, LegacyRecoveryMode::Receiver);
+        Ok::<_, error::TempoPrecompileError>((
+            StorageCtx.counter_sload(),
+            StorageCtx.counter_sstore(),
+        ))
+    })?;
+
+    let mut tagged_storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+    let tagged_receiver_read_counts = StorageCtx::enter(&mut tagged_storage, || {
+        Slot::<TaggedReceivePolicy>::new(tagged_base_slot, address)
+            .write(tagged_receiver.clone())?;
+        StorageCtx.reset_counters();
+        let policy = Slot::<TaggedReceivePolicy>::new(tagged_base_slot, address).read()?;
+        assert_eq!(policy, tagged_receiver);
+        Ok::<_, error::TempoPrecompileError>((
+            StorageCtx.counter_sload(),
+            StorageCtx.counter_sstore(),
+        ))
+    })?;
+
+    assert_eq!(legacy_receiver_read_counts, (1, 0));
+    assert_eq!(tagged_receiver_read_counts, legacy_receiver_read_counts);
+
+    Ok(())
+}
+
+#[test]
+fn test_tagged_payload_enum_contract_handler_context() {
+    #[contract]
+    pub struct Layout {
+        pub enabled: bool,               // 1 byte (slot 0, offset 0)
+        pub recovery: RecoveryAuthority, // tag (slot 0, offset 1), payload (slot 1)
+        pub counter: u64,                // slot 2
+    }
+
+    let (mut storage, address) = setup_storage();
+    let mut layout = Layout::__new(address);
+    let recovery_address = test_address(0xEF);
+
+    StorageCtx::enter(&mut storage, || {
+        assert_eq!(layout.enabled.slot(), U256::ZERO);
+        assert_eq!(layout.recovery.slot(), U256::ZERO);
+        assert_eq!(layout.counter.slot(), U256::from(2));
+
+        layout.enabled.write(true).unwrap();
+        layout
+            .recovery
+            .write(RecoveryAuthority::ThirdParty(recovery_address))
+            .unwrap();
+        layout.counter.write(99).unwrap();
+
+        assert!(layout.enabled.read().unwrap());
+        assert_eq!(
+            layout.recovery.read().unwrap(),
+            RecoveryAuthority::ThirdParty(recovery_address)
+        );
+        assert_eq!(layout.counter.read().unwrap(), 99);
+
+        let tag_slot = Slot::<U256>::new(U256::ZERO, address).read().unwrap();
+        let stored_enabled: bool = extract_from_word(tag_slot, 0, 1).unwrap();
+        let stored_tag: u8 = extract_from_word(tag_slot, 1, 1).unwrap();
+        assert!(stored_enabled);
+        assert_eq!(stored_tag, 2);
     });
 }
 

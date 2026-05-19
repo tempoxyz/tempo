@@ -12,7 +12,7 @@ use crate::{
     utils::{extract_mapping_types, extract_storable_array_sizes, to_snake_case},
 };
 
-/// Implements the `Storable` derive macro for structs and `#[repr(u8)]` unit enums.
+/// Implements the `Storable` derive macro for structs and `#[repr(u8)]` enums.
 ///
 /// Packs fields into storage slots based on their byte sizes.
 /// Fields are placed sequentially in slots, moving to a new slot when
@@ -20,10 +20,10 @@ use crate::{
 pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     match &input.data {
         Data::Struct(data_struct) => derive_struct_impl(&input, data_struct),
-        Data::Enum(data_enum) => derive_unit_enum_impl(&input, data_enum),
+        Data::Enum(data_enum) => derive_enum_impl(&input, data_enum),
         _ => Err(syn::Error::new_spanned(
             &input.ident,
-            "`Storable` can only be derived for structs with named fields or unit enums",
+            "`Storable` can only be derived for structs with named fields or `#[repr(u8)]` enums",
         )),
     }
 }
@@ -184,7 +184,7 @@ fn derive_struct_impl(input: &DeriveInput, data_struct: &DataStruct) -> syn::Res
     Ok(combined)
 }
 
-fn derive_unit_enum_impl(input: &DeriveInput, data_enum: &DataEnum) -> syn::Result<TokenStream> {
+fn derive_enum_impl(input: &DeriveInput, data_enum: &DataEnum) -> syn::Result<TokenStream> {
     if extract_storable_array_sizes(&input.attrs)?.is_some() {
         return Err(syn::Error::new_spanned(
             &input.ident,
@@ -195,7 +195,7 @@ fn derive_unit_enum_impl(input: &DeriveInput, data_enum: &DataEnum) -> syn::Resu
     if !has_repr_u8(&input.attrs)? {
         return Err(syn::Error::new_spanned(
             &input.ident,
-            "`Storable` unit enums must be annotated with `#[repr(u8)]`",
+            "`Storable` enums must be annotated with `#[repr(u8)]`",
         ));
     }
 
@@ -206,23 +206,28 @@ fn derive_unit_enum_impl(input: &DeriveInput, data_enum: &DataEnum) -> syn::Resu
         ));
     }
 
-    for variant in &data_enum.variants {
-        if !matches!(variant.fields, Fields::Unit) {
-            return Err(syn::Error::new_spanned(
-                variant,
-                "`Storable` enums must use unit variants only",
-            ));
-        }
-    }
-
     validate_sequential_discriminants(data_enum)?;
 
+    let has_payload = data_enum
+        .variants
+        .iter()
+        .any(|variant| !matches!(variant.fields, Fields::Unit));
+
+    if has_payload {
+        derive_tagged_payload_enum_impl(input, data_enum)
+    } else {
+        derive_unit_enum_impl(input, data_enum)
+    }
+}
+
+fn derive_unit_enum_impl(input: &DeriveInput, data_enum: &DataEnum) -> syn::Result<TokenStream> {
     let enum_name = &input.ident;
     let variant_names: Vec<_> = data_enum
         .variants
         .iter()
         .map(|variant| &variant.ident)
         .collect();
+    let variant_tags: Vec<u8> = (0..variant_names.len()).map(|idx| idx as u8).collect();
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     Ok(quote! {
@@ -245,7 +250,7 @@ fn derive_unit_enum_impl(input: &DeriveInput, data_enum: &DataEnum) -> syn::Resu
             ) -> crate::error::Result<Self> {
                 let value = <u8 as crate::storage::Storable>::load(storage, slot, ctx)?;
                 match value {
-                    #(discriminant if discriminant == Self::#variant_names as u8 => Ok(Self::#variant_names),)*
+                    #(#variant_tags => Ok(Self::#variant_names),)*
                     _ => Err(crate::error::TempoPrecompileError::enum_conversion_error()),
                 }
             }
@@ -258,10 +263,220 @@ fn derive_unit_enum_impl(input: &DeriveInput, data_enum: &DataEnum) -> syn::Resu
                 ctx: crate::storage::LayoutCtx
             ) -> crate::error::Result<()> {
                 let value = match self {
-                    #(Self::#variant_names => Self::#variant_names as u8,)*
+                    #(Self::#variant_names => #variant_tags,)*
                 };
 
                 <u8 as crate::storage::Storable>::store(&value, storage, slot, ctx)
+            }
+        }
+    })
+}
+
+fn derive_tagged_payload_enum_impl(
+    input: &DeriveInput,
+    data_enum: &DataEnum,
+) -> syn::Result<TokenStream> {
+    if !input.generics.params.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &input.generics,
+            "`Storable` tagged payload enums cannot have generic parameters",
+        ));
+    }
+
+    let enum_name = &input.ident;
+    let variant_names: Vec<_> = data_enum
+        .variants
+        .iter()
+        .map(|variant| &variant.ident)
+        .collect();
+    let variant_tags: Vec<u8> = (0..variant_names.len()).map(|idx| idx as u8).collect();
+
+    let mut payload_assertions = Vec::new();
+    let mut load_arms = Vec::new();
+    let mut tag_arms = Vec::new();
+    let mut payload_store_arms = Vec::new();
+
+    for (idx, variant) in data_enum.variants.iter().enumerate() {
+        let variant_name = &variant.ident;
+        let tag = variant_tags[idx];
+
+        match &variant.fields {
+            Fields::Unit => {
+                load_arms.push(quote! { #tag => Ok(Self::#variant_name) });
+                tag_arms.push(quote! { Self::#variant_name => #tag });
+                payload_store_arms.push(quote! {
+                    Self::#variant_name => {
+                        storage.store(slot + ::alloy::primitives::U256::from(1), ::alloy::primitives::U256::ZERO)?;
+                    }
+                });
+            }
+            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => {
+                let payload_ty = &fields.unnamed[0].ty;
+                payload_assertions.push(quote! {
+                    const _: () = {
+                        assert!(<#payload_ty as crate::storage::StorableType>::LAYOUT.is_single_word_payload());
+                    };
+                });
+                load_arms.push(quote! {
+                    #tag => {
+                        let value = <#payload_ty as crate::storage::Storable>::load(
+                            storage,
+                            slot + ::alloy::primitives::U256::from(1),
+                            crate::storage::LayoutCtx::FULL,
+                        )?;
+                        Ok(Self::#variant_name(value))
+                    }
+                });
+                tag_arms.push(quote! { Self::#variant_name(_) => #tag });
+                payload_store_arms.push(quote! {
+                    Self::#variant_name(value) => {
+                        <#payload_ty as crate::storage::Storable>::store(
+                            value,
+                            storage,
+                            slot + ::alloy::primitives::U256::from(1),
+                            crate::storage::LayoutCtx::FULL,
+                        )?;
+                    }
+                });
+            }
+            Fields::Unnamed(_) => {
+                return Err(syn::Error::new_spanned(
+                    variant,
+                    "`Storable` tagged payload enum tuple variants must have exactly one payload field",
+                ));
+            }
+            Fields::Named(_) => {
+                return Err(syn::Error::new_spanned(
+                    variant,
+                    "`Storable` tagged payload enums do not support named-field variants",
+                ));
+            }
+        }
+    }
+
+    let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
+
+    Ok(quote! {
+        #(#payload_assertions)*
+
+        impl #impl_generics crate::storage::StorableType for #enum_name #ty_generics #where_clause {
+            const LAYOUT: crate::storage::Layout = crate::storage::Layout::TaggedPayload;
+
+            type Handler = crate::storage::Slot<Self>;
+
+            fn handle(slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx, address: ::alloy::primitives::Address) -> Self::Handler {
+                crate::storage::Slot::new_with_ctx(slot, ctx, address)
+            }
+        }
+
+        impl #impl_generics crate::storage::Storable for #enum_name #ty_generics #where_clause {
+            #[inline]
+            fn load<S: crate::storage::StorageOps>(
+                storage: &S,
+                slot: ::alloy::primitives::U256,
+                ctx: crate::storage::LayoutCtx
+            ) -> crate::error::Result<Self> {
+                let tag = if let Some(offset) = ctx.tagged_payload_offset() {
+                    <u8 as crate::storage::Storable>::load(storage, slot, crate::storage::LayoutCtx::packed(offset))?
+                } else {
+                    debug_assert!(ctx.is_full(), "Tagged payload enums can only be loaded with FULL, INIT, or tagged_payload LayoutCtx");
+                    <u8 as crate::storage::Storable>::load(storage, slot, crate::storage::LayoutCtx::FULL)?
+                };
+
+                match tag {
+                    #(#load_arms,)*
+                    _ => Err(crate::error::TempoPrecompileError::enum_conversion_error()),
+                }
+            }
+
+            #[inline]
+            fn store<S: crate::storage::StorageOps>(
+                &self,
+                storage: &mut S,
+                slot: ::alloy::primitives::U256,
+                ctx: crate::storage::LayoutCtx
+            ) -> crate::error::Result<()> {
+                let tag: u8 = match self {
+                    #(#tag_arms,)*
+                };
+
+                if let Some(offset) = ctx.tagged_payload_offset() {
+                    <u8 as crate::storage::Storable>::store(&tag, storage, slot, crate::storage::LayoutCtx::packed(offset))?;
+                } else {
+                    debug_assert!(ctx.is_full(), "Tagged payload enums can only be stored with FULL, INIT, or tagged_payload LayoutCtx");
+                    <u8 as crate::storage::Storable>::store(&tag, storage, slot, crate::storage::LayoutCtx::FULL)?;
+                }
+
+                match self {
+                    #(#payload_store_arms,)*
+                }
+
+                Ok(())
+            }
+
+            #[inline]
+            fn load_tagged_payload<S: crate::storage::StorageOps>(
+                storage: &S,
+                slot: ::alloy::primitives::U256,
+                tag_offset: usize,
+                cached_tag_slot: Option<::alloy::primitives::U256>,
+            ) -> crate::error::Result<Self> {
+                let tag = if let Some(tag_slot_value) = cached_tag_slot {
+                    crate::storage::packing::extract_from_word::<u8>(tag_slot_value, tag_offset, 1)?
+                } else {
+                    <u8 as crate::storage::Storable>::load(
+                        storage,
+                        slot,
+                        crate::storage::LayoutCtx::packed(tag_offset),
+                    )?
+                };
+
+                match tag {
+                    #(#load_arms,)*
+                    _ => Err(crate::error::TempoPrecompileError::enum_conversion_error()),
+                }
+            }
+
+            #[inline]
+            fn store_tagged_payload<S: crate::storage::StorageOps>(
+                &self,
+                storage: &mut S,
+                slot: ::alloy::primitives::U256,
+                tag_offset: usize,
+                tag_slot_value: &mut ::alloy::primitives::U256,
+            ) -> crate::error::Result<()> {
+                let tag: u8 = match self {
+                    #(#tag_arms,)*
+                };
+
+                *tag_slot_value = crate::storage::packing::insert_into_word(
+                    *tag_slot_value,
+                    &tag,
+                    tag_offset,
+                    1,
+                )?;
+
+                match self {
+                    #(#payload_store_arms,)*
+                }
+
+                Ok(())
+            }
+
+            #[inline]
+            fn delete<S: crate::storage::StorageOps>(
+                storage: &mut S,
+                slot: ::alloy::primitives::U256,
+                ctx: crate::storage::LayoutCtx
+            ) -> crate::error::Result<()> {
+                if let Some(offset) = ctx.tagged_payload_offset() {
+                    <u8 as crate::storage::Storable>::delete(storage, slot, crate::storage::LayoutCtx::packed(offset))?;
+                } else {
+                    debug_assert!(ctx.is_full(), "Tagged payload enums can only be deleted with FULL, INIT, or tagged_payload LayoutCtx");
+                    storage.store(slot, ::alloy::primitives::U256::ZERO)?;
+                }
+
+                storage.store(slot + ::alloy::primitives::U256::from(1), ::alloy::primitives::U256::ZERO)
             }
         }
     })
@@ -290,7 +505,7 @@ fn validate_sequential_discriminants(data_enum: &DataEnum) -> syn::Result<()> {
     if data_enum.variants.len() > usize::from(u8::MAX) + 1 {
         return Err(syn::Error::new_spanned(
             &data_enum.variants,
-            "`Storable` unit enums must have at most 256 variants to fit in `u8`",
+            "`Storable` enums must have at most 256 variants to fit in `u8`",
         ));
     }
 
@@ -298,7 +513,7 @@ fn validate_sequential_discriminants(data_enum: &DataEnum) -> syn::Result<()> {
         if variant.discriminant.is_some() {
             return Err(syn::Error::new_spanned(
                 variant,
-                "`Storable` unit enums must not use explicit discriminants; \
+                "`Storable` enums must not use explicit discriminants; \
                  variants are assigned sequential values starting from 0, matching Solidity enum semantics",
             ));
         }
@@ -448,7 +663,21 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                     let curr_offset = #packing::#loc_const.offset_slots;
                     let prev_offset = #prev_slot_ref;
 
-                    if <#ty as crate::storage::StorableType>::IS_PACKABLE && curr_offset == prev_offset {
+                    if <#ty as crate::storage::StorableType>::IS_TAGGED_PAYLOAD {
+                        // Tagged payload enum - reuse the cached tag slot when preceding
+                        // packed fields already loaded it.
+                        let cached_tag_slot = if curr_offset == prev_offset {
+                            Some(cached_slot)
+                        } else {
+                            None
+                        };
+                        <#ty as crate::storage::Storable>::load_tagged_payload(
+                            storage,
+                            #slot_addr,
+                            #packing::#loc_const.offset_bytes,
+                            cached_tag_slot,
+                        )?
+                    } else if <#ty as crate::storage::StorableType>::IS_PACKABLE && curr_offset == prev_offset {
                         // Same slot as previous packable field - reuse cached value
                         let packed = crate::storage::packing::PackedSlot(cached_slot);
                         <#ty as crate::storage::Storable>::load(&packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?
@@ -466,7 +695,14 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
         } else {
             // First field
             quote! {
-                let #name = if <#ty as crate::storage::StorableType>::IS_PACKABLE {
+                let #name = if <#ty as crate::storage::StorableType>::IS_TAGGED_PAYLOAD {
+                    <#ty as crate::storage::Storable>::load_tagged_payload(
+                        storage,
+                        #slot_addr,
+                        #packing::#loc_const.offset_bytes,
+                        None,
+                    )?
+                } else if <#ty as crate::storage::StorableType>::IS_PACKABLE {
                     cached_slot = storage.load(#slot_addr)?;
                     let packed = crate::storage::packing::PackedSlot(cached_slot);
                     <#ty as crate::storage::Storable>::load(&packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?
@@ -507,14 +743,26 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
 
         let slot_addr = quote! { base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots) };
         let packed_ctx = quote! { crate::storage::LayoutCtx::packed(#packing::#loc_const.offset_bytes) };
+        let tagged_or_full_ctx = quote! {{
+            if <#ty as crate::storage::StorableType>::IS_TAGGED_PAYLOAD
+                && #packing::#loc_const.offset_bytes != 0
+            {
+                crate::storage::LayoutCtx::tagged_payload(#packing::#loc_const.offset_bytes)
+            } else {
+                crate::storage::LayoutCtx::FULL
+            }
+        }};
 
         // Determine if we need to store after this field
         let should_store = match (&next_slot_ref, next_ty) {
             (Some(next_slot), Some(next_ty)) => {
-                // Store if next field is in different slot OR next field is not packable
+                // Store if next field is in a different slot or cannot consume the
+                // current packed batch. Tagged-payload enums consume their 1-byte tag
+                // from the parent batch even though the enum as a whole is not packable.
                 quote! {
                     #packing::#loc_const.offset_slots != #next_slot
-                        || !<#next_ty as crate::storage::StorableType>::IS_PACKABLE
+                        || !(<#next_ty as crate::storage::StorableType>::IS_PACKABLE
+                            || <#next_ty as crate::storage::StorableType>::IS_TAGGED_PAYLOAD)
                 }
             }
             _ => quote! { true }, // Always store last field
@@ -525,7 +773,34 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                 let curr_offset = #packing::#loc_const.offset_slots;
                 let prev_offset = #prev_slot_ref;
 
-                if <#ty as crate::storage::StorableType>::IS_PACKABLE && curr_offset == prev_offset {
+                if <#ty as crate::storage::StorableType>::IS_TAGGED_PAYLOAD {
+                    if curr_offset == prev_offset {
+                        // Same slot as preceding packed fields: insert the tag into the
+                        // parent batch and let the normal batch commit write the tag slot once.
+                        if pending_offset.is_none() {
+                            pending_val = if crate::storage::StorageCtx.spec().is_t4() {
+                                ::alloy::primitives::U256::ZERO
+                            } else {
+                                storage.load(#slot_addr)?
+                            };
+                            pending_offset = Some(curr_offset);
+                        }
+                        <#ty as crate::storage::Storable>::store_tagged_payload(
+                            &self.#name,
+                            storage,
+                            #slot_addr,
+                            #packing::#loc_const.offset_bytes,
+                            &mut pending_val,
+                        )?;
+                    } else {
+                        // No parent batch owns the tag slot, so use the enum's normal store.
+                        if let Some(offset) = pending_offset {
+                            storage.store(base_slot + ::alloy::primitives::U256::from(offset), pending_val)?;
+                            pending_offset = None;
+                        }
+                        <#ty as crate::storage::Storable>::store(&self.#name, storage, #slot_addr, #tagged_or_full_ctx)?;
+                    }
+                } else if <#ty as crate::storage::StorableType>::IS_PACKABLE && curr_offset == prev_offset {
                     // Same slot as previous packable field - accumulate in pending slot
                     let mut packed = crate::storage::packing::PackedSlot(pending_val);
                     <#ty as crate::storage::Storable>::store(&self.#name, &mut packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?;
@@ -569,7 +844,9 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
         } else {
             // First field
             quote! {{
-                if <#ty as crate::storage::StorableType>::IS_PACKABLE {
+                if <#ty as crate::storage::StorableType>::IS_TAGGED_PAYLOAD {
+                    <#ty as crate::storage::Storable>::store(&self.#name, storage, #slot_addr, #tagged_or_full_ctx)?;
+                } else if <#ty as crate::storage::StorableType>::IS_PACKABLE {
                     pending_val = if crate::storage::StorageCtx.spec().is_t4() {
                         // This slot group is exclusively owned by the struct and all
                         // declared packed fields are written before commit, so previous

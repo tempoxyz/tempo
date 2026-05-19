@@ -305,16 +305,26 @@ pub(crate) fn gen_slot_packing_logic(
             .saturating_sub(::alloy::primitives::U256::ONE)
     };
 
-    // Compute packing decision at compile-time
+    // Compute packing decision at compile-time. A tagged payload enum is not
+    // packable as a whole, but its 1-byte tag may pack after a previous packable
+    // field. Because tagged enums are not packable, a field following one will
+    // always move to `tag_slot + SLOTS`, i.e. `tag_slot + 2`.
     let can_pack_expr = quote! {
-        #prev_offset_expr
-            + <#prev_ty as crate::storage::StorableType>::BYTES
-            + <#curr_ty as crate::storage::StorableType>::BYTES <= 32
+        <#prev_ty as crate::storage::StorableType>::IS_PACKABLE
+            && (<#curr_ty as crate::storage::StorableType>::IS_PACKABLE
+                || <#curr_ty as crate::storage::StorableType>::IS_TAGGED_PAYLOAD)
+            && #prev_offset_expr
+                + <#prev_ty as crate::storage::StorableType>::BYTES
+                + <#curr_ty as crate::storage::StorableType>::PACKING_HEAD_BYTES <= 32
     };
 
     let slot_expr = quote! {{
         if #can_pack_expr {
+            // HACK: preserve the current slot while still forcing a compile-time
+            // overflow check for the current field's full logical footprint.
             #prev_slot_expr
+                .checked_add(#curr_slots_to_end).expect("slot overflow")
+                .saturating_sub(#curr_slots_to_end)
         } else {
             // HACK: we leverage compiler evaluation checks to ensure that the full type can fit
             // by computing the slot as: `CURR_SLOT = PREV_SLOT + PREV_LEN + (CURR_LEN - 1) - (CURR_LEN - 1)`
@@ -346,29 +356,36 @@ pub(crate) fn gen_layout_ctx_expr(
     prev_slot_const_ref: Option<TokenStream>,
     next_slot_const_ref: Option<TokenStream>,
 ) -> TokenStream {
-    if !is_manual_slot && (prev_slot_const_ref.is_some() || next_slot_const_ref.is_some()) {
-        // Check if this field shares a slot with prev or next field
-        let prev_check = prev_slot_const_ref.map(|prev| quote! { #slot_const_ref == #prev });
-        let next_check = next_slot_const_ref.map(|next| quote! { #slot_const_ref == #next });
+    let shares_slot_check =
+        if !is_manual_slot && (prev_slot_const_ref.is_some() || next_slot_const_ref.is_some()) {
+            // Check if this field shares a slot with prev or next field.
+            let prev_check = prev_slot_const_ref.map(|prev| quote! { #slot_const_ref == #prev });
+            let next_check = next_slot_const_ref.map(|next| quote! { #slot_const_ref == #next });
 
-        let shares_slot_check = match (prev_check, next_check) {
-            (Some(prev), Some(next)) => quote! { (#prev || #next) },
-            (Some(prev), None) => prev,
-            (None, Some(next)) => next,
-            (None, None) => unreachable!(),
+            match (prev_check, next_check) {
+                (Some(prev), Some(next)) => quote! { (#prev || #next) },
+                (Some(prev), None) => prev,
+                (None, Some(next)) => next,
+                (None, None) => unreachable!(),
+            }
+        } else {
+            quote! { false }
         };
 
-        quote! {
-            {
-                if #shares_slot_check && <#ty as crate::storage::StorableType>::IS_PACKABLE {
-                    crate::storage::LayoutCtx::packed(#offset_const_ref)
-                } else {
+    quote! {
+        {
+            if <#ty as crate::storage::StorableType>::IS_TAGGED_PAYLOAD {
+                if #offset_const_ref == 0 {
                     crate::storage::LayoutCtx::FULL
+                } else {
+                    crate::storage::LayoutCtx::tagged_payload(#offset_const_ref)
                 }
+            } else if #shares_slot_check && <#ty as crate::storage::StorableType>::IS_PACKABLE {
+                crate::storage::LayoutCtx::packed(#offset_const_ref)
+            } else {
+                crate::storage::LayoutCtx::FULL
             }
         }
-    } else {
-        quote! { crate::storage::LayoutCtx::FULL }
     }
 }
 
