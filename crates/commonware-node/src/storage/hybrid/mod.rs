@@ -1,122 +1,78 @@
-//! [`Hybrid`] is a prunable archive of finalizeld blocks in front of the
-//! execution layer/reth.
+//! [`Hybrid`] is a prunable archive of finalized blocks fronting reth.
 //!
-//! The  EL is the source of truth for finalized blocks. The prunable archive
-//! is a hot cache for the most recently finalized blocks, sized so that
-//! the marshal can serve gap-repair traffic without round-tripping to
-//! the EL for every read. The marshal actor only ever interacts with the
-//! [`Blocks`] interface so it is unaware whether a given block is served
-//! from the cache or from the EL.
+//! Reth is the source of truth. The prunable archive is a hot cache of
+//! the most-recently finalized blocks that lets the marshal serve
+//! gap-repair without round-tripping to reth on every read. The marshal
+//! only sees the [`Blocks`] interface and is unaware which side served
+//! a given read.
 //!
 //! # Eviction
 //!
-//! The cache is evicted as the execution layer's finalized watermark rises, not
-//! on the height the marshal happens to put. Each [`Blocks::put`] checks the
-//! execution layer for its finalized block number and asks the prunable
-//! archive to drop everything below
-//! `execution_finalized − retention_blocks + 1`. Two consequences:
+//! Eviction is reth-driven, not marshal-driven. Every [`Blocks::put`]
+//! reads reth's finalized watermark and prunes the cache below
+//! `reth.finalized − retention_blocks + 1`. [`Blocks::prune`] from the
+//! marshal is a no-op.
 //!
-//! - The cache never drops a block the EL doesn't yet have. If the EL is
-//!   lagging marshal, the cache may temporarily hold more than
-//!   `retention_blocks` items.
-//! - The cache eviction floor is decoupled from the marshal's view of
-//!   "tip". [`Blocks::prune`] calls from marshal are a no-op. Eviction is
-//!   EL-driven only. The trait contract ("`min` must remain") is
-//!   trivially satisfied because we keep at least `retention_blocks`
-//!   items above EL's finalized boundary.
+//! As a consequences, the cache never drops a block reth doesn't yet have.
+//! If reth is lagging the marshal actor, the cache temporarily holds more than
+//! `retention_blocks` items.
 //!
 //! # Section-rounding
 //!
-//! The prunable archive groups items into fixed-size sections of
-//! `items_per_section` consecutive indices (production default 4096).
-//! [`prunable::Archive::prune`] silently rounds its `min` argument down
-//! to the nearest section boundary; only entire sections are dropped. As
-//! a consequence:
+//! The prunable archive prunes in whole sections of
+//! `items_per_section` items (4096 in production); `prune(min)` rounds
+//! `min` down to a section boundary.
 //!
-//! - Retention is approximate: at any moment the archive holds between
-//!   `retention_blocks` and `retention_blocks + items_per_section − 1`
-//!   items. Pruning fires roughly once per `items_per_section` puts, in
+//! Consequences:
+//!
+//! - Retention is approximate: the cache holds between `retention_blocks`
+//!   and `retention_blocks + items_per_section − 1` items, evicted in
 //!   one-section batches.
-//! - The "prunable holds recent, EL holds old" boundary is the
-//!   archive's section-aligned `oldest_allowed`, not `tip − retention`.
-//!   Reads in `[oldest_allowed, tip − retention)` still hit prunable.
-//!   Same finalized block, same correctness; just a slightly wasteful
-//!   path versus the design intent.
-//! - `Blocks::prune(min)` from the marshal is honored as a *lower bound*
-//!   only: items at and above `min` are guaranteed to remain, but items
-//!   in `[section_start, min)` may also survive. The trait's "min must
-//!   remain" contract is satisfied either way.
-//! - A re-`put` at a height below the *requested* retention floor may
-//!   succeed via the prunable archive (if it sits in the still-live
-//!   tail section) or be silently absorbed by [`Hybrid::put`] (if it
-//!   is below `oldest_allowed`); see "Stale puts" below.
+//! - The cache/reth boundary is the section-aligned `oldest_allowed`,
+//!   not `tip − retention`. Reads in `[oldest_allowed, tip − retention)`
+//!   still hit the cache. Same answer, slightly wasteful path.
+//! - A re-`put` below the requested floor may still land in the cache
+//!   (live tail section) or be silently absorbed (see "Stale puts"
+//!   below).
 //!
-//! Pick `retention_blocks` to be at least a few multiples of
-//! `items_per_section` so the section overshoot is a small fraction of
-//! the working set; see [`super::DEFAULT_FINALIZED_BLOCKS_RETENTION`].
+//! Pick `retention_blocks` as a few multiples of `items_per_section` so
+//! section overshoot is a small fraction of the working set; see
+//! [`super::DEFAULT_FINALIZED_BLOCKS_RETENTION`].
 //!
 //! # Stale puts
 //!
-//! [`Hybrid::put`] turns the prunable archive's
-//! [`archive::Error::AlreadyPrunedTo`] into a silent success rather
-//! than propagating it. The reasoning, which also explains why we
-//! don't worry about EL pruning the same height (next section):
+//! [`Hybrid::put`] absorbs the prunable archive's
+//! [`archive::Error::AlreadyPrunedTo`] as a silent success. The
+//! eviction invariant
+//! `oldest_allowed ≤ section_aligned(reth.finalized − retention + 1)
+//! ≤ reth.finalized` guarantees that a put at `H < oldest_allowed`
+//! also has `H ≤ reth.finalized`, so the block is durable in reth and
+//! a subsequent [`Blocks::get`] will hit the reth fallback. Surfacing
+//! the error would crash the node on a recoverable condition (e.g.
+//! follow-mode catching up while reth has synced past the cache
+//! window). The legacy archive (when present) accepts arbitrary
+//! heights and is always written first, so rollback also still sees it.
 //!
-//! - The cache eviction invariant is
-//!   `oldest_allowed ≤ section_aligned(execution_finalized − retention + 1)
-//!   ≤ execution_finalized`.
-//! - So a put at `H < oldest_allowed` implies `H ≤ execution_finalized`.
-//! - The EL's finality contract guarantees every block at or below
-//!   `execution_finalized` is durably persisted in the EL's storage and
-//!   cannot be reorged.
-//! - We can't write to the EL's storage ourselves, but we don't have to:
-//!   the marshal's subsequent [`Blocks::get`] hits the prunable miss
-//!   path and is served from EL fallback.
-//! - Surfacing the error instead would crash the node via marshal's
-//!   `panic!("failed to finalize")` on a perfectly recoverable
-//!   condition (e.g. follow-mode catching up while the EL has
-//!   independently synced past the cache window).
+//! # Why reth pruning is not a concern
 //!
-//! The legacy archive (when present) accepts arbitrary heights and
-//! has already captured the block before the prunable write is
-//! attempted, so a future rollback also still sees it.
+//! Reth may be configured to retain only a window of recent history,
+//! creating a `reth.pruned_below ≤ reth.finalized` watermark. The
+//! marshal can never ask for a block panic-on-miss below
+//! `reth.pruned_below`:
 //!
-//! # Why execution layer pruning is not a concern
+//! - **`Blocks::put(H)`**: marshal's `last_processed_height` is floored
+//!   to `max(stored_height, reth.finalized)` at startup
+//!   ([`alias::marshal::init`]), so every put has `H > reth.finalized
+//!   > reth.pruned_below`.
+//! - **`Blocks::get(Index(H))`**: only ever asks for the next
+//!   contiguous height or a `gap_end` already in the cache.
+//! - **`Blocks::get(Key(digest))`**: gap-repair parent walks may ask
+//!   for a digest below `reth.pruned_below`; on miss we return
+//!   `Ok(None)` and the marshal falls back to peer resolution.
 //!
-//! The EL/reth has its own pruning configuration; an operator can configure
-//! it to retain only a window of recent history. That introduces a
-//! `reth.pruned_below` watermark below which reth has discarded block
-//! data. By construction reth never prunes above `reth.finalized`, so
-//! always `reth.pruned_below ≤ reth.finalized`.
-//!
-//! For [`Hybrid`]'s correctness the only relevant question is:
-//! "can the marshal ever ask us for a block at a height below
-//! `reth.pruned_below`?" The answer is no for any path that would
-//! panic on a miss, because:
-//!
-//! - **`Blocks::put(H)`**: marshal's `last_processed_height` is
-//!   floored to `max(stored_height, reth.finalized)` at startup
-//!   ([`alias::marshal::init`]) and `store_finalization` drops puts
-//!   at `H ≤ last_processed_height` (`actor.rs:1462`). So every put
-//!   we see has `H > reth.finalized > reth.pruned_below`.
-//! - **`Blocks::get(Index(H))` via `get_finalized_block`**: the
-//!   dispatch path only asks for the next contiguous height
-//!   (`last_processed_height + 1`). The gap-repair path only asks for
-//!   the `gap_end` reported by `prunable.next_gap`, which only
-//!   references heights the prunable archive already has, so the call
-//!   hits the cache directly and never falls through to reth.
-//! - **`Blocks::get(Key(digest))` via `find_block_in_storage`**: the
-//!   only path where we *can* ask for a block whose canonical height
-//!   is below `reth.pruned_below`. Used by gap-repair backward walks
-//!   following parent pointers (`actor.rs:1563`/`actor.rs:1578`). If
-//!   reth has pruned the block we return `Ok(None)`; the marshal
-//!   treats that as "not local" and issues a resolver fetch from
-//!   peers. Slow, but not a panic.
-//!
-//! Operationally, configuring reth with a smaller retention window
-//! than `retention_blocks` will cause some digest-keyed gap-repair
-//! reads to miss both the cache and reth and fall back to peer
-//! resolution; that's a performance issue, not a correctness one.
+//! Configuring reth with a smaller retention window than
+//! `retention_blocks` is a perf concern (more peer fetches), not a
+//! correctness one.
 //!
 //! [`alias::marshal::init`]: crate::alias::marshal::init
 
@@ -314,16 +270,11 @@ where
     /// the height the marshal happens to put. This keeps two invariants:
     ///
     /// - We never evict a block the EL doesn't yet have. If the EL is lagging
-    ///   the marshal, `execution_finalized` is small (or zero) and no eviction
-    ///   happens; the cache temporarily grows past `retention_blocks`.
+    ///   the marshal, no eviction happens; the cache temporarily grows past
+    ///   `retention_blocks`.
     /// - Eviction tracks the EL's progress monotonically. Once the EL
     ///   finalizes height `H`, the cache may drop everything below
     ///   `H - retention_blocks + 1` on the next put.
-    ///
-    /// `prune(min)` keeps `min` and above, and the archive rounds `min`
-    /// *down* to a section boundary, so the actual retained window can
-    /// exceed `retention_blocks` by up to `items_per_section − 1` items.
-    /// See the module docs ("Section-rounding") for the full story.
     async fn evict_below_execution_finalized_floor(&mut self) -> Result<(), archive::Error> {
         // Reth hasn't finalized anything yet (fresh chain) — nothing is
         // safe to evict.
@@ -333,6 +284,10 @@ where
         let Some(min_to_keep) = execution_finalized.checked_sub(self.retention_blocks) else {
             return Ok(());
         };
+        // `prune(min)` keeps `min` and above, and the archive rounds `min`
+        // *down* to a section boundary, so the actual retained window can
+        // exceed `retention_blocks` by up to `items_per_section − 1` items.
+        // See the module docs ("Section-rounding") for the full story.
         let prune_floor = min_to_keep.saturating_add(1);
         prunable::Archive::prune(&mut self.prunable, prune_floor).await
     }
@@ -436,8 +391,7 @@ where
     }
 
     /// No-op: Cache eviction is EL-driven (see [`Self::evict_below_execution_finalized_floor`]).
-    async fn prune(&mut self, min: Height) -> Result<(), Self::Error> {
-        debug!(%min, "ignoring prune request; cache eviction is execution-layer-driven");
+    async fn prune(&mut self, _min: Height) -> Result<(), Self::Error> {
         Ok(())
     }
 
