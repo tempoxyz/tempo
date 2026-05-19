@@ -800,6 +800,10 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     mut feature_intervals = []
     mut baseline_tps_samples = []
     mut feature_tps_samples = []
+    mut baseline_builder_samples = []
+    mut feature_builder_samples = []
+    mut baseline_validation_samples = []
+    mut feature_validation_samples = []
 
     let compute_tps_stats = { |samples: list<any>|
         let sorted_samples = ($samples | sort)
@@ -826,6 +830,17 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             continue
         }
         let report = (open $report_path)
+        let samples_path = $"($results_dir)/report-($label).samples.ndjson"
+        let validation_samples = if ($samples_path | path exists) {
+            open --raw $samples_path
+                | lines
+                | where { |line| ($line | str trim) != "" }
+                | each { |line| $line | from json }
+                | where { |sample| $sample.name in ["reth_tempo_payload_builder_payload_build_duration_seconds" "reth_consensus_engine_beacon_new_payload_latency"] }
+                | where { |sample| ($sample.labels | get -o quantile | default "") in ["0.5" "0.9" "0.99"] }
+        } else { [] }
+        let builder_samples = ($validation_samples | where name == "reth_tempo_payload_builder_payload_build_duration_seconds")
+        let validation_samples = ($validation_samples | where name == "reth_consensus_engine_beacon_new_payload_latency")
         let blocks = ($report | get blocks | each { |b|
             let tx_count = ($b | get tx_count)
             let timestamp = if (($b | get -o timestamp | default null) != null) {
@@ -877,10 +892,14 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             $baseline_blocks = ($baseline_blocks | append $blocks)
             $baseline_intervals = ($baseline_intervals | append $block_intervals)
             $baseline_tps_samples = ($baseline_tps_samples | append $block_tps_samples)
+            $baseline_builder_samples = ($baseline_builder_samples | append $builder_samples)
+            $baseline_validation_samples = ($baseline_validation_samples | append $validation_samples)
         } else {
             $feature_blocks = ($feature_blocks | append $blocks)
             $feature_intervals = ($feature_intervals | append $block_intervals)
             $feature_tps_samples = ($feature_tps_samples | append $block_tps_samples)
+            $feature_builder_samples = ($feature_builder_samples | append $builder_samples)
+            $feature_validation_samples = ($feature_validation_samples | append $validation_samples)
         }
 
         let total_tx = ($blocks | get tx_count | math sum)
@@ -948,6 +967,31 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let b_lat = do $compute_latency_stats $baseline_blocks
     let f_lat = do $compute_latency_stats $feature_blocks
 
+    let compute_quantile_metric_stats = { |samples: list<any>|
+        let quantile_ms = { |q: string|
+            let values = (
+                $samples
+                    | where { |sample| ($sample.labels | get -o quantile | default "") == $q }
+                    | get value
+                    | each { |v| $v * 1000.0 }
+            )
+            if ($values | length) > 0 { $values | math avg | math round --precision 1 } else { 0.0 }
+        }
+        {
+            n: ($samples | length)
+            p50: (do $quantile_ms "0.5")
+            p90: (do $quantile_ms "0.9")
+            p99: (do $quantile_ms "0.99")
+        }
+    }
+
+    let b_builder_metric = do $compute_quantile_metric_stats $baseline_builder_samples
+    let f_builder_metric = do $compute_quantile_metric_stats $feature_builder_samples
+    let b_builder = if $b_builder_metric.n > 0 { $b_builder_metric } else { { n: $b_lat.n, p50: $b_lat.p50, p90: $b_lat.p90, p99: $b_lat.p99 } }
+    let f_builder = if $f_builder_metric.n > 0 { $f_builder_metric } else { { n: $f_lat.n, p50: $f_lat.p50, p90: $f_lat.p90, p99: $f_lat.p99 } }
+    let b_validation = do $compute_quantile_metric_stats $baseline_validation_samples
+    let f_validation = do $compute_quantile_metric_stats $feature_validation_samples
+
     let b_bt = do $compute_block_time_stats $baseline_intervals
     let f_bt = do $compute_block_time_stats $feature_intervals
     let b_tps_stats = do $compute_tps_stats $baseline_tps_samples
@@ -1001,29 +1045,24 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         $"| Block Time P90 [ms] | ($b_bt.p90) | ($f_bt.p90) | (do $delta $b_bt.p90 $f_bt.p90)% |"
         $"| Block Time P99 [ms] | ($b_bt.p99) | ($f_bt.p99) | (do $delta $b_bt.p99 $f_bt.p99)% |"
         ""
-        "## Latency (Secondary)"
+        "## Builder Latency"
         ""
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
-        $"| Latency Mean [ms] | ($b_lat.mean) | ($f_lat.mean) | (do $delta $b_lat.mean $f_lat.mean)% |"
-        $"| Latency Std Dev [ms] | ($b_lat.stddev) | ($f_lat.stddev) | (do $delta $b_lat.stddev $f_lat.stddev)% |"
-        $"| Latency P50 [ms] | ($b_lat.p50) | ($f_lat.p50) | (do $delta $b_lat.p50 $f_lat.p50)% |"
-        $"| Latency P90 [ms] | ($b_lat.p90) | ($f_lat.p90) | (do $delta $b_lat.p90 $f_lat.p90)% |"
-        $"| Latency P99 [ms] | ($b_lat.p99) | ($f_lat.p99) | (do $delta $b_lat.p99 $f_lat.p99)% |"
+        $"| P50 [ms] | ($b_builder.p50) | ($f_builder.p50) | (do $delta $b_builder.p50 $f_builder.p50)% |"
+        $"| P90 [ms] | ($b_builder.p90) | ($f_builder.p90) | (do $delta $b_builder.p90 $f_builder.p90)% |"
+        $"| P99 [ms] | ($b_builder.p99) | ($f_builder.p99) | (do $delta $b_builder.p99 $f_builder.p99)% |"
         ""
-        "## Per-Run Details"
+        "## Validation Latency"
         ""
-        "| Run | Blocks | Total Tx | Success | Failed | Avg TPS | Block P50 | Mgas/s |"
-        "|-----|--------|----------|---------|--------|---------|-----------|--------|"
+        "| Metric | Baseline | Feature | Delta |"
+        "|--------|----------|---------|-------|"
+        $"| P50 [ms] | ($b_validation.p50) | ($f_validation.p50) | (do $delta $b_validation.p50 $f_validation.p50)% |"
+        $"| P90 [ms] | ($b_validation.p90) | ($f_validation.p90) | (do $delta $b_validation.p90 $f_validation.p90)% |"
+        $"| P99 [ms] | ($b_validation.p99) | ($f_validation.p99) | (do $delta $b_validation.p99 $f_validation.p99)% |"
+        ""
     ])
-    let summary = ($summary_lines | str join "\n")
-
-    mut per_run_rows = ""
-    for row in $run_data {
-        $per_run_rows = $"($per_run_rows)| ($row.label) | ($row.blocks) | ($row.total_tx) | ($row.ok) | ($row.err) | ($row.tps) | ($row.block_time_p50) | ($row.mgas_s) |\n"
-    }
-
-    let full_summary = $"($summary)\n($per_run_rows)"
+    let full_summary = ($summary_lines | str join "\n")
     $full_summary | save -f $"($results_dir)/summary.md"
     print $"Summary saved: ($results_dir)/summary.md"
     print $full_summary
@@ -1048,6 +1087,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 latency_p50: $b_lat.p50
                 latency_p90: $b_lat.p90
                 latency_p99: $b_lat.p99
+                builder_latency_p50: $b_builder.p50
+                builder_latency_p90: $b_builder.p90
+                builder_latency_p99: $b_builder.p99
                 tps: $b_tps
                 tps_p50: $b_tps_stats.p50
                 tps_p90: $b_tps_stats.p90
@@ -1056,6 +1098,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 block_time_p50: $b_bt.p50
                 block_time_p90: $b_bt.p90
                 block_time_p99: $b_bt.p99
+                validation_latency_p50: $b_validation.p50
+                validation_latency_p90: $b_validation.p90
+                validation_latency_p99: $b_validation.p99
                 blocks: $b_lat.n
             }
             feature: {
@@ -1064,6 +1109,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 latency_p50: $f_lat.p50
                 latency_p90: $f_lat.p90
                 latency_p99: $f_lat.p99
+                builder_latency_p50: $f_builder.p50
+                builder_latency_p90: $f_builder.p90
+                builder_latency_p99: $f_builder.p99
                 tps: $f_tps
                 tps_p50: $f_tps_stats.p50
                 tps_p90: $f_tps_stats.p90
@@ -1072,6 +1120,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 block_time_p50: $f_bt.p50
                 block_time_p90: $f_bt.p90
                 block_time_p99: $f_bt.p99
+                validation_latency_p50: $f_validation.p50
+                validation_latency_p90: $f_validation.p90
+                validation_latency_p99: $f_validation.p99
                 blocks: $f_lat.n
             }
             deltas: {
@@ -1080,6 +1131,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 latency_p50: (do $delta $b_lat.p50 $f_lat.p50)
                 latency_p90: (do $delta $b_lat.p90 $f_lat.p90)
                 latency_p99: (do $delta $b_lat.p99 $f_lat.p99)
+                builder_latency_p50: (do $delta $b_builder.p50 $f_builder.p50)
+                builder_latency_p90: (do $delta $b_builder.p90 $f_builder.p90)
+                builder_latency_p99: (do $delta $b_builder.p99 $f_builder.p99)
                 tps: (do $delta $b_tps $f_tps)
                 tps_p50: (do $delta $b_tps_stats.p50 $f_tps_stats.p50)
                 tps_p90: (do $delta $b_tps_stats.p90 $f_tps_stats.p90)
@@ -1088,6 +1142,9 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 block_time_p50: (do $delta $b_bt.p50 $f_bt.p50)
                 block_time_p90: (do $delta $b_bt.p90 $f_bt.p90)
                 block_time_p99: (do $delta $b_bt.p99 $f_bt.p99)
+                validation_latency_p50: (do $delta $b_validation.p50 $f_validation.p50)
+                validation_latency_p90: (do $delta $b_validation.p90 $f_validation.p90)
+                validation_latency_p99: (do $delta $b_validation.p99 $f_validation.p99)
             }
         }
         per_run: $run_data

@@ -13,7 +13,7 @@ use tempo_evm::TempoTxResult;
 use tempo_precompiles::tip20::is_tip20_prefix;
 
 type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
-type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u128>);
 
 /// A best-transaction iterator that merges the protocol pool and the 2D nonces pool,

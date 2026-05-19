@@ -259,60 +259,6 @@ impl ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls {
     }
 }
 
-impl TIP20ChannelEscrowError {
-    pub const fn channel_already_exists() -> Self {
-        Self::ChannelAlreadyExists(ITIP20ChannelEscrow::ChannelAlreadyExists {})
-    }
-
-    pub const fn channel_not_found() -> Self {
-        Self::ChannelNotFound(ITIP20ChannelEscrow::ChannelNotFound {})
-    }
-
-    pub const fn not_payer() -> Self {
-        Self::NotPayer(ITIP20ChannelEscrow::NotPayer {})
-    }
-
-    pub const fn not_payee_or_operator() -> Self {
-        Self::NotPayeeOrOperator(ITIP20ChannelEscrow::NotPayeeOrOperator {})
-    }
-
-    pub const fn invalid_payee() -> Self {
-        Self::InvalidPayee(ITIP20ChannelEscrow::InvalidPayee {})
-    }
-
-    pub const fn zero_deposit() -> Self {
-        Self::ZeroDeposit(ITIP20ChannelEscrow::ZeroDeposit {})
-    }
-
-    pub const fn expiring_nonce_hash_not_set() -> Self {
-        Self::ExpiringNonceHashNotSet(ITIP20ChannelEscrow::ExpiringNonceHashNotSet {})
-    }
-
-    pub const fn invalid_signature() -> Self {
-        Self::InvalidSignature(ITIP20ChannelEscrow::InvalidSignature {})
-    }
-
-    pub const fn amount_exceeds_deposit() -> Self {
-        Self::AmountExceedsDeposit(ITIP20ChannelEscrow::AmountExceedsDeposit {})
-    }
-
-    pub const fn amount_not_increasing() -> Self {
-        Self::AmountNotIncreasing(ITIP20ChannelEscrow::AmountNotIncreasing {})
-    }
-
-    pub const fn capture_amount_invalid() -> Self {
-        Self::CaptureAmountInvalid(ITIP20ChannelEscrow::CaptureAmountInvalid {})
-    }
-
-    pub const fn close_not_ready() -> Self {
-        Self::CloseNotReady(ITIP20ChannelEscrow::CloseNotReady {})
-    }
-
-    pub const fn deposit_overflow() -> Self {
-        Self::DepositOverflow(ITIP20ChannelEscrow::DepositOverflow {})
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
