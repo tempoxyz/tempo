@@ -1617,8 +1617,10 @@ def "main kill" [
 # ============================================================================
 
 # Run Tempo localnet
-def "main localnet" [
+def --wrapped "main localnet" [
     --mode: string = "dev"                 # Mode: "dev" or "consensus"
+    --network: string = ""                 # Chain/network name to pass directly to --chain, e.g. mainnet-qmdb
+    --state-root-backend: string = ""      # State root backend: "mpt" or "qmdb"; emits --state-root.backend
     --nodes: int = 3                       # Number of validators (consensus mode)
     --accounts: int = 1000                 # Number of genesis accounts
     --epoch-length: int = 302400           # Epoch length in blocks for generated genesis/localnet
@@ -1633,44 +1635,156 @@ def "main localnet" [
     --skip-build                           # Skip building (assumes binary is already built)
     --force                                # Kill dangling processes without prompting
     --bloat: int = 0                       # Generate state bloat (size in MiB) for TIP20 tokens
+    --dry-run                              # Print commands without building, generating data, or starting nodes
+    ...raw_args: string                    # Wrapped passthrough args, including --state-root.backend
 ] {
-    validate-mode $mode
+    let wrapped = (parse-localnet-wrapped-args $raw_args)
+    let resolved_mode = if $wrapped.mode != "" { $wrapped.mode } else { $mode }
+    let resolved_network = if $wrapped.network != "" { $wrapped.network } else { $network }
+    let resolved_nodes = if $wrapped.nodes != null { $wrapped.nodes } else { $nodes }
+    let resolved_dry_run = $dry_run or $wrapped.dry_run
+
+    validate-mode $resolved_mode
+    validate-localnet-network $resolved_network
+    let requested_state_root_backend = if $state_root_backend != "" {
+        $state_root_backend
+    } else {
+        $wrapped.backend
+    }
+    validate-state-root-backend $requested_state_root_backend
     if $epoch_length <= 0 {
         print "Error: --epoch-length must be greater than 0"
         exit 1
     }
 
     # Check for dangling processes
-    let pids = (find-tempo-pids)
-    if ($pids | length) > 0 {
-        main kill --prompt=($force | not $in)
+    if not $resolved_dry_run {
+        let pids = (find-tempo-pids)
+        if ($pids | length) > 0 {
+            main kill --prompt=($force | not $in)
+        }
     }
 
     # Parse custom args
-    let extra_args = (parse-cli-args $node_args)
+    let extra_args = (parse-cli-args $node_args) | append $wrapped.passthrough
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
+    let resolved_state_root_backend = if $requested_state_root_backend != "" {
+        $requested_state_root_backend
+    } else if (is-qmdb-network $resolved_network) {
+        "qmdb"
+    } else {
+        ""
+    }
+    let q_state_args = (build-qmdb-localnet-args $resolved_network $resolved_state_root_backend)
+    let all_extra_args = ($q_state_args | append $extra_args)
 
     # Build first (unless skipped)
-    if not $skip_build {
+    if (not $skip_build) and (not $resolved_dry_run) {
         build-tempo ["tempo"] $profile $features
     }
 
-    if $mode == "dev" {
-        if $nodes != 3 {
+    if $resolved_mode == "dev" {
+        if ($resolved_nodes != 3) and (not $resolved_dry_run) {
             print "Error: --nodes is only valid with --mode consensus"
             exit 1
         }
-        run-dev-node $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat
+        run-dev-node $accounts $epoch_length $genesis $resolved_network $samply $samply_args_list $reset $profile $loud $all_extra_args $bloat $resolved_dry_run
     } else {
-        run-consensus-nodes $nodes $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat
+        run-consensus-nodes $resolved_nodes $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $loud $all_extra_args $bloat
     }
+}
+
+def parse-localnet-wrapped-args [raw_args: list<string>] {
+    mut backend = ""
+    mut mode = ""
+    mut network = ""
+    mut nodes = null
+    mut dry_run = false
+    mut passthrough = []
+    mut read_value_for = ""
+
+    for arg in $raw_args {
+        if $read_value_for != "" {
+            if $read_value_for == "backend" {
+                $backend = $arg
+            } else if $read_value_for == "mode" {
+                $mode = $arg
+            } else if $read_value_for == "network" {
+                $network = $arg
+            } else if $read_value_for == "nodes" {
+                $nodes = ($arg | into int)
+            }
+            $read_value_for = ""
+        } else if $arg == "--state-root.backend" {
+            $read_value_for = "backend"
+        } else if ($arg starts-with "--state-root.backend=") {
+            $backend = ($arg | split row "=" | get 1)
+        } else if $arg == "--mode" {
+            $read_value_for = "mode"
+        } else if ($arg starts-with "--mode=") {
+            $mode = ($arg | split row "=" | get 1)
+        } else if $arg == "--network" {
+            $read_value_for = "network"
+        } else if ($arg starts-with "--network=") {
+            $network = ($arg | split row "=" | get 1)
+        } else if $arg == "--nodes" {
+            $read_value_for = "nodes"
+        } else if ($arg starts-with "--nodes=") {
+            $nodes = (($arg | split row "=" | get 1) | into int)
+        } else if $arg == "--dry-run" {
+            $dry_run = true
+        } else {
+            $passthrough = ($passthrough | append $arg)
+        }
+    }
+
+    if $read_value_for != "" {
+        print $"Error: --($read_value_for) requires a value"
+        exit 1
+    }
+
+    { backend: $backend, mode: $mode, network: $network, nodes: $nodes, dry_run: $dry_run, passthrough: $passthrough }
+}
+
+def is-qmdb-network [network: string] {
+    $network in ["mainnet-qmdb" "moderato-qmdb" "presto-qmdb" "testnet-qmdb"]
+}
+
+def validate-localnet-network [network: string] {
+    if $network == "" {
+        return
+    }
+    if not ($network in ["mainnet" "moderato" "presto" "testnet" "mainnet-qmdb" "moderato-qmdb" "presto-qmdb" "testnet-qmdb"]) {
+        print $"Error: unsupported --network ($network)"
+        exit 1
+    }
+}
+
+def validate-state-root-backend [backend: string] {
+    if $backend == "" {
+        return
+    }
+    if not ($backend in ["mpt" "qmdb"]) {
+        print $"Error: unsupported --state-root-backend ($backend)"
+        exit 1
+    }
+}
+
+def build-qmdb-localnet-args [network: string, backend: string] {
+    let backend_args = if $backend == "" { [] } else { ["--state-root.backend" $backend] }
+    let isolation_args = if (is-qmdb-network $network) {
+        ["--tempo.bootnodes-endpoint" "none" "--disable-discovery" "--no-persist-peers"]
+    } else {
+        []
+    }
+    $backend_args | append $isolation_args
 }
 
 # ============================================================================
 # Dev mode
 # ============================================================================
 
-def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int] {
+def run-dev-node [accounts: int, epoch_length: int, genesis: string, network: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int, dry_run: bool] {
     let tempo_bin = if $profile == "dev" {
         "./target/debug/tempo"
     } else {
@@ -1679,7 +1793,9 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
     let datadir = $"($LOCALNET_DIR)/reth"
     let log_dir = $"($LOCALNET_DIR)/logs"
 
-    let genesis_path = if $genesis != "" {
+    let genesis_path = if $network != "" {
+        $network
+    } else if $genesis != "" {
         # Custom genesis provided - check if bloat requires init
         if $bloat > 0 {
             generate-bloat-file $bloat $profile
@@ -1690,7 +1806,7 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
         let default_genesis = $"($LOCALNET_DIR)/genesis.json"
         let needs_generation = $reset or (not ($default_genesis | path exists))
 
-        if $needs_generation {
+        if $needs_generation and (not $dry_run) {
             if $reset {
                 print "Resetting localnet data..."
             } else {
@@ -1703,7 +1819,7 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
         }
 
         # Apply state bloat if requested (requires fresh init)
-        if $bloat > 0 {
+        if ($bloat > 0) and (not $dry_run) {
             generate-bloat-file $bloat $profile
             load-bloat-into-node $tempo_bin $default_genesis $datadir
         }
@@ -1717,6 +1833,10 @@ def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: boo
         | append $extra_args
 
     let cmd = wrap-samply [$tempo_bin ...$args] $samply $samply_args
+    if $dry_run {
+        print $"Dry run dev node: ($cmd | str join ' ')"
+        return
+    }
     print $"Running dev node: `($cmd | str join ' ')`..."
     run-external ($cmd | first) ...($cmd | skip 1)
 }

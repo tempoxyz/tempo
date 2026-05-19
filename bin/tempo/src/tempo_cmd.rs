@@ -43,7 +43,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_precompiles::validator_config_v2::{VALIDATOR_NS_ADD, VALIDATOR_NS_ROTATE};
 use tempo_validator_config::ValidatorConfig;
 
-use crate::{init_state, p2p_proxy::P2pProxyArgs, regenesis};
+use crate::{init_state, p2p_proxy::P2pProxyArgs, regenesis, translate_blocks};
 
 fn get_env(key: &str) -> eyre::Result<String> {
     std::env::var(key).wrap_err_with(|| format!("failed reading environment variable `{key}`"))
@@ -78,6 +78,9 @@ pub(crate) enum TempoSubcommand {
 
     /// Patch a virgin block-0 database to use a new genesis header.
     Regenesis(Box<regenesis::Regenesis<TempoChainSpecParser>>),
+
+    /// Translate canonical Tempo blocks into a QMDB target network.
+    TranslateBlocks(Box<translate_blocks::TranslateBlocksArgs>),
 
     /// Install an extension (e.g., `tempo add wallet`).
     #[command(
@@ -125,6 +128,10 @@ impl ExtendedCommand for TempoSubcommand {
                 runner.run_blocking_until_ctrl_c(
                     cmd.execute::<tempo_node::node::TempoNode>(runtime),
                 )?;
+                Ok(())
+            }
+            Self::TranslateBlocks(cmd) => {
+                runner.run_blocking_until_ctrl_c(async move { cmd.run().await })?;
                 Ok(())
             }
             Self::Add(_) | Self::Update(_) | Self::Remove(_) | Self::List(_) => {

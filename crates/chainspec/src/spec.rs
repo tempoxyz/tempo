@@ -103,7 +103,15 @@ impl TempoGenesisInfo {
 pub struct TempoChainSpecParser;
 
 /// Chains supported by Tempo. First value should be used as the default.
-pub const SUPPORTED_CHAINS: &[&str] = &["mainnet", "moderato", "testnet"];
+pub const SUPPORTED_CHAINS: &[&str] = &[
+    "mainnet",
+    "mainnet-qmdb",
+    "presto-qmdb",
+    "moderato",
+    "moderato-qmdb",
+    "testnet",
+    "testnet-qmdb",
+];
 
 /// Clap value parser for [`ChainSpec`]s.
 ///
@@ -113,7 +121,9 @@ pub const SUPPORTED_CHAINS: &[&str] = &["mainnet", "moderato", "testnet"];
 pub fn chain_value_parser(s: &str) -> eyre::Result<Arc<TempoChainSpec>> {
     Ok(match s {
         "mainnet" => PRESTO.clone(),
+        "mainnet-qmdb" | "presto-qmdb" => PRESTO_QMDB.clone(),
         "testnet" | "moderato" => MODERATO.clone(),
+        "testnet-qmdb" | "moderato-qmdb" => MODERATO_QMDB.clone(),
         "dev" => DEV.clone(),
         _ => TempoChainSpec::from_genesis(reth_cli::chainspec::parse_genesis(s)?).into(),
     })
@@ -161,6 +171,22 @@ pub static PRESTO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
         .into()
 });
 
+pub static PRESTO_QMDB: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
+    let genesis: Genesis = serde_json::from_str(include_str!("./genesis/presto.json"))
+        .expect("`./genesis/presto.json` must be present and deserializable");
+    TempoChainSpec::from_genesis(genesis)
+        .with_state_root_scheme(TempoStateRootScheme::Qmdb)
+        .into()
+});
+
+pub static MODERATO_QMDB: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
+    let genesis: Genesis = serde_json::from_str(include_str!("./genesis/moderato.json"))
+        .expect("`./genesis/moderato.json` must be present and deserializable");
+    TempoChainSpec::from_genesis(genesis)
+        .with_state_root_scheme(TempoStateRootScheme::Qmdb)
+        .into()
+});
+
 /// Development chainspec with funded dev accounts and activated tempo hardforks
 ///
 /// `cargo x generate-genesis -o dev.json --accounts 10 --no-dkg-in-genesis`
@@ -170,6 +196,16 @@ pub static DEV: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
 
     TempoChainSpec::from_genesis(genesis).into()
 });
+
+/// State-root computation scheme for a Tempo chain spec.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum TempoStateRootScheme {
+    /// Ethereum Merkle Patricia Trie roots.
+    #[default]
+    Mpt,
+    /// QMDB overlay roots.
+    Qmdb,
+}
 
 /// Tempo chain spec type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -181,12 +217,24 @@ pub struct TempoChainSpec {
     pub network_identity: Option<NetworkIdentity>,
     /// Default RPC URL for following this chain.
     pub default_follow_url: Option<&'static str>,
+    /// State-root computation scheme for this chain spec.
+    state_root_scheme: TempoStateRootScheme,
 }
 
 impl TempoChainSpec {
     /// Returns the default RPC URL for following this chain.
     pub fn default_follow_url(&self) -> Option<&'static str> {
         self.default_follow_url
+    }
+
+    /// Returns the state-root computation scheme.
+    pub fn state_root_scheme(&self) -> TempoStateRootScheme {
+        self.state_root_scheme
+    }
+
+    /// Returns true if this spec uses QMDB state roots.
+    pub fn is_qmdb(&self) -> bool {
+        matches!(self.state_root_scheme, TempoStateRootScheme::Qmdb)
     }
 
     /// Converts the given [`Genesis`] into a [`TempoChainSpec`].
@@ -222,6 +270,7 @@ impl TempoChainSpec {
             info,
             network_identity,
             default_follow_url: None,
+            state_root_scheme: TempoStateRootScheme::Mpt,
         }
     }
 
@@ -234,6 +283,12 @@ impl TempoChainSpec {
     /// Sets the default follow URL for this chain spec.
     pub fn with_default_follow_url(mut self, url: &'static str) -> Self {
         self.default_follow_url = Some(url);
+        self
+    }
+
+    /// Sets the state-root computation scheme for this chain spec.
+    pub fn with_state_root_scheme(mut self, scheme: TempoStateRootScheme) -> Self {
+        self.state_root_scheme = scheme;
         self
     }
 
@@ -268,6 +323,7 @@ impl From<ChainSpec> for TempoChainSpec {
             info: TempoGenesisInfo::default(),
             network_identity,
             default_follow_url: None,
+            state_root_scheme: TempoStateRootScheme::Mpt,
         }
     }
 }
@@ -341,6 +397,10 @@ impl EthChainSpec for TempoChainSpec {
     }
 
     fn bootnodes(&self) -> Option<Vec<NodeRecord>> {
+        if self.is_qmdb() {
+            return self.inner.bootnodes();
+        }
+
         match self.inner.chain_id() {
             4217 => Some(presto_nodes()),
             42431 => Some(moderato_nodes()),
@@ -688,6 +748,147 @@ mod tests {
                 .expect(&format!("failed to parse chain `{name}`"));
 
             assert_eq!(spec.chain(), resolved.chain(), "chain mismatch for {name}");
+        }
+    }
+
+    mod qmdb_chain_aliases {
+        use super::*;
+        use reth_chainspec::EthChainSpec;
+
+        const MAINNET_ALIASES: &[&str] = &["mainnet-qmdb", "presto-qmdb"];
+        const MODERATO_ALIASES: &[&str] = &["moderato-qmdb", "testnet-qmdb"];
+
+        fn parse(name: &str) -> std::sync::Arc<super::super::TempoChainSpec> {
+            super::super::TempoChainSpecParser::parse(name)
+                .unwrap_or_else(|err| panic!("failed to parse `{name}`: {err:?}"))
+        }
+
+        fn assert_same_protocol_spec(
+            canonical: &super::super::TempoChainSpec,
+            qmdb: &super::super::TempoChainSpec,
+        ) {
+            assert_eq!(canonical.chain(), qmdb.chain());
+            assert_eq!(canonical.genesis_hash(), qmdb.genesis_hash());
+            assert_eq!(canonical.info, qmdb.info);
+            assert_eq!(canonical.genesis_header(), qmdb.genesis_header());
+            assert_eq!(canonical.genesis(), qmdb.genesis());
+
+            for &fork in TempoHardfork::VARIANTS {
+                assert_eq!(
+                    canonical.tempo_fork_activation(fork),
+                    qmdb.tempo_fork_activation(fork),
+                    "tempo hardfork activation mismatch for {fork:?}",
+                );
+            }
+
+            for timestamp in [0, 1_770_303_600, 1_770_908_400, 1_778_767_200] {
+                assert_eq!(
+                    canonical.base_fee_params_at_timestamp(timestamp),
+                    qmdb.base_fee_params_at_timestamp(timestamp),
+                    "base fee params mismatch at {timestamp}",
+                );
+                assert_eq!(
+                    canonical.next_block_base_fee(canonical.genesis_header(), timestamp),
+                    qmdb.next_block_base_fee(qmdb.genesis_header(), timestamp),
+                    "tempo base fee mismatch at {timestamp}",
+                );
+            }
+        }
+
+        #[test]
+        fn qmdb_aliases_parse() {
+            for alias in MAINNET_ALIASES
+                .iter()
+                .chain(MODERATO_ALIASES.iter())
+                .copied()
+            {
+                let spec = parse(alias);
+                assert!(spec.is_qmdb(), "{alias} must use QMDB state roots");
+                assert_eq!(
+                    spec.state_root_scheme(),
+                    super::super::TempoStateRootScheme::Qmdb,
+                );
+            }
+        }
+
+        #[test]
+        fn mainnet_qmdb_matches_mainnet_spec() {
+            let canonical = parse("mainnet");
+
+            for alias in MAINNET_ALIASES {
+                let qmdb = parse(alias);
+                assert_same_protocol_spec(&canonical, &qmdb);
+                assert_eq!(qmdb.chain().id(), 4217);
+            }
+        }
+
+        #[test]
+        fn moderato_qmdb_matches_moderato_spec() {
+            let canonical = parse("moderato");
+
+            for alias in MODERATO_ALIASES {
+                let qmdb = parse(alias);
+                assert_same_protocol_spec(&canonical, &qmdb);
+                assert_eq!(qmdb.chain().id(), 42431);
+            }
+        }
+
+        #[test]
+        fn qmdb_aliases_do_not_use_canonical_bootnodes() {
+            assert!(!parse("mainnet").bootnodes().unwrap_or_default().is_empty());
+            assert!(!parse("moderato").bootnodes().unwrap_or_default().is_empty());
+
+            for alias in MAINNET_ALIASES
+                .iter()
+                .chain(MODERATO_ALIASES.iter())
+                .copied()
+            {
+                assert!(
+                    parse(alias).bootnodes().unwrap_or_default().is_empty(),
+                    "{alias} must not use canonical bootnodes",
+                );
+            }
+        }
+
+        #[test]
+        fn qmdb_aliases_do_not_have_default_follow_url() {
+            assert_eq!(
+                parse("mainnet").default_follow_url(),
+                Some("wss://rpc.presto.tempo.xyz"),
+            );
+            assert_eq!(
+                parse("moderato").default_follow_url(),
+                Some("wss://rpc.moderato.tempo.xyz"),
+            );
+
+            for alias in MAINNET_ALIASES
+                .iter()
+                .chain(MODERATO_ALIASES.iter())
+                .copied()
+            {
+                assert_eq!(
+                    parse(alias).default_follow_url(),
+                    None,
+                    "{alias} must not have a default follow URL",
+                );
+            }
+        }
+
+        #[test]
+        fn chainspec_from_chain_id_stays_canonical() {
+            let mainnet = super::super::chainspec_from_chain_id(4217).unwrap();
+            assert!(!mainnet.is_qmdb());
+            assert_eq!(
+                mainnet.default_follow_url(),
+                Some("wss://rpc.presto.tempo.xyz"),
+            );
+
+            let moderato = super::super::chainspec_from_chain_id(42431).unwrap();
+            assert!(!moderato.is_qmdb());
+            assert_eq!(
+                moderato.default_follow_url(),
+                Some("wss://rpc.moderato.tempo.xyz"),
+            );
         }
     }
 }

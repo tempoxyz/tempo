@@ -4,7 +4,7 @@ use jiff::SignedDuration;
 use reth_cli_commands::download::DownloadDefaults;
 use reth_ethereum::node::core::args::{
     DefaultDiscoveryArgs, DefaultEngineValues, DefaultNetworkArgs, DefaultPayloadBuilderValues,
-    DefaultTraceValues, DefaultTxPoolValues,
+    DefaultTxPoolValues,
 };
 use std::{borrow::Cow, str::FromStr, time::Duration};
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -218,11 +218,12 @@ fn init_engine_defaults() {
 }
 
 fn init_trace_defaults() {
-    DefaultTraceValues::default()
-        .with_service_name("tempo")
-        .with_service_version(env!("CARGO_PKG_VERSION"))
-        .try_init()
-        .expect("failed to initialize trace defaults");
+    if std::env::var_os("OTEL_SERVICE_NAME").is_none() {
+        // SAFETY: Must be called at startup before any other threads are spawned
+        unsafe {
+            std::env::set_var("OTEL_SERVICE_NAME", "tempo");
+        }
+    }
 }
 
 fn init_otlp_defaults() {

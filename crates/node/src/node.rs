@@ -1,3 +1,5 @@
+#[cfg(feature = "qmdb")]
+use crate::qmdb::QmdbStateLoader;
 use crate::{
     TempoPayloadTypes,
     engine::TempoEngineValidator,
@@ -13,6 +15,8 @@ use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
 };
+#[cfg(not(feature = "qmdb"))]
+use reth_node_builder::rpc::BasicEngineValidatorBuilder;
 use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter,
     components::{
@@ -20,12 +24,12 @@ use reth_node_builder::{
         PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
-        BasicEngineValidatorBuilder, EngineValidatorAddOn, NoopEngineApiBuilder,
-        PayloadValidatorBuilder, RethRpcAddOns, RpcAddOns, RpcHandle, RpcHooks,
+        EngineValidatorAddOn, NoopEngineApiBuilder, PayloadValidatorBuilder, RethRpcAddOns,
+        RpcAddOns, RpcHandle, RpcHooks,
     },
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
-use reth_primitives_traits::SealedHeader;
+use reth_primitives_traits::{SealedBlock, SealedHeader};
 use reth_provider::providers::ProviderFactoryBuilder;
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
@@ -35,13 +39,14 @@ use reth_rpc_eth_api::{
 use reth_storage_api::EmptyBodyStorage;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
-use tempo_chainspec::spec::TempoChainSpec;
+use std::sync::Arc;
+use tempo_chainspec::spec::{TempoChainSpec, TempoStateRootScheme};
 use tempo_consensus::TempoConsensus;
 use tempo_evm::TempoEvmConfig;
 use tempo_payload_builder::{
     DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
 };
-use tempo_payload_types::TempoPayloadAttributes;
+use tempo_payload_types::{TempoExecutionData, TempoPayloadAttributes};
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool,
@@ -52,8 +57,59 @@ use tempo_transaction_pool::{
     },
 };
 
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum StateRootBackend {
+    /// Compute Ethereum Merkle Patricia Trie state roots.
+    #[default]
+    Mpt,
+    /// Compute QMDB state roots.
+    Qmdb,
+}
+
+impl From<TempoStateRootScheme> for StateRootBackend {
+    fn from(value: TempoStateRootScheme) -> Self {
+        match value {
+            TempoStateRootScheme::Mpt => Self::Mpt,
+            TempoStateRootScheme::Qmdb => Self::Qmdb,
+        }
+    }
+}
+
+impl StateRootBackend {
+    /// Resolves an explicit backend override against the chain spec default.
+    pub fn resolve(explicit: Option<Self>, chain_spec: &TempoChainSpec) -> Self {
+        explicit.unwrap_or_else(|| chain_spec.state_root_scheme().into())
+    }
+}
+
+/// QMDB node CLI arguments.
+#[derive(Debug, Clone, PartialEq, Eq, clap::Args)]
+pub struct QmdbArgs {
+    /// Maximum number of blocks committed to QMDB per stage execution.
+    #[arg(long = "qmdb.batch-blocks", default_value_t = 1_000)]
+    pub batch_blocks: u64,
+
+    /// Number of QMDB worker threads.
+    #[arg(long = "qmdb.worker-threads", default_value_t = 2)]
+    pub worker_threads: usize,
+
+    /// QMDB partition prefix.
+    #[arg(long = "qmdb.partition-prefix", default_value = "state")]
+    pub partition_prefix: String,
+}
+
+impl Default for QmdbArgs {
+    fn default() -> Self {
+        Self {
+            batch_blocks: 1_000,
+            worker_threads: 2,
+            partition_prefix: "state".to_string(),
+        }
+    }
+}
+
 /// Tempo node CLI arguments.
-#[derive(Debug, Clone, Copy, PartialEq, clap::Args)]
+#[derive(Debug, Clone, PartialEq, clap::Args)]
 pub struct TempoNodeArgs {
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
@@ -77,6 +133,14 @@ pub struct TempoNodeArgs {
         default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
     )]
     pub builder_build_time_multiplier: f64,
+
+    /// State-root backend to use.
+    #[arg(long = "state-root.backend", value_enum)]
+    pub state_root_backend: Option<StateRootBackend>,
+
+    /// QMDB-specific options.
+    #[command(flatten)]
+    pub qmdb: QmdbArgs,
 }
 
 impl Default for TempoNodeArgs {
@@ -87,6 +151,8 @@ impl Default for TempoNodeArgs {
             builder_state_provider_metrics: false,
             builder_enable_prewarming: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            state_root_backend: None,
+            qmdb: QmdbArgs::default(),
         }
     }
 }
@@ -106,7 +172,15 @@ impl TempoNodeArgs {
             state_provider_metrics: self.builder_state_provider_metrics,
             enable_prewarming: self.builder_enable_prewarming,
             build_time_multiplier: self.builder_build_time_multiplier,
+            state_root_backend: self.state_root_backend,
+            #[cfg(feature = "qmdb")]
+            qmdb: QmdbStateLoader::new(self.qmdb.clone()),
         }
+    }
+
+    /// Resolves the state-root backend for the given chain spec.
+    pub fn resolved_state_root_backend(&self, chain_spec: &TempoChainSpec) -> StateRootBackend {
+        StateRootBackend::resolve(self.state_root_backend, chain_spec)
     }
 }
 
@@ -120,6 +194,11 @@ pub struct TempoNode {
     payload_builder_builder: TempoPayloadBuilderBuilder,
     /// Validator public key for `admin_validatorKey` RPC method.
     validator_key: Option<B256>,
+    /// Explicit state-root backend override.
+    state_root_backend: Option<StateRootBackend>,
+    /// QMDB state loader shared by payload building and engine validation.
+    #[cfg(feature = "qmdb")]
+    qmdb: QmdbStateLoader,
 }
 
 impl TempoNode {
@@ -129,6 +208,9 @@ impl TempoNode {
             pool_builder: args.pool_builder(),
             payload_builder_builder: args.payload_builder_builder(),
             validator_key,
+            state_root_backend: args.state_root_backend,
+            #[cfg(feature = "qmdb")]
+            qmdb: QmdbStateLoader::new(args.qmdb.clone()),
         }
     }
 
@@ -165,6 +247,19 @@ impl TempoNode {
         self.validator_key = validator_key;
         self
     }
+
+    /// Sets an explicit state-root backend override.
+    pub fn with_state_root_backend(mut self, backend: Option<StateRootBackend>) -> Self {
+        self.state_root_backend = backend;
+        self.payload_builder_builder.state_root_backend = backend;
+        self
+    }
+
+    /// Returns the QMDB state loader used by this node.
+    #[cfg(feature = "qmdb")]
+    pub fn qmdb_state_loader(&self) -> &QmdbStateLoader {
+        &self.qmdb
+    }
 }
 
 impl NodeTypes for TempoNode {
@@ -174,6 +269,14 @@ impl NodeTypes for TempoNode {
     type Payload = TempoPayloadTypes;
 }
 
+#[cfg(feature = "qmdb")]
+type TempoEngineValidatorBuilderForAddOns =
+    crate::qmdb::QmdbEngineValidatorBuilder<TempoEngineValidatorBuilder>;
+
+#[cfg(not(feature = "qmdb"))]
+type TempoEngineValidatorBuilderForAddOns =
+    BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>;
+
 #[derive(Debug)]
 pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
     inner: RpcAddOns<
@@ -181,7 +284,7 @@ pub struct TempoAddOns<N: FullNodeTypes<Types = TempoNode>> {
         TempoEthApiBuilder,
         TempoEngineValidatorBuilder,
         NoopEngineApiBuilder,
-        BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>,
+        TempoEngineValidatorBuilderForAddOns,
         Identity,
     >,
     validator_key: Option<B256>,
@@ -192,13 +295,38 @@ where
     N: FullNodeTypes<Types = TempoNode>,
 {
     /// Creates a new instance from the inner `RpcAddOns`.
-    pub fn new(validator_key: Option<B256>) -> Self {
+    #[cfg(not(feature = "qmdb"))]
+    pub fn new(validator_key: Option<B256>, _state_root_backend: Option<StateRootBackend>) -> Self {
         Self {
             inner: RpcAddOns::new(
                 TempoEthApiBuilder::new(validator_key),
                 TempoEngineValidatorBuilder,
                 NoopEngineApiBuilder::default(),
                 BasicEngineValidatorBuilder::default(),
+                Identity::default(),
+                Default::default(),
+            ),
+            validator_key,
+        }
+    }
+
+    /// Creates a new instance from the inner `RpcAddOns`.
+    #[cfg(feature = "qmdb")]
+    pub fn new(
+        validator_key: Option<B256>,
+        state_root_backend: Option<StateRootBackend>,
+        qmdb: QmdbStateLoader,
+    ) -> Self {
+        Self {
+            inner: RpcAddOns::new(
+                TempoEthApiBuilder::new(validator_key),
+                TempoEngineValidatorBuilder,
+                NoopEngineApiBuilder::default(),
+                crate::qmdb::QmdbEngineValidatorBuilder::new(
+                    TempoEngineValidatorBuilder,
+                    qmdb,
+                    state_root_backend,
+                ),
                 Identity::default(),
                 Default::default(),
             ),
@@ -269,7 +397,7 @@ impl<N> EngineValidatorAddOn<NodeAdapter<N>> for TempoAddOns<N>
 where
     N: FullNodeTypes<Types = TempoNode>,
 {
-    type ValidatorBuilder = BasicEngineValidatorBuilder<TempoEngineValidatorBuilder>;
+    type ValidatorBuilder = TempoEngineValidatorBuilderForAddOns;
 
     fn engine_validator_builder(&self) -> Self::ValidatorBuilder {
         self.inner.engine_validator_builder()
@@ -292,11 +420,21 @@ where
     type AddOns = TempoAddOns<N>;
 
     fn components_builder(&self) -> Self::ComponentsBuilder {
-        Self::components(self.pool_builder, self.payload_builder_builder)
+        Self::components(self.pool_builder, self.payload_builder_builder.clone())
     }
 
+    #[cfg(not(feature = "qmdb"))]
     fn add_ons(&self) -> Self::AddOns {
-        TempoAddOns::new(self.validator_key)
+        TempoAddOns::new(self.validator_key, self.state_root_backend)
+    }
+
+    #[cfg(feature = "qmdb")]
+    fn add_ons(&self) -> Self::AddOns {
+        TempoAddOns::new(
+            self.validator_key,
+            self.state_root_backend,
+            self.qmdb.clone(),
+        )
     }
 }
 
@@ -304,10 +442,15 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
     type RpcBlock =
         alloy_rpc_types_eth::Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeader>;
 
-    fn rpc_to_primitive_block(rpc_block: Self::RpcBlock) -> tempo_primitives::Block {
-        rpc_block
+    fn rpc_to_execution_data(rpc_block: Self::RpcBlock) -> TempoExecutionData {
+        let block = rpc_block
             .into_consensus_block()
-            .map_transactions(|tx| tx.into_inner())
+            .map_transactions(|tx| tx.into_inner());
+
+        TempoExecutionData {
+            block: Arc::new(SealedBlock::seal_slow(block)),
+            validator_set: None,
+        }
     }
 
     fn local_payload_attributes_builder(
@@ -507,7 +650,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 #[non_exhaustive]
 pub struct TempoPayloadBuilderBuilder {
     /// Enable state provider metrics for the payload builder.
@@ -516,6 +659,11 @@ pub struct TempoPayloadBuilderBuilder {
     pub enable_prewarming: bool,
     /// Initial multiplier for predicting replayable payload build work.
     pub build_time_multiplier: f64,
+    /// Explicit state-root backend override.
+    pub state_root_backend: Option<StateRootBackend>,
+    /// QMDB state loader.
+    #[cfg(feature = "qmdb")]
+    pub qmdb: QmdbStateLoader,
 }
 
 impl Default for TempoPayloadBuilderBuilder {
@@ -524,10 +672,14 @@ impl Default for TempoPayloadBuilderBuilder {
             state_provider_metrics: false,
             enable_prewarming: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            state_root_backend: None,
+            #[cfg(feature = "qmdb")]
+            qmdb: QmdbStateLoader::default(),
         }
     }
 }
 
+#[cfg(not(feature = "qmdb"))]
 impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
     for TempoPayloadBuilderBuilder
 where
@@ -541,6 +693,11 @@ where
         pool: TempoTransactionPool<Node::Provider>,
         evm_config: TempoEvmConfig,
     ) -> eyre::Result<Self::PayloadBuilder> {
+        let backend = StateRootBackend::resolve(self.state_root_backend, ctx.chain_spec().as_ref());
+        if matches!(backend, StateRootBackend::Qmdb) {
+            eyre::bail!("QMDB state-root backend requires the `qmdb` feature");
+        }
+
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
@@ -553,5 +710,93 @@ where
                 build_time_multiplier: self.build_time_multiplier,
             },
         ))
+    }
+}
+
+#[cfg(feature = "qmdb")]
+impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
+    for TempoPayloadBuilderBuilder
+where
+    Node: FullNodeTypes<Types = TempoNode>,
+{
+    type PayloadBuilder = TempoPayloadBuilder<
+        Node::Provider,
+        crate::qmdb::TempoStateRootProviderFactory<Node::Provider>,
+    >;
+
+    async fn build_payload_builder(
+        self,
+        ctx: &BuilderContext<Node>,
+        pool: TempoTransactionPool<Node::Provider>,
+        evm_config: TempoEvmConfig,
+    ) -> eyre::Result<Self::PayloadBuilder> {
+        let backend = StateRootBackend::resolve(self.state_root_backend, ctx.chain_spec().as_ref());
+        let provider = match backend {
+            StateRootBackend::Mpt => {
+                crate::qmdb::TempoStateRootProviderFactory::mpt(ctx.provider().clone())
+            }
+            StateRootBackend::Qmdb => {
+                let qmdb = self.qmdb.open_for_provider(ctx.config(), ctx.provider())?;
+                crate::qmdb::TempoStateRootProviderFactory::qmdb(ctx.provider().clone(), qmdb)
+            }
+        };
+
+        Ok(TempoPayloadBuilder::new(
+            pool,
+            provider,
+            ctx.task_executor().clone(),
+            evm_config,
+            TempoPayloadBuilderConfig {
+                is_dev: ctx.is_dev(),
+                state_provider_metrics: self.state_provider_metrics,
+                enable_prewarming: self.enable_prewarming,
+                build_time_multiplier: self.build_time_multiplier,
+            },
+        ))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempo_chainspec::spec::{MODERATO, MODERATO_QMDB, PRESTO, PRESTO_QMDB};
+
+    #[test]
+    fn qmdb_backend_args() {
+        let default_args = TempoNodeArgs::default();
+        assert_eq!(
+            default_args.resolved_state_root_backend(PRESTO.as_ref()),
+            StateRootBackend::Mpt,
+        );
+        assert_eq!(
+            default_args.resolved_state_root_backend(MODERATO.as_ref()),
+            StateRootBackend::Mpt,
+        );
+        assert_eq!(
+            default_args.resolved_state_root_backend(PRESTO_QMDB.as_ref()),
+            StateRootBackend::Qmdb,
+        );
+        assert_eq!(
+            default_args.resolved_state_root_backend(MODERATO_QMDB.as_ref()),
+            StateRootBackend::Qmdb,
+        );
+
+        let force_qmdb = TempoNodeArgs {
+            state_root_backend: Some(StateRootBackend::Qmdb),
+            ..TempoNodeArgs::default()
+        };
+        assert_eq!(
+            force_qmdb.resolved_state_root_backend(PRESTO.as_ref()),
+            StateRootBackend::Qmdb,
+        );
+
+        let force_mpt = TempoNodeArgs {
+            state_root_backend: Some(StateRootBackend::Mpt),
+            ..TempoNodeArgs::default()
+        };
+        assert_eq!(
+            force_mpt.resolved_state_root_backend(PRESTO_QMDB.as_ref()),
+            StateRootBackend::Mpt,
+        );
     }
 }

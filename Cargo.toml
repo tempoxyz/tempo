@@ -182,6 +182,7 @@ reth-config = { git = "https://github.com/paradigmxyz/reth", rev = "aec6ba0" }
 reth-downloaders = { git = "https://github.com/paradigmxyz/reth", rev = "aec6ba0" }
 reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "aec6ba0" }
 reth-prune-types = { git = "https://github.com/paradigmxyz/reth", rev = "aec6ba0" }
+reth-qmdb = { git = "https://github.com/paradigmxyz/reth", rev = "aec6ba0" }
 reth-rpc = { git = "https://github.com/paradigmxyz/reth", rev = "aec6ba0" }
 reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", rev = "aec6ba0" }
 reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "aec6ba0" }

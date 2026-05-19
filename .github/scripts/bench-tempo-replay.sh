@@ -17,8 +17,6 @@
 #   BENCH_REPLAY_RPC_URL          – RPC URL override for replay extraction (optional)
 set -euxo pipefail
 
-eval "$(nu bench-schelk.nu detect)"
-
 redact_url() {
   sed -E 's#(https?://|wss?://)([^/@]+)@#\1***@#' <<< "$1"
 }
@@ -33,15 +31,33 @@ case "$CHAIN" in
   mainnet)
     CHAIN_ID=4217
     CHAIN_NAME="mainnet"
+    SOURCE_CHAIN="mainnet"
     DEFAULT_REPLAY_RPC_URL="https://rpc.tempo.xyz"
+    STATE_ROOT_BACKEND="mpt"
     ;;
   testnet)
     CHAIN_ID=42431
     CHAIN_NAME="moderato"
+    SOURCE_CHAIN="moderato"
     DEFAULT_REPLAY_RPC_URL="https://rpc.moderato.tempo.xyz"
+    STATE_ROOT_BACKEND="mpt"
+    ;;
+  mainnet-qmdb)
+    CHAIN_ID=4217
+    CHAIN_NAME="mainnet-qmdb"
+    SOURCE_CHAIN="mainnet"
+    DEFAULT_REPLAY_RPC_URL="https://rpc.tempo.xyz"
+    STATE_ROOT_BACKEND="qmdb"
+    ;;
+  moderato-qmdb)
+    CHAIN_ID=42431
+    CHAIN_NAME="moderato-qmdb"
+    SOURCE_CHAIN="moderato"
+    DEFAULT_REPLAY_RPC_URL="https://rpc.moderato.tempo.xyz"
+    STATE_ROOT_BACKEND="qmdb"
     ;;
   *)
-    echo "::error::Unknown chain: $CHAIN (must be 'mainnet' or 'testnet')"
+    echo "::error::Unknown chain: $CHAIN (must be 'mainnet', 'testnet', 'mainnet-qmdb', or 'moderato-qmdb')"
     exit 1
     ;;
 esac
@@ -52,10 +68,17 @@ if [ -n "${BENCH_REPLAY_RPC_URL:-}" ]; then
 fi
 set -x
 
-DATADIR="$SCHELK_MOUNT/tempo-replay-${CHAIN_NAME}"
+BACKEND_SUFFIX=""
+if [ "$STATE_ROOT_BACKEND" != "mpt" ]; then
+  BACKEND_SUFFIX="-${STATE_ROOT_BACKEND}"
+fi
+
 SNAPSHOT_PREFIX="tempo-${CHAIN_ID}-"
-SNAPSHOT_HASH_FILE="$HOME/.tempo-replay-snapshot-hash-${CHAIN_NAME}"
-echo "Chain: $CHAIN_NAME (id=$CHAIN_ID, rpc=$(redact_url "$REPLAY_RPC_URL"))"
+if [ "$STATE_ROOT_BACKEND" = "qmdb" ]; then
+  SNAPSHOT_PREFIX="tempo-${CHAIN_ID}-${STATE_ROOT_BACKEND}-"
+fi
+SNAPSHOT_HASH_FILE="$HOME/.tempo-replay-snapshot-hash-${CHAIN_NAME}${BACKEND_SUFFIX}"
+echo "Chain: $CHAIN_NAME (id=$CHAIN_ID, rpc=$(redact_url "$REPLAY_RPC_URL"), state_root_backend=$STATE_ROOT_BACKEND)"
 
 MC="mc"
 BLOCKS="${BENCH_BLOCKS:-5000}"
@@ -65,6 +88,37 @@ if ! [[ "$RUN_PAIRS" =~ ^[1-9][0-9]*$ ]]; then
   echo "::error::BENCH_RUN_PAIRS must be a positive integer"
   exit 1
 fi
+
+STATE_ROOT_ARGS=()
+if [ "$STATE_ROOT_BACKEND" = "qmdb" ]; then
+  STATE_ROOT_ARGS=(--state-root.backend qmdb)
+fi
+
+if [ "${BENCH_DRY_RUN:-0}" = "1" ]; then
+  DRY_RUN_FROM="${BENCH_FROM_BLOCK:-1}"
+  WARMUP_TO=$(( DRY_RUN_FROM + WARMUP - 1 ))
+  BENCH_FROM="$DRY_RUN_FROM"
+  if [ "$WARMUP" -gt 0 ]; then
+    BENCH_FROM=$(( WARMUP_TO + 1 ))
+  fi
+  BENCH_TO=$(( BENCH_FROM + BLOCKS - 1 ))
+
+  echo "Replay dry run"
+  echo "source RPC: $REPLAY_RPC_URL"
+  echo "target chain: $CHAIN_NAME"
+  echo "target node args: --chain $CHAIN_NAME ${STATE_ROOT_ARGS[*]}"
+  echo "warmup range: ${DRY_RUN_FROM}..${WARMUP_TO}"
+  echo "benchmark range: ${BENCH_FROM}..${BENCH_TO}"
+  if [ "$STATE_ROOT_BACKEND" = "qmdb" ]; then
+    DRY_RUN_DATADIR="${SCHELK_MOUNT:-/schelk}/tempo-replay-${CHAIN_NAME}${BACKEND_SUFFIX}"
+    echo "translator command: tempo translate-blocks --source-chain $SOURCE_CHAIN --target-chain $CHAIN_NAME --source-rpc $REPLAY_RPC_URL --target-engine http://127.0.0.1:8551 --jwt-secret $DRY_RUN_DATADIR/jwt.hex --from $BENCH_FROM --to $BENCH_TO"
+  fi
+  exit 0
+fi
+
+eval "$(nu bench-schelk.nu detect)"
+
+DATADIR="$SCHELK_MOUNT/tempo-replay-${CHAIN_NAME}${BACKEND_SUFFIX}"
 
 mkdir -p "$BENCH_WORK_DIR"
 
@@ -85,6 +139,9 @@ fi
 if [ -z "$BENCHMARK_ID" ]; then
   echo "Error: BENCHMARK_ID or GITHUB_RUN_ID must be set for replay benchmarks" >&2
   exit 1
+fi
+if [ "$STATE_ROOT_BACKEND" = "qmdb" ] && [[ ",$BENCH_FEATURES," != *",qmdb,"* ]]; then
+  BENCH_FEATURES="${BENCH_FEATURES},qmdb"
 fi
 
 if [ "${BENCH_OTLP:-false}" = "true" ]; then
@@ -260,6 +317,7 @@ run_single() {
     --engine.share-sparse-trie-with-payload-builder
     --engine.share-execution-cache-with-payload-builder
   )
+  NODE_ARGS+=("${STATE_ROOT_ARGS[@]}")
 
   # Per-label extra node args
   local extra_args=""
@@ -403,10 +461,19 @@ run_single() {
   if [ "$WARMUP" -gt 0 ]; then
     local warmup_to=$(( from_block + WARMUP - 1 ))
     echo "Running warmup ($WARMUP blocks: $from_block..$warmup_to)..."
-    "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$warmup_to" \
-      | "$TXGEN_BENCH_BIN" send-blocks \
-        --engine http://127.0.0.1:8551 \
-        --jwt-secret "$DATADIR/jwt.hex" 2>&1 | sed -u "s/^/[bench] /"
+    if [ "$STATE_ROOT_BACKEND" = "qmdb" ]; then
+      "$binary" translate-blocks --source-chain "$SOURCE_CHAIN" --target-chain "$CHAIN_NAME" \
+        --source-rpc "$REPLAY_RPC_URL" --target-engine http://127.0.0.1:8551 \
+        --jwt-secret "$DATADIR/jwt.hex" --from "$from_block" --to "$warmup_to" \
+        | "$TXGEN_BENCH_BIN" send-blocks \
+          --engine http://127.0.0.1:8551 \
+          --jwt-secret "$DATADIR/jwt.hex" 2>&1 | sed -u "s/^/[bench] /"
+    else
+      "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$warmup_to" \
+        | "$TXGEN_BENCH_BIN" send-blocks \
+          --engine http://127.0.0.1:8551 \
+          --jwt-secret "$DATADIR/jwt.hex" 2>&1 | sed -u "s/^/[bench] /"
+    fi
     from_block=$(( warmup_to + 1 ))
   fi
 
@@ -418,7 +485,13 @@ run_single() {
     clickhouse_report=(--report "clickhouse:$CLICKHOUSE_URL")
   fi
 
-  "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$bench_to" \
+  if [ "$STATE_ROOT_BACKEND" = "qmdb" ]; then
+    "$binary" translate-blocks --source-chain "$SOURCE_CHAIN" --target-chain "$CHAIN_NAME" \
+      --source-rpc "$REPLAY_RPC_URL" --target-engine http://127.0.0.1:8551 \
+      --jwt-secret "$DATADIR/jwt.hex" --from "$from_block" --to "$bench_to"
+  else
+    "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$bench_to"
+  fi \
     | "$TXGEN_BENCH_BIN" send-blocks \
       --engine http://127.0.0.1:8551 \
       --jwt-secret "$DATADIR/jwt.hex" \
@@ -433,6 +506,7 @@ run_single() {
       -m "benchmark_id=$BENCHMARK_ID" \
       -m "benchmark_run=$label" \
       -m "run_type=$run_type" \
+      -m "state-root-backend=$STATE_ROOT_BACKEND" \
       -m "blocks=$BLOCKS" 2>&1 | sed -u "s/^/[bench] /"
 
   # Cleanup (runs via EXIT trap; call explicitly for the success log line)

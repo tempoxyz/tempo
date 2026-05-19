@@ -44,6 +44,7 @@ mod init_state;
 mod p2p_proxy;
 mod regenesis;
 mod tempo_cmd;
+mod translate_blocks;
 
 use clap::{CommandFactory, FromArgMatches};
 use commonware_runtime::{Metrics, Runner};

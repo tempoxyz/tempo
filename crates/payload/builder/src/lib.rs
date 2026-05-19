@@ -81,9 +81,9 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
 }
 
 #[derive(Debug, Clone)]
-pub struct TempoPayloadBuilder<Provider> {
-    pool: TempoTransactionPool<Provider>,
-    provider: Provider,
+pub struct TempoPayloadBuilder<PoolProvider, StateRootProvider = PoolProvider> {
+    pool: TempoTransactionPool<PoolProvider>,
+    provider: StateRootProvider,
     executor: TaskExecutor,
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
@@ -132,10 +132,11 @@ impl Default for TempoPayloadBuilderConfig {
     }
 }
 
-impl<Provider> TempoPayloadBuilder<Provider> {
+impl<PoolProvider, StateRootProvider> TempoPayloadBuilder<PoolProvider, StateRootProvider> {
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
-        pool: TempoTransactionPool<Provider>,
-        provider: Provider,
+        pool: TempoTransactionPool<PoolProvider>,
+        provider: StateRootProvider,
         executor: TaskExecutor,
         evm_config: TempoEvmConfig,
         config: TempoPayloadBuilderConfig,
@@ -173,7 +174,10 @@ impl<Provider> TempoPayloadBuilder<Provider> {
     }
 }
 
-impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilder<Provider> {
+impl<PoolProvider, StateRootProvider> TempoPayloadBuilder<PoolProvider, StateRootProvider>
+where
+    StateRootProvider: ChainSpecProvider<ChainSpec = TempoChainSpec>,
+{
     /// Builds system transactions to seal the block.
     ///
     /// Returns a vector of system transactions that must be executed at the end of each block:
@@ -221,10 +225,21 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
     }
 }
 
-impl<Provider> PayloadBuilder for TempoPayloadBuilder<Provider>
+impl<PoolProvider, StateRootProvider> PayloadBuilder
+    for TempoPayloadBuilder<PoolProvider, StateRootProvider>
 where
-    Provider:
-        StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
+    PoolProvider: StateProviderFactory
+        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    StateRootProvider: StateProviderFactory
+        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     type Attributes = TempoPayloadAttributes;
     type BuiltPayload = TempoBuiltPayload;
@@ -268,10 +283,20 @@ where
     }
 }
 
-impl<Provider> TempoPayloadBuilder<Provider>
+impl<PoolProvider, StateRootProvider> TempoPayloadBuilder<PoolProvider, StateRootProvider>
 where
-    Provider:
-        StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
+    PoolProvider: StateProviderFactory
+        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+    StateRootProvider: StateProviderFactory
+        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     #[instrument(
         target = "payload_builder",

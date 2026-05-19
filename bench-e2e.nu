@@ -839,6 +839,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
         | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
         | append $local_reth_args
+        | append (if $ctx.state_root_backend == "qmdb" { ["--state-root.backend" "qmdb"] } else { [] })
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
@@ -846,6 +847,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
         | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
         | append $local_reth_args
+        | append (if $ctx.state_root_backend == "qmdb" { ["--state-root.backend" "qmdb"] } else { [] })
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
@@ -1082,6 +1084,7 @@ def "main e2e" [
     --max-concurrent-requests: int = 100                # Max concurrent requests
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 1, 10, or 100
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
+    --state-root-backend: string = "mpt"                # State root backend for benchmark nodes: mpt or qmdb
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
@@ -1133,6 +1136,10 @@ def "main e2e" [
         print "Error: tracy-capture not found. Install tracy and ensure tracy-capture is in PATH."
         exit 1
     }
+    if $state_root_backend not-in ["mpt" "qmdb"] {
+        print $"Error: --state-root-backend must be one of: mpt, qmdb \(got '($state_root_backend)'\)"
+        exit 1
+    }
     let hardfork_mode = $baseline_hardfork != "" or $feature_hardfork != ""
     if $hardfork_mode and ($baseline_hardfork == "" or $feature_hardfork == "") {
         print "Error: --baseline-hardfork and --feature-hardfork must both be provided"
@@ -1163,8 +1170,9 @@ def "main e2e" [
     let a_consensus_port = ($a_validator | split row ":" | get 1 | into int)
     let b_ip = ($b_validator | split row ":" | get 0)
     let b_consensus_port = ($b_validator | split row ":" | get 1 | into int)
-    let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb"
-    let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb"
+    let state_root_suffix = if $state_root_backend == "mpt" { "" } else { $"_($state_root_backend)" }
+    let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb($state_root_suffix)"
+    let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb($state_root_suffix)"
     let a_identity = $a_db
     let b_identity = $b_db
     let genesis_path = $"($a_db)/($BENCH_META_SUBDIR)/genesis.json"
@@ -1248,6 +1256,7 @@ def "main e2e" [
             dkg_in_genesis: true
             topology: "single-runner"
             state_hardfork: $snapshot_state_hardfork
+            state_root_backend: $state_root_backend
         }
         init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
         init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
@@ -1406,6 +1415,7 @@ def "main e2e" [
         feature_local_reth_args: $feature_arg_filter.supported
         regenesis_tempo: $regenesis_tempo
         tracing_otlp: $tracing_otlp
+        state_root_backend: $state_root_backend
     }
 
     let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }

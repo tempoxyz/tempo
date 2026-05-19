@@ -32,6 +32,7 @@ reth-node-core.workspace = true
 reth-node-metrics.workspace = true
 reth-tracing.workspace = true
 reth-provider.workspace = true
+reth-qmdb = { workspace = true, optional = true }
 reth-transaction-pool.workspace = true
 reth-evm.workspace = true
 reth-network-api.workspace = true
@@ -43,6 +44,10 @@ reth-node-api.workspace = true
 reth-rpc-eth-types.workspace = true
 reth-node-ethereum.workspace = true
 reth-storage-api.workspace = true
+reth-engine-tree = { workspace = true, optional = true }
+reth-stages = { workspace = true, optional = true }
+reth-trie-common = { workspace = true, optional = true }
+reth-trie-db = { workspace = true, optional = true }
 
 alloy-serde.workspace = true
 alloy-eips.workspace = true
@@ -99,6 +104,13 @@ vergen-git2.workspace = true
 
 [features]
 default = []
+qmdb = [
+	"dep:reth-engine-tree",
+	"dep:reth-qmdb",
+	"dep:reth-stages",
+	"dep:reth-trie-common",
+	"dep:reth-trie-db",
+]
 asm-keccak = [
 	"alloy/asm-keccak",
 	"alloy-primitives/asm-keccak",

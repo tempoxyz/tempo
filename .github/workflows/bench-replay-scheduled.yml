@@ -35,6 +35,8 @@ on:
         options:
           - mainnet
           - testnet
+          - mainnet-qmdb
+          - moderato-qmdb
       blocks:
         description: "Number of blocks to benchmark"
         required: false
@@ -101,7 +103,7 @@ jobs:
           fi
 
           case "$INPUT_CHAIN" in
-            mainnet|testnet) ;;
+            mainnet|testnet|mainnet-qmdb|moderato-qmdb) ;;
             *)
               echo "::error::Unknown chain value: $INPUT_CHAIN"
               exit 1

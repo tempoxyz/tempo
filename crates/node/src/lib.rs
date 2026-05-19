@@ -14,6 +14,8 @@ pub use tempo_transaction_pool::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS;
 
 pub mod engine;
 pub mod node;
+#[cfg(feature = "qmdb")]
+pub mod qmdb;
 pub mod rpc;
 pub mod telemetry;
 pub use tempo_consensus as consensus;
@@ -21,6 +23,15 @@ pub use tempo_evm as evm;
 pub use tempo_primitives as primitives;
 
 mod version;
+
+#[cfg(feature = "qmdb")]
+mod qmdb_compile_check {
+    #[allow(unused_imports)]
+    use reth_qmdb::{
+        QmdbBlock, QmdbConfig, QmdbStage, QmdbState, QmdbStateProviderFactory,
+        QmdbStateRootProvider, genesis_hashed_state,
+    };
+}
 
 type TempoFullNodeTypes = RethFullAdapter<DatabaseEnv, TempoNode>;
 type TempoNodeAdapter = NodeAdapter<TempoFullNodeTypes>;

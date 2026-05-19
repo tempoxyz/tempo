@@ -9,11 +9,18 @@ permissions: {}
 jobs:
   publish:
     permissions:
+      contents: read
       pull-requests: read
     runs-on: ubuntu-latest
     if: >-
       github.event.issue.pull_request && github.event.comment.author_association == 'MEMBER' && startsWith(github.event.comment.body, '/build-devnet')
     steps:
+    - uses: actions/checkout@v6
+      with:
+        persist-credentials: false
+        sparse-checkout: .github/scripts
+        sparse-checkout-cone-mode: true
+
     - name: Get PR details
       id: pr
 
@@ -34,23 +41,21 @@ jobs:
         GH_REPO: ${{ github.repository }}
         PR_NUMBER: ${{ github.event.issue.number }}
         REQUESTED_BY: ${{ github.event.comment.user.login }}
+        COMMENT_BODY: ${{ github.event.comment.body }}
         PR_BRANCH: ${{ steps.pr.outputs.branch }}
       run: |
         set -euo pipefail
 
         echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
         echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
+        EVENT_DATA=$(.github/scripts/build-devnet-event.sh "$COMMENT_BODY" "$PR_BRANCH" "$REQUESTED_BY" "devnet-pr-${PR_NUMBER}")
 
         curl -sf -o /dev/null -X POST ${{ secrets.EVENTS_ARGS }} \
           -H "Content-Type: application/json" \
           --key "${RUNNER_TEMP}/key" \
           --cert "${RUNNER_TEMP}/cert" \
-          -d "{
-            \"repository\": \"${GH_REPO}\",
-            \"event\": \"build_devnet\",
-            \"data\": {
-              \"name\": \"devnet-pr-${PR_NUMBER}\",
-              \"branch\": \"${PR_BRANCH}\",
-              \"requested_by\": \"${REQUESTED_BY}\"
-            }
-          }"
+          -d "$(jq -n \
+            --arg repository "$GH_REPO" \
+            --arg event "build_devnet" \
+            --argjson data "$EVENT_DATA" \
+            '{repository: $repository, event: $event, data: $data}')"

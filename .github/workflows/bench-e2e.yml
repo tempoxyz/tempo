@@ -125,6 +125,14 @@ on:
         type: string
         required: true
         default: "1000000000"
+      state-root-backend:
+        description: State root backend for benchmark nodes.
+        type: choice
+        required: true
+        default: mpt
+        options:
+          - mpt
+          - qmdb
       force-bloat:
         description: Force regeneration of local benchmark state.
         type: boolean
@@ -266,6 +274,10 @@ on:
         type: string
         required: false
         default: "1000000000"
+      state-root-backend:
+        type: string
+        required: false
+        default: mpt
       run-type:
         type: string
         required: false
@@ -376,6 +388,7 @@ jobs:
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
       BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '1000000000' }}
+      BENCH_STATE_ROOT_BACKEND: ${{ inputs.state-root-backend || 'mpt' }}
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat }}
       BENCH_NO_CACHE: ${{ inputs.no-cache || 'false' }}
@@ -733,6 +746,7 @@ jobs:
             --accounts "$BENCH_ACCOUNTS"
             --max-concurrent-requests "$BENCH_MAX_CONCURRENT_REQUESTS"
             --gas-limit "$BENCH_GAS_LIMIT"
+            --state-root-backend "$BENCH_STATE_ROOT_BACKEND"
             --baseline "$BASELINE_REF"
             --feature "$FEATURE_REF"
             --baseline-name "${{ steps.refs.outputs.baseline-name }}"
