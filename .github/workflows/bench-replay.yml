@@ -30,7 +30,7 @@ on:
       otlp:
         description: "Export OTLP traces and logs"
         type: boolean
-        default: false
+        default: true
       baseline:
         description: "Baseline git ref (default: merge-base)"
         type: string
@@ -87,7 +87,7 @@ on:
       otlp:
         type: string
         required: false
-        default: "false"
+        default: "true"
       baseline-args:
         type: string
         required: false
@@ -163,8 +163,8 @@ jobs:
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor }}
       BENCH_SAMPLY: ${{ inputs.samply }}
-      BENCH_OTLP: ${{ inputs.otlp == true || inputs.otlp == 'true' }}
-      BENCH_FEATURES: ${{ (inputs.otlp == true || inputs.otlp == 'true') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
+      BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' }}
+      BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_ARGS: "--dev.block-time 999999s ${{ inputs.baseline-args }}"
       BENCH_FEATURE_ARGS: "--dev.block-time 999999s ${{ inputs.feature-args }}"
       BENCH_BLOCKS: ${{ inputs.blocks || '5000' }}

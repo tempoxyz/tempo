@@ -1672,7 +1672,7 @@ impl AASequenceId {
 ///
 /// Identified by its sender, nonce key and nonce for that nonce key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub(crate) struct AA2dTransactionId {
+pub struct AA2dTransactionId {
     /// Uniquely identifies the accounts nonce key sequence
     pub(crate) seq_id: AASequenceId,
     /// The nonce in that sequence
@@ -1688,6 +1688,11 @@ impl AA2dTransactionId {
     /// Returns the next transaction in the sequence.
     pub(crate) fn unlocks(&self) -> Self {
         Self::new(self.seq_id, self.nonce.saturating_add(1))
+    }
+
+    /// Returns the nonce key sequence of this transaction.
+    pub fn seq_id(&self) -> &AASequenceId {
+        &self.seq_id
     }
 }
 

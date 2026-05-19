@@ -145,6 +145,7 @@ jobs:
       matrix: ${{ fromJSON(needs.resolve-refs.outputs.bench-matrix) }}
     permissions:
       contents: read
+      issues: write
       pull-requests: write
     with:
       actor: ${{ matrix.actor }}

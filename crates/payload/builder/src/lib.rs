@@ -4,8 +4,12 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod metrics;
+mod prewarming;
 
-use crate::metrics::{InstrumentedFinishProvider, TempoPayloadBuilderMetrics};
+use crate::{
+    metrics::{InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
+    prewarming::BestTransactionsPrewarming,
+};
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
@@ -28,6 +32,7 @@ use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
 use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
 use reth_revm::{State, context::Block, database::StateProviderDatabase};
 use reth_storage_api::{StateProvider, StateProviderFactory};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
@@ -72,6 +77,7 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
 pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
     provider: Provider,
+    executor: TaskExecutor,
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
     /// Height at which we've seen an invalid subblock.
@@ -90,26 +96,33 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to disable state cache.
     disable_state_cache: bool,
+    /// Whether to enable prewarming of best transactions.
+    enable_prewarming: bool,
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
+        executor: TaskExecutor,
         evm_config: TempoEvmConfig,
         is_dev: bool,
         state_provider_metrics: bool,
         disable_state_cache: bool,
+        enable_prewarming: bool,
     ) -> Self {
         Self {
             pool,
             provider,
+            executor,
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             highest_invalid_subblock: Default::default(),
             is_dev,
             state_provider_metrics,
             disable_state_cache,
+            enable_prewarming,
         }
     }
 }
@@ -229,7 +242,9 @@ where
         empty: bool,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
-        Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+        Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>
+            + Send
+            + 'static,
     {
         let BuildArguments {
             mut cached_reads,
@@ -424,17 +439,22 @@ where
         let base_fee = builder.evm_mut().block().basefee;
         let validator_fee_token = resolve_validator_fee_token(&mut builder)?;
         let pool_fetch_start = Instant::now();
+        let best_txs = best_txs(BestTransactionsAttributes::new(
+            base_fee,
+            builder
+                .evm_mut()
+                .block()
+                .blob_gasprice()
+                .map(|gasprice| gasprice as u64),
+        ));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
-        let mut best_txs =
-            StateAwareBestTransactions::new(best_txs(BestTransactionsAttributes::new(
-                base_fee,
-                builder
-                    .evm_mut()
-                    .block()
-                    .blob_gasprice()
-                    .map(|gasprice| gasprice as u64),
-            )));
+        let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
+            Box::new(BestTransactionsPrewarming::new(&self.executor, best_txs))
+                as Box<dyn BestTransactions<Item = _>>
+        } else {
+            Box::new(best_txs)
+        });
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
