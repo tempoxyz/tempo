@@ -7,7 +7,7 @@ mod metrics;
 mod prewarming;
 
 use crate::{
-    metrics::{InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
+    metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
@@ -464,7 +464,7 @@ where
         let mut skipped_oversized_block = false;
         let block_build_stop_reason = loop {
             if attributes.is_interrupted() {
-                break "time_limit";
+                break BlockBuildStopReason::TimeLimit;
             }
 
             check_cancel!();
@@ -475,11 +475,11 @@ where
                     continue;
                 }
                 let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
-                    "gas_limit"
+                    BlockBuildStopReason::GasLimit
                 } else if skipped_oversized_block {
-                    "rlp_block_size_limit"
+                    BlockBuildStopReason::RlpBlockSizeLimit
                 } else {
-                    "tx_pool_empty"
+                    BlockBuildStopReason::TxPoolEmpty
                 };
                 break stop_reason;
             };
@@ -530,7 +530,7 @@ where
 
             // check if the job was interrupted, if so we can skip remaining transactions
             if attributes.is_interrupted() {
-                break "time_limit";
+                break BlockBuildStopReason::TimeLimit;
             }
 
             check_cancel!();
