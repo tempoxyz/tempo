@@ -229,16 +229,11 @@ pub trait TempoStateAccess<M = ()> {
     /// Checks if the given TIP20 token has USD currency.
     ///
     /// IMPORTANT: Caller must ensure `fee_token` has a valid TIP20 prefix.
-    fn is_tip20_usd(
-        &mut self,
-        spec: TempoHardfork,
-        fee_token: Address,
-    ) -> TempoResult<(bool, Option<TempoInvalidTransaction>)>
+    fn is_tip20_usd(&mut self, spec: TempoHardfork, fee_token: Address) -> TempoResult<bool>
     where
         Self: Sized,
     {
-        let err = self.ensure_tip20_usd(spec, fee_token)?;
-        Ok((err.is_none(), err))
+        Ok(self.ensure_tip20_usd(spec, fee_token)?.is_none())
     }
 
     /// Checks if the given token can be used as a fee token.
@@ -252,7 +247,7 @@ pub trait TempoStateAccess<M = ()> {
         }
 
         // Ensure the currency is USD
-        Ok(self.is_tip20_usd(spec, fee_token)?.0)
+        self.is_tip20_usd(spec, fee_token)
     }
 
     /// Checks if a fee token is paused.
@@ -753,9 +748,8 @@ mod tests {
             let mut db = revm::database::CacheDB::new(EmptyDB::default());
             db.insert_account_storage(fee_token, tip20_slots::CURRENCY, *currency_value)?;
 
-            let (is_usd, err) = db.is_tip20_usd(TempoHardfork::Genesis, fee_token)?;
+            let is_usd = db.is_tip20_usd(TempoHardfork::Genesis, fee_token)?;
             assert_eq!(is_usd, *expected, "currency '{label}' failed");
-            assert_eq!(err.is_some(), !expected, "currency '{label}' error failed");
         }
 
         Ok(())
@@ -769,8 +763,7 @@ mod tests {
 
         db.insert_account_storage(fee_token, tip20_slots::CURRENCY, U256::from(len * 2 + 1))?;
 
-        let (is_tip20_usd, err) = db.is_tip20_usd(TempoHardfork::Genesis, fee_token)?;
-        assert!(!is_tip20_usd);
+        let err = db.ensure_tip20_usd(TempoHardfork::Genesis, fee_token)?;
         assert!(matches!(
             err,
             Some(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
