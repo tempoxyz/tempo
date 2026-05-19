@@ -123,6 +123,13 @@ impl TempoPayloadBuilderMetrics {
             .increment(1);
     }
 
+    /// Increments the counter for why the payload builder stopped adding pool transactions.
+    #[inline]
+    pub(crate) fn inc_block_build_stop_reason(&self, reason: &'static str) {
+        metrics::counter!("tempo_payload_builder_block_build_stop_total", "reason" => reason)
+            .increment(1);
+    }
+
     /// Increments the counter for subblocks dropped due to expired transactions.
     #[inline]
     pub(crate) fn inc_subblocks_expired(&self) {

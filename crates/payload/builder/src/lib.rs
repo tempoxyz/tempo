@@ -461,9 +461,10 @@ where
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
-        loop {
+        let mut skipped_oversized_block = false;
+        let block_build_stop_reason = loop {
             if attributes.is_interrupted() {
-                break;
+                break "time_limit";
             }
 
             check_cancel!();
@@ -473,7 +474,14 @@ where
                     std::thread::sleep(Duration::from_millis(1));
                     continue;
                 }
-                break;
+                let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
+                    "gas_limit"
+                } else if skipped_oversized_block {
+                    "rlp_block_size_limit"
+                } else {
+                    "tx_pool_empty"
+                };
+                break stop_reason;
             };
             pool_transactions_yielded += 1;
 
@@ -522,7 +530,7 @@ where
 
             // check if the job was interrupted, if so we can skip remaining transactions
             if attributes.is_interrupted() {
-                break;
+                break "time_limit";
             }
 
             check_cancel!();
@@ -542,6 +550,7 @@ where
                     },
                 );
                 self.metrics.inc_pool_tx_skipped("oversized_block");
+                skipped_oversized_block = true;
                 continue;
             }
 
@@ -621,8 +630,10 @@ where
 
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
-        }
+        };
         drop(_block_fill_span);
+        self.metrics
+            .inc_block_build_stop_reason(block_build_stop_reason);
         let total_normal_transaction_execution_elapsed = execution_start.elapsed();
         self.metrics
             .total_normal_transaction_execution_duration_seconds
