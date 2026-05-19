@@ -81,10 +81,12 @@ where
 
 async fn set_receive_policy<P: Provider + Clone>(
     registry: &ITIP403Registry::ITIP403RegistryInstance<P>,
+    sender_policy_id: u64,
+    token_filter_id: u64,
     recovery: Address,
 ) -> eyre::Result<u64> {
     let receipt = registry
-        .setReceivePolicy(REJECT_ALL_POLICY_ID, ALLOW_ALL_POLICY_ID, recovery)
+        .setReceivePolicy(sender_policy_id, token_filter_id, recovery)
         .gas(GAS)
         .send()
         .await?
@@ -143,6 +145,27 @@ async fn create_blocked_transfer<P: Provider + Clone>(
     })
 }
 
+async fn create_allowed_transfer<P: Provider + Clone>(
+    token: &ITIP20::ITIP20Instance<P>,
+    receiver: Address,
+    amount: U256,
+) -> eyre::Result<u64> {
+    let receipt = token
+        .transfer(receiver, amount)
+        .gas(GAS)
+        .send()
+        .await?
+        .get_receipt()
+        .await?;
+    assert!(receipt.status(), "allowed transfer failed");
+    assert!(
+        transfer_blocked(&receipt).is_err(),
+        "allowed transfer should not emit TransferBlocked"
+    );
+
+    Ok(receipt.gas_used)
+}
+
 async fn claim_blocked<P: Provider + Clone>(
     escrow: &ITIP1028Escrow::ITIP1028EscrowInstance<P>,
     to: Address,
@@ -189,6 +212,7 @@ async fn test_tip1028_escrow_gas_snapshots() -> eyre::Result<()> {
     let third_party_recovery_receiver = wallet(4)?;
     let recovery = wallet(5)?;
     let destination = wallet(6)?;
+    let allowed_third_party_receiver = wallet(7)?;
 
     let admin_provider = ProviderBuilder::new()
         .wallet(admin.clone())
@@ -224,11 +248,16 @@ async fn test_tip1028_escrow_gas_snapshots() -> eyre::Result<()> {
     let third_party_recovery_provider = ProviderBuilder::new()
         .wallet(third_party_recovery_receiver.clone())
         .connect_http(http_url.clone());
+    let allowed_third_party_provider = ProviderBuilder::new()
+        .wallet(allowed_third_party_receiver.clone())
+        .connect_http(http_url.clone());
 
     gas.insert(
         "set_receive_policy_originator_recovery",
         set_receive_policy(
             &ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, originator_recovery_provider),
+            REJECT_ALL_POLICY_ID,
+            ALLOW_ALL_POLICY_ID,
             RECOVERY_ORIGINATOR,
         )
         .await?,
@@ -237,6 +266,8 @@ async fn test_tip1028_escrow_gas_snapshots() -> eyre::Result<()> {
         "set_receive_policy_receiver_recovery",
         set_receive_policy(
             &ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, receiver_recovery_provider.clone()),
+            REJECT_ALL_POLICY_ID,
+            ALLOW_ALL_POLICY_ID,
             RECOVERY_RECEIVER,
         )
         .await?,
@@ -245,6 +276,18 @@ async fn test_tip1028_escrow_gas_snapshots() -> eyre::Result<()> {
         "set_receive_policy_third_party_recovery",
         set_receive_policy(
             &ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, third_party_recovery_provider),
+            REJECT_ALL_POLICY_ID,
+            ALLOW_ALL_POLICY_ID,
+            recovery.address(),
+        )
+        .await?,
+    );
+    gas.insert(
+        "set_receive_policy_allowed_third_party_recovery",
+        set_receive_policy(
+            &ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, allowed_third_party_provider),
+            ALLOW_ALL_POLICY_ID,
+            ALLOW_ALL_POLICY_ID,
             recovery.address(),
         )
         .await?,
@@ -285,6 +328,15 @@ async fn test_tip1028_escrow_gas_snapshots() -> eyre::Result<()> {
     gas.insert(
         "transfer_blocked_third_party_recovery",
         third_party_blocked.gas_used,
+    );
+    gas.insert(
+        "transfer_allowed_third_party_receive_policy",
+        create_allowed_transfer(
+            &originator_token,
+            allowed_third_party_receiver.address(),
+            U256::from(4_000),
+        )
+        .await?,
     );
 
     let originator_escrow = ITIP1028Escrow::new(ESCROW_ADDRESS, originator_provider);
