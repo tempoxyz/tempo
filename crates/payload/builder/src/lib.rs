@@ -7,7 +7,7 @@ mod metrics;
 mod prewarming;
 
 use crate::{
-    metrics::{InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
+    metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
@@ -23,7 +23,7 @@ use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
-    block::{BlockExecutionError, BlockExecutor, BlockValidationError, TxResult},
+    block::{BlockExecutionError, BlockExecutor, BlockValidationError},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
 use reth_execution_types::BlockExecutionOutput;
@@ -47,14 +47,11 @@ use std::{
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
-use tempo_precompiles::{tip_fee_manager::TipFeeManager, validator_config_v2::ValidatorConfigV2};
+use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
     subblock::PartialValidatorKey,
-    transaction::{
-        calc_gas_balance_spending,
-        envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
-    },
+    transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool,
@@ -437,7 +434,6 @@ where
             .record(prepare_system_txs_elapsed);
 
         let base_fee = builder.evm_mut().block().basefee;
-        let validator_fee_token = resolve_validator_fee_token(&mut builder)?;
         let pool_fetch_start = Instant::now();
         let best_txs = best_txs(BestTransactionsAttributes::new(
             base_fee,
@@ -461,9 +457,10 @@ where
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
-        loop {
+        let mut skipped_oversized_block = false;
+        let block_build_stop_reason = loop {
             if attributes.is_interrupted() {
-                break;
+                break BlockBuildStopReason::TimeLimit;
             }
 
             check_cancel!();
@@ -473,7 +470,14 @@ where
                     std::thread::sleep(Duration::from_millis(1));
                     continue;
                 }
-                break;
+                let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
+                    BlockBuildStopReason::GasLimit
+                } else if skipped_oversized_block {
+                    BlockBuildStopReason::RlpBlockSizeLimit
+                } else {
+                    BlockBuildStopReason::TxPoolEmpty
+                };
+                break stop_reason;
             };
             pool_transactions_yielded += 1;
 
@@ -522,7 +526,7 @@ where
 
             // check if the job was interrupted, if so we can skip remaining transactions
             if attributes.is_interrupted() {
-                break;
+                break BlockBuildStopReason::TimeLimit;
             }
 
             check_cancel!();
@@ -542,10 +546,9 @@ where
                     },
                 );
                 self.metrics.inc_pool_tx_skipped("oversized_block");
+                skipped_oversized_block = true;
                 continue;
             }
-
-            let effective_gas_price = pool_tx.transaction.effective_gas_price(Some(base_fee));
 
             let tx_debug_repr = tracing::enabled!(Level::TRACE)
                 .then(|| format!("{:?}", pool_tx.transaction))
@@ -561,27 +564,9 @@ where
                         non_payment_gas_used += result.block_gas_used();
                     }
 
-                    // Score payload value by actual validator payout, applying the AMM
-                    // haircut when the transaction's fee token differs from the validator's.
-                    let nominal_spending = calc_gas_balance_spending(
-                        result.result().result.tx_gas_used(),
-                        effective_gas_price,
-                    );
-                    if let Some(fee_token) = pool_tx.transaction.resolved_fee_token() {
-                        if fee_token == validator_fee_token {
-                            total_fees += nominal_spending;
-                        } else {
-                            total_fees +=
-                                tempo_precompiles::tip_fee_manager::amm::compute_amount_out(
-                                    nominal_spending,
-                                )
-                                .expect(
-                                    "execution succeeded, so compute_amount_out should not fail",
-                                );
-                        }
-                    } else {
-                        warn!("no resolved fee token for a pool transaction")
-                    }
+                    // Score payload value by the validator-credited fee amount that the
+                    // FeeManager precompile actually wrote during this transaction.
+                    total_fees += result.validator_fee();
 
                     // Notify transactions iterator about the new state.
                     best_txs.on_new_result(result);
@@ -621,8 +606,10 @@ where
 
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
-        }
+        };
         drop(_block_fill_span);
+        self.metrics
+            .inc_block_build_stop_reason(block_build_stop_reason);
         let total_normal_transaction_execution_elapsed = execution_start.elapsed();
         self.metrics
             .total_normal_transaction_execution_duration_seconds
@@ -985,22 +972,6 @@ fn maybe_override_fee_recipient<DB: Database>(
             warn!(%err, "failed resolving fee recipient from contract; using fallback");
         }
     }
-}
-
-/// Resolves the validator's preferred fee token.
-fn resolve_validator_fee_token(
-    builder: &mut impl BlockBuilder<Executor: BlockExecutor<Evm = TempoEvm<impl Database>>>,
-) -> Result<Address, PayloadBuilderError> {
-    let ctx = builder.evm_mut().ctx_mut();
-    // We are using the database as a read-only storage context to avoid modifying the journal state.
-    // Reading slots here might be dangerous because they would end up being warmed and might affect gas accounting.
-    ctx.journaled_state
-        .database
-        .with_read_only_storage_ctx(ctx.cfg.spec, || {
-            TipFeeManager::new()
-                .get_validator_token(ctx.block.beneficiary)
-                .map_err(PayloadBuilderError::other)
-        })
 }
 
 #[cfg(test)]

@@ -218,7 +218,9 @@ impl TipFeeManager {
     /// Finalizes fee collection after transaction execution.
     ///
     /// Refunds unused `user_token` to `fee_payer` via [`TIP20Token`], executes the fee swap
-    /// through the AMM pool if tokens differ, and accumulates fees for the validator.
+    /// through the AMM pool if tokens differ, and accumulates fees for the validator. Returns
+    /// the validator-credited amount (post-feeAMM haircut, in the validator's fee token), which
+    /// is used by the payload builder to score blocks by actual proposer revenue.
     ///
     /// # Errors
     /// - `InvalidToken` — `fee_token` does not have a valid TIP-20 prefix
@@ -231,7 +233,7 @@ impl TipFeeManager {
         refund_amount: U256,
         fee_token: Address,
         beneficiary: Address,
-    ) -> Result<()> {
+    ) -> Result<U256> {
         // Refund unused tokens to user
         let mut tip20_token = TIP20Token::from_address(fee_token)?;
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
@@ -259,7 +261,7 @@ impl TipFeeManager {
 
         self.increment_collected_fees(beneficiary, validator_token, amount)?;
 
-        Ok(())
+        Ok(amount)
     }
 
     /// Increment collected fees for a specific validator and token combination.
@@ -552,14 +554,14 @@ mod tests {
             )?;
 
             // Call collect_fee_post_tx directly
-            let result = fee_manager.collect_fee_post_tx(
+            let credited = fee_manager.collect_fee_post_tx(
                 user,
                 actual_used,
                 refund_amount,
                 token.address(),
                 validator,
-            );
-            assert!(result.is_ok());
+            )?;
+            assert_eq!(credited, actual_used);
 
             // Verify fees were tracked
             let tracked_amount = fee_manager.collected_fees[validator][token.address()].read()?;
@@ -740,7 +742,7 @@ mod tests {
             )?;
 
             // Then call collect_fee_post_tx (executes swap immediately)
-            fee_manager.collect_fee_post_tx(
+            let credited = fee_manager.collect_fee_post_tx(
                 user,
                 actual_spending,
                 refund_amount,
@@ -750,6 +752,7 @@ mod tests {
 
             // Expected output: 800 * 9970 / 10000 = 797
             let expected_fee_amount = (actual_spending * U256::from(9970)) / U256::from(10000);
+            assert_eq!(credited, expected_fee_amount);
             let collected =
                 fee_manager.collected_fees[validator][validator_token.address()].read()?;
             assert_eq!(collected, expected_fee_amount);
@@ -1206,7 +1209,13 @@ mod tests {
 
                     let amount_u = U256::from(amount);
                     fm.collect_fee_pre_tx(user, t.user, amount_u, validator, false)?;
-                    fm.collect_fee_post_tx(user, amount_u, U256::ZERO, t.user, validator)?;
+                    let credited =
+                        fm.collect_fee_post_tx(user, amount_u, U256::ZERO, t.user, validator)?;
+                    let one_hop_amount = compute_amount_out(amount_u)?;
+                    assert!(
+                        credited < one_hop_amount,
+                        "amount={amount}: two-hop credit ({credited}) should be less than one-hop credit ({one_hop_amount})",
+                    );
 
                     assert_eq!(
                         fm.collected_fees[validator][t.validator].read()?,

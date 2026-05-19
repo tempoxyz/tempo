@@ -380,6 +380,7 @@ jobs:
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
       BENCH_DISABLE_ABBA: ${{ (inputs.disable-abba == true || inputs.disable-abba == 'true' || inputs.run-type == 'nightly') && 'true' || 'false' }}
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
+      BENCHMARK_ID: bench-e2e-${{ github.run_id }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
       BENCH_PR_HEAD_REF: ${{ inputs.pr-head-ref }}
@@ -778,19 +779,22 @@ jobs:
               summary = '⚠️ Benchmark completed but failed to read summary.';
             }
 
-            // Compute Grafana URLs from summary.json
+            // Compute observability URLs from summary.json.
             let grafanaSection = '';
             try {
               const meta = JSON.parse(fs.readFileSync(`${resultsDir}/summary.json`, 'utf8'));
-              const refEpoch = meta.reference_epoch;
               const benchId = meta.benchmark_id;
-              if (refEpoch && benchId) {
-                const fromMs = refEpoch * 1000;
-                const toMs = Date.now();
+              const metricsRange = meta.observability_range || {};
+              const actualRange = meta.actual_observability_range || metricsRange;
+              const metricsFrom = metricsRange.from || (metricsRange.from_ms ? String(metricsRange.from_ms) : '');
+              const metricsTo = metricsRange.to || (metricsRange.to_ms ? String(metricsRange.to_ms) : '');
+              const actualFrom = actualRange.from || (actualRange.from_ms ? String(actualRange.from_ms) : '');
+              const actualTo = actualRange.to || (actualRange.to_ms ? String(actualRange.to_ms) : '');
+              if (benchId && metricsFrom && metricsTo && actualFrom && actualTo) {
                 const traceqlQuery = `{resource.benchmark_id="${benchId}"}`;
-                const grafanaUrl = `https://tempoxyz.grafana.net/d/tikv2tn/tempo-bench?orgId=1&from=${fromMs}&to=${toMs}&var-benchmark_id=${benchId}&var-job=github-tempo-bench-e2e`;
+                const grafanaUrl = meta.grafana_url || `https://tempoxyz.grafana.net/d/dffj6qf1o30oowe/performance?orgId=1&from=${encodeURIComponent(metricsFrom)}&to=${encodeURIComponent(metricsTo)}&timezone=browser&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=${encodeURIComponent(benchId)}&var-group_by=benchmark_run`;
                 const logsPane = JSON.stringify({
-                  g39: {
+                  pw4: {
                     datasource: 'cfk1hzy08xekgd',
                     queries: [{
                       refId: 'A',
@@ -799,8 +803,8 @@ jobs:
                       expr: `benchmark_id:${benchId}`,
                       queryType: 'instant',
                     }],
-                    range: { from: String(fromMs), to: String(toMs) },
-                    panelsState: { logs: { sortOrder: 'Descending' } },
+                    range: { from: actualFrom, to: actualTo },
+                    panelsState: { logs: { sortOrder: 'Descending', columns: ['Time', 'Line'], visualisationType: 'table', labelFieldName: 'labels' } },
                     compact: false,
                   },
                 });
@@ -814,12 +818,12 @@ jobs:
                       queryType: 'traceqlSearch',
                       serviceMapUseNativeHistograms: false,
                       filters: [
-                        { id: 'benchmark-id', operator: '=', scope: 'resource', tag: 'benchmark_id', value: [`"${benchId}"`], isCustomValue: true },
-                        { id: 'span-name', tag: 'name', operator: '=', scope: 'span', value: [], isCustomValue: false },
+                        { id: 'benchmark-id', operator: '=', scope: 'resource', tag: 'benchmark_id', value: [benchId], valueType: 'string', isCustomValue: true },
                       ],
                       query: traceqlQuery,
                     }],
-                    range: { from: String(fromMs), to: String(toMs) },
+                    range: { from: actualFrom, to: actualTo },
+                    panelsState: { logs: { visualisationType: 'table' } },
                     compact: false,
                   },
                 });

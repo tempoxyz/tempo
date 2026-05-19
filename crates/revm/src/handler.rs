@@ -1481,7 +1481,7 @@ where
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
 
-        StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
+        let credited = StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
             let mut fee_manager = TipFeeManager::new();
 
             if !actual_spending.is_zero() || !refund_amount.is_zero() {
@@ -1498,11 +1498,16 @@ where
                         fee_token,
                         beneficiary,
                     )
-                    .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
+                    .map_err(|e| EVMError::Custom(format!("{e:?}")))
+            } else {
+                Ok(U256::ZERO)
             }
+        })?;
 
-            Ok(())
-        })
+        // Stash the per-tx credit so `TempoBlockExecutor` can surface it on `TempoTxResult`
+        // for payload scoring. Reset to zero on every tx entry below in `validate_env`.
+        evm.validator_fee = credited;
+        Ok(())
     }
 
     #[inline]
@@ -1523,6 +1528,9 @@ where
     /// - Time window validation (validAfter/validBefore)
     #[inline]
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
+        // Reset per-tx validator fee.
+        evm.validator_fee = U256::ZERO;
+
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;
 
