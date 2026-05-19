@@ -1,6 +1,10 @@
 use std::{
     collections::VecDeque,
-    sync::mpsc::{self, Receiver, Sender},
+    sync::{
+        Arc,
+        atomic::{AtomicUsize, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
     time::Instant,
 };
 
@@ -46,11 +50,13 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let (commands_tx, commands_rx) = mpsc::channel();
+        let builder_consumed_tx_count = Arc::new(AtomicUsize::new(0));
         let prewarm = PrewarmingExecutionContext {
             evm_config,
             provider,
             parent_hash,
             evm_env,
+            builder_consumed_tx_count,
         };
         let prewarm_executor = executor.clone();
         executor.spawn_blocking_named("builder-prewarm", move || {
@@ -60,6 +66,7 @@ impl BestTransactionsPrewarming {
                     best_txs,
                     commands_rx,
                     prewarm,
+                    next_tx_index: 0,
                 },
             );
         });
@@ -83,25 +90,34 @@ impl BestTransactionsPrewarming {
             let mut buffered_txs = VecDeque::new();
             let fill_prewarming_buffer =
                 |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>,
-                 buffered_txs: &mut VecDeque<BestTransaction>| {
+                 buffered_txs: &mut VecDeque<IndexedTransaction>| {
                     while buffered_txs.len() < PREWARMING_BUFFERED_LOOKAHEAD {
-                        let Some(tx) = ctx.best_txs.next() else {
+                        let Some(tx) = ctx.next_transaction() else {
                             break;
                         };
 
-                        let prewarm_tx = tx.clone();
+                        let prewarm = ctx.prewarm.clone();
+                        let tx_index = tx.index;
+                        let prewarm_tx = tx.transaction.clone();
                         buffered_txs.push_back(tx);
 
-                        let prewarm = ctx.prewarm.clone();
-                        scope.spawn(move |_| Self::prewarm_transaction(prewarm, prewarm_tx));
+                        scope.spawn(move |_| {
+                            Self::prewarm_transaction(prewarm, tx_index, prewarm_tx)
+                        });
                     }
                 };
 
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
                     BestTransactionsCommand::Advance { response } => {
-                        let tx = buffered_txs.pop_front().or_else(|| ctx.best_txs.next());
+                        let tx = buffered_txs.pop_front().or_else(|| ctx.next_transaction());
                         let should_refill = tx.is_some();
+                        let tx = tx.map(|tx| {
+                            ctx.prewarm
+                                .builder_consumed_tx_count
+                                .store(tx.index + 1, Ordering::Relaxed);
+                            tx.transaction
+                        });
                         let _ = response.send(tx);
 
                         if should_refill {
@@ -110,8 +126,9 @@ impl BestTransactionsPrewarming {
                     }
                     BestTransactionsCommand::Invalid(invalid) => {
                         ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
-                        buffered_txs
-                            .retain(|tx| !is_invalidated_buffered_transaction(&invalid.tx, tx));
+                        buffered_txs.retain(|tx| {
+                            !is_invalidated_buffered_transaction(&invalid.tx, &tx.transaction)
+                        });
                         fill_prewarming_buffer(&mut ctx, &mut buffered_txs);
                     }
                     BestTransactionsCommand::NoUpdates => {
@@ -132,10 +149,15 @@ impl BestTransactionsPrewarming {
 
     fn prewarm_transaction<Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
+        tx_index: usize,
         tx: BestTransaction,
     ) where
         Provider: StateProviderFactory + Clone + 'static,
     {
+        if prewarm.is_consumed_by_builder(tx_index) {
+            return;
+        }
+
         WorkerPool::with_worker_mut(|worker| {
             let worker_state =
                 worker.get_or_init::<PrewarmWorkerState>(PrewarmWorkerState::default);
@@ -147,6 +169,10 @@ impl BestTransactionsPrewarming {
             let Some(evm) = worker_state.evm.as_mut() else {
                 return;
             };
+
+            if prewarm.is_consumed_by_builder(tx_index) {
+                return;
+            }
 
             let start = Instant::now();
             let tx_hash = *tx.hash();
@@ -216,6 +242,25 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     best_txs: Txs,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
+    next_tx_index: usize,
+}
+
+impl<Txs, Provider> BestTransactionsPrewarmingContext<Txs, Provider>
+where
+    Txs: BestTransactions<Item = BestTransaction>,
+{
+    fn next_transaction(&mut self) -> Option<IndexedTransaction> {
+        let transaction = self.best_txs.next()?;
+        let index = self.next_tx_index;
+        self.next_tx_index += 1;
+        Some(IndexedTransaction { index, transaction })
+    }
+}
+
+/// Transaction tagged with its source iterator order.
+struct IndexedTransaction {
+    index: usize,
+    transaction: BestTransaction,
 }
 
 /// Context needed to execute prewarm transactions independently of the real builder.
@@ -225,6 +270,8 @@ struct PrewarmingExecutionContext<Provider> {
     provider: Provider,
     parent_hash: B256,
     evm_env: EvmEnvFor<TempoEvmConfig>,
+    /// Number of source transactions already handed to the builder.
+    builder_consumed_tx_count: Arc<AtomicUsize>,
 }
 
 #[derive(Default)]
@@ -256,6 +303,10 @@ where
         evm_env.cfg_env.disable_balance_check = true;
 
         Some(self.evm_config.evm_with_env(state_provider, evm_env))
+    }
+
+    fn is_consumed_by_builder(&self, tx_index: usize) -> bool {
+        tx_index < self.builder_consumed_tx_count.load(Ordering::Relaxed)
     }
 }
 
