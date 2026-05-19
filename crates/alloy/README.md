@@ -175,8 +175,7 @@ proxies, retry policy, or middleware:
 - `RelayConnector::with_config(default, sponsor, mode, forward_headers)` also configures sponsor header forwarding;
 - `RelayTransport::new(default_transport, sponsor_transport)` wraps existing transports directly;
 - `RelayTransport::with_mode(default_transport, sponsor_transport, mode)` selects an explicit mode;
-- `RelayTransport::with_config(default_transport, sponsor_transport, mode, forward_headers)` also configures sponsor header forwarding;
-- `RelayLayer::new(sponsor_transport)` supports Tower-style composition.
+- `RelayTransport::with_config(default_transport, sponsor_transport, mode, forward_headers)` also configures sponsor header forwarding.
 
 Runtime policy is intentionally strict:
 

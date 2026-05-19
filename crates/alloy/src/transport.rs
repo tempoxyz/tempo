@@ -62,55 +62,6 @@ pub struct RelayTransport<D, R> {
     forward_sponsor_request_headers: bool,
 }
 
-/// Tower layer that wraps a default transport with sponsor relay support.
-#[derive(Debug, Clone)]
-pub struct RelayLayer<R> {
-    relay: R,
-    mode: SponsorshipMode,
-    forward_sponsor_request_headers: bool,
-}
-
-impl<R> RelayLayer<R> {
-    /// Create a relay layer.
-    pub fn new(relay: R) -> Self {
-        Self::with_config(relay, SponsorshipMode::default(), true)
-    }
-
-    /// Create a relay layer with an explicit sponsorship mode.
-    pub fn with_mode(relay: R, mode: SponsorshipMode) -> Self {
-        Self::with_config(relay, mode, true)
-    }
-
-    /// Create a relay layer with explicit mode and sponsor header forwarding.
-    pub fn with_config(
-        relay: R,
-        mode: SponsorshipMode,
-        forward_sponsor_request_headers: bool,
-    ) -> Self {
-        Self {
-            relay,
-            mode,
-            forward_sponsor_request_headers,
-        }
-    }
-}
-
-impl<D, R> tower::Layer<D> for RelayLayer<R>
-where
-    R: Clone,
-{
-    type Service = RelayTransport<D, R>;
-
-    fn layer(&self, default: D) -> Self::Service {
-        RelayTransport::with_config(
-            default,
-            self.relay.clone(),
-            self.mode,
-            self.forward_sponsor_request_headers,
-        )
-    }
-}
-
 /// Transport connector that combines default and sponsor relay connectors into a [`RelayTransport`].
 ///
 /// Use this with explicit connector instances when the default RPC or sponsor endpoint needs custom
@@ -492,7 +443,6 @@ mod tests {
         TempoSignature, TempoTransaction, TempoTxEnvelope,
         transaction::{Call, FEE_PAYER_SIGNATURE_MARKER, PrimitiveSignature},
     };
-    use tower::Layer;
 
     #[derive(Clone, Debug, Default)]
     struct RecordingTransport {
@@ -961,21 +911,6 @@ mod tests {
                 .contains("does not support JSON-RPC batches containing eth_sendRawTransaction")
         );
         assert!(default.methods().is_empty());
-        assert!(relay.methods().is_empty());
-    }
-
-    #[tokio::test]
-    async fn relay_layer_wraps_default_transport() {
-        let default = RecordingTransport::default();
-        let relay = RecordingTransport::default();
-        default.push_success(&alloy_primitives::U64::from(42));
-        let mut transport = RelayLayer::new(relay.clone()).layer(default.clone());
-        assert!(
-            tower::Service::call(&mut transport, make_request("eth_chainId"))
-                .await
-                .is_ok()
-        );
-        assert_eq!(default.methods(), vec!["eth_chainId"]);
         assert!(relay.methods().is_empty());
     }
 
