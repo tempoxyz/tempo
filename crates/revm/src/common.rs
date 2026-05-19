@@ -194,28 +194,15 @@ pub trait TempoStateAccess<M = ()> {
         Ok(DEFAULT_FEE_TOKEN)
     }
 
-    /// Checks if the given TIP20 token has USD currency.
+    /// Checks if the given TIP20 token has USD currency. Optionally returns the stored currency.
     ///
     /// IMPORTANT: Caller must ensure `fee_token` has a valid TIP20 prefix.
-    fn is_tip20_usd(&mut self, spec: TempoHardfork, fee_token: Address) -> TempoResult<bool>
-    where
-        Self: Sized,
-    {
-        self.with_read_only_storage_ctx(spec, || {
-            // SAFETY: caller must ensure prefix is already checked
-            let token = TIP20Token::from_address_unchecked(fee_token);
-            Ok(token.currency.len()? == 3 && token.currency.read()?.as_str() == "USD")
-        })
-    }
-
-    /// Reads the given TIP20 token's currency for error messages.
-    ///
-    /// IMPORTANT: Caller must ensure `fee_token` has a valid TIP20 prefix.
-    fn tip20_currency_for_error(
+    fn check_tip20_currency(
         &mut self,
         spec: TempoHardfork,
         fee_token: Address,
-    ) -> TempoResult<String>
+        include_currency: bool,
+    ) -> TempoResult<(bool, Option<String>)>
     where
         Self: Sized,
     {
@@ -223,11 +210,31 @@ pub trait TempoStateAccess<M = ()> {
             // SAFETY: caller must ensure prefix is already checked
             let token = TIP20Token::from_address_unchecked(fee_token);
             let len = token.currency.len()?;
-            if len > 31 {
-                return Ok(format!("<{len} bytes>"));
+
+            if !include_currency && len != 3 {
+                return Ok((false, None));
             }
-            token.currency.read()
+
+            if len > 31 {
+                return Ok((false, Some(format!("<{len} bytes>"))));
+            }
+
+            let currency = token.currency.read()?;
+            Ok((
+                currency.as_str() == "USD",
+                include_currency.then_some(currency),
+            ))
         })
+    }
+
+    /// Checks if the given TIP20 token has USD currency.
+    ///
+    /// IMPORTANT: Caller must ensure `fee_token` has a valid TIP20 prefix.
+    fn is_tip20_usd(&mut self, spec: TempoHardfork, fee_token: Address) -> TempoResult<bool>
+    where
+        Self: Sized,
+    {
+        Ok(self.check_tip20_currency(spec, fee_token, false)?.0)
     }
 
     /// Checks if the given token can be used as a fee token.
@@ -757,11 +764,10 @@ mod tests {
 
         db.insert_account_storage(fee_token, tip20_slots::CURRENCY, U256::from(len * 2 + 1))?;
 
-        assert!(!db.is_tip20_usd(TempoHardfork::Genesis, fee_token)?);
-        assert_eq!(
-            db.tip20_currency_for_error(TempoHardfork::Genesis, fee_token)?,
-            "<1024 bytes>"
-        );
+        let (is_tip20_usd, currency) =
+            db.check_tip20_currency(TempoHardfork::Genesis, fee_token, true)?;
+        assert!(!is_tip20_usd);
+        assert_eq!(currency.unwrap().as_str(), "<1024 bytes>");
 
         Ok(())
     }
