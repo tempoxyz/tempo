@@ -47,7 +47,7 @@ use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
 
-use reth_provider::{BlockHashReader as _, BlockReader as _};
+use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::TempoConsensusContext;
 use tracing::{Level, debug, info, info_span, instrument, warn};
@@ -60,6 +60,7 @@ use crate::{
     consensus::{Digest, block::Block},
     epoch::SchemeProvider,
     subblocks,
+    utils::OptionFuture,
 };
 
 pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
@@ -313,39 +314,84 @@ impl Inner<Init> {
 
         let mut payload_id_rx: Option<oneshot::Receiver<eyre::Result<PayloadId>>> = None;
 
-        let proposal_digest = select!(
-            () = response.closed() => {
-                if let Some(rx) = payload_id_rx.as_mut() {
-                    let id = rx
-                        .await
-                        .wrap_err("executor dropped response")?
-                        .wrap_err("failed requesting a new payload build")?;
-                    let fut = self
-                        .execution_node
-                        .payload_builder_handle
-                        .resolve_kind_fut(id, PayloadKind::WaitForPending)
-                        .await
-                        .wrap_err("failed resolving payload")?;
-                    drop(fut);
-                }
+        let proposal_digest = {
+            let cancel_payload_build =
+                async |payload_id_rx: &mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>| {
+                    let rx = payload_id_rx.take();
+                    let payload_builder_handle = &self.execution_node.payload_builder_handle;
 
-                Err(eyre!(
-                    "proposal return channel was closed by consensus \
-                    engine before block could be proposed; aborting"
-                ))
-           },
+                    if let Some(rx) = rx {
+                        let id = rx
+                            .await
+                            .wrap_err("executor dropped response")?
+                            .wrap_err("failed requesting a new payload build")?;
+                        let fut = payload_builder_handle
+                            .resolve_kind_fut(id, PayloadKind::WaitForPending)
+                            .await
+                            .wrap_err("failed resolving payload")?;
+                        drop(fut);
+                    }
 
-            res = self.clone().propose(
+                    eyre::Ok(())
+                };
+
+            // Follow the commonware marshal::standard::inline application:
+            //
+            // >On leader recovery, marshal may already hold a verified block
+            // >for this round (persisted by a pre-crash propose whose
+            // >notarize vote never reached the journal).
+            //
+            // >The parent context recovered by simplex may differ from the one
+            // >the cached block was built against, so the stored block is not safe to reuse
+            // >and building a fresh block would land on the same prunable
+            // >archive index and be silently dropped.
+            //
+            // >Skip this view and let the voter nullify it via timeout.
+            //
+            // TODO: we are diverging from commonware in that we return the digest
+            // here. Is that ok or can that cause problems?
+            //
+            // Poll the marshal response concurrently with block construction so the
+            // recovery check does not block steady-state payload building.
+            let already_verified = OptionFuture::some(self.marshal.get_verified(round));
+            futures::pin_mut!(already_verified);
+
+            let mut proposal = Box::pin(self.clone().propose(
                 context.clone(),
                 parent_view,
                 parent_digest,
                 round,
                 &mut payload_id_rx,
                 leader,
-            ) => {
-                res.wrap_err("failed creating a proposal")
+            ));
+
+            loop {
+                select!(
+                    () = response.closed() => {
+                        drop(proposal);
+                        cancel_payload_build(&mut payload_id_rx).await?;
+
+                        return Err(eyre!(
+                            "proposal return channel was closed by consensus \
+                            engine before block could be proposed; aborting"
+                        ))
+                    },
+
+                    maybe_proposed = &mut already_verified => {
+                        if let Some(block) = maybe_proposed {
+                            drop(proposal);
+                            cancel_payload_build(&mut payload_id_rx).await?;
+                            debug!("skipping proposal: verified block already exists for round on restart");
+                            break block.digest();
+                        }
+                    },
+
+                    res = &mut proposal => {
+                        break res.wrap_err("failed creating a proposal")?;
+                    },
+                );
             }
-        )?;
+        };
 
         info!(
             proposal.digest = %proposal_digest,
@@ -426,26 +472,6 @@ impl Inner<Init> {
         leader: PublicKey,
     ) -> eyre::Result<Digest> {
         let propose_start = Instant::now();
-
-        // Follow the commonware marshal::standard::inline application:
-        //
-        // >On leader recovery, marshal may already hold a verified block
-        // >for this round (persisted by a pre-crash propose whose
-        // >notarize vote never reached the journal).
-        //
-        // >The parent context recovered by simplex may differ from the one
-        // >the cached block was built against, so the stored block is not safe to reuse
-        // >and building a fresh block would land on the same prunable
-        // >archive index and be silently dropped.
-        //
-        // >Skip this view and let the voter nullify it via timeout.
-        //
-        // TODO: we are diverging from commonware in that we return the digest
-        // here. Is that ok or can that cause problems?
-        if let Some(block) = self.marshal.get_verified(round).await {
-            debug!("skipping proposal: verified block already exists for round on restart");
-            return Ok(block.digest());
-        }
 
         let parent = get_parent(
             &self.execution_node,
@@ -1023,20 +1049,27 @@ async fn get_parent(
     parent_view: View,
     marshal: &crate::alias::marshal::Mailbox,
 ) -> eyre::Result<Block> {
+    if let Some(parent) = execution_node
+        .provider
+        .find_block_by_hash(parent_digest.0, BlockSource::Any)
+        .wrap_err_with(|| {
+            format!("failed querying execution layer for parent block `{parent_digest}`")
+        })?
+    {
+        return Ok(Block::from_execution_block(parent.seal()));
+    }
+
     let genesis_digest = execution_node.chain_spec().genesis_hash();
     if parent_digest == Digest(genesis_digest) {
-        let genesis_block = Block::from_execution_block(
-            execution_node
-                .provider
-                .block_by_number(0)
-                .map_or_else(
-                    |e| Err(eyre::Report::new(e)),
-                    |block| block.ok_or_eyre("execution layer did not have block"),
-                )
-                .wrap_err("execution layer did not have the genesis block")?
-                .seal(),
-        );
-        Ok(genesis_block)
+        let genesis_block = execution_node
+            .provider
+            .block_by_number(0)
+            .map_or_else(
+                |e| Err(eyre::Report::new(e)),
+                |block| block.ok_or_eyre("execution layer did not have block"),
+            )
+            .wrap_err("execution layer did not have the genesis block")?;
+        Ok(Block::from_execution_block(genesis_block.seal()))
     } else {
         marshal
             .subscribe_by_digest(Some(Round::new(round.epoch(), parent_view)), parent_digest)
