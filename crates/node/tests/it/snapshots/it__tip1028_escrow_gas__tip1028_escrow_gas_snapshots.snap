@@ -1,0 +1,13 @@
+---
+source: crates/node/tests/it/tip1028_escrow_gas.rs
+expression: gas
+---
+claim_originator_recovery_to_destination: 310217
+claim_receiver_recovery_to_receiver: 303841
+claim_third_party_recovery_to_destination: 308369
+set_receive_policy_originator_recovery: 527777
+set_receive_policy_receiver_recovery: 777789
+set_receive_policy_third_party_recovery: 778017
+transfer_blocked_originator_recovery: 1062359
+transfer_blocked_receiver_recovery: 317971
+transfer_blocked_third_party_recovery: 317971
