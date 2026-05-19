@@ -1,4 +1,5 @@
 use std::{
+    cell::RefCell,
     collections::VecDeque,
     sync::{
         Arc,
@@ -8,12 +9,13 @@ use std::{
     time::Instant,
 };
 
+use crate::metrics::TempoPayloadBuilderMetrics;
 use alloy_primitives::{Address, B256, TxKind, U256};
 use alloy_sol_types::SolInterface;
 use reth_storage_api::{
     StateProvider, StateProviderBox, StateProviderFactory, errors::provider::ProviderResult,
 };
-use reth_tasks::{TaskExecutor, pool::WorkerPool};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -28,16 +30,12 @@ use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
-/// Total best-transaction window touched per advance: one returned immediately
-/// plus buffered transactions prewarmed for the next builder iterations.
-const PREWARMING_WINDOW: usize = 16;
-const PREWARMING_BUFFERED_LOOKAHEAD: usize = PREWARMING_WINDOW - 1;
-
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
 /// [`BestTransactions`] iterator with the source order and invalidations triggered
 /// by [`Self::mark_invalid`] preserved.
 pub(crate) struct BestTransactionsPrewarming {
+    transactions_rx: Receiver<Option<BestTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
 }
 
@@ -48,18 +46,21 @@ impl BestTransactionsPrewarming {
         provider: Provider,
         parent_hash: B256,
         fee_recipient: Address,
+        metrics: TempoPayloadBuilderMetrics,
         best_txs: Txs,
     ) -> Self
     where
         Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
         Provider: StateProviderFactory + Clone + 'static,
     {
+        let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
         let builder_consumed_tx_count = Arc::new(AtomicUsize::new(0));
         let prewarm = PrewarmingExecutionContext {
             provider,
             parent_hash,
             fee_recipient,
+            metrics,
             builder_consumed_tx_count,
         };
         let prewarm_executor = executor.clone();
@@ -68,6 +69,7 @@ impl BestTransactionsPrewarming {
                 prewarm_executor,
                 BestTransactionsPrewarmingContext {
                     best_txs,
+                    transactions_tx,
                     commands_rx,
                     prewarm,
                     next_tx_index: 0,
@@ -75,7 +77,10 @@ impl BestTransactionsPrewarming {
             );
         });
 
-        Self { commands_tx }
+        Self {
+            transactions_rx,
+            commands_tx,
+        }
     }
 
     /// Runs the coordinator side of prewarming for a payload build.
@@ -89,13 +94,17 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        // Keep enough buffered work to occupy the whole prewarming pool. The
+        // transaction returned to the builder on each advance is in addition to
+        // this lookahead.
+        let buffered_lookahead = pool.current_num_threads().max(1);
 
         pool.in_place_scope(|scope| {
             let mut buffered_txs = VecDeque::new();
             let fill_prewarming_buffer =
                 |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>,
                  buffered_txs: &mut VecDeque<IndexedTransaction>| {
-                    while buffered_txs.len() < PREWARMING_BUFFERED_LOOKAHEAD {
+                    while buffered_txs.len() < buffered_lookahead {
                         let Some(tx) = ctx.next_transaction() else {
                             break;
                         };
@@ -105,6 +114,7 @@ impl BestTransactionsPrewarming {
                         let prewarm_tx = tx.transaction.clone();
                         buffered_txs.push_back(tx);
 
+                        prewarm.metrics.inc_prewarming_transactions_scheduled();
                         scope.spawn(move |_| {
                             Self::prewarm_transaction(prewarm, tx_index, prewarm_tx)
                         });
@@ -113,7 +123,7 @@ impl BestTransactionsPrewarming {
 
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
-                    BestTransactionsCommand::Advance { response } => {
+                    BestTransactionsCommand::Advance => {
                         let tx = buffered_txs.pop_front().or_else(|| ctx.next_transaction());
                         let should_refill = tx.is_some();
                         let tx = tx.map(|tx| {
@@ -122,7 +132,7 @@ impl BestTransactionsPrewarming {
                                 .store(tx.index + 1, Ordering::Relaxed);
                             tx.transaction
                         });
-                        let _ = response.send(tx);
+                        let _ = ctx.transactions_tx.send(tx);
 
                         if should_refill {
                             fill_prewarming_buffer(&mut ctx, &mut buffered_txs);
@@ -130,9 +140,15 @@ impl BestTransactionsPrewarming {
                     }
                     BestTransactionsCommand::Invalid(invalid) => {
                         ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
+                        let previous_buffered = buffered_txs.len();
                         buffered_txs.retain(|tx| {
                             !is_invalidated_buffered_transaction(&invalid.tx, &tx.transaction)
                         });
+                        for _ in 0..previous_buffered - buffered_txs.len() {
+                            ctx.prewarm
+                                .metrics
+                                .inc_prewarming_transactions_skipped("invalidated_buffered");
+                        }
                         fill_prewarming_buffer(&mut ctx, &mut buffered_txs);
                     }
                     BestTransactionsCommand::NoUpdates => {
@@ -148,7 +164,9 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        pool.broadcast(pool.current_num_threads(), |_| {
+            PREWARM_WORKER_STATE.with(|state| state.borrow_mut().clear());
+        });
     }
 
     fn prewarm_transaction<Provider>(
@@ -159,12 +177,14 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         if prewarm.is_consumed_by_builder(tx_index) {
+            prewarm
+                .metrics
+                .inc_prewarming_transactions_skipped("overtaken");
             return;
         }
 
-        WorkerPool::with_worker_mut(|worker| {
-            let worker_state =
-                worker.get_or_init::<PrewarmWorkerState>(PrewarmWorkerState::default);
+        PREWARM_WORKER_STATE.with(|worker_state| {
+            let mut worker_state = worker_state.borrow_mut();
             if worker_state.parent_hash != prewarm.parent_hash
                 || worker_state.state_provider.is_none()
             {
@@ -172,20 +192,34 @@ impl BestTransactionsPrewarming {
                 worker_state.state_provider = prewarm.state_provider_for_ctx();
             }
 
-            let Some(state_provider) = worker_state.state_provider.as_ref() else {
-                return;
-            };
-
             if prewarm.is_consumed_by_builder(tx_index) {
+                prewarm
+                    .metrics
+                    .inc_prewarming_transactions_skipped("overtaken");
                 return;
             }
 
             let start = Instant::now();
             let tx_hash = *tx.hash();
-            let touches = storage_touches_for_transaction(&tx, prewarm.fee_recipient);
+            let PrewarmWorkerState {
+                state_provider,
+                touches,
+                ..
+            } = &mut *worker_state;
+            let Some(state_provider) = state_provider.as_ref() else {
+                prewarm
+                    .metrics
+                    .inc_prewarming_transactions_failed("provider");
+                return;
+            };
+            storage_touches_for_transaction(&tx, prewarm.fee_recipient, touches);
+            let touched = touches.len();
 
-            for touch in &touches {
+            for touch in touches.iter().copied() {
                 if let Err(err) = touch.warm(state_provider.as_ref()) {
+                    prewarm
+                        .metrics
+                        .inc_prewarming_transactions_failed("storage");
                     trace!(
                         target: "payload_builder",
                         %err,
@@ -196,10 +230,22 @@ impl BestTransactionsPrewarming {
                 }
             }
 
+            let elapsed = start.elapsed();
+            prewarm
+                .metrics
+                .prewarming_transaction_duration_seconds
+                .record(elapsed);
+            prewarm
+                .metrics
+                .prewarming_storage_touches
+                .record(touched as f64);
+            prewarm.metrics.inc_prewarming_storage_touches(touched);
+            prewarm.metrics.inc_prewarming_transactions_completed();
+
             trace!(
                 target: "payload_builder",
-                elapsed = ?start.elapsed(),
-                touched = touches.len(),
+                elapsed = ?elapsed,
+                touched,
                 ?tx_hash,
                 "Prewarmed transaction"
             );
@@ -217,11 +263,10 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let (response, rx) = mpsc::channel();
         self.commands_tx
-            .send(BestTransactionsCommand::Advance { response })
+            .send(BestTransactionsCommand::Advance)
             .ok()?;
-        rx.recv().ok().flatten()
+        self.transactions_rx.recv().ok().flatten()
     }
 }
 
@@ -249,6 +294,7 @@ impl BestTransactions for BestTransactionsPrewarming {
 /// Context for prewarming best transactions for a payload build.
 struct BestTransactionsPrewarmingContext<Txs, Provider> {
     best_txs: Txs,
+    transactions_tx: Sender<Option<BestTransaction>>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_tx_index: usize,
@@ -278,14 +324,36 @@ struct PrewarmingExecutionContext<Provider> {
     provider: Provider,
     parent_hash: B256,
     fee_recipient: Address,
+    metrics: TempoPayloadBuilderMetrics,
     /// Number of source transactions already handed to the builder.
     builder_consumed_tx_count: Arc<AtomicUsize>,
 }
 
-#[derive(Default)]
 struct PrewarmWorkerState {
     parent_hash: B256,
     state_provider: Option<StateProviderBox>,
+    touches: Vec<StorageTouch>,
+}
+
+impl Default for PrewarmWorkerState {
+    fn default() -> Self {
+        Self {
+            parent_hash: B256::ZERO,
+            state_provider: None,
+            touches: Vec::with_capacity(24),
+        }
+    }
+}
+
+impl PrewarmWorkerState {
+    fn clear(&mut self) {
+        *self = Self::default();
+    }
+}
+
+thread_local! {
+    static PREWARM_WORKER_STATE: RefCell<PrewarmWorkerState> =
+        RefCell::new(PrewarmWorkerState::default());
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -336,8 +404,9 @@ impl StorageTouch {
 fn storage_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
-) -> Vec<StorageTouch> {
-    let mut touches = Vec::with_capacity(24);
+    touches: &mut Vec<StorageTouch>,
+) {
+    touches.clear();
     let sender = tx.transaction.sender();
     let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
     let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
@@ -347,18 +416,16 @@ fn storage_touches_for_transaction(
             .unwrap_or(DEFAULT_FEE_TOKEN)
     });
 
-    add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
-    add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
+    add_tip20_fee_touches(touches, fee_token, fee_payer);
+    add_fee_manager_touches(touches, fee_recipient, fee_token);
 
     if tx.transaction.is_payment() {
         for (kind, input) in tx.transaction.inner().calls() {
-            add_tip20_call_touches(&mut touches, sender, kind, input);
+            add_tip20_call_touches(touches, sender, kind, input);
         }
     }
 
-    add_expiring_nonce_touches(&mut touches, tx);
-
-    touches
+    add_expiring_nonce_touches(touches, tx);
 }
 
 fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
@@ -519,9 +586,7 @@ fn add_unique_touch(touches: &mut Vec<StorageTouch>, touch: StorageTouch) {
 /// Command sent by [`BestTransactionsPrewarming`] consumer.
 #[derive(Debug)]
 enum BestTransactionsCommand {
-    Advance {
-        response: Sender<Option<BestTransaction>>,
-    },
+    Advance,
     Invalid(InvalidTransaction),
     NoUpdates,
     SkipBlobs(bool),
@@ -668,6 +733,14 @@ mod tests {
         log: Arc<Mutex<TestLog>>,
     ) -> BestTransactionsPrewarming {
         let executor = TaskExecutor::test();
+        prewarming_with_executor(executor, txs, log)
+    }
+
+    fn prewarming_with_executor(
+        executor: TaskExecutor,
+        txs: Vec<BestTransaction>,
+        log: Arc<Mutex<TestLog>>,
+    ) -> BestTransactionsPrewarming {
         let evm_config = TempoEvmConfig::moderato();
         let provider =
             NoopProvider::<TempoChainSpec, TempoPrimitives>::new(evm_config.chain_spec().clone());
@@ -689,6 +762,7 @@ mod tests {
             provider,
             parent_header.hash(),
             Address::ZERO,
+            TempoPayloadBuilderMetrics::default(),
             TestBestTransactions::new(txs, log),
         )
     }
@@ -759,22 +833,24 @@ mod tests {
     #[test]
     fn prewarming_window_limits_source_iterator_drain_after_first_advance() {
         let sender = Address::random();
-        let txs = (0..PREWARMING_WINDOW + 4)
+        let executor = TaskExecutor::test();
+        let prewarming_window = executor.prewarming_pool().current_num_threads() + 1;
+        let txs = (0..prewarming_window + 4)
             .map(|nonce| test_tx(sender, nonce as u64))
             .collect::<Vec<_>>();
         let log = Arc::new(Mutex::new(TestLog::default()));
 
-        let mut prewarming = prewarming(txs, log.clone());
+        let mut prewarming = prewarming_with_executor(executor, txs, log.clone());
         thread::sleep(Duration::from_millis(25));
         assert_eq!(log.lock().unwrap().yielded, 0);
 
         assert!(prewarming.next().is_some());
-        wait_until(|| log.lock().unwrap().yielded == PREWARMING_WINDOW);
+        wait_until(|| log.lock().unwrap().yielded == prewarming_window);
         thread::sleep(Duration::from_millis(25));
-        assert_eq!(log.lock().unwrap().yielded, PREWARMING_WINDOW);
+        assert_eq!(log.lock().unwrap().yielded, prewarming_window);
 
         assert!(prewarming.next().is_some());
-        wait_until(|| log.lock().unwrap().yielded == PREWARMING_WINDOW + 1);
+        wait_until(|| log.lock().unwrap().yielded == prewarming_window + 1);
     }
 
     #[test]
@@ -831,6 +907,24 @@ mod tests {
         wait_until(|| {
             let log = log.lock().unwrap();
             log.no_updates == 1 && log.skip_blobs == vec![true]
+        });
+    }
+
+    #[test]
+    fn prewarming_does_not_use_shared_worker_state_slot() {
+        let executor = TaskExecutor::test();
+        let pool = executor.prewarming_pool();
+        pool.init::<usize>(|existing| existing.map(|value| *value).unwrap_or(1));
+
+        let sender = Address::random();
+        let txs = vec![test_tx(sender, 0)];
+        let log = Arc::new(Mutex::new(TestLog::default()));
+        let mut prewarming = prewarming_with_executor(executor.clone(), txs, log);
+
+        assert!(prewarming.next().is_some());
+
+        pool.broadcast(pool.current_num_threads(), |worker| {
+            assert_eq!(*worker.get::<usize>(), 1);
         });
     }
 }
