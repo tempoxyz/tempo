@@ -215,31 +215,39 @@ pub trait TempoStateAccess<M = ()> {
         &mut self,
         spec: TempoHardfork,
         fee_token: Address,
-    ) -> TempoResult<Option<EVMError<Self::Error, TempoInvalidTransaction>>>
+    ) -> Result<(), EVMError<Self::Error, TempoInvalidTransaction>>
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(spec, || {
-            // SAFETY: caller must ensure prefix is already checked
-            let token = TIP20Token::from_address_unchecked(fee_token);
-            let len = token.currency.len()?;
+        let err = self
+            .with_read_only_storage_ctx(spec, || {
+                // SAFETY: caller must ensure prefix is already checked
+                let token = TIP20Token::from_address_unchecked(fee_token);
+                let len = token.currency.len()?;
 
-            let currency = if len > 31 {
-                format!("<{len} bytes>")
-            } else {
-                token.currency.read()?
-            };
+                let currency = if len > 31 {
+                    format!("<{len} bytes>")
+                } else {
+                    token.currency.read()?
+                };
 
-            let is_usd = currency.as_str() == "USD";
-            let err = (!is_usd).then_some(EVMError::Transaction(
-                TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                    address: fee_token,
-                    currency,
-                },
-            ));
+                let is_usd = currency.as_str() == "USD";
+                let err = (!is_usd).then_some(EVMError::Transaction(
+                    TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                        address: fee_token,
+                        currency,
+                    },
+                ));
 
-            Ok(err)
-        })
+                Ok(err)
+            })
+            .map_err(|err: TempoPrecompileError| EVMError::Custom(err.to_string()))?;
+
+        if let Some(err) = err {
+            return Err(err);
+        }
+
+        Ok(())
     }
 
     /// Checks if the given token can be used as a fee token.
@@ -769,15 +777,17 @@ mod tests {
 
         db.insert_account_storage(fee_token, tip20_slots::CURRENCY, U256::from(len * 2 + 1))?;
 
-        let err = db.ensure_tip20_usd(TempoHardfork::Genesis, fee_token)?;
+        let err = db
+            .ensure_tip20_usd(TempoHardfork::Genesis, fee_token)
+            .expect_err("long non-USD currency returns an EVM error");
         assert!(matches!(
             err,
-            Some(EVMError::Transaction(
+            EVMError::Transaction(
                 TempoInvalidTransaction::FeeTokenNotUsdCurrency {
                     currency,
                     ..
                 }
-            )) if currency == "<1024 bytes>"
+            ) if currency == "<1024 bytes>"
         ));
 
         Ok(())
