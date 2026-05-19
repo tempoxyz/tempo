@@ -625,7 +625,7 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                         if curr_offset == prev_offset {
                             // Override the tag slot with the cached packed word so the enum can use
                             // `Storable::load` without issuing a duplicate SLOAD for the tag slot.
-                            let cached_storage = crate::storage::packing::CachedSlotOverride::new(
+                            let cached_storage = crate::storage::packing::SlotOverride::read_only(
                                 storage,
                                 #slot_addr,
                                 cached_slot,
@@ -742,7 +742,7 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                             pending_offset = Some(curr_offset);
                         }
                         {
-                            let mut pending_storage = crate::storage::packing::PendingSlotOverride::new(
+                            let mut pending_storage = crate::storage::packing::SlotOverride::new(
                                 storage,
                                 #slot_addr,
                                 &mut pending_val,

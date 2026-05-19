@@ -39,81 +39,68 @@ impl StorageOps for PackedSlot {
     }
 }
 
-/// Read-only storage adapter that overrides one slot with a cached word and
-/// forwards all other loads to the underlying storage provider.
+/// Storage adapter that overrides one slot and forwards all other operations to
+/// the underlying storage provider.
 ///
-/// Generated struct loads use this when a tagged-payload enum's tag lives in a
-/// packed slot that has already been loaded for preceding fields. The enum can
-/// run its normal `Storable::load` implementation while avoiding a duplicate
-/// SLOAD for the tag slot.
-pub struct CachedSlotOverride<'a, S> {
-    inner: &'a S,
+/// Generated struct code uses this for tagged-payload enum fields whose tag lives
+/// in a parent packed slot:
+/// - `read_only` serves tag-slot from an already-loaded word, avoiding extra SLOADs.
+/// - `new` redirects tag-slot reads/writes to the parent packed-slot, avoiding extra SSTOREs.
+pub struct SlotOverride<I, V> {
+    inner: I,
     slot: U256,
-    value: U256,
+    value: V,
 }
 
-impl<'a, S> CachedSlotOverride<'a, S> {
+impl<'a, S> SlotOverride<&'a S, U256> {
     #[inline]
-    pub const fn new(inner: &'a S, slot: U256, value: U256) -> Self {
+    pub const fn read_only(inner: &'a S, slot: U256, value: U256) -> Self {
         Self { inner, slot, value }
     }
 }
 
-impl<S: StorageOps> StorageOps for CachedSlotOverride<'_, S> {
-    #[inline]
-    fn load(&self, slot: U256) -> Result<U256> {
-        if slot == self.slot {
-            Ok(self.value)
-        } else {
-            self.inner.load(slot)
-        }
-    }
-
-    #[inline]
-    fn store(&mut self, _slot: U256, _value: U256) -> Result<()> {
-        Err(TempoPrecompileError::Fatal(
-            "cached slot override is read-only".to_string(),
-        ))
-    }
-}
-
-/// Writable storage adapter that redirects reads/writes for one slot into an
-/// in-memory word and forwards all other operations to the underlying storage.
-///
-/// Generated struct stores use this when a tagged-payload enum's tag should be
-/// inserted into the parent struct's packed-slot batch. The enum can run its
-/// normal `Storable::store` implementation while the tag-slot write updates the
-/// pending word instead of issuing a separate SSTORE.
-pub struct PendingSlotOverride<'a, S> {
-    inner: &'a mut S,
-    slot: U256,
-    value: &'a mut U256,
-}
-
-impl<'a, S> PendingSlotOverride<'a, S> {
+impl<'a, S> SlotOverride<&'a mut S, &'a mut U256> {
     #[inline]
     pub fn new(inner: &'a mut S, slot: U256, value: &'a mut U256) -> Self {
         Self { inner, slot, value }
     }
 }
 
-impl<S: StorageOps> StorageOps for PendingSlotOverride<'_, S> {
+impl<S: StorageOps> StorageOps for SlotOverride<&S, U256> {
     #[inline]
-    fn load(&self, slot: U256) -> Result<U256> {
-        if slot == self.slot {
-            Ok(*self.value)
+    fn load(&self, key: U256) -> Result<U256> {
+        if key == self.slot {
+            Ok(self.value)
         } else {
-            self.inner.load(slot)
+            self.inner.load(key)
         }
     }
 
     #[inline]
-    fn store(&mut self, slot: U256, value: U256) -> Result<()> {
-        if slot == self.slot {
-            *self.value = value;
+    fn store(&mut self, _key: U256, _new_value: U256) -> Result<()> {
+        Err(TempoPrecompileError::Fatal(
+            "read-only slot override cannot store".to_string(),
+        ))
+    }
+}
+
+impl<S: StorageOps> StorageOps for SlotOverride<&mut S, &mut U256> {
+    #[inline]
+    fn load(&self, key: U256) -> Result<U256> {
+        if key == self.slot {
+            Ok(*self.value)
+        } else {
+            self.inner.load(key)
+        }
+    }
+
+    #[inline]
+    fn store(&mut self, key: U256, new_value: U256) -> Result<()> {
+        if key == self.slot {
+            *self.value = new_value;
             Ok(())
         } else {
-            self.inner.store(slot, value)
+            self.inner.store(key, new_value)
         }
     }
 }
