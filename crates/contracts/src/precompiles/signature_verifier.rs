@@ -22,13 +22,3 @@ crate::sol! {
         error InvalidSignature();
     }
 }
-
-impl SignatureVerifierError {
-    pub const fn invalid_format() -> Self {
-        Self::InvalidFormat(ISignatureVerifier::InvalidFormat {})
-    }
-
-    pub const fn invalid_signature() -> Self {
-        Self::InvalidSignature(ISignatureVerifier::InvalidSignature {})
-    }
-}

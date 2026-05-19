@@ -1,9 +1,10 @@
 use super::{
     tempo_transaction::{TEMPO_TX_TYPE_ID, TempoTransaction},
     tt_signature::TempoSignature,
+    unique_tx_identifier_from_signable,
 };
 use alloc::vec::Vec;
-use alloy_consensus::{SignableTransaction, Transaction, transaction::TxHashRef};
+use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eips::{
     Decodable2718, Encodable2718, Typed2718,
     eip2718::{Eip2718Error, Eip2718Result},
@@ -108,16 +109,8 @@ impl AASigned {
     ///   (since `encode_for_signing` doesn't commit to them when a fee payer is present).
     /// - **Unique per sender**: different signers produce different recovered addresses, so the
     ///   hash differs even for identical transaction payloads.
-    ///
-    /// This prevents a replay attack where two different fee payers sign the same sender-signed
-    /// transaction, producing different `tx_hash` values that would bypass `tx_hash`-based
-    /// replay protection.
     pub fn expiring_nonce_hash(&self, sender: Address) -> B256 {
-        let mut buf =
-            Vec::with_capacity(self.tx.payload_len_for_signature() + sender.as_slice().len());
-        self.tx.encode_for_signing(&mut buf);
-        buf.extend_from_slice(sender.as_slice());
-        alloy_primitives::keccak256(&buf)
+        unique_tx_identifier_from_signable(&self.tx, sender)
     }
 
     /// Returns the RLP header for the transaction and signature, encapsulating both

@@ -113,9 +113,11 @@ where
 
         let static_file_provider = provider_rw.static_file_provider();
         static_file_provider.delete_segment(StaticFileSegment::Headers)?;
-        let mut writer =
-            static_file_provider.get_writer(genesis_block_number, StaticFileSegment::Headers)?;
-        writer.append_header(genesis_header, &new_genesis_hash)?;
+        {
+            let mut writer = static_file_provider
+                .get_writer(genesis_block_number, StaticFileSegment::Headers)?;
+            writer.append_header(genesis_header, &new_genesis_hash)?;
+        }
 
         tx.delete::<tables::HeaderNumbers>(stored_genesis_hash, None)?;
         tx.put::<tables::HeaderNumbers>(new_genesis_hash, 0)?;

@@ -13,7 +13,7 @@ use tempo_evm::TempoTxResult;
 use tempo_precompiles::tip20::is_tip20_prefix;
 
 type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
-type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u128>);
 
 /// A best-transaction iterator that merges the protocol pool and the 2D nonces pool,
@@ -89,7 +89,7 @@ impl Iterator for MergeBestTransactions {
 }
 
 impl BestTransactions for MergeBestTransactions {
-    fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
         if transaction.transaction.is_aa_2d() {
             self.aa_2d_pool.mark_invalid(transaction, kind);
         } else {
@@ -169,7 +169,7 @@ where
             {
                 self.inner.mark_invalid(
                     &tx,
-                    &InvalidPoolTransactionError::Consensus(
+                    InvalidPoolTransactionError::Consensus(
                         InvalidTransactionError::InsufficientFunds(
                             (balance, tx.transaction.fee_token_cost()).into(),
                         ),
@@ -187,7 +187,7 @@ impl<I> BestTransactions for StateAwareBestTransactions<I>
 where
     I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
 {
-    fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
         self.inner.mark_invalid(transaction, kind);
     }
 
@@ -446,7 +446,7 @@ mod tests {
         // Simulate payload builder marking R1 as invalid
         let kind =
             InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
-        merged.mark_invalid(&first, &kind);
+        merged.mark_invalid(&first, kind);
 
         // The AA2D descendant must be skipped, while protocol txs still yield.
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*l1.hash()));
@@ -470,7 +470,7 @@ mod tests {
 
         let kind =
             InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
-        merged.mark_invalid(&first, &kind);
+        merged.mark_invalid(&first, kind);
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*l2.hash()));
         assert!(merged.next().is_none());
@@ -495,7 +495,7 @@ mod tests {
 
         let kind =
             InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
-        merged.mark_invalid(&first, &kind);
+        merged.mark_invalid(&first, kind);
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*right_tx.hash()));
         assert!(merged.next().is_none());

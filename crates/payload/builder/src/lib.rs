@@ -4,8 +4,12 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod metrics;
+mod prewarming;
 
-use crate::metrics::{InstrumentedFinishProvider, TempoPayloadBuilderMetrics};
+use crate::{
+    metrics::{InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
+    prewarming::BestTransactionsPrewarming,
+};
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
@@ -28,6 +32,7 @@ use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
 use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
 use reth_revm::{State, context::Block, database::StateProviderDatabase};
 use reth_storage_api::{StateProvider, StateProviderFactory};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
@@ -72,6 +77,7 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
 pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
     provider: Provider,
+    executor: TaskExecutor,
     evm_config: TempoEvmConfig,
     metrics: TempoPayloadBuilderMetrics,
     /// Height at which we've seen an invalid subblock.
@@ -90,26 +96,33 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to disable state cache.
     disable_state_cache: bool,
+    /// Whether to enable prewarming of best transactions.
+    enable_prewarming: bool,
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
+    #[expect(clippy::too_many_arguments)]
     pub fn new(
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
+        executor: TaskExecutor,
         evm_config: TempoEvmConfig,
         is_dev: bool,
         state_provider_metrics: bool,
         disable_state_cache: bool,
+        enable_prewarming: bool,
     ) -> Self {
         Self {
             pool,
             provider,
+            executor,
             evm_config,
             metrics: TempoPayloadBuilderMetrics::default(),
             highest_invalid_subblock: Default::default(),
             is_dev,
             state_provider_metrics,
             disable_state_cache,
+            enable_prewarming,
         }
     }
 }
@@ -229,7 +242,9 @@ where
         empty: bool,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
-        Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+        Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>
+            + Send
+            + 'static,
     {
         let BuildArguments {
             mut cached_reads,
@@ -308,6 +323,7 @@ where
             block_gas_limit,
             shared_gas_limit,
         );
+        let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
 
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;
@@ -423,17 +439,22 @@ where
         let base_fee = builder.evm_mut().block().basefee;
         let validator_fee_token = resolve_validator_fee_token(&mut builder)?;
         let pool_fetch_start = Instant::now();
+        let best_txs = best_txs(BestTransactionsAttributes::new(
+            base_fee,
+            builder
+                .evm_mut()
+                .block()
+                .blob_gasprice()
+                .map(|gasprice| gasprice as u64),
+        ));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
-        let mut best_txs =
-            StateAwareBestTransactions::new(best_txs(BestTransactionsAttributes::new(
-                base_fee,
-                builder
-                    .evm_mut()
-                    .block()
-                    .blob_gasprice()
-                    .map(|gasprice| gasprice as u64),
-            )));
+        let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
+            Box::new(BestTransactionsPrewarming::new(&self.executor, best_txs))
+                as Box<dyn BestTransactions<Item = _>>
+        } else {
+            Box::new(best_txs)
+        });
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
@@ -469,7 +490,7 @@ where
                 // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
                     &pool_tx,
-                    &InvalidPoolTransactionError::ExceedsGasLimit(
+                    InvalidPoolTransactionError::ExceedsGasLimit(
                         pool_tx.gas_limit(),
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
@@ -479,14 +500,18 @@ where
                 continue;
             }
 
+            let is_payment = if hardfork.is_t5() {
+                pool_tx.transaction.inner().is_payment_v2()
+            } else {
+                pool_tx.transaction.inner().is_payment_v1()
+            };
+
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
-            if !pool_tx.transaction.is_payment()
-                && non_payment_gas_used + max_regular_gas_used > general_gas_limit
-            {
+            if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
                 best_txs.mark_invalid(
                     &pool_tx,
-                    &InvalidPoolTransactionError::Other(Box::new(
+                    InvalidPoolTransactionError::Other(Box::new(
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
                 );
@@ -501,7 +526,6 @@ where
             }
 
             check_cancel!();
-            let is_payment = pool_tx.transaction.is_payment();
             if is_payment {
                 payment_transactions += 1;
             }
@@ -512,7 +536,7 @@ where
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
                 best_txs.mark_invalid(
                     &pool_tx,
-                    &InvalidPoolTransactionError::OversizedData {
+                    InvalidPoolTransactionError::OversizedData {
                         size: estimated_block_size_with_tx,
                         limit: MAX_RLP_BLOCK_SIZE,
                     },
@@ -578,7 +602,7 @@ where
                         trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
                         best_txs.mark_invalid(
                             &pool_tx,
-                            &InvalidPoolTransactionError::Consensus(
+                            InvalidPoolTransactionError::Consensus(
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),
                         );
@@ -714,6 +738,7 @@ where
             block,
             hashed_state,
             trie_updates,
+            ..
         } = if let Some(mut handle) = trie_handle {
             // Dropping the hook signals that execution is complete and the sparse trie task can
             // finalize the state root it has been updating incrementally.

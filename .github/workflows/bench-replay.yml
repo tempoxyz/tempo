@@ -20,13 +20,17 @@ on:
         type: string
         default: "5000"
       warmup:
-        description: "Number of warmup blocks"
+        description: "Number of warmup blocks (default: one-quarter of blocks)"
         type: string
-        default: "1000"
+        default: ""
       samply:
         description: "Enable samply profiling"
         type: string
         default: "false"
+      otlp:
+        description: "Export OTLP traces and logs"
+        type: boolean
+        default: false
       baseline:
         description: "Baseline git ref (default: merge-base)"
         type: string
@@ -80,6 +84,10 @@ on:
       samply:
         type: string
         required: true
+      otlp:
+        type: string
+        required: false
+        default: "false"
       baseline-args:
         type: string
         required: false
@@ -95,6 +103,16 @@ on:
       comment-id:
         type: string
         required: false
+      pr-head-sha:
+        description: Pinned PR head SHA from the ack job.
+        type: string
+        required: false
+        default: ""
+      pr-head-ref:
+        description: Pinned PR head branch from the ack job.
+        type: string
+        required: false
+        default: ""
       slack:
         type: string
         required: false
@@ -108,9 +126,23 @@ on:
         required: false
       DEREK_TOKEN:
         required: false
+      TEMPO_TELEMETRY_URL:
+        required: false
+      GRAFANA_TEMPO:
+        required: false
+      BENCH_MAINNET_RPC_URL:
+        required: false
+      BENCH_TESTNET_RPC_URL:
+        required: false
       SLACK_BENCH_BOT_TOKEN:
         required: false
       SLACK_BENCH_CHANNEL:
+        required: false
+      CLICKHOUSE_URL:
+        required: false
+      CLICKHOUSE_USER:
+        required: false
+      CLICKHOUSE_PASSWORD:
         required: false
 
 env:
@@ -124,22 +156,63 @@ permissions:
 jobs:
   bench-replay:
     name: bench-replay
-    runs-on: [self-hosted, Linux, X64, bare-metal]
+    runs-on: [self-hosted, Linux, X64, bare-metal-dual-schelk]
     timeout-minutes: 300
     env:
       BENCH_CHAIN: ${{ inputs.chain || 'mainnet' }}
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor }}
       BENCH_SAMPLY: ${{ inputs.samply }}
+      BENCH_OTLP: ${{ inputs.otlp == true || inputs.otlp == 'true' }}
+      BENCH_FEATURES: ${{ (inputs.otlp == true || inputs.otlp == 'true') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_ARGS: "--dev.block-time 999999s ${{ inputs.baseline-args }}"
       BENCH_FEATURE_ARGS: "--dev.block-time 999999s ${{ inputs.feature-args }}"
-      BENCH_BLOCKS: ${{ inputs.blocks }}
+      BENCH_BLOCKS: ${{ inputs.blocks || '5000' }}
       BENCH_WARMUP_BLOCKS: ${{ inputs.warmup }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
+      BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
+      BENCH_PR_HEAD_REF: ${{ inputs.pr-head-ref }}
       BENCH_SLACK: ${{ inputs.slack || 'never' }}
       BENCH_RUN_LABEL: ${{ inputs.run-label || 'Replay Bench' }}
       BENCH_WORK_DIR: bench-results/replay-${{ inputs.chain || 'mainnet' }}
     steps:
+      - name: Resolve benchmark config
+        env:
+          INPUT_BLOCKS: ${{ inputs.blocks || '5000' }}
+          INPUT_WARMUP: ${{ inputs.warmup || '' }}
+        run: |
+          if ! [[ "$INPUT_BLOCKS" =~ ^[0-9]+$ ]]; then
+            echo "::error::blocks must be a non-negative integer"
+            exit 1
+          fi
+          if [ -n "$INPUT_WARMUP" ] && ! [[ "$INPUT_WARMUP" =~ ^[0-9]+$ ]]; then
+            echo "::error::warmup must be a non-negative integer"
+            exit 1
+          fi
+          if [ -z "$INPUT_WARMUP" ]; then
+            INPUT_WARMUP=$(( INPUT_BLOCKS / 4 ))
+          fi
+
+          {
+            echo "BENCH_BLOCKS=$INPUT_BLOCKS"
+            echo "BENCH_WARMUP_BLOCKS=$INPUT_WARMUP"
+          } >> "$GITHUB_ENV"
+
+      - name: Configure OTLP telemetry
+        if: env.BENCH_OTLP == 'true'
+        env:
+          TEMPO_TELEMETRY_URL_SECRET: ${{ secrets.TEMPO_TELEMETRY_URL }}
+          GRAFANA_TEMPO_SECRET: ${{ secrets.GRAFANA_TEMPO }}
+        run: |
+          if [ -n "$TEMPO_TELEMETRY_URL_SECRET" ]; then
+            echo "::add-mask::$TEMPO_TELEMETRY_URL_SECRET"
+            printf 'TEMPO_TELEMETRY_URL=%s\n' "$TEMPO_TELEMETRY_URL_SECRET" >> "$GITHUB_ENV"
+          fi
+          if [ -n "$GRAFANA_TEMPO_SECRET" ]; then
+            echo "::add-mask::$GRAFANA_TEMPO_SECRET"
+            printf 'GRAFANA_TEMPO=%s\n' "$GRAFANA_TEMPO_SECRET" >> "$GITHUB_ENV"
+          fi
+
       - name: Resolve checkout ref
         id: checkout-ref
         uses: actions/github-script@v8
@@ -166,7 +239,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: pr.number,
-                  body: `cc @${'${{ github.actor }}'}\n\n🚀 Replay benchmark started! [View run](${runUrl})\n\n⏳ **Status:** Running...\n\n**Config:** chain: \`${'${{ inputs.chain || 'mainnet' }}'}\`, blocks: \`${'${{ inputs.blocks || '5000' }}'}\`, warmup: \`${'${{ inputs.warmup || '1000' }}'}\``,
+                  body: `cc @${'${{ github.actor }}'}\n\n🚀 Replay benchmark started! [View run](${runUrl})\n\n⏳ **Status:** Running...\n\n**Config:** chain: \`${'${{ inputs.chain || 'mainnet' }}'}\`, blocks: \`${process.env.BENCH_BLOCKS}\`, warmup: \`${process.env.BENCH_WARMUP_BLOCKS}\``,
                 });
                 core.exportVariable('BENCH_COMMENT_ID', String(comment.id));
                 if (pr.mergeable) {
@@ -184,16 +257,13 @@ jobs:
               core.setOutput('ref', '${{ github.ref }}');
               return;
             }
-            const { data: pr } = await github.rest.pulls.get({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              pull_number: parseInt(process.env.BENCH_PR),
-            });
-            if (pr.state !== 'open' || !pr.mergeable) {
-              core.setOutput('ref', pr.head.sha);
-            } else {
-              core.setOutput('ref', `refs/pull/${process.env.BENCH_PR}/merge`);
+            const sha = process.env.BENCH_PR_HEAD_SHA;
+            if (!sha) {
+              core.setFailed('BENCH_PR_HEAD_SHA is not set — ack job must pin the PR head SHA');
+              return;
             }
+            core.info(`PR #${process.env.BENCH_PR}, using pinned head SHA ${sha}`);
+            core.setOutput('ref', sha);
 
       - name: Clean up root-owned files from previous runs
         run: sudo rm -rf "$BENCH_WORK_DIR"
@@ -225,8 +295,10 @@ jobs:
             const feature = '${{ inputs.feature-name }}';
             const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
+            const otlp = process.env.BENCH_OTLP === 'true';
+            const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
             const chain = process.env.BENCH_CHAIN || 'mainnet';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}`);
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${otlpNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -249,13 +321,10 @@ jobs:
         with:
           script: |
             if (process.env.BENCH_PR) {
-              const { data: pr } = await github.rest.pulls.get({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                pull_number: parseInt(process.env.BENCH_PR),
-              });
-              core.setOutput('head-ref', pr.head.ref);
-              core.setOutput('head-sha', pr.head.sha);
+              const ref = process.env.BENCH_PR_HEAD_REF || '${{ github.ref_name }}';
+              const sha = process.env.BENCH_PR_HEAD_SHA || '${{ github.sha }}';
+              core.setOutput('head-ref', ref);
+              core.setOutput('head-sha', sha);
             } else {
               core.setOutput('head-ref', '${{ github.ref_name }}');
               core.setOutput('head-sha', '${{ github.sha }}');
@@ -334,6 +403,10 @@ jobs:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
           DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
+          CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+          CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+          CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+          BENCH_REPLAY_RPC_URL: ${{ env.BENCH_CHAIN == 'mainnet' && secrets.BENCH_MAINNET_RPC_URL || env.BENCH_CHAIN == 'testnet' && secrets.BENCH_TESTNET_RPC_URL || '' }}
         run: bash .github/scripts/bench-tempo-replay.sh
 
       - name: Parse results
@@ -451,7 +524,7 @@ jobs:
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
             const chain = process.env.BENCH_CHAIN || 'mainnet';
             const blocks = process.env.BENCH_BLOCKS || '5000';
-            const warmup = process.env.BENCH_WARMUP_BLOCKS || '1000';
+            const warmup = process.env.BENCH_WARMUP_BLOCKS || String(Math.floor(Number(blocks) / 4));
             const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Replay benchmark complete! [View job](${jobUrl})\n\nChain: \`${chain}\`\nWarmup: \`${warmup}\`\nBlocks: \`${blocks}\`\n\n${comment}`;
 
             await github.rest.issues.updateComment({
