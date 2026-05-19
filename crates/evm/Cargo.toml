@@ -46,7 +46,9 @@ alloy-signer-local = { workspace = true, features = ["mnemonic"] }
 alloy-sol-types.workspace = true
 criterion.workspace = true
 revm.workspace = true
+reth-execution-cache.workspace = true
 reth-storage-api.workspace = true
+reth-trie.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary"] }
 
