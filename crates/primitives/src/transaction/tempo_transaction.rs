@@ -17,11 +17,8 @@ use core::num::NonZeroU64;
 /// Tempo transaction type byte (0x76)
 pub const TEMPO_TX_TYPE_ID: u8 = 0x76;
 
-/// Magic byte for the fee payer signature.
+/// Magic byte for the fee payer signature
 pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
-
-/// In-memory sentinel for transactions that need a sponsor signature.
-pub const FEE_PAYER_SIGNATURE_MARKER: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
 
 /// Signature type constants
 pub const SECP256K1_SIGNATURE_LENGTH: usize = 65;

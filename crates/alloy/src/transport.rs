@@ -25,18 +25,6 @@ use alloy_transport::{
 use std::str::FromStr;
 use tempo_primitives::{AASigned, TempoTxEnvelope, transaction::FEE_PAYER_SIGNATURE_MARKER};
 
-// TODO(rusowsky): Remove once alloy-transport publishes `TransportErrorKind::NonRetryable`
-trait TransportErrorKindNonRetryableExt {
-    fn non_retryable(err: impl std::error::Error + Send + Sync + 'static) -> TransportError;
-}
-
-// TODO(rusowsky): Remove once alloy-transport publishes `TransportErrorKind::NonRetryable`
-impl TransportErrorKindNonRetryableExt for TransportErrorKind {
-    fn non_retryable(err: impl std::error::Error + Send + Sync + 'static) -> TransportError {
-        Self::custom(err)
-    }
-}
-
 /// How sponsored raw transactions are handled by [`RelayTransport`].
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum SponsorshipMode {
