@@ -252,6 +252,7 @@ run_single() {
     --debug.startup-sync-state-idle
     --builder.max-tasks 1
     --engine.share-sparse-trie-with-payload-builder
+    --consensus.time-to-prepare-proposal-transactions 400ms
   )
 
   # Per-label extra node args

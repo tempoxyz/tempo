@@ -479,6 +479,7 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
         "--authrpc.port" $"($authrpc_port)"
         "--consensus.use-local-defaults"
         "--consensus.bypass-ip-check"
+        "--consensus.time-to-prepare-proposal-transactions" "400ms"
     ]
 }
 
