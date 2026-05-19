@@ -314,7 +314,7 @@ impl<D, R> RelayTransport<D, R> {
 
 fn encode_for_fee_payer_service(tx: &AASigned) -> String {
     let mut buf = Vec::new();
-    tx.tx().encode_for_fee_payer_service(&mut buf);
+    tx.encode_for_fee_payer_service(&mut buf);
     hex::encode_prefixed(buf)
 }
 

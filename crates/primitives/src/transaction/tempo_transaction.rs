@@ -409,7 +409,7 @@ impl TempoTransaction {
     /// Outputs the length of the transaction's fields, without a RLP header.
     ///
     /// This is the internal helper that takes closures for flexible encoding.
-    fn rlp_encoded_fields_length(
+    pub(crate) fn rlp_encoded_fields_length(
         &self,
         signature_length: impl FnOnce(&Option<Signature>) -> usize,
         skip_fee_token: bool,
@@ -442,7 +442,7 @@ impl TempoTransaction {
             }
     }
 
-    fn rlp_encode_fields(
+    pub(crate) fn rlp_encode_fields(
         &self,
         out: &mut dyn BufMut,
         encode_signature: impl FnOnce(&Option<Signature>, &mut dyn BufMut),
