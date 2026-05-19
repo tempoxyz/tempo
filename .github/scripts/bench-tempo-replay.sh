@@ -69,6 +69,7 @@ export PATH="$CARGO_BIN_DIR:$PATH"
 TXGEN_TEMPO_BIN="${TXGEN_TEMPO_BIN:-txgen-tempo}"
 TXGEN_BENCH_BIN="${TXGEN_BENCH_BIN:-bench}"
 BENCH_FEATURES="${BENCH_FEATURES:-jemalloc,asm-keccak,keccak-cache-global}"
+BENCHMARK_ID="${BENCHMARK_ID:-bench-replay-${GITHUB_RUN_ID:-$(date +%s)}}"
 
 if [ "${BENCH_OTLP:-false}" = "true" ]; then
   if [ -z "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" ] && [ -n "${GRAFANA_TEMPO:-}" ]; then
@@ -370,6 +371,12 @@ run_single() {
     fi
   fi
 
+  local run_type="feature"
+  case "$label" in
+    baseline*) run_type="baseline" ;;
+  esac
+  export OTEL_RESOURCE_ATTRIBUTES="benchmark_id=${BENCHMARK_ID},benchmark_run=${label},run_type=${run_type},git_ref=${git_ref},chain=${CHAIN_NAME}"
+
   # Warmup
   if [ "$WARMUP" -gt 0 ]; then
     local warmup_to=$(( from_block + WARMUP - 1 ))
@@ -401,6 +408,9 @@ run_single() {
       -m "platform=tempo" \
       -m "scenario=replay" \
       -m "chain=$CHAIN_NAME" \
+      -m "benchmark_id=$BENCHMARK_ID" \
+      -m "benchmark_run=$label" \
+      -m "run_type=$run_type" \
       -m "blocks=$BLOCKS" 2>&1 | sed -u "s/^/[bench] /"
 
   # Cleanup (runs via EXIT trap; call explicitly for the success log line)

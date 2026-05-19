@@ -884,6 +884,25 @@ mod tests {
                 false,
             ),
             (
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenNotTip20 {
+                    address: Address::repeat_byte(0x20),
+                }),
+                false,
+            ),
+            (
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                    address: Address::repeat_byte(0x20),
+                    currency: "EUR".to_string(),
+                }),
+                false,
+            ),
+            (
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenPaused {
+                    address: Address::repeat_byte(0x20),
+                }),
+                false,
+            ),
+            (
                 TempoPoolTransactionError::AccessKeyExpired {
                     expiry: 100,
                     min_allowed: 200,
