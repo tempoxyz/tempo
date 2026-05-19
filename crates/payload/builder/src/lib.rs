@@ -19,10 +19,7 @@ use reth_basic_payload_builder::{
 };
 use reth_chainspec::{ChainSpecProvider, EthChainSpec, EthereumHardforks};
 use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
-use reth_engine_tree::tree::{
-    CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider, ExecutionCache,
-    instrumented_state::InstrumentedStateProvider,
-};
+use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
@@ -64,8 +61,6 @@ use tempo_transaction_pool::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
-
-const BUILDER_PREWARM_EXECUTION_CACHE_SIZE_BYTES: usize = 8 * 1024 * 1024;
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
@@ -254,11 +249,11 @@ where
     {
         let BuildArguments {
             mut cached_reads,
-            execution_cache,
             trie_handle,
             config,
             cancel,
             best_payload,
+            ..
         } = args;
         let PayloadConfig {
             parent_header,
@@ -290,38 +285,13 @@ where
 
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
-        let shared_execution_cache = if self.disable_state_cache {
-            None
-        } else {
-            execution_cache
-                .as_ref()
-                .map(|cache| cache.cache().clone())
-                .or_else(|| {
-                    self.enable_prewarming
-                        .then(|| ExecutionCache::new(BUILDER_PREWARM_EXECUTION_CACHE_SIZE_BYTES))
-                })
-        };
-        let shared_execution_cache_metrics = shared_execution_cache
-            .as_ref()
-            .map(|_| CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder));
         let state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
         let state_provider: Box<dyn StateProvider> = if self.state_provider_metrics {
             Box::new(InstrumentedStateProvider::new(state_provider, "builder"))
         } else {
             state_provider
         };
-        let state_provider: Box<dyn StateProvider> = match (
-            shared_execution_cache.as_ref(),
-            shared_execution_cache_metrics.as_ref(),
-        ) {
-            (Some(cache), Some(metrics)) => Box::new(CachedStateProvider::new(
-                state_provider,
-                cache.clone(),
-                metrics.clone(),
-            )),
-            _ => state_provider,
-        };
-        let state = StateProviderDatabase::new(state_provider.as_ref());
+        let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()
             .with_database(if self.disable_state_cache {
                 Box::new(state) as Box<dyn Database<Error = ProviderError>>
@@ -483,8 +453,6 @@ where
                 self.provider.clone(),
                 parent_header.hash(),
                 builder.evm().block().beneficiary,
-                shared_execution_cache.clone(),
-                shared_execution_cache_metrics.clone(),
                 best_txs,
             )) as Box<dyn BestTransactions<Item = _>>
         } else {
