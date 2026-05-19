@@ -293,8 +293,8 @@ impl TIP403Registry {
             return Ok(None);
         }
 
-        let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
         if !self.is_authorized_simple(config.token_filter_id, token)? {
+            let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
             return Ok(Some((
                 ITIP403Registry::BlockedReason::TOKEN_FILTER,
                 recovery_address,
@@ -302,6 +302,7 @@ impl TIP403Registry {
         }
 
         if !self.is_authorized_simple(config.sender_policy_id, sender)? {
+            let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
             return Ok(Some((
                 ITIP403Registry::BlockedReason::RECEIVE_POLICY,
                 recovery_address,
