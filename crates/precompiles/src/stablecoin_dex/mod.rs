@@ -4,7 +4,7 @@ pub mod error;
 pub mod order;
 pub mod orderbook;
 
-pub use order::Order;
+pub use order::{Order, Orders};
 pub use orderbook::{
     MAX_TICK, MIN_TICK, Orderbook, PRICE_SCALE, RoundingDirection, TickLevel, base_to_quote,
     quote_to_base, tick_to_price, validate_tick_spacing,
@@ -40,7 +40,7 @@ pub const TICK_SPACING: i16 = 10;
 #[contract(addr = STABLECOIN_DEX_ADDRESS)]
 pub struct StablecoinDEX {
     books: Mapping<B256, Orderbook>,
-    orders: Mapping<u128, Order>,
+    orders: Orders,
     balances: Mapping<Address, Mapping<Address, u128>>,
     next_order_id: u128,
     book_keys: Vec<B256>,
@@ -97,7 +97,7 @@ impl StablecoinDEX {
     /// Fetch order from storage. If the order is currently pending or filled, this function returns
     /// `StablecoinDEXError::OrderDoesNotExist`
     pub fn get_order(&self, order_id: u128) -> Result<Order> {
-        let order = self.orders[order_id].read()?;
+        let order = self.orders.read(order_id)?;
 
         // If the order is not filled and currently active
         if !order.maker().is_zero() && order.order_id() < self.next_order_id()? {
@@ -491,9 +491,7 @@ impl StablecoinDEX {
             }
         } else {
             // Update previous tail's next pointer
-            let mut prev_order = self.orders[prev_tail].read()?;
-            prev_order.next = order.order_id();
-            self.orders[prev_tail].write(prev_order)?;
+            self.orders.set_next(prev_tail, order.order_id())?;
 
             // Set current order's prev pointer
             order.prev = prev_tail;
@@ -510,7 +508,7 @@ impl StablecoinDEX {
             .tick_level_handler_mut(order.tick(), order.is_bid())
             .write(level)?;
 
-        self.orders[order.order_id()].write(order)
+        self.orders.write(order.order_id(), order)
     }
 
     /// Place a flip order that auto-flips when filled
@@ -648,9 +646,7 @@ impl StablecoinDEX {
 
         // Update order remaining amount
         let new_remaining = order.remaining() - fill_amount;
-        self.orders[order.order_id()]
-            .remaining
-            .write(new_remaining)?;
+        self.orders.set_remaining(order.order_id(), new_remaining)?;
 
         // Calculate quote amount for this fill (used by both maker settlement and taker output)
         let quote_amount = base_to_quote(
@@ -754,7 +750,7 @@ impl StablecoinDEX {
         }
 
         // Delete the filled order
-        self.orders[order.order_id()].delete()?;
+        self.orders.delete(order.order_id())?;
 
         // Advance tick if liquidity is exhausted
         let next_tick_info = if order.next() == 0 {
@@ -782,14 +778,14 @@ impl StablecoinDEX {
                 let new_level = self.books[book_key]
                     .tick_level_handler(tick, order.is_bid())
                     .read()?;
-                let new_order = self.orders[new_level.head].read()?;
+                let new_order = self.orders.read(new_level.head)?;
 
                 Some((new_level, new_order))
             }
         } else {
             // If there are subsequent orders at tick, advance to next order
             level.head = order.next();
-            self.orders[order.next()].prev.delete()?;
+            self.orders.set_prev(order.next(), 0)?;
 
             let new_liquidity = level
                 .total_liquidity
@@ -801,7 +797,7 @@ impl StablecoinDEX {
                 .tick_level_handler_mut(order.tick(), order.is_bid())
                 .write(level)?;
 
-            let new_order = self.orders[order.next()].read()?;
+            let new_order = self.orders.read(order.next())?;
             Some((level, new_order))
         };
 
@@ -817,7 +813,7 @@ impl StablecoinDEX {
         taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, bid)?;
-        let mut order = self.orders[level.head].read()?;
+        let mut order = self.orders.read(level.head)?;
 
         let mut total_amount_in: u128 = 0;
 
@@ -897,7 +893,7 @@ impl StablecoinDEX {
         taker: Address,
     ) -> Result<u128> {
         let mut level = self.get_best_price_level(book_key, bid)?;
-        let mut order = self.orders[level.head].read()?;
+        let mut order = self.orders.read(level.head)?;
 
         let mut total_amount_out: u128 = 0;
 
@@ -994,7 +990,7 @@ impl StablecoinDEX {
     /// Cancel an order and refund tokens to maker
     /// Only the order maker can cancel their own order
     pub fn cancel(&mut self, sender: Address, order_id: u128) -> Result<()> {
-        let order = self.orders[order_id].read()?;
+        let order = self.orders.read(order_id)?;
 
         if order.maker().is_zero() {
             return Err(StablecoinDEXError::order_does_not_exist().into());
@@ -1019,13 +1015,13 @@ impl StablecoinDEX {
 
         // Update linked list
         if order.prev() != 0 {
-            self.orders[order.prev()].next.write(order.next())?;
+            self.orders.set_next(order.prev(), order.next())?;
         } else {
             level.head = order.next();
         }
 
         if order.next() != 0 {
-            self.orders[order.next()].prev.write(order.prev())?;
+            self.orders.set_prev(order.next(), order.prev())?;
         } else {
             level.tail = order.prev();
         }
@@ -1083,7 +1079,7 @@ impl StablecoinDEX {
         }
 
         // Clear the order from storage
-        self.orders[order.order_id()].delete()?;
+        self.orders.delete(order.order_id())?;
 
         // Emit OrderCancelled event
         self.emit_event(StablecoinDEXEvents::OrderCancelled(
@@ -1101,7 +1097,7 @@ impl StablecoinDEX {
     /// [TIP-403]: <https://docs.tempo.xyz/protocol/tip403>
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     pub fn cancel_stale_order(&mut self, order_id: u128) -> Result<()> {
-        let order = self.orders[order_id].read()?;
+        let order = self.orders.read(order_id)?;
 
         if order.maker().is_zero() {
             return Err(StablecoinDEXError::order_does_not_exist().into());
@@ -1762,7 +1758,7 @@ mod tests {
             assert_eq!(exchange.next_order_id()?, 2);
 
             // Verify the order was stored correctly
-            let stored_order = exchange.orders[order_id].read()?;
+            let stored_order = exchange.orders.read(order_id)?;
             assert_eq!(stored_order.maker(), alice);
             assert_eq!(stored_order.amount(), min_order_amount);
             assert_eq!(stored_order.remaining(), min_order_amount);
@@ -1822,7 +1818,7 @@ mod tests {
             assert_eq!(exchange.next_order_id()?, 2);
 
             // Verify the order was stored correctly
-            let stored_order = exchange.orders[order_id].read()?;
+            let stored_order = exchange.orders.read(order_id)?;
             assert_eq!(stored_order.maker(), alice);
             assert_eq!(stored_order.amount(), min_order_amount);
             assert_eq!(stored_order.remaining(), min_order_amount);
@@ -1992,7 +1988,7 @@ mod tests {
             assert_eq!(exchange.next_order_id()?, 2);
 
             // Verify the order was stored correctly
-            let stored_order = exchange.orders[order_id].read()?;
+            let stored_order = exchange.orders.read(order_id)?;
             assert_eq!(stored_order.maker(), alice);
             assert_eq!(stored_order.amount(), min_order_amount);
             assert_eq!(stored_order.remaining(), min_order_amount);
@@ -2394,14 +2390,14 @@ mod tests {
                 .expect("Swap should succeed");
 
             // Assert that the order has filled (remaining should be 0)
-            let filled_order = exchange.orders[flip_order_id].read()?;
+            let filled_order = exchange.orders.read(flip_order_id)?;
             assert_eq!(filled_order.remaining(), 0);
 
             // The flipped order should be created with id = flip_order_id + 1
             let new_order_id = exchange.next_order_id()? - 1;
             assert_eq!(new_order_id, flip_order_id + 1);
 
-            let new_order = exchange.orders[new_order_id].read()?;
+            let new_order = exchange.orders.read(new_order_id)?;
             assert_eq!(new_order.maker(), alice);
             assert_eq!(new_order.tick(), flip_tick);
             assert_eq!(new_order.flip_tick(), tick);
@@ -3152,8 +3148,8 @@ mod tests {
             let order2_id = exchange.place(bob, base_token, order2_amount, false, tick)?;
 
             // Verify linked list is set up correctly
-            let order1 = exchange.orders[order1_id].read()?;
-            let order2 = exchange.orders[order2_id].read()?;
+            let order1 = exchange.orders.read(order1_id)?;
+            let order2 = exchange.orders.read(order2_id)?;
             assert_eq!(order1.next(), order2_id);
             assert_eq!(order2.prev(), order1_id);
 
@@ -3168,7 +3164,7 @@ mod tests {
             )?;
 
             // After filling order1, order2 should be the new head with prev = 0
-            let order2_after = exchange.orders[order2_id].read()?;
+            let order2_after = exchange.orders.read(order2_id)?;
             assert_eq!(
                 order2_after.prev(),
                 0,
@@ -3734,7 +3730,7 @@ mod tests {
                 "Best bid tick should be updated"
             );
 
-            let stored_order = exchange.orders[order_id].read()?;
+            let stored_order = exchange.orders.read(order_id)?;
             assert!(stored_order.is_flip(), "Order should be a flip order");
             assert_eq!(
                 stored_order.flip_tick(),
@@ -3776,7 +3772,7 @@ mod tests {
 
             let order_id = exchange.place(alice, base_token, min_order_amount, true, tick)?;
 
-            let stored_order = exchange.orders[order_id].read()?;
+            let stored_order = exchange.orders.read(order_id)?;
             assert_eq!(stored_order.maker(), alice);
             assert_eq!(stored_order.remaining(), min_order_amount);
             assert_eq!(stored_order.tick(), tick);
