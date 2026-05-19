@@ -520,20 +520,12 @@ impl TempoTransaction {
     ///
     /// Fee-payer services accept an unsigned sponsorship request with `0x00` fee-payer signature.
     /// This is a placeholder that tells the sponsor where to insert the real fee-payer signature.
-    pub(crate) fn rlp_encoded_fields_length_for_fee_payer_service(&self) -> usize {
-        self.rlp_encoded_fields_length(|_| 1, true)
-    }
-
-    pub(crate) fn rlp_encode_fields_for_fee_payer_service(&self, out: &mut dyn BufMut) {
-        self.rlp_encode_fields(out, |_, out| out.put_u8(0x00), true);
-    }
-
     pub fn encode_for_fee_payer_service(&self, out: &mut dyn BufMut) {
         out.put_u8(Self::tx_type());
 
-        let payload_length = self.rlp_encoded_fields_length_for_fee_payer_service();
+        let payload_length = self.rlp_encoded_fields_length(|_| 1, true);
         rlp_header(payload_length).encode(out);
-        self.rlp_encode_fields_for_fee_payer_service(out);
+        self.rlp_encode_fields(out, |_, out| out.put_u8(0x00), true);
     }
 
     /// Decodes the inner TempoTransaction fields from RLP bytes
@@ -1106,7 +1098,7 @@ mod tests {
             max_priority_fee_per_gas: 1000000000,
             max_fee_per_gas: 2000000000,
             gas_limit: 21000,
-            calls: vec![call.clone()],
+            calls: vec![call],
             access_list: Default::default(),
             nonce_key: U256::ZERO,
             nonce: 1,
@@ -1129,8 +1121,7 @@ mod tests {
         assert_eq!(service_encoded, signing_encoded);
 
         let mut tx_with_different_fee_token = tx;
-        tx_with_different_fee_token.fee_token =
-            Some(Address::random());
+        tx_with_different_fee_token.fee_token = Some(Address::random());
         let mut different_fee_token_encoded = Vec::new();
         tx_with_different_fee_token.encode_for_fee_payer_service(&mut different_fee_token_encoded);
         assert_eq!(service_encoded, different_fee_token_encoded);

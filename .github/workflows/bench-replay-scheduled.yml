@@ -237,6 +237,8 @@ jobs:
     secrets:
       DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
+      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
+      GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
       BENCH_MAINNET_RPC_URL: ${{ secrets.BENCH_MAINNET_RPC_URL }}
       BENCH_TESTNET_RPC_URL: ${{ secrets.BENCH_TESTNET_RPC_URL }}
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}

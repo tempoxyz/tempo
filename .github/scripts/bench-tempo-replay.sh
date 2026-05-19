@@ -89,6 +89,12 @@ bench_schelk() {
   nu bench-schelk.nu "$@"
 }
 
+cleanup_reth_ipc() {
+  if [ -e /tmp/reth.ipc ]; then
+    rm -f /tmp/reth.ipc
+  fi
+}
+
 # ============================================================================
 # Install txgen-tempo and bench-cli
 # ============================================================================
@@ -211,6 +217,7 @@ run_single() {
   # Recover snapshot
   sudo systemctl stop "$TEMPO_SCOPE" 2>/dev/null || true
   sudo systemctl reset-failed "$TEMPO_SCOPE" 2>/dev/null || true
+  cleanup_reth_ipc
   bench_schelk restore "$SCHELK_STATE_PATH" "$SCHELK_MOUNT"
 
   sync
@@ -297,6 +304,7 @@ run_single() {
     fi
     sudo systemctl stop "$TEMPO_SCOPE" 2>/dev/null || true
     sudo systemctl reset-failed "$TEMPO_SCOPE" 2>/dev/null || true
+    cleanup_reth_ipc
     sudo chown -R "$(id -un):$(id -gn)" "$output_dir" 2>/dev/null || true
     bench_schelk cleanup "$SCHELK_STATE_PATH" || true
   }
