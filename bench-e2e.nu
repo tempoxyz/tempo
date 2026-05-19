@@ -27,6 +27,7 @@ const E2E_LOCAL_RETH_ARGS = [
     "--tempo.bootnodes-endpoint" "none"
     "--builder.max-tasks" "1"
     "--engine.share-sparse-trie-with-payload-builder"
+    "--consensus.time-to-prepare-proposal-transactions" "400ms"
 ]
 
 def run-bench-schelk [...args: string] {
