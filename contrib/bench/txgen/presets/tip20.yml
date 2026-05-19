@@ -25,7 +25,7 @@ templates:
     max_priority_fee_per_gas: 100000000000
     fee_token: "0x20c0000000000000000000000000000000000000"
     expiring_nonce: true
-    valid_for_secs: 25
+    valid_for_secs: 15
     call:
       to: "0x20c0000000000000000000000000000000000000"
       abi: ERC20
