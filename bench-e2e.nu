@@ -1313,10 +1313,8 @@ def "main e2e" [
         }
     }
 
-    let baseline_label = if $hardfork_mode { $"($baseline_base_label) \(($baseline_hardfork_name)\)" } else { $baseline_base_label }
-    let feature_label = if $hardfork_mode { $"($feature_base_label) \(($feature_hardfork_name)\)" } else { $feature_base_label }
     if $e2e_exit == 0 {
-        generate-summary $results_dir $baseline_label $feature_label $bloat_mib $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch
+        generate-summary $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch --baseline-hardfork $baseline_hardfork_name --feature-hardfork $feature_hardfork_name
     }
 
     try { git worktree remove --force $baseline_wt } catch { }
