@@ -149,6 +149,7 @@ interface ITIP20ChannelEscrow {
     error NotPayer();
     error NotPayeeOrOperator();
     error InvalidPayee();
+    error InvalidToken();
     error ZeroDeposit();
     error ExpiringNonceHashNotSet();
     error InvalidSignature();
