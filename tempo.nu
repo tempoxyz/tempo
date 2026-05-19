@@ -774,18 +774,13 @@ def iso-from-epoch-ms [epoch_ms: int] {
     $"($base).($millis | into string | fill --alignment right --character '0' --width 3)Z"
 }
 
-def grafana-performance-url [benchmark_id: string, reference_epoch: int, duration: int] {
-    if $benchmark_id == "" or $reference_epoch <= 0 {
+def grafana-performance-url [benchmark_id: string, from_ms: int, to_ms: int] {
+    if $benchmark_id == "" or $from_ms <= 0 or $to_ms <= 0 {
         return ""
     }
 
-    let range = {
-        from: ($reference_epoch * 1000)
-        to: (($reference_epoch + $duration) * 1000)
-    }
-
-    let from = (iso-from-epoch-ms $range.from)
-    let to = (iso-from-epoch-ms $range.to)
+    let from = (iso-from-epoch-ms $from_ms)
+    let to = (iso-from-epoch-ms $to_ms)
     $"https://tempoxyz.grafana.net/d/dffj6qf1o30oowe/performance?orgId=1&from=($from)&to=($to)&timezone=browser&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=($benchmark_id)&var-group_by=benchmark_run"
 }
 
@@ -1009,16 +1004,29 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     # Compute deltas (feature vs baseline)
     let delta = { |base: float, feat: float| if $base != 0.0 { ((($feat - $base) / $base) * 100) | math round --precision 1 } else { 0.0 } }
 
+    let observability_padding_ms = 5000
+    let observability_duration_ms = $duration * ($run_labels | length) * 1000
+    let observability_from_ms = if $reference_epoch > 0 {
+        (($reference_epoch * 1000) - $observability_padding_ms)
+    } else { 0 }
+    let observability_to_ms = if $reference_epoch > 0 {
+        (($reference_epoch * 1000) + $observability_duration_ms - $observability_padding_ms)
+    } else { 0 }
+    let phase_ranges = ($run_labels | each { |label|
+        let range_path = $"($results_dir)/phase-range-($label).json"
+        if ($range_path | path exists) { open $range_path } else { null }
+    } | where { |range| $range != null })
+    let phase_start_ms = ($phase_ranges | where started_ms != null | get started_ms | sort)
+    let phase_finish_ms = ($phase_ranges | where finished_ms != null | get finished_ms | sort)
+    let actual_observability_from_ms = if ($phase_start_ms | length) > 0 {
+        $phase_start_ms | first
+    } else { $observability_from_ms }
+    let actual_observability_to_ms = if ($phase_finish_ms | length) > 0 {
+        $phase_finish_ms | last
+    } else { $observability_to_ms }
+
     # Build summary markdown
-    let grafana_url = (grafana-performance-url $benchmark_id $reference_epoch $duration)
-    let observability_lines = if $grafana_url != "" {
-        [
-            "## Observability"
-            ""
-            $"- Grafana: [Performance dashboard]\(($grafana_url)\)"
-            ""
-        ]
-    } else { [] }
+    let grafana_url = (grafana-performance-url $benchmark_id $observability_from_ms $observability_to_ms)
     let summary_lines = ([
         $"# Bench Comparison: ($baseline_ref) vs ($feature_ref)"
         ""
@@ -1031,7 +1039,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         $"- Baseline blocks: ($b_lat.n)"
         $"- Feature blocks: ($f_lat.n)"
         ""
-    ] | append $observability_lines | append [
+    ] | append [
         "## Tempo Metrics"
         ""
         "| Metric | Baseline | Feature | Delta |"
@@ -1071,6 +1079,18 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let summary_json = {
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
+        observability_range: {
+            from_ms: $observability_from_ms
+            to_ms: $observability_to_ms
+            from: (if $observability_from_ms > 0 { iso-from-epoch-ms $observability_from_ms } else { "" })
+            to: (if $observability_to_ms > 0 { iso-from-epoch-ms $observability_to_ms } else { "" })
+        }
+        actual_observability_range: {
+            from_ms: $actual_observability_from_ms
+            to_ms: $actual_observability_to_ms
+            from: (if $actual_observability_from_ms > 0 { iso-from-epoch-ms $actual_observability_from_ms } else { "" })
+            to: (if $actual_observability_to_ms > 0 { iso-from-epoch-ms $actual_observability_to_ms } else { "" })
+        }
         grafana_url: $grafana_url
         baseline_ref: $baseline_ref
         feature_ref: $feature_ref

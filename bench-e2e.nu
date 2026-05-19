@@ -845,6 +845,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
 
     if $phase_exit == 0 {
+        let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
         let sender_exit = (try {
             let bench_result = (txgen-run-preset-pipeline
                 --txgen-tempo-bin $ctx.txgen.txgen_tempo_bin
@@ -881,6 +882,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
             print $"Error: local e2e txgen sender failed for ($phase): ($e.msg)"
             1
         })
+        let phase_finished_ms = ((date now | into int) / 1_000_000 | into int)
+        {
+            phase: $phase
+            started_ms: $phase_started_ms
+            finished_ms: $phase_finished_ms
+        } | to json | save -f $"($ctx.results_dir)/phase-range-($phase).json"
         $phase_exit = $sender_exit
     } else {
         print $"Skipping local e2e sender for ($phase) because readiness checks failed"
