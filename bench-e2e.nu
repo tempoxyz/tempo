@@ -25,6 +25,8 @@ const E2E_LOCAL_RETH_ARGS = [
     "--disable-discovery"
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
+    "--builder.max-tasks" "1"
+    "--engine.share-sparse-trie-with-payload-builder"
 ]
 
 def run-bench-schelk [...args: string] {
@@ -780,12 +782,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
+        | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
         | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
         | append $E2E_LOCAL_RETH_ARGS
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
+        | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let a_args = (dedup-args $a_base_args $extra_args)
     let b_args = (dedup-args $b_base_args $extra_args)
 
@@ -843,6 +847,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
 
     if $phase_exit == 0 {
+        let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
         let sender_exit = (try {
             let bench_result = (txgen-run-preset-pipeline
                 --txgen-tempo-bin $ctx.txgen.txgen_tempo_bin
@@ -879,6 +884,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
             print $"Error: local e2e txgen sender failed for ($phase): ($e.msg)"
             1
         })
+        let phase_finished_ms = ((date now | into int) / 1_000_000 | into int)
+        {
+            phase: $phase
+            started_ms: $phase_started_ms
+            finished_ms: $phase_finished_ms
+        } | to json | save -f $"($ctx.results_dir)/phase-range-($phase).json"
         $phase_exit = $sender_exit
     } else {
         print $"Skipping local e2e sender for ($phase) because readiness checks failed"
@@ -1000,7 +1011,17 @@ def "main e2e" [
     let a_trusted_peers_path = $"($a_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
     let run_started_at = (date now)
     let timestamp = ($run_started_at | format date "%Y%m%d-%H%M%S-%3f")
-    let benchmark_id = $"bench-e2e-local-($timestamp)"
+    let benchmark_id = ($env | get --optional BENCHMARK_ID)
+    let benchmark_id = if $benchmark_id == null or ($benchmark_id | str trim) == "" {
+        let run_id = ($env | get --optional GITHUB_RUN_ID)
+        if $run_id == null or ($run_id | str trim) == "" {
+            print "Error: BENCHMARK_ID or GITHUB_RUN_ID must be set for e2e benchmarks"
+            exit 1
+        }
+        $"bench-e2e-($run_id)"
+    } else {
+        $benchmark_id
+    }
     let reference_epoch = (($run_started_at | into int) / 1_000_000_000 | into int)
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
     let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
@@ -1196,6 +1217,7 @@ def "main e2e" [
         tune: $tune
         loud: $loud
         gas_limit: $gas_limit
+        tracing_otlp: $tracing_otlp
     }
 
     let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }

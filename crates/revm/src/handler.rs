@@ -903,17 +903,13 @@ where
         // Always validate TIP20 prefix to prevent panics in get_token_balance.
         // This is a protocol-level check since validators could bypass initial validation.
         if !fee_token.is_tip20() {
-            return Err(TempoInvalidTransaction::InvalidFeeToken(fee_token).into());
+            return Err(TempoInvalidTransaction::FeeTokenNotTip20 { address: fee_token }.into());
         }
 
         // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
         // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
-        if (!tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction())
-            && !journal
-                .is_tip20_usd(cfg.spec, fee_token)
-                .map_err(|err| EVMError::Custom(err.to_string()))?
-        {
-            return Err(TempoInvalidTransaction::InvalidFeeToken(fee_token).into());
+        if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
+            journal.ensure_tip20_usd(cfg.spec, fee_token)?;
         }
 
         // Load the fee payer balance
@@ -1256,6 +1252,10 @@ where
                     }
                     .into(),
 
+                    TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
+                        TempoInvalidTransaction::FeeTokenPaused { address: fee_token }.into()
+                    }
+
                     TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
 
                     _ => FeePaymentError::Other(err.to_string()).into(),
@@ -1481,7 +1481,7 @@ where
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
 
-        StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
+        let credited = StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
             let mut fee_manager = TipFeeManager::new();
 
             if !actual_spending.is_zero() || !refund_amount.is_zero() {
@@ -1498,11 +1498,16 @@ where
                         fee_token,
                         beneficiary,
                     )
-                    .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
+                    .map_err(|e| EVMError::Custom(format!("{e:?}")))
+            } else {
+                Ok(U256::ZERO)
             }
+        })?;
 
-            Ok(())
-        })
+        // Stash the per-tx credit so `TempoBlockExecutor` can surface it on `TempoTxResult`
+        // for payload scoring. Reset to zero on every tx entry below in `validate_env`.
+        evm.validator_fee = credited;
+        Ok(())
     }
 
     #[inline]
@@ -1523,6 +1528,9 @@ where
     /// - Time window validation (validAfter/validBefore)
     #[inline]
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
+        // Reset per-tx validator fee.
+        evm.validator_fee = U256::ZERO;
+
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;
 
@@ -1817,6 +1825,7 @@ where
         if evm.ctx.tx.is_subblock_transaction()
             && let Some(
                 TempoInvalidTransaction::CollectFeePreTx(_)
+                | TempoInvalidTransaction::FeeTokenPaused { .. }
                 | TempoInvalidTransaction::EthInvalidTransaction(
                     InvalidTransaction::LackOfFundForMaxFee { .. },
                 ),
@@ -2241,7 +2250,9 @@ mod tests {
     };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
-    use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, test_util::TIP20Setup};
+    use tempo_precompiles::{
+        PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::ContractStorage, test_util::TIP20Setup,
+    };
     use tempo_primitives::transaction::{
         Call, RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
@@ -2339,7 +2350,7 @@ mod tests {
 
     #[test]
     fn test_invalid_fee_token_rejected() {
-        // Test that an invalid fee token (non-TIP20 address) is rejected with InvalidFeeToken error
+        // Test that an invalid fee token (non-TIP20 address) is rejected with a typed error
         // rather than panicking. This validates the check in validate_against_state_and_deduct_caller that
         // guards against invalid tokens reaching get_token_balance.
         let invalid_token = Address::random(); // Random address won't have TIP20 prefix
@@ -2357,9 +2368,78 @@ mod tests {
         assert!(
             matches!(
                 result,
-                Err(EVMError::Transaction(TempoInvalidTransaction::InvalidFeeToken(addr))) if addr == invalid_token
+                Err(EVMError::Transaction(TempoInvalidTransaction::FeeTokenNotTip20 { address })) if address == invalid_token
             ),
-            "Should reject invalid fee token with InvalidFeeToken error"
+            "Should reject non-TIP20 fee token with FeeTokenNotTip20 error"
+        );
+    }
+
+    #[test]
+    fn test_non_usd_fee_token_rejected() {
+        let admin = Address::random();
+        let mut test = TestHandlerEvm::tx(TempoHardfork::default(), |tx_env| {
+            tx_env.inner.gas_limit = 100_000;
+            tx_env.inner.gas_price = 1_000_000_000;
+            tx_env.inner.gas_priority_fee = Some(1_000_000_000);
+        });
+
+        let fee_token = StorageCtx::enter_ctx(&mut test.evm.inner.ctx, || {
+            TIP20Setup::create("Euro", "EUR", admin)
+                .currency("EUR")
+                .apply()
+                .map(|token| token.address())
+        })
+        .expect("EUR token setup succeeds");
+
+        test.evm.inner.ctx.tx.fee_token = Some(fee_token);
+
+        let result = test.validate_against_state_and_deduct_caller();
+
+        assert!(
+            matches!(
+                result,
+                Err(EVMError::Transaction(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                    address,
+                    currency,
+                })) if address == fee_token && currency == "EUR"
+            ),
+            "Should reject non-USD fee token with FeeTokenNotUsdCurrency error"
+        );
+    }
+
+    #[test]
+    fn test_paused_fee_token_rejected() {
+        let admin = Address::random();
+        let fee_payer = Address::random();
+        let fee = U256::from(100_000_000_000_000_u64);
+        let mut test = TestHandlerEvm::tx(TempoHardfork::default(), |tx_env| {
+            tx_env.inner.caller = fee_payer;
+            tx_env.inner.gas_limit = 100_000;
+            tx_env.inner.gas_price = 1_000_000_000;
+            tx_env.inner.gas_priority_fee = Some(1_000_000_000);
+        });
+
+        let fee_token = StorageCtx::enter_ctx(&mut test.evm.inner.ctx, || {
+            let mut token = TIP20Setup::create("Paused USD", "PUSD", admin)
+                .with_issuer(admin)
+                .with_role(admin, *tempo_precompiles::tip20::PAUSE_ROLE)
+                .with_mint(fee_payer, fee)
+                .apply()?;
+            token.pause(admin, tempo_precompiles::tip20::ITIP20::pauseCall {})?;
+            Ok::<_, TempoPrecompileError>(token.address())
+        })
+        .expect("paused USD token setup succeeds");
+
+        test.evm.inner.ctx.tx.fee_token = Some(fee_token);
+
+        let result = test.validate_against_state_and_deduct_caller();
+
+        assert!(
+            matches!(
+                result,
+                Err(EVMError::Transaction(TempoInvalidTransaction::FeeTokenPaused { address })) if address == fee_token
+            ),
+            "Should reject paused fee token with FeeTokenPaused error"
         );
     }
 
@@ -5221,6 +5301,51 @@ mod tests {
                     TX_GAS_LIMIT,
                     CAP,
                 );
+                assert_eq!(gas.state_gas_spent(), 0, "halt reports zero state gas");
+            }
+            other => panic!("expected ExecutionResult::Halt, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn test_subblock_paused_fee_token_halts_as_fee_payment_failure() {
+        let aa_env = TempoBatchCallEnv {
+            subblock_transaction: true,
+            ..Default::default()
+        };
+        let tx_env = TempoTxEnv {
+            inner: revm::context::TxEnv {
+                gas_limit: 100_000,
+                kind: TxKind::Call(Address::random()),
+                ..Default::default()
+            },
+            tempo_tx_env: Some(Box::new(aa_env)),
+            ..Default::default()
+        };
+
+        let mut test = TestHandlerEvm::with_cfg(TempoHardfork::T4, tx_env, |cfg| {
+            cfg.tx_gas_limit_cap = Some(30_000_000);
+            cfg.enable_amsterdam_eip8037 = true;
+            cfg.gas_params =
+                crate::gas_params::tempo_gas_params_with_amsterdam(TempoHardfork::T4, true);
+        });
+
+        let err = EVMError::Transaction(TempoInvalidTransaction::FeeTokenPaused {
+            address: PATH_USD_ADDRESS,
+        });
+
+        let result = test
+            .handler
+            .catch_error(&mut test.evm, err)
+            .expect("subblock paused fee-token failure must be converted to a halt");
+
+        match result {
+            ExecutionResult::Halt { reason, gas, .. } => {
+                assert!(
+                    matches!(reason, TempoHaltReason::SubblockTxFeePayment),
+                    "expected SubblockTxFeePayment halt, got {reason:?}"
+                );
+                assert_eq!(gas.total_gas_spent(), 100_000);
                 assert_eq!(gas.state_gas_spent(), 0, "halt reports zero state gas");
             }
             other => panic!("expected ExecutionResult::Halt, got {other:?}"),

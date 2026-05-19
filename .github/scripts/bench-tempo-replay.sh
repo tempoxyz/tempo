@@ -69,6 +69,17 @@ export PATH="$CARGO_BIN_DIR:$PATH"
 TXGEN_TEMPO_BIN="${TXGEN_TEMPO_BIN:-txgen-tempo}"
 TXGEN_BENCH_BIN="${TXGEN_BENCH_BIN:-bench}"
 BENCH_FEATURES="${BENCH_FEATURES:-jemalloc,asm-keccak,keccak-cache-global}"
+if [ -z "${BENCHMARK_ID:-}" ]; then
+  if [ -z "${GITHUB_RUN_ID:-}" ]; then
+    echo "Error: BENCHMARK_ID or GITHUB_RUN_ID must be set for replay benchmarks" >&2
+    exit 1
+  fi
+  BENCHMARK_ID="bench-replay-${GITHUB_RUN_ID}"
+fi
+if [ -z "$BENCHMARK_ID" ]; then
+  echo "Error: BENCHMARK_ID or GITHUB_RUN_ID must be set for replay benchmarks" >&2
+  exit 1
+fi
 
 if [ "${BENCH_OTLP:-false}" = "true" ]; then
   if [ -z "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" ] && [ -n "${GRAFANA_TEMPO:-}" ]; then
@@ -87,6 +98,12 @@ fi
 
 bench_schelk() {
   nu bench-schelk.nu "$@"
+}
+
+cleanup_reth_ipc() {
+  if [ -e /tmp/reth.ipc ]; then
+    rm -f /tmp/reth.ipc
+  fi
 }
 
 # ============================================================================
@@ -211,6 +228,7 @@ run_single() {
   # Recover snapshot
   sudo systemctl stop "$TEMPO_SCOPE" 2>/dev/null || true
   sudo systemctl reset-failed "$TEMPO_SCOPE" 2>/dev/null || true
+  cleanup_reth_ipc
   bench_schelk restore "$SCHELK_STATE_PATH" "$SCHELK_MOUNT"
 
   sync
@@ -232,6 +250,8 @@ run_single() {
     --disable-discovery
     --no-persist-peers
     --debug.startup-sync-state-idle
+    --builder.max-tasks 1
+    --engine.share-sparse-trie-with-payload-builder
   )
 
   # Per-label extra node args
@@ -297,6 +317,7 @@ run_single() {
     fi
     sudo systemctl stop "$TEMPO_SCOPE" 2>/dev/null || true
     sudo systemctl reset-failed "$TEMPO_SCOPE" 2>/dev/null || true
+    cleanup_reth_ipc
     sudo chown -R "$(id -un):$(id -gn)" "$output_dir" 2>/dev/null || true
     bench_schelk cleanup "$SCHELK_STATE_PATH" || true
   }
@@ -362,6 +383,12 @@ run_single() {
     fi
   fi
 
+  local run_type="feature"
+  case "$label" in
+    baseline*) run_type="baseline" ;;
+  esac
+  export OTEL_RESOURCE_ATTRIBUTES="benchmark_id=${BENCHMARK_ID},benchmark_run=${label},run_type=${run_type},git_ref=${git_ref},chain=${CHAIN_NAME}"
+
   # Warmup
   if [ "$WARMUP" -gt 0 ]; then
     local warmup_to=$(( from_block + WARMUP - 1 ))
@@ -393,6 +420,9 @@ run_single() {
       -m "platform=tempo" \
       -m "scenario=replay" \
       -m "chain=$CHAIN_NAME" \
+      -m "benchmark_id=$BENCHMARK_ID" \
+      -m "benchmark_run=$label" \
+      -m "run_type=$run_type" \
       -m "blocks=$BLOCKS" 2>&1 | sed -u "s/^/[bench] /"
 
   # Cleanup (runs via EXIT trap; call explicitly for the success log line)
