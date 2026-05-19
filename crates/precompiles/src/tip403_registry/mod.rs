@@ -398,10 +398,13 @@ impl TIP403Registry {
             token_filter_id: call.tokenFilterId,
             recovery_mode: recovery_address.into(),
         };
-        self.receive_policies[msg_sender].write(ReceivePolicy {
-            config,
-            recovery_address,
-        })?;
+        let recovery_mode = config.recovery_mode;
+        self.receive_policies[msg_sender].config.write(config)?;
+        if matches!(recovery_mode, RecoveryMode::ThirdParty) {
+            self.receive_policies[msg_sender]
+                .recovery_address
+                .write(recovery_address)?;
+        }
 
         self.emit_event(TIP403RegistryEvent::ReceivePolicyUpdated(
             ITIP403Registry::ReceivePolicyUpdated {
