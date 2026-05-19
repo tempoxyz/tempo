@@ -88,7 +88,7 @@ on:
         description: Optional ref to pin in tempoxyz/txgen.
         type: string
         required: false
-        default: ""
+        default: "7c0de9684e0b2fa9466fa05f6e7b5cb3792c4116"
       profiling:
         description: Profiling.
         type: choice
@@ -219,7 +219,7 @@ on:
       txgen-ref:
         type: string
         required: false
-        default: ""
+        default: "7c0de9684e0b2fa9466fa05f6e7b5cb3792c4116"
       baseline-name:
         type: string
         required: false

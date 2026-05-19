@@ -68,6 +68,7 @@ CARGO_BIN_DIR="${CARGO_HOME:-$HOME/.cargo}/bin"
 export PATH="$CARGO_BIN_DIR:$PATH"
 TXGEN_TEMPO_BIN="${TXGEN_TEMPO_BIN:-txgen-tempo}"
 TXGEN_BENCH_BIN="${TXGEN_BENCH_BIN:-bench}"
+BENCH_TXGEN_REF="${BENCH_TXGEN_REF:-7c0de9684e0b2fa9466fa05f6e7b5cb3792c4116}"
 BENCH_FEATURES="${BENCH_FEATURES:-jemalloc,asm-keccak,keccak-cache-global}"
 
 if [ "${BENCH_OTLP:-false}" = "true" ]; then
@@ -94,7 +95,9 @@ bench_schelk() {
 # ============================================================================
 
 echo "Installing txgen-tempo and bench-cli..."
-cargo install --git "https://x-access-token:${DEREK_BENCH_TOKEN}@github.com/tempoxyz/txgen" --locked txgen-tempo bench-cli
+TXGEN_GIT_URL="https://x-access-token:${DEREK_BENCH_TOKEN}@github.com/tempoxyz/txgen"
+TXGEN_REV="$(git ls-remote "$TXGEN_GIT_URL" "$BENCH_TXGEN_REF" "refs/heads/$BENCH_TXGEN_REF" "refs/tags/$BENCH_TXGEN_REF" | awk 'BEGIN { rev = "" } /\^\{\}$/ { rev = $1; exit } rev == "" { rev = $1 } END { if (rev != "") print rev }')"
+cargo install --git "$TXGEN_GIT_URL" --rev "${TXGEN_REV:-$BENCH_TXGEN_REF}" --locked txgen-tempo bench-cli
 command -v "$TXGEN_TEMPO_BIN"
 command -v "$TXGEN_BENCH_BIN"
 
