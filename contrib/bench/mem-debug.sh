@@ -40,9 +40,9 @@ cgroup_file_value() {
 interesting_process() {
   local comm=$1 cmd=$2
   case "$comm:$cmd" in
-    tempo:*" tempo node "*|tempo:".bench-worktrees/"*" node "*|\
-    bench:*" bench send "*|\
-    txgen-tempo:*" txgen-tempo generate "*|\
+    tempo:*"tempo node "*|tempo:".bench-worktrees/"*" node "*|\
+    bench:*"bench send "*|\
+    txgen-tempo:*"txgen-tempo generate "*|\
     nu:*"bench-e2e.nu e2e"*|\
     Runner.Worker:*|Runner.Listener:*|\
     sccache:*|vector:*|vmagent:*|tailscaled:*)
