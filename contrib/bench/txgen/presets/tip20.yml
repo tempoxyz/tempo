@@ -31,12 +31,9 @@ templates:
       abi: ERC20
       function: transfer
       args:
-        - pool:
-            pool: users
-            select: random
+        - random
         - 1
 
 mix:
   - template: tip20_transfer
     weight: 100
-
