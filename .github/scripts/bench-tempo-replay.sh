@@ -239,6 +239,8 @@ run_single() {
     --disable-discovery
     --no-persist-peers
     --debug.startup-sync-state-idle
+    --builder.max-tasks 1
+    --engine.share-sparse-trie-with-payload-builder
   )
 
   # Per-label extra node args
