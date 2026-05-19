@@ -480,13 +480,24 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
     ]
 }
 
+def find-current-user-tempo-pids [] {
+    let uid = (id -u | str trim)
+    ^ps -eo pid=,uid=,comm=
+    | lines
+    | each { |line| $line | str trim | split row --regex '\s+' }
+    | where { |cols| ($cols | length) >= 3 and ($cols | get 1) == $uid and ($cols | get 2) == "tempo" }
+    | each { |cols| $cols | get 0 }
+}
+
 def stop-e2e-processes-gracefully [] {
-    let pids = (find-tempo-pids)
+    let pids = (find-current-user-tempo-pids)
     if ($pids | length) > 0 {
-        print $"Stopping tempo processes: ($pids | str join ', ')"
+        print $"Stopping current-user tempo processes: ($pids | str join ', ')"
     }
     for pid in $pids {
-        kill -s 2 $pid
+        try { kill -s 2 $pid } catch { |e|
+            print $"  Warning: failed to SIGINT PID ($pid): ($e.msg)"
+        }
     }
     for pid in $pids {
         mut wait = 0
@@ -497,7 +508,9 @@ def stop-e2e-processes-gracefully [] {
         }
         if $wait >= 30 {
             print $"  Warning: PID ($pid) did not exit, sending SIGKILL"
-            kill -s 9 $pid
+            try { kill -s 9 $pid } catch { |e|
+                print $"  Warning: failed to SIGKILL PID ($pid): ($e.msg)"
+            }
             sleep 1sec
         }
     }
@@ -807,7 +820,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     sleep 2sec
     let rpc_timeout = if $ctx.bloat > 0 { 600 } else { 300 }
     mut phase_exit = 0
-    if ((find-tempo-pids) | length) < 2 {
+    if ((find-current-user-tempo-pids) | length) < 2 {
         print $"Error: local e2e validators exited before readiness checks completed for ($phase)"
         $phase_exit = 1
     }
