@@ -63,7 +63,7 @@
 //! - **`Blocks::put(H)`**: marshal's `last_processed_height` is floored
 //!   to `max(stored_height, reth.finalized)` at startup
 //!   ([`alias::marshal::init`]), so every put has
-//!  `H > reth.finalized > reth.pruned_below`.
+//!   `H > reth.finalized > reth.pruned_below`.
 //! - **`Blocks::get(Index(H))`**: only ever asks for the next
 //!   contiguous height or a `gap_end` already in the cache.
 //! - **`Blocks::get(Key(digest))`**: gap-repair parent walks may ask
