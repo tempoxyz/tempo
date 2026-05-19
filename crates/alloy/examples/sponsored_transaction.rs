@@ -31,9 +31,9 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         .filler(Random2DNonceFiller)
         .filler(<TempoNetwork as RecommendedFillers>::recommended_fillers())
         .wallet(EthereumWallet::from(signer))
-        // Default is `SponsorshipMode::SignAndRelay`: the sponsor signs and broadcasts the tx.
+        // Default is `SponsorConfig::sign_and_relay()`: the sponsor signs and broadcasts the tx.
         // For sign-only mode, where the sponsor signs and the client broadcasts through `RPC_URL`,
-        // use the builder method `.sponsor_with_mode(url, SponsorshipMode::SignOnly)`.
+        // use the builder method `.sponsor_with_config(sponsor_rpc, SponsorConfig::sign_only())`.
         .sponsor(sponsor_url)
         .connect(&rpc_url)
         .await?;

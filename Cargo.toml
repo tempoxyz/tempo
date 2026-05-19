@@ -266,6 +266,7 @@ either = "1"
 eyre = "0.6.12"
 futures = "0.3.31"
 governor = "0.10.4"
+http = "1.4.0"
 indexmap = "2.13.0"
 indicatif = "0.18"
 insta = { version = "1", features = ["yaml"] }

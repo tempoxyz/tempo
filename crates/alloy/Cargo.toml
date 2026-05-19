@@ -46,6 +46,7 @@ serde.workspace = true
 serde_json.workspace = true
 tracing.workspace = true
 reqwest.workspace = true
+http.workspace = true
 
 [dev-dependencies]
 alloy = { workspace = true, features = ["providers", "reqwest", "rpc-client", "rpc-types-eth", "signers", "signer-local", "sol-types", "transport-http"] }
