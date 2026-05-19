@@ -5,8 +5,10 @@ use alloy_provider::{
     Identity, Provider, ProviderBuilder, ProviderLayer, RootProvider,
     fillers::{JoinFill, TxFiller},
 };
-use alloy_rpc_client::BuiltInConnectionString;
-use alloy_transport::{TransportError, TransportErrorKind};
+use alloy_rpc_client::{BuiltInConnectionString, ConnectionConfig};
+use alloy_transport::{
+    Authorization, BoxTransport, TransportConnect, TransportError, TransportErrorKind,
+};
 use std::str::FromStr;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
@@ -20,7 +22,7 @@ use tempo_primitives::transaction::{CallScope, TEMPO_EXPIRING_NONCE_KEY};
 use crate::{
     TempoFillers, TempoNetwork,
     fillers::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller, SponsorFiller},
-    transport::{RelayConnector, SponsorshipMode},
+    transport::{AuthHeaderTransport, RelayConnector, SponsorshipMode},
 };
 
 /// Extension trait for [`Provider`] with Tempo-specific functionality.
@@ -167,12 +169,91 @@ pub trait TempoProviderExt: Provider<TempoNetwork> {
 #[cfg_attr(not(target_family = "wasm"), async_trait::async_trait)]
 impl<P> TempoProviderExt for P where P: Provider<TempoNetwork> {}
 
+/// Config for sponsor requests via provider builder: mode, auth, and request-header forwarding.
+#[derive(Clone, Debug)]
+pub struct SponsorConfig {
+    mode: SponsorshipMode,
+    config: ConnectionConfig,
+    forward_request_headers: bool,
+}
+
+impl SponsorConfig {
+    /// Configure sponsorship mode and whether sponsor requests receive original request headers.
+    pub const fn new(mode: SponsorshipMode, forward_request_headers: bool) -> Self {
+        Self {
+            mode,
+            config: ConnectionConfig::new(),
+            forward_request_headers,
+        }
+    }
+
+    /// Configure sign-and-relay sponsorship. Forwards request headers by default.
+    pub const fn sign_and_relay() -> Self {
+        Self::new(SponsorshipMode::SignAndRelay, true)
+    }
+
+    /// Configure sign-only sponsorship without forwarding request headers by default.
+    pub const fn sign_only() -> Self {
+        Self::new(SponsorshipMode::SignOnly, false)
+    }
+
+    /// Set the sponsor built-in connection configuration.
+    ///
+    /// Existing authentication configured with [`Self::with_auth`] is preserved unless the new
+    /// connection configuration also contains authentication.
+    pub fn with_connection_config(mut self, mut connection_config: ConnectionConfig) -> Self {
+        if connection_config.auth.is_none() {
+            connection_config.auth = self.config.auth;
+        }
+        self.config = connection_config;
+        self
+    }
+
+    /// Set sponsor authentication. Overrides any forwarded `authorization` header on sponsor requests.
+    pub fn with_auth(mut self, auth: Authorization) -> Self {
+        self.config = self.config.with_auth(auth);
+        self
+    }
+}
+
+impl Default for SponsorConfig {
+    fn default() -> Self {
+        Self::sign_and_relay()
+    }
+}
+
 /// A [`ProviderBuilder`] wrapper that connects through a Tempo sponsor.
+///
+/// Header forwarding is controlled by [`SponsorConfig`]. Sign-only sponsor signing never receives
+/// original headers; its final default-RPC broadcast still preserves them.
 #[derive(Debug)]
 pub struct SponsoredProviderBuilder<L, F, N = TempoNetwork> {
     inner: ProviderBuilder<L, F, N>,
     sponsor_rpc: String,
-    mode: SponsorshipMode,
+    sponsor_config: SponsorConfig,
+}
+
+#[derive(Clone, Debug)]
+struct ConfiguredBuiltInConnection {
+    connection: BuiltInConnectionString,
+    config: ConnectionConfig,
+}
+
+impl TransportConnect for ConfiguredBuiltInConnection {
+    fn is_local(&self) -> bool {
+        self.connection.is_local()
+    }
+
+    async fn get_transport(&self) -> Result<BoxTransport, TransportError> {
+        let transport = self
+            .connection
+            .connect_boxed_with(self.config.clone())
+            .await?;
+        Ok(match self.config.auth.clone() {
+            Some(auth) => BoxTransport::new(AuthHeaderTransport::new(transport, auth)?),
+            None => transport,
+        })
+    }
 }
 
 impl<L, F, N> SponsoredProviderBuilder<L, F, N> {
@@ -185,9 +266,17 @@ impl<L, F, N> SponsoredProviderBuilder<L, F, N> {
     {
         let default =
             BuiltInConnectionString::from_str(default_rpc).map_err(TransportErrorKind::custom)?;
-        let sponsor = BuiltInConnectionString::from_str(&self.sponsor_rpc)
-            .map_err(TransportErrorKind::custom)?;
-        let connect = RelayConnector::with_mode(default, sponsor, self.mode);
+        let sponsor = ConfiguredBuiltInConnection {
+            connection: BuiltInConnectionString::from_str(&self.sponsor_rpc)
+                .map_err(TransportErrorKind::custom)?,
+            config: self.sponsor_config.config,
+        };
+        let connect = RelayConnector::with_config(
+            default,
+            sponsor,
+            self.sponsor_config.mode,
+            self.sponsor_config.forward_request_headers,
+        );
         self.inner.connect_with(&connect).await
     }
 }
@@ -204,11 +293,11 @@ pub trait TempoProviderBuilderExt<L, F>: Sized {
         sponsor_rpc: impl Into<String>,
     ) -> SponsoredProviderBuilder<L, JoinFill<F, SponsorFiller>, TempoNetwork>;
 
-    /// Enable Tempo transaction sponsorship with an explicit mode.
-    fn sponsor_with_mode(
+    /// Enable Tempo transaction sponsorship with an explicit sponsor configuration.
+    fn sponsor_with_config(
         self,
         sponsor_rpc: impl Into<String>,
-        mode: SponsorshipMode,
+        sponsor_config: SponsorConfig,
     ) -> SponsoredProviderBuilder<L, JoinFill<F, SponsorFiller>, TempoNetwork>;
 
     /// Returns a provider builder with the recommended Tempo fillers and the random 2D nonce filler.
@@ -254,18 +343,18 @@ where
         self,
         sponsor_rpc: impl Into<String>,
     ) -> SponsoredProviderBuilder<L, JoinFill<F, SponsorFiller>, TempoNetwork> {
-        self.sponsor_with_mode(sponsor_rpc, SponsorshipMode::default())
+        self.sponsor_with_config(sponsor_rpc, SponsorConfig::default())
     }
 
-    fn sponsor_with_mode(
+    fn sponsor_with_config(
         self,
         sponsor_rpc: impl Into<String>,
-        mode: SponsorshipMode,
+        sponsor_config: SponsorConfig,
     ) -> SponsoredProviderBuilder<L, JoinFill<F, SponsorFiller>, TempoNetwork> {
         SponsoredProviderBuilder {
             inner: self.filler(SponsorFiller),
             sponsor_rpc: sponsor_rpc.into(),
-            mode,
+            sponsor_config,
         }
     }
 
@@ -316,8 +405,7 @@ mod tests {
     use crate::{
         TempoFillers, TempoNetwork,
         fillers::{ExpiringNonceFiller, NonceKeyFiller, Random2DNonceFiller},
-        provider::ext::{TempoProviderBuilderExt, TempoProviderExt},
-        transport::SponsorshipMode,
+        provider::ext::{SponsorConfig, TempoProviderBuilderExt, TempoProviderExt},
     };
 
     fn mock_provider(asserter: Asserter) -> impl alloy_provider::Provider<TempoNetwork> {
@@ -328,9 +416,9 @@ mod tests {
     fn test_sponsor_builder_extension() {
         let _ = ProviderBuilder::<_, _, TempoNetwork>::default()
             .sponsor("https://sponsor.testnet.tempo.xyz");
-        let _ = ProviderBuilder::<_, _, TempoNetwork>::default().sponsor_with_mode(
+        let _ = ProviderBuilder::<_, _, TempoNetwork>::default().sponsor_with_config(
             "https://sponsor.testnet.tempo.xyz",
-            SponsorshipMode::SignOnly,
+            SponsorConfig::sign_only(),
         );
     }
 
