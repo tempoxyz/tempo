@@ -1095,7 +1095,7 @@ mod tests {
             max_priority_fee_per_gas: 1000000000,
             max_fee_per_gas: 2000000000,
             gas_limit: 21000,
-            calls: vec![call.clone()],
+            calls: vec![call],
             access_list: Default::default(),
             nonce_key: U256::ZERO,
             nonce: 1,
@@ -1118,8 +1118,7 @@ mod tests {
         assert_eq!(service_encoded, signing_encoded);
 
         let mut tx_with_different_fee_token = tx;
-        tx_with_different_fee_token.fee_token =
-            Some(Address::random());
+        tx_with_different_fee_token.fee_token = Some(Address::random());
         let mut different_fee_token_encoded = Vec::new();
         tx_with_different_fee_token.encode_for_fee_payer_service(&mut different_fee_token_encoded);
         assert_eq!(service_encoded, different_fee_token_encoded);
