@@ -69,7 +69,17 @@ export PATH="$CARGO_BIN_DIR:$PATH"
 TXGEN_TEMPO_BIN="${TXGEN_TEMPO_BIN:-txgen-tempo}"
 TXGEN_BENCH_BIN="${TXGEN_BENCH_BIN:-bench}"
 BENCH_FEATURES="${BENCH_FEATURES:-jemalloc,asm-keccak,keccak-cache-global}"
-BENCHMARK_ID="${BENCHMARK_ID:-bench-replay-${GITHUB_RUN_ID:-$(date +%s)}}"
+if [ -z "${BENCHMARK_ID:-}" ]; then
+  if [ -z "${GITHUB_RUN_ID:-}" ]; then
+    echo "Error: BENCHMARK_ID or GITHUB_RUN_ID must be set for replay benchmarks" >&2
+    exit 1
+  fi
+  BENCHMARK_ID="bench-replay-${GITHUB_RUN_ID}"
+fi
+if [ -z "$BENCHMARK_ID" ]; then
+  echo "Error: BENCHMARK_ID or GITHUB_RUN_ID must be set for replay benchmarks" >&2
+  exit 1
+fi
 
 if [ "${BENCH_OTLP:-false}" = "true" ]; then
   if [ -z "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" ] && [ -n "${GRAFANA_TEMPO:-}" ]; then
@@ -240,6 +250,8 @@ run_single() {
     --disable-discovery
     --no-persist-peers
     --debug.startup-sync-state-idle
+    --builder.max-tasks 1
+    --engine.share-sparse-trie-with-payload-builder
   )
 
   # Per-label extra node args
