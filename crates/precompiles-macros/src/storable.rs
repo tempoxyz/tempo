@@ -415,55 +415,6 @@ fn derive_tagged_payload_enum_impl(
             }
 
             #[inline]
-            fn load_tagged_payload<S: crate::storage::StorageOps>(
-                storage: &S,
-                slot: ::alloy::primitives::U256,
-                tag_offset: usize,
-                cached_tag_slot: Option<::alloy::primitives::U256>,
-            ) -> crate::error::Result<Self> {
-                let tag = if let Some(tag_slot_value) = cached_tag_slot {
-                    crate::storage::packing::extract_from_word::<u8>(tag_slot_value, tag_offset, 1)?
-                } else {
-                    <u8 as crate::storage::Storable>::load(
-                        storage,
-                        slot,
-                        crate::storage::LayoutCtx::packed(tag_offset),
-                    )?
-                };
-
-                match tag {
-                    #(#load_arms,)*
-                    _ => Err(crate::error::TempoPrecompileError::enum_conversion_error()),
-                }
-            }
-
-            #[inline]
-            fn store_tagged_payload<S: crate::storage::StorageOps>(
-                &self,
-                storage: &mut S,
-                slot: ::alloy::primitives::U256,
-                tag_offset: usize,
-                tag_slot_value: &mut ::alloy::primitives::U256,
-            ) -> crate::error::Result<()> {
-                let tag: u8 = match self {
-                    #(#tag_arms,)*
-                };
-
-                *tag_slot_value = crate::storage::packing::insert_into_word(
-                    *tag_slot_value,
-                    &tag,
-                    tag_offset,
-                    1,
-                )?;
-
-                match self {
-                    #(#payload_store_arms,)*
-                }
-
-                Ok(())
-            }
-
-            #[inline]
             fn delete<S: crate::storage::StorageOps>(
                 storage: &mut S,
                 slot: ::alloy::primitives::U256,
@@ -656,6 +607,13 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
 
         let slot_addr = quote! { base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots) };
         let packed_ctx = quote! { crate::storage::LayoutCtx::packed(#packing::#loc_const.offset_bytes) };
+        let tagged_or_full_ctx = quote! {{
+            if <#ty as crate::storage::StorableType>::IS_TAGGED_PAYLOAD && #packing::#loc_const.offset_bytes != 0 {
+                crate::storage::LayoutCtx::tagged_payload(#packing::#loc_const.offset_bytes)
+            } else {
+                crate::storage::LayoutCtx::FULL
+            }
+        }};
 
         if let Some(prev_slot_ref) = prev_slot_ref {
             quote! {
@@ -664,19 +622,22 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                     let prev_offset = #prev_slot_ref;
 
                     if <#ty as crate::storage::StorableType>::IS_TAGGED_PAYLOAD {
-                        // Tagged payload enum - reuse the cached tag slot when preceding
-                        // packed fields already loaded it.
-                        let cached_tag_slot = if curr_offset == prev_offset {
-                            Some(cached_slot)
+                        if curr_offset == prev_offset {
+                            // Override the tag slot with the cached packed word so the enum can use
+                            // `Storable::load` without issuing a duplicate SLOAD for the tag slot.
+                            let cached_storage = crate::storage::packing::CachedSlotOverride::new(
+                                storage,
+                                #slot_addr,
+                                cached_slot,
+                            );
+                            <#ty as crate::storage::Storable>::load(
+                                &cached_storage,
+                                #slot_addr,
+                                crate::storage::LayoutCtx::tagged_payload(#packing::#loc_const.offset_bytes),
+                            )?
                         } else {
-                            None
-                        };
-                        <#ty as crate::storage::Storable>::load_tagged_payload(
-                            storage,
-                            #slot_addr,
-                            #packing::#loc_const.offset_bytes,
-                            cached_tag_slot,
-                        )?
+                            <#ty as crate::storage::Storable>::load(storage, #slot_addr, #tagged_or_full_ctx)?
+                        }
                     } else if <#ty as crate::storage::StorableType>::IS_PACKABLE && curr_offset == prev_offset {
                         // Same slot as previous packable field - reuse cached value
                         let packed = crate::storage::packing::PackedSlot(cached_slot);
@@ -696,12 +657,7 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
             // First field
             quote! {
                 let #name = if <#ty as crate::storage::StorableType>::IS_TAGGED_PAYLOAD {
-                    <#ty as crate::storage::Storable>::load_tagged_payload(
-                        storage,
-                        #slot_addr,
-                        #packing::#loc_const.offset_bytes,
-                        None,
-                    )?
+                    <#ty as crate::storage::Storable>::load(storage, #slot_addr, #tagged_or_full_ctx)?
                 } else if <#ty as crate::storage::StorableType>::IS_PACKABLE {
                     cached_slot = storage.load(#slot_addr)?;
                     let packed = crate::storage::packing::PackedSlot(cached_slot);
@@ -785,13 +741,19 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                             };
                             pending_offset = Some(curr_offset);
                         }
-                        <#ty as crate::storage::Storable>::store_tagged_payload(
-                            &self.#name,
-                            storage,
-                            #slot_addr,
-                            #packing::#loc_const.offset_bytes,
-                            &mut pending_val,
-                        )?;
+                        {
+                            let mut pending_storage = crate::storage::packing::PendingSlotOverride::new(
+                                storage,
+                                #slot_addr,
+                                &mut pending_val,
+                            );
+                            <#ty as crate::storage::Storable>::store(
+                                &self.#name,
+                                &mut pending_storage,
+                                #slot_addr,
+                                crate::storage::LayoutCtx::tagged_payload(#packing::#loc_const.offset_bytes),
+                            )?;
+                        }
                     } else {
                         // No parent batch owns the tag slot, so use the enum's normal store.
                         if let Some(offset) = pending_offset {

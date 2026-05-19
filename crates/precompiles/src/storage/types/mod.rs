@@ -283,43 +283,6 @@ pub trait Storable: StorableType + Sized {
     /// Store this type to storage at the given slot.
     fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()>;
 
-    /// Load a tagged-payload enum using an optional cached tag slot word.
-    ///
-    /// This is an optimization hook for generated parent-struct code. Normal types
-    /// fall back to [`Self::load`]; tagged-payload enum derives override it to avoid
-    /// a redundant SLOAD when preceding packed fields already loaded the tag slot.
-    #[doc(hidden)]
-    fn load_tagged_payload<S: StorageOps>(
-        storage: &S,
-        tag_slot: U256,
-        tag_offset: usize,
-        _cached_tag_slot: Option<U256>,
-    ) -> Result<Self> {
-        Self::load(storage, tag_slot, LayoutCtx::tagged_payload(tag_offset))
-    }
-
-    /// Store a tagged-payload enum into an in-memory packed tag slot word.
-    ///
-    /// This is an optimization hook for generated parent-struct code. Normal types
-    /// fall back to [`Self::store`]; tagged-payload enum derives override it to let
-    /// the parent batch the tag with preceding packed fields and commit the tag slot
-    /// once.
-    #[doc(hidden)]
-    fn store_tagged_payload<S: StorageOps>(
-        &self,
-        storage: &mut S,
-        tag_slot: U256,
-        tag_offset: usize,
-        _tag_slot_value: &mut U256,
-    ) -> Result<()> {
-        Self::store(
-            self,
-            storage,
-            tag_slot,
-            LayoutCtx::tagged_payload(tag_offset),
-        )
-    }
-
     /// Delete this type from storage (set to zero).
     ///
     /// Default implementation handles both full-slot and packed contexts:

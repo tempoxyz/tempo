@@ -15,7 +15,7 @@
 use alloy::primitives::U256;
 
 use crate::{
-    error::Result,
+    error::{Result, TempoPrecompileError},
     storage::{FromWord, Layout, StorableType, StorageOps},
 };
 
@@ -36,6 +36,85 @@ impl StorageOps for PackedSlot {
     fn store(&mut self, _slot: U256, value: U256) -> Result<()> {
         self.0 = value;
         Ok(())
+    }
+}
+
+/// Read-only storage adapter that overrides one slot with a cached word and
+/// forwards all other loads to the underlying storage provider.
+///
+/// Generated struct loads use this when a tagged-payload enum's tag lives in a
+/// packed slot that has already been loaded for preceding fields. The enum can
+/// run its normal `Storable::load` implementation while avoiding a duplicate
+/// SLOAD for the tag slot.
+pub struct CachedSlotOverride<'a, S> {
+    inner: &'a S,
+    slot: U256,
+    value: U256,
+}
+
+impl<'a, S> CachedSlotOverride<'a, S> {
+    #[inline]
+    pub const fn new(inner: &'a S, slot: U256, value: U256) -> Self {
+        Self { inner, slot, value }
+    }
+}
+
+impl<S: StorageOps> StorageOps for CachedSlotOverride<'_, S> {
+    #[inline]
+    fn load(&self, slot: U256) -> Result<U256> {
+        if slot == self.slot {
+            Ok(self.value)
+        } else {
+            self.inner.load(slot)
+        }
+    }
+
+    #[inline]
+    fn store(&mut self, _slot: U256, _value: U256) -> Result<()> {
+        Err(TempoPrecompileError::Fatal(
+            "cached slot override is read-only".to_string(),
+        ))
+    }
+}
+
+/// Writable storage adapter that redirects reads/writes for one slot into an
+/// in-memory word and forwards all other operations to the underlying storage.
+///
+/// Generated struct stores use this when a tagged-payload enum's tag should be
+/// inserted into the parent struct's packed-slot batch. The enum can run its
+/// normal `Storable::store` implementation while the tag-slot write updates the
+/// pending word instead of issuing a separate SSTORE.
+pub struct PendingSlotOverride<'a, S> {
+    inner: &'a mut S,
+    slot: U256,
+    value: &'a mut U256,
+}
+
+impl<'a, S> PendingSlotOverride<'a, S> {
+    #[inline]
+    pub fn new(inner: &'a mut S, slot: U256, value: &'a mut U256) -> Self {
+        Self { inner, slot, value }
+    }
+}
+
+impl<S: StorageOps> StorageOps for PendingSlotOverride<'_, S> {
+    #[inline]
+    fn load(&self, slot: U256) -> Result<U256> {
+        if slot == self.slot {
+            Ok(*self.value)
+        } else {
+            self.inner.load(slot)
+        }
+    }
+
+    #[inline]
+    fn store(&mut self, slot: U256, value: U256) -> Result<()> {
+        if slot == self.slot {
+            *self.value = value;
+            Ok(())
+        } else {
+            self.inner.store(slot, value)
+        }
     }
 }
 
@@ -89,7 +168,7 @@ pub fn extract_from_word<T: FromWord + StorableType>(
 
     // Validate that the value doesn't span slot boundaries
     if offset + bytes > 32 {
-        return Err(crate::error::TempoPrecompileError::Fatal(format!(
+        return Err(TempoPrecompileError::Fatal(format!(
             "Value of {} bytes at offset {} would span slot boundary (max offset: {})",
             bytes,
             offset,
@@ -120,7 +199,7 @@ pub fn insert_into_word<T: FromWord + StorableType>(
 
     // Validate that the value doesn't span slot boundaries
     if offset + bytes > 32 {
-        return Err(crate::error::TempoPrecompileError::Fatal(format!(
+        return Err(TempoPrecompileError::Fatal(format!(
             "Value of {} bytes at offset {} would span slot boundary (max offset: {})",
             bytes,
             offset,
@@ -152,7 +231,7 @@ pub fn insert_into_word<T: FromWord + StorableType>(
 pub fn delete_from_word(current: U256, offset: usize, bytes: usize) -> Result<U256> {
     // Validate that the value doesn't span slot boundaries
     if offset + bytes > 32 {
-        return Err(crate::error::TempoPrecompileError::Fatal(format!(
+        return Err(TempoPrecompileError::Fatal(format!(
             "Value of {} bytes at offset {} would span slot boundary (max offset: {})",
             bytes,
             offset,
