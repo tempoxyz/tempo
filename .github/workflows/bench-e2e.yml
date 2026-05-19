@@ -379,6 +379,8 @@ jobs:
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
       BENCH_DISABLE_ABBA: ${{ (inputs.disable-abba == true || inputs.disable-abba == 'true' || inputs.run-type == 'nightly') && 'true' || 'false' }}
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
+      BENCH_MEM_DEBUG: "true"
+      BENCH_MEM_DEBUG_INTERVAL: "2"
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
       BENCH_PR_HEAD_REF: ${{ inputs.pr-head-ref }}

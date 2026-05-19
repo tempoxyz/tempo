@@ -126,6 +126,36 @@ def ensure-bloat-space [bloat: int] {
     }
 }
 
+def e2e-memory-debug-enabled [] {
+    let value = ($env.BENCH_MEM_DEBUG? | default "" | str downcase)
+    $value in ["1" "true" "yes" "on"]
+}
+
+def start-e2e-memory-debug [results_dir: string, phase: string] {
+    if not (e2e-memory-debug-enabled) {
+        return ""
+    }
+
+    mkdir $results_dir
+    let out = $"($results_dir)/memory-($phase).tsv"
+    let sentinel = $"($results_dir)/memory-($phase).running"
+    let interval = ($env.BENCH_MEM_DEBUG_INTERVAL? | default "5")
+    touch $sentinel
+    print $"Starting memory debug sampler for ($phase): ($out)"
+    job spawn { bash contrib/bench/mem-debug.sh $out $sentinel $interval $phase }
+    $sentinel
+}
+
+def stop-e2e-memory-debug [sentinel: string] {
+    if $sentinel == "" {
+        return
+    }
+    if ($sentinel | path exists) {
+        rm -f $sentinel
+        sleep 2sec
+    }
+}
+
 def e2e-bloat-gib-to-mib [bloat: int] {
     if $bloat in [1 10 100] {
         return ($bloat * 1000)
@@ -771,6 +801,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
     if ("report.json" | path exists) { rm report.json }
     let tuning_state = if $ctx.tune { apply-system-tuning } else { { tuned: false } }
+    let mem_debug_sentinel = (start-e2e-memory-debug $ctx.results_dir $phase)
 
     let a_rpc = "http://127.0.0.1:8545"
     let b_rpc = "http://127.0.0.1:8645"
@@ -888,6 +919,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         stop-tracy-capture
     }
     stop-e2e-processes-gracefully
+    stop-e2e-memory-debug $mem_debug_sentinel
     if $ctx.samply { wait-for-samply-profile }
     if ($a_log_dir | path exists) { cp -r $a_log_dir $"($ctx.results_dir)/logs-($phase)-a" }
     if ($b_log_dir | path exists) { cp -r $b_log_dir $"($ctx.results_dir)/logs-($phase)-b" }
