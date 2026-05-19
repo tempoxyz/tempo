@@ -175,6 +175,7 @@ jobs:
       BENCH_SLACK: ${{ inputs.slack || 'never' }}
       BENCH_RUN_LABEL: ${{ inputs.run-label || 'Replay Bench' }}
       BENCH_WORK_DIR: bench-results/replay-${{ inputs.chain || 'mainnet' }}
+      BENCHMARK_ID: bench-replay-${{ github.run_id }}
     steps:
       - name: Resolve benchmark config
         env:
