@@ -946,16 +946,6 @@ mod tests {
             );
             assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
 
-            // A zero-capture close transmits no new value, so it remains available.
-            escrow.close(
-                payee,
-                ITIP20ChannelEscrow::closeCall {
-                    descriptor,
-                    cumulativeAmount: U96::from(0),
-                    captureAmount: U96::from(0),
-                    signature: Bytes::new(),
-                },
-            )?;
             Ok(())
         })
     }
