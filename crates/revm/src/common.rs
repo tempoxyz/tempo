@@ -233,7 +233,18 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        Ok(self.ensure_tip20_usd(spec, fee_token)?.is_none())
+        self.with_read_only_storage_ctx(spec, || {
+            // SAFETY: caller must ensure prefix is already checked
+            let token = TIP20Token::from_address_unchecked(fee_token);
+            let len = token.currency.len()?;
+
+            if len != 3 {
+                return Ok(false);
+            }
+
+            let currency = token.currency.read()?;
+            Ok(currency.as_str() == "USD")
+        })
     }
 
     /// Checks if the given token can be used as a fee token.
