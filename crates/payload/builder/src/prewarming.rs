@@ -10,6 +10,7 @@ use std::{
 
 use alloy_primitives::{Address, B256, TxKind, U256};
 use alloy_sol_types::SolInterface;
+use reth_engine_tree::tree::{CachedStateMetrics, CachedStateProvider, ExecutionCache};
 use reth_storage_api::{
     StateProvider, StateProviderBox, StateProviderFactory, errors::provider::ProviderResult,
 };
@@ -32,6 +33,7 @@ use tracing::trace;
 /// plus buffered transactions prewarmed for the next builder iterations.
 const PREWARMING_WINDOW: usize = 16;
 const PREWARMING_BUFFERED_LOOKAHEAD: usize = PREWARMING_WINDOW - 1;
+static NEXT_PREWARM_CACHE_ID: AtomicUsize = AtomicUsize::new(1);
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -48,6 +50,8 @@ impl BestTransactionsPrewarming {
         provider: Provider,
         parent_hash: B256,
         fee_recipient: Address,
+        execution_cache: Option<ExecutionCache>,
+        execution_cache_metrics: Option<CachedStateMetrics>,
         best_txs: Txs,
     ) -> Self
     where
@@ -56,10 +60,17 @@ impl BestTransactionsPrewarming {
     {
         let (commands_tx, commands_rx) = mpsc::channel();
         let builder_consumed_tx_count = Arc::new(AtomicUsize::new(0));
+        let execution_cache_id = execution_cache
+            .as_ref()
+            .map(|_| NEXT_PREWARM_CACHE_ID.fetch_add(1, Ordering::Relaxed))
+            .unwrap_or_default();
         let prewarm = PrewarmingExecutionContext {
             provider,
             parent_hash,
             fee_recipient,
+            execution_cache,
+            execution_cache_metrics,
+            execution_cache_id,
             builder_consumed_tx_count,
         };
         let prewarm_executor = executor.clone();
@@ -166,9 +177,11 @@ impl BestTransactionsPrewarming {
             let worker_state =
                 worker.get_or_init::<PrewarmWorkerState>(PrewarmWorkerState::default);
             if worker_state.parent_hash != prewarm.parent_hash
+                || worker_state.execution_cache_id != prewarm.execution_cache_id
                 || worker_state.state_provider.is_none()
             {
                 worker_state.parent_hash = prewarm.parent_hash;
+                worker_state.execution_cache_id = prewarm.execution_cache_id;
                 worker_state.state_provider = prewarm.state_provider_for_ctx();
             }
 
@@ -278,6 +291,9 @@ struct PrewarmingExecutionContext<Provider> {
     provider: Provider,
     parent_hash: B256,
     fee_recipient: Address,
+    execution_cache: Option<ExecutionCache>,
+    execution_cache_metrics: Option<CachedStateMetrics>,
+    execution_cache_id: usize,
     /// Number of source transactions already handed to the builder.
     builder_consumed_tx_count: Arc<AtomicUsize>,
 }
@@ -285,6 +301,7 @@ struct PrewarmingExecutionContext<Provider> {
 #[derive(Default)]
 struct PrewarmWorkerState {
     parent_hash: B256,
+    execution_cache_id: usize,
     state_provider: Option<StateProviderBox>,
 }
 
@@ -294,7 +311,17 @@ where
 {
     fn state_provider_for_ctx(&self) -> Option<StateProviderBox> {
         match self.provider.state_by_block_hash(self.parent_hash) {
-            Ok(provider) => Some(provider),
+            Ok(provider) => {
+                if let Some(cache) = &self.execution_cache {
+                    Some(Box::new(CachedStateProvider::new_prewarm(
+                        provider,
+                        cache.clone(),
+                        self.execution_cache_metrics.clone().unwrap_or_default(),
+                    )))
+                } else {
+                    Some(provider)
+                }
+            }
             Err(err) => {
                 trace!(
                     target: "payload_builder",
@@ -689,6 +716,8 @@ mod tests {
             provider,
             parent_header.hash(),
             Address::ZERO,
+            None,
+            None,
             TestBestTransactions::new(txs, log),
         )
     }
