@@ -105,6 +105,7 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
 }
 
+/// Reason the payload builder stopped adding pool transactions to the block.
 pub(crate) enum BlockBuildStopReason {
     TimeLimit,
     GasLimit,
