@@ -7,7 +7,10 @@
 
 pub mod dispatch;
 
-use crate::StorageCtx;
+use crate::{
+    StorageCtx,
+    tip1028_escrow::{RECOVERY_ORIGINATOR, RECOVERY_RECEIVER, RecoveryMode},
+};
 pub use tempo_contracts::precompiles::{
     ITIP403Registry::{self, PolicyType},
     TIP403RegistryError, TIP403RegistryEvent,
@@ -49,10 +52,17 @@ pub struct TIP403Registry {
     /// address is restricted.
     policy_set: Mapping<u64, Mapping<Address, bool>>,
     /// Account receive policy configuration.
-    receive_policy_config: Mapping<Address, ReceivePolicyConfig>,
+    receive_policies: Mapping<Address, ReceivePolicy>,
 }
 
 /// Per-account TIP-1028 receive policy configuration.
+#[derive(Debug, Clone, Default, Storable)]
+struct ReceivePolicy {
+    config: ReceivePolicyConfig,
+    recovery_address: Address,
+}
+
+/// Per-account TIP-1028 receive policy configuration. Packed in a single slot.
 #[derive(Debug, Clone, Default, Storable)]
 struct ReceivePolicyConfig {
     /// Whether the account has configured a receive policy.
@@ -61,9 +71,8 @@ struct ReceivePolicyConfig {
     sender_policy_id: u64,
     /// Policy ID filtering which tokens may be received.
     token_filter_id: u64,
-    /// Recovery authority for blocked inbound funds. `0x0` denotes the originator,
-    /// `0x1` denotes the receiver, any other address denotes a third-party contract.
-    recovery_address: Address,
+    /// Recovery authority for blocked inbound funds.
+    recovery_mode: RecoveryMode,
 }
 
 /// Policy record containing base data and optional data for compound policies ([TIP-1015])
@@ -247,14 +256,14 @@ impl TIP403Registry {
 
     /// Returns `account`'s receive-policy configuration.
     pub fn receive_policy(&self, account: Address) -> Result<ITIP403Registry::receivePolicyReturn> {
-        let config = self.receive_policy_config[account].read()?;
+        let config = self.receive_policies[account].config.read()?;
         Ok(ITIP403Registry::receivePolicyReturn {
             hasReceivePolicy: config.has_receive_policy,
             senderPolicyId: config.sender_policy_id,
             senderPolicyType: self.receive_policy_type(config.sender_policy_id)?,
             tokenFilterId: config.token_filter_id,
             tokenFilterType: self.receive_policy_type(config.token_filter_id)?,
-            recoveryAuthority: config.recovery_address,
+            recoveryAuthority: self.receive_policy_recovery(account, config.recovery_mode)?,
         })
     }
 
@@ -279,33 +288,37 @@ impl TIP403Registry {
         sender: Address,
         receiver: Address,
     ) -> Result<Option<(ITIP403Registry::BlockedReason, Address)>> {
-        let config = self.receive_policy_config[receiver].read()?;
+        let config = self.receive_policies[receiver].config.read()?;
         if !config.has_receive_policy {
             return Ok(None);
         }
 
+        let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
         if !self.is_authorized_simple(config.token_filter_id, token)? {
             return Ok(Some((
                 ITIP403Registry::BlockedReason::TOKEN_FILTER,
-                config.recovery_address,
+                recovery_address,
             )));
         }
 
         if !self.is_authorized_simple(config.sender_policy_id, sender)? {
             return Ok(Some((
                 ITIP403Registry::BlockedReason::RECEIVE_POLICY,
-                config.recovery_address,
+                recovery_address,
             )));
         }
 
         Ok(None)
     }
 
-    /// Returns `receiver`'s configured recovery address, or zero if no receive policy is set.
-    pub fn receive_policy_recovery(&self, receiver: Address) -> Result<Address> {
-        Ok(self.receive_policy_config[receiver]
-            .read()?
-            .recovery_address)
+    /// Returns the recovery authority encoded by `mode` for `account`.
+    /// Originator and receiver modes return sentinel addresses; third-party mode reads storage.
+    fn receive_policy_recovery(&self, account: Address, mode: RecoveryMode) -> Result<Address> {
+        match mode {
+            RecoveryMode::Originator => Ok(RECOVERY_ORIGINATOR),
+            RecoveryMode::Receiver => Ok(RECOVERY_RECEIVER),
+            RecoveryMode::ThirdParty => self.receive_policies[account].recovery_address.read(),
+        }
     }
 
     /// Creates a new simple (whitelist or blacklist) policy and returns its ID.
@@ -379,10 +392,14 @@ impl TIP403Registry {
         self.validate_receive_policy_id(call.senderPolicyId)?;
         self.validate_receive_policy_id(call.tokenFilterId)?;
 
-        self.receive_policy_config[msg_sender].write(ReceivePolicyConfig {
+        let config = ReceivePolicyConfig {
             has_receive_policy: true,
             sender_policy_id: call.senderPolicyId,
             token_filter_id: call.tokenFilterId,
+            recovery_mode: recovery_address.into(),
+        };
+        self.receive_policies[msg_sender].write(ReceivePolicy {
+            config,
             recovery_address,
         })?;
 
@@ -1099,7 +1116,10 @@ mod tests {
                 registry.validate_receive_policy(Address::random(), Address::random(), account)?,
                 None
             );
-            assert_eq!(registry.receive_policy_recovery(account)?, Address::ZERO);
+            assert_eq!(
+                registry.receive_policies[account].recovery_address.read()?,
+                Address::ZERO
+            );
 
             Ok(())
         })
@@ -1135,7 +1155,10 @@ mod tests {
                 ITIP403Registry::PolicyType::BLACKLIST
             );
             assert_eq!(policy.recoveryAuthority, recovery);
-            assert_eq!(registry.receive_policy_recovery(account)?, recovery);
+            assert_eq!(
+                registry.receive_policies[account].recovery_address.read()?,
+                recovery
+            );
 
             registry.assert_emitted_events(vec![TIP403RegistryEvent::ReceivePolicyUpdated(
                 ITIP403Registry::ReceivePolicyUpdated {

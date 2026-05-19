@@ -19,7 +19,7 @@ use alloy::{
     primitives::{Address, B256, U256},
     sol_types::SolValue,
 };
-use tempo_precompiles_macros::contract;
+use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::TempoAddressExt;
 
 /// Version tag for the v1 [`ITIP1028Escrow::ClaimReceiptV1`] layout.
@@ -36,6 +36,28 @@ pub const RECOVERY_RECEIVER: Address = Address::with_last_byte(1);
 pub struct TIP1028Escrow {
     blocked_receipt_nonce: u64,
     blocked_receipt_amount: Mapping<B256, U256>,
+}
+
+/// Recovery authority for blocked inbound funds.
+#[derive(Debug, Clone, Copy, Default, Storable)]
+#[repr(u8)]
+pub(crate) enum RecoveryMode {
+    #[default]
+    Originator,
+    Receiver,
+    ThirdParty,
+}
+
+impl From<Address> for RecoveryMode {
+    fn from(value: Address) -> Self {
+        if value == RECOVERY_ORIGINATOR {
+            Self::Originator
+        } else if value == RECOVERY_RECEIVER {
+            Self::Receiver
+        } else {
+            Self::ThirdParty
+        }
+    }
 }
 
 impl TIP1028Escrow {
