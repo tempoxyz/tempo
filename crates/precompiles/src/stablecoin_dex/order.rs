@@ -32,18 +32,26 @@ use tempo_precompiles_macros::Storable;
 /// # Onchain Storage
 /// Orders are stored onchain in doubly linked lists organized by tick.
 /// Each tick maintains a FIFO queue of orders using `prev` and `next` pointers.
+pub const ORDER_STORAGE_VERSION_V1: u8 = 1;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Storable)]
 pub struct Order {
-    /// Unique identifier for this order
-    pub order_id: u128,
     /// Address of the user who placed this order
     pub maker: Address,
-    /// Orderbook key (identifies the trading pair)
-    pub book_key: B256,
     /// Whether this is a bid (true) or ask (false) order
     pub is_bid: bool,
     /// Price tick
     pub tick: i16,
+    /// Whether this is a flip order
+    pub is_flip: bool,
+    /// Tick to flip to when fully filled (for flip orders, 0 for regular orders).
+    /// Pre-T5: for bid flips `flip_tick > tick`; for ask flips `flip_tick < tick`.
+    /// T5+ (TIP-1030): for bid flips `flip_tick >= tick`; for ask flips `flip_tick <= tick`.
+    pub flip_tick: i16,
+    /// Storage layout version. V1 packs immutable order metadata into the first slot.
+    pub version: u8,
+    /// Orderbook key (identifies the trading pair)
+    pub book_key: B256,
     /// Original order amount
     pub amount: u128,
     /// Remaining amount to be filled
@@ -52,12 +60,11 @@ pub struct Order {
     pub prev: u128,
     /// Next order ID in the doubly linked list (0 if tail)
     pub next: u128,
-    /// Whether this is a flip order
-    pub is_flip: bool,
-    /// Tick to flip to when fully filled (for flip orders, 0 for regular orders).
-    /// Pre-T5: for bid flips `flip_tick > tick`; for ask flips `flip_tick < tick`.
-    /// T5+ (TIP-1030): for bid flips `flip_tick >= tick`; for ask flips `flip_tick <= tick`.
-    pub flip_tick: i16,
+    /// Unique identifier for this order.
+    ///
+    /// Kept in the value for compatibility with the generic mapping handler. The mapping key is the
+    /// source of truth, so a future keyed order handler can drop this from storage entirely.
+    pub order_id: u128,
 }
 
 impl Order {
@@ -74,17 +81,18 @@ impl Order {
         flip_tick: i16,
     ) -> Self {
         Self {
-            order_id,
             maker,
-            book_key,
             is_bid,
             tick,
+            is_flip,
+            flip_tick,
+            version: ORDER_STORAGE_VERSION_V1,
+            book_key,
             amount,
             remaining: amount,
             prev: 0,
             next: 0,
-            is_flip,
-            flip_tick,
+            order_id,
         }
     }
 
@@ -263,17 +271,18 @@ impl Order {
 
         // Create flipped order
         Self {
-            order_id: new_order_id,
             maker: self.maker,
+            is_bid: !self.is_bid, // Flip the side
+            tick: self.flip_tick, // Old flip_tick becomes new tick
+            is_flip: true,        // Keep as flip order
+            flip_tick: self.tick, // Old tick becomes new flip_tick
+            version: ORDER_STORAGE_VERSION_V1,
             book_key: self.book_key,
-            is_bid: !self.is_bid,   // Flip the side
-            tick: self.flip_tick,   // Old flip_tick becomes new tick
             amount: self.amount,    // Same as original
             remaining: self.amount, // Reset remaining to original amount
             prev: 0,                // Reset linked list pointers
             next: 0,
-            is_flip: true,        // Keep as flip order
-            flip_tick: self.tick, // Old tick becomes new flip_tick
+            order_id: new_order_id,
         }
     }
 }
@@ -746,11 +755,42 @@ mod tests {
             assert!(loaded_order.is_bid());
             assert!(loaded_order.is_flip());
             assert_eq!(loaded_order.flip_tick(), 10);
+            assert_eq!(loaded_order.version, ORDER_STORAGE_VERSION_V1);
             assert_eq!(loaded_order.prev(), 0);
             assert_eq!(loaded_order.next(), 0);
 
             Ok(())
         })
+    }
+
+    #[test]
+    fn test_order_v1_storage_layout() {
+        assert_eq!(__packing_order::SLOT_COUNT, 5);
+
+        assert_eq!(__packing_order::MAKER_LOC.offset_slots, 0);
+        assert_eq!(__packing_order::MAKER_LOC.offset_bytes, 0);
+        assert_eq!(__packing_order::IS_BID_LOC.offset_slots, 0);
+        assert_eq!(__packing_order::IS_BID_LOC.offset_bytes, 20);
+        assert_eq!(__packing_order::TICK_LOC.offset_slots, 0);
+        assert_eq!(__packing_order::TICK_LOC.offset_bytes, 21);
+        assert_eq!(__packing_order::IS_FLIP_LOC.offset_slots, 0);
+        assert_eq!(__packing_order::IS_FLIP_LOC.offset_bytes, 23);
+        assert_eq!(__packing_order::FLIP_TICK_LOC.offset_slots, 0);
+        assert_eq!(__packing_order::FLIP_TICK_LOC.offset_bytes, 24);
+        assert_eq!(__packing_order::VERSION_LOC.offset_slots, 0);
+        assert_eq!(__packing_order::VERSION_LOC.offset_bytes, 26);
+
+        assert_eq!(__packing_order::BOOK_KEY_LOC.offset_slots, 1);
+        assert_eq!(__packing_order::AMOUNT_LOC.offset_slots, 2);
+        assert_eq!(__packing_order::AMOUNT_LOC.offset_bytes, 0);
+        assert_eq!(__packing_order::REMAINING_LOC.offset_slots, 2);
+        assert_eq!(__packing_order::REMAINING_LOC.offset_bytes, 16);
+        assert_eq!(__packing_order::PREV_LOC.offset_slots, 3);
+        assert_eq!(__packing_order::PREV_LOC.offset_bytes, 0);
+        assert_eq!(__packing_order::NEXT_LOC.offset_slots, 3);
+        assert_eq!(__packing_order::NEXT_LOC.offset_bytes, 16);
+
+        assert_eq!(__packing_order::ORDER_ID_LOC.offset_slots, 4);
     }
 
     #[test]
