@@ -1,4 +1,4 @@
-use crate::TempoTxEnv;
+use crate::{TempoInvalidTransaction, TempoTxEnv};
 use alloy_consensus::transaction::{Either, Recovered};
 use alloy_primitives::{Address, Bytes, LogData, TxKind, U256};
 use alloy_sol_types::SolCall;
@@ -194,15 +194,14 @@ pub trait TempoStateAccess<M = ()> {
         Ok(DEFAULT_FEE_TOKEN)
     }
 
-    /// Checks if the given TIP20 token has USD currency. Optionally returns the stored currency.
+    /// Checks if the given TIP20 token has USD currency.
     ///
     /// IMPORTANT: Caller must ensure `fee_token` has a valid TIP20 prefix.
-    fn check_tip20_currency(
+    fn is_tip20_usd(
         &mut self,
         spec: TempoHardfork,
         fee_token: Address,
-        include_currency: bool,
-    ) -> TempoResult<(bool, Option<String>)>
+    ) -> TempoResult<(bool, Option<TempoInvalidTransaction>)>
     where
         Self: Sized,
     {
@@ -211,30 +210,20 @@ pub trait TempoStateAccess<M = ()> {
             let token = TIP20Token::from_address_unchecked(fee_token);
             let len = token.currency.len()?;
 
-            if !include_currency && len != 3 {
-                return Ok((false, None));
-            }
+            let currency = if len > 31 {
+                format!("<{len} bytes>")
+            } else {
+                token.currency.read()?
+            };
 
-            if len > 31 {
-                return Ok((false, Some(format!("<{len} bytes>"))));
-            }
+            let is_usd = currency.as_str() == "USD";
+            let err = (!is_usd).then_some(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                address: fee_token,
+                currency,
+            });
 
-            let currency = token.currency.read()?;
-            Ok((
-                currency.as_str() == "USD",
-                include_currency.then_some(currency),
-            ))
+            Ok((is_usd, err))
         })
-    }
-
-    /// Checks if the given TIP20 token has USD currency.
-    ///
-    /// IMPORTANT: Caller must ensure `fee_token` has a valid TIP20 prefix.
-    fn is_tip20_usd(&mut self, spec: TempoHardfork, fee_token: Address) -> TempoResult<bool>
-    where
-        Self: Sized,
-    {
-        Ok(self.check_tip20_currency(spec, fee_token, false)?.0)
     }
 
     /// Checks if the given token can be used as a fee token.
@@ -248,7 +237,7 @@ pub trait TempoStateAccess<M = ()> {
         }
 
         // Ensure the currency is USD
-        self.is_tip20_usd(spec, fee_token)
+        Ok(self.is_tip20_usd(spec, fee_token)?.0)
     }
 
     /// Checks if a fee token is paused.
@@ -749,8 +738,9 @@ mod tests {
             let mut db = revm::database::CacheDB::new(EmptyDB::default());
             db.insert_account_storage(fee_token, tip20_slots::CURRENCY, *currency_value)?;
 
-            let is_usd = db.is_tip20_usd(TempoHardfork::Genesis, fee_token)?;
+            let (is_usd, err) = db.is_tip20_usd(TempoHardfork::Genesis, fee_token)?;
             assert_eq!(is_usd, *expected, "currency '{label}' failed");
+            assert_eq!(err.is_some(), !expected, "currency '{label}' error failed");
         }
 
         Ok(())
@@ -764,10 +754,15 @@ mod tests {
 
         db.insert_account_storage(fee_token, tip20_slots::CURRENCY, U256::from(len * 2 + 1))?;
 
-        let (is_tip20_usd, currency) =
-            db.check_tip20_currency(TempoHardfork::Genesis, fee_token, true)?;
+        let (is_tip20_usd, err) = db.is_tip20_usd(TempoHardfork::Genesis, fee_token)?;
         assert!(!is_tip20_usd);
-        assert_eq!(currency.unwrap().as_str(), "<1024 bytes>");
+        assert!(matches!(
+            err,
+            Some(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                currency,
+                ..
+            }) if currency == "<1024 bytes>"
+        ));
 
         Ok(())
     }

@@ -909,15 +909,11 @@ where
         // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
         // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
         if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
-            let (is_tip20_usd, currency) = journal
-                .check_tip20_currency(cfg.spec, fee_token, true)
+            let (is_tip20_usd, err) = journal
+                .is_tip20_usd(cfg.spec, fee_token)
                 .map_err(|err| EVMError::Custom(err.to_string()))?;
             if !is_tip20_usd {
-                return Err(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                    address: fee_token,
-                    currency: currency.unwrap_or_default(), // always `Some` for `true`
-                }
-                .into());
+                return Err(err.expect("non-USD TIP20 returns an error").into());
             }
         }
 
