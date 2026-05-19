@@ -1009,7 +1009,17 @@ def "main e2e" [
     let a_trusted_peers_path = $"($a_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
     let run_started_at = (date now)
     let timestamp = ($run_started_at | format date "%Y%m%d-%H%M%S-%3f")
-    let benchmark_id = $"bench-e2e-local-($timestamp)"
+    let benchmark_id = ($env | get --optional BENCHMARK_ID)
+    let benchmark_id = if $benchmark_id == null or ($benchmark_id | str trim) == "" {
+        let run_id = ($env | get --optional GITHUB_RUN_ID)
+        if $run_id == null or ($run_id | str trim) == "" {
+            print "Error: BENCHMARK_ID or GITHUB_RUN_ID must be set for e2e benchmarks"
+            exit 1
+        }
+        $"bench-e2e-($run_id)"
+    } else {
+        $benchmark_id
+    }
     let reference_epoch = (($run_started_at | into int) / 1_000_000_000 | into int)
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
     let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
