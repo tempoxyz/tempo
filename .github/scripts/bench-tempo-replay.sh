@@ -250,6 +250,7 @@ run_single() {
     --disable-discovery
     --no-persist-peers
     --debug.startup-sync-state-idle
+    --consensus.time-to-prepare-proposal-transactions 400ms
     --builder.max-tasks 1
     --engine.share-sparse-trie-with-payload-builder
   )

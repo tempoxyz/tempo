@@ -477,6 +477,7 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
         "--discovery.v5.port" $"($discv5_port)"
         "--p2p-secret-key" $enode_key
         "--authrpc.port" $"($authrpc_port)"
+        "--consensus.time-to-prepare-proposal-transactions" "400ms"
         "--consensus.use-local-defaults"
         "--consensus.bypass-ip-check"
     ]
