@@ -913,7 +913,7 @@ where
                 .ensure_tip20_usd(cfg.spec, fee_token)
                 .map_err(|err| EVMError::Custom(err.to_string()))?
             {
-                return Err(err.into());
+                return Err(err);
             }
         }
 

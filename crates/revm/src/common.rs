@@ -5,7 +5,7 @@ use alloy_sol_types::SolCall;
 use core::marker::PhantomData;
 use revm::{
     Database,
-    context::JournalTr,
+    context::{JournalTr, result::EVMError},
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -215,7 +215,7 @@ pub trait TempoStateAccess<M = ()> {
         &mut self,
         spec: TempoHardfork,
         fee_token: Address,
-    ) -> TempoResult<Option<TempoInvalidTransaction>>
+    ) -> TempoResult<Option<EVMError<Self::Error, TempoInvalidTransaction>>>
     where
         Self: Sized,
     {
@@ -231,10 +231,12 @@ pub trait TempoStateAccess<M = ()> {
             };
 
             let is_usd = currency.as_str() == "USD";
-            let err = (!is_usd).then_some(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                address: fee_token,
-                currency,
-            });
+            let err = (!is_usd).then_some(EVMError::Transaction(
+                TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                    address: fee_token,
+                    currency,
+                },
+            ));
 
             Ok(err)
         })
@@ -770,10 +772,12 @@ mod tests {
         let err = db.ensure_tip20_usd(TempoHardfork::Genesis, fee_token)?;
         assert!(matches!(
             err,
-            Some(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                currency,
-                ..
-            }) if currency == "<1024 bytes>"
+            Some(EVMError::Transaction(
+                TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                    currency,
+                    ..
+                }
+            )) if currency == "<1024 bytes>"
         ));
 
         Ok(())
