@@ -225,17 +225,12 @@ pub struct TempoChainSpec {
     pub inner: ChainSpec<TempoHeader>,
     pub info: TempoGenesisInfo,
     /// Compiled consensus network identity for this chain.
-    pub network_identity: Option<NetworkIdentity>,
+    pub network_identity: NetworkIdentity,
     /// Default RPC URL for following this chain.
     pub default_follow_url: Option<&'static str>,
 }
 
 impl TempoChainSpec {
-    /// Returns the compiled consensus network identity for this chain.
-    pub fn network_identity(&self) -> Option<&NetworkIdentity> {
-        self.network_identity.as_ref()
-    }
-
     /// Returns the default RPC URL for following this chain.
     pub fn default_follow_url(&self) -> Option<&'static str> {
         self.default_follow_url
@@ -264,11 +259,14 @@ impl TempoChainSpec {
             inner,
         });
 
-        let network_identity = info.network_identity().or_else(|| {
-            NetworkIdentity::from_genesis_extra_data(
-                inner.genesis_header().inner.extra_data.as_ref(),
-            )
-        });
+        let network_identity = info
+            .network_identity()
+            .or_else(|| {
+                NetworkIdentity::from_genesis_extra_data(
+                    inner.genesis_header().inner.extra_data.as_ref(),
+                )
+            })
+            .expect("genesis block must contain an initial network identity");
 
         Self {
             inner,
@@ -280,7 +278,7 @@ impl TempoChainSpec {
 
     /// Sets the compiled consensus network identity for this chain.
     pub fn with_network_identity(mut self, identity: NetworkIdentity) -> Self {
-        self.network_identity = Some(identity);
+        self.network_identity = identity;
         self
     }
 
@@ -305,16 +303,22 @@ impl TempoChainSpec {
 // The test utilities need to convert from standard ChainSpec to custom chain specs.
 impl From<ChainSpec> for TempoChainSpec {
     fn from(spec: ChainSpec) -> Self {
+        let inner = spec.map_header(|inner| TempoHeader {
+            general_gas_limit: 0,
+            timestamp_millis_part: inner.timestamp % 1000,
+            shared_gas_limit: 0,
+            consensus_context: None,
+            inner,
+        });
+        let network_identity = NetworkIdentity::from_genesis_extra_data(
+            inner.genesis_header().inner.extra_data.as_ref(),
+        )
+        .expect("tempo genesis must contain an initial network identity");
+
         Self {
-            inner: spec.map_header(|inner| TempoHeader {
-                general_gas_limit: 0,
-                timestamp_millis_part: inner.timestamp % 1000,
-                shared_gas_limit: 0,
-                consensus_context: None,
-                inner,
-            }),
+            inner,
             info: TempoGenesisInfo::default(),
-            network_identity: None,
+            network_identity,
             default_follow_url: None,
         }
     }
@@ -473,9 +477,7 @@ mod tests {
             serde_json::from_str(include_str!("./genesis/presto.json"))
                 .expect("the mainnet genesis must always be well formed");
         let chainspec = super::TempoChainSpec::from_genesis(genesis);
-        let identity = chainspec
-            .network_identity()
-            .expect("mainnet genesis should contain a DKG outcome");
+        let identity = chainspec.network_identity;
 
         assert_eq!(identity.from_epoch, 0);
         assert_eq!(
@@ -492,9 +494,7 @@ mod tests {
     fn named_network_identities_are_hardcoded() {
         let moderato = super::TempoChainSpecParser::parse("moderato")
             .expect("the moderato chainspec must always be well formed");
-        let moderato_identity = moderato
-            .network_identity()
-            .expect("moderato should have a compiled network identity");
+        let moderato_identity = moderato.network_identity.clone();
         assert_eq!(moderato_identity.from_epoch, 51);
         assert_eq!(
             moderato_identity.identity.encode().as_ref(),
@@ -507,13 +507,13 @@ mod tests {
 
         let testnet = super::TempoChainSpecParser::parse("testnet")
             .expect("the testnet chainspec must always be well formed");
-        assert_eq!(testnet.network_identity(), moderato.network_identity());
+        assert_eq!(testnet.network_identity, moderato.network_identity);
 
         let presto = super::TempoChainSpecParser::parse("mainnet")
             .expect("the mainnet chainspec must always be well formed");
-        let presto_identity = presto
-            .network_identity()
-            .expect("mainnet should have a compiled network identity");
+
+        let presto_identity = presto.network_identity.clone();
+
         assert_eq!(presto_identity.from_epoch, 0);
         assert_eq!(
             presto_identity.identity.encode().as_ref(),
@@ -526,15 +526,15 @@ mod tests {
     }
 
     #[test]
-    fn network_identity_is_absent_without_genesis_dkg() {
+    #[should_panic(expected = "tempo genesis must contain an initial network identity")]
+    fn network_identity_is_required() {
         let genesis: alloy_genesis::Genesis = serde_json::from_value(serde_json::json!({
             "config": { "chainId": 1234 },
             "alloc": {}
         }))
         .unwrap();
-        let chainspec = super::TempoChainSpec::from_genesis(genesis);
 
-        assert!(chainspec.network_identity().is_none());
+        let _ = super::TempoChainSpec::from_genesis(genesis);
     }
 
     #[test]
@@ -554,9 +554,7 @@ mod tests {
         }))
         .unwrap();
         let chainspec = super::TempoChainSpec::from_genesis(genesis);
-        let identity = chainspec
-            .network_identity()
-            .expect("extra fields should provide a network identity");
+        let identity = chainspec.network_identity;
 
         assert_eq!(identity.from_epoch, 51);
         assert_eq!(
@@ -613,6 +611,16 @@ mod tests {
         // Build genesis config with every post-Genesis fork at timestamp 0
         let mut config = serde_json::Map::new();
         config.insert("chainId".into(), 1234.into());
+        config.insert(
+            "networkIdentity".into(),
+            concat!(
+                "0xa217bb85001d4dcf8e5c50136f77af88cb2cab1857279b91c6240f41cca95c4f",
+                "43f6dcab3e0dfb87dafb3ecbeb6251e90a5df2e6c47432482821cd8b84665ee4",
+                "642589d2d9628a92b03e2bbfb00e006d038cd98def76d2a41b7c228c05f5a193"
+            )
+            .into(),
+        );
+        config.insert("networkIdentityFromEpoch".into(), 0.into());
         for &fork in TempoHardfork::VARIANTS {
             if fork != TempoHardfork::Genesis {
                 let key = format!("{}Time", fork.name().to_lowercase());
