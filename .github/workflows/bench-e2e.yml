@@ -398,6 +398,8 @@ jobs:
         run: |
           if [ -n "$TEMPO_TELEMETRY_URL_SECRET" ]; then
             echo "::add-mask::$TEMPO_TELEMETRY_URL_SECRET"
+            telemetry_base_no_auth="$(printf '%s' "$TEMPO_TELEMETRY_URL_SECRET" | sed -E 's#^(https?://)[^/@]+@#\1#; s#/*$##')"
+            echo "::add-mask::$telemetry_base_no_auth"
             printf 'TEMPO_TELEMETRY_URL=%s\n' "$TEMPO_TELEMETRY_URL_SECRET" >> "$GITHUB_ENV"
           fi
           if [ -n "$GRAFANA_TEMPO_SECRET" ]; then
