@@ -171,11 +171,9 @@ Lower-level entry points are available when either endpoint needs custom auth, d
 proxies, retry policy, or middleware:
 
 - `RelayConnector::http(default_rpc, sponsor_rpc)` implements Alloy's `TransportConnect`;
-- `RelayConnector::with_mode(default, sponsor, mode)` builds from explicit connectors;
-- `RelayConnector::with_config(default, sponsor, mode, forward_headers)` also configures sponsor header forwarding;
+- `RelayConnector::with_config(default, sponsor, mode, forward_headers)` builds from explicit connectors and configures sponsor header forwarding;
 - `RelayTransport::new(default_transport, sponsor_transport)` wraps existing transports directly;
-- `RelayTransport::with_mode(default_transport, sponsor_transport, mode)` selects an explicit mode;
-- `RelayTransport::with_config(default_transport, sponsor_transport, mode, forward_headers)` also configures sponsor header forwarding.
+- `RelayTransport::with_config(default_transport, sponsor_transport, mode, forward_headers)` selects an explicit mode and configures sponsor header forwarding.
 
 Runtime policy is intentionally strict:
 

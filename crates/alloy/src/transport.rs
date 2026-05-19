@@ -80,11 +80,6 @@ impl<D, R> RelayConnector<D, R> {
         Self::with_config(default, relay, SponsorshipMode::default(), true)
     }
 
-    /// Create a connector from default RPC and sponsor relay connectors with an explicit mode.
-    pub fn with_mode(default: D, relay: R, mode: SponsorshipMode) -> Self {
-        Self::with_config(default, relay, mode, true)
-    }
-
     /// Create a connector with explicit mode and sponsor header forwarding.
     pub fn with_config(
         default: D,
@@ -143,11 +138,6 @@ impl<D, R> RelayTransport<D, R> {
     /// `default` and `relay` may be customized transports, including auth headers or middleware.
     pub fn new(default: D, relay: R) -> Self {
         Self::with_config(default, relay, SponsorshipMode::default(), true)
-    }
-
-    /// Create a new Tempo relay transport with an explicit sponsorship mode.
-    pub fn with_mode(default: D, relay: R, mode: SponsorshipMode) -> Self {
-        Self::with_config(default, relay, mode, true)
     }
 
     /// Create a new Tempo relay transport with explicit mode and sponsor header forwarding.
@@ -646,33 +636,34 @@ mod tests {
 
     #[tokio::test]
     async fn routes_non_send_to_default_only() {
-        let default = RecordingTransport::default();
-        let relay = RecordingTransport::default();
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
         default.push_success(&alloy_primitives::U64::from(42));
-        let mut transport = RelayTransport::new(default.clone(), relay.clone());
+        let mut rpc = RelayTransport::new(default, relay);
         assert!(
-            tower::Service::call(&mut transport, make_request("eth_getTransactionCount"))
+            tower::Service::call(&mut rpc, make_request("eth_getTransactionCount"))
                 .await
                 .is_ok()
         );
-        assert_eq!(default.methods(), vec!["eth_getTransactionCount"]);
-        assert!(relay.methods().is_empty());
+        assert_eq!(rpc.default.methods(), vec!["eth_getTransactionCount"]);
+        assert!(rpc.relay.methods().is_empty());
     }
 
     #[tokio::test]
     async fn batch_without_send_forwards_to_default_unchanged() {
-        let default = RecordingTransport::default();
-        let relay = RecordingTransport::default();
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
         default.push_success(&alloy_primitives::U64::from(42431));
         default.push_success(&alloy_primitives::U64::from(7));
-        let mut transport = RelayTransport::new(default.clone(), relay.clone());
+        let mut rpc = RelayTransport::new(default, relay);
         assert!(
-            tower::Service::call(&mut transport, make_batch_no_send())
+            tower::Service::call(&mut rpc, make_batch_no_send())
                 .await
                 .is_ok()
         );
-        assert_eq!(default.methods(), vec!["eth_chainId", "eth_blockNumber"]);
-        assert!(relay.methods().is_empty());
+        assert_eq!(
+            rpc.default.methods(),
+            vec!["eth_chainId", "eth_blockNumber"]
+        );
+        assert!(rpc.relay.methods().is_empty());
     }
 
     #[tokio::test]
@@ -680,80 +671,75 @@ mod tests {
         let raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
         let sponsor_raw_tx =
             encode_for_fee_payer_service(&decode_unsigned_tempo_aa(&raw_tx).unwrap());
-        let default = RecordingTransport::default();
-        let relay = RecordingTransport::default();
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
         relay.push_success(&alloy_primitives::B256::ZERO);
-        let mut transport = RelayTransport::new(default.clone(), relay.clone());
+        let mut rpc = RelayTransport::new(default, relay);
         assert!(
-            tower::Service::call(&mut transport, make_send_raw_tx_request(&raw_tx))
+            tower::Service::call(&mut rpc, make_send_raw_tx_request(&raw_tx))
                 .await
                 .is_ok()
         );
-        assert_eq!(relay.methods(), vec![SEND_RAW_TX]);
-        assert_eq!(relay.params(0), serde_json::json!([sponsor_raw_tx]));
-        assert!(default.methods().is_empty());
+        assert_eq!(rpc.relay.methods(), vec![SEND_RAW_TX]);
+        assert_eq!(rpc.relay.params(0), serde_json::json!([sponsor_raw_tx]));
+        assert!(rpc.default.methods().is_empty());
     }
 
     #[tokio::test]
     async fn rejects_non_tempo_aa_before_relay() {
-        let default = RecordingTransport::default();
-        let relay = RecordingTransport::default();
-        let mut transport = RelayTransport::new(default.clone(), relay.clone());
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
+        let mut rpc = RelayTransport::new(default, relay);
         assert!(
-            tower::Service::call(&mut transport, make_send_raw_tx_request("0x01"))
+            tower::Service::call(&mut rpc, make_send_raw_tx_request("0x01"))
                 .await
                 .is_err()
         );
-        assert!(default.methods().is_empty());
-        assert!(relay.methods().is_empty());
+        assert!(rpc.default.methods().is_empty());
+        assert!(rpc.relay.methods().is_empty());
     }
 
     #[tokio::test]
     async fn rejects_already_fee_payer_signed_tx_before_relay() {
-        let default = RecordingTransport::default();
-        let relay = RecordingTransport::default();
-        let mut transport = RelayTransport::new(default.clone(), relay.clone());
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
+        let mut rpc = RelayTransport::new(default, relay);
         assert!(
             tower::Service::call(
-                &mut transport,
+                &mut rpc,
                 make_send_raw_tx_request(&signed_tempo_aa_raw_tx_with_nonce(true, 1))
             )
             .await
             .is_err()
         );
-        assert!(default.methods().is_empty());
-        assert!(relay.methods().is_empty());
+        assert!(rpc.default.methods().is_empty());
+        assert!(rpc.relay.methods().is_empty());
     }
 
     #[tokio::test]
     async fn sign_only_gets_sponsor_signature_then_broadcasts_to_default() {
         let unsigned_raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
         let signed_raw_tx = signed_tempo_aa_raw_tx_with_nonce(true, 1);
-        let default = RecordingTransport::default();
-        let relay = RecordingTransport::default();
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
         relay.push_success(&signed_raw_tx);
         default.push_success(&alloy_primitives::B256::ZERO);
-        let mut transport =
-            RelayTransport::with_mode(default.clone(), relay.clone(), SponsorshipMode::SignOnly);
+        let mut rpc = RelayTransport::with_config(default, relay, SponsorshipMode::SignOnly, true);
 
         let mut req = send_req_with_id(&unsigned_raw_tx, Id::Number(1));
         req.headers_mut()
             .insert("authorization", "Bearer default-rpc-token".parse().unwrap());
         assert!(
-            tower::Service::call(&mut transport, RequestPacket::Single(req))
+            tower::Service::call(&mut rpc, RequestPacket::Single(req))
                 .await
                 .is_ok()
         );
 
         let sponsor_raw_tx =
             encode_for_fee_payer_service(&decode_unsigned_tempo_aa(&unsigned_raw_tx).unwrap());
-        assert_eq!(relay.methods(), vec![SIGN_RAW_TX]);
-        assert_eq!(relay.params(0), serde_json::json!([sponsor_raw_tx]));
-        assert_eq!(relay.header_value(0, "authorization"), None);
-        assert_eq!(default.methods(), vec![SEND_RAW_TX]);
-        assert_eq!(default.params(0), serde_json::json!([signed_raw_tx]));
+        assert_eq!(rpc.relay.methods(), vec![SIGN_RAW_TX]);
+        assert_eq!(rpc.relay.params(0), serde_json::json!([sponsor_raw_tx]));
+        assert_eq!(rpc.relay.header_value(0, "authorization"), None);
+        assert_eq!(rpc.default.methods(), vec![SEND_RAW_TX]);
+        assert_eq!(rpc.default.params(0), serde_json::json!([signed_raw_tx]));
         assert_eq!(
-            default.header_value(0, "authorization"),
+            rpc.default.header_value(0, "authorization"),
             Some("Bearer default-rpc-token".to_string())
         );
     }
@@ -762,7 +748,7 @@ mod tests {
     async fn auth_header_transport_sets_configured_authorization() {
         let inner = RecordingTransport::default();
         inner.push_success(&alloy_primitives::B256::ZERO);
-        let mut transport = AuthHeaderTransport::new(
+        let mut rpc = AuthHeaderTransport::new(
             BoxTransport::new(inner.clone()),
             Authorization::bearer("sponsor-token"),
         )
@@ -772,7 +758,7 @@ mod tests {
             .headers_mut()
             .insert("authorization", "Bearer original-token".parse().unwrap());
 
-        tower::Service::call(&mut transport, RequestPacket::Single(request))
+        tower::Service::call(&mut rpc, RequestPacket::Single(request))
             .await
             .unwrap();
 
@@ -785,87 +771,80 @@ mod tests {
     #[tokio::test]
     async fn sign_only_rejects_sponsor_response_without_fee_payer_signature() {
         let unsigned_raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
-        let default = RecordingTransport::default();
-        let relay = RecordingTransport::default();
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
         relay.push_success(&unsigned_raw_tx);
-        let mut transport =
-            RelayTransport::with_mode(default.clone(), relay.clone(), SponsorshipMode::SignOnly);
+        let mut rpc = RelayTransport::with_config(default, relay, SponsorshipMode::SignOnly, true);
 
-        let err = tower::Service::call(&mut transport, make_send_raw_tx_request(&unsigned_raw_tx))
+        let err = tower::Service::call(&mut rpc, make_send_raw_tx_request(&unsigned_raw_tx))
             .await
             .unwrap_err();
 
         assert!(err.to_string().contains("fee-payer signature placeholder"));
-        assert_eq!(relay.methods(), vec![SIGN_RAW_TX]);
-        assert!(default.methods().is_empty());
+        assert_eq!(rpc.relay.methods(), vec![SIGN_RAW_TX]);
+        assert!(rpc.default.methods().is_empty());
     }
 
     #[tokio::test]
     async fn sign_only_rejects_sponsor_response_with_different_payload() {
         let unsigned_raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
         let different_signed_raw_tx = signed_tempo_aa_raw_tx_with_nonce(true, 2);
-        let default = RecordingTransport::default();
-        let relay = RecordingTransport::default();
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
         relay.push_success(&different_signed_raw_tx);
-        let mut transport =
-            RelayTransport::with_mode(default.clone(), relay.clone(), SponsorshipMode::SignOnly);
+        let mut rpc = RelayTransport::with_config(default, relay, SponsorshipMode::SignOnly, true);
 
-        let err = tower::Service::call(&mut transport, make_send_raw_tx_request(&unsigned_raw_tx))
+        let err = tower::Service::call(&mut rpc, make_send_raw_tx_request(&unsigned_raw_tx))
             .await
             .unwrap_err();
 
         assert!(err.to_string().contains("different"));
-        assert_eq!(relay.methods(), vec![SIGN_RAW_TX]);
-        assert!(default.methods().is_empty());
+        assert_eq!(rpc.relay.methods(), vec![SIGN_RAW_TX]);
+        assert!(rpc.default.methods().is_empty());
     }
 
     #[tokio::test]
     async fn relay_error_propagates_without_default_call() {
-        let default = RecordingTransport::default();
-        let relay = RecordingTransport::default();
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
         relay.push_failure("sponsor account broke");
-        let mut transport = RelayTransport::new(default.clone(), relay.clone());
+        let mut rpc = RelayTransport::new(default, relay);
         assert!(
             tower::Service::call(
-                &mut transport,
+                &mut rpc,
                 make_send_raw_tx_request(&signed_tempo_aa_raw_tx_with_nonce(false, 1))
             )
             .await
             .is_err()
         );
-        assert_eq!(relay.methods(), vec![SEND_RAW_TX]);
-        assert!(default.methods().is_empty());
+        assert_eq!(rpc.relay.methods(), vec![SEND_RAW_TX]);
+        assert!(rpc.default.methods().is_empty());
     }
 
     #[tokio::test]
     async fn preserves_request_id_when_forwarding_to_relay() {
         let raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
-        let default = RecordingTransport::default();
-        let relay = RecordingTransport::default();
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
         relay.push_success(&alloy_primitives::B256::ZERO);
-        let mut transport = RelayTransport::new(default, relay.clone());
+        let mut rpc = RelayTransport::new(default, relay);
         let req = RequestPacket::Single(send_req_with_id(&raw_tx, Id::String("abc".into())));
-        assert!(tower::Service::call(&mut transport, req).await.is_ok());
-        assert_eq!(relay.ids(), vec![Id::String("abc".into())]);
+        assert!(tower::Service::call(&mut rpc, req).await.is_ok());
+        assert_eq!(rpc.relay.ids(), vec![Id::String("abc".into())]);
     }
 
     #[tokio::test]
     async fn sign_and_relay_forwards_original_request_headers_to_relay() {
         let raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
-        let default = RecordingTransport::default();
-        let relay = RecordingTransport::default();
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
         relay.push_success(&alloy_primitives::B256::ZERO);
-        let mut transport = RelayTransport::new(default, relay.clone());
+        let mut rpc = RelayTransport::new(default, relay);
         let mut req = send_req_with_id(&raw_tx, Id::Number(1));
         req.headers_mut()
             .insert("authorization", "Bearer sponsor-token".parse().unwrap());
         assert!(
-            tower::Service::call(&mut transport, RequestPacket::Single(req))
+            tower::Service::call(&mut rpc, RequestPacket::Single(req))
                 .await
                 .is_ok()
         );
         assert_eq!(
-            relay.header_value(0, "authorization"),
+            rpc.relay.header_value(0, "authorization"),
             Some("Bearer sponsor-token".to_string())
         );
     }
@@ -873,35 +852,29 @@ mod tests {
     #[tokio::test]
     async fn sign_and_relay_can_skip_original_request_headers_to_relay() {
         let raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
-        let default = RecordingTransport::default();
-        let relay = RecordingTransport::default();
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
         relay.push_success(&alloy_primitives::B256::ZERO);
-        let mut transport = RelayTransport::with_config(
-            default,
-            relay.clone(),
-            SponsorshipMode::SignAndRelay,
-            false,
-        );
+        let mut rpc =
+            RelayTransport::with_config(default, relay, SponsorshipMode::SignAndRelay, false);
         let mut req = send_req_with_id(&raw_tx, Id::Number(1));
         req.headers_mut()
             .insert("authorization", "Bearer default-token".parse().unwrap());
 
         assert!(
-            tower::Service::call(&mut transport, RequestPacket::Single(req))
+            tower::Service::call(&mut rpc, RequestPacket::Single(req))
                 .await
                 .is_ok()
         );
 
-        assert_eq!(relay.header_value(0, "authorization"), None);
+        assert_eq!(rpc.relay.header_value(0, "authorization"), None);
     }
 
     #[tokio::test]
     async fn rejects_batch_containing_send_before_any_transport_call() {
-        let default = RecordingTransport::default();
-        let relay = RecordingTransport::default();
-        let mut transport = RelayTransport::new(default.clone(), relay.clone());
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
+        let mut rpc = RelayTransport::new(default, relay);
         let err = tower::Service::call(
-            &mut transport,
+            &mut rpc,
             make_batch_with_send_raw_tx(&signed_tempo_aa_raw_tx_with_nonce(false, 1)),
         )
         .await
@@ -910,28 +883,24 @@ mod tests {
             err.to_string()
                 .contains("does not support JSON-RPC batches containing eth_sendRawTransaction")
         );
-        assert!(default.methods().is_empty());
-        assert!(relay.methods().is_empty());
+        assert!(rpc.default.methods().is_empty());
+        assert!(rpc.relay.methods().is_empty());
     }
 
     #[tokio::test]
     async fn relay_connector_builds_boxed_relay_transport() {
-        let default = RecordingTransport::default();
-        let relay = RecordingTransport::default();
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
         default.push_success(&alloy_primitives::U64::from(42));
-        let connect = RelayConnector::new(
-            ConnectForTest(default.clone()),
-            ConnectForTest(relay.clone()),
-        );
+        let connect = RelayConnector::new(ConnectForTest(default), ConnectForTest(relay));
         assert!(connect.is_local());
-        let mut transport = connect.get_transport().await.unwrap();
+        let mut rpc = connect.get_transport().await.unwrap();
         assert!(
-            tower::Service::call(&mut transport, make_request("eth_chainId"))
+            tower::Service::call(&mut rpc, make_request("eth_chainId"))
                 .await
                 .is_ok()
         );
-        assert_eq!(default.methods(), vec!["eth_chainId"]);
-        assert!(relay.methods().is_empty());
+        assert_eq!(connect.default.0.methods(), vec!["eth_chainId"]);
+        assert!(connect.relay.0.methods().is_empty());
     }
 
     #[test]
