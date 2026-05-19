@@ -11,7 +11,9 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use scoped_tls::scoped_thread_local;
-use std::{cell::RefCell, fmt::Debug};
+#[cfg(debug_assertions)]
+use std::cell::Cell;
+use std::fmt::Debug;
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{
@@ -20,7 +22,9 @@ use crate::{
     storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
 };
 
-scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
+scoped_thread_local!(static STORAGE: *mut dyn PrecompileStorageProvider);
+#[cfg(debug_assertions)]
+scoped_thread_local!(static STORAGE_BORROWED: Cell<bool>);
 
 /// Thread-local storage accessor that implements `PrecompileStorageProvider` without the trait bound.
 ///
@@ -56,8 +60,14 @@ impl StorageCtx {
         let storage: &mut dyn PrecompileStorageProvider = storage;
         let storage_static: &mut (dyn PrecompileStorageProvider + 'static) =
             unsafe { std::mem::transmute(storage) };
-        let cell = RefCell::new(storage_static);
-        STORAGE.set(&cell, f)
+        let storage_ptr = storage_static as *mut dyn PrecompileStorageProvider;
+        #[cfg(debug_assertions)]
+        {
+            let borrowed = Cell::new(false);
+            return STORAGE.set(&storage_ptr, || STORAGE_BORROWED.set(&borrowed, f));
+        }
+        #[cfg(not(debug_assertions))]
+        STORAGE.set(&storage_ptr, f)
     }
 
     /// Execute an infallible function with access to the current thread-local storage provider.
@@ -72,11 +82,13 @@ impl StorageCtx {
             STORAGE.is_set(),
             "No storage context. 'StorageCtx::enter' must be called first"
         );
-        STORAGE.with(|cell| {
-            // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
-            // Holding the guard prevents re-entrant borrows.
-            let mut guard = cell.borrow_mut();
-            f(&mut **guard)
+        STORAGE.with(|storage| {
+            #[cfg(debug_assertions)]
+            let _guard = StorageBorrowGuard::new();
+
+            // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope,
+            // and `enter` requires a unique mutable provider for the duration of that scope.
+            f(unsafe { &mut **storage })
         })
     }
 
@@ -90,11 +102,13 @@ impl StorageCtx {
                 "No storage context. 'StorageCtx::enter' must be called first".to_string(),
             ));
         }
-        STORAGE.with(|cell| {
-            // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
-            // Holding the guard prevents re-entrant borrows.
-            let mut guard = cell.borrow_mut();
-            f(&mut **guard)
+        STORAGE.with(|storage| {
+            #[cfg(debug_assertions)]
+            let _guard = StorageBorrowGuard::new();
+
+            // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope,
+            // and `enter` requires a unique mutable provider for the duration of that scope.
+            f(unsafe { &mut **storage })
         })
     }
 
@@ -324,6 +338,26 @@ impl Drop for CheckpointGuard {
         if let Some(cp) = self.checkpoint.take() {
             StorageCtx::with_storage(|s| s.checkpoint_revert(cp));
         }
+    }
+}
+
+#[cfg(debug_assertions)]
+struct StorageBorrowGuard;
+
+#[cfg(debug_assertions)]
+impl StorageBorrowGuard {
+    fn new() -> Self {
+        STORAGE_BORROWED.with(|borrowed| {
+            assert!(!borrowed.replace(true), "already borrowed");
+        });
+        Self
+    }
+}
+
+#[cfg(debug_assertions)]
+impl Drop for StorageBorrowGuard {
+    fn drop(&mut self) {
+        STORAGE_BORROWED.with(|borrowed| borrowed.set(false));
     }
 }
 
