@@ -13,8 +13,6 @@ import { ITIP20RolesAuthErr } from "tempo-std/interfaces/ITIP20RolesAuth.sol";
 ///      TEMPO-1026-1: `bytes(logoURI()).length <= 256` must always hold.
 ///      TEMPO-1026-2: The legacy 6-argument `createToken` selector and the
 ///                    `TokenCreated` event signature are unchanged by this TIP.
-/// forge-config: default.hardfork = "tempo:T5"
-/// forge-config: fuzz500.hardfork = "tempo:T5"
 contract TIP1026InvariantTest is InvariantBaseTest {
 
     /*//////////////////////////////////////////////////////////////

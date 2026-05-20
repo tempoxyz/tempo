@@ -156,7 +156,7 @@ jobs:
       preset: ${{ matrix.preset }}
       tps: "20000"
       run-type: ${{ matrix.run_type }}
-      disable-abba: "true"
+      run-pairs: "1"
       clickhouse-run: feature-1
     secrets:
       DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}

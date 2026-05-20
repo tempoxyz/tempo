@@ -9,8 +9,6 @@ import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 /// @title FeeAMM Invariant Test
 /// @notice Invariant tests for the FeeAMM/FeeManager implementation
-/// forge-config: default.hardfork = "tempo:T5"
-/// forge-config: fuzz500.hardfork = "tempo:T5"
 contract FeeAMMInvariantTest is InvariantBaseTest {
 
     /// @dev Constants from Rust tip_fee_manager/amm.rs
