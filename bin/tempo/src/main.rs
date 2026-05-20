@@ -225,6 +225,16 @@ impl NodeCommandExt for reth_cli_commands::node::NodeCommand<TempoChainSpecParse
     }
 }
 
+fn block_on_consensus_public_key(
+    args: &tempo_commonware_node::Args,
+) -> eyre::Result<Option<commonware_cryptography::ed25519::PublicKey>> {
+    tokio::runtime::Builder::new_current_thread()
+        .enable_time()
+        .build()
+        .wrap_err("failed building runtime for consensus key parsing")?
+        .block_on(args.public_key())
+}
+
 /// Print installed extensions as a footer after root help output.
 /// Skips printing when help is for a subcommand (e.g. `tempo node --help`).
 fn print_extensions_footer() {
@@ -366,10 +376,7 @@ fn main() -> eyre::Result<()> {
             .try_to_config()
             .wrap_err("failed to parse telemetry config")?
     {
-        let consensus_pubkey = node_cmd
-            .ext
-            .consensus
-            .public_key()
+        let consensus_pubkey = block_on_consensus_public_key(&node_cmd.ext.consensus)
             .wrap_err("failed parsing consensus key")?
             .map(|k| k.to_string());
 
@@ -472,6 +479,7 @@ fn main() -> eyre::Result<()> {
                 let consensus_pubkey = args
                     .consensus
                     .public_key()
+                    .await
                     .wrap_err("failed parsing consensus key")?
                     .map(|k| k.to_string());
 
@@ -554,7 +562,8 @@ fn main() -> eyre::Result<()> {
         let faucet_args = args.faucet_args.clone();
         let validator_key = args
             .consensus
-            .public_key()?
+            .public_key()
+            .await?
             .map(|key| B256::from_slice(key.as_ref()));
 
         // Initialize Pyroscope profiling if enabled

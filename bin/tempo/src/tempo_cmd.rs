@@ -34,7 +34,7 @@ use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node_config::SigningKey;
+use tempo_commonware_node_config::{SigningKey, read_signing_key_passphrase_from_pipe_path};
 use tempo_contracts::precompiles::{
     IValidatorConfigV2::{self, Validator},
     VALIDATOR_CONFIG_V2_ADDRESS,
@@ -150,8 +150,11 @@ pub(crate) enum ConsensusSubcommand {
     CreateRotateValidatorSignature(CreateRotateValidatorSignatureArgs),
     /// Deactivate a validator
     DeactivateValidator(DeactivateValidator),
+    /// Encrypt an existing ed25519 signing key using a passphrase.
+    EncryptSigningKey(EncryptSigningKey),
     /// Generates an ed25519 signing key pair to be used in consensus.
-    GeneratePrivateKey(GeneratePrivateKey),
+    #[command(alias = "generate-private-key")]
+    GenerateSigningKey(GenerateSigningKey),
     /// Rotate a validator to a new identity.
     RotateValidator(RotateValidator),
     /// Set the validator Ip Address
@@ -178,7 +181,8 @@ impl ConsensusSubcommand {
             Self::CreateRotateValidatorSignature(args) => args.run().await,
             Self::SetValidatorIpAddress(args) => args.run().await,
             Self::SetValidatorFeeRecipient(args) => args.run().await,
-            Self::GeneratePrivateKey(args) => args.run(),
+            Self::EncryptSigningKey(args) => args.run(),
+            Self::GenerateSigningKey(args) => args.run(),
             Self::CalculatePublicKey(args) => args.run(),
             Self::Validator(args) => args.run().await,
             Self::Info(args) => args.run().await,
@@ -304,8 +308,8 @@ impl ValidatorSignatureArgs {
         match (self.signature, self.signing_key) {
             (Some(sig), _) => Ok(sig),
             (None, Some(path)) => {
-                let key =
-                    SigningKey::read_from_file(&path).wrap_err("failed reading signing key")?;
+                let key = SigningKey::read_from_file_unencrypted(&path)
+                    .wrap_err("failed reading signing key")?;
                 let private_key = key.into_inner();
                 let sig = private_key.sign(namespace, message.as_slice());
                 Ok(sig.encode().into())
@@ -636,8 +640,8 @@ pub(crate) struct CreateAddValidatorSignatureArgs {
 
 impl CreateAddValidatorSignatureArgs {
     async fn run(self) -> eyre::Result<()> {
-        let signing_key =
-            SigningKey::read_from_file(&self.signing_key).wrap_err("failed reading signing key")?;
+        let signing_key = SigningKey::read_from_file_unencrypted(&self.signing_key)
+            .wrap_err("failed reading signing key")?;
 
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(&self.chain_id_from_rpc_url)
@@ -678,8 +682,8 @@ pub(crate) struct CreateRotateValidatorSignatureArgs {
 
 impl CreateRotateValidatorSignatureArgs {
     async fn run(self) -> eyre::Result<()> {
-        let signing_key =
-            SigningKey::read_from_file(&self.signing_key).wrap_err("failed reading signing key")?;
+        let signing_key = SigningKey::read_from_file_unencrypted(&self.signing_key)
+            .wrap_err("failed reading signing key")?;
 
         let provider = ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect(&self.chain_id_from_rpc_url)
@@ -793,22 +797,49 @@ impl SetValidatorFeeRecipient {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct GeneratePrivateKey {
+pub(crate) struct GenerateSigningKey {
     /// Destination of the generated signing key.
     #[arg(long, short, value_name = "FILE")]
     output: PathBuf,
+
+    /// Passphrase source for encrypting the generated signing key.
+    ///
+    /// Must be a FIFO path, including shell process substitution like `<(...)`.
+    /// If omitted, the signing key is written unencrypted for compatibility.
+    #[arg(long, value_name = "PIPE")]
+    secret: Option<PathBuf>,
 
     /// Whether to override `output`, if it already exists.
     #[arg(long, short)]
     force: bool,
 }
 
-impl GeneratePrivateKey {
+impl GenerateSigningKey {
     fn run(self) -> eyre::Result<()> {
-        let Self { output, force } = self;
+        let Self {
+            output,
+            secret,
+            force,
+        } = self;
         let signing_key = PrivateKey::random(&mut rand_08::thread_rng());
         let public_key = signing_key.public_key();
         let signing_key = SigningKey::from(signing_key);
+        let passphrase = secret
+            .as_ref()
+            .map(|secret| {
+                read_signing_key_passphrase_from_pipe_path(secret).wrap_err_with(|| {
+                    format!(
+                        "failed reading signing-key encryption passphrase from pipe `{}`",
+                        secret.display()
+                    )
+                })
+            })
+            .transpose()?;
+
+        if passphrase.is_none() {
+            warn_unencrypted_signing_key_deprecation();
+        }
+
         OpenOptions::new()
             .write(true)
             .create_new(!force)
@@ -816,10 +847,15 @@ impl GeneratePrivateKey {
             .truncate(force)
             .open(&output)
             .map_err(Report::new)
-            .and_then(|f| signing_key.to_writer(f).map_err(Report::new))
-            .wrap_err_with(|| format!("failed writing private key to `{}`", output.display()))?;
+            .and_then(|f| match passphrase {
+                Some(passphrase) => signing_key
+                    .write_encrypted(f, passphrase)
+                    .map_err(Report::new),
+                None => signing_key.to_writer_unencrypted(f).map_err(Report::new),
+            })
+            .wrap_err_with(|| format!("failed writing signing key to `{}`", output.display()))?;
         eprintln!(
-            "wrote private key to: {}\npublic key: {public_key}",
+            "wrote signing key to: {}\npublic key: {public_key}",
             output.display()
         );
 
@@ -827,22 +863,129 @@ impl GeneratePrivateKey {
     }
 }
 
+fn warn_unencrypted_signing_key_deprecation() {
+    eprintln!(
+        "\
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
+WARNING: generated consensus signing key will be written UNENCRYPTED.
+This compatibility mode is deprecated and will be removed in a future release.
+Pass `--secret <PIPE>` (for example `--secret <(cmd)`) to encrypt the key at rest.
+!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
+    );
+}
+
+#[derive(Debug, clap::Args)]
+pub(crate) struct EncryptSigningKey {
+    /// Existing plaintext ed25519 signing key file.
+    #[arg(long, short, value_name = "FILE")]
+    input: PathBuf,
+
+    /// Destination for the passphrase-encrypted signing key.
+    #[arg(long, short, value_name = "FILE")]
+    output: PathBuf,
+
+    /// Passphrase source. Must be a FIFO path, including shell process substitution like `<(...)`.
+    #[arg(long, value_name = "PIPE")]
+    secret: PathBuf,
+
+    /// Whether to override `output`, if it already exists.
+    #[arg(long, short)]
+    force: bool,
+}
+
+impl EncryptSigningKey {
+    fn run(self) -> eyre::Result<()> {
+        let Self {
+            input,
+            output,
+            secret,
+            force,
+        } = self;
+
+        let signing_key = SigningKey::read_from_file_unencrypted(&input).wrap_err_with(|| {
+            format!(
+                "failed reading plaintext signing key from `{}`",
+                input.display()
+            )
+        })?;
+        let passphrase =
+            read_signing_key_passphrase_from_pipe_path(&secret).wrap_err_with(|| {
+                format!(
+                    "failed reading signing-key encryption passphrase from pipe `{}`",
+                    secret.display()
+                )
+            })?;
+
+        OpenOptions::new()
+            .write(true)
+            .create_new(!force)
+            .create(force)
+            .truncate(force)
+            .open(&output)
+            .map_err(Report::new)
+            .and_then(|f| {
+                signing_key
+                    .write_encrypted(f, passphrase)
+                    .map_err(Report::new)
+            })
+            .wrap_err_with(|| {
+                format!(
+                    "failed writing encrypted signing key to `{}`",
+                    output.display()
+                )
+            })?;
+
+        eprintln!("wrote encrypted signing key to: {}", output.display());
+        Ok(())
+    }
+}
+
 #[derive(Debug, clap::Args)]
 pub(crate) struct CalculatePublicKey {
-    /// Private key to calculate the public key from.
+    /// Signing key to calculate the public key from.
     #[arg(long, short, value_name = "FILE")]
     private_key: PathBuf,
+
+    /// Passphrase source for decrypting the signing key.
+    ///
+    /// Must be a FIFO path, including shell process substitution like `<(...)`.
+    /// If omitted, the signing key is read as plaintext hex.
+    #[arg(long, value_name = "PIPE")]
+    secret: Option<PathBuf>,
 }
 
 impl CalculatePublicKey {
     fn run(self) -> eyre::Result<()> {
-        let Self { private_key } = self;
-        let private_key = SigningKey::read_from_file(&private_key).wrap_err_with(|| {
-            format!(
-                "failed reading private key from `{}`",
-                private_key.display()
-            )
-        })?;
+        let Self {
+            private_key,
+            secret,
+        } = self;
+        let private_key = match secret.as_ref() {
+            Some(secret) => {
+                let passphrase =
+                    read_signing_key_passphrase_from_pipe_path(secret).wrap_err_with(|| {
+                        format!(
+                            "failed reading signing-key passphrase from pipe `{}`",
+                            secret.display()
+                        )
+                    })?;
+
+                SigningKey::read_from_file_encrypted(&private_key, passphrase).wrap_err_with(
+                    || {
+                        format!(
+                            "failed decrypting signing key from `{}`",
+                            private_key.display()
+                        )
+                    },
+                )?
+            }
+            None => SigningKey::read_from_file_unencrypted(&private_key).wrap_err_with(|| {
+                format!(
+                    "failed reading signing key from `{}`",
+                    private_key.display()
+                )
+            })?,
+        };
 
         let validating_key = private_key.public_key();
         println!("public key: {validating_key}");
@@ -1276,6 +1419,119 @@ mod tests {
     fn parse_p2p_proxy_missing_rpc_url_fails() {
         let result = TempoCli::try_parse_from(["tempo", "p2p-proxy"]);
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn parse_encrypt_signing_key() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "encrypt-signing-key",
+            "--input",
+            "/tmp/signing.key",
+            "--output",
+            "/tmp/signing.key.age",
+            "--secret",
+            "/dev/fd/11",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::EncryptSigningKey(EncryptSigningKey {
+                    input,
+                    output,
+                    secret,
+                    force: false,
+                })
+            )) if input == PathBuf::from("/tmp/signing.key")
+                && output == PathBuf::from("/tmp/signing.key.age")
+                && secret == PathBuf::from("/dev/fd/11")
+        ));
+    }
+
+    #[test]
+    fn parse_calculate_public_key_with_secret() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "calculate-public-key",
+            "--private-key",
+            "/tmp/signing.key.age",
+            "--secret",
+            "/dev/fd/11",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::CalculatePublicKey(CalculatePublicKey {
+                    private_key,
+                    secret: Some(secret),
+                })
+            )) if private_key == PathBuf::from("/tmp/signing.key.age")
+                && secret == PathBuf::from("/dev/fd/11")
+        ));
+    }
+
+    #[test]
+    fn parse_generate_signing_key_command() {
+        assert_parse_generate_signing_key("generate-signing-key");
+    }
+
+    #[test]
+    fn parse_generate_private_key_alias() {
+        assert_parse_generate_signing_key("generate-private-key");
+    }
+
+    #[test]
+    fn parse_generate_signing_key_with_secret() {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            "generate-signing-key",
+            "--output",
+            "/tmp/signing.key",
+            "--secret",
+            "/dev/fd/11",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::GenerateSigningKey(GenerateSigningKey {
+                    output,
+                    secret: Some(secret),
+                    force: false,
+                })
+            )) if output == PathBuf::from("/tmp/signing.key")
+                && secret == PathBuf::from("/dev/fd/11")
+        ));
+    }
+
+    fn assert_parse_generate_signing_key(command: &str) {
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "consensus",
+            command,
+            "--output",
+            "/tmp/signing.key",
+        ])
+        .unwrap();
+
+        assert!(matches!(
+            cli.command,
+            reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
+                ConsensusSubcommand::GenerateSigningKey(GenerateSigningKey {
+                    output,
+                    secret: None,
+                    force: false,
+                })
+            )) if output == PathBuf::from("/tmp/signing.key")
+        ));
     }
 
     #[test]

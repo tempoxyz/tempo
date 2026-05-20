@@ -118,7 +118,7 @@ impl GenerateDevnet {
                     devmode,
                     node_image_tag: image_tag.clone(),
 
-                    consensus_on_disk_signing_key: validator.signing_key.to_string(),
+                    consensus_on_disk_signing_key: signing_key_to_hex(&validator.signing_key),
                     consensus_on_disk_signing_share: validator.signing_share.to_string(),
 
                     // FIXME(janis): this should not be zero
@@ -174,4 +174,13 @@ pub(crate) struct ConfigOutput {
     execution_p2p_port: u16,
     execution_peers: Vec<String>,
     execution_p2p_disc_key: String,
+}
+
+/// Stopgap: serialize the signing key to its on-disk hex representation
+/// via [`SigningKey::to_writer_unencrypted`].
+fn signing_key_to_hex(key: &tempo_commonware_node_config::SigningKey) -> String {
+    let mut buf = Vec::new();
+    key.to_writer_unencrypted(&mut buf)
+        .expect("writing to Vec cannot fail");
+    String::from_utf8(buf).expect("hex output is valid utf-8")
 }

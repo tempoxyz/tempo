@@ -306,6 +306,8 @@ rayon = "1.11"
 url = "2.5"
 test-case = "3"
 zeroize = "1"
+age = { version = "0.11", default-features = false }
+secrecy = "0.10"
 
 # build deps
 vergen = "9.1.0"
