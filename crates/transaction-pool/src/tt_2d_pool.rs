@@ -95,15 +95,6 @@ impl Default for AA2dPool {
 }
 
 impl AA2dPool {
-    fn expiring_nonce_hash(
-        transaction: &Arc<ValidPoolTransaction<TempoPooledTransaction>>,
-    ) -> B256 {
-        transaction
-            .transaction
-            .expiring_nonce_hash()
-            .expect("expiring nonce tx must be AA")
-    }
-
     /// Creates a new instance with the givenconfig and nonce keys
     pub fn new(config: AA2dPoolConfig) -> Self {
         let (new_transaction_notifier, _) = broadcast::channel(200);
@@ -346,7 +337,7 @@ impl AA2dPool {
         hardfork: TempoHardfork,
     ) -> PoolResult<AddedTransaction<TempoPooledTransaction>> {
         let tx_hash = *transaction.hash();
-        let expiring_nonce_hash = Self::expiring_nonce_hash(&transaction);
+        let expiring_nonce_hash = transaction.transaction.precomputed_expiring_nonce_hash();
 
         // Check if already exists (by expiring nonce hash)
         if self.expiring_nonce_txs.contains_key(&expiring_nonce_hash) {
@@ -748,7 +739,8 @@ impl AA2dPool {
 
         // Check if this is an expiring nonce transaction
         if tx.transaction.is_expiring_nonce() {
-            let tx = self.remove_expiring_nonce_tx(&Self::expiring_nonce_hash(&tx))?;
+            let tx =
+                self.remove_expiring_nonce_tx(&tx.transaction.precomputed_expiring_nonce_hash())?;
             return Some((tx, None));
         }
 
@@ -818,7 +810,9 @@ impl AA2dPool {
             .collect::<Vec<_>>();
         for tx in txs {
             if tx.transaction.is_expiring_nonce() {
-                if let Some(tx) = self.remove_expiring_nonce_tx(&Self::expiring_nonce_hash(&tx)) {
+                if let Some(tx) =
+                    self.remove_expiring_nonce_tx(&tx.transaction.precomputed_expiring_nonce_hash())
+                {
                     removed.push(tx);
                 }
             } else if let Some(tx) = tx
@@ -1266,7 +1260,7 @@ impl AA2dPool {
             if tx.transaction.is_expiring_nonce() {
                 assert!(
                     self.expiring_nonce_txs
-                        .contains_key(&Self::expiring_nonce_hash(tx)),
+                        .contains_key(&tx.transaction.precomputed_expiring_nonce_hash()),
                     "Expiring nonce transaction with hash {hash:?} in by_hash but not in expiring_nonce_txs"
                 );
                 continue;
