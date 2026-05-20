@@ -284,7 +284,7 @@ where
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
         let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
-        if let Some(execution_cache) = execution_cache {
+        if let Some(execution_cache) = &execution_cache {
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
                 execution_cache.cache().clone(),
@@ -380,26 +380,29 @@ where
             })
             .collect();
 
-        let next_block_env_attributes = TempoNextBlockEnvAttributes {
-            inner: NextBlockEnvAttributes {
-                timestamp: attributes.timestamp,
-                suggested_fee_recipient: attributes.suggested_fee_recipient,
-                prev_randao: attributes.prev_randao,
-                gas_limit: block_gas_limit,
-                parent_beacon_block_root: attributes.parent_beacon_block_root,
-                withdrawals: attributes.withdrawals.clone().map(Into::into),
-                extra_data: attributes.extra_data().clone(),
-                slot_number: attributes.slot_number,
-            },
-            general_gas_limit,
-            shared_gas_limit,
-            timestamp_millis_part: attributes.timestamp_millis_part(),
-            consensus_context: attributes.consensus_context(),
-            subblock_fee_recipients,
-        };
         let mut builder = self
             .evm_config
-            .builder_for_next_block(&mut db, &parent_header, next_block_env_attributes)
+            .builder_for_next_block(
+                &mut db,
+                &parent_header,
+                TempoNextBlockEnvAttributes {
+                    inner: NextBlockEnvAttributes {
+                        timestamp: attributes.timestamp,
+                        suggested_fee_recipient: attributes.suggested_fee_recipient,
+                        prev_randao: attributes.prev_randao,
+                        gas_limit: block_gas_limit,
+                        parent_beacon_block_root: attributes.parent_beacon_block_root,
+                        withdrawals: attributes.withdrawals.clone().map(Into::into),
+                        extra_data: attributes.extra_data().clone(),
+                        slot_number: attributes.slot_number,
+                    },
+                    general_gas_limit,
+                    shared_gas_limit,
+                    timestamp_millis_part: attributes.timestamp_millis_part(),
+                    consensus_context: attributes.consensus_context(),
+                    subblock_fee_recipients,
+                },
+            )
             .map_err(PayloadBuilderError::other)?;
 
         check_cancel!();
@@ -450,6 +453,7 @@ where
             Box::new(BestTransactionsPrewarming::new(
                 self.executor.clone(),
                 self.provider.clone(),
+                execution_cache,
                 parent_header.hash(),
                 builder.evm().evm_env(),
                 best_txs,

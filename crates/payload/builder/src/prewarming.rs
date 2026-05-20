@@ -9,6 +9,9 @@ use std::{
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_sol_types::SolInterface;
+use reth_engine_tree::tree::{
+    CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider, SavedCache,
+};
 use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{
@@ -47,6 +50,7 @@ impl BestTransactionsPrewarming {
     pub(crate) fn new<Txs, Provider>(
         executor: TaskExecutor,
         provider: Provider,
+        cache: Option<SavedCache>,
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
         best_txs: Txs,
@@ -62,6 +66,7 @@ impl BestTransactionsPrewarming {
         let prewarm = PrewarmingExecutionContext {
             provider,
             parent_hash,
+            cache,
             evm_env,
             builder_consumed_tx_count,
             stop: stop.clone(),
@@ -339,10 +344,74 @@ struct IndexedTransaction {
 struct PrewarmingExecutionContext<Provider> {
     provider: Provider,
     parent_hash: B256,
+    cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     /// Number of source transactions already handed to the builder.
     builder_consumed_tx_count: Arc<AtomicUsize>,
     stop: Arc<AtomicBool>,
+}
+
+impl<Provider> PrewarmingExecutionContext<Provider>
+where
+    Provider: StateProviderFactory + Clone + 'static,
+{
+    fn evm_for_ctx(&self) -> PrewarmEvmState {
+        let state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
+            Ok(provider) => provider,
+            Err(err) => {
+                trace!(
+                    target: "payload_builder",
+                    %err,
+                    parent_hash = ?self.parent_hash,
+                    "failed to build state provider for prewarm transaction"
+                );
+                return None;
+            }
+        };
+        let state_provider = StateProviderDatabase::new(state_provider);
+        let mut evm_env = self.evm_env.clone();
+        evm_env.cfg_env.disable_nonce_check = true;
+        evm_env.cfg_env.disable_balance_check = true;
+
+        Some(TempoEvm::new(state_provider, evm_env))
+    }
+
+    fn state_provider_for_ctx(&self) -> Option<StateProviderBox> {
+        let mut state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
+            Ok(provider) => provider,
+            Err(err) => {
+                trace!(
+                    target: "payload_builder",
+                    %err,
+                    parent_hash = ?self.parent_hash,
+                    "failed to build state provider for transaction prewarming"
+                );
+                return None;
+            }
+        };
+
+        if let Some(cache) = &self.cache {
+            state_provider = Box::new(CachedStateProvider::new(
+                state_provider,
+                cache.cache().clone(),
+                CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
+            ));
+        }
+
+        Some(state_provider)
+    }
+
+    fn is_consumed_by_builder(&self, tx_index: usize) -> bool {
+        tx_index < self.builder_consumed_tx_count.load(Ordering::Relaxed)
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+
+    fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
 }
 
 struct PrewarmWorkerState {
@@ -379,59 +448,6 @@ impl PrewarmWorkerState {
 thread_local! {
     static PREWARM_WORKER_STATE: RefCell<PrewarmWorkerState> =
         RefCell::new(PrewarmWorkerState::default());
-}
-
-impl<Provider> PrewarmingExecutionContext<Provider>
-where
-    Provider: StateProviderFactory + Clone + 'static,
-{
-    fn evm_for_ctx(&self) -> PrewarmEvmState {
-        let state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
-            Ok(provider) => provider,
-            Err(err) => {
-                trace!(
-                    target: "payload_builder",
-                    %err,
-                    parent_hash = ?self.parent_hash,
-                    "failed to build state provider for prewarm transaction"
-                );
-                return None;
-            }
-        };
-        let state_provider = StateProviderDatabase::new(state_provider);
-        let mut evm_env = self.evm_env.clone();
-        evm_env.cfg_env.disable_nonce_check = true;
-        evm_env.cfg_env.disable_balance_check = true;
-
-        Some(TempoEvm::new(state_provider, evm_env))
-    }
-
-    fn state_provider_for_ctx(&self) -> Option<StateProviderBox> {
-        match self.provider.state_by_block_hash(self.parent_hash) {
-            Ok(provider) => Some(provider),
-            Err(err) => {
-                trace!(
-                    target: "payload_builder",
-                    %err,
-                    parent_hash = ?self.parent_hash,
-                    "failed to build state provider for transaction prewarming"
-                );
-                None
-            }
-        }
-    }
-
-    fn is_consumed_by_builder(&self, tx_index: usize) -> bool {
-        tx_index < self.builder_consumed_tx_count.load(Ordering::Relaxed)
-    }
-
-    fn is_stopped(&self) -> bool {
-        self.stop.load(Ordering::Relaxed)
-    }
-
-    fn stop(&self) {
-        self.stop.store(true, Ordering::Relaxed);
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -823,10 +839,35 @@ mod tests {
         })
     }
 
-    fn prewarming(
-        txs: Vec<BestTransaction>,
-        log: Arc<Mutex<TestLog>>,
-    ) -> BestTransactionsPrewarming {
+    struct TestPrewarming {
+        prewarming: Option<BestTransactionsPrewarming>,
+        executor: TaskExecutor,
+    }
+
+    impl Drop for TestPrewarming {
+        fn drop(&mut self) {
+            drop(self.prewarming.take());
+            self.executor
+                .spawn_blocking_named("builder-prewarm", || {})
+                .get();
+        }
+    }
+
+    impl std::ops::Deref for TestPrewarming {
+        type Target = BestTransactionsPrewarming;
+
+        fn deref(&self) -> &Self::Target {
+            self.prewarming.as_ref().expect("prewarming exists")
+        }
+    }
+
+    impl std::ops::DerefMut for TestPrewarming {
+        fn deref_mut(&mut self) -> &mut Self::Target {
+            self.prewarming.as_mut().expect("prewarming exists")
+        }
+    }
+
+    fn prewarming(txs: Vec<BestTransaction>, log: Arc<Mutex<TestLog>>) -> TestPrewarming {
         let executor = TaskExecutor::test();
         prewarming_with_executor(executor, txs, log)
     }
@@ -835,7 +876,7 @@ mod tests {
         executor: TaskExecutor,
         txs: Vec<BestTransaction>,
         log: Arc<Mutex<TestLog>>,
-    ) -> BestTransactionsPrewarming {
+    ) -> TestPrewarming {
         let evm_config = TempoEvmConfig::moderato();
         let provider =
             NoopProvider::<TempoChainSpec, TempoPrimitives>::new(evm_config.chain_spec().clone());
@@ -872,13 +913,18 @@ mod tests {
         let evm_env = evm_config
             .next_evm_env(&parent_header, &attributes)
             .expect("test next block env");
-        BestTransactionsPrewarming::new(
-            executor,
+        let prewarming = BestTransactionsPrewarming::new(
+            executor.clone(),
             provider,
+            None,
             parent_header.hash(),
             evm_env,
             TestBestTransactions::new(txs, log),
-        )
+        );
+        TestPrewarming {
+            prewarming: Some(prewarming),
+            executor,
+        }
     }
 
     fn wait_until(mut condition: impl FnMut() -> bool) {
@@ -985,44 +1031,38 @@ mod tests {
     }
 
     #[test]
-    fn prewarming_window_limits_source_iterator_drain_after_first_advance() {
+    fn prewarming_eagerly_drains_source_iterator() {
         let sender = Address::random();
         let executor = TaskExecutor::test();
-        let prewarming_lookahead = executor.prewarming_pool().current_num_threads();
-        let first_advance_drain = prewarming_lookahead + 1;
-        let txs = (0..first_advance_drain + 4)
+        let txs = (0..executor.prewarming_pool().current_num_threads() * 2 + 4)
             .map(|nonce| test_tx(sender, nonce as u64))
             .collect::<Vec<_>>();
+        let expected = txs.iter().map(|tx| *tx.hash()).collect::<Vec<_>>();
         let log = Arc::new(Mutex::new(TestLog::default()));
 
         let mut prewarming = prewarming_with_executor(executor, txs, log.clone());
-        thread::sleep(Duration::from_millis(25));
-        assert_eq!(log.lock().unwrap().yielded, 0);
+        wait_until(|| log.lock().unwrap().yielded == expected.len());
 
-        assert!(prewarming.next().is_some());
-        wait_until(|| log.lock().unwrap().yielded == first_advance_drain);
-        thread::sleep(Duration::from_millis(25));
-        assert_eq!(log.lock().unwrap().yielded, first_advance_drain);
-
-        assert!(prewarming.next().is_some());
-        wait_until(|| log.lock().unwrap().yielded == first_advance_drain + 1);
+        let actual = (0..expected.len())
+            .map(|_| *prewarming.next().expect("transaction").hash())
+            .collect::<Vec<_>>();
+        assert_eq!(actual, expected);
     }
 
     #[test]
-    fn empty_source_is_polled_once_per_advance() {
+    fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
+        let executor = TaskExecutor::test();
+        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
         let log = Arc::new(Mutex::new(TestLog::default()));
-        let mut prewarming = prewarming(Vec::new(), log.clone());
+        let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 
-        thread::sleep(Duration::from_millis(25));
-        assert_eq!(log.lock().unwrap().empty_polls, 0);
-
-        assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == 1);
-        thread::sleep(Duration::from_millis(25));
-        assert_eq!(log.lock().unwrap().empty_polls, 1);
+        wait_until(|| log.lock().unwrap().empty_polls == eager_advances);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == 2);
+        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 1);
+
+        assert!(prewarming.next().is_none());
+        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 2);
     }
 
     #[test]
@@ -1039,7 +1079,7 @@ mod tests {
             Some(tx1.hash())
         );
 
-        wait_until(|| log.lock().unwrap().yielded == 2);
+        wait_until(|| log.lock().unwrap().yielded == 3);
         prewarming.mark_invalid(
             &tx1,
             InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
