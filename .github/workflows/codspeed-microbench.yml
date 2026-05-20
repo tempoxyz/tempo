@@ -49,9 +49,12 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
-      - uses: taiki-e/install-action@d0f23220b09a75c6db730f13bb37c4f8144b4382 # v2.75.9
-        with:
-          tool: cargo-codspeed@4.6.0
+      - name: Install cargo-codspeed
+        run: |
+          cargo install cargo-codspeed \
+            --git https://github.com/CodSpeedHQ/codspeed-rust \
+            --rev 0c6ccae11dc48654fd83c8dd77d231e386ebd9bd \
+            --locked
       - name: Resolve cargo codspeed arguments
         id: args
         env:
