@@ -20,8 +20,6 @@
     "terminalTotalDifficulty": 0,
     "terminalTotalDifficultyPassed": true,
     "epochLength": 302400,
-    "networkIdentity": "0xa217bb85001d4dcf8e5c50136f77af88cb2cab1857279b91c6240f41cca95c4f43f6dcab3e0dfb87dafb3ecbeb6251e90a5df2e6c47432482821cd8b84665ee4642589d2d9628a92b03e2bbfb00e006d038cd98def76d2a41b7c228c05f5a193",
-    "networkIdentityFromEpoch": 0,
     "t0Time": 0,
     "t1Time": 0,
     "t1aTime": 0,

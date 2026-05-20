@@ -19,11 +19,8 @@ const PRESTO_NETWORK_IDENTITY: [u8; 96] = hex!(
     "642589d2d9628a92b03e2bbfb00e006d038cd98def76d2a41b7c228c05f5a193"
 );
 
-/// A compiled weak-subjectivity anchor for the consensus network identity.
-///
-/// This records the BLS threshold public key that a release knows is active for
-/// a chain. The genesis-derived value must be updated with a newer identity
-/// after a full DKG rotation.
+/// This holds the key that known to be active. The genesis-derived
+/// value must be updated with a newer identity after a full DKG rotation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NetworkIdentity {
     /// First epoch for which `identity` is expected to verify finalizations.
@@ -53,8 +50,9 @@ impl NetworkIdentity {
         }
     }
 
-    pub(crate) fn from_genesis_extra_data(extra_data: &[u8]) -> Option<Self> {
+    pub(crate) fn from_extra_data(extra_data: &[u8]) -> Option<Self> {
         let outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref()).ok()?;
+
         Some(Self {
             from_epoch: outcome.epoch.get(),
             identity: outcome.network_identity().clone(),
