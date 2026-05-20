@@ -100,7 +100,6 @@ pub struct TempoPayloadBuilder<Provider> {
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
-    #[expect(clippy::too_many_arguments)]
     pub fn new(
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
