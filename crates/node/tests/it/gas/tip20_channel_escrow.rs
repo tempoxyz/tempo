@@ -4,6 +4,8 @@ use alloy::{
     signers::{SignerSync, local::PrivateKeySigner},
     sol_types::SolEvent,
 };
+use alloy_network::ReceiptResponse;
+use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_contracts::precompiles::ITIP20ChannelEscrow;
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS};
 
@@ -156,7 +158,10 @@ impl<P: Provider + Clone> ChannelEnv<P> {
     async fn from_open_receipt(sender: &TempoTxSender<P>, sent: Receipt) -> eyre::Result<Self> {
         let receipt = sender
             .provider
-            .get_transaction_receipt(sent.tx_hash)
+            .raw_request::<_, Option<TempoTransactionReceipt>>(
+                "eth_getTransactionReceipt".into(),
+                (sent.tx_hash,),
+            )
             .await?
             .ok_or_else(|| eyre::eyre!("open receipt not found"))?;
         assert!(receipt.status(), "open failed");
