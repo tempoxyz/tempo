@@ -123,71 +123,17 @@ sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
 # without falling back to a blanket `cargo update`. Bail out if the same crate
 # conflicts twice in a row (i.e. `cargo update` made no progress).
 pushd "$FOUNDRY_ROOT" >/dev/null
-# Disable cargo color output so the error-parsing regex below isn't tripped up
-# by ANSI escape codes when the workflow exports CARGO_TERM_COLOR=always.
-export CARGO_TERM_COLOR=never
-# Accumulate every conflicting crate into a single `cargo update -p` invocation.
-# A targeted `cargo update -p X` only bumps X, so when tempo's reth bump pulls
-# in a sibling crate that also needs bumping (e.g. alloy-primitives + alloy-sol-types
-# are released together), updating just the first conflict surfaces the second one
-# but leaves the first un-resolvable on its own. Add every newly-reported package
-# to the same `cargo update` call so they're bumped atomically.
-parse_conflict_pkg() {
-  printf '%s\n' "$1" | sed -nE "s/^error: failed to select a version for \`([^\`]+)\`.*/\1/p" | head -n1
-}
-# Groups of crates that are released together and must be bumped in lock-step.
-# When the resolver reports a conflict on any member, every member of the
-# group is added to `cargo update -p` so they all move to the same major.minor.
-# This avoids leaving e.g. alloy-dyn-abi at 1.5.7 while alloy-sol-types is
-# bumped to 1.6.0, which produces winnow trait mismatches at compile time
-# because alloy-sol-type-parser unifies to 1.6 (winnow 1.0) but alloy-dyn-abi
-# 1.5.7's own code references winnow 0.7 types.
-sibling_groups=(
-  "alloy-dyn-abi alloy-sol-macro alloy-sol-macro-expander alloy-sol-macro-input alloy-sol-type-parser alloy-sol-types"
-)
-expand_siblings() {
-  local pkg="$1"
-  for group in "${sibling_groups[@]}"; do
-    if [[ " $group " == *" $pkg "* ]]; then
-      printf '%s\n' $group
-      return
-    fi
-  done
-  printf '%s\n' "$pkg"
-}
-update_pkgs=()
-seen_pkgs=" "
-add_pkg() {
-  local pkg
-  for pkg in $(expand_siblings "$1"); do
-    if [[ "$seen_pkgs" != *" $pkg "* ]]; then
-      update_pkgs+=("-p" "$pkg")
-      seen_pkgs+="$pkg "
-    fi
-  done
-}
+prev_conflict_pkg=""
 while true; do
   err="$(cargo metadata --format-version=1 --no-default-features 2>&1 >/dev/null)" && break
-  conflict_pkg="$(parse_conflict_pkg "$err")"
-  if [[ -z "$conflict_pkg" || "$seen_pkgs" == *" $conflict_pkg "* ]]; then
+  conflict_pkg="$(printf '%s\n' "$err" | sed -nE "s/^error: failed to select a version for \`([^']+)\`.*/\1/p" | head -n1)"
+  if [[ -z "$conflict_pkg" || "$conflict_pkg" == "$prev_conflict_pkg" ]]; then
     printf '%s\n' "$err" >&2
     exit 1
   fi
-  add_pkg "$conflict_pkg"
-  echo "cargo metadata failed on '$conflict_pkg' constraint; running 'cargo update ${update_pkgs[*]}' and retrying"
-  # cargo update can itself fail when its targeted bump exposes another sibling
-  # crate that also needs bumping. Parse the new conflict from the update error
-  # and extend the update list until cargo update succeeds or stops making progress.
-  while true; do
-    upd_err="$(cargo update "${update_pkgs[@]}" 2>&1 >/dev/null)" && break
-    new_pkg="$(parse_conflict_pkg "$upd_err")"
-    if [[ -z "$new_pkg" || "$seen_pkgs" == *" $new_pkg "* ]]; then
-      printf '%s\n' "$upd_err" >&2
-      exit 1
-    fi
-    add_pkg "$new_pkg"
-    echo "cargo update failed on '$new_pkg'; adding it to the update list and retrying"
-  done
+  echo "cargo metadata failed on '$conflict_pkg' constraint; running 'cargo update -p $conflict_pkg' and retrying"
+  cargo update -p "$conflict_pkg" >/dev/null
+  prev_conflict_pkg="$conflict_pkg"
 done
 
 stale_tempo_pkgs="$(
