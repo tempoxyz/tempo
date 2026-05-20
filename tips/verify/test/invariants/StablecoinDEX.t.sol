@@ -11,8 +11,6 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 /// @dev Tests invariants TEMPO-DEX1 through TEMPO-DEX19 as documented in README.md.
 /// Pinned to T5 so TEMPO-DEX17 covers TIP-1030's same-tick flip path
 /// (`flipTick == tick`).
-/// forge-config: default.hardfork = "tempo:T5"
-/// forge-config: fuzz500.hardfork = "tempo:T5"
 contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
     /// @dev Mapping of actor address to their placed order IDs

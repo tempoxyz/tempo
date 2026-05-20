@@ -622,6 +622,7 @@ def run-bench-single [
             --duration $duration
             --accounts $accounts
             --max-concurrent-requests $max_concurrent_requests
+            --bench-args $bench_args
             --bench-env $bench_env
             --git-ref $git_ref
             --build-profile $build_profile
@@ -786,7 +787,12 @@ def grafana-performance-url [benchmark_id: string, from_ms: int, to_ms: int] {
 
 
 def generate-summary [results_dir: string, baseline_ref: string, feature_ref: string, bloat: int, preset: string, tps: int, duration: int, --benchmark-id: string = "", --reference-epoch: int = 0] {
-    let candidate_run_labels = ["baseline-1" "feature-1" "feature-2" "baseline-2"]
+    let run_order_path = $"($results_dir)/run-order.txt"
+    let candidate_run_labels = if ($run_order_path | path exists) {
+        open $run_order_path | lines | where { |label| $label != "" }
+    } else {
+        ["baseline-1" "feature-1" "feature-2" "baseline-2"]
+    }
     let run_labels = ($candidate_run_labels | where { |label| ($"($results_dir)/report-($label).json" | path exists) })
     mut run_data = []
     mut baseline_blocks = []
@@ -1020,6 +1026,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     # Aggregate TPS and Mgas/s from per-run totals (total_tx / total_time)
     let baseline_runs = ($run_data | where { |r| $r.label | str starts-with "baseline" })
     let feature_runs = ($run_data | where { |r| $r.label | str starts-with "feature" })
+    let run_pairs = ([($baseline_runs | length) ($feature_runs | length)] | math max)
 
     let b_tps = if ($baseline_runs | length) > 0 { $baseline_runs | get tps | math avg | math round --precision 0 } else { 0.0 }
     let f_tps = if ($feature_runs | length) > 0 { $feature_runs | get tps | math avg | math round --precision 0 } else { 0.0 }
@@ -1065,6 +1072,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         $"- Preset: ($preset)"
         $"- Target TPS: ($tps)"
         $"- Duration: ($duration)s"
+        $"- Run pairs: ($run_pairs)"
         $"- Snapshot: (if (has-schelk) { 'schelk' } else { 'cp fallback' })"
         $"- Baseline blocks: ($b_lat.n)"
         $"- Feature blocks: ($f_lat.n)"
@@ -1131,6 +1139,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             preset: $preset
             tps: $tps
             duration: $duration
+            run_pairs: $run_pairs
         }
         results: {
             baseline: {
@@ -1854,7 +1863,7 @@ def "main bench" [
     --node-args: string = ""                        # Additional node arguments (space-separated, applied to all runs)
     --baseline-args: string = ""                    # Additional node arguments for baseline runs only (space-separated)
     --feature-args: string = ""                     # Additional node arguments for feature runs only (space-separated)
-    --bench-args: string = ""                       # Legacy benchmark arguments; only --existing-recipients is ignored for txgen
+    --bench-args: string = ""                       # Additional txgen generate arguments
     --baseline-env: string = ""                     # Environment variables for baseline node runs (KEY=VAL KEY2=VAL2)
     --feature-env: string = ""                      # Environment variables for feature node runs (KEY=VAL KEY2=VAL2)
     --bench-env: string = ""                        # Environment variables for txgen/bench (KEY=VAL KEY2=VAL2)
@@ -1884,7 +1893,6 @@ def "main bench" [
     }
 
     let preset_path = (txgen-preset-path $preset)
-    txgen-validate-bench-args $bench_args
     let txgen = (txgen-resolve-binaries)
 
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
@@ -2431,6 +2439,7 @@ def "main bench" [
             --duration $duration
             --accounts $accounts
             --max-concurrent-requests $max_concurrent_requests
+            --bench-args $bench_args
             --bench-env $bench_env
             --git-ref $current_sha
             --build-profile $profile
@@ -2937,7 +2946,7 @@ def main [] {
     print "  --node-args <ARGS>       Additional node arguments (space-separated, all runs)"
     print "  --baseline-args <ARGS>       Additional node arguments for baseline runs only"
     print "  --feature-args <ARGS>        Additional node arguments for feature runs only"
-    print "  --bench-args <ARGS>      Legacy benchmark arguments (only --existing-recipients is ignored)"
+    print "  --bench-args <ARGS>      Additional txgen generate arguments"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
     print "  --gas-limit <N>          Block gas limit for genesis (raw number, default: 1000000000000)"
     print ""
