@@ -103,10 +103,6 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) hashed_post_state_duration_seconds: Histogram,
     /// Time to compute the state root and trie updates via `state_root_with_updates`.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
-    /// Time to prewarm one transaction's storage reads.
-    pub(crate) prewarming_transaction_duration_seconds: Histogram,
-    /// Number of account and storage touches prewarmed for one transaction.
-    pub(crate) prewarming_storage_touches: Histogram,
 }
 
 /// Reason the payload builder stopped adding pool transactions to the block.
@@ -157,41 +153,6 @@ impl TempoPayloadBuilderMetrics {
     #[inline]
     pub(crate) fn inc_subblocks_expired(&self) {
         metrics::counter!("tempo_payload_builder_subblocks_expired_total").increment(1);
-    }
-
-    /// Increments the count of prewarming tasks scheduled for worker execution.
-    #[inline]
-    pub(crate) fn inc_prewarming_transactions_scheduled(&self) {
-        metrics::counter!("tempo_payload_builder_prewarming_transactions_scheduled_total")
-            .increment(1);
-    }
-
-    /// Increments the count of prewarming tasks that completed all warm reads.
-    #[inline]
-    pub(crate) fn inc_prewarming_transactions_completed(&self) {
-        metrics::counter!("tempo_payload_builder_prewarming_transactions_completed_total")
-            .increment(1);
-    }
-
-    /// Increments the count of prewarming tasks skipped before doing useful work.
-    #[inline]
-    pub(crate) fn inc_prewarming_transactions_skipped(&self, reason: &'static str) {
-        metrics::counter!("tempo_payload_builder_prewarming_transactions_skipped_total", "reason" => reason)
-            .increment(1);
-    }
-
-    /// Increments the count of prewarming tasks that failed while reading state.
-    #[inline]
-    pub(crate) fn inc_prewarming_transactions_failed(&self, reason: &'static str) {
-        metrics::counter!("tempo_payload_builder_prewarming_transactions_failed_total", "reason" => reason)
-            .increment(1);
-    }
-
-    /// Increments the total count of storage/account reads attempted by prewarming.
-    #[inline]
-    pub(crate) fn inc_prewarming_storage_touches(&self, touches: usize) {
-        metrics::counter!("tempo_payload_builder_prewarming_storage_touches_total")
-            .increment(touches as u64);
     }
 }
 
