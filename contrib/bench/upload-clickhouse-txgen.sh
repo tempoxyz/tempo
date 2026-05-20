@@ -78,7 +78,8 @@ def normalized_blocks(report):
 
 blocks = normalized_blocks(report)
 
-run_id = str(uuid.uuid4())
+benchmark_id = report.get("benchmark_id") or ""
+run_id = str(uuid.UUID(benchmark_id)) if benchmark_id else str(uuid.uuid4())
 
 # Compute aggregates
 total_tx = sum(b["tx_count"] for b in blocks)
