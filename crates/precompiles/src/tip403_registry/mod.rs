@@ -381,7 +381,13 @@ impl TIP403Registry {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
 
-        let recovery_address = call.recoveryAuthority;
+        let recovery_mode = call.recoveryAuthority.into();
+        let recovery_address = if matches!(recovery_mode, RecoveryMode::ThirdParty) {
+            call.recoveryAuthority
+        } else {
+            Address::ZERO
+        };
+
         if recovery_address == ESCROW_ADDRESS
             || recovery_address == msg_sender
             || recovery_address.is_tip20()
@@ -397,15 +403,12 @@ impl TIP403Registry {
             has_receive_policy: true,
             sender_policy_id: call.senderPolicyId,
             token_filter_id: call.tokenFilterId,
-            recovery_mode: recovery_address.into(),
+            recovery_mode,
         };
-        let recovery_mode = config.recovery_mode;
         self.receive_policies[msg_sender].config.write(config)?;
-        if matches!(recovery_mode, RecoveryMode::ThirdParty) {
-            self.receive_policies[msg_sender]
-                .recovery_address
-                .write(recovery_address)?;
-        }
+        self.receive_policies[msg_sender]
+            .recovery_address
+            .write(recovery_address)?;
 
         self.emit_event(TIP403RegistryEvent::ReceivePolicyUpdated(
             ITIP403Registry::ReceivePolicyUpdated {
