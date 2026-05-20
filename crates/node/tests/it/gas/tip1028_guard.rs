@@ -1,9 +1,7 @@
-use std::collections::BTreeMap;
-
 use alloy::{
     primitives::{Address, B256, Bytes, U256},
     providers::{Provider, ProviderBuilder},
-    signers::local::{MnemonicBuilder, PrivateKeySigner},
+    signers::local::PrivateKeySigner,
     sol_types::{SolEvent, SolValue},
 };
 use alloy_rpc_types_eth::TransactionReceipt;
@@ -18,20 +16,13 @@ use tempo_precompiles::{
     tip1028_guard::{BLOCKED_PROOF_VERSION, InboundKind, RECOVERY_ORIGINATOR, RECOVERY_RECEIVER},
 };
 
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
-
-const GAS: u64 = 5_000_000;
+use super::helpers::{GAS_LIMIT, GasSnapshot, print_gas_snapshot, test_signer};
+use crate::utils::TestNodeBuilder;
 
 struct BlockedTransfer {
     receiver: Address,
     proof: Bytes,
     gas_used: u64,
-}
-
-fn wallet(index: u32) -> eyre::Result<PrivateKeySigner> {
-    Ok(MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(index)?
-        .build()?)
 }
 
 async fn create_token<P>(provider: P, admin: Address, salt: B256) -> eyre::Result<Address>
@@ -48,7 +39,7 @@ where
             admin,
             salt,
         )
-        .gas(GAS)
+        .gas(GAS_LIMIT)
         .send()
         .await?
         .get_receipt()
@@ -65,7 +56,7 @@ where
     let roles = IRolesAuth::new(token, provider);
     let grant = roles
         .grantRole(*ISSUER_ROLE, admin)
-        .gas(GAS)
+        .gas(GAS_LIMIT)
         .send()
         .await?
         .get_receipt()
@@ -83,7 +74,7 @@ async fn set_receive_policy<P: Provider + Clone>(
 ) -> eyre::Result<u64> {
     let receipt = registry
         .setReceivePolicy(sender_policy_id, token_filter_id, recovery)
-        .gas(GAS)
+        .gas(GAS_LIMIT)
         .send()
         .await?
         .get_receipt()
@@ -101,7 +92,7 @@ async fn create_blocked_transfer<P: Provider + Clone>(
 ) -> eyre::Result<BlockedTransfer> {
     let receipt = token
         .transfer(receiver, amount)
-        .gas(GAS)
+        .gas(GAS_LIMIT)
         .send()
         .await?
         .get_receipt()
@@ -149,7 +140,7 @@ async fn create_allowed_transfer<P: Provider + Clone>(
 ) -> eyre::Result<u64> {
     let receipt = token
         .transfer(receiver, amount)
-        .gas(GAS)
+        .gas(GAS_LIMIT)
         .send()
         .await?
         .get_receipt()
@@ -170,7 +161,7 @@ async fn claim_blocked<P: Provider + Clone>(
 ) -> eyre::Result<u64> {
     let receipt = guard
         .claim(to, blocked.proof.clone())
-        .gas(GAS)
+        .gas(GAS_LIMIT)
         .send()
         .await?
         .get_receipt()
@@ -196,21 +187,28 @@ async fn test_tip1028_guard_gas_snapshots() -> eyre::Result<()> {
     let setup = TestNodeBuilder::new().build_http_only().await?;
     let http_url = setup.http_url;
 
-    let admin = wallet(0)?;
-    let originator = wallet(1)?;
-    let originator_recovery_receiver = wallet(2)?;
-    let receiver_recovery_receiver = wallet(3)?;
-    let third_party_recovery_receiver = wallet(4)?;
-    let recovery = wallet(5)?;
-    let destination = wallet(6)?;
-    let allowed_third_party_receiver = wallet(7)?;
+    let [
+        admin,
+        originator,
+        originator_recovery_receiver,
+        receiver_recovery_receiver,
+        third_party_recovery_receiver,
+        recovery,
+        destination,
+        allowed_third_party_receiver,
+    ] = (0..8)
+        .map(test_signer)
+        .collect::<eyre::Result<Vec<_>>>()?
+        .try_into()
+        .map_err(|_| eyre::eyre!("expected 8 test signers"))?;
 
-    let admin_provider = ProviderBuilder::new()
-        .wallet(admin.clone())
-        .connect_http(http_url.clone());
-    let originator_provider = ProviderBuilder::new()
-        .wallet(originator.clone())
-        .connect_http(http_url.clone());
+    let provider = |signer: &PrivateKeySigner| {
+        ProviderBuilder::new()
+            .wallet(signer.clone())
+            .connect_http(http_url.clone())
+    };
+    let admin_provider = provider(&admin);
+    let originator_provider = provider(&originator);
 
     let token = create_token(
         admin_provider.clone(),
@@ -221,68 +219,52 @@ async fn test_tip1028_guard_gas_snapshots() -> eyre::Result<()> {
     let admin_token = ITIP20::new(token, admin_provider);
     let mint = admin_token
         .mint(originator.address(), U256::from(30_000))
-        .gas(GAS)
+        .gas(GAS_LIMIT)
         .send()
         .await?
         .get_receipt()
         .await?;
     assert!(mint.status(), "mint failed");
 
-    let mut gas = BTreeMap::new();
+    let mut gas = GasSnapshot::new();
 
-    let originator_recovery_provider = ProviderBuilder::new()
-        .wallet(originator_recovery_receiver.clone())
-        .connect_http(http_url.clone());
-    let receiver_recovery_provider = ProviderBuilder::new()
-        .wallet(receiver_recovery_receiver.clone())
-        .connect_http(http_url.clone());
-    let third_party_recovery_provider = ProviderBuilder::new()
-        .wallet(third_party_recovery_receiver.clone())
-        .connect_http(http_url.clone());
-    let allowed_third_party_provider = ProviderBuilder::new()
-        .wallet(allowed_third_party_receiver.clone())
-        .connect_http(http_url.clone());
-
-    gas.insert(
-        "set_receive_policy_originator_recovery",
-        set_receive_policy(
-            &ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, originator_recovery_provider),
+    for (name, signer, sender_policy_id, recovery_authority) in [
+        (
+            "set_receive_policy_originator_recovery",
+            &originator_recovery_receiver,
             REJECT_ALL_POLICY_ID,
-            ALLOW_ALL_POLICY_ID,
             RECOVERY_ORIGINATOR,
-        )
-        .await?,
-    );
-    gas.insert(
-        "set_receive_policy_receiver_recovery",
-        set_receive_policy(
-            &ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, receiver_recovery_provider.clone()),
+        ),
+        (
+            "set_receive_policy_receiver_recovery",
+            &receiver_recovery_receiver,
             REJECT_ALL_POLICY_ID,
-            ALLOW_ALL_POLICY_ID,
             RECOVERY_RECEIVER,
-        )
-        .await?,
-    );
-    gas.insert(
-        "set_receive_policy_third_party_recovery",
-        set_receive_policy(
-            &ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, third_party_recovery_provider),
+        ),
+        (
+            "set_receive_policy_third_party_recovery",
+            &third_party_recovery_receiver,
             REJECT_ALL_POLICY_ID,
+            recovery.address(),
+        ),
+        (
+            "set_receive_policy_allowed_third_party_recovery",
+            &allowed_third_party_receiver,
             ALLOW_ALL_POLICY_ID,
             recovery.address(),
-        )
-        .await?,
-    );
-    gas.insert(
-        "set_receive_policy_allowed_third_party_recovery",
-        set_receive_policy(
-            &ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, allowed_third_party_provider),
-            ALLOW_ALL_POLICY_ID,
-            ALLOW_ALL_POLICY_ID,
-            recovery.address(),
-        )
-        .await?,
-    );
+        ),
+    ] {
+        gas.record(
+            name,
+            set_receive_policy(
+                &ITIP403Registry::new(TIP403_REGISTRY_ADDRESS, provider(signer)),
+                sender_policy_id,
+                ALLOW_ALL_POLICY_ID,
+                recovery_authority,
+            )
+            .await?,
+        );
+    }
 
     let originator_token = ITIP20::new(token, originator_provider.clone());
     let originator_blocked = create_blocked_transfer(
@@ -292,7 +274,7 @@ async fn test_tip1028_guard_gas_snapshots() -> eyre::Result<()> {
         U256::from(1_000),
     )
     .await?;
-    gas.insert(
+    gas.record(
         "transfer_blocked_originator_recovery",
         originator_blocked.gas_used,
     );
@@ -304,7 +286,7 @@ async fn test_tip1028_guard_gas_snapshots() -> eyre::Result<()> {
         U256::from(2_000),
     )
     .await?;
-    gas.insert(
+    gas.record(
         "transfer_blocked_receiver_recovery",
         receiver_blocked.gas_used,
     );
@@ -316,11 +298,11 @@ async fn test_tip1028_guard_gas_snapshots() -> eyre::Result<()> {
         U256::from(3_000),
     )
     .await?;
-    gas.insert(
+    gas.record(
         "transfer_blocked_third_party_recovery",
         third_party_blocked.gas_used,
     );
-    gas.insert(
+    gas.record(
         "transfer_allowed_third_party_receive_policy",
         create_allowed_transfer(
             &originator_token,
@@ -331,15 +313,11 @@ async fn test_tip1028_guard_gas_snapshots() -> eyre::Result<()> {
     );
 
     let originator_guard = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, originator_provider);
-    let receiver_guard = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, receiver_recovery_provider);
-    let recovery_guard = ITIP1028Guard::new(
-        TIP1028_GUARD_ADDRESS,
-        ProviderBuilder::new()
-            .wallet(recovery.clone())
-            .connect_http(http_url),
-    );
+    let receiver_guard =
+        ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, provider(&receiver_recovery_receiver));
+    let recovery_guard = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, provider(&recovery));
 
-    gas.insert(
+    gas.record(
         "claim_originator_recovery_to_destination",
         claim_blocked(
             &originator_guard,
@@ -348,7 +326,7 @@ async fn test_tip1028_guard_gas_snapshots() -> eyre::Result<()> {
         )
         .await?,
     );
-    gas.insert(
+    gas.record(
         "claim_receiver_recovery_to_receiver",
         claim_blocked(
             &receiver_guard,
@@ -357,15 +335,12 @@ async fn test_tip1028_guard_gas_snapshots() -> eyre::Result<()> {
         )
         .await?,
     );
-    gas.insert(
+    gas.record(
         "claim_third_party_recovery_to_destination",
         claim_blocked(&recovery_guard, destination.address(), &third_party_blocked).await?,
     );
 
-    eprintln!("\nTIP1028Guard gas snapshot:");
-    for (name, gas_used) in &gas {
-        eprintln!("{name}: {gas_used}");
-    }
+    print_gas_snapshot("TIP1028Guard gas snapshot", &gas);
 
     insta::assert_yaml_snapshot!(gas);
 
