@@ -448,7 +448,7 @@ where
                 self.executor.clone(),
                 self.provider.clone(),
                 parent_header.hash(),
-                builder.evm().block().beneficiary,
+                builder.evm().evm_env(),
                 self.metrics.clone(),
                 best_txs,
             )) as Box<dyn BestTransactions<Item = _>>

@@ -1,5 +1,4 @@
 use std::{
-    cell::RefCell,
     collections::VecDeque,
     sync::{
         Arc,
@@ -12,13 +11,18 @@ use std::{
 use crate::metrics::TempoPayloadBuilderMetrics;
 use alloy_primitives::{Address, B256, TxKind, U256};
 use alloy_sol_types::SolInterface;
+use reth_errors::ProviderError;
+use reth_evm::{Evm, EvmEnv};
+use reth_revm::{Database, State, database::StateProviderDatabase, db::bal::EvmDatabaseError};
 use reth_storage_api::{
-    StateProvider, StateProviderBox, StateProviderFactory, errors::provider::ProviderResult,
+    StateProviderBox, StateProviderFactory,
 };
-use reth_tasks::TaskExecutor;
+use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
+use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_evm::{TempoBlockEnv, evm::TempoEvm};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     nonce::slots as nonce_slots,
@@ -29,6 +33,8 @@ use tempo_precompiles::{
 use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
+
+type PrewarmEvm = TempoEvm<State<StateProviderDatabase<StateProviderBox>>>;
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -45,7 +51,7 @@ impl BestTransactionsPrewarming {
         executor: TaskExecutor,
         provider: Provider,
         parent_hash: B256,
-        fee_recipient: Address,
+        evm_env: EvmEnv<TempoHardfork, TempoBlockEnv>,
         metrics: TempoPayloadBuilderMetrics,
         best_txs: Txs,
     ) -> Self
@@ -59,7 +65,7 @@ impl BestTransactionsPrewarming {
         let prewarm = PrewarmingExecutionContext {
             provider,
             parent_hash,
-            fee_recipient,
+            evm_env,
             metrics,
             builder_consumed_tx_count,
         };
@@ -100,6 +106,11 @@ impl BestTransactionsPrewarming {
         let buffered_lookahead = pool.current_num_threads().max(1);
 
         pool.in_place_scope(|scope| {
+            let prewarm = ctx.prewarm.clone();
+            scope.spawn(move |_| {
+                pool.init(|_| prewarm.create_evm());
+            });
+
             let mut buffered_txs = VecDeque::new();
             let fill_prewarming_buffer =
                 |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>,
@@ -164,9 +175,7 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.broadcast(pool.current_num_threads(), |_| {
-            PREWARM_WORKER_STATE.with(|state| state.borrow_mut().clear());
-        });
+        pool.clear();
     }
 
     fn prewarm_transaction<Provider>(
@@ -183,14 +192,11 @@ impl BestTransactionsPrewarming {
             return;
         }
 
-        PREWARM_WORKER_STATE.with(|worker_state| {
-            let mut worker_state = worker_state.borrow_mut();
-            if worker_state.parent_hash != prewarm.parent_hash
-                || worker_state.state_provider.is_none()
-            {
-                worker_state.parent_hash = prewarm.parent_hash;
-                worker_state.state_provider = prewarm.state_provider_for_ctx();
-            }
+        WorkerPool::with_worker_mut(|worker| {
+            let Some(evm) = worker.get_or_init::<Option<PrewarmEvm>>(|| prewarm.create_evm())
+            else {
+                return;
+            };
 
             if prewarm.is_consumed_by_builder(tx_index) {
                 prewarm
@@ -201,22 +207,11 @@ impl BestTransactionsPrewarming {
 
             let start = Instant::now();
             let tx_hash = *tx.hash();
-            let PrewarmWorkerState {
-                state_provider,
-                touches,
-                ..
-            } = &mut *worker_state;
-            let Some(state_provider) = state_provider.as_ref() else {
-                prewarm
-                    .metrics
-                    .inc_prewarming_transactions_failed("provider");
-                return;
-            };
-            storage_touches_for_transaction(&tx, prewarm.fee_recipient, touches);
+            let touches = storage_touches_for_transaction(&tx, evm.block.beneficiary);
             let touched = touches.len();
 
-            for touch in touches.iter().copied() {
-                if let Err(err) = touch.warm(state_provider.as_ref()) {
+            for touch in touches.iter() {
+                if let Err(err) = touch.warm(evm) {
                     prewarm
                         .metrics
                         .inc_prewarming_transactions_failed("storage");
@@ -323,56 +318,23 @@ struct IndexedTransaction {
 struct PrewarmingExecutionContext<Provider> {
     provider: Provider,
     parent_hash: B256,
-    fee_recipient: Address,
+    evm_env: EvmEnv<TempoHardfork, TempoBlockEnv>,
     metrics: TempoPayloadBuilderMetrics,
     /// Number of source transactions already handed to the builder.
     builder_consumed_tx_count: Arc<AtomicUsize>,
-}
-
-struct PrewarmWorkerState {
-    parent_hash: B256,
-    state_provider: Option<StateProviderBox>,
-    touches: Vec<StorageTouch>,
-}
-
-impl Default for PrewarmWorkerState {
-    fn default() -> Self {
-        Self {
-            parent_hash: B256::ZERO,
-            state_provider: None,
-            touches: Vec::with_capacity(24),
-        }
-    }
-}
-
-impl PrewarmWorkerState {
-    fn clear(&mut self) {
-        *self = Self::default();
-    }
-}
-
-thread_local! {
-    static PREWARM_WORKER_STATE: RefCell<PrewarmWorkerState> =
-        RefCell::new(PrewarmWorkerState::default());
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
 where
     Provider: StateProviderFactory + Clone + 'static,
 {
-    fn state_provider_for_ctx(&self) -> Option<StateProviderBox> {
-        match self.provider.state_by_block_hash(self.parent_hash) {
-            Ok(provider) => Some(provider),
-            Err(err) => {
-                trace!(
-                    target: "payload_builder",
-                    %err,
-                    parent_hash = ?self.parent_hash,
-                    "failed to build state provider for transaction prewarming"
-                );
-                None
-            }
-        }
+    fn create_evm(&self) -> Option<PrewarmEvm> {
+        let db = State::builder()
+            .with_database(StateProviderDatabase::new(
+                self.provider.state_by_block_hash(self.parent_hash).ok()?,
+            ))
+            .build();
+        Some(TempoEvm::new(db, self.evm_env.clone()))
     }
 
     fn is_consumed_by_builder(&self, tx_index: usize) -> bool {
@@ -387,13 +349,13 @@ enum StorageTouch {
 }
 
 impl StorageTouch {
-    fn warm(&self, state_provider: &dyn StateProvider) -> ProviderResult<()> {
+    fn warm(&self, evm: &mut PrewarmEvm) -> Result<(), EvmDatabaseError<ProviderError>> {
         match *self {
             Self::Account(address) => {
-                let _ = state_provider.basic_account(&address)?;
+                let _ = evm.db_mut().basic(address)?;
             }
             Self::Storage { address, slot } => {
-                let _ = state_provider.storage(address, slot.into())?;
+                let _ = evm.db_mut().storage(address, slot)?;
             }
         }
 
@@ -404,9 +366,8 @@ impl StorageTouch {
 fn storage_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
-    touches: &mut Vec<StorageTouch>,
-) {
-    touches.clear();
+) -> Vec<StorageTouch> {
+    let mut touches = Vec::new();
     let sender = tx.transaction.sender();
     let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
     let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
@@ -416,16 +377,18 @@ fn storage_touches_for_transaction(
             .unwrap_or(DEFAULT_FEE_TOKEN)
     });
 
-    add_tip20_fee_touches(touches, fee_token, fee_payer);
-    add_fee_manager_touches(touches, fee_recipient, fee_token);
+    add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
+    add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
 
     if tx.transaction.is_payment() {
         for (kind, input) in tx.transaction.inner().calls() {
-            add_tip20_call_touches(touches, sender, kind, input);
+            add_tip20_call_touches(&mut touches, sender, kind, input);
         }
     }
 
-    add_expiring_nonce_touches(touches, tx);
+    add_expiring_nonce_touches(&mut touches, tx);
+
+    touches
 }
 
 fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
@@ -761,7 +724,7 @@ mod tests {
             executor,
             provider,
             parent_header.hash(),
-            Address::ZERO,
+            EvmEnv::default(),
             TempoPayloadBuilderMetrics::default(),
             TestBestTransactions::new(txs, log),
         )
