@@ -573,6 +573,13 @@ jobs:
       - name: Write job summary
         if: success()
         run: |
+          {
+            echo "Chain: \`${BENCH_CHAIN:-mainnet}\`"
+            echo "Warmup: \`${BENCH_WARMUP_BLOCKS:-}\`"
+            echo "Blocks: \`${BENCH_BLOCKS:-5000}\`"
+            echo "Run pairs: \`${BENCH_RUN_PAIRS:-2}\`"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
           if [ -f "$BENCH_WORK_DIR/comment.md" ]; then
             cat "$BENCH_WORK_DIR/comment.md" >> "$GITHUB_STEP_SUMMARY"
           fi
