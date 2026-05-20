@@ -1,6 +1,6 @@
 use std::{
     cell::RefCell,
-    collections::VecDeque,
+    collections::{HashSet, VecDeque},
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -83,6 +83,7 @@ impl BestTransactionsPrewarming {
                     commands_rx,
                     prewarm,
                     gas_budget: PrewarmingGasBudget::new(prewarm_gas_limit, tx_gas_limit_cap),
+                    tip20_touch_gate: Tip20TouchGate::default(),
                     next_tx_index: 0,
                 },
             );
@@ -312,6 +313,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     gas_budget: PrewarmingGasBudget,
+    tip20_touch_gate: Tip20TouchGate,
     next_tx_index: usize,
 }
 
@@ -321,7 +323,10 @@ where
 {
     fn next_transaction(&mut self) -> Option<IndexedTransaction> {
         let transaction = self.best_txs.next()?;
-        let should_prewarm = self.gas_budget.reserve(&transaction);
+        let should_prewarm = self.gas_budget.reserve(&transaction)
+            && self
+                .tip20_touch_gate
+                .should_prewarm(&transaction, self.prewarm.fee_recipient);
         let index = self.next_tx_index;
         self.next_tx_index += 1;
         Some(IndexedTransaction {
@@ -329,6 +334,27 @@ where
             transaction,
             should_prewarm,
         })
+    }
+}
+
+#[derive(Default)]
+struct Tip20TouchGate {
+    recipient_touches: HashSet<StorageTouch>,
+    touches_buffer: Vec<StorageTouch>,
+}
+
+impl Tip20TouchGate {
+    fn should_prewarm(&mut self, tx: &BestTransaction, fee_recipient: Address) -> bool {
+        if !is_tip20_transfer_transaction(tx) {
+            return true;
+        }
+
+        tip20_recipient_touches_for_transaction(tx, fee_recipient, &mut self.touches_buffer);
+        let mut has_new_touch = false;
+        for touch in self.touches_buffer.iter().copied() {
+            has_new_touch |= self.recipient_touches.insert(touch);
+        }
+        has_new_touch
     }
 }
 
@@ -479,7 +505,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum StorageTouch {
     Account(Address),
     Storage { address: Address, slot: U256 },
@@ -559,6 +585,27 @@ fn storage_touches_for_transaction(
     add_expiring_nonce_touches(touches, tx);
 }
 
+fn tip20_recipient_touches_for_transaction(
+    tx: &BestTransaction,
+    fee_recipient: Address,
+    touches: &mut Vec<StorageTouch>,
+) {
+    touches.clear();
+    let sender = tx.transaction.sender();
+    let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
+        tx.transaction
+            .inner()
+            .fee_token()
+            .unwrap_or(DEFAULT_FEE_TOKEN)
+    });
+
+    add_fee_manager_touches(touches, fee_recipient, fee_token);
+
+    for (kind, input) in tx.transaction.inner().calls() {
+        add_tip20_recipient_touches(touches, sender, kind, input);
+    }
+}
+
 fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
     if !fee_token.is_tip20() {
         return;
@@ -629,6 +676,46 @@ fn add_tip20_call_touches(
         ITIP20::ITIP20Calls::burn(_) | ITIP20::ITIP20Calls::burnWithMemo(_) => {
             add_tip20_balance_touch(touches, token, sender);
             add_tip20_reward_touches(touches, token, sender);
+        }
+        _ => {}
+    }
+}
+
+fn add_tip20_recipient_touches(
+    touches: &mut Vec<StorageTouch>,
+    sender: Address,
+    kind: TxKind,
+    input: &[u8],
+) {
+    let Some(token) = kind.to().copied() else {
+        return;
+    };
+    if !token.is_tip20() {
+        return;
+    }
+    add_tip20_common_touches(touches, token);
+    let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) else {
+        return;
+    };
+
+    match call {
+        ITIP20::ITIP20Calls::transfer(call) => {
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_reward_touches(touches, token, call.to);
+        }
+        ITIP20::ITIP20Calls::transferWithMemo(call) => {
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_reward_touches(touches, token, call.to);
+        }
+        ITIP20::ITIP20Calls::transferFrom(call) => {
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_allowance_touch(touches, token, call.from, sender);
+            add_tip20_reward_touches(touches, token, call.to);
+        }
+        ITIP20::ITIP20Calls::transferFromWithMemo(call) => {
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_allowance_touch(touches, token, call.from, sender);
+            add_tip20_reward_touches(touches, token, call.to);
         }
         _ => {}
     }
@@ -842,14 +929,46 @@ mod tests {
     }
 
     fn test_tx_with_gas_limit(sender: Address, nonce: u64, gas_limit: u64) -> BestTransaction {
+        test_tx_with_call(
+            sender,
+            nonce,
+            gas_limit,
+            TxKind::Call(Address::random()),
+            Bytes::new(),
+        )
+    }
+
+    fn test_tip20_transfer_tx(sender: Address, nonce: u64, recipient: Address) -> BestTransaction {
+        test_tx_with_call(
+            sender,
+            nonce,
+            21_000,
+            TxKind::Call(DEFAULT_FEE_TOKEN),
+            Bytes::from(
+                ITIP20::transferCall {
+                    to: recipient,
+                    amount: U256::from(1),
+                }
+                .abi_encode(),
+            ),
+        )
+    }
+
+    fn test_tx_with_call(
+        sender: Address,
+        nonce: u64,
+        gas_limit: u64,
+        to: TxKind,
+        input: Bytes,
+    ) -> BestTransaction {
         let tx = TxLegacy {
             chain_id: Some(42431),
             nonce,
             gas_price: 20_000_000_000,
             gas_limit,
-            to: TxKind::Call(Address::random()),
+            to,
             value: U256::ZERO,
-            input: Bytes::new(),
+            input,
         };
         let envelope =
             TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
@@ -970,6 +1089,29 @@ mod tests {
 
         assert!(!budget.reserve(&oversized));
         assert!(budget.reserve(&fitting));
+    }
+
+    #[test]
+    fn tip20_touch_gate_skips_repeated_recipient() {
+        let sender = Address::random();
+        let recipient = Address::random();
+        let tx1 = test_tip20_transfer_tx(sender, 0, recipient);
+        let tx2 = test_tip20_transfer_tx(sender, 1, recipient);
+        let mut gate = Tip20TouchGate::default();
+
+        assert!(gate.should_prewarm(&tx1, Address::ZERO));
+        assert!(!gate.should_prewarm(&tx2, Address::ZERO));
+    }
+
+    #[test]
+    fn tip20_touch_gate_allows_new_recipient() {
+        let sender = Address::random();
+        let tx1 = test_tip20_transfer_tx(sender, 0, Address::random());
+        let tx2 = test_tip20_transfer_tx(sender, 1, Address::random());
+        let mut gate = Tip20TouchGate::default();
+
+        assert!(gate.should_prewarm(&tx1, Address::ZERO));
+        assert!(gate.should_prewarm(&tx2, Address::ZERO));
     }
 
     #[test]
