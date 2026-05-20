@@ -40,30 +40,6 @@ def run-bench-schelk [...args: string] {
     }
 }
 
-def lookup-clickhouse-run-id [clickhouse_url: string, benchmark_id: string, benchmark_run: string] {
-    let query = "SELECT toString(run_id) FROM txgen_runs WHERE metadata['benchmark_id'] = {benchmark_id:String} AND metadata['benchmark_run'] = {benchmark_run:String} ORDER BY started_at DESC LIMIT 1 FORMAT TSVRaw"
-    let result = (with-env { CLICKHOUSE_URL: $clickhouse_url, BENCHMARK_ID: $benchmark_id, BENCHMARK_RUN: $benchmark_run, CLICKHOUSE_QUERY: $query } {
-        bash -lc '
-            set -euo pipefail
-            db="${CLICKHOUSE_DATABASE:-${CLICKHOUSE_DB:-default}}"
-            args=(-fsS -G "$CLICKHOUSE_URL/" --data-urlencode "database=$db" --data-urlencode "query=$CLICKHOUSE_QUERY" --data-urlencode "param_benchmark_id=$BENCHMARK_ID" --data-urlencode "param_benchmark_run=$BENCHMARK_RUN")
-            if [ -n "${CLICKHOUSE_USER:-}" ]; then
-                args+=(-H "X-ClickHouse-User: $CLICKHOUSE_USER")
-            fi
-            if [ -n "${CLICKHOUSE_PASSWORD:-}" ]; then
-                args+=(-H "X-ClickHouse-Key: $CLICKHOUSE_PASSWORD")
-            fi
-            curl "${args[@]}"
-        ' | complete
-    })
-    if $result.exit_code != 0 {
-        print $"Warning: failed to look up ClickHouse run id for ($benchmark_id)/($benchmark_run)"
-        if $result.stderr != "" { print $result.stderr }
-        return ""
-    }
-    $result.stdout | str trim
-}
-
 def schelk-state [state_path: string] {
     sudo cat $state_path | from json
 }
@@ -913,11 +889,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
             print $"Error: local e2e txgen sender failed for ($phase): ($e.msg)"
             1
         })
-        if $sender_exit == 0 and $phase_clickhouse_url != "" {
-            let clickhouse_run_id = (lookup-clickhouse-run-id $phase_clickhouse_url $ctx.benchmark_id $phase)
-            if $clickhouse_run_id != "" {
-                $clickhouse_run_id | save -f $"($ctx.results_dir)/clickhouse-run-id-($phase).txt"
-                $clickhouse_run_id | save -f $"($ctx.results_dir)/clickhouse-run-id.txt"
+        if $sender_exit == 0 {
+            let report = (open $"($ctx.results_dir)/report-($phase).json")
+            let report_benchmark_id = ($report | get --optional benchmark_id | default "")
+            if $report_benchmark_id != "" {
+                $report_benchmark_id | save -f $"($ctx.results_dir)/clickhouse-run-id-($phase).txt"
+                $report_benchmark_id | save -f $"($ctx.results_dir)/clickhouse-run-id.txt"
             }
         }
         let phase_finished_ms = ((date now | into int) / 1_000_000 | into int)
