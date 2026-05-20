@@ -76,9 +76,21 @@ impl TIP20Token {
     /// balance and the reward per token difference since their last update.
     /// Rewards are accumulated in the delegated recipient's rewardBalance.
     /// Returns the holder's delegated recipient address.
-    pub fn update_rewards(&mut self, holder: Address) -> Result<Address> {
-        let mut info = self.user_reward_info[holder].read()?;
+    pub fn update_rewards(
+        &mut self,
+        holder: Address,
+        global_reward_per_token: Option<U256>,
+        holder_balance: Option<U256>,
+    ) -> Result<Address> {
+        if self.storage.spec().is_t6() {
+            self.update_rewards_t6(holder, global_reward_per_token, holder_balance)
+        } else {
+            self.update_rewards_legacy(holder)
+        }
+    }
 
+    fn update_rewards_legacy(&mut self, holder: Address) -> Result<Address> {
+        let mut info = self.user_reward_info[holder].read()?;
         let cached_delegate = info.reward_recipient;
 
         let global_reward_per_token = self.get_global_reward_per_token()?;
@@ -116,6 +128,49 @@ impl TIP20Token {
         Ok(cached_delegate)
     }
 
+    fn update_rewards_t6(
+        &mut self,
+        holder: Address,
+        global_reward_per_token: Option<U256>,
+        holder_balance: Option<U256>,
+    ) -> Result<Address> {
+        let cached_delegate = self.user_reward_info[holder].reward_recipient.read()?;
+        let holder_reward_per_token = self.user_reward_info[holder].reward_per_token.read()?;
+
+        let global_reward_per_token =
+            global_reward_per_token.map_or_else(|| self.get_global_reward_per_token(), Ok)?;
+        let reward_per_token_delta = global_reward_per_token
+            .checked_sub(holder_reward_per_token)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+
+        if reward_per_token_delta != U256::ZERO {
+            if cached_delegate != Address::ZERO {
+                let holder_balance = holder_balance.map_or_else(|| self.get_balance(holder), Ok)?;
+                let reward = holder_balance
+                    .checked_mul(reward_per_token_delta)
+                    .and_then(|v| v.checked_div(ACC_PRECISION))
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+
+                if reward != U256::ZERO {
+                    // Add reward to delegate's balance (or holder's own balance if self-delegated)
+                    let new_reward_balance = self.user_reward_info[cached_delegate]
+                        .reward_balance
+                        .read()?
+                        .checked_add(reward)
+                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    self.user_reward_info[cached_delegate]
+                        .reward_balance
+                        .write(new_reward_balance)?;
+                }
+            }
+            self.user_reward_info[holder]
+                .reward_per_token
+                .write(global_reward_per_token)?;
+        }
+
+        Ok(cached_delegate)
+    }
+
     /// Sets or changes the reward recipient for a token holder.
     ///
     /// This function allows a token holder to designate who should receive their
@@ -141,30 +196,16 @@ impl TIP20Token {
             self.ensure_transfer_authorized(msg_sender, call.recipient)?;
         }
 
-        let from_delegate = self.update_rewards(msg_sender)?;
+        let from_delegate = self.update_rewards(msg_sender, None, None)?;
 
         let holder_balance = self.get_balance(msg_sender)?;
 
         if from_delegate != Address::ZERO {
             if call.recipient == Address::ZERO {
-                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                    .checked_sub(holder_balance)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                self.set_opted_in_supply(
-                    opted_in_supply
-                        .try_into()
-                        .map_err(|_| TempoPrecompileError::under_overflow())?,
-                )?;
+                self.update_opted_in_supply(holder_balance, false)?;
             }
         } else if call.recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(holder_balance)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
+            self.update_opted_in_supply(holder_balance, true)?;
         }
 
         let mut info = self.user_reward_info[msg_sender].read()?;
@@ -189,7 +230,7 @@ impl TIP20Token {
         self.check_not_paused()?;
         self.ensure_transfer_authorized(self.address, msg_sender)?;
 
-        self.update_rewards(msg_sender)?;
+        self.update_rewards(msg_sender, None, None)?;
 
         let mut info = self.user_reward_info[msg_sender].read()?;
         let amount = info.reward_balance;
@@ -260,32 +301,27 @@ impl TIP20Token {
     pub fn handle_rewards_on_transfer(
         &mut self,
         from: Address,
+        from_balance: U256,
         to: Address,
+        to_balance: Option<U256>,
         amount: U256,
     ) -> Result<()> {
-        let from_delegate = self.update_rewards(from)?;
-        let to_delegate = self.update_rewards(to)?;
+        let global_reward_per_token = if self.storage.spec().is_t6() {
+            Some(self.get_global_reward_per_token()?)
+        } else {
+            None
+        };
+
+        let from_delegate =
+            self.update_rewards(from, global_reward_per_token, Some(from_balance))?;
+        let to_delegate = self.update_rewards(to, global_reward_per_token, to_balance)?;
 
         if !from_delegate.is_zero() {
             if to_delegate.is_zero() {
-                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                    .checked_sub(amount)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                self.set_opted_in_supply(
-                    opted_in_supply
-                        .try_into()
-                        .map_err(|_| TempoPrecompileError::under_overflow())?,
-                )?;
+                self.update_opted_in_supply(amount, false)?;
             }
         } else if !to_delegate.is_zero() {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
+            self.update_opted_in_supply(amount, true)?;
         }
 
         Ok(())
@@ -293,20 +329,28 @@ impl TIP20Token {
 
     /// Handles reward accounting when tokens are minted to an address.
     pub fn handle_rewards_on_mint(&mut self, to: Address, amount: U256) -> Result<()> {
-        let to_delegate = self.update_rewards(to)?;
+        let to_delegate = self.update_rewards(to, None, None)?;
 
         if !to_delegate.is_zero() {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
+            self.update_opted_in_supply(amount, true)?;
         }
 
         Ok(())
+    }
+
+    fn update_opted_in_supply(&mut self, amount: U256, increase_supply: bool) -> Result<()> {
+        let opted_in_supply = if increase_supply {
+            U256::from(self.get_opted_in_supply()?).checked_add(amount)
+        } else {
+            U256::from(self.get_opted_in_supply()?).checked_sub(amount)
+        }
+        .ok_or(TempoPrecompileError::under_overflow())?;
+
+        self.set_opted_in_supply(
+            opted_in_supply
+                .try_into()
+                .map_err(|_| TempoPrecompileError::under_overflow())?,
+        )
     }
 
     /// Retrieves user reward information for a given account.
@@ -462,7 +506,7 @@ mod tests {
             assert_eq!(token.get_balance(admin)?, U256::ZERO);
 
             // Update rewards to accrue alice's share
-            token.update_rewards(alice)?;
+            token.update_rewards(alice, None, None)?;
             let info = token.get_user_reward_info(alice)?;
             assert_eq!(info.reward_balance, reward_amount);
 
@@ -563,7 +607,7 @@ mod tests {
             )?;
 
             // Trigger an action to update alice's stored reward balance
-            token.update_rewards(alice)?;
+            token.update_rewards(alice, None, None)?;
             let user_info = token.get_user_reward_info(alice)?;
             assert_eq!(user_info.reward_balance, reward_amount);
 
@@ -622,7 +666,7 @@ mod tests {
             assert_eq!(bob_pending_before_update, 0u128);
 
             // After calling update_rewards on alice, bob's stored balance is updated
-            token.update_rewards(alice)?;
+            token.update_rewards(alice, None, None)?;
             let bob_pending_after_update = token.get_pending_rewards(bob)?;
             assert_eq!(U256::from(bob_pending_after_update), reward_amount);
 

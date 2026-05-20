@@ -1085,7 +1085,13 @@ impl TIP20Token {
             );
         }
 
-        self.handle_rewards_on_transfer(from, to.target, amount)?;
+        let to_balance = if self.storage.spec().is_t6() && to.target != Address::ZERO {
+            Some(self.get_balance(to.target)?)
+        } else {
+            None
+        };
+
+        self.handle_rewards_on_transfer(from, from_balance, to.target, to_balance, amount)?;
 
         // Adjust balances
         let new_from_balance = from_balance
@@ -1095,7 +1101,7 @@ impl TIP20Token {
         self.set_balance(from, new_from_balance)?;
 
         if to.target != Address::ZERO {
-            let to_balance = self.get_balance(to.target)?;
+            let to_balance = to_balance.map_or_else(|| self.get_balance(to.target), Ok)?;
             let new_to_balance = to_balance
                 .checked_add(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
@@ -1129,7 +1135,7 @@ impl TIP20Token {
         self.check_and_update_spending_limit(from, amount)?;
 
         // Update rewards for the sender and get their reward recipient
-        let from_reward_recipient = self.update_rewards(from)?;
+        let from_reward_recipient = self.update_rewards(from, None, None)?;
 
         // If user is opted into rewards, decrease opted-in supply
         if from_reward_recipient != Address::ZERO {
@@ -1187,7 +1193,7 @@ impl TIP20Token {
         }
 
         // Update rewards for the recipient and get their reward recipient
-        let to_reward_recipient = self.update_rewards(to)?;
+        let to_reward_recipient = self.update_rewards(to, None, None)?;
 
         // If user is opted into rewards, increase opted-in supply by refund amount
         if to_reward_recipient != Address::ZERO {
