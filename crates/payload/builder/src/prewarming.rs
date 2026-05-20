@@ -106,10 +106,9 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
-        // Keep enough buffered work to occupy the whole prewarming pool. The
-        // transaction returned to the builder on each advance is in addition to
-        // this lookahead.
-        let buffered_lookahead = pool.current_num_threads().max(1);
+        // Use only part of the shared prewarming pool for builder lookahead so
+        // mmap warming does not compete with block execution on every core.
+        let buffered_lookahead = builder_prewarming_lookahead(pool.current_num_threads());
 
         pool.in_place_scope(|scope| {
             let mut buffered_txs = VecDeque::new();
@@ -372,6 +371,10 @@ struct IndexedTransaction {
     index: usize,
     transaction: BestTransaction,
     should_prewarm: bool,
+}
+
+fn builder_prewarming_lookahead(pool_threads: usize) -> usize {
+    pool_threads.saturating_add(1).max(2) / 2
 }
 
 /// Context needed to prewarm transaction storage independently of the real builder.
@@ -1065,8 +1068,10 @@ mod tests {
     fn prewarming_window_limits_source_iterator_drain_after_first_advance() {
         let sender = Address::random();
         let executor = TaskExecutor::test();
-        let prewarming_window = executor.prewarming_pool().current_num_threads() + 1;
-        let txs = (0..prewarming_window + 4)
+        let prewarming_lookahead =
+            builder_prewarming_lookahead(executor.prewarming_pool().current_num_threads());
+        let first_advance_drain = prewarming_lookahead + 1;
+        let txs = (0..first_advance_drain + 4)
             .map(|nonce| test_tx(sender, nonce as u64))
             .collect::<Vec<_>>();
         let log = Arc::new(Mutex::new(TestLog::default()));
@@ -1076,12 +1081,12 @@ mod tests {
         assert_eq!(log.lock().unwrap().yielded, 0);
 
         assert!(prewarming.next().is_some());
-        wait_until(|| log.lock().unwrap().yielded == prewarming_window);
+        wait_until(|| log.lock().unwrap().yielded == first_advance_drain);
         thread::sleep(Duration::from_millis(25));
-        assert_eq!(log.lock().unwrap().yielded, prewarming_window);
+        assert_eq!(log.lock().unwrap().yielded, first_advance_drain);
 
         assert!(prewarming.next().is_some());
-        wait_until(|| log.lock().unwrap().yielded == prewarming_window + 1);
+        wait_until(|| log.lock().unwrap().yielded == first_advance_drain + 1);
     }
 
     #[test]
@@ -1115,7 +1120,7 @@ mod tests {
             Some(tx1.hash())
         );
 
-        wait_until(|| log.lock().unwrap().yielded == 3);
+        wait_until(|| log.lock().unwrap().yielded == 2);
         prewarming.mark_invalid(
             &tx1,
             InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
