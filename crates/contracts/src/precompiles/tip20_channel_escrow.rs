@@ -205,8 +205,6 @@ crate::sol! {
         error NotPayeeOrOperator();
         /// Payee is zero or a TIP-20-prefix address.
         error InvalidPayee();
-        /// Token is not a TIP-20-prefix address.
-        error InvalidToken();
         /// Initial deposit cannot be zero.
         error ZeroDeposit();
         /// Handler did not seed the transaction-scoped open context hash.
