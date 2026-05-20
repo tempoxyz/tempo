@@ -109,6 +109,25 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) prewarming_storage_touches: Histogram,
 }
 
+/// Reason the payload builder stopped adding pool transactions to the block.
+pub(crate) enum BlockBuildStopReason {
+    TimeLimit,
+    GasLimit,
+    RlpBlockSizeLimit,
+    TxPoolEmpty,
+}
+
+impl BlockBuildStopReason {
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::TimeLimit => "time_limit",
+            Self::GasLimit => "gas_limit",
+            Self::RlpBlockSizeLimit => "rlp_block_size_limit",
+            Self::TxPoolEmpty => "tx_pool_empty",
+        }
+    }
+}
+
 impl TempoPayloadBuilderMetrics {
     /// Increments the unified pool transaction skip counter with the given reason label.
     ///
@@ -124,6 +143,13 @@ impl TempoPayloadBuilderMetrics {
     #[inline]
     pub(crate) fn inc_build_failure(&self, reason: &'static str) {
         metrics::counter!("tempo_payload_builder_build_failures_total", "reason" => reason)
+            .increment(1);
+    }
+
+    /// Increments the counter for why the payload builder stopped adding pool transactions.
+    #[inline]
+    pub(crate) fn inc_block_build_stop_reason(&self, reason: BlockBuildStopReason) {
+        metrics::counter!("tempo_payload_builder_block_build_stop_total", "reason" => reason.as_str())
             .increment(1);
     }
 

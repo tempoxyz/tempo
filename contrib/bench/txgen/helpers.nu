@@ -100,19 +100,6 @@ def txgen-account-mnemonic [] {
     $TXGEN_HELPER_ACCOUNT_MNEMONIC
 }
 
-def txgen-validate-bench-args [bench_args: string] {
-    if $bench_args == "" {
-        return
-    }
-
-    let unsupported = ($bench_args
-        | str replace --all --regex '--existing-recipients(=(true|false))?' ''
-        | str trim)
-    if $unsupported != "" {
-        error make { msg: $"txgen path does not support custom --bench-args yet: ($unsupported)" }
-    }
-}
-
 def txgen-rpc-call [rpc_url: string, payload: string] {
     let result = (^curl -sf -X POST -H "Content-Type: application/json" -d $payload $rpc_url | complete)
     if $result.exit_code != 0 {
@@ -187,6 +174,7 @@ def txgen-run-preset-pipeline [
     --duration: int
     --accounts: int
     --max-concurrent-requests: int
+    --bench-args: string = ""
     --bench-env: string = ""
     --git-ref: string = ""
     --git-ref-label: string = ""
@@ -263,7 +251,12 @@ def txgen-run-preset-pipeline [
     let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
-    let txgen_cmd_str = (txgen-shell-join $txgen_cmd)
+    let txgen_base_cmd_str = (txgen-shell-join $txgen_cmd)
+    let txgen_cmd_str = if $bench_args == "" {
+        $txgen_base_cmd_str
+    } else {
+        $"($txgen_base_cmd_str) ($bench_args)"
+    }
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
 

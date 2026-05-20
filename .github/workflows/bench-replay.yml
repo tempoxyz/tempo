@@ -1,7 +1,7 @@
 # Replay benchmark job.
 #
 # Called by bench.yml when mode=replay. Replays real Tempo blocks through the
-# Engine API for an interleaved B-F-F-B comparison.
+# Engine API for an interleaved baseline/feature comparison.
 
 name: bench-replay
 
@@ -23,6 +23,10 @@ on:
         description: "Number of warmup blocks (default: one-quarter of blocks)"
         type: string
         default: ""
+      run-pairs:
+        description: "Number of baseline/feature run pairs"
+        type: string
+        default: "2"
       samply:
         description: "Enable samply profiling"
         type: string
@@ -100,6 +104,10 @@ on:
       warmup:
         type: string
         required: true
+      run-pairs:
+        type: string
+        required: false
+        default: "2"
       comment-id:
         type: string
         required: false
@@ -169,6 +177,7 @@ jobs:
       BENCH_FEATURE_ARGS: "--dev.block-time 999999s ${{ inputs.feature-args }}"
       BENCH_BLOCKS: ${{ inputs.blocks || '5000' }}
       BENCH_WARMUP_BLOCKS: ${{ inputs.warmup }}
+      BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '2' }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
       BENCH_PR_HEAD_SHA: ${{ inputs.pr-head-sha }}
       BENCH_PR_HEAD_REF: ${{ inputs.pr-head-ref }}
@@ -181,6 +190,7 @@ jobs:
         env:
           INPUT_BLOCKS: ${{ inputs.blocks || '5000' }}
           INPUT_WARMUP: ${{ inputs.warmup || '' }}
+          INPUT_RUN_PAIRS: ${{ inputs.run-pairs || '2' }}
         run: |
           if ! [[ "$INPUT_BLOCKS" =~ ^[0-9]+$ ]]; then
             echo "::error::blocks must be a non-negative integer"
@@ -190,6 +200,10 @@ jobs:
             echo "::error::warmup must be a non-negative integer"
             exit 1
           fi
+          if ! [[ "$INPUT_RUN_PAIRS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::run-pairs must be a positive integer"
+            exit 1
+          fi
           if [ -z "$INPUT_WARMUP" ]; then
             INPUT_WARMUP=$(( INPUT_BLOCKS / 4 ))
           fi
@@ -197,6 +211,7 @@ jobs:
           {
             echo "BENCH_BLOCKS=$INPUT_BLOCKS"
             echo "BENCH_WARMUP_BLOCKS=$INPUT_WARMUP"
+            echo "BENCH_RUN_PAIRS=$INPUT_RUN_PAIRS"
           } >> "$GITHUB_ENV"
 
       - name: Configure OTLP telemetry
@@ -240,7 +255,7 @@ jobs:
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: pr.number,
-                  body: `cc @${'${{ github.actor }}'}\n\n🚀 Replay benchmark started! [View run](${runUrl})\n\n⏳ **Status:** Running...\n\n**Config:** chain: \`${'${{ inputs.chain || 'mainnet' }}'}\`, blocks: \`${process.env.BENCH_BLOCKS}\`, warmup: \`${process.env.BENCH_WARMUP_BLOCKS}\``,
+                  body: `cc @${'${{ github.actor }}'}\n\n🚀 Replay benchmark started! [View run](${runUrl})\n\n⏳ **Status:** Running...\n\n**Config:** chain: \`${'${{ inputs.chain || 'mainnet' }}'}\`, blocks: \`${process.env.BENCH_BLOCKS}\`, warmup: \`${process.env.BENCH_WARMUP_BLOCKS}\`, run-pairs: \`${process.env.BENCH_RUN_PAIRS || '2'}\``,
                 });
                 core.exportVariable('BENCH_COMMENT_ID', String(comment.id));
                 if (pr.mergeable) {
@@ -292,6 +307,7 @@ jobs:
 
             const blocks = process.env.BENCH_BLOCKS;
             const warmup = process.env.BENCH_WARMUP_BLOCKS;
+            const runPairs = process.env.BENCH_RUN_PAIRS || '2';
             const baseline = '${{ inputs.baseline-name }}';
             const feature = '${{ inputs.feature-name }}';
             const samply = process.env.BENCH_SAMPLY === 'true';
@@ -299,7 +315,7 @@ jobs:
             const otlp = process.env.BENCH_OTLP === 'true';
             const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
             const chain = process.env.BENCH_CHAIN || 'mainnet';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${otlpNote}`);
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${otlpNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -419,19 +435,28 @@ jobs:
           FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
         run: |
-          SUMMARY_ARGS="--output-summary $BENCH_WORK_DIR/summary.json"
-          SUMMARY_ARGS="$SUMMARY_ARGS --output-markdown $BENCH_WORK_DIR/comment.md"
-          SUMMARY_ARGS="$SUMMARY_ARGS --repo ${{ github.repository }}"
-          SUMMARY_ARGS="$SUMMARY_ARGS --baseline-ref ${BASELINE_REF}"
-          SUMMARY_ARGS="$SUMMARY_ARGS --baseline-name ${BASELINE_NAME}"
-          SUMMARY_ARGS="$SUMMARY_ARGS --feature-name ${FEATURE_NAME}"
-          SUMMARY_ARGS="$SUMMARY_ARGS --feature-ref ${FEATURE_REF}"
-          BASELINE_JSONS="$BENCH_WORK_DIR/baseline-1/report.json $BENCH_WORK_DIR/baseline-2/report.json"
-          FEATURE_JSONS="$BENCH_WORK_DIR/feature-1/report.json $BENCH_WORK_DIR/feature-2/report.json"
-          SUMMARY_ARGS="$SUMMARY_ARGS --baseline-json $BASELINE_JSONS"
-          SUMMARY_ARGS="$SUMMARY_ARGS --feature-json $FEATURE_JSONS"
-          # shellcheck disable=SC2086
-          python3 .github/scripts/bench-replay-summary.py $SUMMARY_ARGS
+          mapfile -t RUN_LABELS < "$BENCH_WORK_DIR/run-order.txt"
+          BASELINE_JSONS=()
+          FEATURE_JSONS=()
+          for label in "${RUN_LABELS[@]}"; do
+            [ -z "$label" ] && continue
+            report="$BENCH_WORK_DIR/$label/report.json"
+            if [[ "$label" == baseline-* ]]; then
+              BASELINE_JSONS+=("$report")
+            elif [[ "$label" == feature-* ]]; then
+              FEATURE_JSONS+=("$report")
+            fi
+          done
+          python3 .github/scripts/bench-replay-summary.py \
+            --output-summary "$BENCH_WORK_DIR/summary.json" \
+            --output-markdown "$BENCH_WORK_DIR/comment.md" \
+            --repo "${{ github.repository }}" \
+            --baseline-ref "$BASELINE_REF" \
+            --baseline-name "$BASELINE_NAME" \
+            --feature-name "$FEATURE_NAME" \
+            --feature-ref "$FEATURE_REF" \
+            --baseline-json "${BASELINE_JSONS[@]}" \
+            --feature-json "${FEATURE_JSONS[@]}"
 
       - name: Generate charts
         id: charts
@@ -440,15 +465,24 @@ jobs:
           BASELINE_NAME: ${{ steps.refs.outputs.baseline-name }}
           FEATURE_NAME: ${{ steps.refs.outputs.feature-name }}
         run: |
-          CHART_ARGS="--output-dir $BENCH_WORK_DIR/charts"
-          FEATURE_JSONS="$BENCH_WORK_DIR/feature-1/report.json $BENCH_WORK_DIR/feature-2/report.json"
-          BASELINE_JSONS="$BENCH_WORK_DIR/baseline-1/report.json $BENCH_WORK_DIR/baseline-2/report.json"
-          CHART_ARGS="$CHART_ARGS --feature $FEATURE_JSONS"
-          CHART_ARGS="$CHART_ARGS --baseline $BASELINE_JSONS"
-          CHART_ARGS="$CHART_ARGS --baseline-name ${BASELINE_NAME}"
-          CHART_ARGS="$CHART_ARGS --feature-name ${FEATURE_NAME}"
-          # shellcheck disable=SC2086
-          uv run --with matplotlib python3 .github/scripts/bench-replay-charts.py $CHART_ARGS
+          mapfile -t RUN_LABELS < "$BENCH_WORK_DIR/run-order.txt"
+          BASELINE_JSONS=()
+          FEATURE_JSONS=()
+          for label in "${RUN_LABELS[@]}"; do
+            [ -z "$label" ] && continue
+            report="$BENCH_WORK_DIR/$label/report.json"
+            if [[ "$label" == baseline-* ]]; then
+              BASELINE_JSONS+=("$report")
+            elif [[ "$label" == feature-* ]]; then
+              FEATURE_JSONS+=("$report")
+            fi
+          done
+          uv run --with matplotlib python3 .github/scripts/bench-replay-charts.py \
+            --output-dir "$BENCH_WORK_DIR/charts" \
+            --feature "${FEATURE_JSONS[@]}" \
+            --baseline "${BASELINE_JSONS[@]}" \
+            --baseline-name "$BASELINE_NAME" \
+            --feature-name "$FEATURE_NAME"
 
       - name: Upload results
         id: upload-results
@@ -526,7 +560,8 @@ jobs:
             const chain = process.env.BENCH_CHAIN || 'mainnet';
             const blocks = process.env.BENCH_BLOCKS || '5000';
             const warmup = process.env.BENCH_WARMUP_BLOCKS || String(Math.floor(Number(blocks) / 4));
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Replay benchmark complete! [View job](${jobUrl})\n\nChain: \`${chain}\`\nWarmup: \`${warmup}\`\nBlocks: \`${blocks}\`\n\n${comment}`;
+            const runPairs = process.env.BENCH_RUN_PAIRS || '2';
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Replay benchmark complete! [View job](${jobUrl})\n\nChain: \`${chain}\`\nWarmup: \`${warmup}\`\nBlocks: \`${blocks}\`\nRun pairs: \`${runPairs}\`\n\n${comment}`;
 
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
@@ -538,6 +573,13 @@ jobs:
       - name: Write job summary
         if: success()
         run: |
+          {
+            echo "Chain: \`${BENCH_CHAIN:-mainnet}\`"
+            echo "Warmup: \`${BENCH_WARMUP_BLOCKS:-}\`"
+            echo "Blocks: \`${BENCH_BLOCKS:-5000}\`"
+            echo "Run pairs: \`${BENCH_RUN_PAIRS:-2}\`"
+            echo
+          } >> "$GITHUB_STEP_SUMMARY"
           if [ -f "$BENCH_WORK_DIR/comment.md" ]; then
             cat "$BENCH_WORK_DIR/comment.md" >> "$GITHUB_STEP_SUMMARY"
           fi
