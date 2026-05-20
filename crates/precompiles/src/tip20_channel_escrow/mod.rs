@@ -938,7 +938,7 @@ mod tests {
             let res = escrow.close(
                 payee,
                 ITIP20ChannelEscrow::closeCall {
-                    descriptor: descriptor.clone(),
+                    descriptor,
                     cumulativeAmount: U96::from(10),
                     captureAmount: U96::from(10),
                     signature,
