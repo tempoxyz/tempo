@@ -836,8 +836,14 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         }
         let report = (open $report_path)
         let samples_path = $"($results_dir)/report-($label).samples.ndjson"
-        let metric_samples = if ($samples_path | path exists) {
+        let samples_gz_path = $"($samples_path).gz"
+        let samples_raw = if ($samples_path | path exists) {
             open --raw $samples_path
+        } else if ($samples_gz_path | path exists) {
+            gzip -dc $samples_gz_path
+        } else { "" }
+        let metric_samples = if $samples_raw != "" {
+            $samples_raw
                 | lines
                 | where { |line| ($line | str trim) != "" }
                 | each { |line| $line | from json }
