@@ -3778,7 +3778,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ccc2776f0c61eca1ca32528f85548abd1a4be8fb53d1b21c013e4f18da1e7090"
 dependencies = [
  "data-encoding",
- "syn 2.0.117",
+ "syn 1.0.109",
 ]
 
 [[package]]
@@ -8004,6 +8004,7 @@ dependencies = [
  "chacha20 0.10.0",
  "getrandom 0.4.2",
  "rand_core 0.10.1",
+ "serde",
 ]
 
 [[package]]
@@ -12946,7 +12947,7 @@ dependencies = [
  "jiff",
  "jsonrpsee",
  "p256",
- "rand 0.9.4",
+ "rand 0.10.1",
  "reqwest 0.13.3",
  "reth-chainspec",
  "reth-e2e-test-utils",
@@ -13107,7 +13108,7 @@ dependencies = [
  "p256",
  "proptest",
  "proptest-arbitrary-interop",
- "rand 0.9.4",
+ "rand 0.10.1",
  "reth-codecs",
  "reth-db-api",
  "reth-ethereum-primitives",
