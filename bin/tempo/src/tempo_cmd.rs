@@ -142,8 +142,9 @@ impl ExtendedCommand for TempoSubcommand {
 pub(crate) enum ConsensusSubcommand {
     /// Add a new validator to the validator config contract.
     AddValidator(AddValidator),
-    /// Calculates the public key from an ed25519 signing key.
-    CalculatePublicKey(CalculatePublicKey),
+    /// Shows the verification key for an ed25519 signing key.
+    #[command(alias = "calculate-public-key")]
+    ShowVerificationKey(ShowVerificationKey),
     /// Create an ed25519 signature for `addValidator`.
     CreateAddValidatorSignature(CreateAddValidatorSignatureArgs),
     /// Create an ed25519 signature for `rotateValidator`.
@@ -183,7 +184,7 @@ impl ConsensusSubcommand {
             Self::SetValidatorFeeRecipient(args) => args.run().await,
             Self::EncryptSigningKey(args) => args.run(),
             Self::GenerateSigningKey(args) => args.run(),
-            Self::CalculatePublicKey(args) => args.run(),
+            Self::ShowVerificationKey(args) => args.run(),
             Self::Validator(args) => args.run().await,
             Self::Info(args) => args.run().await,
         }
@@ -941,8 +942,8 @@ impl EncryptSigningKey {
 }
 
 #[derive(Debug, clap::Args)]
-pub(crate) struct CalculatePublicKey {
-    /// Signing key to calculate the public key from.
+pub(crate) struct ShowVerificationKey {
+    /// Signing key to show the verification key for.
     #[arg(long, short, value_name = "FILE")]
     private_key: PathBuf,
 
@@ -954,7 +955,7 @@ pub(crate) struct CalculatePublicKey {
     secret: Option<PathBuf>,
 }
 
-impl CalculatePublicKey {
+impl ShowVerificationKey {
     fn run(self) -> eyre::Result<()> {
         let Self {
             private_key,
@@ -1452,11 +1453,20 @@ mod tests {
     }
 
     #[test]
-    fn parse_calculate_public_key_with_secret() {
+    fn parse_show_verification_key_with_secret() {
+        assert_parse_show_verification_key("show-verification-key");
+    }
+
+    #[test]
+    fn parse_calculate_public_key_alias_with_secret() {
+        assert_parse_show_verification_key("calculate-public-key");
+    }
+
+    fn assert_parse_show_verification_key(command: &str) {
         let cli = TempoCli::try_parse_from([
             "tempo",
             "consensus",
-            "calculate-public-key",
+            command,
             "--private-key",
             "/tmp/signing.key.age",
             "--secret",
@@ -1467,7 +1477,7 @@ mod tests {
         assert!(matches!(
             cli.command,
             reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::CalculatePublicKey(CalculatePublicKey {
+                ConsensusSubcommand::ShowVerificationKey(ShowVerificationKey {
                     private_key,
                     secret: Some(secret),
                 })
