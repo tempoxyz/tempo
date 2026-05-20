@@ -26,7 +26,7 @@ async fn test_tempo_simulate_v1() -> eyre::Result<()> {
     let mint_amount = U256::from(1_000_000u64);
     token
         .mint(caller, mint_amount)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T1_BASE_FEE))
         .gas(1_000_000)
         .send()
         .await?

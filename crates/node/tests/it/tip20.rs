@@ -51,7 +51,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         pending_txs.push(
             token
                 .mint(*account, *balance)
-                .gas_price(TEMPO_T1_BASE_FEE as u128)
+                .gas_price(u128::from(TEMPO_T1_BASE_FEE))
                 .gas(1_000_000)
                 .send()
                 .await?,
@@ -109,7 +109,7 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         assert!(success);
         let pending_tx = token
             .transfer(recipient, sender_balance)
-            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas_price(u128::from(TEMPO_T1_BASE_FEE))
             .gas(1_000_000)
             .send()
             .await?;
@@ -175,7 +175,7 @@ async fn test_tip20_mint() -> eyre::Result<()> {
         pending_txs.push(
             token
                 .mint(*account, *balance)
-                .gas_price(TEMPO_T1_BASE_FEE as u128)
+                .gas_price(u128::from(TEMPO_T1_BASE_FEE))
                 .gas(1_000_000)
                 .send()
                 .await?,
@@ -257,7 +257,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
     let total_balance: U256 = account_data.iter().map(|(_, balance)| *balance).sum();
     token
         .mint(caller, total_balance)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T1_BASE_FEE))
         .gas(1_000_000)
         .send()
         .await?
@@ -272,7 +272,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
         pending_txs.push(
             token
                 .approve(signer.address(), *balance)
-                .gas_price(TEMPO_T1_BASE_FEE as u128)
+                .gas_price(u128::from(TEMPO_T1_BASE_FEE))
                 .gas(1_000_000)
                 .send()
                 .await?,
@@ -312,7 +312,7 @@ async fn test_tip20_transfer_from() -> eyre::Result<()> {
 
         let pending_tx = spender_token
             .transferFrom(caller, recipient, *allowance)
-            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas_price(u128::from(TEMPO_T1_BASE_FEE))
             .gas(1_000_000)
             .send()
             .await?;
@@ -352,7 +352,7 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
     let recipient = Address::random();
     token
         .mint(caller, transfer_amount)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T1_BASE_FEE))
         .gas(1_000_000)
         .send()
         .await?
@@ -363,7 +363,7 @@ async fn test_tip20_transfer_with_memo() -> eyre::Result<()> {
     let memo = FixedBytes::<32>::random();
     let receipt = token
         .transferWithMemo(recipient, transfer_amount, memo)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T1_BASE_FEE))
         .gas(1_000_000)
         .send()
         .await?
@@ -409,7 +409,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     // Create a blacklist policy
     let policy_receipt = registry
         .createPolicy(admin, ITIP403Registry::PolicyType::BLACKLIST)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T1_BASE_FEE))
         .gas(1_000_000)
         .send()
         .await?
@@ -427,7 +427,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     // Update the token policy to the blacklist
     token
         .changeTransferPolicyId(policy_id)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T1_BASE_FEE))
         .gas(1_000_000)
         .send()
         .await?
@@ -450,7 +450,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     for account in blacklisted_accounts {
         let pending_tx = registry
             .modifyPolicyBlacklist(policy_id, account.address(), true)
-            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas_price(u128::from(TEMPO_T1_BASE_FEE))
             .gas(1_000_000)
             .send()
             .await?;
@@ -462,7 +462,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
     try_join_all(accounts.iter().map(|account| async {
         token
             .mint(account.address(), U256::from(1000))
-            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas_price(u128::from(TEMPO_T1_BASE_FEE))
             .gas(1_000_000)
             .send()
             .await
@@ -502,7 +502,7 @@ async fn test_tip20_blacklist() -> eyre::Result<()> {
 
             token
                 .transfer(Address::random(), U256::ONE)
-                .gas_price(TEMPO_T1_BASE_FEE as u128)
+                .gas_price(u128::from(TEMPO_T1_BASE_FEE))
                 .gas(1_000_000)
                 .send()
                 .await
@@ -535,7 +535,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     // Create a whitelist policy
     let policy_receipt = registry
         .createPolicy(admin, ITIP403Registry::PolicyType::WHITELIST)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T1_BASE_FEE))
         .gas(1_000_000)
         .send()
         .await?
@@ -553,7 +553,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     // Update the token policy to the whitelist
     token
         .changeTransferPolicyId(policy_id)
-        .gas_price(TEMPO_T1_BASE_FEE as u128)
+        .gas_price(u128::from(TEMPO_T1_BASE_FEE))
         .gas(1_000_000)
         .send()
         .await?
@@ -586,7 +586,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     for account in whitelisted_accounts {
         let pending_tx = registry
             .modifyPolicyWhitelist(policy_id, account, true)
-            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas_price(u128::from(TEMPO_T1_BASE_FEE))
             .gas(1_000_000)
             .send()
             .await?;
@@ -600,7 +600,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
     try_join_all(accounts.iter().map(|account| async {
         token
             .mint(account.address(), U256::from(1000))
-            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas_price(u128::from(TEMPO_T1_BASE_FEE))
             .gas(1_000_000)
             .send()
             .await
@@ -647,7 +647,7 @@ async fn test_tip20_whitelist() -> eyre::Result<()> {
             .map(|(token, recipient)| async {
                 token
                     .transfer(*recipient, U256::ONE)
-                    .gas_price(TEMPO_T1_BASE_FEE as u128)
+                    .gas_price(u128::from(TEMPO_T1_BASE_FEE))
                     .send()
                     .await
                     .expect("Could not send tx")
@@ -699,7 +699,7 @@ async fn test_tip20_rewards() -> eyre::Result<()> {
 
     // TIP-1000 increased state creation costs significantly (SSTORE 250k, new account 250k)
     let gas = 2_000_000;
-    let gas_price = TEMPO_T1_BASE_FEE as u128;
+    let gas_price = u128::from(TEMPO_T1_BASE_FEE);
 
     let mut pending = vec![];
     pending.push(
@@ -812,7 +812,7 @@ async fn test_tip20_pause_blocks_fee_collection() -> eyre::Result<()> {
     let roles = IRolesAuth::new(*token.address(), admin_provider.clone());
 
     let gas = 2_000_000u64;
-    let gas_price = TEMPO_T1_BASE_FEE as u128;
+    let gas_price = u128::from(TEMPO_T1_BASE_FEE);
 
     // Mint tokens to user
     token

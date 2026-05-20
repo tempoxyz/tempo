@@ -39,7 +39,7 @@ fn build_create_key_auth_tx(
     let tx = TempoTransaction {
         chain_id,
         max_priority_fee_per_gas,
-        max_fee_per_gas: core::cmp::max(max_priority_fee_per_gas, TEMPO_T1_BASE_FEE as u128),
+        max_fee_per_gas: core::cmp::max(max_priority_fee_per_gas, u128::from(TEMPO_T1_BASE_FEE)),
         gas_limit,
         calls: vec![Call {
             to: TxKind::Create,
@@ -77,7 +77,7 @@ fn build_2d_nonce_transfer_tx(
     let tx = TempoTransaction {
         chain_id,
         max_priority_fee_per_gas,
-        max_fee_per_gas: core::cmp::max(max_priority_fee_per_gas, TEMPO_T1_BASE_FEE as u128),
+        max_fee_per_gas: core::cmp::max(max_priority_fee_per_gas, u128::from(TEMPO_T1_BASE_FEE)),
         // 21k base + 250k new_account_cost (2D nonce with nonce=0 creates account) + margin
         gas_limit: 300_000,
         calls: vec![Call {
@@ -146,7 +146,7 @@ async fn test_pre_t1b_keyauth_oog_replay() -> eyre::Result<()> {
         chain_id,
         nonce,
         1_050_000,
-        (TEMPO_T1_BASE_FEE * 2) as u128,
+        u128::from(TEMPO_T1_BASE_FEE * 2),
     )?;
 
     // ── Block 1 ──────────────────────────────────────────────────────────
@@ -156,7 +156,7 @@ async fn test_pre_t1b_keyauth_oog_replay() -> eyre::Result<()> {
         chain_id,
         1, // nonce_key=1
         0, // first tx on this 2D nonce
-        TEMPO_T1_BASE_FEE as u128,
+        u128::from(TEMPO_T1_BASE_FEE),
     )?;
 
     let _ = provider.send_raw_transaction(&poisoned_tx).await?;
@@ -188,7 +188,7 @@ async fn test_pre_t1b_keyauth_oog_replay() -> eyre::Result<()> {
         chain_id,
         2, // different nonce_key to avoid replay on the 2D nonce
         0,
-        TEMPO_T1_BASE_FEE as u128,
+        u128::from(TEMPO_T1_BASE_FEE),
     )?;
 
     let _ = provider.send_raw_transaction(&poisoned_tx).await?;
@@ -242,7 +242,7 @@ async fn test_pre_t1b_keyauth_oog_single_tx_nonce_not_bumped() -> eyre::Result<(
         chain_id,
         nonce,
         1_050_000,
-        TEMPO_T1_BASE_FEE as u128,
+        u128::from(TEMPO_T1_BASE_FEE),
     )?;
 
     let _ = provider.send_raw_transaction(&encoded).await?;
@@ -289,7 +289,7 @@ async fn test_post_t1b_keyauth_oog_fixed() -> eyre::Result<()> {
         chain_id,
         nonce,
         1_050_000,
-        TEMPO_T1_BASE_FEE as u128,
+        u128::from(TEMPO_T1_BASE_FEE),
     )?;
 
     let _ = provider.send_raw_transaction(&encoded).await?;

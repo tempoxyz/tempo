@@ -36,8 +36,8 @@ fn build_tx(
         nonce,
         gas_limit,
         to: Address::ZERO.into(),
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
+        max_priority_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
         ..Default::default()
     };
     let signature = signer.sign_transaction_sync(&mut tx).unwrap();

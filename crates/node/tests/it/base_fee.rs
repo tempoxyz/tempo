@@ -33,7 +33,7 @@ async fn test_base_fee() -> eyre::Result<()> {
         .header
         .base_fee_per_gas
         .expect("Could not get basefee");
-    assert_eq!(base_fee, TEMPO_T1_BASE_FEE as u128 as u64);
+    assert_eq!(base_fee, u128::from(TEMPO_T1_BASE_FEE) as u64);
 
     let token = ITIP20::new(PATH_USD_ADDRESS, provider.clone());
 
@@ -43,7 +43,7 @@ async fn test_base_fee() -> eyre::Result<()> {
     for _ in 0..500 {
         let pending_tx = token
             .transfer(Address::random(), U256::ONE)
-            .gas_price(TEMPO_T1_BASE_FEE as u128)
+            .gas_price(u128::from(TEMPO_T1_BASE_FEE))
             .gas(1_000_000)
             .send()
             .await?;
@@ -76,7 +76,7 @@ async fn test_base_fee() -> eyre::Result<()> {
                     .header
                     .base_fee_per_gas
                     .expect("Could not get basefee");
-                assert_eq!(base_fee, TEMPO_T1_BASE_FEE as u128 as u64);
+                assert_eq!(base_fee, u128::from(TEMPO_T1_BASE_FEE) as u64);
             }
         })
         .await;
@@ -91,7 +91,7 @@ async fn test_base_fee() -> eyre::Result<()> {
         .iter()
         .zip(fee_history.gas_used_ratio)
     {
-        assert_eq!(*base_fee, TEMPO_T1_BASE_FEE as u128);
+        assert_eq!(*base_fee, u128::from(TEMPO_T1_BASE_FEE));
         println!("Gas used ratio: {gas_used_ratio}");
     }
 

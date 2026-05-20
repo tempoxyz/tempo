@@ -59,10 +59,12 @@ where
             tx_req.nonce = Some(nonce);
             tx_req.chain_id = Some(chain_id);
             tx_req.gas = tx_req.gas.or(Some(5_000_000));
-            tx_req.max_fee_per_gas = tx_req.max_fee_per_gas.or(Some(TEMPO_T1_BASE_FEE as u128));
+            tx_req.max_fee_per_gas = tx_req
+                .max_fee_per_gas
+                .or(Some(u128::from(TEMPO_T1_BASE_FEE)));
             tx_req.max_priority_fee_per_gas = tx_req
                 .max_priority_fee_per_gas
-                .or(Some(TEMPO_T1_BASE_FEE as u128));
+                .or(Some(u128::from(TEMPO_T1_BASE_FEE)));
 
             let signed = <TransactionRequest as NetworkTransactionBuilder<Ethereum>>::build(
                 tx_req,
@@ -141,8 +143,8 @@ async fn inject_non_payment_txs(
             chain_id,
             gas_limit: 2_000_000,
             to: Address::ZERO.into(),
-            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-            max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+            max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
+            max_priority_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
             ..Default::default()
         };
         let signature = wallet_signer.sign_transaction_sync(&mut tx).unwrap();
@@ -179,8 +181,8 @@ where
         tx_request.nonce = Some(current_nonce + i as u64);
         tx_request.chain_id = Some(chain_id);
         tx_request.gas = Some(1_000_000);
-        tx_request.max_fee_per_gas = Some(TEMPO_T1_BASE_FEE as u128);
-        tx_request.max_priority_fee_per_gas = Some(TEMPO_T1_BASE_FEE as u128);
+        tx_request.max_fee_per_gas = Some(u128::from(TEMPO_T1_BASE_FEE));
+        tx_request.max_priority_fee_per_gas = Some(u128::from(TEMPO_T1_BASE_FEE));
 
         let signed_tx =
             <TransactionRequest as NetworkTransactionBuilder<Ethereum>>::build(tx_request, &signer)
@@ -204,10 +206,10 @@ async fn sign_and_inject(
     tx_request.gas = tx_request.gas.or(Some(5_000_000));
     tx_request.max_fee_per_gas = tx_request
         .max_fee_per_gas
-        .or(Some(TEMPO_T1_BASE_FEE as u128));
+        .or(Some(u128::from(TEMPO_T1_BASE_FEE)));
     tx_request.max_priority_fee_per_gas = tx_request
         .max_priority_fee_per_gas
-        .or(Some(TEMPO_T1_BASE_FEE as u128));
+        .or(Some(u128::from(TEMPO_T1_BASE_FEE)));
 
     let signed_tx = <TransactionRequest as NetworkTransactionBuilder<Ethereum>>::build(
         tx_request,
@@ -408,8 +410,8 @@ async fn test_block_building_only_non_payment_txs() -> eyre::Result<()> {
                 chain_id,
                 gas_limit: 2_000_000,
                 to: Address::ZERO.into(),
-                max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-                max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+                max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
+                max_priority_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
                 ..Default::default()
             };
             let signature = wallet_signer.sign_transaction_sync(&mut tx).unwrap();

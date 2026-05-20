@@ -211,8 +211,8 @@ pub(super) async fn fund_address_with(
 
     let funding_tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_priority_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
+        max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
         gas_limit: 2_000_000,
         calls: vec![Call {
             to: fee_token.into(),
@@ -790,8 +790,8 @@ pub(crate) fn create_basic_aa_tx(
 ) -> TempoTransaction {
     TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_priority_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
+        max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
         gas_limit,
         calls,
         nonce_key: U256::ZERO,

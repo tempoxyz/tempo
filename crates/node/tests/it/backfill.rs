@@ -74,8 +74,8 @@ async fn test_backfill_sync() -> eyre::Result<()> {
                 chain_id,
                 gas_limit: 300_000,
                 to: Address::ZERO.into(),
-                max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-                max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+                max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
+                max_priority_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
                 ..Default::default()
             };
             let signature = wallet_signer.sign_transaction_sync(&mut tx).unwrap();

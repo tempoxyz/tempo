@@ -3217,7 +3217,7 @@ pub(crate) mod tests {
             );
 
             let sig = signer.sign_hash_sync(&digest).unwrap();
-            let v = sig.v() as u8 + 27;
+            let v = u8::from(sig.v()) + 27;
             let r: B256 = sig.r().into();
             let s: B256 = sig.s().into();
             (v, r, s)
