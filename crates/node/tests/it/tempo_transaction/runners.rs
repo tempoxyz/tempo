@@ -2019,8 +2019,8 @@ pub(super) async fn run_authorization_list_scenario<E: TestEnv>(env: &mut E) -> 
             to: Some(recipient.into()),
             value: Some(U256::ZERO),
             gas: Some(2_000_000),
-            max_fee_per_gas: Some(u128::from(tempo_chainspec::spec::TEMPO_T1_BASE_FEE)),
-            max_priority_fee_per_gas: Some(u128::from(tempo_chainspec::spec::TEMPO_T1_BASE_FEE)),
+            max_fee_per_gas: Some(tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128),
+            max_priority_fee_per_gas: Some(tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128),
             nonce: Some(env.provider().get_transaction_count(sender_addr).await?),
             chain_id: Some(chain_id),
             ..Default::default()
@@ -2114,8 +2114,8 @@ pub(super) async fn run_keychain_auth_list_skipped_scenario<E: TestEnv>(
             to: Some(recipient.into()),
             value: Some(U256::ZERO),
             gas: Some(2_000_000),
-            max_fee_per_gas: Some(u128::from(tempo_chainspec::spec::TEMPO_T1_BASE_FEE)),
-            max_priority_fee_per_gas: Some(u128::from(tempo_chainspec::spec::TEMPO_T1_BASE_FEE)),
+            max_fee_per_gas: Some(tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128),
+            max_priority_fee_per_gas: Some(tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128),
             nonce: Some(sender_nonce_before),
             chain_id: Some(chain_id),
             ..Default::default()
@@ -2715,8 +2715,8 @@ pub(super) async fn run_create_contract_address_scenario<E: TestEnv>(
 
     let tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: u128::from(tempo_chainspec::spec::TEMPO_T1_BASE_FEE),
-        max_fee_per_gas: u128::from(tempo_chainspec::spec::TEMPO_T1_BASE_FEE),
+        max_priority_fee_per_gas: tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: tempo_chainspec::spec::TEMPO_T1_BASE_FEE as u128,
         gas_limit: 2_000_000,
         calls: vec![Call {
             to: TxKind::Create,

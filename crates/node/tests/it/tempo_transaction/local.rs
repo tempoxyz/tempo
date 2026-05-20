@@ -337,7 +337,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             recipient,
             0,
             initial_nonce,
-            u128::from(TEMPO_T1_BASE_FEE),
+            TEMPO_T1_BASE_FEE as u128,
         )
         .await?,
     ); // Protocol pool
@@ -349,7 +349,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             recipient,
             1,
             0,
-            u128::from(TEMPO_T1_BASE_FEE),
+            TEMPO_T1_BASE_FEE as u128,
         )
         .await?,
     ); // 2D pool
@@ -361,7 +361,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
             recipient,
             2,
             0,
-            u128::from(TEMPO_T1_BASE_FEE),
+            TEMPO_T1_BASE_FEE as u128,
         )
         .await?,
     ); // 2D pool
@@ -529,7 +529,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         recipient,
         3,
         0,
-        u128::from(TEMPO_T1_BASE_FEE),
+        TEMPO_T1_BASE_FEE as u128,
     )
     .await?;
     println!("  Sent nonce_key=3, nonce=0 (should be pending)");
@@ -542,7 +542,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         recipient,
         3,
         2,
-        u128::from(TEMPO_T1_BASE_FEE),
+        TEMPO_T1_BASE_FEE as u128,
     )
     .await?;
     println!("  Sent nonce_key=3, nonce=2 (should be queued - gap at nonce=1)");
@@ -608,7 +608,7 @@ async fn test_aa_2d_nonce_pool_comprehensive() -> eyre::Result<()> {
         recipient,
         3,
         1,
-        u128::from(TEMPO_T1_BASE_FEE),
+        TEMPO_T1_BASE_FEE as u128,
     )
     .await?;
     println!("\n  Sent nonce_key=3, nonce=1 (fills the gap)");
@@ -700,7 +700,7 @@ async fn send_tx(
     );
     tx.nonce_key = U256::from(nonce_key);
     tx.max_priority_fee_per_gas = priority_fee;
-    tx.max_fee_per_gas = u128::from(TEMPO_T1_BASE_FEE) + priority_fee;
+    tx.max_fee_per_gas = TEMPO_T1_BASE_FEE as u128 + priority_fee;
     tx.fee_token = None;
 
     let signature = sign_aa_tx_secp256k1(&tx, signer)?;
@@ -1289,7 +1289,7 @@ async fn test_propagate_2d_transactions() -> eyre::Result<()> {
     let tx = TempoTransaction {
         chain_id,
         max_priority_fee_per_gas: 1_000_000_000u128,
-        max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 2_000_000,
         calls: vec![Call {
             to: Address::random().into(),

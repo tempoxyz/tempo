@@ -302,7 +302,7 @@ async fn test_asks() -> eyre::Result<()> {
 
     // Assert exchange balance for makers
     // For ask orders, makers receive quote tokens based on price
-    let price = (100000 + i32::from(tick)) as u128; // tick_to_price formula: PRICE_SCALE + tick
+    let price = (100000 + tick as i32) as u128; // tick_to_price formula: PRICE_SCALE + tick
     let expected_quote_per_order = (order_amount * price) / 100000;
 
     for (account, _) in account_data.iter().take(account_data.len() - 1) {

@@ -45,8 +45,8 @@ fn build_call_tx(
         nonce,
         gas_limit,
         to: to.into(),
-        max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
-        max_priority_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         input,
         ..Default::default()
     };
@@ -898,8 +898,8 @@ async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()>
     // Step 3: Send as AA tx with a single call to Multicall3, gas_limit=150M.
     let tx = TempoTransaction {
         chain_id,
-        max_priority_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
-        max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 150_000_000, // 150M
         calls: vec![Call {
             to: tempo_contracts::MULTICALL3_ADDRESS.into(),

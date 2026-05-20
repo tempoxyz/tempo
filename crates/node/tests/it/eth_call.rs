@@ -81,7 +81,7 @@ async fn test_eth_call(schedule: ForkSchedule) -> eyre::Result<()> {
     let mint_amount = U256::from(rand::random::<u128>());
     token
         .mint(caller, mint_amount)
-        .gas_price(u128::from(TEMPO_T1_BASE_FEE))
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(1_000_000)
         .send()
         .await?
@@ -127,7 +127,7 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
     let mint_amount = U256::from(rand::random::<u128>());
     token
         .mint(caller, mint_amount)
-        .gas_price(u128::from(TEMPO_T1_BASE_FEE))
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(1_000_000)
         .send()
         .await?
@@ -225,7 +225,7 @@ async fn test_eth_get_logs(schedule: ForkSchedule) -> eyre::Result<()> {
     let mint_amount = U256::from(rand::random::<u128>());
     let mint_receipt = token
         .mint(caller, mint_amount)
-        .gas_price(u128::from(TEMPO_T1_BASE_FEE))
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(1_000_000)
         .send()
         .await?
@@ -235,7 +235,7 @@ async fn test_eth_get_logs(schedule: ForkSchedule) -> eyre::Result<()> {
     let recipient = Address::random();
     token
         .transfer(recipient, mint_amount)
-        .gas_price(u128::from(TEMPO_T1_BASE_FEE))
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
         .gas(1_000_000)
         .send()
         .await?
@@ -517,7 +517,7 @@ async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()
     let tx = TransactionRequest::default()
         .from(wallet_address)
         .to(*user_fee_token.address())
-        .gas_price(u128::from(TEMPO_T1_BASE_FEE))
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
         .input(TransactionInput::new(calldata));
 
     let gas = provider.estimate_gas(tx.clone()).await?;
@@ -615,7 +615,7 @@ async fn test_eth_estimate_gas_preseeded_zero_address_validator_token() -> eyre:
     let tx = TransactionRequest::default()
         .from(wallet_address)
         .to(*user_fee_token.address())
-        .gas_price(u128::from(TEMPO_T1_BASE_FEE))
+        .gas_price(TEMPO_T1_BASE_FEE as u128)
         .input(TransactionInput::new(calldata));
 
     let gas = provider.estimate_gas(tx).await?;

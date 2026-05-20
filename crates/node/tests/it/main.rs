@@ -1,3 +1,5 @@
+#![allow(clippy::cast_lossless)]
+
 mod backfill;
 mod base_fee;
 mod block_building;

@@ -163,8 +163,8 @@ async fn test_evict_expired_aa_tx() -> eyre::Result<()> {
 
     let tx_aa = TempoTransaction {
         chain_id: 1337,
-        max_priority_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
-        max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 1_000_000,
         calls: vec![Call {
             to: TxKind::Call(Address::ZERO),
@@ -259,8 +259,8 @@ async fn test_2d_nonce_tx_reinjected_after_reorg() -> eyre::Result<()> {
     let tx_aa = TempoTransaction {
         chain_id: 1337,
         nonce_key: U256::from(42),
-        max_priority_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
-        max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 1_000_000,
         calls: vec![Call {
             to: TxKind::Call(Address::ZERO),
@@ -349,8 +349,8 @@ async fn test_evict_tx_on_validator_token_change() -> eyre::Result<()> {
     // Submit a transaction that uses DEFAULT_FEE_TOKEN (PATH_USD)
     let tx_default = TempoTransaction {
         chain_id: 1337,
-        max_priority_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
-        max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 1_000_000,
         calls: vec![Call {
             to: TxKind::Call(Address::ZERO),
@@ -450,8 +450,8 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
 
     let policy_tx = TempoTransaction {
         chain_id: 1337,
-        max_priority_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
-        max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 5_000_000,
         calls: vec![
             // Call 1: create a whitelist policy
@@ -526,8 +526,8 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
 
         let tx_aa = TempoTransaction {
             chain_id: 1337,
-            max_priority_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
-            max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
+            max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
             gas_limit: 1_000_000,
             calls: vec![Call {
                 to: TxKind::Call(Address::ZERO),
@@ -555,8 +555,8 @@ async fn test_evict_txs_on_transfer_policy_change() -> eyre::Result<()> {
     // Submit the whitelisted sender's transaction
     let whitelisted_tx = TempoTransaction {
         chain_id: 1337,
-        max_priority_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
-        max_fee_per_gas: u128::from(TEMPO_T1_BASE_FEE),
+        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
         gas_limit: 1_000_000,
         calls: vec![Call {
             to: TxKind::Call(Address::ZERO),
