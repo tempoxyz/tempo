@@ -24,6 +24,20 @@ pub struct Args {
     #[arg(long = "consensus.signing-share")]
     pub signing_share: Option<PathBuf>,
 
+    /// Consensus network identity. Must be set if rotated post-genesis
+    #[arg(
+        long = "consensus.network-identity",
+        requires = "network_identity_from_epoch"
+    )]
+    pub network_identity: Option<String>,
+
+    /// First epoch for which --consensus.network-identity verifies finalizations.
+    #[arg(
+        long = "consensus.network-identity-from-epoch",
+        requires = "network_identity"
+    )]
+    pub network_identity_from_epoch: Option<u64>,
+
     /// The socket address that will be bound to listen for consensus communication from
     /// other nodes.
     #[arg(long = "consensus.listen-address", default_value = "127.0.0.1:8000")]
