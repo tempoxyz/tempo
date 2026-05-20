@@ -250,6 +250,25 @@ pub struct Args {
     /// `--datadir`.
     #[arg(long = "consensus.datadir", value_name = "PATH")]
     pub storage_dir: Option<PathBuf>,
+
+    /// Number of recently finalized blocks the marshal actor keeps in its
+    /// prunable archive. Anything older is served from reth's database
+    /// through the hybrid finalized blocks store.
+    #[arg(
+        long = "consensus.finalized-blocks-retention",
+        default_value_t = crate::storage::DEFAULT_FINALIZED_BLOCKS_RETENTION,
+    )]
+    pub finalized_blocks_retention: u64,
+
+    /// Disable dual-writing newly finalized blocks to the legacy immutable
+    /// archive. By default the marshal writes each finalized block to
+    /// both the new prunable archive and the legacy archive so an
+    /// operator can roll back to the previous binary.
+    ///
+    /// Nodes that are started with this set and restarted without are not
+    /// supported.
+    #[arg(long = "consensus.no-legacy-archive")]
+    pub no_legacy_archive: bool,
 }
 
 /// A jiff::SignedDuration that checks that the duration is positive and not zero.

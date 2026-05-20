@@ -19,7 +19,7 @@ use tempo_precompiles::{
     validator_config_v2::{IValidatorConfigV2, ValidatorConfigV2},
 };
 
-use tracing::{Level, instrument, warn};
+use tracing::{Level, debug, instrument, warn};
 
 use crate::utils::public_key_to_b256;
 
@@ -49,12 +49,18 @@ pub(crate) fn read_active_and_known_peers_at_block_hash(
                 );
             }
         }
+        debug!(
+            active_validators = ?all,
+            "read active validators from contract, now extending with historic \
+            peers that are still in the peer set but no longer marked active",
+        );
         for member in known {
             if !all.contains_key(member) {
                 let decoded = config
                     .validator_by_public_key(public_key_to_b256(member))
                     .map_err(eyre::Report::new)
                     .and_then(DecodedValidatorV2::decode_from_contract)
+                    .wrap_err_with(|| format!("failed to read peer `{member}` from contract"))
                     .expect(
                         "invariant: known peers must have an entry in the \
                         smart contract and be well formed",
@@ -68,6 +74,7 @@ pub(crate) fn read_active_and_known_peers_at_block_hash(
 }
 
 /// Reads the validator state at the given block hash.
+#[instrument(skip_all, fields(%block_hash), err(Display))]
 pub(crate) fn read_validator_config_at_block_hash<C, T>(
     node: &TempoFullNode,
     block_hash: B256,
@@ -82,6 +89,8 @@ where
         .map_err(eyre::Report::new)
         .and_then(|maybe| maybe.ok_or_eyre("execution layer returned empty header"))
         .wrap_err_with(|| format!("failed reading block with hash `{block_hash}`"))?;
+
+    debug!(height = header.number(), "header found");
 
     let db = State::builder()
         .with_database(StateProviderDatabase::new(
