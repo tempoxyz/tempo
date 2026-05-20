@@ -852,6 +852,7 @@ jobs:
               if (benchId && metricsFrom && metricsTo && actualFrom && actualTo) {
                 const traceqlQuery = `{resource.benchmark_id="${benchId}"}`;
                 const grafanaUrl = meta.grafana_url || `https://tempoxyz.grafana.net/d/dffj6qf1o30oowe/performance?orgId=1&from=${encodeURIComponent(metricsFrom)}&to=${encodeURIComponent(metricsTo)}&timezone=browser&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=${encodeURIComponent(benchId)}&var-group_by=benchmark_run`;
+                const internalPerfUrl = meta.internal_perf_url || '';
                 const logsPane = JSON.stringify({
                   pw4: {
                     datasource: 'cfk1hzy08xekgd',
@@ -887,7 +888,8 @@ jobs:
                   },
                 });
                 const tracesUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(tracesPane)}&orgId=1`;
-                grafanaSection = `\n\n### Observability\n\n- [Metrics dashboard](${grafanaUrl})\n- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n`;
+                const internalPerfLine = internalPerfUrl ? `- [Internal dashboard](${internalPerfUrl})\n` : '';
+                grafanaSection = `\n\n### Observability\n\n${internalPerfLine}- [Metrics dashboard](${grafanaUrl})\n- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n`;
               }
             } catch (e) {}
 
