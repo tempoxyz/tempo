@@ -12,7 +12,8 @@ use crate::metrics::TempoPayloadBuilderMetrics;
 use alloy_primitives::{Address, B256, TxKind, U256};
 use alloy_sol_types::SolInterface;
 use reth_errors::ProviderError;
-use reth_evm::{Evm, EvmEnv};
+use reth_evm::{Evm, EvmEnv, FromRecoveredTx, RecoveredTx};
+use tempo_evm::TempoTxEnv;
 use reth_revm::{Database, State, database::StateProviderDatabase, db::bal::EvmDatabaseError};
 use reth_storage_api::{
     StateProviderBox, StateProviderFactory,
@@ -79,6 +80,7 @@ impl BestTransactionsPrewarming {
                     commands_rx,
                     prewarm,
                     next_tx_index: 0,
+                    expiring_nonce_offset: 0,
                 },
             );
         });
@@ -120,6 +122,13 @@ impl BestTransactionsPrewarming {
                             break;
                         };
 
+                        let expiring_nonce_offset = if tx.transaction.transaction.inner().is_expiring_nonce() {
+                            ctx.expiring_nonce_offset += 1;
+                            Some(ctx.expiring_nonce_offset - 1)
+                        } else {
+                            None
+                        };
+
                         let prewarm = ctx.prewarm.clone();
                         let tx_index = tx.index;
                         let prewarm_tx = tx.transaction.clone();
@@ -127,7 +136,7 @@ impl BestTransactionsPrewarming {
 
                         prewarm.metrics.inc_prewarming_transactions_scheduled();
                         scope.spawn(move |_| {
-                            Self::prewarm_transaction(prewarm, tx_index, prewarm_tx)
+                            Self::prewarm_transaction(prewarm, tx_index, expiring_nonce_offset, prewarm_tx)
                         });
                     }
                 };
@@ -181,6 +190,7 @@ impl BestTransactionsPrewarming {
     fn prewarm_transaction<Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
         tx_index: usize,
+        expiring_nonce_offset: Option<usize>,
         tx: BestTransaction,
     ) where
         Provider: StateProviderFactory + Clone + 'static,
@@ -207,7 +217,13 @@ impl BestTransactionsPrewarming {
 
             let start = Instant::now();
             let tx_hash = *tx.hash();
-            if let Err(err) = evm.transact(tx.transaction.inner()) {
+            let mut tx_env: TempoTxEnv = FromRecoveredTx::from_recovered_tx(tx.transaction.inner().tx(), tx.transaction.sender());
+            if let Some(offset) = expiring_nonce_offset {
+                if let Some(tempo_tx_env) = &mut tx_env.tempo_tx_env {
+                    tempo_tx_env.expiring_nonce_idx = Some(offset);
+                }
+            }
+            if let Err(err) = evm.transact_raw(tx_env) {
                 trace!(
                     target: "payload_builder",
                     %err,
@@ -283,6 +299,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_tx_index: usize,
+    expiring_nonce_offset: usize,
 }
 
 impl<Txs, Provider> BestTransactionsPrewarmingContext<Txs, Provider>
