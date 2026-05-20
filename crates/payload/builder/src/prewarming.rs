@@ -207,22 +207,13 @@ impl BestTransactionsPrewarming {
 
             let start = Instant::now();
             let tx_hash = *tx.hash();
-            let touches = storage_touches_for_transaction(&tx, evm.block.beneficiary);
-            let touched = touches.len();
-
-            for touch in touches.iter() {
-                if let Err(err) = touch.warm(evm) {
-                    prewarm
-                        .metrics
-                        .inc_prewarming_transactions_failed("storage");
-                    trace!(
-                        target: "payload_builder",
-                        %err,
-                        ?tx_hash,
-                        "Failed to prewarm transaction storage"
-                    );
-                    return;
-                }
+            if let Err(err) = evm.transact(tx.transaction.inner()) {
+                trace!(
+                    target: "payload_builder",
+                    %err,
+                    ?tx_hash,
+                    "Failed to prewarm transaction"
+                );
             }
 
             let elapsed = start.elapsed();
@@ -233,14 +224,13 @@ impl BestTransactionsPrewarming {
             prewarm
                 .metrics
                 .prewarming_storage_touches
-                .record(touched as f64);
-            prewarm.metrics.inc_prewarming_storage_touches(touched);
+                .record(1 as f64);
+            prewarm.metrics.inc_prewarming_storage_touches(1);
             prewarm.metrics.inc_prewarming_transactions_completed();
 
             trace!(
                 target: "payload_builder",
                 elapsed = ?elapsed,
-                touched,
                 ?tx_hash,
                 "Prewarmed transaction"
             );
