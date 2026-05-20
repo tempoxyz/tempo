@@ -25,15 +25,18 @@ templates:
     max_priority_fee_per_gas: 100000000000
     fee_token: "0x20c0000000000000000000000000000000000000"
     expiring_nonce: true
-    valid_for_secs: 15
+    valid_for_secs: 10
     call:
       to: "0x20c0000000000000000000000000000000000000"
       abi: ERC20
       function: transfer
       args:
-        - random
+        - pool:
+            pool: users
+            select: random
         - 1
 
 mix:
   - template: tip20_transfer
     weight: 100
+
