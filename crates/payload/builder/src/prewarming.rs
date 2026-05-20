@@ -3,7 +3,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc,
-        atomic::{AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicUsize, Ordering},
         mpsc::{self, Receiver, Sender},
     },
 };
@@ -40,6 +40,7 @@ type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>
 pub(crate) struct BestTransactionsPrewarming {
     transactions_rx: Receiver<Option<BestTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
+    stop: Arc<AtomicBool>,
 }
 
 impl BestTransactionsPrewarming {
@@ -51,6 +52,8 @@ impl BestTransactionsPrewarming {
         parent_hash: B256,
         fee_recipient: Address,
         evm_env: EvmEnvFor<TempoEvmConfig>,
+        prewarm_gas_limit: u64,
+        tx_gas_limit_cap: u64,
         best_txs: Txs,
     ) -> Self
     where
@@ -60,13 +63,15 @@ impl BestTransactionsPrewarming {
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
         let builder_consumed_tx_count = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
         let prewarm = PrewarmingExecutionContext {
             evm_config,
             provider,
             parent_hash,
             fee_recipient,
             evm_env,
-            builder_consumed_tx_count,
+            builder_consumed_tx_count: builder_consumed_tx_count.clone(),
+            stop: stop.clone(),
         };
         let prewarm_executor = executor.clone();
         executor.spawn_blocking_named("builder-prewarm", move || {
@@ -77,6 +82,7 @@ impl BestTransactionsPrewarming {
                     transactions_tx,
                     commands_rx,
                     prewarm,
+                    gas_budget: PrewarmingGasBudget::new(prewarm_gas_limit, tx_gas_limit_cap),
                     next_tx_index: 0,
                 },
             );
@@ -85,6 +91,7 @@ impl BestTransactionsPrewarming {
         Self {
             transactions_rx,
             commands_tx,
+            stop,
         }
     }
 
@@ -109,19 +116,21 @@ impl BestTransactionsPrewarming {
             let fill_prewarming_buffer =
                 |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>,
                  buffered_txs: &mut VecDeque<IndexedTransaction>| {
-                    while buffered_txs.len() < buffered_lookahead {
+                    while buffered_txs.len() < buffered_lookahead && !ctx.prewarm.is_stopped() {
                         let Some(tx) = ctx.next_transaction() else {
                             break;
                         };
 
-                        let prewarm = ctx.prewarm.clone();
-                        let tx_index = tx.index;
-                        let prewarm_tx = tx.transaction.clone();
+                        let prewarm_job = tx
+                            .should_prewarm
+                            .then(|| (ctx.prewarm.clone(), tx.index, tx.transaction.clone()));
                         buffered_txs.push_back(tx);
 
-                        scope.spawn(move |_| {
-                            Self::prewarm_transaction(prewarm, tx_index, prewarm_tx)
-                        });
+                        if let Some((prewarm, tx_index, prewarm_tx)) = prewarm_job {
+                            scope.spawn(move |_| {
+                                Self::prewarm_transaction(prewarm, tx_index, prewarm_tx)
+                            });
+                        }
                     }
                 };
 
@@ -156,6 +165,7 @@ impl BestTransactionsPrewarming {
                         ctx.best_txs.set_skip_blobs(skip_blobs);
                     }
                     BestTransactionsCommand::Stop => {
+                        ctx.prewarm.stop();
                         return;
                     }
                 }
@@ -174,7 +184,7 @@ impl BestTransactionsPrewarming {
     ) where
         Provider: StateProviderFactory + Clone + 'static,
     {
-        if prewarm.is_consumed_by_builder(tx_index) {
+        if prewarm.is_stopped() || prewarm.is_consumed_by_builder(tx_index) {
             return;
         }
 
@@ -184,7 +194,7 @@ impl BestTransactionsPrewarming {
                 worker_state.reset(prewarm.parent_hash);
             }
 
-            if prewarm.is_consumed_by_builder(tx_index) {
+            if prewarm.is_stopped() || prewarm.is_consumed_by_builder(tx_index) {
                 return;
             }
 
@@ -207,6 +217,9 @@ impl BestTransactionsPrewarming {
                 storage_touches_for_transaction(&tx, prewarm.fee_recipient, touches);
 
                 for touch in touches.iter().copied() {
+                    if prewarm.is_stopped() {
+                        return;
+                    }
                     if let Err(err) = touch.warm(state_provider.as_ref()) {
                         trace!(
                             target: "payload_builder",
@@ -220,6 +233,9 @@ impl BestTransactionsPrewarming {
 
                 Some(touches.len())
             } else {
+                if prewarm.is_stopped() {
+                    return;
+                }
                 if evm.is_none() {
                     *evm = prewarm.evm_for_ctx();
                 }
@@ -253,6 +269,7 @@ impl BestTransactionsPrewarming {
 
 impl Drop for BestTransactionsPrewarming {
     fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
         let _ = self.commands_tx.send(BestTransactionsCommand::Stop);
     }
 }
@@ -295,6 +312,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     transactions_tx: Sender<Option<BestTransaction>>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
+    gas_budget: PrewarmingGasBudget,
     next_tx_index: usize,
 }
 
@@ -304,9 +322,48 @@ where
 {
     fn next_transaction(&mut self) -> Option<IndexedTransaction> {
         let transaction = self.best_txs.next()?;
+        let should_prewarm = self.gas_budget.reserve(&transaction);
         let index = self.next_tx_index;
         self.next_tx_index += 1;
-        Some(IndexedTransaction { index, transaction })
+        Some(IndexedTransaction {
+            index,
+            transaction,
+            should_prewarm,
+        })
+    }
+}
+
+/// Approximate payload gas horizon for mmap warming.
+///
+/// This tracks every transaction pulled from the source iterator and gates only
+/// whether buffered lookahead gets a warm job. Builder behavior is unchanged.
+struct PrewarmingGasBudget {
+    gas_limit: u64,
+    tx_gas_limit_cap: u64,
+    gas_used: u64,
+}
+
+impl PrewarmingGasBudget {
+    const fn new(gas_limit: u64, tx_gas_limit_cap: u64) -> Self {
+        Self {
+            gas_limit,
+            tx_gas_limit_cap,
+            gas_used: 0,
+        }
+    }
+
+    fn reserve(&mut self, tx: &BestTransaction) -> bool {
+        let tx_gas = tx.gas_limit().min(self.tx_gas_limit_cap);
+        let Some(next_gas_used) = self.gas_used.checked_add(tx_gas) else {
+            return false;
+        };
+
+        if next_gas_used > self.gas_limit {
+            return false;
+        }
+
+        self.gas_used = next_gas_used;
+        true
     }
 }
 
@@ -314,6 +371,7 @@ where
 struct IndexedTransaction {
     index: usize,
     transaction: BestTransaction,
+    should_prewarm: bool,
 }
 
 /// Context needed to prewarm transaction storage independently of the real builder.
@@ -326,6 +384,7 @@ struct PrewarmingExecutionContext<Provider> {
     evm_env: EvmEnvFor<TempoEvmConfig>,
     /// Number of source transactions already handed to the builder.
     builder_consumed_tx_count: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
 }
 
 struct PrewarmWorkerState {
@@ -406,6 +465,14 @@ where
 
     fn is_consumed_by_builder(&self, tx_index: usize) -> bool {
         tx_index < self.builder_consumed_tx_count.load(Ordering::Relaxed)
+    }
+
+    fn is_stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+
+    fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
     }
 }
 
@@ -768,11 +835,15 @@ mod tests {
     }
 
     fn test_tx(sender: Address, nonce: u64) -> BestTransaction {
+        test_tx_with_gas_limit(sender, nonce, 21_000)
+    }
+
+    fn test_tx_with_gas_limit(sender: Address, nonce: u64, gas_limit: u64) -> BestTransaction {
         let tx = TxLegacy {
             chain_id: Some(42431),
             nonce,
             gas_price: 20_000_000_000,
-            gas_limit: 21_000,
+            gas_limit,
             to: TxKind::Call(Address::random()),
             value: U256::ZERO,
             input: Bytes::new(),
@@ -846,6 +917,8 @@ mod tests {
             parent_header.hash(),
             Address::ZERO,
             evm_env,
+            30_000_000,
+            u64::MAX,
             TestBestTransactions::new(txs, log),
         )
     }
@@ -859,6 +932,41 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         assert!(condition(), "condition did not become true before timeout");
+    }
+
+    #[test]
+    fn prewarming_gas_budget_stops_after_limit() {
+        let sender = Address::random();
+        let tx1 = test_tx(sender, 0);
+        let tx2 = test_tx(sender, 1);
+        let mut budget = PrewarmingGasBudget::new(tx1.gas_limit(), u64::MAX);
+
+        assert!(budget.reserve(&tx1));
+        assert!(!budget.reserve(&tx2));
+    }
+
+    #[test]
+    fn prewarming_gas_budget_applies_tx_gas_limit_cap() {
+        let sender = Address::random();
+        let tx1 = test_tx(sender, 0);
+        let tx2 = test_tx(sender, 1);
+        let tx3 = test_tx(sender, 2);
+        let mut budget = PrewarmingGasBudget::new(20_000, 10_000);
+
+        assert!(budget.reserve(&tx1));
+        assert!(budget.reserve(&tx2));
+        assert!(!budget.reserve(&tx3));
+    }
+
+    #[test]
+    fn prewarming_gas_budget_rejects_oversized_tx_without_consuming_budget() {
+        let sender = Address::random();
+        let oversized = test_tx_with_gas_limit(sender, 0, 30_000);
+        let fitting = test_tx_with_gas_limit(sender, 1, 10_000);
+        let mut budget = PrewarmingGasBudget::new(20_000, u64::MAX);
+
+        assert!(!budget.reserve(&oversized));
+        assert!(budget.reserve(&fitting));
     }
 
     #[test]

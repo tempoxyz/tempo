@@ -455,6 +455,8 @@ where
                 parent_header.hash(),
                 builder.evm().block().beneficiary,
                 prewarm_evm_env.expect("prewarm EVM env must be set when prewarming is enabled"),
+                non_shared_gas_limit,
+                builder.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
                 best_txs,
             )) as Box<dyn BestTransactions<Item = _>>
         } else {
@@ -616,6 +618,7 @@ where
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
         };
+        drop(best_txs);
         drop(_block_fill_span);
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
