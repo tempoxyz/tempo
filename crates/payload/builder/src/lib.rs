@@ -452,6 +452,7 @@ where
                 self.provider.clone(),
                 parent_header.hash(),
                 builder.evm().evm_env(),
+                hardfork,
                 best_txs,
             )) as Box<dyn BestTransactions<Item = _>>
         } else {

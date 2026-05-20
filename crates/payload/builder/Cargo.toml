@@ -38,10 +38,12 @@ reth-trie-common.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
-alloy-sol-types.workspace = true
 
 metrics.workspace = true
 tracing.workspace = true
+
+[dev-dependencies]
+alloy-sol-types.workspace = true
 
 [features]
 trie-debug = ["reth-engine-tree/trie-debug"]
