@@ -408,7 +408,7 @@ contract TIP20FactoryInvariantTest is InvariantBaseTest {
     /// @dev FAC1 verified at creation time, FAC2/FAC11/FAC12 verified inline
     ///      FAC8 system contract checks in setUp() as they're immutable
     ///      This function uses sampling to avoid O(n) on every call
-    function invariant_globalInvariants() public view {
+    function invariant_tip20FactoryGlobal() public view {
         // Only sample-check if we have created tokens
         if (_createdTokens.length == 0) return;
 
