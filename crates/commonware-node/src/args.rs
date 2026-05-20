@@ -151,15 +151,18 @@ pub struct Args {
     /// including the newly discovered ones.
     #[arg(
         long = "consensus.wait-before-peers-redial",
-        default_value = "1s",
+        default_value = "500ms",
         default_value_if("use_local_defaults", "true", "500ms")
     )]
     pub wait_before_peers_redial: PositiveDuration,
 
     /// How long to wait before sending a ping message to peers for liveness detection.
+    ///
+    /// Keep this short enough that restarted validators can replace stale connections
+    /// before they miss several proposal rounds.
     #[arg(
         long = "consensus.wait-before-peers-reping",
-        default_value = "50s",
+        default_value = "10s",
         default_value_if("use_local_defaults", "true", "5s")
     )]
     pub wait_before_peers_reping: PositiveDuration,
@@ -174,9 +177,13 @@ pub struct Args {
 
     /// Minimum time between connection attempts to the same peer. A rate-limit
     /// on connection attempts.
+    ///
+    /// Commonware applies this after failed reservations and dials. A long
+    /// value makes validator restarts reconnect gradually when peers still
+    /// have stale connections to the old process.
     #[arg(
         long = "consensus.connection-per-peer-min-period",
-        default_value = "60s",
+        default_value = "10s",
         default_value_if("use_local_defaults", "true", "1s")
     )]
     pub connection_per_peer_min_period: PositiveDuration,
@@ -185,7 +192,7 @@ pub struct Args {
     /// on attempts.
     #[arg(
         long = "consensus.handshake-per-ip-min-period",
-        default_value = "5s",
+        default_value = "1s",
         default_value_if("use_local_defaults", "true", "62ms")
     )]
     pub handshake_per_ip_min_period: PositiveDuration,

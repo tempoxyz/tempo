@@ -72,7 +72,7 @@ where
             peers.clone(),
         );
         let context = ContextCell::new(context);
-        let peer_update_timer = Box::pin(context.sleep(BOOTSTRAP_UPDATE_INTERVAL));
+        let peer_update_timer = Box::pin(context.sleep(Duration::ZERO));
         Self {
             context,
             oracle,
