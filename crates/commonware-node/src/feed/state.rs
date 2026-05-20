@@ -1,6 +1,6 @@
 //! Shared state for the feed module.
 
-use crate::alias::marshal;
+use crate::alias::{BlsPublicKey, marshal};
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::hex;
 use commonware_codec::{Encode, ReadExt as _};
@@ -8,7 +8,6 @@ use commonware_consensus::{
     marshal::Identifier,
     types::{Epoch, Epocher as _, FixedEpocher, Height, Round, View},
 };
-use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use parking_lot::RwLock;
 use reth_node_core::rpc::compat::FromConsensusHeader;
 use reth_provider::HeaderProvider as _;
@@ -45,11 +44,11 @@ struct IdentityTransitionCache {
     /// The epoch from which the chain was built (inclusive).
     from_epoch: u64,
     /// Public key at `from_epoch`.
-    from_pubkey: <MinSig as Variant>::Public,
+    from_pubkey: BlsPublicKey,
     /// The earliest epoch we walked to (0 if we reached genesis).
     to_epoch: u64,
     /// The public key at `to_epoch`.
-    to_pubkey: <MinSig as Variant>::Public,
+    to_pubkey: BlsPublicKey,
     /// Cached transitions, ordered newest to oldest.
     transitions: Arc<Vec<IdentityTransition>>,
 }

@@ -3,9 +3,13 @@ use std::{
     net::SocketAddr, num::NonZeroU32, path::PathBuf, str::FromStr, sync::OnceLock, time::Duration,
 };
 
+use alloy_primitives::FixedBytes;
+use commonware_codec::ReadExt as _;
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
 use tempo_commonware_node_config::SigningKey;
+
+use crate::alias::BlsPublicKey;
 
 const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
     reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
@@ -24,19 +28,20 @@ pub struct Args {
     #[arg(long = "consensus.signing-share")]
     pub signing_share: Option<PathBuf>,
 
-    /// Consensus network identity. Otherwise derived from genesis
+    /// Consensus network BLS public key. Otherwise derived from genesis
     #[arg(
         long = "consensus.network-identity",
         requires = "network_identity_from_epoch"
     )]
-    pub network_identity: Option<String>,
+    pub(crate) network_identity: Option<BlsPublicKeyParser>,
 
-    /// Epoch where --consensus.network-identity rotation occurred
+    /// Epoch where --consensus.network-identity rotation occurred. If the network identity
+    /// was explicitly set, there must have been a network rotation after genesis.
     #[arg(
         long = "consensus.network-identity-from-epoch",
         requires = "network_identity"
     )]
-    pub network_identity_from_epoch: Option<u64>,
+    pub(crate) network_identity_from_epoch: Option<u64>,
 
     /// The socket address that will be bound to listen for consensus communication from
     /// other nodes.
@@ -266,6 +271,21 @@ pub struct Args {
     pub storage_dir: Option<PathBuf>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct BlsPublicKeyParser(BlsPublicKey);
+impl FromStr for BlsPublicKeyParser {
+    type Err = Box<dyn std::error::Error + Send + Sync + 'static>;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let bytes = s.parse::<FixedBytes<96>>()?;
+
+        let mut bytes = bytes.as_slice();
+        let key = BlsPublicKey::read(&mut bytes).wrap_err("must be a valid BLS public key")?;
+
+        Ok(Self(key))
+    }
+}
+
 /// A jiff::SignedDuration that checks that the duration is positive and not zero.
 #[derive(Debug, Clone, Copy)]
 pub struct PositiveDuration(jiff::SignedDuration);
@@ -318,5 +338,9 @@ impl Args {
         Ok(self
             .signing_key()?
             .map(|signing_key| signing_key.public_key()))
+    }
+
+    pub fn network_key(&self) -> Option<BlsPublicKey> {
+        self.network_identity.map(|v| v.0)
     }
 }
