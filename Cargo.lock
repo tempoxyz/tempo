@@ -13218,6 +13218,7 @@ dependencies = [
  "reth-tracing",
  "reth-transaction-pool",
  "revm",
+ "smallvec",
  "tempo-chainspec",
  "tempo-contracts",
  "tempo-evm",

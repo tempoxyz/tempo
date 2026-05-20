@@ -289,6 +289,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 semver = "1"
 serde = { version = "1.0.228", features = ["derive"], default-features = false }
 serde_json = { version = "1.0.149", features = ["alloc"], default-features = false }
+smallvec = "1.15.1"
 schnellru = "0.2"
 sha2 = { version = "0.10", default-features = false }
 tempfile = "3.24.0"

@@ -42,6 +42,7 @@ futures.workspace = true
 tracing.workspace = true
 itertools.workspace = true
 parking_lot.workspace = true
+smallvec.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 thiserror.workspace = true
 metrics.workspace = true

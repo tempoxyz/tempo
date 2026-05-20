@@ -1,4 +1,7 @@
-use crate::tt_2d_pool::{AA2dTransactionId, AASequenceId};
+use crate::{
+    tip20_prerequisites::InferredTip20Prerequisites,
+    tt_2d_pool::{AA2dTransactionId, AASequenceId},
+};
 use alloy_consensus::{BlobTransactionValidationError, Transaction, transaction::TxHashRef};
 use alloy_eips::{
     eip2718::{Encodable2718, Typed2718},
@@ -20,6 +23,7 @@ use std::{
     fmt::Debug,
     sync::{Arc, OnceLock},
 };
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, nonce::NonceManager, tip20::TIP20Token};
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
@@ -98,6 +102,18 @@ impl TempoPooledTransaction {
     /// Returns a reference to inner [`TempoTxEnvelope`].
     pub fn inner(&self) -> &Recovered<TempoTxEnvelope> {
         &self.inner.transaction
+    }
+
+    /// Infers precomputed account and storage prerequisites for transfer-shaped TIP-20 calls.
+    ///
+    /// Returns `None` if any call in the transaction is not one of:
+    /// `transfer`, `transferWithMemo`, `transferFrom`, or `transferFromWithMemo`
+    /// to a TIP-20 token address.
+    pub fn inferred_tip20_prerequisites(
+        &self,
+        hardfork: TempoHardfork,
+    ) -> Option<InferredTip20Prerequisites> {
+        InferredTip20Prerequisites::new(self.inner().calls(), self.sender(), hardfork)
     }
 
     /// Returns true if this is an AA transaction
