@@ -4,6 +4,7 @@ pragma solidity >=0.8.20 <0.9.0;
 /// @title ITIP20ChannelReserve
 /// @notice Reference interface for the TIP-1034 channel model.
 interface ITIP20ChannelReserve {
+
     struct ChannelDescriptor {
         address payer;
         address payee;
@@ -35,9 +36,16 @@ interface ITIP20ChannelReserve {
         uint96 deposit,
         bytes32 salt,
         address authorizedSigner
-    ) external returns (bytes32 channelId);
+    )
+        external
+        returns (bytes32 channelId);
 
-    function settle(ChannelDescriptor calldata descriptor, uint96 cumulativeAmount, bytes calldata signature) external;
+    function settle(
+        ChannelDescriptor calldata descriptor,
+        uint96 cumulativeAmount,
+        bytes calldata signature
+    )
+        external;
 
     function topUp(ChannelDescriptor calldata descriptor, uint96 additionalDeposit) external;
 
@@ -46,17 +54,24 @@ interface ITIP20ChannelReserve {
         uint96 cumulativeAmount,
         uint96 captureAmount,
         bytes calldata signature
-    ) external;
+    )
+        external;
 
     function requestClose(ChannelDescriptor calldata descriptor) external;
 
     function withdraw(ChannelDescriptor calldata descriptor) external;
 
-    function getChannel(ChannelDescriptor calldata descriptor) external view returns (Channel memory);
+    function getChannel(ChannelDescriptor calldata descriptor)
+        external
+        view
+        returns (Channel memory);
 
     function getChannelState(bytes32 channelId) external view returns (ChannelState memory);
 
-    function getChannelStatesBatch(bytes32[] calldata channelIds) external view returns (ChannelState[] memory);
+    function getChannelStatesBatch(bytes32[] calldata channelIds)
+        external
+        view
+        returns (ChannelState[] memory);
 
     function computeChannelId(
         address payer,
@@ -66,9 +81,18 @@ interface ITIP20ChannelReserve {
         bytes32 salt,
         address authorizedSigner,
         bytes32 expiringNonceHash
-    ) external view returns (bytes32);
+    )
+        external
+        view
+        returns (bytes32);
 
-    function getVoucherDigest(bytes32 channelId, uint96 cumulativeAmount) external view returns (bytes32);
+    function getVoucherDigest(
+        bytes32 channelId,
+        uint96 cumulativeAmount
+    )
+        external
+        view
+        returns (bytes32);
 
     function domainSeparator() external view returns (bytes32);
 
@@ -102,7 +126,10 @@ interface ITIP20ChannelReserve {
     );
 
     event CloseRequested(
-        bytes32 indexed channelId, address indexed payer, address indexed payee, uint256 closeGraceEnd
+        bytes32 indexed channelId,
+        address indexed payer,
+        address indexed payee,
+        uint256 closeGraceEnd
     );
 
     event ChannelClosed(
@@ -113,7 +140,9 @@ interface ITIP20ChannelReserve {
         uint96 refundedToPayer
     );
 
-    event CloseRequestCancelled(bytes32 indexed channelId, address indexed payer, address indexed payee);
+    event CloseRequestCancelled(
+        bytes32 indexed channelId, address indexed payer, address indexed payee
+    );
 
     error ChannelAlreadyExists();
     error ChannelNotFound();
@@ -129,4 +158,5 @@ interface ITIP20ChannelReserve {
     error CaptureAmountInvalid();
     error CloseNotReady();
     error DepositOverflow();
+
 }

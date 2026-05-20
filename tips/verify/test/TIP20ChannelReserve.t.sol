@@ -1,24 +1,44 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {TIP20ChannelReserve} from "../src/TIP20ChannelReserve.sol";
-import {ITIP20ChannelReserve} from "../src/interfaces/ITIP20ChannelReserve.sol";
-import {MockTIP20} from "./mocks/MockTIP20.sol";
-import {Test} from "forge-std/Test.sol";
+import { TIP20ChannelReserve } from "../src/TIP20ChannelReserve.sol";
+import { ITIP20ChannelReserve } from "../src/interfaces/ITIP20ChannelReserve.sol";
+import { MockTIP20 } from "./mocks/MockTIP20.sol";
+import { Test } from "forge-std/Test.sol";
 
 contract MockSignatureVerifier {
+
     error InvalidFormat();
     error InvalidSignature();
 
-    function recover(bytes32 hash, bytes calldata signature) external pure returns (address signer) {
+    function recover(bytes32 hash, bytes calldata signature)
+        external
+        pure
+        returns (address signer)
+    {
         return _recover(hash, signature);
     }
 
-    function verify(address signer, bytes32 hash, bytes calldata signature) external pure returns (bool) {
+    function verify(
+        address signer,
+        bytes32 hash,
+        bytes calldata signature
+    )
+        external
+        pure
+        returns (bool)
+    {
         return _recover(hash, signature) == signer;
     }
 
-    function _recover(bytes32 hash, bytes calldata signature) internal pure returns (address signer) {
+    function _recover(
+        bytes32 hash,
+        bytes calldata signature
+    )
+        internal
+        pure
+        returns (address signer)
+    {
         if (signature.length != 65) revert InvalidSignature();
 
         bytes32 r;
@@ -37,9 +57,11 @@ contract MockSignatureVerifier {
         signer = ecrecover(hash, v, r, s);
         if (signer == address(0)) revert InvalidSignature();
     }
+
 }
 
 contract TIP20ChannelReserveTest is Test {
+
     TIP20ChannelReserve public channel;
     MockTIP20 public token;
 
@@ -77,7 +99,10 @@ contract TIP20ChannelReserveTest is Test {
         return _descriptor(SALT, address(0), lastExpiringNonceHash);
     }
 
-    function _descriptor(bytes32 salt, address authorizedSigner)
+    function _descriptor(
+        bytes32 salt,
+        address authorizedSigner
+    )
         internal
         view
         returns (ITIP20ChannelReserve.ChannelDescriptor memory)
@@ -85,7 +110,11 @@ contract TIP20ChannelReserveTest is Test {
         return _descriptor(salt, authorizedSigner, lastExpiringNonceHash);
     }
 
-    function _descriptor(bytes32 salt, address authorizedSigner, bytes32 expiringNonceHash)
+    function _descriptor(
+        bytes32 salt,
+        address authorizedSigner,
+        bytes32 expiringNonceHash
+    )
         internal
         view
         returns (ITIP20ChannelReserve.ChannelDescriptor memory)
@@ -98,7 +127,11 @@ contract TIP20ChannelReserveTest is Test {
         address operator,
         address authorizedSigner,
         bytes32 expiringNonceHash
-    ) internal view returns (ITIP20ChannelReserve.ChannelDescriptor memory) {
+    )
+        internal
+        view
+        returns (ITIP20ChannelReserve.ChannelDescriptor memory)
+    {
         return ITIP20ChannelReserve.ChannelDescriptor({
             payer: payer,
             payee: payee,
@@ -124,7 +157,15 @@ contract TIP20ChannelReserveTest is Test {
         return _signVoucher(channelId, amount, payerKey);
     }
 
-    function _signVoucher(bytes32 channelId, uint96 amount, uint256 signerKey) internal view returns (bytes memory) {
+    function _signVoucher(
+        bytes32 channelId,
+        uint96 amount,
+        uint256 signerKey
+    )
+        internal
+        view
+        returns (bytes memory)
+    {
         bytes32 digest = channel.getVoucherDigest(channelId, amount);
         (uint8 v, bytes32 r, bytes32 s) = vm.sign(signerKey, digest);
         return abi.encodePacked(r, s, v);
@@ -134,7 +175,8 @@ contract TIP20ChannelReserveTest is Test {
         bytes32 expiringNonceHash = _prepareNextExpiringNonceHash();
 
         vm.prank(payer);
-        bytes32 channelId = channel.open(payee, address(0), address(token), DEPOSIT, SALT, address(0));
+        bytes32 channelId =
+            channel.open(payee, address(0), address(token), DEPOSIT, SALT, address(0));
 
         ITIP20ChannelReserve.Channel memory ch = channel.getChannel(_descriptor());
         assertEq(ch.descriptor.payer, payer);
@@ -161,7 +203,12 @@ contract TIP20ChannelReserveTest is Test {
         vm.prank(payer);
         vm.expectRevert(ITIP20ChannelReserve.InvalidPayee.selector);
         channel.open(
-            address(0x20C0000000000000000000000000000000000001), address(0), address(token), DEPOSIT, SALT, address(0)
+            address(0x20C0000000000000000000000000000000000001),
+            address(0),
+            address(token),
+            DEPOSIT,
+            SALT,
+            address(0)
         );
     }
 
@@ -195,11 +242,14 @@ contract TIP20ChannelReserveTest is Test {
 
         channel.setExpiringNonceHashForTest(sharedExpiringNonceHash);
         vm.prank(payer);
-        bytes32 channelId1 = channel.open(payee, address(0), address(token), DEPOSIT, SALT, address(0));
+        bytes32 channelId1 =
+            channel.open(payee, address(0), address(token), DEPOSIT, SALT, address(0));
 
         channel.setExpiringNonceHashForTest(sharedExpiringNonceHash);
         vm.prank(payer);
-        bytes32 channelId2 = channel.open(payee, address(0), address(token), DEPOSIT, bytes32(uint256(2)), address(0));
+        bytes32 channelId2 = channel.open(
+            payee, address(0), address(token), DEPOSIT, bytes32(uint256(2)), address(0)
+        );
 
         // Same top-level transaction means the same expiringNonceHash, but distinct descriptors
         // still derive independent channel IDs and are safe to open atomically in one AA batch.
@@ -243,7 +293,8 @@ contract TIP20ChannelReserveTest is Test {
 
         _prepareNextExpiringNonceHash();
         vm.prank(payer);
-        bytes32 channelId = channel.open(payee, address(0), address(token), DEPOSIT, SALT, delegateSigner);
+        bytes32 channelId =
+            channel.open(payee, address(0), address(token), DEPOSIT, SALT, delegateSigner);
 
         bytes memory sig = _signVoucher(channelId, 500_000, delegateKey);
 
@@ -263,7 +314,9 @@ contract TIP20ChannelReserveTest is Test {
         bytes memory sig = _signVoucher(channelId, 500_000);
 
         vm.prank(operator);
-        channel.settle(_descriptorWithOperator(SALT, operator, address(0), lastExpiringNonceHash), 500_000, sig);
+        channel.settle(
+            _descriptorWithOperator(SALT, operator, address(0), lastExpiringNonceHash), 500_000, sig
+        );
 
         assertEq(channel.getChannelState(channelId).settled, 500_000);
         assertEq(token.balanceOf(payee), 500_000);
@@ -422,7 +475,9 @@ contract TIP20ChannelReserveTest is Test {
 
         _prepareNextExpiringNonceHash();
         vm.prank(payer);
-        bytes32 channelId2 = channel.open(payee, address(0), address(token), DEPOSIT, bytes32(uint256(2)), address(0));
+        bytes32 channelId2 = channel.open(
+            payee, address(0), address(token), DEPOSIT, bytes32(uint256(2)), address(0)
+        );
 
         bytes memory sig = _signVoucher(channelId1, 400_000);
         vm.prank(payee);
@@ -442,12 +497,15 @@ contract TIP20ChannelReserveTest is Test {
         TIP20ChannelReserve other = new TIP20ChannelReserve();
         bytes32 expiringNonceHash = keccak256("expiringNonceHash");
 
-        bytes32 id1 =
-            channel.computeChannelId(payer, payee, address(0), address(token), SALT, address(0), expiringNonceHash);
-        bytes32 id2 =
-            other.computeChannelId(payer, payee, address(0), address(token), SALT, address(0), expiringNonceHash);
+        bytes32 id1 = channel.computeChannelId(
+            payer, payee, address(0), address(token), SALT, address(0), expiringNonceHash
+        );
+        bytes32 id2 = other.computeChannelId(
+            payer, payee, address(0), address(token), SALT, address(0), expiringNonceHash
+        );
 
         assertEq(id1, id2);
         assertEq(channel.domainSeparator(), other.domainSeparator());
     }
+
 }
