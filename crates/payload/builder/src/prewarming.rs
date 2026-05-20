@@ -1,6 +1,5 @@
 use std::{
     cell::RefCell,
-    collections::VecDeque,
     sync::{
         Arc,
         atomic::{AtomicBool, AtomicUsize, Ordering},
@@ -10,7 +9,7 @@ use std::{
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_sol_types::SolInterface;
-use reth_evm::{ConfigureEvm, Evm, EvmEnvFor};
+use reth_evm::{Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{
     StateProvider, StateProviderBox, StateProviderFactory, errors::provider::ProviderResult,
@@ -47,13 +46,9 @@ impl BestTransactionsPrewarming {
     /// Spawns prewarming for `best_txs` and returns a new [`BestTransactions`] iterator.
     pub(crate) fn new<Txs, Provider>(
         executor: TaskExecutor,
-        evm_config: TempoEvmConfig,
         provider: Provider,
         parent_hash: B256,
-        fee_recipient: Address,
         evm_env: EvmEnvFor<TempoEvmConfig>,
-        prewarm_gas_limit: u64,
-        tx_gas_limit_cap: u64,
         best_txs: Txs,
     ) -> Self
     where
@@ -65,14 +60,19 @@ impl BestTransactionsPrewarming {
         let builder_consumed_tx_count = Arc::new(AtomicUsize::new(0));
         let stop = Arc::new(AtomicBool::new(false));
         let prewarm = PrewarmingExecutionContext {
-            evm_config,
             provider,
             parent_hash,
-            fee_recipient,
             evm_env,
-            builder_consumed_tx_count: builder_consumed_tx_count.clone(),
+            builder_consumed_tx_count,
             stop: stop.clone(),
         };
+
+        let this = Self {
+            transactions_rx,
+            commands_tx: commands_tx.clone(),
+            stop,
+        };
+
         let prewarm_executor = executor.clone();
         executor.spawn_blocking_named("builder-prewarm", move || {
             Self::start_prewarming(
@@ -81,18 +81,14 @@ impl BestTransactionsPrewarming {
                     best_txs,
                     transactions_tx,
                     commands_rx,
+                    commands_tx,
                     prewarm,
-                    gas_budget: PrewarmingGasBudget::new(prewarm_gas_limit, tx_gas_limit_cap),
                     next_tx_index: 0,
                 },
             );
         });
 
-        Self {
-            transactions_rx,
-            commands_tx,
-            stop,
-        }
+        this
     }
 
     /// Runs the coordinator side of prewarming for a payload build.
@@ -106,56 +102,50 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
-        // Use only part of the shared prewarming pool for builder lookahead so
-        // mmap warming does not compete with block execution on every core.
-        let buffered_lookahead = builder_prewarming_lookahead(pool.current_num_threads());
 
         pool.in_place_scope(|scope| {
-            let mut buffered_txs = VecDeque::new();
-            let fill_prewarming_buffer =
-                |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>,
-                 buffered_txs: &mut VecDeque<IndexedTransaction>| {
-                    while buffered_txs.len() < buffered_lookahead && !ctx.prewarm.is_stopped() {
-                        let Some(tx) = ctx.next_transaction() else {
-                            break;
-                        };
-
-                        let prewarm_job = tx
-                            .should_prewarm
-                            .then(|| (ctx.prewarm.clone(), tx.index, tx.transaction.clone()));
-                        buffered_txs.push_back(tx);
-
-                        if let Some((prewarm, tx_index, prewarm_tx)) = prewarm_job {
-                            scope.spawn(move |_| {
-                                Self::prewarm_transaction(prewarm, tx_index, prewarm_tx)
-                            });
-                        }
-                    }
+            let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
+                let Some(tx) = ctx.next_transaction() else {
+                    let _ = ctx.transactions_tx.send(None);
+                    return;
                 };
+                let _ = ctx.transactions_tx.send(Some(tx.transaction.clone()));
+
+                let prewarm = ctx.prewarm.clone();
+                let commands_tx = ctx.commands_tx.clone();
+                scope.spawn(move |_| {
+                    Self::prewarm_transaction(prewarm, tx.index, tx.transaction.clone());
+                    let _ = commands_tx.send(BestTransactionsCommand::Advance);
+                });
+            };
+
+            // Fill the initial batch of transactions to execute and prewarm.
+            //
+            // We schedule 2x the number of threads to make sure that workers are never idle.
+            for _ in 0..pool.current_num_threads() * 2 {
+                advance(&mut ctx);
+            }
 
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
                     BestTransactionsCommand::Advance => {
-                        let tx = buffered_txs.pop_front().or_else(|| ctx.next_transaction());
-                        let should_refill = tx.is_some();
-                        let tx = tx.map(|tx| {
-                            ctx.prewarm
-                                .builder_consumed_tx_count
-                                .store(tx.index + 1, Ordering::Relaxed);
-                            tx.transaction
-                        });
-                        let _ = ctx.transactions_tx.send(tx);
-
-                        if should_refill {
-                            fill_prewarming_buffer(&mut ctx, &mut buffered_txs);
-                        }
+                        advance(&mut ctx);
                     }
-                    BestTransactionsCommand::Invalid(invalid) => {
+                    BestTransactionsCommand::Invalid {
+                        invalid,
+                        old_rx,
+                        new_tx,
+                    } => {
                         ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
-                        buffered_txs.retain(|tx| {
-                            !is_invalidated_buffered_transaction(&invalid.tx, &tx.transaction)
-                        });
-                        fill_prewarming_buffer(&mut ctx, &mut buffered_txs);
+                        ctx.transactions_tx = new_tx;
+
+                        for tx in old_rx {
+                            if let Some(tx) = tx
+                                && !is_invalidated_buffered_transaction(&invalid.tx, &tx)
+                            {
+                                let _ = ctx.transactions_tx.send(Some(tx));
+                            }
+                        }
                     }
                     BestTransactionsCommand::NoUpdates => {
                         ctx.best_txs.no_updates();
@@ -213,9 +203,13 @@ impl BestTransactionsPrewarming {
                     return;
                 };
 
-                storage_touches_for_transaction(&tx, prewarm.fee_recipient, touches);
+                storage_touches_for_transaction(
+                    &tx,
+                    prewarm.evm_env.block_env.beneficiary,
+                    touches,
+                );
 
-                for touch in touches.iter().copied() {
+                for touch in touches.iter() {
                     if prewarm.is_stopped() {
                         return;
                     }
@@ -286,12 +280,16 @@ impl Iterator for BestTransactionsPrewarming {
 
 impl BestTransactions for BestTransactionsPrewarming {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
-        let _ = self
-            .commands_tx
-            .send(BestTransactionsCommand::Invalid(InvalidTransaction {
+        let (new_tx, new_rx) = mpsc::channel();
+        let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
+        let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
+            invalid: InvalidTransaction {
                 tx: transaction.clone(),
                 kind,
-            }));
+            },
+            old_rx,
+            new_tx,
+        });
     }
 
     fn no_updates(&mut self) {
@@ -309,9 +307,9 @@ impl BestTransactions for BestTransactionsPrewarming {
 struct BestTransactionsPrewarmingContext<Txs, Provider> {
     best_txs: Txs,
     transactions_tx: Sender<Option<BestTransaction>>,
+    commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
-    gas_budget: PrewarmingGasBudget,
     next_tx_index: usize,
 }
 
@@ -321,48 +319,9 @@ where
 {
     fn next_transaction(&mut self) -> Option<IndexedTransaction> {
         let transaction = self.best_txs.next()?;
-        let should_prewarm = self.gas_budget.reserve(&transaction);
         let index = self.next_tx_index;
         self.next_tx_index += 1;
-        Some(IndexedTransaction {
-            index,
-            transaction,
-            should_prewarm,
-        })
-    }
-}
-
-/// Approximate payload gas horizon for mmap warming.
-///
-/// This tracks every transaction pulled from the source iterator and gates only
-/// whether buffered lookahead gets a warm job. Builder behavior is unchanged.
-struct PrewarmingGasBudget {
-    gas_limit: u64,
-    tx_gas_limit_cap: u64,
-    gas_used: u64,
-}
-
-impl PrewarmingGasBudget {
-    const fn new(gas_limit: u64, tx_gas_limit_cap: u64) -> Self {
-        Self {
-            gas_limit,
-            tx_gas_limit_cap,
-            gas_used: 0,
-        }
-    }
-
-    fn reserve(&mut self, tx: &BestTransaction) -> bool {
-        let tx_gas = tx.gas_limit().min(self.tx_gas_limit_cap);
-        let Some(next_gas_used) = self.gas_used.checked_add(tx_gas) else {
-            return false;
-        };
-
-        if next_gas_used > self.gas_limit {
-            return false;
-        }
-
-        self.gas_used = next_gas_used;
-        true
+        Some(IndexedTransaction { index, transaction })
     }
 }
 
@@ -370,20 +329,13 @@ impl PrewarmingGasBudget {
 struct IndexedTransaction {
     index: usize,
     transaction: BestTransaction,
-    should_prewarm: bool,
-}
-
-fn builder_prewarming_lookahead(pool_threads: usize) -> usize {
-    pool_threads.saturating_add(1).max(2) / 2
 }
 
 /// Context needed to prewarm transaction storage independently of the real builder.
 #[derive(Clone)]
 struct PrewarmingExecutionContext<Provider> {
-    evm_config: TempoEvmConfig,
     provider: Provider,
     parent_hash: B256,
-    fee_recipient: Address,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     /// Number of source transactions already handed to the builder.
     builder_consumed_tx_count: Arc<AtomicUsize>,
@@ -448,7 +400,7 @@ where
         evm_env.cfg_env.disable_nonce_check = true;
         evm_env.cfg_env.disable_balance_check = true;
 
-        Some(self.evm_config.evm_with_env(state_provider, evm_env))
+        Some(TempoEvm::new(state_provider, evm_env))
     }
 
     fn state_provider_for_ctx(&self) -> Option<StateProviderBox> {
@@ -718,7 +670,11 @@ fn add_unique_touch(touches: &mut Vec<StorageTouch>, touch: StorageTouch) {
 #[derive(Debug)]
 enum BestTransactionsCommand {
     Advance,
-    Invalid(InvalidTransaction),
+    Invalid {
+        invalid: InvalidTransaction,
+        old_rx: Receiver<Option<BestTransaction>>,
+        new_tx: Sender<Option<BestTransaction>>,
+    },
     NoUpdates,
     SkipBlobs(bool),
     Stop,
@@ -759,7 +715,7 @@ mod tests {
     use alloy_consensus::{BlockHeader, Header, Signed, TxLegacy};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
     use alloy_sol_types::SolCall;
-    use reth_evm::NextBlockEnvAttributes;
+    use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use reth_primitives_traits::{
         Recovered, SealedHeader, transaction::error::InvalidTransactionError,
     };
@@ -915,13 +871,9 @@ mod tests {
             .expect("test next block env");
         BestTransactionsPrewarming::new(
             executor,
-            evm_config,
             provider,
             parent_header.hash(),
-            Address::ZERO,
             evm_env,
-            30_000_000,
-            u64::MAX,
             TestBestTransactions::new(txs, log),
         )
     }
@@ -935,41 +887,6 @@ mod tests {
             thread::sleep(Duration::from_millis(5));
         }
         assert!(condition(), "condition did not become true before timeout");
-    }
-
-    #[test]
-    fn prewarming_gas_budget_stops_after_limit() {
-        let sender = Address::random();
-        let tx1 = test_tx(sender, 0);
-        let tx2 = test_tx(sender, 1);
-        let mut budget = PrewarmingGasBudget::new(tx1.gas_limit(), u64::MAX);
-
-        assert!(budget.reserve(&tx1));
-        assert!(!budget.reserve(&tx2));
-    }
-
-    #[test]
-    fn prewarming_gas_budget_applies_tx_gas_limit_cap() {
-        let sender = Address::random();
-        let tx1 = test_tx(sender, 0);
-        let tx2 = test_tx(sender, 1);
-        let tx3 = test_tx(sender, 2);
-        let mut budget = PrewarmingGasBudget::new(20_000, 10_000);
-
-        assert!(budget.reserve(&tx1));
-        assert!(budget.reserve(&tx2));
-        assert!(!budget.reserve(&tx3));
-    }
-
-    #[test]
-    fn prewarming_gas_budget_rejects_oversized_tx_without_consuming_budget() {
-        let sender = Address::random();
-        let oversized = test_tx_with_gas_limit(sender, 0, 30_000);
-        let fitting = test_tx_with_gas_limit(sender, 1, 10_000);
-        let mut budget = PrewarmingGasBudget::new(20_000, u64::MAX);
-
-        assert!(!budget.reserve(&oversized));
-        assert!(budget.reserve(&fitting));
     }
 
     #[test]
@@ -1068,8 +985,7 @@ mod tests {
     fn prewarming_window_limits_source_iterator_drain_after_first_advance() {
         let sender = Address::random();
         let executor = TaskExecutor::test();
-        let prewarming_lookahead =
-            builder_prewarming_lookahead(executor.prewarming_pool().current_num_threads());
+        let prewarming_lookahead = executor.prewarming_pool().current_num_threads();
         let first_advance_drain = prewarming_lookahead + 1;
         let txs = (0..first_advance_drain + 4)
             .map(|nonce| test_tx(sender, nonce as u64))

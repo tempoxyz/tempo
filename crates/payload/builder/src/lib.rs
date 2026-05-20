@@ -22,7 +22,7 @@ use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_engine_tree::tree::instrumented_state::InstrumentedStateProvider;
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
-    ConfigureEvm, Database, Evm, EvmEnv, NextBlockEnvAttributes,
+    ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
     block::{BlockExecutionError, BlockExecutor, BlockValidationError},
     execute::{BlockBuilder, BlockBuilderOutcome},
 };
@@ -404,10 +404,6 @@ where
         // Override the fee recipient with the on-chain value from the V2
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut builder, &attributes);
-        let prewarm_evm_env = self.enable_prewarming.then(|| EvmEnv {
-            cfg_env: builder.evm().cfg_env().clone(),
-            block_env: builder.evm().block().clone(),
-        });
 
         if let Some(ref handle) = trie_handle {
             builder
@@ -450,13 +446,9 @@ where
         let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
             Box::new(BestTransactionsPrewarming::new(
                 self.executor.clone(),
-                self.evm_config.clone(),
                 self.provider.clone(),
                 parent_header.hash(),
-                builder.evm().block().beneficiary,
-                prewarm_evm_env.expect("prewarm EVM env must be set when prewarming is enabled"),
-                non_shared_gas_limit,
-                builder.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+                builder.evm().evm_env(),
                 best_txs,
             )) as Box<dyn BestTransactions<Item = _>>
         } else {
@@ -618,7 +610,6 @@ where
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
         };
-        drop(best_txs);
         drop(_block_fill_span);
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
