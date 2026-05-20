@@ -3,13 +3,13 @@ pragma solidity ^0.8.20;
 
 import { ISignatureVerifier } from "./interfaces/ISignatureVerifier.sol";
 import { ITIP20 } from "./interfaces/ITIP20.sol";
-import { ITIP20ChannelEscrow } from "./interfaces/ITIP20ChannelEscrow.sol";
+import { ITIP20ChannelReserve } from "./interfaces/ITIP20ChannelReserve.sol";
 
-/// @title TIP20ChannelEscrow
+/// @title TIP20ChannelReserve
 /// @notice Reference contract for the TIP-1034 channel model.
-contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
+contract TIP20ChannelReserve is ITIP20ChannelReserve {
 
-    address public constant TIP20_CHANNEL_ESCROW = 0x4d50500000000000000000000000000000000000;
+    address public constant TIP20_CHANNEL_RESERVE = 0x4d50500000000000000000000000000000000000;
     address public constant SIGNATURE_VERIFIER_PRECOMPILE =
         0x5165300000000000000000000000000000000000;
 
@@ -24,7 +24,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
     bytes32 internal constant _EIP712_DOMAIN_TYPEHASH = keccak256(
         "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
     );
-    bytes32 internal constant _NAME_HASH = keccak256("TIP20 Channel Escrow");
+    bytes32 internal constant _NAME_HASH = keccak256("TIP20 Channel Reserve");
     bytes32 internal constant _VERSION_HASH = keccak256("1");
 
     mapping(bytes32 => uint256) internal channelStates;
@@ -89,7 +89,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         bool success = ITIP20(token).transferFrom(msg.sender, address(this), deposit);
         if (!success) revert TransferFailed();
 
-        // Mark after the escrow transfer succeeds so failed opens do not poison the guard. The real
+        // Mark after the deposit transfer succeeds so failed opens do not poison the guard. The real
         // precompile marker is transient and only protects the current top-level transaction.
         _openedChannelIdsForTest[channelId] = true;
 
@@ -308,7 +308,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
                 salt,
                 authorizedSigner,
                 expiringNonceHash,
-                TIP20_CHANNEL_ESCROW,
+                TIP20_CHANNEL_RESERVE,
                 block.chainid
             )
         );
@@ -407,7 +407,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
                 _NAME_HASH,
                 _VERSION_HASH,
                 block.chainid,
-                TIP20_CHANNEL_ESCROW
+                TIP20_CHANNEL_RESERVE
             )
         );
     }
