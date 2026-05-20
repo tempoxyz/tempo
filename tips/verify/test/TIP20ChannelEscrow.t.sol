@@ -453,6 +453,22 @@ contract TIP20ChannelEscrowTest is Test {
         assertNotEq(reopenedChannelId, channelId);
     }
 
+    function test_close_creditsDeletedChannelStorage_and_openConsumesCredit() public {
+        bytes32 channelId = _openChannel();
+        bytes memory sig = _signVoucher(channelId, 600_000);
+
+        vm.prank(payee);
+        channel.close(_descriptor(), 600_000, 600_000, sig);
+
+        assertEq(channel.getChannelState(channelId).deposit, 0);
+        assertEq(channel.storageCredits(payer), 1);
+
+        bytes32 reopenedChannelId = _openChannel();
+
+        assertNotEq(reopenedChannelId, channelId);
+        assertEq(channel.storageCredits(payer), 0);
+    }
+
     function test_withdraw_afterGracePeriod() public {
         bytes32 channelId = _openChannel();
 
@@ -467,6 +483,21 @@ contract TIP20ChannelEscrowTest is Test {
 
         assertEq(channel.getChannelState(channelId).closeRequestedAt, 0);
         assertEq(token.balanceOf(payer), payerBalanceBefore + DEPOSIT);
+    }
+
+    function test_withdraw_creditsDeletedChannelStorage() public {
+        bytes32 channelId = _openChannel();
+
+        vm.prank(payer);
+        channel.requestClose(_descriptor());
+
+        vm.warp(block.timestamp + channel.CLOSE_GRACE_PERIOD() + 1);
+
+        vm.prank(payer);
+        channel.withdraw(_descriptor());
+
+        assertEq(channel.getChannelState(channelId).deposit, 0);
+        assertEq(channel.storageCredits(payer), 1);
     }
 
     function test_getChannelStatesBatch_success() public {

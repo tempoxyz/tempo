@@ -73,6 +73,8 @@ interface ITIP20ChannelEscrow {
         view
         returns (ChannelState[] memory);
 
+    function storageCredits(address payer) external view returns (uint64 credits);
+
     function computeChannelId(
         address payer,
         address payee,

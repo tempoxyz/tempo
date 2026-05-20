@@ -31,6 +31,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
     bytes32 internal constant _VERSION_HASH = keccak256("1");
 
     mapping(bytes32 => uint256) internal channelStates;
+    mapping(address => uint64) internal channelStorageCredits;
     bytes32 internal _expiringNonceHashContext;
 
     // Reference-contract-only approximation of the precompile's transient per-transaction guard.
@@ -82,6 +83,17 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         // context hash, and thus the derived channel ID, is unchanged for later calls in the same
         // top-level transaction.
         if (_openedChannelIdsForTest[channelId]) revert ChannelAlreadyExists();
+
+        if (channelStorageCredits[msg.sender] > 0) {
+            // Reference-contract approximation of consuming one payer-owned channel storage
+            // credit. The enshrined precompile must call
+            // `tip1060_use_storage_token(TIP20_CHANNEL_ESCROW)` before this write.
+            channelStorageCredits[msg.sender] -= 1;
+        } else {
+            // The enshrined precompile must call `tip1060_use_gas(TIP20_CHANNEL_ESCROW)` before
+            // this write so precompile-level TIP-1060 tokens are preserved when the payer has no
+            // channel storage credit.
+        }
 
         channelStates[channelId] = _encodeChannelState(
             ChannelState({ settled: 0, deposit: deposit, closeRequestedAt: 0 })
@@ -222,6 +234,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         uint96 refund = channel.deposit - captureAmount;
 
         delete channelStates[channelId];
+        _creditDeletedChannelStorage(descriptor.payer);
 
         if (delta > 0) {
             bool payeeTransferSucceeded = ITIP20(descriptor.token).transfer(descriptor.payee, delta);
@@ -251,6 +264,7 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
 
         uint96 refund = channel.deposit - channel.settled;
         delete channelStates[channelId];
+        _creditDeletedChannelStorage(descriptor.payer);
 
         if (refund > 0) {
             bool success = ITIP20(descriptor.token).transfer(descriptor.payer, refund);
@@ -292,6 +306,10 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         for (uint256 i = 0; i < length; ++i) {
             states[i] = _decodeChannelState(channelStates[channelIds[i]]);
         }
+    }
+
+    function storageCredits(address payer) external view returns (uint64 credits) {
+        return channelStorageCredits[payer];
     }
 
     function computeChannelId(
@@ -406,6 +424,13 @@ contract TIP20ChannelEscrow is ITIP20ChannelEscrow {
         }
 
         if (!isValid) revert InvalidSignature();
+    }
+
+    function _creditDeletedChannelStorage(address payer) internal {
+        uint64 credits = channelStorageCredits[payer];
+        if (credits != type(uint64).max) {
+            channelStorageCredits[payer] = credits + 1;
+        }
     }
 
     function _domainSeparator() internal view returns (bytes32) {
