@@ -114,21 +114,3 @@ impl TryFrom<alloy_primitives::Bytes> for ITIP1028Guard::ClaimProofV1 {
         Self::abi_decode(&proof).map_err(|_| TIP1028GuardError::invalid_proof())
     }
 }
-
-impl TIP1028GuardError {
-    pub const fn unauthorized_claimer() -> Self {
-        Self::UnauthorizedClaimer(ITIP1028Guard::UnauthorizedClaimer {})
-    }
-
-    pub const fn invalid_proof() -> Self {
-        Self::InvalidProof(ITIP1028Guard::InvalidProof {})
-    }
-
-    pub const fn address_reserved() -> Self {
-        Self::AddressReserved(ITIP1028Guard::AddressReserved {})
-    }
-
-    pub const fn invalid_claim_address() -> Self {
-        Self::InvalidClaimAddress(ITIP1028Guard::InvalidClaimAddress {})
-    }
-}

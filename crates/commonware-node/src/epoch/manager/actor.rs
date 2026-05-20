@@ -389,8 +389,10 @@ where
         self.metrics.latest_participants.set(n_participants as i64);
         self.metrics.active_epochs.inc();
         let _ = self.metrics.latest_epoch.try_set(epoch.get());
-        self.metrics.how_often_signer.inc_by(is_signer as u64);
-        self.metrics.how_often_verifier.inc_by(!is_signer as u64);
+        self.metrics.how_often_signer.inc_by(u64::from(is_signer));
+        self.metrics
+            .how_often_verifier
+            .inc_by(u64::from(!is_signer));
 
         Ok(())
     }

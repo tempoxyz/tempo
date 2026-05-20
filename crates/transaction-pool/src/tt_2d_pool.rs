@@ -2,7 +2,7 @@
 use crate::{metrics::AA2dPoolMetrics, transaction::TempoPooledTransaction};
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, HashMap, HashSet, U256Map},
+    map::{AddressMap, B256Map, HashMap, HashSet, U256Map},
 };
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_tracing::tracing::trace;
@@ -53,10 +53,10 @@ pub struct AA2dPool {
     /// _All_ transactions that are currently inside the pool grouped by their unique identifier.
     by_id: BTreeMap<AA2dTransactionId, Arc<AA2dInternalTransaction>>,
     /// _All_ transactions by hash.
-    by_hash: HashMap<TxHash, Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    by_hash: B256Map<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     /// Expiring nonce transactions, keyed by expiring nonce hash (always pending/independent).
     /// These use expiring nonce replay protection instead of sequential nonces.
-    expiring_nonce_txs: HashMap<B256, PendingTransaction<TxOrdering>>,
+    expiring_nonce_txs: B256Map<PendingTransaction<TxOrdering>>,
     /// A mapping of `expiring_nonce_seen` slot to expiring nonce hash.
     ///
     /// Used to track inclusion of expiring nonce transactions.
@@ -95,15 +95,6 @@ impl Default for AA2dPool {
 }
 
 impl AA2dPool {
-    fn expiring_nonce_hash(
-        transaction: &Arc<ValidPoolTransaction<TempoPooledTransaction>>,
-    ) -> B256 {
-        transaction
-            .transaction
-            .expiring_nonce_hash()
-            .expect("expiring nonce tx must be AA")
-    }
-
     /// Creates a new instance with the givenconfig and nonce keys
     pub fn new(config: AA2dPoolConfig) -> Self {
         let (new_transaction_notifier, _) = broadcast::channel(200);
@@ -346,7 +337,7 @@ impl AA2dPool {
         hardfork: TempoHardfork,
     ) -> PoolResult<AddedTransaction<TempoPooledTransaction>> {
         let tx_hash = *transaction.hash();
-        let expiring_nonce_hash = Self::expiring_nonce_hash(&transaction);
+        let expiring_nonce_hash = transaction.transaction.precomputed_expiring_nonce_hash();
 
         // Check if already exists (by expiring nonce hash)
         if self.expiring_nonce_txs.contains_key(&expiring_nonce_hash) {
@@ -748,7 +739,8 @@ impl AA2dPool {
 
         // Check if this is an expiring nonce transaction
         if tx.transaction.is_expiring_nonce() {
-            let tx = self.remove_expiring_nonce_tx(&Self::expiring_nonce_hash(&tx))?;
+            let tx =
+                self.remove_expiring_nonce_tx(&tx.transaction.precomputed_expiring_nonce_hash())?;
             return Some((tx, None));
         }
 
@@ -818,7 +810,9 @@ impl AA2dPool {
             .collect::<Vec<_>>();
         for tx in txs {
             if tx.transaction.is_expiring_nonce() {
-                if let Some(tx) = self.remove_expiring_nonce_tx(&Self::expiring_nonce_hash(&tx)) {
+                if let Some(tx) =
+                    self.remove_expiring_nonce_tx(&tx.transaction.precomputed_expiring_nonce_hash())
+                {
                     removed.push(tx);
                 }
             } else if let Some(tx) = tx
@@ -1266,7 +1260,7 @@ impl AA2dPool {
             if tx.transaction.is_expiring_nonce() {
                 assert!(
                     self.expiring_nonce_txs
-                        .contains_key(&Self::expiring_nonce_hash(tx)),
+                        .contains_key(&tx.transaction.precomputed_expiring_nonce_hash()),
                     "Expiring nonce transaction with hash {hash:?} in by_hash but not in expiring_nonce_txs"
                 );
                 continue;
@@ -1672,7 +1666,7 @@ impl AASequenceId {
 ///
 /// Identified by its sender, nonce key and nonce for that nonce key.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Ord, PartialOrd)]
-pub(crate) struct AA2dTransactionId {
+pub struct AA2dTransactionId {
     /// Uniquely identifies the accounts nonce key sequence
     pub(crate) seq_id: AASequenceId,
     /// The nonce in that sequence
@@ -1688,6 +1682,11 @@ impl AA2dTransactionId {
     /// Returns the next transaction in the sequence.
     pub(crate) fn unlocks(&self) -> Self {
         Self::new(self.seq_id, self.nonce.saturating_add(1))
+    }
+
+    /// Returns the nonce key sequence of this transaction.
+    pub fn seq_id(&self) -> &AASequenceId {
+        &self.seq_id
     }
 }
 
