@@ -21,7 +21,7 @@ use reth_transaction_pool::{
 };
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    nonce::{EXPIRING_NONCE_SET_CAPACITY, NonceManager, slots as nonce_slots},
+    nonce::slots as nonce_slots,
     storage::StorageKey as _,
     tip_fee_manager::slots as fee_manager_slots,
     tip20::{ITIP20, tip20_slots},
@@ -73,7 +73,6 @@ impl BestTransactionsPrewarming {
                     commands_rx,
                     prewarm,
                     next_tx_index: 0,
-                    next_expiring_nonce_ordinal: 0,
                 },
             );
         });
@@ -112,17 +111,13 @@ impl BestTransactionsPrewarming {
 
                         let prewarm = ctx.prewarm.clone();
                         let tx_index = tx.index;
-                        let expiring_nonce_ordinal = tx.expiring_nonce_ordinal;
                         let prewarm_tx = tx.transaction.clone();
                         buffered_txs.push_back(tx);
 
                         prewarm.metrics.inc_prewarming_transactions_scheduled();
-                        scope.spawn(move |_| Self::prewarm_transaction(
-                            prewarm,
-                            tx_index,
-                            expiring_nonce_ordinal,
-                            prewarm_tx,
-                        ));
+                        scope.spawn(move |_| {
+                            Self::prewarm_transaction(prewarm, tx_index, prewarm_tx)
+                        });
                     }
                 };
 
@@ -177,7 +172,6 @@ impl BestTransactionsPrewarming {
     fn prewarm_transaction<Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
         tx_index: usize,
-        expiring_nonce_ordinal: Option<usize>,
         tx: BestTransaction,
     ) where
         Provider: StateProviderFactory + Clone + 'static,
@@ -218,13 +212,7 @@ impl BestTransactionsPrewarming {
                     .inc_prewarming_transactions_failed("provider");
                 return;
             };
-            storage_touches_for_transaction(
-                &tx,
-                prewarm.fee_recipient,
-                expiring_nonce_ordinal,
-                state_provider.as_ref(),
-                touches,
-            );
+            storage_touches_for_transaction(&tx, prewarm.fee_recipient, touches);
             let touched = touches.len();
 
             for touch in touches.iter().copied() {
@@ -310,7 +298,6 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
     next_tx_index: usize,
-    next_expiring_nonce_ordinal: usize,
 }
 
 impl<Txs, Provider> BestTransactionsPrewarmingContext<Txs, Provider>
@@ -321,25 +308,13 @@ where
         let transaction = self.best_txs.next()?;
         let index = self.next_tx_index;
         self.next_tx_index += 1;
-        let expiring_nonce_ordinal = if transaction.transaction.is_expiring_nonce() {
-            let ordinal = self.next_expiring_nonce_ordinal;
-            self.next_expiring_nonce_ordinal += 1;
-            Some(ordinal)
-        } else {
-            None
-        };
-        Some(IndexedTransaction {
-            index,
-            expiring_nonce_ordinal,
-            transaction,
-        })
+        Some(IndexedTransaction { index, transaction })
     }
 }
 
 /// Transaction tagged with its source iterator order.
 struct IndexedTransaction {
     index: usize,
-    expiring_nonce_ordinal: Option<usize>,
     transaction: BestTransaction,
 }
 
@@ -429,8 +404,6 @@ impl StorageTouch {
 fn storage_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
-    expiring_nonce_ordinal: Option<usize>,
-    state_provider: &dyn StateProvider,
     touches: &mut Vec<StorageTouch>,
 ) {
     touches.clear();
@@ -452,7 +425,7 @@ fn storage_touches_for_transaction(
         }
     }
 
-    add_expiring_nonce_touches(touches, tx, expiring_nonce_ordinal, state_provider);
+    add_expiring_nonce_touches(touches, tx);
 }
 
 fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
@@ -581,12 +554,7 @@ fn add_fee_manager_touches(
     );
 }
 
-fn add_expiring_nonce_touches(
-    touches: &mut Vec<StorageTouch>,
-    tx: &BestTransaction,
-    expiring_nonce_ordinal: Option<usize>,
-    state_provider: &dyn StateProvider,
-) {
+fn add_expiring_nonce_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransaction) {
     let Some(expiring_nonce_slot) = tx.transaction.expiring_nonce_slot() else {
         return;
     };
@@ -598,41 +566,6 @@ fn add_expiring_nonce_touches(
         NONCE_PRECOMPILE_ADDRESS,
         nonce_slots::EXPIRING_NONCE_RING_PTR,
     );
-
-    let Some(expiring_nonce_ordinal) = expiring_nonce_ordinal else {
-        return;
-    };
-    let Ok(ring_ptr) = state_provider.storage(
-        NONCE_PRECOMPILE_ADDRESS,
-        nonce_slots::EXPIRING_NONCE_RING_PTR.into(),
-    ) else {
-        return;
-    };
-    let ring_ptr = ring_ptr.unwrap_or_default();
-    let ring_slot = expiring_nonce_ring_slot(ring_ptr.saturating_to(), expiring_nonce_ordinal);
-    add_storage_touch(touches, NONCE_PRECOMPILE_ADDRESS, ring_slot);
-
-    let Ok(old_hash) = state_provider.storage(NONCE_PRECOMPILE_ADDRESS, ring_slot.into()) else {
-        return;
-    };
-    let old_hash = old_hash.unwrap_or_default();
-    if old_hash.is_zero() {
-        return;
-    }
-
-    let old_hash = B256::from(old_hash.to_be_bytes::<32>());
-    add_storage_touch(
-        touches,
-        NONCE_PRECOMPILE_ADDRESS,
-        NonceManager::new().expiring_nonce_seen[old_hash].slot(),
-    );
-}
-
-fn expiring_nonce_ring_slot(parent_ring_ptr: u32, expiring_nonce_ordinal: usize) -> U256 {
-    let capacity = u64::from(EXPIRING_NONCE_SET_CAPACITY);
-    let ring_idx = (u64::from(parent_ring_ptr) + (expiring_nonce_ordinal as u64 % capacity))
-        % capacity;
-    NonceManager::new().expiring_nonce_ring[ring_idx as u32].slot()
 }
 
 fn add_account_touch(touches: &mut Vec<StorageTouch>, address: Address) {
@@ -880,26 +813,6 @@ mod tests {
             address: token,
             slot: recipient.mapping_slot(tip20_slots::BALANCES)
         }));
-    }
-
-    #[test]
-    fn expiring_nonce_ring_slot_follows_builder_order() {
-        let parent_ring_ptr = EXPIRING_NONCE_SET_CAPACITY - 1;
-
-        assert_eq!(
-            expiring_nonce_ring_slot(parent_ring_ptr, 0),
-            NonceManager::new()
-                .expiring_nonce_ring[parent_ring_ptr]
-                .slot()
-        );
-        assert_eq!(
-            expiring_nonce_ring_slot(parent_ring_ptr, 1),
-            NonceManager::new().expiring_nonce_ring[0].slot()
-        );
-        assert_eq!(
-            expiring_nonce_ring_slot(parent_ring_ptr, 2),
-            NonceManager::new().expiring_nonce_ring[1].slot()
-        );
     }
 
     #[test]
