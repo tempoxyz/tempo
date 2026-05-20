@@ -12,9 +12,12 @@
 #   BENCH_WARMUP_BLOCKS           – number of warmup blocks
 #   BENCH_BASELINE_ARGS           – extra node args for baseline (optional)
 #   BENCH_FEATURE_ARGS            – extra node args for feature (optional)
+#   BENCH_BASELINE_RETH_REF       – override paradigmxyz/reth rev for baseline (optional)
+#   BENCH_FEATURE_RETH_REF        – override paradigmxyz/reth rev for feature (optional)
 #   BENCH_SAMPLY                  – "true" to enable samply profiling (optional)
 set -euxo pipefail
 
+REPO_ROOT="$(pwd -P)"
 eval "$(nu bench-schelk.nu detect)"
 
 BENCH_WORK_DIR="${BENCH_WORK_DIR:-bench-results/replay}"
@@ -100,6 +103,15 @@ build_tempo() {
     git clone . "$src_dir"
   fi
   git -C "$src_dir" checkout "$ref"
+
+  local reth_ref=""
+  case "$label" in
+    baseline*) reth_ref="${BENCH_BASELINE_RETH_REF:-}" ;;
+    feature*) reth_ref="${BENCH_FEATURE_RETH_REF:-}" ;;
+  esac
+  if [ -n "$reth_ref" ]; then
+    bash "$REPO_ROOT/.github/scripts/bench-update-reth-ref.sh" "$src_dir" "$reth_ref" "$label"
+  fi
 
   echo "Building $label tempo ($ref)..."
   cd "$src_dir"

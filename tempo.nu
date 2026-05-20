@@ -448,7 +448,7 @@ def cache-upload [worktree_dir: string, profile: string, commit_sha: string, cac
 }
 
 # Build tempo binary in a git worktree (with optional MinIO cache)
-def build-in-worktree [worktree_dir: string, ref: string, profile: string, features: string, commit_sha: string, --no-cache, --no-default-features, --extra-rustflags: string = "", --bench-features: string = ""] {
+def build-in-worktree [worktree_dir: string, ref: string, profile: string, features: string, commit_sha: string, --no-cache, --no-default-features, --extra-rustflags: string = "", --bench-features: string = "", --skip-cache-upload] {
     let cache_key = (bench-cache-key $commit_sha $features $no_default_features)
 
     # Try cache first
@@ -466,8 +466,10 @@ def build-in-worktree [worktree_dir: string, ref: string, profile: string, featu
         do { cd $worktree_dir; run-external ($build_cmd | first) ...($build_cmd | skip 1) }
     }
 
-    # Upload to cache
-    cache-upload $worktree_dir $profile $commit_sha $cache_key
+    # Upload to cache unless the worktree was mutated after checkout.
+    if not $skip_cache_upload {
+        cache-upload $worktree_dir $profile $commit_sha $cache_key
+    }
 }
 
 # Get the path to a built binary in a worktree

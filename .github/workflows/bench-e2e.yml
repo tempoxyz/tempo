@@ -18,6 +18,16 @@ on:
         type: string
         required: false
         default: ""
+      baseline-reth-ref:
+        description: Optional paradigmxyz/reth ref to use for the baseline build.
+        type: string
+        required: false
+        default: ""
+      feature-reth-ref:
+        description: Optional paradigmxyz/reth ref to use for the feature build.
+        type: string
+        required: false
+        default: ""
       baseline-hardfork:
         description: Latest active hardfork for the baseline run.
         type: choice
@@ -198,6 +208,14 @@ on:
         type: string
         required: false
         default: ""
+      baseline-reth-ref:
+        type: string
+        required: false
+        default: ""
+      feature-reth-ref:
+        type: string
+        required: false
+        default: ""
       baseline-hardfork:
         type: string
         required: false
@@ -339,6 +357,8 @@ jobs:
       BENCH_TPS: ${{ inputs.tps }}
       BENCH_ACCOUNTS: ${{ inputs.accounts || '1000' }}
       BENCH_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests || '100' }}
+      BENCH_BASELINE_RETH_REF: ${{ inputs.baseline-reth-ref }}
+      BENCH_FEATURE_RETH_REF: ${{ inputs.feature-reth-ref }}
       BENCH_BASELINE_HARDFORK: ${{ inputs.baseline-hardfork }}
       BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
@@ -453,6 +473,8 @@ jobs:
             const tps = process.env.BENCH_TPS;
             const accounts = process.env.BENCH_ACCOUNTS;
             const maxConcurrentRequests = process.env.BENCH_MAX_CONCURRENT_REQUESTS;
+            const baselineRethRef = process.env.BENCH_BASELINE_RETH_REF || '';
+            const featureRethRef = process.env.BENCH_FEATURE_RETH_REF || '';
             const baselineHardfork = process.env.BENCH_BASELINE_HARDFORK || '';
             const featureHardfork = process.env.BENCH_FEATURE_HARDFORK || '';
             const baseline = process.env.INPUT_BASELINE_NAME;
@@ -468,7 +490,8 @@ jobs:
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
             const gasLimit = process.env.BENCH_GAS_LIMIT;
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`);
+            const rethNote = (baselineRethRef || featureRethRef) ? `${baselineRethRef ? `, baseline-reth-ref: \`${baselineRethRef}\`` : ''}${featureRethRef ? `, feature-reth-ref: \`${featureRethRef}\`` : ''}` : '';
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${rethNote}${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -646,6 +669,8 @@ jobs:
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
           [ -n "$BENCH_BASELINE_HARDFORK" ] && cmd+=(--baseline-hardfork="$BENCH_BASELINE_HARDFORK")
           [ -n "$BENCH_FEATURE_HARDFORK" ] && cmd+=(--feature-hardfork="$BENCH_FEATURE_HARDFORK")
+          [ -n "$BENCH_BASELINE_RETH_REF" ] && cmd+=(--baseline-reth-ref "$BENCH_BASELINE_RETH_REF")
+          [ -n "$BENCH_FEATURE_RETH_REF" ] && cmd+=(--feature-reth-ref "$BENCH_FEATURE_RETH_REF")
           [ -n "$BENCH_BASELINE_ARGS" ] && cmd+=(--baseline-args="$BENCH_BASELINE_ARGS")
           [ -n "$BENCH_FEATURE_ARGS" ] && cmd+=(--feature-args="$BENCH_FEATURE_ARGS")
           [ -n "$BENCH_BENCH_ARGS" ] && cmd+=(--bench-args="$BENCH_BENCH_ARGS")

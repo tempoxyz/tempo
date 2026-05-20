@@ -39,6 +39,14 @@ on:
         description: "Feature git ref (default: branch head)"
         type: string
         default: ""
+      baseline-reth-ref:
+        description: "Optional paradigmxyz/reth ref to use for the baseline build"
+        type: string
+        default: ""
+      feature-reth-ref:
+        description: "Optional paradigmxyz/reth ref to use for the feature build"
+        type: string
+        default: ""
       baseline-args:
         description: "Extra node args for baseline"
         type: string
@@ -75,6 +83,14 @@ on:
       feature:
         type: string
         required: false
+      baseline-reth-ref:
+        type: string
+        required: false
+        default: ""
+      feature-reth-ref:
+        type: string
+        required: false
+        default: ""
       baseline-name:
         type: string
         required: true
@@ -163,6 +179,8 @@ jobs:
       BENCH_FEATURES: ${{ (inputs.otlp == true || inputs.otlp == 'true') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_ARGS: "--dev.block-time 999999s ${{ inputs.baseline-args }}"
       BENCH_FEATURE_ARGS: "--dev.block-time 999999s ${{ inputs.feature-args }}"
+      BENCH_BASELINE_RETH_REF: ${{ inputs.baseline-reth-ref }}
+      BENCH_FEATURE_RETH_REF: ${{ inputs.feature-reth-ref }}
       BENCH_BLOCKS: ${{ inputs.blocks || '5000' }}
       BENCH_WARMUP_BLOCKS: ${{ inputs.warmup }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
@@ -289,12 +307,15 @@ jobs:
             const warmup = process.env.BENCH_WARMUP_BLOCKS;
             const baseline = '${{ inputs.baseline-name }}';
             const feature = '${{ inputs.feature-name }}';
+            const baselineRethRef = process.env.BENCH_BASELINE_RETH_REF || '';
+            const featureRethRef = process.env.BENCH_FEATURE_RETH_REF || '';
             const samply = process.env.BENCH_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const otlp = process.env.BENCH_OTLP === 'true';
             const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
             const chain = process.env.BENCH_CHAIN || 'mainnet';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${otlpNote}`);
+            const rethNote = (baselineRethRef || featureRethRef) ? `${baselineRethRef ? `, baseline-reth-ref: \`${baselineRethRef}\`` : ''}${featureRethRef ? `, feature-reth-ref: \`${featureRethRef}\`` : ''}` : '';
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${rethNote}${samplyNote}${otlpNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({

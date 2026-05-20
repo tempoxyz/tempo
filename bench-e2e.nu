@@ -800,6 +800,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
+    --baseline-reth-ref: string = ""                    # Override paradigmxyz/reth rev for baseline build
+    --feature-reth-ref: string = ""                     # Override paradigmxyz/reth rev for feature build
     --preset: string = ""                               # Txgen preset name
     --tps: int = 20000                                  # Target TPS
     --duration: int = 300                               # Duration in seconds
@@ -1008,6 +1010,13 @@ def "main e2e" [
     git worktree add $baseline_wt $baseline
     git worktree add $feature_wt $feature
 
+    if $baseline_reth_ref != "" {
+        run-external "bash" ".github/scripts/bench-update-reth-ref.sh" $baseline_wt $baseline_reth_ref "baseline"
+    }
+    if $feature_reth_ref != "" {
+        run-external "bash" ".github/scripts/bench-update-reth-ref.sh" $feature_wt $feature_reth_ref "feature"
+    }
+
     let tbc = (tracy-build-config $features $tracy)
     let effective_features = $tbc.features
     let effective_extra_rustflags = $tbc.extra_rustflags
@@ -1015,12 +1024,17 @@ def "main e2e" [
     # Build baseline and feature in parallel — they use separate worktrees
     # with independent target/ directories, so cargo invocations don't collide.
     let builds = [
-        { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline" }
-        { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature" }
+        { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", reth_ref: $baseline_reth_ref }
+        { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", reth_ref: $feature_reth_ref }
     ]
     $builds | par-each { |b|
-        if $effective_no_cache {
-            build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $effective_extra_rustflags --bench-features $features $b.wt $b.ref_name $profile $effective_features $b.sha
+        let reth_override = $b.reth_ref != ""
+        if $effective_no_cache or $reth_override {
+            if $reth_override {
+                build-in-worktree --no-cache --skip-cache-upload --no-default-features=$no_default_features --extra-rustflags $effective_extra_rustflags --bench-features $features $b.wt $b.ref_name $profile $effective_features $b.sha
+            } else {
+                build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $effective_extra_rustflags --bench-features $features $b.wt $b.ref_name $profile $effective_features $b.sha
+            }
         } else {
             build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $effective_features $b.sha
         }

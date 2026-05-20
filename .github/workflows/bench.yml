@@ -36,6 +36,8 @@ jobs:
       max-concurrent-requests: ${{ steps.args.outputs.max-concurrent-requests }}
       baseline: ${{ steps.args.outputs.baseline }}
       feature: ${{ steps.args.outputs.feature }}
+      baseline-reth-ref: ${{ steps.args.outputs.baseline-reth-ref }}
+      feature-reth-ref: ${{ steps.args.outputs.feature-reth-ref }}
       baseline-hardfork: ${{ steps.args.outputs.baseline-hardfork }}
       feature-hardfork: ${{ steps.args.outputs.feature-hardfork }}
       txgen-ref: ${{ steps.args.outputs.txgen-ref }}
@@ -104,7 +106,7 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
-            let pr, actor, mode, preset, duration, bloat, tps, accounts, maxConcurrentRequests, baseline, feature, baselineHardfork, featureHardfork, txgenRef, samply, tracy, tracySeconds, tracyOffset, otlp, baselineArgs, featureArgs, gasLimit, runType, forceBloat, noCache, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv, blocks, warmup;
+            let pr, actor, mode, preset, duration, bloat, tps, accounts, maxConcurrentRequests, baseline, feature, baselineRethRef, featureRethRef, baselineHardfork, featureHardfork, txgenRef, samply, tracy, tracySeconds, tracyOffset, otlp, baselineArgs, featureArgs, gasLimit, runType, forceBloat, noCache, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv, blocks, warmup;
             let explicitWarmup = false;
 
             pr = String(context.issue.number);
@@ -112,12 +114,12 @@ jobs:
 
             const body = context.payload.comment.body.trim();
             const intArgs = new Set(['duration', 'bloat', 'tps', 'accounts', 'max-concurrent-requests', 'gas-limit', 'tracy-seconds', 'tracy-offset', 'blocks', 'warmup']);
-            const refArgs = new Set(['baseline', 'feature', 'txgen-ref']);
+            const refArgs = new Set(['baseline', 'feature', 'baseline-reth-ref', 'feature-reth-ref', 'txgen-ref']);
             const stringArgs = new Set(['mode', 'preset', 'tracy', 'baseline-args', 'feature-args', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain', 'baseline-hardfork', 'feature-hardfork']);
             const boolArgs = new Set(['samply', 'force-bloat', 'no-cache', 'no-slack', 'no-existing-recipients', 'otlp']);
             const bloatValues = new Set(['1', '10', '100']);
             const hardforkValues = new Set(['T0', 'T1', 'T1A', 'T1B', 'T1C', 'T2', 'T3', 'T4', 'T5', 'T6']);
-            const defaults = { mode: 'e2e', preset: 'tip20', duration: '300', bloat: '100', tps: '20000', accounts: '1000', 'max-concurrent-requests': '100', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', otlp: 'false', 'baseline-args': '', 'feature-args': '', 'gas-limit': '500000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'no-existing-recipients': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet' };
+            const defaults = { mode: 'e2e', preset: 'tip20', duration: '300', bloat: '100', tps: '20000', accounts: '1000', 'max-concurrent-requests': '100', baseline: '', feature: '', 'baseline-reth-ref': '', 'feature-reth-ref': '', 'baseline-hardfork': '', 'feature-hardfork': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', otlp: 'false', 'baseline-args': '', 'feature-args': '', 'gas-limit': '500000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'no-existing-recipients': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet' };
             const unknown = [];
             const invalid = [];
             const defaultWarmup = (blockCount) => String(Math.floor(Number(blockCount) / 4));
@@ -190,7 +192,7 @@ jobs:
             if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
             if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
             if (errors.length) {
-              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [txgen-ref=REF] [samply] [otlp] [force-bloat] [no-cache] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
+              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N] [baseline=REF] [feature=REF] [baseline-reth-ref=REF] [feature-reth-ref=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [txgen-ref=REF] [samply] [otlp] [force-bloat] [no-cache] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -209,6 +211,8 @@ jobs:
             maxConcurrentRequests = defaults['max-concurrent-requests'];
             baseline = defaults.baseline;
             feature = defaults.feature;
+            baselineRethRef = defaults['baseline-reth-ref'];
+            featureRethRef = defaults['feature-reth-ref'];
             baselineHardfork = defaults['baseline-hardfork'];
             featureHardfork = defaults['feature-hardfork'];
             txgenRef = defaults['txgen-ref'];
@@ -239,7 +243,7 @@ jobs:
             const erFlag = `--existing-recipients=${existingRecipients}`;
             benchArgs = benchArgs ? `${benchArgs} ${erFlag}` : erFlag;
 
-            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [txgen-ref=REF] [samply] [otlp] [force-bloat] [no-cache] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
+            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N] [baseline=REF] [feature=REF] [baseline-reth-ref=REF] [feature-reth-ref=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [txgen-ref=REF] [samply] [otlp] [force-bloat] [no-cache] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
 
             // Validate chain value
             if (!['mainnet', 'testnet'].includes(chain)) {
@@ -352,6 +356,8 @@ jobs:
             core.setOutput('max-concurrent-requests', maxConcurrentRequests);
             core.setOutput('baseline', baseline);
             core.setOutput('feature', feature);
+            core.setOutput('baseline-reth-ref', baselineRethRef);
+            core.setOutput('feature-reth-ref', featureRethRef);
             core.setOutput('baseline-hardfork', baselineHardfork || '');
             core.setOutput('feature-hardfork', featureHardfork || '');
             core.setOutput('txgen-ref', txgenRef || '');
@@ -392,6 +398,8 @@ jobs:
           ACK_MAX_CONCURRENT_REQUESTS: ${{ steps.args.outputs.max-concurrent-requests }}
           ACK_BASELINE_NAME: ${{ steps.args.outputs.baseline-name }}
           ACK_FEATURE_NAME: ${{ steps.args.outputs.feature-name }}
+          ACK_BASELINE_RETH_REF: ${{ steps.args.outputs.baseline-reth-ref }}
+          ACK_FEATURE_RETH_REF: ${{ steps.args.outputs.feature-reth-ref }}
           ACK_BASELINE_HARDFORK: ${{ steps.args.outputs.baseline-hardfork }}
           ACK_FEATURE_HARDFORK: ${{ steps.args.outputs.feature-hardfork }}
           ACK_TXGEN_REF: ${{ steps.args.outputs.txgen-ref }}
@@ -429,6 +437,8 @@ jobs:
             const maxConcurrentRequests = process.env.ACK_MAX_CONCURRENT_REQUESTS;
             const baseline = process.env.ACK_BASELINE_NAME;
             const feature = process.env.ACK_FEATURE_NAME;
+            const baselineRethRef = process.env.ACK_BASELINE_RETH_REF || '';
+            const featureRethRef = process.env.ACK_FEATURE_RETH_REF || '';
             const baselineHardfork = process.env.ACK_BASELINE_HARDFORK || '';
             const featureHardfork = process.env.ACK_FEATURE_HARDFORK || '';
             const txgenRef = process.env.ACK_TXGEN_REF || 'default';
@@ -445,7 +455,8 @@ jobs:
             const noCache = process.env.ACK_NO_CACHE === 'true';
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
-            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${samplyNote}${tracyNote}${otlpNote}${naNote}${noCacheNote}`;
+            const rethNote = (baselineRethRef || featureRethRef) ? `${baselineRethRef ? `, baseline-reth-ref: \`${baselineRethRef}\`` : ''}${featureRethRef ? `, feature-reth-ref: \`${featureRethRef}\`` : ''}` : '';
+            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${rethNote}${samplyNote}${tracyNote}${otlpNote}${naNote}${noCacheNote}`;
 
             const { data: comment } = await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -471,6 +482,8 @@ jobs:
       max-concurrent-requests: ${{ needs.tempo-bench-ack.outputs.max-concurrent-requests }}
       baseline: ${{ needs.tempo-bench-ack.outputs.baseline }}
       feature: ${{ needs.tempo-bench-ack.outputs.feature }}
+      baseline-reth-ref: ${{ needs.tempo-bench-ack.outputs.baseline-reth-ref }}
+      feature-reth-ref: ${{ needs.tempo-bench-ack.outputs.feature-reth-ref }}
       baseline-hardfork: ${{ needs.tempo-bench-ack.outputs.baseline-hardfork }}
       feature-hardfork: ${{ needs.tempo-bench-ack.outputs.feature-hardfork }}
       txgen-ref: ${{ needs.tempo-bench-ack.outputs.txgen-ref }}
@@ -516,6 +529,8 @@ jobs:
       actor: ${{ needs.tempo-bench-ack.outputs.actor }}
       baseline: ${{ needs.tempo-bench-ack.outputs.baseline }}
       feature: ${{ needs.tempo-bench-ack.outputs.feature }}
+      baseline-reth-ref: ${{ needs.tempo-bench-ack.outputs.baseline-reth-ref }}
+      feature-reth-ref: ${{ needs.tempo-bench-ack.outputs.feature-reth-ref }}
       baseline-name: ${{ needs.tempo-bench-ack.outputs.baseline-name }}
       feature-name: ${{ needs.tempo-bench-ack.outputs.feature-name }}
       samply: ${{ needs.tempo-bench-ack.outputs.samply }}
