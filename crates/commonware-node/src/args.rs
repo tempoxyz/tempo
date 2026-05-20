@@ -342,13 +342,10 @@ impl Args {
     }
 
     pub fn network_identity(&self) -> Option<NetworkIdentity> {
-        let Some(identity) = self.network_identity else {
-            return None;
-        };
-
+        let identity = self.network_identity?;
         let from_epoch = self
             .network_identity_from_epoch
-            .expect("network identity from epoch must be set");
+            .expect("network identity from epoch required");
 
         Some(NetworkIdentity {
             from_epoch,
