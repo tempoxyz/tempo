@@ -622,6 +622,7 @@ def run-bench-single [
             --duration $duration
             --accounts $accounts
             --max-concurrent-requests $max_concurrent_requests
+            --bench-args $bench_args
             --bench-env $bench_env
             --git-ref $git_ref
             --build-profile $build_profile
@@ -804,6 +805,10 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     mut feature_builder_samples = []
     mut baseline_validation_samples = []
     mut feature_validation_samples = []
+    mut baseline_builder_gas_samples = []
+    mut feature_builder_gas_samples = []
+    mut baseline_validation_gas_samples = []
+    mut feature_validation_gas_samples = []
 
     let compute_tps_stats = { |samples: list<any>|
         let sorted_samples = ($samples | sort)
@@ -831,16 +836,26 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         }
         let report = (open $report_path)
         let samples_path = $"($results_dir)/report-($label).samples.ndjson"
-        let validation_samples = if ($samples_path | path exists) {
+        let metric_samples = if ($samples_path | path exists) {
             open --raw $samples_path
                 | lines
                 | where { |line| ($line | str trim) != "" }
                 | each { |line| $line | from json }
-                | where { |sample| $sample.name in ["reth_tempo_payload_builder_payload_build_duration_seconds" "reth_consensus_engine_beacon_new_payload_latency"] }
-                | where { |sample| ($sample.labels | get -o quantile | default "") in ["0.5" "0.9" "0.99"] }
+                | where { |sample| $sample.name in [
+                    "reth_tempo_payload_builder_payload_build_duration_seconds"
+                    "reth_consensus_engine_beacon_new_payload_latency"
+                    "reth_tempo_payload_builder_gas_per_second_last"
+                    "reth_consensus_engine_beacon_new_payload_gas_per_second_last"
+                ] }
+                | where { |sample|
+                    let quantile = ($sample.labels | get -o quantile | default "")
+                    ($quantile in ["0.5" "0.9" "0.99"]) or ($quantile == "")
+                }
         } else { [] }
-        let builder_samples = ($validation_samples | where name == "reth_tempo_payload_builder_payload_build_duration_seconds")
-        let validation_samples = ($validation_samples | where name == "reth_consensus_engine_beacon_new_payload_latency")
+        let builder_samples = ($metric_samples | where name == "reth_tempo_payload_builder_payload_build_duration_seconds")
+        let validation_samples = ($metric_samples | where name == "reth_consensus_engine_beacon_new_payload_latency")
+        let builder_gas_samples = ($metric_samples | where name == "reth_tempo_payload_builder_gas_per_second_last")
+        let validation_gas_samples = ($metric_samples | where name == "reth_consensus_engine_beacon_new_payload_gas_per_second_last")
         let blocks = ($report | get blocks | each { |b|
             let tx_count = ($b | get tx_count)
             let timestamp = if (($b | get -o timestamp | default null) != null) {
@@ -894,12 +909,16 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             $baseline_tps_samples = ($baseline_tps_samples | append $block_tps_samples)
             $baseline_builder_samples = ($baseline_builder_samples | append $builder_samples)
             $baseline_validation_samples = ($baseline_validation_samples | append $validation_samples)
+            $baseline_builder_gas_samples = ($baseline_builder_gas_samples | append $builder_gas_samples)
+            $baseline_validation_gas_samples = ($baseline_validation_gas_samples | append $validation_gas_samples)
         } else {
             $feature_blocks = ($feature_blocks | append $blocks)
             $feature_intervals = ($feature_intervals | append $block_intervals)
             $feature_tps_samples = ($feature_tps_samples | append $block_tps_samples)
             $feature_builder_samples = ($feature_builder_samples | append $builder_samples)
             $feature_validation_samples = ($feature_validation_samples | append $validation_samples)
+            $feature_builder_gas_samples = ($feature_builder_gas_samples | append $builder_gas_samples)
+            $feature_validation_gas_samples = ($feature_validation_gas_samples | append $validation_gas_samples)
         }
 
         let total_tx = ($blocks | get tx_count | math sum)
@@ -957,7 +976,6 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         {
             n: ($blocks | length)
             mean: (if ($latencies | length) > 0 { $latencies | math avg | math round --precision 1 } else { 0.0 })
-            stddev: (if ($latencies | length) > 1 { $latencies | math stddev | math round --precision 1 } else { 0.0 })
             p50: (percentile $latencies 50 | math round --precision 1)
             p90: (percentile $latencies 90 | math round --precision 1)
             p99: (percentile $latencies 99 | math round --precision 1)
@@ -991,6 +1009,14 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let f_builder = if $f_builder_metric.n > 0 { $f_builder_metric } else { { n: $f_lat.n, p50: $f_lat.p50, p90: $f_lat.p90, p99: $f_lat.p99 } }
     let b_validation = do $compute_quantile_metric_stats $baseline_validation_samples
     let f_validation = do $compute_quantile_metric_stats $feature_validation_samples
+    let compute_gas_stats = { |samples: list<any>|
+        let values = ($samples | get value | where { |value| $value != null })
+        if ($values | length) > 0 { $values | math avg | math round --precision 0 } else { 0.0 }
+    }
+    let b_builder_gas = do $compute_gas_stats $baseline_builder_gas_samples
+    let f_builder_gas = do $compute_gas_stats $feature_builder_gas_samples
+    let b_validation_gas = do $compute_gas_stats $baseline_validation_gas_samples
+    let f_validation_gas = do $compute_gas_stats $feature_validation_gas_samples
 
     let b_bt = do $compute_block_time_stats $baseline_intervals
     let f_bt = do $compute_block_time_stats $feature_intervals
@@ -1009,6 +1035,11 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
 
     # Compute deltas (feature vs baseline)
     let delta = { |base: float, feat: float| if $base != 0.0 { ((($feat - $base) / $base) * 100) | math round --precision 1 } else { 0.0 } }
+    let to_mgas_s = { |value: float| ($value / 1_000_000.0) | math round --precision 1 }
+    let b_builder_mgas = do $to_mgas_s $b_builder_gas
+    let f_builder_mgas = do $to_mgas_s $f_builder_gas
+    let b_validation_mgas = do $to_mgas_s $b_validation_gas
+    let f_validation_mgas = do $to_mgas_s $f_validation_gas
 
     let observability_padding_ms = 5000
     let observability_duration_ms = $duration * ($run_labels | length) * 1000
@@ -1060,18 +1091,20 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         $"| Block Time P90 [ms] | ($b_bt.p90) | ($f_bt.p90) | (do $delta $b_bt.p90 $f_bt.p90)% |"
         $"| Block Time P99 [ms] | ($b_bt.p99) | ($f_bt.p99) | (do $delta $b_bt.p99 $f_bt.p99)% |"
         ""
-        "## Builder Latency"
+        "## Builder"
         ""
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
+        $"| Gas Throughput [Mgas/s] | ($b_builder_mgas) | ($f_builder_mgas) | (do $delta $b_builder_gas $f_builder_gas)% |"
         $"| P50 [ms] | ($b_builder.p50) | ($f_builder.p50) | (do $delta $b_builder.p50 $f_builder.p50)% |"
         $"| P90 [ms] | ($b_builder.p90) | ($f_builder.p90) | (do $delta $b_builder.p90 $f_builder.p90)% |"
         $"| P99 [ms] | ($b_builder.p99) | ($f_builder.p99) | (do $delta $b_builder.p99 $f_builder.p99)% |"
         ""
-        "## Validation Latency"
+        "## Validator"
         ""
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
+        $"| Gas Throughput [Mgas/s] | ($b_validation_mgas) | ($f_validation_mgas) | (do $delta $b_validation_gas $f_validation_gas)% |"
         $"| P50 [ms] | ($b_validation.p50) | ($f_validation.p50) | (do $delta $b_validation.p50 $f_validation.p50)% |"
         $"| P90 [ms] | ($b_validation.p90) | ($f_validation.p90) | (do $delta $b_validation.p90 $f_validation.p90)% |"
         $"| P99 [ms] | ($b_validation.p99) | ($f_validation.p99) | (do $delta $b_validation.p99 $f_validation.p99)% |"
@@ -1111,13 +1144,13 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         results: {
             baseline: {
                 latency_mean: $b_lat.mean
-                latency_stddev: $b_lat.stddev
                 latency_p50: $b_lat.p50
                 latency_p90: $b_lat.p90
                 latency_p99: $b_lat.p99
                 builder_latency_p50: $b_builder.p50
                 builder_latency_p90: $b_builder.p90
                 builder_latency_p99: $b_builder.p99
+                builder_gas_s: $b_builder_gas
                 tps: $b_tps
                 tps_p50: $b_tps_stats.p50
                 tps_p90: $b_tps_stats.p90
@@ -1129,17 +1162,18 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 validation_latency_p50: $b_validation.p50
                 validation_latency_p90: $b_validation.p90
                 validation_latency_p99: $b_validation.p99
+                validation_gas_s: $b_validation_gas
                 blocks: $b_lat.n
             }
             feature: {
                 latency_mean: $f_lat.mean
-                latency_stddev: $f_lat.stddev
                 latency_p50: $f_lat.p50
                 latency_p90: $f_lat.p90
                 latency_p99: $f_lat.p99
                 builder_latency_p50: $f_builder.p50
                 builder_latency_p90: $f_builder.p90
                 builder_latency_p99: $f_builder.p99
+                builder_gas_s: $f_builder_gas
                 tps: $f_tps
                 tps_p50: $f_tps_stats.p50
                 tps_p90: $f_tps_stats.p90
@@ -1151,17 +1185,18 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 validation_latency_p50: $f_validation.p50
                 validation_latency_p90: $f_validation.p90
                 validation_latency_p99: $f_validation.p99
+                validation_gas_s: $f_validation_gas
                 blocks: $f_lat.n
             }
             deltas: {
                 latency_mean: (do $delta $b_lat.mean $f_lat.mean)
-                latency_stddev: (do $delta $b_lat.stddev $f_lat.stddev)
                 latency_p50: (do $delta $b_lat.p50 $f_lat.p50)
                 latency_p90: (do $delta $b_lat.p90 $f_lat.p90)
                 latency_p99: (do $delta $b_lat.p99 $f_lat.p99)
                 builder_latency_p50: (do $delta $b_builder.p50 $f_builder.p50)
                 builder_latency_p90: (do $delta $b_builder.p90 $f_builder.p90)
                 builder_latency_p99: (do $delta $b_builder.p99 $f_builder.p99)
+                builder_gas_s: (do $delta $b_builder_gas $f_builder_gas)
                 tps: (do $delta $b_tps $f_tps)
                 tps_p50: (do $delta $b_tps_stats.p50 $f_tps_stats.p50)
                 tps_p90: (do $delta $b_tps_stats.p90 $f_tps_stats.p90)
@@ -1173,6 +1208,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 validation_latency_p50: (do $delta $b_validation.p50 $f_validation.p50)
                 validation_latency_p90: (do $delta $b_validation.p90 $f_validation.p90)
                 validation_latency_p99: (do $delta $b_validation.p99 $f_validation.p99)
+                validation_gas_s: (do $delta $b_validation_gas $f_validation_gas)
             }
         }
         per_run: $run_data
@@ -1827,7 +1863,7 @@ def "main bench" [
     --node-args: string = ""                        # Additional node arguments (space-separated, applied to all runs)
     --baseline-args: string = ""                    # Additional node arguments for baseline runs only (space-separated)
     --feature-args: string = ""                     # Additional node arguments for feature runs only (space-separated)
-    --bench-args: string = ""                       # Legacy benchmark arguments; only --existing-recipients is ignored for txgen
+    --bench-args: string = ""                       # Additional txgen generate arguments
     --baseline-env: string = ""                     # Environment variables for baseline node runs (KEY=VAL KEY2=VAL2)
     --feature-env: string = ""                      # Environment variables for feature node runs (KEY=VAL KEY2=VAL2)
     --bench-env: string = ""                        # Environment variables for txgen/bench (KEY=VAL KEY2=VAL2)
@@ -1857,7 +1893,6 @@ def "main bench" [
     }
 
     let preset_path = (txgen-preset-path $preset)
-    txgen-validate-bench-args $bench_args
     let txgen = (txgen-resolve-binaries)
 
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
@@ -2404,6 +2439,7 @@ def "main bench" [
             --duration $duration
             --accounts $accounts
             --max-concurrent-requests $max_concurrent_requests
+            --bench-args $bench_args
             --bench-env $bench_env
             --git-ref $current_sha
             --build-profile $profile
@@ -2910,7 +2946,7 @@ def main [] {
     print "  --node-args <ARGS>       Additional node arguments (space-separated, all runs)"
     print "  --baseline-args <ARGS>       Additional node arguments for baseline runs only"
     print "  --feature-args <ARGS>        Additional node arguments for feature runs only"
-    print "  --bench-args <ARGS>      Legacy benchmark arguments (only --existing-recipients is ignored)"
+    print "  --bench-args <ARGS>      Additional txgen generate arguments"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
     print "  --gas-limit <N>          Block gas limit for genesis (raw number, default: 1000000000000)"
     print ""

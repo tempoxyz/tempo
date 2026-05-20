@@ -861,6 +861,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --duration $ctx.duration
                 --accounts $ctx.accounts
                 --max-concurrent-requests $ctx.max_concurrent_requests
+                --bench-args $ctx.bench_args
                 --bench-env $ctx.bench_env
                 --git-ref $run.ref
                 --git-ref-label ($run | get -o ref_label | default $run.ref)
@@ -960,7 +961,7 @@ def "main e2e" [
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
-    --bench-args: string = ""                           # Additional txgen bench args
+    --bench-args: string = ""                           # Additional txgen generate arguments
     --baseline-env: string = ""                         # Environment vars for baseline node phases
     --feature-env: string = ""                          # Environment vars for feature node phases
     --bench-env: string = ""                            # Environment vars for the sender process
@@ -973,7 +974,6 @@ def "main e2e" [
     --no-cache                                           # Skip binary cache
 ] {
     let preset_path = (txgen-preset-path $preset)
-    txgen-validate-bench-args $bench_args
     if $tracy not-in ["off" "on" "full"] {
         print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
         exit 1
