@@ -952,7 +952,6 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         {
             n: ($blocks | length)
             mean: (if ($latencies | length) > 0 { $latencies | math avg | math round --precision 1 } else { 0.0 })
-            stddev: (if ($latencies | length) > 1 { $latencies | math stddev | math round --precision 1 } else { 0.0 })
             p50: (percentile $latencies 50 | math round --precision 1)
             p90: (percentile $latencies 90 | math round --precision 1)
             p99: (percentile $latencies 99 | math round --precision 1)
@@ -1103,7 +1102,6 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         results: {
             baseline: {
                 latency_mean: $b_lat.mean
-                latency_stddev: $b_lat.stddev
                 latency_p50: $b_lat.p50
                 latency_p90: $b_lat.p90
                 latency_p99: $b_lat.p99
@@ -1125,7 +1123,6 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             }
             feature: {
                 latency_mean: $f_lat.mean
-                latency_stddev: $f_lat.stddev
                 latency_p50: $f_lat.p50
                 latency_p90: $f_lat.p90
                 latency_p99: $f_lat.p99
@@ -1147,7 +1144,6 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             }
             deltas: {
                 latency_mean: (do $delta $b_lat.mean $f_lat.mean)
-                latency_stddev: (do $delta $b_lat.stddev $f_lat.stddev)
                 latency_p50: (do $delta $b_lat.p50 $f_lat.p50)
                 latency_p90: (do $delta $b_lat.p90 $f_lat.p90)
                 latency_p99: (do $delta $b_lat.p99 $f_lat.p99)
