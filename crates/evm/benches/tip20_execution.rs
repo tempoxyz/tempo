@@ -100,9 +100,8 @@ struct ExecutionFixture {
     metrics: CachedStateMetrics,
 }
 
-type FixedCacheDb = State<StateProviderDatabase<CachedStateProvider<InMemoryStateProvider>>>;
-type PrewarmFixedCacheDb =
-    State<StateProviderDatabase<CachedStateProvider<InMemoryStateProvider, true>>>;
+type FixedCacheDb<const PREWARM: bool = false> =
+    State<StateProviderDatabase<CachedStateProvider<InMemoryStateProvider, PREWARM>>>;
 
 impl ExecutionFixture {
     fn state_db(&self) -> FixedCacheDb {
@@ -117,7 +116,7 @@ impl ExecutionFixture {
             .build()
     }
 
-    fn prewarm_state_db(&self) -> PrewarmFixedCacheDb {
+    fn prewarm_state_db(&self) -> FixedCacheDb<true> {
         let provider = CachedStateProvider::new_prewarm(
             self.provider.clone(),
             self.cache.clone(),
@@ -153,10 +152,8 @@ impl BlockHashReader for InMemoryStateProvider {
         Ok(self.block_hashes.get(&number).copied())
     }
 
-    fn canonical_hashes_range(&self, start: u64, end: u64) -> ProviderResult<Vec<B256>> {
-        Ok((start..end)
-            .filter_map(|number| self.block_hashes.get(&number).copied())
-            .collect())
+    fn canonical_hashes_range(&self, _start: u64, _end: u64) -> ProviderResult<Vec<B256>> {
+        Err(ProviderError::UnsupportedProvider)
     }
 }
 
@@ -242,7 +239,7 @@ impl StateProofProvider for InMemoryStateProvider {
 
 impl HashedPostStateProvider for InMemoryStateProvider {
     fn hashed_post_state(&self, _bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
-        HashedPostState::default()
+        unreachable!("TIP20 execution benchmark does not compute hashed post-state")
     }
 }
 
