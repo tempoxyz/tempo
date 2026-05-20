@@ -4,12 +4,13 @@
 # (reth-bench new-payload-fcu) against baseline and feature Tempo binaries,
 # using a schelk-managed snapshot for instant rollback between runs.
 #
-# Runs in B-F-F-B interleaved order to reduce systematic bias.
+# Runs in interleaved order to reduce systematic bias.
 #
 # Required env:
 #   BASELINE_REF, FEATURE_REF     – git SHAs to build
 #   BENCH_BLOCKS                  – number of blocks to benchmark
 #   BENCH_WARMUP_BLOCKS           – number of warmup blocks
+#   BENCH_RUN_PAIRS               – number of baseline/feature run pairs
 #   BENCH_BASELINE_ARGS           – extra node args for baseline (optional)
 #   BENCH_FEATURE_ARGS            – extra node args for feature (optional)
 #   BENCH_SAMPLY                  – "true" to enable samply profiling (optional)
@@ -59,6 +60,11 @@ echo "Chain: $CHAIN_NAME (id=$CHAIN_ID, rpc=$(redact_url "$REPLAY_RPC_URL"))"
 MC="mc"
 BLOCKS="${BENCH_BLOCKS:-5000}"
 WARMUP="${BENCH_WARMUP_BLOCKS:-1000}"
+RUN_PAIRS="${BENCH_RUN_PAIRS:-2}"
+if ! [[ "$RUN_PAIRS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "::error::BENCH_RUN_PAIRS must be a positive integer"
+  exit 1
+fi
 
 mkdir -p "$BENCH_WORK_DIR"
 
@@ -454,16 +460,55 @@ update_bench_status() {
 }
 
 # ============================================================================
-# B-F-F-B interleaved runs
+# Interleaved runs. For run-pairs=2 this preserves the previous B-F-F-B order.
 # ============================================================================
 
-update_bench_status "Running replay phase baseline-1 (1/4)..."
-run_single baseline-1 "$BASELINE_BIN" "$BENCH_WORK_DIR/baseline-1"
-update_bench_status "Running replay phase feature-1 (2/4)..."
-run_single feature-1  "$FEATURE_BIN"  "$BENCH_WORK_DIR/feature-1"
-update_bench_status "Running replay phase feature-2 (3/4)..."
-run_single feature-2  "$FEATURE_BIN"  "$BENCH_WORK_DIR/feature-2"
-update_bench_status "Running replay phase baseline-2 (4/4)..."
-run_single baseline-2 "$BASELINE_BIN" "$BENCH_WORK_DIR/baseline-2"
+build_run_order() {
+  local run_pairs="$1"
+  if [ $((run_pairs % 2)) -eq 0 ]; then
+    printf 'BFFB%.0s' $(seq 1 $((run_pairs / 2)))
+  else
+    printf 'BF%.0s' $(seq 1 "$run_pairs")
+  fi
+  echo
+}
+
+RUN_ORDER="$(build_run_order "$RUN_PAIRS")"
+echo "$RUN_ORDER" > "$BENCH_WORK_DIR/run_order.txt"
+echo "$RUN_ORDER" | grep -o . | while read -r side; do
+  case "$side" in
+    B) echo "baseline" ;;
+    F) echo "feature" ;;
+  esac
+done | awk '
+  $1 == "baseline" { b++; print "baseline-" b; next }
+  $1 == "feature" { f++; print "feature-" f; next }
+' > "$BENCH_WORK_DIR/run-order.txt"
+echo "Run order: $RUN_ORDER (B=baseline, F=feature; run-pairs=$RUN_PAIRS)"
+
+run_total="${#RUN_ORDER}"
+run_progress=0
+baseline_index=0
+feature_index=0
+
+for ((i = 0; i < ${#RUN_ORDER}; i++)); do
+  side="${RUN_ORDER:i:1}"
+  if [ "$side" = "B" ]; then
+    baseline_index=$((baseline_index + 1))
+    run_label="baseline-${baseline_index}"
+    binary="$BASELINE_BIN"
+  elif [ "$side" = "F" ]; then
+    feature_index=$((feature_index + 1))
+    run_label="feature-${feature_index}"
+    binary="$FEATURE_BIN"
+  else
+    echo "::error::Invalid run-order entry '${side}'"
+    exit 1
+  fi
+
+  run_progress=$((run_progress + 1))
+  update_bench_status "Running replay phase ${run_label} (${run_progress}/${run_total})..."
+  run_single "$run_label" "$binary" "$BENCH_WORK_DIR/$run_label"
+done
 
 echo "All replay benchmark runs complete."

@@ -786,7 +786,12 @@ def grafana-performance-url [benchmark_id: string, from_ms: int, to_ms: int] {
 
 
 def generate-summary [results_dir: string, baseline_ref: string, feature_ref: string, bloat: int, preset: string, tps: int, duration: int, --benchmark-id: string = "", --reference-epoch: int = 0] {
-    let candidate_run_labels = ["baseline-1" "feature-1" "feature-2" "baseline-2"]
+    let run_order_path = $"($results_dir)/run-order.txt"
+    let candidate_run_labels = if ($run_order_path | path exists) {
+        open $run_order_path | lines | where { |label| $label != "" }
+    } else {
+        ["baseline-1" "feature-1" "feature-2" "baseline-2"]
+    }
     let run_labels = ($candidate_run_labels | where { |label| ($"($results_dir)/report-($label).json" | path exists) })
     mut run_data = []
     mut baseline_blocks = []
@@ -995,6 +1000,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     # Aggregate TPS and Mgas/s from per-run totals (total_tx / total_time)
     let baseline_runs = ($run_data | where { |r| $r.label | str starts-with "baseline" })
     let feature_runs = ($run_data | where { |r| $r.label | str starts-with "feature" })
+    let run_pairs = ([($baseline_runs | length) ($feature_runs | length)] | math max)
 
     let b_tps = if ($baseline_runs | length) > 0 { $baseline_runs | get tps | math avg | math round --precision 0 } else { 0.0 }
     let f_tps = if ($feature_runs | length) > 0 { $feature_runs | get tps | math avg | math round --precision 0 } else { 0.0 }
@@ -1035,6 +1041,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         $"- Preset: ($preset)"
         $"- Target TPS: ($tps)"
         $"- Duration: ($duration)s"
+        $"- Run pairs: ($run_pairs)"
         $"- Snapshot: (if (has-schelk) { 'schelk' } else { 'cp fallback' })"
         $"- Baseline blocks: ($b_lat.n)"
         $"- Feature blocks: ($f_lat.n)"
@@ -1099,6 +1106,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             preset: $preset
             tps: $tps
             duration: $duration
+            run_pairs: $run_pairs
         }
         results: {
             baseline: {
