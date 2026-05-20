@@ -57,6 +57,8 @@ pub struct AA2dPool {
     /// Expiring nonce transactions, keyed by expiring nonce hash (always pending/independent).
     /// These use expiring nonce replay protection instead of sequential nonces.
     expiring_nonce_txs: HashMap<B256, PendingTransaction<TxOrdering>>,
+    /// Expiring nonce transactions ordered by eviction priority (lowest priority first).
+    expiring_nonce_eviction_order: BTreeSet<ExpiringNonceEvictionKey>,
     /// A mapping of `expiring_nonce_seen` slot to expiring nonce hash.
     ///
     /// Used to track inclusion of expiring nonce transactions.
@@ -113,6 +115,7 @@ impl AA2dPool {
             by_id: Default::default(),
             by_hash: Default::default(),
             expiring_nonce_txs: Default::default(),
+            expiring_nonce_eviction_order: Default::default(),
             slot_to_expiring_nonce_hash: Default::default(),
             slot_to_seq_id: Default::default(),
             config,
@@ -374,9 +377,16 @@ impl AA2dPool {
         // Notify active BestAA2dTransactions iterators about the new pending transaction
         self.notify_new_pending(&pending_tx);
 
+        let eviction_key = ExpiringNonceEvictionKey::new(
+            expiring_nonce_hash,
+            pending_tx.priority.clone(),
+            pending_tx.submission_id,
+        );
+
         // Insert into expiring nonce map and by_hash
         self.expiring_nonce_txs
             .insert(expiring_nonce_hash, pending_tx);
+        self.expiring_nonce_eviction_order.insert(eviction_key);
         if let Some(slot) = transaction.transaction.expiring_nonce_slot() {
             self.slot_to_expiring_nonce_hash
                 .insert(slot, expiring_nonce_hash);
@@ -1032,14 +1042,9 @@ impl AA2dPool {
             .map(|key| (key.tx_id, key.priority().clone(), key.submission_id()));
 
         let worst_expiring = self
-            .expiring_nonce_txs
-            .iter()
-            .min_by(|a, b| {
-                a.1.priority
-                    .cmp(&b.1.priority)
-                    .then_with(|| b.1.submission_id.cmp(&a.1.submission_id))
-            })
-            .map(|(hash, tx)| (*hash, tx.priority.clone(), tx.submission_id));
+            .expiring_nonce_eviction_order
+            .first()
+            .map(|key| (key.expiring_hash, key.priority.clone(), key.submission_id));
 
         match (worst_2d, worst_expiring) {
             (Some((id, pri_2d, sid_2d)), Some((hash, pri_exp, sid_exp))) => {
@@ -1078,6 +1083,11 @@ impl AA2dPool {
         expiring_hash: &B256,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
         let pending_tx = self.expiring_nonce_txs.remove(expiring_hash)?;
+        self.expiring_nonce_eviction_order
+            .remove(&ExpiringNonceEvictionKey::from_pending(
+                *expiring_hash,
+                &pending_tx,
+            ));
         let tx_hash = *pending_tx.transaction.hash();
         self.by_hash.remove(&tx_hash);
         if let Some(slot) = pending_tx.transaction.transaction.expiring_nonce_slot() {
@@ -1361,7 +1371,19 @@ impl AA2dPool {
                 pending_tx.transaction.transaction.is_expiring_nonce(),
                 "Transaction in expiring_nonce_txs is not an expiring nonce tx"
             );
+            assert!(
+                self.expiring_nonce_eviction_order
+                    .contains(&ExpiringNonceEvictionKey::from_pending(*hash, pending_tx,)),
+                "Expiring nonce tx {tx_hash:?} missing from eviction index"
+            );
         }
+        assert_eq!(
+            self.expiring_nonce_eviction_order.len(),
+            self.expiring_nonce_txs.len(),
+            "expiring_nonce_eviction_order.len() ({}) != expiring_nonce_txs.len() ({})",
+            self.expiring_nonce_eviction_order.len(),
+            self.expiring_nonce_txs.len()
+        );
     }
 }
 
@@ -1484,6 +1506,52 @@ impl Ord for EvictionKey {
 }
 
 impl PartialOrd for EvictionKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+#[derive(Clone, Debug)]
+struct ExpiringNonceEvictionKey {
+    expiring_hash: B256,
+    priority: Priority<u128>,
+    submission_id: u64,
+}
+
+impl ExpiringNonceEvictionKey {
+    fn new(expiring_hash: B256, priority: Priority<u128>, submission_id: u64) -> Self {
+        Self {
+            expiring_hash,
+            priority,
+            submission_id,
+        }
+    }
+
+    fn from_pending(expiring_hash: B256, tx: &PendingTransaction<TxOrdering>) -> Self {
+        Self::new(expiring_hash, tx.priority.clone(), tx.submission_id)
+    }
+}
+
+impl PartialEq for ExpiringNonceEvictionKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.expiring_hash == other.expiring_hash
+            && self.priority == other.priority
+            && self.submission_id == other.submission_id
+    }
+}
+
+impl Eq for ExpiringNonceEvictionKey {}
+
+impl Ord for ExpiringNonceEvictionKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.priority
+            .cmp(&other.priority)
+            .then_with(|| other.submission_id.cmp(&self.submission_id))
+            .then_with(|| self.expiring_hash.cmp(&other.expiring_hash))
+    }
+}
+
+impl PartialOrd for ExpiringNonceEvictionKey {
     fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
         Some(self.cmp(other))
     }
