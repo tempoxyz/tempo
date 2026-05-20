@@ -40,11 +40,21 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
+alloy-eips.workspace = true
+alloy-signer.workspace = true
+alloy-signer-local = { workspace = true, features = ["mnemonic"] }
+alloy-sol-types.workspace = true
+criterion.workspace = true
 revm.workspace = true
 reth-storage-api.workspace = true
+tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary"] }
 
 [features]
 default = ["rpc", "engine"]
 rpc = ["dep:reth-rpc-eth-api", "tempo-revm/rpc", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
 engine = ["dep:tempo-payload-types", "dep:rayon"]
+
+[[bench]]
+name = "tip20_execution"
+harness = false

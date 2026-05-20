@@ -1676,7 +1676,7 @@ mod tests {
                 assert!(matches!(
                     err.downcast_other_ref::<TempoPoolTransactionError>(),
                     Some(TempoPoolTransactionError::Evm(
-                        TempoInvalidTransaction::InvalidFeeToken(_)
+                        TempoInvalidTransaction::FeeTokenNotTip20 { .. }
                     ))
                 ));
             }

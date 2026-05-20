@@ -100,19 +100,6 @@ def txgen-account-mnemonic [] {
     $TXGEN_HELPER_ACCOUNT_MNEMONIC
 }
 
-def txgen-validate-bench-args [bench_args: string] {
-    if $bench_args == "" {
-        return
-    }
-
-    let unsupported = ($bench_args
-        | str replace --all --regex '--existing-recipients(=(true|false))?' ''
-        | str trim)
-    if $unsupported != "" {
-        error make { msg: $"txgen path does not support custom --bench-args yet: ($unsupported)" }
-    }
-}
-
 def txgen-rpc-call [rpc_url: string, payload: string] {
     let result = (^curl -sf -X POST -H "Content-Type: application/json" -d $payload $rpc_url | complete)
     if $result.exit_code != 0 {
@@ -181,12 +168,13 @@ def txgen-run-preset-pipeline [
     --preset-path: string
     --generate-rpc-url: string
     --submit-rpc-url: string
-    --metrics-url: string
+    --metrics-url: list<string>
     --report-path: string
     --tps: int
     --duration: int
     --accounts: int
     --max-concurrent-requests: int
+    --bench-args: string = ""
     --bench-env: string = ""
     --git-ref: string = ""
     --git-ref-label: string = ""
@@ -199,6 +187,7 @@ def txgen-run-preset-pipeline [
     --platform: string = ""
     --scenario: string = ""
     --victoriametrics-url: string = ""
+    --clickhouse-url: string = ""
     --skip-funding                                   # Skip faucet funding (accounts already funded at genesis via state bloat)
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
@@ -222,19 +211,21 @@ def txgen-run-preset-pipeline [
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
     ]
+    let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
     let bench_base_cmd = [
         $txgen_bench_bin
         "send"
         "--rpc-url" $submit_rpc_url
         "--tps" $tps
         "--max-concurrent" $max_concurrent_requests
-        "--metrics-url" $metrics_url
+        ...$metrics_url_args
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
         "--drain-timeout" $TXGEN_HELPER_DRAIN_TIMEOUT_SECS
     ]
         | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
     let report_args = ["--report" $"json:($report_path)"]
         | append (if $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
+        | append (if $clickhouse_url != "" { ["--report" $"clickhouse:($clickhouse_url)"] } else { [] })
     let metadata_args = [
         "-m" "job=github-tempo-bench-e2e"
         "-m" $"chain_id=($chain_id)"
@@ -260,7 +251,12 @@ def txgen-run-preset-pipeline [
     let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
-    let txgen_cmd_str = (txgen-shell-join $txgen_cmd)
+    let txgen_base_cmd_str = (txgen-shell-join $txgen_cmd)
+    let txgen_cmd_str = if $bench_args == "" {
+        $txgen_base_cmd_str
+    } else {
+        $"($txgen_base_cmd_str) ($bench_args)"
+    }
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
 

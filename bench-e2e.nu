@@ -16,7 +16,7 @@ const E2E_A_CPUS = "0-7,16-23"
 const E2E_B_CPUS = "8-15,24-31"
 const E2E_A_MEMORY = "60G"
 const E2E_B_MEMORY = "60G"
-const E2E_GAS_LIMIT = "500000000"
+const E2E_GAS_LIMIT = "1000000000"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
@@ -25,6 +25,8 @@ const E2E_LOCAL_RETH_ARGS = [
     "--disable-discovery"
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
+    "--builder.max-tasks" "1"
+    "--engine.share-sparse-trie-with-payload-builder"
 ]
 
 def run-bench-schelk [...args: string] {
@@ -223,45 +225,137 @@ def e2e-snapshot-state-hardfork [datadir: string] {
     normalize-hardfork $state_hardfork
 }
 
-def e2e-update-snapshot-hardfork-marker [datadir: string, hardfork: string] {
-    let fork = (normalize-hardfork $hardfork)
-    let marker_path = $"($datadir)/($BENCH_META_SUBDIR)/marker.json"
-    let marker = (open $marker_path)
-    $marker | upsert state_hardfork $fork | to json | save -f $marker_path
+def normalize-gas-limit [gas_limit: string] {
+    if $gas_limit == "" {
+        return ""
+    }
+    $gas_limit | into int | into string
 }
 
-def e2e-synthesize-hardfork-genesis [source_genesis: string, target_genesis: string, hardfork: string] {
-    let fork = (normalize-hardfork $hardfork)
+def gas-limit-quantity [gas_limit: string] {
+    let normalized = (normalize-gas-limit $gas_limit)
+    if $normalized == "" {
+        return ""
+    }
+    $normalized | into int | format number | get lowerhex
+}
+
+def e2e-snapshot-state-gas-limit [datadir: string] {
+    let marker = (read-bench-marker $datadir)
+    if $marker != null {
+        let marker_gas_limit = ($marker | get -o gas_limit | default "")
+        if $marker_gas_limit != "" {
+            return (normalize-gas-limit $marker_gas_limit)
+        }
+    }
+
+    let genesis_path = $"($datadir)/($BENCH_META_SUBDIR)/genesis.json"
+    if ($genesis_path | path exists) {
+        let genesis_gas_limit = (open $genesis_path | get -o gasLimit | default "")
+        if $genesis_gas_limit != "" {
+            return (normalize-gas-limit $genesis_gas_limit)
+        }
+    }
+
+    ""
+}
+
+def e2e-update-snapshot-genesis-marker [
+    datadir: string,
+    hardfork: string,
+    gas_limit: string,
+] {
+    let marker_path = $"($datadir)/($BENCH_META_SUBDIR)/marker.json"
+    mut marker = (open $marker_path)
+    if $hardfork != "" {
+        let fork = (normalize-hardfork $hardfork)
+        $marker = ($marker | upsert state_hardfork $fork)
+    }
+    if $gas_limit != "" {
+        $marker = ($marker | upsert gas_limit (normalize-gas-limit $gas_limit))
+    }
+    $marker | to json | save -f $marker_path
+}
+
+def e2e-synthesize-genesis [
+    source_genesis: string,
+    target_genesis: string,
+    hardfork: string,
+    gas_limit: string,
+] {
     let source = (open $source_genesis)
     mut config = ($source | get config)
-    for field in (hardfork-genesis-config-fields $fork) {
-        $config = ($config | upsert $field.name $field.value)
+    mut patch_labels = []
+    if $hardfork != "" {
+        let fork = (normalize-hardfork $hardfork)
+        for field in (hardfork-genesis-config-fields $fork) {
+            $config = ($config | upsert $field.name $field.value)
+        }
+        $patch_labels = ($patch_labels | append $"hardfork=($fork)")
     }
-    let genesis = ($source | upsert config $config)
+    mut genesis = ($source | upsert config $config)
+    if $gas_limit != "" {
+        let normalized_gas_limit = (normalize-gas-limit $gas_limit)
+        $genesis = ($genesis | upsert gasLimit (gas-limit-quantity $normalized_gas_limit))
+        $patch_labels = ($patch_labels | append $"gas_limit=($normalized_gas_limit)")
+    }
     let target_dir = ($target_genesis | path dirname)
     mkdir $target_dir
     $genesis | to json | save -f $target_genesis
-    print $"Synthesized ($fork) genesis at ($target_genesis)"
+    let patch_label = if ($patch_labels | length) > 0 {
+        $patch_labels | str join ", "
+    } else {
+        "unchanged"
+    }
+    print $"Synthesized genesis \(($patch_label)\) at ($target_genesis)"
 }
 
-def e2e-regenesis [tempo_bin: string, genesis: string, datadir: string, hardfork: string] {
-    let fork = (normalize-hardfork $hardfork)
+def e2e-regenesis [
+    tempo_bin: string,
+    genesis: string,
+    datadir: string,
+    hardfork: string,
+    gas_limit: string,
+] {
+    let target_hardfork = if $hardfork != "" { normalize-hardfork $hardfork } else { "" }
+    let target_gas_limit = if $gas_limit != "" { normalize-gas-limit $gas_limit } else { "" }
     let current_hardfork = (e2e-snapshot-state-hardfork $datadir)
-    if $current_hardfork == $fork {
-        print $"Skipping tempo regenesis for ($datadir); marker state_hardfork already matches ($fork)"
+    let current_gas_limit = (e2e-snapshot-state-gas-limit $datadir)
+    let hardfork_matches = $target_hardfork == "" or $current_hardfork == $target_hardfork
+    let gas_limit_matches = $target_gas_limit == "" or $current_gas_limit == $target_gas_limit
+    if $hardfork_matches and $gas_limit_matches {
+        mut matches = []
+        if $target_hardfork != "" {
+            $matches = ($matches | append $"state_hardfork=($target_hardfork)")
+        }
+        if $target_gas_limit != "" {
+            $matches = ($matches | append $"gas_limit=($target_gas_limit)")
+        }
+        print $"Skipping tempo regenesis for ($datadir); marker already matches (($matches | str join ', '))"
         return
     }
 
-    print $"Running tempo regenesis for ($datadir): state_hardfork=($current_hardfork) -> ($fork) with ($genesis)..."
-    let result = (run-external $tempo_bin "regenesis" "--chain" $genesis "--datadir" $datadir | complete)
+    let target_genesis = $"($datadir)/($BENCH_META_SUBDIR)/regenesis-target.json"
+    e2e-synthesize-genesis $genesis $target_genesis $target_hardfork $target_gas_limit
+
+    mut changes = []
+    if not $hardfork_matches {
+        $changes = ($changes | append $"state_hardfork=($current_hardfork) -> ($target_hardfork)")
+    }
+    if not $gas_limit_matches {
+        $changes = ($changes | append $"gas_limit=($current_gas_limit) -> ($target_gas_limit)")
+    }
+    print $"Running tempo regenesis for ($datadir): ($changes | str join ', ') with ($target_genesis)..."
+    let result = (run-external $tempo_bin "regenesis" "--chain" $target_genesis "--datadir" $datadir | complete)
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }
     if $result.exit_code != 0 {
         print $"Error: tempo regenesis failed for ($datadir) with exit code ($result.exit_code)"
         exit $result.exit_code
     }
-    e2e-synthesize-hardfork-genesis $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $fork
-    e2e-update-snapshot-hardfork-marker $datadir $fork
+    e2e-synthesize-genesis $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $target_hardfork $target_gas_limit
+    e2e-update-snapshot-genesis-marker $datadir $target_hardfork $target_gas_limit
+    rm $target_genesis
 }
 
 def derive-tracing-otlp [tracing_otlp: string] {
@@ -643,9 +737,9 @@ def run-local-e2e-phase [run: record, ctx: record] {
             exit 1
         }
     }
-    if $hardfork != "" {
-        e2e-regenesis $run.tempo $genesis $ctx.a.datadir $hardfork
-        e2e-regenesis $run.tempo $genesis $ctx.b.datadir $hardfork
+    if $hardfork != "" or $ctx.gas_limit != "" {
+        e2e-regenesis $run.tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit
+        e2e-regenesis $run.tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit
     }
     for role_info in [
         { role: "a", node_dir: $ctx.a.node_dir }
@@ -688,12 +782,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
+        | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
         | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
         | append $E2E_LOCAL_RETH_ARGS
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
+        | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let a_args = (dedup-args $a_base_args $extra_args)
     let b_args = (dedup-args $b_base_args $extra_args)
 
@@ -742,7 +838,16 @@ def run-local-e2e-phase [run: record, ctx: record] {
         $tracy_capture_started = true
     }
 
+    let tps_k = ($ctx.tps // 1000)
+    let scenario = $"($ctx.preset)-($tps_k)k"
+    let phase_clickhouse_url = if $ctx.clickhouse_url != "" and ($ctx.clickhouse_run == "" or $ctx.clickhouse_run == $phase) {
+        $ctx.clickhouse_url
+    } else {
+        ""
+    }
+
     if $phase_exit == 0 {
+        let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
         let sender_exit = (try {
             let bench_result = (txgen-run-preset-pipeline
                 --txgen-tempo-bin $ctx.txgen.txgen_tempo_bin
@@ -750,21 +855,26 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --preset-path $ctx.preset_path
                 --generate-rpc-url $a_rpc
                 --submit-rpc-url $a_rpc
-                --metrics-url "http://127.0.0.1:9001/metrics"
+                --metrics-url ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
                 --report-path $"($ctx.results_dir)/report-($phase).json"
                 --tps $ctx.tps
                 --duration $ctx.duration
                 --accounts $ctx.accounts
                 --max-concurrent-requests $ctx.max_concurrent_requests
+                --bench-args $ctx.bench_args
                 --bench-env $ctx.bench_env
                 --git-ref $run.ref
+                --git-ref-label ($run | get -o ref_label | default $run.ref)
                 --build-profile $ctx.profile
                 --benchmark-mode "e2e"
                 --benchmark-id $ctx.benchmark_id
                 --benchmark-run $phase
-                --run-type $run_type
+                --run-type $ctx.run_type
                 --benchmark-start $ctx.reference_epoch
+                --platform "tempo"
+                --scenario $scenario
                 --victoriametrics-url $ctx.victoriametrics_url
+                --clickhouse-url $phase_clickhouse_url
                 --skip-funding=($ctx.bloat > 0))
             if not $bench_result.ok {
                 $bench_result.exit_code
@@ -775,6 +885,12 @@ def run-local-e2e-phase [run: record, ctx: record] {
             print $"Error: local e2e txgen sender failed for ($phase): ($e.msg)"
             1
         })
+        let phase_finished_ms = ((date now | into int) / 1_000_000 | into int)
+        {
+            phase: $phase
+            started_ms: $phase_started_ms
+            finished_ms: $phase_finished_ms
+        } | to json | save -f $"($ctx.results_dir)/phase-range-($phase).json"
         $phase_exit = $sender_exit
     } else {
         print $"Skipping local e2e sender for ($phase) because readiness checks failed"
@@ -796,7 +912,26 @@ def run-local-e2e-phase [run: record, ctx: record] {
     return 0
 }
 
-# Run the baseline-feature-feature-baseline e2e sequence on one runner.
+def e2e-run-sides [run_pairs: int] {
+    if $run_pairs <= 0 {
+        print "Error: --run-pairs must be a positive integer"
+        exit 1
+    }
+
+    mut sides = []
+    if ($run_pairs mod 2) == 0 {
+        for _ in 0..<($run_pairs // 2) {
+            $sides = ($sides | append ["baseline" "feature" "feature" "baseline"])
+        }
+    } else {
+        for _ in 0..<$run_pairs {
+            $sides = ($sides | append ["baseline" "feature"])
+        }
+    }
+    $sides
+}
+
+# Run the e2e sequence on one runner.
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
@@ -822,9 +957,13 @@ def "main e2e" [
     --tracy-offset: int = 120                           # Seconds to wait before starting tracy capture
     --tracing-otlp: string = ""                         # OTLP endpoint for tracing (auto-derived from GRAFANA_TEMPO/TEMPO_TELEMETRY_URL)
     --victoriametrics-url: string = ""                  # VictoriaMetrics base URL for txgen metric sample import
+    --clickhouse-url: string = ""                       # ClickHouse HTTP endpoint for txgen result upload
+    --clickhouse-run: string = "feature-1"              # Run label allowed to use the ClickHouse reporter; empty = every run
+    --run-pairs: int = 2                                # Number of baseline/feature run pairs
+    --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
-    --bench-args: string = ""                           # Additional txgen bench args
+    --bench-args: string = ""                           # Additional txgen generate arguments
     --baseline-env: string = ""                         # Environment vars for baseline node phases
     --feature-env: string = ""                          # Environment vars for feature node phases
     --bench-env: string = ""                            # Environment vars for the sender process
@@ -837,9 +976,12 @@ def "main e2e" [
     --no-cache                                           # Skip binary cache
 ] {
     let preset_path = (txgen-preset-path $preset)
-    txgen-validate-bench-args $bench_args
     if $tracy not-in ["off" "on" "full"] {
         print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
+        exit 1
+    }
+    if $run_pairs <= 0 {
+        print "Error: --run-pairs must be a positive integer"
         exit 1
     }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
@@ -889,7 +1031,17 @@ def "main e2e" [
     let a_trusted_peers_path = $"($a_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
     let run_started_at = (date now)
     let timestamp = ($run_started_at | format date "%Y%m%d-%H%M%S-%3f")
-    let benchmark_id = $"bench-e2e-local-($timestamp)"
+    let benchmark_id = ($env | get --optional BENCHMARK_ID)
+    let benchmark_id = if $benchmark_id == null or ($benchmark_id | str trim) == "" {
+        let run_id = ($env | get --optional GITHUB_RUN_ID)
+        if $run_id == null or ($run_id | str trim) == "" {
+            print "Error: BENCHMARK_ID or GITHUB_RUN_ID must be set for e2e benchmarks"
+            exit 1
+        }
+        $"bench-e2e-($run_id)"
+    } else {
+        $benchmark_id
+    }
     let reference_epoch = (($run_started_at | into int) / 1_000_000_000 | into int)
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
     let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
@@ -978,8 +1130,8 @@ def "main e2e" [
     if $hardfork_mode {
         if ($hardfork_genesis_dir | path exists) { rm -rf $hardfork_genesis_dir }
         mkdir $hardfork_genesis_dir
-        e2e-synthesize-hardfork-genesis $genesis_path $baseline_genesis_path $baseline_hardfork_name
-        e2e-synthesize-hardfork-genesis $genesis_path $feature_genesis_path $feature_hardfork_name
+        e2e-synthesize-genesis $genesis_path $baseline_genesis_path $baseline_hardfork_name $gas_limit
+        e2e-synthesize-genesis $genesis_path $feature_genesis_path $feature_hardfork_name $gas_limit
     }
     let trusted_peers = if ($a_trusted_peers_path | path exists) {
         open $a_trusted_peers_path | str trim
@@ -1089,19 +1241,52 @@ def "main e2e" [
         feature_env: $feature_env
         bench_env: $bench_env
         victoriametrics_url: $victoriametrics_url
+        clickhouse_url: $clickhouse_url
+        clickhouse_run: $clickhouse_run
+        run_type: $run_type
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
         tune: $tune
         loud: $loud
         gas_limit: $gas_limit
+        tracing_otlp: $tracing_otlp
     }
 
-    let runs = [
-        { phase: "baseline-1", ref: $baseline, tempo: $baseline_tempo, genesis: $baseline_genesis_path, hardfork: $baseline_hardfork_name }
-        { phase: "feature-1", ref: $feature, tempo: $feature_tempo, genesis: $feature_genesis_path, hardfork: $feature_hardfork_name }
-        { phase: "feature-2", ref: $feature, tempo: $feature_tempo, genesis: $feature_genesis_path, hardfork: $feature_hardfork_name }
-        { phase: "baseline-2", ref: $baseline, tempo: $baseline_tempo, genesis: $baseline_genesis_path, hardfork: $baseline_hardfork_name }
-    ]
+    let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
+    let feature_base_label = if $feature_name != "" { $feature_name } else { $feature }
+
+    mut baseline_run_index = 0
+    mut feature_run_index = 0
+    mut runs = []
+    for side in (e2e-run-sides $run_pairs) {
+        if $side == "baseline" {
+            $baseline_run_index = $baseline_run_index + 1
+            $runs = ($runs | append {
+                phase: $"baseline-($baseline_run_index)"
+                ref: $baseline
+                ref_label: $baseline_base_label
+                tempo: $baseline_tempo
+                genesis: $baseline_genesis_path
+                hardfork: $baseline_hardfork_name
+            })
+        } else {
+            $feature_run_index = $feature_run_index + 1
+            $runs = ($runs | append {
+                phase: $"feature-($feature_run_index)"
+                ref: $feature
+                ref_label: $feature_base_label
+                tempo: $feature_tempo
+                genesis: $feature_genesis_path
+                hardfork: $feature_hardfork_name
+            })
+        }
+    }
+    let valid_run_labels = ($runs | get phase)
+    if $clickhouse_run != "" and $clickhouse_run not-in $valid_run_labels {
+        print $"Error: --clickhouse-run must be one of: ($valid_run_labels | str join ', ') \(got '($clickhouse_run)'\)"
+        exit 1
+    }
+    $valid_run_labels | str join "\n" | save -f $"($results_dir)/run-order.txt"
     let num_phases = ($runs | length)
     mut e2e_exit = 0
     for idx in 0..<$num_phases {
@@ -1138,8 +1323,6 @@ def "main e2e" [
         }
     }
 
-    let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
-    let feature_base_label = if $feature_name != "" { $feature_name } else { $feature }
     let baseline_label = if $hardfork_mode { $"($baseline_base_label) \(($baseline_hardfork_name)\)" } else { $baseline_base_label }
     let feature_label = if $hardfork_mode { $"($feature_base_label) \(($feature_hardfork_name)\)" } else { $feature_base_label }
     if $e2e_exit == 0 {
