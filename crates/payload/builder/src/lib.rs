@@ -245,6 +245,7 @@ where
             + 'static,
     {
         let BuildArguments {
+            cached_reads,
             execution_cache,
             trie_handle,
             config,
@@ -636,7 +637,7 @@ where
             // can skip building the block
             return Ok(BuildOutcome::Aborted {
                 fees: total_fees,
-                cached_reads: Default::default(),
+                cached_reads,
             });
         }
 
@@ -896,7 +897,7 @@ where
         } else {
             Ok(BuildOutcome::Better {
                 payload,
-                cached_reads: Default::default(),
+                cached_reads,
             })
         }
     }
