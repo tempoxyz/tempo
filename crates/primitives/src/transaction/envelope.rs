@@ -1,4 +1,6 @@
-use super::{tt_signed::AASigned, unique_tx_identifier_from_signable};
+use super::{
+    tt_signature::TempoSignature, tt_signed::AASigned, unique_tx_identifier_from_signable,
+};
 use crate::{TempoAddressExt, TempoTransaction, subblock::PartialValidatorKey};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
@@ -505,7 +507,9 @@ fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
         Some(to) if to.is_tip20() => ITIP20::ITIP20Calls::is_payment(input),
         // TIP20ChannelEscrow call + payment calldata constraints
         Some(to) if *to == TIP20_CHANNEL_ESCROW_ADDRESS => {
-            ITIP20ChannelEscrowCalls::is_payment(input)
+            ITIP20ChannelEscrowCalls::is_payment_with_valid_signature(input, |signature| {
+                TempoSignature::from_bytes(signature).is_ok()
+            })
         }
         _ => false,
     }
@@ -590,11 +594,12 @@ mod tests {
     #[rustfmt::skip]
     fn channel_escrow_payment_calldatas() -> [Bytes; 6] {
         let descriptor = channel_descriptor();
+        let signature = TempoSignature::from(Signature::test_signature()).to_bytes();
         [
             ITIP20ChannelEscrow::openCall { payee: Address::random(), operator: Address::random(), token: PAYMENT_TKN, deposit: U96::from(1), salt: B256::random(), authorizedSigner: Address::random() }.abi_encode().into(),
             ITIP20ChannelEscrow::topUpCall { descriptor: descriptor.clone(), additionalDeposit: U96::from(1) }.abi_encode().into(),
-            ITIP20ChannelEscrow::settleCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), signature: vec![1, 2, 3].into() }.abi_encode().into(),
-            ITIP20ChannelEscrow::closeCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), captureAmount: U96::from(1), signature: vec![1, 2, 3].into() }.abi_encode().into(),
+            ITIP20ChannelEscrow::settleCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), signature: signature.clone() }.abi_encode().into(),
+            ITIP20ChannelEscrow::closeCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), captureAmount: U96::from(1), signature }.abi_encode().into(),
             ITIP20ChannelEscrow::requestCloseCall { descriptor: descriptor.clone() }.abi_encode().into(),
             ITIP20ChannelEscrow::withdrawCall { descriptor }.abi_encode().into(),
         ]
@@ -858,11 +863,41 @@ mod tests {
     }
 
     #[test]
+    fn test_payment_v2_rejects_invalid_channel_escrow_signature_encoding() {
+        let descriptor = channel_descriptor();
+        let invalid_signature = Bytes::from(vec![1, 2, 3]);
+        let calldatas = [
+            ITIP20ChannelEscrow::settleCall {
+                descriptor: descriptor.clone(),
+                cumulativeAmount: U96::ONE,
+                signature: invalid_signature.clone(),
+            }
+            .abi_encode(),
+            ITIP20ChannelEscrow::closeCall {
+                descriptor,
+                cumulativeAmount: U96::ONE,
+                captureAmount: U96::ONE,
+                signature: invalid_signature,
+            }
+            .abi_encode(),
+        ];
+
+        for calldata in calldatas {
+            for envelope in payment_envelopes_to(TIP20_CHANNEL_ESCROW_ADDRESS, calldata.into()) {
+                assert!(
+                    !envelope.is_payment_v2(),
+                    "V2 must reject invalid Tempo signature encoding"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_payment_v2_rejects_invalid_channel_escrow_dynamic_calldata() {
         let mut corrupted_calldata = ITIP20ChannelEscrow::settleCall {
             descriptor: channel_descriptor(),
             cumulativeAmount: U96::ONE,
-            signature: vec![1, 2, 3].into(),
+            signature: TempoSignature::from(Signature::test_signature()).to_bytes(),
         }
         .abi_encode();
         // Corrupt the dynamic `signature` offset word.
