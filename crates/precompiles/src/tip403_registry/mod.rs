@@ -9,7 +9,7 @@ pub mod dispatch;
 
 use crate::{
     StorageCtx,
-    tip1028_escrow::{RECOVERY_ORIGINATOR, RECOVERY_RECEIVER, RecoveryMode},
+    tip1028_guard::{RECOVERY_ORIGINATOR, RECOVERY_RECEIVER, RecoveryMode},
 };
 pub use tempo_contracts::precompiles::{
     ITIP403Registry::{self, PolicyType},
@@ -18,7 +18,7 @@ pub use tempo_contracts::precompiles::{
 use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
-    ESCROW_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    TIP403_REGISTRY_ADDRESS, TIP1028_GUARD_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
@@ -374,7 +374,7 @@ impl TIP403Registry {
         msg_sender: Address,
         call: ITIP403Registry::setReceivePolicyCall,
     ) -> Result<()> {
-        if msg_sender == ESCROW_ADDRESS {
+        if msg_sender == TIP1028_GUARD_ADDRESS {
             return Err(TIP403RegistryError::invalid_recovery_authority().into());
         }
         if msg_sender.is_virtual() {
@@ -388,7 +388,7 @@ impl TIP403Registry {
             Address::ZERO
         };
 
-        if recovery_address == ESCROW_ADDRESS
+        if recovery_address == TIP1028_GUARD_ADDRESS
             || recovery_address == msg_sender
             || recovery_address.is_tip20()
             || recovery_address.is_virtual()
@@ -1186,8 +1186,8 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
-            let escrow_result = registry.set_receive_policy(
-                ESCROW_ADDRESS,
+            let block_result = registry.set_receive_policy(
+                TIP1028_GUARD_ADDRESS,
                 ITIP403Registry::setReceivePolicyCall {
                     senderPolicyId: REJECT_ALL_POLICY_ID,
                     tokenFilterId: ALLOW_ALL_POLICY_ID,
@@ -1195,7 +1195,7 @@ mod tests {
                 },
             );
             assert!(matches!(
-                escrow_result,
+                block_result,
                 Err(TempoPrecompileError::TIP403RegistryError(
                     TIP403RegistryError::InvalidRecoveryAuthority(_)
                 ))
@@ -1229,7 +1229,12 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
-            for recovery_address in [ESCROW_ADDRESS, PATH_USD_ADDRESS, virtual_addr, account] {
+            for recovery_address in [
+                TIP1028_GUARD_ADDRESS,
+                PATH_USD_ADDRESS,
+                virtual_addr,
+                account,
+            ] {
                 let result = registry.set_receive_policy(
                     account,
                     ITIP403Registry::setReceivePolicyCall {

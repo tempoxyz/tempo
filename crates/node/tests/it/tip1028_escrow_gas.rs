@@ -9,15 +9,13 @@ use alloy::{
 use alloy_rpc_types_eth::TransactionReceipt;
 use eyre::OptionExt;
 use tempo_contracts::precompiles::{
-    IRolesAuth, ITIP20, ITIP20Factory, ITIP403Registry, ITIP1028Escrow,
+    IRolesAuth, ITIP20, ITIP20Factory, ITIP403Registry, ITIP1028Guard,
 };
 use tempo_precompiles::{
-    ESCROW_ADDRESS, PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, TIP1028_GUARD_ADDRESS,
     tip20::ISSUER_ROLE,
     tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
-    tip1028_escrow::{
-        BLOCKED_RECEIPT_VERSION, InboundKind, RECOVERY_ORIGINATOR, RECOVERY_RECEIVER,
-    },
+    tip1028_guard::{BLOCKED_PROOF_VERSION, InboundKind, RECOVERY_ORIGINATOR, RECOVERY_RECEIVER},
 };
 
 use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
@@ -25,10 +23,8 @@ use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
 const GAS: u64 = 5_000_000;
 
 struct BlockedTransfer {
-    token: Address,
     receiver: Address,
-    recovery: Address,
-    receipt: Bytes,
+    proof: Bytes,
     gas_used: u64,
 }
 
@@ -118,13 +114,16 @@ async fn create_blocked_transfer<P: Provider + Clone>(
     assert_eq!(blocked.recipient, receiver);
     assert_eq!(blocked.recoveryAuthority, recovery);
     assert_eq!(blocked.amount, amount);
-    assert_eq!(blocked.receiptVersion, BLOCKED_RECEIPT_VERSION);
+    assert_eq!(blocked.proofVersion, BLOCKED_PROOF_VERSION);
     assert_eq!(
         blocked.blockedReason,
         ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8
     );
 
-    let receipt_bytes: Bytes = ITIP1028Escrow::ClaimReceiptV1 {
+    let proof_bytes: Bytes = ITIP1028Guard::ClaimProofV1 {
+        version: 1,
+        token: *token.address(),
+        recoveryAuthority: recovery,
         originator: blocked.from,
         recipient: blocked.recipient,
         blockedAt: blocked.blockedAt,
@@ -137,10 +136,8 @@ async fn create_blocked_transfer<P: Provider + Clone>(
     .into();
 
     Ok(BlockedTransfer {
-        token: *token.address(),
         receiver,
-        recovery,
-        receipt: receipt_bytes,
+        proof: proof_bytes,
         gas_used: receipt.gas_used,
     })
 }
@@ -167,18 +164,12 @@ async fn create_allowed_transfer<P: Provider + Clone>(
 }
 
 async fn claim_blocked<P: Provider + Clone>(
-    escrow: &ITIP1028Escrow::ITIP1028EscrowInstance<P>,
+    guard: &ITIP1028Guard::ITIP1028GuardInstance<P>,
     to: Address,
     blocked: &BlockedTransfer,
 ) -> eyre::Result<u64> {
-    let receipt = escrow
-        .claim(
-            blocked.token,
-            blocked.recovery,
-            BLOCKED_RECEIPT_VERSION,
-            blocked.receipt.clone(),
-            to,
-        )
+    let receipt = guard
+        .claim(to, blocked.proof.clone())
         .gas(GAS)
         .send()
         .await?
@@ -189,17 +180,17 @@ async fn claim_blocked<P: Provider + Clone>(
     Ok(receipt.gas_used)
 }
 
-fn transfer_blocked(receipt: &TransactionReceipt) -> eyre::Result<ITIP1028Escrow::TransferBlocked> {
+fn transfer_blocked(receipt: &TransactionReceipt) -> eyre::Result<ITIP1028Guard::TransferBlocked> {
     receipt
         .logs()
         .iter()
-        .find_map(|log| ITIP1028Escrow::TransferBlocked::decode_log(&log.inner).ok())
+        .find_map(|log| ITIP1028Guard::TransferBlocked::decode_log(&log.inner).ok())
         .map(|event| event.data)
         .ok_or_eyre("TransferBlocked event missing")
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip1028_escrow_gas_snapshots() -> eyre::Result<()> {
+async fn test_tip1028_guard_gas_snapshots() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
@@ -339,10 +330,10 @@ async fn test_tip1028_escrow_gas_snapshots() -> eyre::Result<()> {
         .await?,
     );
 
-    let originator_escrow = ITIP1028Escrow::new(ESCROW_ADDRESS, originator_provider);
-    let receiver_escrow = ITIP1028Escrow::new(ESCROW_ADDRESS, receiver_recovery_provider);
-    let recovery_escrow = ITIP1028Escrow::new(
-        ESCROW_ADDRESS,
+    let originator_guard = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, originator_provider);
+    let receiver_guard = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, receiver_recovery_provider);
+    let recovery_guard = ITIP1028Guard::new(
+        TIP1028_GUARD_ADDRESS,
         ProviderBuilder::new()
             .wallet(recovery.clone())
             .connect_http(http_url),
@@ -351,7 +342,7 @@ async fn test_tip1028_escrow_gas_snapshots() -> eyre::Result<()> {
     gas.insert(
         "claim_originator_recovery_to_destination",
         claim_blocked(
-            &originator_escrow,
+            &originator_guard,
             destination.address(),
             &originator_blocked,
         )
@@ -360,7 +351,7 @@ async fn test_tip1028_escrow_gas_snapshots() -> eyre::Result<()> {
     gas.insert(
         "claim_receiver_recovery_to_receiver",
         claim_blocked(
-            &receiver_escrow,
+            &receiver_guard,
             receiver_blocked.receiver,
             &receiver_blocked,
         )
@@ -368,15 +359,10 @@ async fn test_tip1028_escrow_gas_snapshots() -> eyre::Result<()> {
     );
     gas.insert(
         "claim_third_party_recovery_to_destination",
-        claim_blocked(
-            &recovery_escrow,
-            destination.address(),
-            &third_party_blocked,
-        )
-        .await?,
+        claim_blocked(&recovery_guard, destination.address(), &third_party_blocked).await?,
     );
 
-    eprintln!("\nTIP1028Escrow gas snapshot:");
+    eprintln!("\nTIP1028Guard gas snapshot:");
     for (name, gas_used) in &gas {
         eprintln!("{name}: {gas_used}");
     }
