@@ -15,22 +15,14 @@ use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_signer::SignerSync;
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
 use alloy_sol_types::SolCall;
-use criterion::{Criterion, Throughput, criterion_group, criterion_main};
+use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use revm::{
     DatabaseCommit,
     context::{BlockEnv, CfgEnv},
     database::{CacheDB, EmptyDB},
     inspector::JournalExt,
 };
-use std::{
-    collections::BTreeSet,
-    fs,
-    hint::black_box,
-    num::NonZeroU64,
-    path::Path,
-    sync::Arc,
-    time::{Duration, Instant},
-};
+use std::{collections::BTreeSet, fs, hint::black_box, num::NonZeroU64, path::Path, sync::Arc};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
 use tempo_contracts::precompiles::ITIP20;
 use tempo_evm::{
@@ -360,24 +352,19 @@ fn tip20_execution(c: &mut Criterion) {
     let mut group = c.benchmark_group("tip20_execution");
     group.throughput(Throughput::Elements(workload.transactions.len() as u64));
     group.bench_function("txgen_tip20_pure_execution", |b| {
-        b.iter_custom(|iters| {
-            let mut elapsed = Duration::ZERO;
-            let mut total_gas = 0u64;
-            for _ in 0..iters {
-                let db = db.clone();
-                let start = Instant::now();
+        b.iter_batched(
+            || db.clone(),
+            |db| {
                 let stats = execute_txs(
                     &config,
                     db,
                     &workload.transactions,
                     workload.block_timestamp,
                 );
-                elapsed += start.elapsed();
-                total_gas = total_gas.saturating_add(stats.gas_used);
-            }
-            black_box(total_gas);
-            elapsed
-        })
+                black_box(stats.gas_used);
+            },
+            BatchSize::SmallInput,
+        )
     });
     group.finish();
 }

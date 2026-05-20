@@ -154,11 +154,11 @@ on:
         type: string
         required: false
         default: ""
-      disable-abba:
-        description: Run only baseline-1 and feature-1 instead of the full baseline-feature-feature-baseline sequence.
-        type: boolean
+      run-pairs:
+        description: Number of baseline/feature run pairs.
+        type: string
         required: true
-        default: false
+        default: "2"
       clickhouse-run:
         description: Benchmark phase that may use the direct ClickHouse reporter.
         type: string
@@ -292,10 +292,10 @@ on:
         type: string
         required: false
         default: ""
-      disable-abba:
+      run-pairs:
         type: string
         required: false
-        default: "false"
+        default: "2"
       clickhouse-run:
         type: string
         required: false
@@ -378,7 +378,7 @@ jobs:
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
-      BENCH_DISABLE_ABBA: ${{ (inputs.disable-abba == true || inputs.disable-abba == 'true' || inputs.run-type == 'nightly') && 'true' || 'false' }}
+      BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '2' }}
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
       BENCHMARK_ID: bench-e2e-${{ github.run_id }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
@@ -491,8 +491,9 @@ jobs:
             const noCache = process.env.BENCH_NO_CACHE === 'true';
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
             const gasLimit = process.env.BENCH_GAS_LIMIT;
+            const runPairs = process.env.BENCH_RUN_PAIRS || '2';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`);
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -672,8 +673,9 @@ jobs:
             const noCache = process.env.BENCH_NO_CACHE === 'true';
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
             const gasLimit = process.env.BENCH_GAS_LIMIT;
+            const runPairs = process.env.BENCH_RUN_PAIRS || '2';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
-            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`;
+            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`;
             core.exportVariable('BENCH_CONFIG', config);
 
             const { data: comment } = await github.rest.issues.createComment({
@@ -706,11 +708,16 @@ jobs:
             unset OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
             unset OTEL_EXPORTER_OTLP_HEADERS
           fi
+          if ! [[ "$BENCH_RUN_PAIRS" =~ ^[1-9][0-9]*$ ]]; then
+            echo "::error::run-pairs must be a positive integer"
+            exit 1
+          fi
           cmd=(nu bench-e2e.nu e2e)
           cmd+=(
             --preset "$BENCH_PRESET"
             --bloat "$BENCH_BLOAT"
             --duration "$BENCH_DURATION"
+            --run-pairs "$BENCH_RUN_PAIRS"
             --tps "$BENCH_TPS"
             --accounts "$BENCH_ACCOUNTS"
             --max-concurrent-requests "$BENCH_MAX_CONCURRENT_REQUESTS"
@@ -738,7 +745,6 @@ jobs:
           [ -n "$BENCH_VICTORIAMETRICS_URL" ] && cmd+=(--victoriametrics-url "$BENCH_VICTORIAMETRICS_URL")
           [ -n "$CLICKHOUSE_URL" ] && cmd+=(--clickhouse-url "$CLICKHOUSE_URL")
           [ -n "$BENCH_RUN_TYPE" ] && cmd+=(--run-type "$BENCH_RUN_TYPE")
-          [ "$BENCH_DISABLE_ABBA" = "true" ] && cmd+=(--disable-abba)
           [ -n "$BENCH_CLICKHOUSE_RUN" ] && cmd+=(--clickhouse-run "$BENCH_CLICKHOUSE_RUN")
           "${cmd[@]}"
 
@@ -832,8 +838,19 @@ jobs:
               }
             } catch (e) {}
 
-            const runs = ['baseline-1', 'feature-1', 'feature-2', 'baseline-2']
-              .filter(run => fs.existsSync(`${resultsDir}/report-${run}.json`));
+            let runs = [];
+            try {
+              runs = fs.readFileSync(`${resultsDir}/run-order.txt`, 'utf8')
+                .split(/\r?\n/)
+                .map(run => run.trim())
+                .filter(run => run && fs.existsSync(`${resultsDir}/report-${run}.json`));
+            } catch (e) {}
+            if (runs.length === 0) {
+              runs = fs.readdirSync(resultsDir)
+                .map(name => /^report-(.+)\.json$/.exec(name)?.[1])
+                .filter(Boolean)
+                .sort();
+            }
 
             // Samply profile links (URLs produced by tempo.nu upload-samply-profile)
             let samplySection = '';
