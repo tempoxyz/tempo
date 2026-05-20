@@ -2,7 +2,7 @@
 use crate::{metrics::AA2dPoolMetrics, transaction::TempoPooledTransaction};
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, HashMap, HashSet, U256Map},
+    map::{AddressMap, B256Map, HashMap, HashSet, U256Map},
 };
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_tracing::tracing::trace;
@@ -53,10 +53,10 @@ pub struct AA2dPool {
     /// _All_ transactions that are currently inside the pool grouped by their unique identifier.
     by_id: BTreeMap<AA2dTransactionId, Arc<AA2dInternalTransaction>>,
     /// _All_ transactions by hash.
-    by_hash: HashMap<TxHash, Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    by_hash: B256Map<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     /// Expiring nonce transactions, keyed by expiring nonce hash (always pending/independent).
     /// These use expiring nonce replay protection instead of sequential nonces.
-    expiring_nonce_txs: HashMap<B256, PendingTransaction<TxOrdering>>,
+    expiring_nonce_txs: B256Map<PendingTransaction<TxOrdering>>,
     /// A mapping of `expiring_nonce_seen` slot to expiring nonce hash.
     ///
     /// Used to track inclusion of expiring nonce transactions.
