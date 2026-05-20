@@ -92,10 +92,6 @@ pub struct TempoPayloadBuilder<Provider> {
     is_dev: bool,
     /// Whether to enable state provider metrics.
     state_provider_metrics: bool,
-    /// Whether to disable state cache.
-    disable_state_cache: bool,
-    /// Whether to disable cached reads.
-    disable_cached_reads: bool,
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
@@ -105,8 +101,6 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         evm_config: TempoEvmConfig,
         is_dev: bool,
         state_provider_metrics: bool,
-        disable_state_cache: bool,
-        disable_cached_reads: bool,
     ) -> Self {
         Self {
             pool,
@@ -117,8 +111,6 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             highest_invalid_subblock: Default::default(),
             is_dev,
             state_provider_metrics,
-            disable_state_cache,
-            disable_cached_reads,
         }
     }
 }
@@ -241,7 +233,6 @@ where
         Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     {
         let BuildArguments {
-            mut cached_reads,
             execution_cache,
             trie_handle,
             config,
@@ -280,9 +271,7 @@ where
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
         let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
-        if !self.disable_state_cache
-            && let Some(execution_cache) = execution_cache
-        {
+        if let Some(execution_cache) = execution_cache {
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
                 execution_cache.cache().clone(),
@@ -295,11 +284,7 @@ where
 
         let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()
-            .with_database(if self.disable_cached_reads {
-                Box::new(state) as Box<dyn Database<Error = ProviderError>>
-            } else {
-                Box::new(cached_reads.as_db_mut(state))
-            })
+            .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
             .with_bundle_update()
             .build();
         drop(_state_setup_span);
@@ -644,7 +629,7 @@ where
             // can skip building the block
             return Ok(BuildOutcome::Aborted {
                 fees: total_fees,
-                cached_reads,
+                cached_reads: Default::default(),
             });
         }
 
@@ -904,7 +889,7 @@ where
         } else {
             Ok(BuildOutcome::Better {
                 payload,
-                cached_reads,
+                cached_reads: Default::default(),
             })
         }
     }

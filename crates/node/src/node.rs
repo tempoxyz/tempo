@@ -64,14 +64,6 @@ pub struct TempoNodeArgs {
     /// Enable state provider metrics for the payload builder.
     #[arg(long = "builder.state-provider-metrics", default_value_t = false)]
     pub builder_state_provider_metrics: bool,
-
-    /// Disable state cache for the payload builder.
-    #[arg(long = "builder.disable-state-cache", default_value_t = false)]
-    pub builder_disable_state_cache: bool,
-
-    /// Disable cached reads for the payload builder.
-    #[arg(long = "builder.disable-cached-reads", default_value_t = false)]
-    pub builder_disable_cached_reads: bool,
 }
 
 impl TempoNodeArgs {
@@ -87,8 +79,6 @@ impl TempoNodeArgs {
     pub fn payload_builder_builder(&self) -> TempoPayloadBuilderBuilder {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
-            disable_state_cache: self.builder_disable_state_cache,
-            disable_cached_reads: self.builder_disable_cached_reads,
         }
     }
 }
@@ -494,10 +484,6 @@ where
 pub struct TempoPayloadBuilderBuilder {
     /// Enable state provider metrics for the payload builder.
     pub state_provider_metrics: bool,
-    /// Disable state cache for the payload builder.
-    pub disable_state_cache: bool,
-    /// Disable cached reads for the payload builder.
-    pub disable_cached_reads: bool,
 }
 
 impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
@@ -519,8 +505,6 @@ where
             evm_config,
             ctx.is_dev(),
             self.state_provider_metrics,
-            self.disable_state_cache,
-            self.disable_cached_reads,
         ))
     }
 }
