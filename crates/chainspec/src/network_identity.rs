@@ -51,11 +51,12 @@ impl NetworkIdentity {
     }
 
     pub(crate) fn from_extra_data(extra_data: &[u8]) -> Option<Self> {
-        let outcome = OnchainDkgOutcome::read(&mut extra_data.as_ref()).ok()?;
+        let mut extra_data = extra_data;
+        let outcome = OnchainDkgOutcome::read(&mut extra_data).ok()?;
 
         Some(Self {
             from_epoch: outcome.epoch.get(),
-            identity: outcome.network_identity().clone(),
+            identity: *outcome.network_identity(),
         })
     }
 }

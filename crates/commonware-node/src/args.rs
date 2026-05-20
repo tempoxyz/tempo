@@ -24,14 +24,14 @@ pub struct Args {
     #[arg(long = "consensus.signing-share")]
     pub signing_share: Option<PathBuf>,
 
-    /// Consensus network identity. Must be set if rotated post-genesis
+    /// Consensus network identity. Otherwise derived from genesis
     #[arg(
         long = "consensus.network-identity",
         requires = "network_identity_from_epoch"
     )]
     pub network_identity: Option<String>,
 
-    /// First epoch for which --consensus.network-identity verifies finalizations.
+    /// Epoch where --consensus.network-identity rotation occurred
     #[arg(
         long = "consensus.network-identity-from-epoch",
         requires = "network_identity"
