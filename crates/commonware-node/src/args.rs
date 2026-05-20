@@ -7,6 +7,7 @@ use alloy_primitives::FixedBytes;
 use commonware_codec::ReadExt as _;
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
+use tempo_chainspec::NetworkIdentity;
 use tempo_commonware_node_config::SigningKey;
 
 use crate::alias::BlsPublicKey;
@@ -340,7 +341,18 @@ impl Args {
             .map(|signing_key| signing_key.public_key()))
     }
 
-    pub fn network_key(&self) -> Option<BlsPublicKey> {
-        self.network_identity.map(|v| v.0)
+    pub fn network_identity(&self) -> Option<NetworkIdentity> {
+        let Some(identity) = self.network_identity else {
+            return None;
+        };
+
+        let from_epoch = self
+            .network_identity_from_epoch
+            .expect("network identity from epoch must be set");
+
+        Some(NetworkIdentity {
+            from_epoch,
+            identity: identity.0,
+        })
     }
 }
