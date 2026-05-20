@@ -44,6 +44,7 @@ manual-string-new = "warn"
 uninlined-format-args = "warn"
 use-self = "warn"
 redundant-clone = "warn"
+cast-lossless = "deny"
 default-constructed-unit-structs = "allow"
 
 [workspace.lints.rust]
@@ -162,6 +163,7 @@ reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", rev = "1be17e
 reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "1be17eb" }
 reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "1be17eb" }
 reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "1be17eb", default-features = false }
+reth-execution-cache = { git = "https://github.com/paradigmxyz/reth", rev = "1be17eb" }
 reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "1be17eb" }
 reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "1be17eb" }
 reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "1be17eb" }
@@ -287,6 +289,7 @@ rustls = { version = "0.23", default-features = false, features = ["ring"] }
 semver = "1"
 serde = { version = "1.0.228", features = ["derive"], default-features = false }
 serde_json = { version = "1.0.149", features = ["alloc"], default-features = false }
+smallvec = "1.15.1"
 schnellru = "0.2"
 sha2 = { version = "0.10", default-features = false }
 tempfile = "3.24.0"

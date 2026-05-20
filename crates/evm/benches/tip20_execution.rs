@@ -2,24 +2,41 @@
 //!
 //! By default this generates txgen-style AA TIP20 transfers from the benchmark mnemonic. Set
 //! `TEMPO_TIP20_EXEC_TXS` to a newline-delimited raw 2718 txgen output file to replay exact
-//! txgen transactions against the in-memory execution path.
+//! txgen transactions against the in-memory fixed-cache execution path.
 
 use alloy_consensus::transaction::{Recovered, SignerRecoverable};
 use alloy_eips::Decodable2718;
 use alloy_evm::{
     Evm, EvmEnv, EvmFactory,
-    block::{BlockExecutor, BlockExecutorFactory, TxResult},
+    block::{BlockExecutor, BlockExecutorFactory, StateDB, TxResult},
     eth::EthBlockExecutionCtx,
 };
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{
+    Address, B256, Bytes, TxKind, U256,
+    map::{AddressMap, B256Map, HashMap},
+};
 use alloy_signer::SignerSync;
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
 use alloy_sol_types::SolCall;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
+use reth_execution_cache::{
+    CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider, ExecutionCache,
+};
+use reth_primitives_traits::{Account as RethAccount, Bytecode as RethBytecode};
+use reth_revm::{State, database::StateProviderDatabase};
+use reth_storage_api::{
+    AccountReader, BlockHashReader, BytecodeReader, HashedPostStateProvider, StateProofProvider,
+    StateProvider, StateRootProvider, StorageRootProvider,
+    errors::{ProviderError, ProviderResult},
+};
+use reth_trie::{
+    AccountProof, HashedPostState, HashedStorage, MultiProof, MultiProofTargets, StorageMultiProof,
+    StorageProof, TrieInput, updates::TrieUpdates,
+};
 use revm::{
     DatabaseCommit,
     context::{BlockEnv, CfgEnv},
-    database::{CacheDB, EmptyDB},
+    database::{CacheDB, DbAccount, EmptyDB},
     inspector::JournalExt,
 };
 use std::{collections::BTreeSet, fs, hint::black_box, num::NonZeroU64, path::Path, sync::Arc};
@@ -29,7 +46,8 @@ use tempo_evm::{
     TempoBlockEnv, TempoBlockExecutionCtx, TempoEvmConfig, TempoEvmFactory, evm::TempoEvm,
 };
 use tempo_precompiles::{
-    PATH_USD_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
     error::TempoPrecompileError,
     nonce::NonceManager,
     storage::StorageCtx,
@@ -52,6 +70,7 @@ const DEFAULT_BLOCK_TIMESTAMP: u64 = 1_700_000_000;
 const TXGEN_GAS_LIMIT: u64 = 300_000;
 const TXGEN_FEE_PER_GAS: u128 = 100_000_000_000;
 const PARTICIPANT_MINT_AMOUNT: u128 = 1_000_000_000_000_000_000;
+const EXECUTION_CACHE_BYTES: usize = 64 * 1024 * 1024;
 
 #[derive(Clone)]
 struct Workload {
@@ -64,6 +83,164 @@ struct Workload {
 struct ExecutionStats {
     txs: u64,
     gas_used: u64,
+}
+
+#[derive(Clone, Debug)]
+struct InMemoryStateProvider {
+    accounts: Arc<AddressMap<RethAccount>>,
+    storage: Arc<HashMap<(Address, B256), U256>>,
+    contracts: Arc<B256Map<RethBytecode>>,
+    block_hashes: Arc<HashMap<u64, B256>>,
+}
+
+#[derive(Clone)]
+struct ExecutionFixture {
+    provider: InMemoryStateProvider,
+    cache: ExecutionCache,
+    metrics: CachedStateMetrics,
+}
+
+type FixedCacheDb<const PREWARM: bool = false> =
+    State<StateProviderDatabase<CachedStateProvider<InMemoryStateProvider, PREWARM>>>;
+
+impl ExecutionFixture {
+    fn state_db(&self) -> FixedCacheDb {
+        let provider = CachedStateProvider::new(
+            self.provider.clone(),
+            self.cache.clone(),
+            self.metrics.clone(),
+        );
+        State::builder()
+            .with_database(StateProviderDatabase::new(provider))
+            .with_bundle_update()
+            .build()
+    }
+
+    fn prewarm_state_db(&self) -> FixedCacheDb<true> {
+        let provider = CachedStateProvider::new_prewarm(
+            self.provider.clone(),
+            self.cache.clone(),
+            self.metrics.clone(),
+        );
+        State::builder()
+            .with_database(StateProviderDatabase::new(provider))
+            .with_bundle_update()
+            .build()
+    }
+}
+
+impl AccountReader for InMemoryStateProvider {
+    fn basic_account(&self, address: &Address) -> ProviderResult<Option<RethAccount>> {
+        Ok(self.accounts.get(address).copied())
+    }
+}
+
+impl StateProvider for InMemoryStateProvider {
+    fn storage(&self, account: Address, storage_key: B256) -> ProviderResult<Option<U256>> {
+        Ok(self.storage.get(&(account, storage_key)).copied())
+    }
+}
+
+impl BytecodeReader for InMemoryStateProvider {
+    fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<RethBytecode>> {
+        Ok(self.contracts.get(code_hash).cloned())
+    }
+}
+
+impl BlockHashReader for InMemoryStateProvider {
+    fn block_hash(&self, number: u64) -> ProviderResult<Option<B256>> {
+        Ok(self.block_hashes.get(&number).copied())
+    }
+
+    fn canonical_hashes_range(&self, _start: u64, _end: u64) -> ProviderResult<Vec<B256>> {
+        Err(ProviderError::UnsupportedProvider)
+    }
+}
+
+impl StateRootProvider for InMemoryStateProvider {
+    fn state_root(&self, _hashed_state: HashedPostState) -> ProviderResult<B256> {
+        Err(ProviderError::UnsupportedProvider)
+    }
+
+    fn state_root_from_nodes(&self, _input: TrieInput) -> ProviderResult<B256> {
+        Err(ProviderError::UnsupportedProvider)
+    }
+
+    fn state_root_with_updates(
+        &self,
+        _hashed_state: HashedPostState,
+    ) -> ProviderResult<(B256, TrieUpdates)> {
+        Err(ProviderError::UnsupportedProvider)
+    }
+
+    fn state_root_from_nodes_with_updates(
+        &self,
+        _input: TrieInput,
+    ) -> ProviderResult<(B256, TrieUpdates)> {
+        Err(ProviderError::UnsupportedProvider)
+    }
+}
+
+impl StorageRootProvider for InMemoryStateProvider {
+    fn storage_root(
+        &self,
+        _address: Address,
+        _hashed_storage: HashedStorage,
+    ) -> ProviderResult<B256> {
+        Err(ProviderError::UnsupportedProvider)
+    }
+
+    fn storage_proof(
+        &self,
+        _address: Address,
+        _slot: B256,
+        _hashed_storage: HashedStorage,
+    ) -> ProviderResult<StorageProof> {
+        Err(ProviderError::UnsupportedProvider)
+    }
+
+    fn storage_multiproof(
+        &self,
+        _address: Address,
+        _slots: &[B256],
+        _hashed_storage: HashedStorage,
+    ) -> ProviderResult<StorageMultiProof> {
+        Err(ProviderError::UnsupportedProvider)
+    }
+}
+
+impl StateProofProvider for InMemoryStateProvider {
+    fn proof(
+        &self,
+        _input: TrieInput,
+        _address: Address,
+        _slots: &[B256],
+    ) -> ProviderResult<AccountProof> {
+        Err(ProviderError::UnsupportedProvider)
+    }
+
+    fn multiproof(
+        &self,
+        _input: TrieInput,
+        _targets: MultiProofTargets,
+    ) -> ProviderResult<MultiProof> {
+        Err(ProviderError::UnsupportedProvider)
+    }
+
+    fn witness(
+        &self,
+        _input: TrieInput,
+        _target: HashedPostState,
+        _mode: reth_trie::ExecutionWitnessMode,
+    ) -> ProviderResult<Vec<Bytes>> {
+        Err(ProviderError::UnsupportedProvider)
+    }
+}
+
+impl HashedPostStateProvider for InMemoryStateProvider {
+    fn hashed_post_state(&self, _bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
+        unreachable!("TIP20 execution benchmark does not compute hashed post-state")
+    }
 }
 
 fn bench_env(block_timestamp: u64) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
@@ -91,9 +268,9 @@ fn bench_env(block_timestamp: u64) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
     }
 }
 
-fn setup_in_memory_state(participants: &[Address], block_timestamp: u64) -> CacheDB<EmptyDB> {
-    // The benchmark state is intentionally a revm memory overlay over an empty database.
-    // Do not replace this with a provider backed by DB files or static files.
+fn seed_in_memory_cache_db(participants: &[Address], block_timestamp: u64) -> CacheDB<EmptyDB> {
+    // This setup database only materializes the benchmark fixture in memory. The measured
+    // execution path below uses Reth's fixed-cache execution provider, not CacheDB.
     let mut evm = TempoEvmFactory::default()
         .create_evm(CacheDB::new(EmptyDB::default()), bench_env(block_timestamp));
     let admin = participants
@@ -141,6 +318,75 @@ fn setup_in_memory_state(participants: &[Address], block_timestamp: u64) -> Cach
     let evm_state = evm.ctx_mut().journaled_state.evm_state().clone();
     evm.db_mut().commit(evm_state);
     evm.finish().0
+}
+
+fn setup_fixed_cache_state(participants: &[Address], block_timestamp: u64) -> ExecutionFixture {
+    let seeded = seed_in_memory_cache_db(participants, block_timestamp);
+    let state_cache = seeded.cache;
+    let execution_cache = ExecutionCache::new(EXECUTION_CACHE_BYTES);
+
+    let mut accounts = AddressMap::default();
+    let mut storage = HashMap::default();
+    let mut contracts = B256Map::default();
+    let mut block_hashes = HashMap::default();
+
+    for (hash, bytecode) in state_cache.contracts {
+        let bytecode = RethBytecode(bytecode);
+        execution_cache.insert_code(hash, Some(bytecode.clone()));
+        contracts.insert(hash, bytecode);
+    }
+
+    for (address, account) in state_cache.accounts {
+        insert_account(&execution_cache, &mut accounts, address, &account);
+        for (slot, value) in account.storage {
+            let storage_key = B256::new(slot.to_be_bytes());
+            execution_cache.insert_storage(address, storage_key, Some(value));
+            storage.insert((address, storage_key), value);
+        }
+    }
+
+    for (number, hash) in state_cache.block_hashes {
+        block_hashes.insert(number.to::<u64>(), hash);
+    }
+
+    for address in [
+        ADDRESS_REGISTRY_ADDRESS,
+        NONCE_PRECOMPILE_ADDRESS,
+        SIGNATURE_VERIFIER_ADDRESS,
+        TIP20_CHANNEL_ESCROW_ADDRESS,
+        VALIDATOR_CONFIG_V2_ADDRESS,
+    ] {
+        if !accounts.contains_key(&address) {
+            execution_cache.insert_account(address, None);
+        }
+    }
+
+    ExecutionFixture {
+        provider: InMemoryStateProvider {
+            accounts: Arc::new(accounts),
+            storage: Arc::new(storage),
+            contracts: Arc::new(contracts),
+            block_hashes: Arc::new(block_hashes),
+        },
+        cache: execution_cache,
+        metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
+    }
+}
+
+fn insert_account(
+    cache: &ExecutionCache,
+    accounts: &mut AddressMap<RethAccount>,
+    address: Address,
+    account: &DbAccount,
+) {
+    let Some(info) = account.info() else {
+        cache.insert_account(address, None);
+        return;
+    };
+
+    let account = RethAccount::from(&info);
+    cache.insert_account(address, Some(account));
+    accounts.insert(address, account);
 }
 
 fn txgen_signers(account_count: usize) -> Vec<PrivateKeySigner> {
@@ -293,12 +539,15 @@ fn workload() -> Workload {
     }
 }
 
-fn execute_txs(
+fn execute_txs<DB>(
     config: &TempoEvmConfig,
-    db: CacheDB<EmptyDB>,
+    db: DB,
     txs: &[Recovered<TempoTxEnvelope>],
     block_timestamp: u64,
-) -> ExecutionStats {
+) -> ExecutionStats
+where
+    DB: StateDB,
+{
     let evm: TempoEvm<_, _> = TempoEvmFactory::default().create_evm(db, bench_env(block_timestamp));
     let ctx = TempoBlockExecutionCtx {
         inner: EthBlockExecutionCtx {
@@ -346,14 +595,20 @@ fn execute_txs(
 
 fn tip20_execution(c: &mut Criterion) {
     let workload = workload();
-    let db = setup_in_memory_state(&workload.participants, workload.block_timestamp);
     let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
+    let fixture = setup_fixed_cache_state(&workload.participants, workload.block_timestamp);
+    execute_txs(
+        &config,
+        fixture.prewarm_state_db(),
+        &workload.transactions,
+        workload.block_timestamp,
+    );
 
     let mut group = c.benchmark_group("tip20_execution");
     group.throughput(Throughput::Elements(workload.transactions.len() as u64));
     group.bench_function("txgen_tip20_pure_execution", |b| {
         b.iter_batched(
-            || db.clone(),
+            || fixture.state_db(),
             |db| {
                 let stats = execute_txs(
                     &config,

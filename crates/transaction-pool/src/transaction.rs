@@ -1,4 +1,7 @@
-use crate::tt_2d_pool::{AA2dTransactionId, AASequenceId};
+use crate::{
+    tip20_prerequisites::InferredTip20Prerequisites,
+    tt_2d_pool::{AA2dTransactionId, AASequenceId},
+};
 use alloy_consensus::{BlobTransactionValidationError, Transaction, transaction::TxHashRef};
 use alloy_eips::{
     eip2718::{Encodable2718, Typed2718},
@@ -20,6 +23,7 @@ use std::{
     fmt::Debug,
     sync::{Arc, OnceLock},
 };
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, nonce::NonceManager, tip20::TIP20Token};
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
@@ -33,8 +37,8 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached payment classification for efficient block building
     is_payment: bool,
-    /// Cached expiring nonce classification
-    is_expiring_nonce: bool,
+    /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
+    expiring_nonce_hash: Option<B256>,
     /// Cached slot of the 2D nonce, if any.
     nonce_key_slot: OnceLock<Option<U256>>,
     /// Cached `expiring_nonce_seen` storage slot for expiring nonce transactions.
@@ -62,10 +66,12 @@ impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
     pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
         let is_payment = transaction.is_payment_v2();
-        let is_expiring_nonce = transaction
-            .as_aa()
-            .map(|tx| tx.tx().is_expiring_nonce_tx())
-            .unwrap_or(false);
+        let sender = transaction.signer();
+        let expiring_nonce_hash = transaction.as_aa().and_then(|tx| {
+            tx.tx()
+                .is_expiring_nonce_tx()
+                .then(|| tx.expiring_nonce_hash(sender))
+        });
         Self {
             inner: EthPooledTransaction {
                 cost: calc_gas_balance_spending(
@@ -78,7 +84,7 @@ impl TempoPooledTransaction {
                 transaction,
             },
             is_payment,
-            is_expiring_nonce,
+            expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
@@ -96,6 +102,18 @@ impl TempoPooledTransaction {
     /// Returns a reference to inner [`TempoTxEnvelope`].
     pub fn inner(&self) -> &Recovered<TempoTxEnvelope> {
         &self.inner.transaction
+    }
+
+    /// Infers precomputed account and storage prerequisites for transfer-shaped TIP-20 calls.
+    ///
+    /// Returns `None` if any call in the transaction is not one of:
+    /// `transfer`, `transferWithMemo`, `transferFrom`, or `transferFromWithMemo`
+    /// to a TIP-20 token address.
+    pub fn inferred_tip20_prerequisites(
+        &self,
+        hardfork: TempoHardfork,
+    ) -> Option<InferredTip20Prerequisites> {
+        InferredTip20Prerequisites::new(self.inner().calls(), self.sender(), hardfork)
     }
 
     /// Returns true if this is an AA transaction
@@ -135,7 +153,7 @@ impl TempoPooledTransaction {
 
     /// Returns true if this is an expiring nonce transaction.
     pub fn is_expiring_nonce(&self) -> bool {
-        self.is_expiring_nonce
+        self.expiring_nonce_hash.is_some()
     }
 
     /// Extracts the keychain subject (account, key_id, fee_token) from this transaction.
@@ -255,10 +273,23 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns the expiring nonce hash for AA expiring nonce transactions.
+    /// Returns the sender-scoped expiring nonce hash for AA transactions.
+    ///
+    /// Expiring nonce transactions use the precomputed value from construction;
+    /// other AA transactions compute on demand to preserve the helper's existing behavior.
     pub fn expiring_nonce_hash(&self) -> Option<B256> {
+        if let Some(hash) = self.expiring_nonce_hash {
+            return Some(hash);
+        }
+
         let aa_tx = self.inner().as_aa()?;
         Some(aa_tx.expiring_nonce_hash(self.sender()))
+    }
+
+    /// Returns the precomputed hash for transactions already classified as expiring nonce.
+    pub(crate) fn precomputed_expiring_nonce_hash(&self) -> B256 {
+        self.expiring_nonce_hash
+            .expect("expiring nonce hash must be precomputed")
     }
 
     /// Returns the cached `expiring_nonce_seen` storage slot for this transaction.

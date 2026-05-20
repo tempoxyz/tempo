@@ -110,7 +110,7 @@ contract GasPricingInvariantTest is InvariantBase {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Run all invariant checks
-    function invariant_globalInvariants() public view {
+    function invariant_gasPricingGlobal() public view {
         _invariantSstoreNewSlotCost();
         _invariantCreateCost();
         _invariantMultiSlotScaling();
