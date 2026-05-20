@@ -40,7 +40,7 @@ use reth_evm_ethereum::EthEvmConfig;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_revm::{evm::TempoContext, gas_params::tempo_gas_params_with_amsterdam};
 
-pub use tempo_revm::{TempoBlockEnv, TempoHaltReason, TempoStateAccess};
+pub use tempo_revm::{TempoBlockEnv, TempoHaltReason, TempoInvalidTransaction, TempoStateAccess};
 
 #[cfg(test)]
 mod test_utils;

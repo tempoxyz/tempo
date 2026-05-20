@@ -2,7 +2,7 @@
 name = "tempo-chainspec"
 description = "Tempo hardfork configuration and chain specification helpers"
 
-version = "1.5.3"
+version = "1.5.4"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true

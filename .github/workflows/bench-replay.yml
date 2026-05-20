@@ -30,7 +30,7 @@ on:
       otlp:
         description: "Export OTLP traces and logs"
         type: boolean
-        default: false
+        default: true
       baseline:
         description: "Baseline git ref (default: merge-base)"
         type: string
@@ -87,7 +87,7 @@ on:
       otlp:
         type: string
         required: false
-        default: "false"
+        default: "true"
       baseline-args:
         type: string
         required: false
@@ -130,9 +130,19 @@ on:
         required: false
       GRAFANA_TEMPO:
         required: false
+      BENCH_MAINNET_RPC_URL:
+        required: false
+      BENCH_TESTNET_RPC_URL:
+        required: false
       SLACK_BENCH_BOT_TOKEN:
         required: false
       SLACK_BENCH_CHANNEL:
+        required: false
+      CLICKHOUSE_URL:
+        required: false
+      CLICKHOUSE_USER:
+        required: false
+      CLICKHOUSE_PASSWORD:
         required: false
 
 env:
@@ -153,8 +163,8 @@ jobs:
       BENCH_PR: ${{ inputs.pr }}
       BENCH_ACTOR: ${{ inputs.actor }}
       BENCH_SAMPLY: ${{ inputs.samply }}
-      BENCH_OTLP: ${{ inputs.otlp == true || inputs.otlp == 'true' }}
-      BENCH_FEATURES: ${{ (inputs.otlp == true || inputs.otlp == 'true') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
+      BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' }}
+      BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_ARGS: "--dev.block-time 999999s ${{ inputs.baseline-args }}"
       BENCH_FEATURE_ARGS: "--dev.block-time 999999s ${{ inputs.feature-args }}"
       BENCH_BLOCKS: ${{ inputs.blocks || '5000' }}
@@ -165,6 +175,7 @@ jobs:
       BENCH_SLACK: ${{ inputs.slack || 'never' }}
       BENCH_RUN_LABEL: ${{ inputs.run-label || 'Replay Bench' }}
       BENCH_WORK_DIR: bench-results/replay-${{ inputs.chain || 'mainnet' }}
+      BENCHMARK_ID: bench-replay-${{ github.run_id }}
     steps:
       - name: Resolve benchmark config
         env:
@@ -393,6 +404,10 @@ jobs:
           BASELINE_REF: ${{ steps.refs.outputs.baseline-ref }}
           FEATURE_REF: ${{ steps.refs.outputs.feature-ref }}
           DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
+          CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
+          CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
+          CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+          BENCH_REPLAY_RPC_URL: ${{ env.BENCH_CHAIN == 'mainnet' && secrets.BENCH_MAINNET_RPC_URL || env.BENCH_CHAIN == 'testnet' && secrets.BENCH_TESTNET_RPC_URL || '' }}
         run: bash .github/scripts/bench-tempo-replay.sh
 
       - name: Parse results

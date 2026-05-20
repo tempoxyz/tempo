@@ -12,6 +12,7 @@ use crate::{
     signature_verifier::SignatureVerifier,
     storage::{Handler, Mapping},
     tip20::{ITIP20, TIP20Token, is_tip20_prefix},
+    tip403_registry::AuthRole,
 };
 use alloy::{
     primitives::{Address, B256, U256, aliases::U96, keccak256},
@@ -113,9 +114,8 @@ impl TIP20ChannelEscrow {
         if call.payee == Address::ZERO || is_tip20_prefix(call.payee) {
             return Err(TIP20ChannelEscrowError::invalid_payee().into());
         }
-        if !is_tip20_prefix(call.token) {
-            return Err(TIP20ChannelEscrowError::invalid_token().into());
-        }
+
+        let mut token = TIP20Token::from_address(call.token)?;
 
         let deposit = call.deposit;
         if deposit.is_zero() {
@@ -138,17 +138,16 @@ impl TIP20ChannelEscrow {
             return Err(TIP20ChannelEscrowError::channel_already_exists().into());
         }
 
+        token.ensure_authorized_as(call.payee, AuthRole::Recipient)?;
+        token.system_transfer_from(self.address, msg_sender, U256::from(call.deposit))?;
+
         self.channel_states[channel_id].write(PackedChannelState {
             settled: U96::ZERO,
             deposit,
             close_requested_at: 0,
         })?;
-        TIP20Token::from_address(call.token)?.system_transfer_from(
-            self.address,
-            msg_sender,
-            U256::from(call.deposit),
-        )?;
         self.opened_this_tx[channel_id].t_write(true)?;
+
         self.emit_event(TIP20ChannelEscrowEvent::ChannelOpened(
             ITIP20ChannelEscrow::ChannelOpened {
                 channelId: channel_id,
@@ -199,15 +198,20 @@ impl TIP20ChannelEscrow {
             .checked_sub(state.settled)
             .expect("cumulative amount already checked to be increasing");
 
+        let mut token = TIP20Token::from_address(call.descriptor.token)?;
+        token.ensure_authorized_as(call.descriptor.payer, AuthRole::Sender)?;
+
         state.settled = cumulative;
         self.channel_states[channel_id].write(state)?;
-        TIP20Token::from_address(call.descriptor.token)?.transfer(
+
+        token.transfer(
             self.address,
             ITIP20::transferCall {
                 to: call.descriptor.payee,
                 amount: U256::from(delta),
             },
         )?;
+
         self.emit_event(TIP20ChannelEscrowEvent::Settled(
             ITIP20ChannelEscrow::Settled {
                 channelId: channel_id,
@@ -247,7 +251,9 @@ impl TIP20ChannelEscrow {
 
         if !additional.is_zero() {
             state.deposit = next_deposit;
-            TIP20Token::from_address(call.descriptor.token)?.system_transfer_from(
+            let mut token = TIP20Token::from_address(call.descriptor.token)?;
+            token.ensure_authorized_as(call.descriptor.payee, AuthRole::Recipient)?;
+            token.system_transfer_from(
                 self.address,
                 msg_sender,
                 U256::from(call.additionalDeposit),
@@ -359,6 +365,7 @@ impl TIP20ChannelEscrow {
 
         let mut token = TIP20Token::from_address(call.descriptor.token)?;
         if !delta.is_zero() {
+            token.ensure_authorized_as(call.descriptor.payer, AuthRole::Sender)?;
             token.transfer(
                 self.address,
                 ITIP20::transferCall {
@@ -648,6 +655,7 @@ mod tests {
         Precompile,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
+        tip403_registry::{ITIP403Registry, TIP403Registry},
     };
     use alloy::{
         primitives::{Bytes, Signature},
@@ -656,11 +664,7 @@ mod tests {
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls;
-
-    fn abi_u96(value: u128) -> U96 {
-        U96::from(value)
-    }
+    use tempo_contracts::precompiles::{ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls, TIP20Error};
 
     fn descriptor(
         payer: Address,
@@ -694,7 +698,7 @@ mod tests {
             payee,
             operator,
             token,
-            deposit: abi_u96(deposit),
+            deposit: U96::from(deposit),
             salt,
             authorizedSigner: authorized_signer,
         }
@@ -704,6 +708,57 @@ mod tests {
         let hash = B256::random();
         escrow.set_channel_open_context_hash(hash)?;
         Ok(hash)
+    }
+
+    fn install_blacklist_policy(
+        token: &mut TIP20Token,
+        admin: Address,
+    ) -> Result<(TIP403Registry, u64, u64)> {
+        let mut registry = TIP403Registry::new();
+        registry.initialize()?;
+        let blacklist = |registry: &mut TIP403Registry| {
+            registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )
+        };
+        let sender_policy = blacklist(&mut registry)?;
+        let recipient_policy = blacklist(&mut registry)?;
+        let compound_policy = registry.create_compound_policy(
+            admin,
+            ITIP403Registry::createCompoundPolicyCall {
+                senderPolicyId: sender_policy,
+                recipientPolicyId: recipient_policy,
+                mintRecipientPolicyId: 1,
+            },
+        )?;
+        token.change_transfer_policy_id(
+            admin,
+            ITIP20::changeTransferPolicyIdCall {
+                newPolicyId: compound_policy,
+            },
+        )?;
+        Ok((registry, sender_policy, recipient_policy))
+    }
+
+    fn set_blacklisted(
+        registry: &mut TIP403Registry,
+        admin: Address,
+        policy_id: u64,
+        account: Address,
+        restricted: bool,
+    ) -> Result<()> {
+        registry.modify_policy_blacklist(
+            admin,
+            ITIP403Registry::modifyPolicyBlacklistCall {
+                policyId: policy_id,
+                account,
+                restricted,
+            },
+        )
     }
 
     #[test]
@@ -789,6 +844,113 @@ mod tests {
     }
 
     #[test]
+    fn test_tip403_logical_payer_payee_policy_checks() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let payer_signer = PrivateKeySigner::random();
+        let payer = payer_signer.address();
+        let payee = Address::random();
+        let admin = payer;
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(payer, U256::from(1_000u128))
+                .apply()?;
+            let (mut registry, sender_policy, recipient_policy) =
+                install_blacklist_policy(&mut token, admin)?;
+            let mut escrow = TIP20ChannelEscrow::new();
+            escrow.initialize()?;
+
+            // A blocked recipient cannot be used as the payee for a new channel.
+            set_blacklisted(&mut registry, admin, recipient_policy, payee, true)?;
+            seed_expiring_nonce_hash(&mut escrow)?;
+            let res = escrow.open(
+                payer,
+                open_call(
+                    payee,
+                    Address::ZERO,
+                    token.address(),
+                    100,
+                    B256::random(),
+                    Address::ZERO,
+                ),
+            );
+            assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
+
+            // Unblock the payee so we can fund a channel for later sender-side checks.
+            set_blacklisted(&mut registry, admin, recipient_policy, payee, false)?;
+            let salt = B256::random();
+            let expiring_nonce_hash = seed_expiring_nonce_hash(&mut escrow)?;
+            let channel_id = escrow.open(
+                payer,
+                open_call(
+                    payee,
+                    Address::ZERO,
+                    token.address(),
+                    100,
+                    salt,
+                    Address::ZERO,
+                ),
+            )?;
+            let descriptor = descriptor(
+                payer,
+                payee,
+                Address::ZERO,
+                token.address(),
+                salt,
+                Address::ZERO,
+                expiring_nonce_hash,
+            );
+
+            // Top-ups also reject channels whose payee can no longer receive.
+            set_blacklisted(&mut registry, admin, recipient_policy, payee, true)?;
+            let res = escrow.top_up(
+                payer,
+                ITIP20ChannelEscrow::topUpCall {
+                    descriptor: descriptor.clone(),
+                    additionalDeposit: U96::from(1),
+                },
+            );
+            assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
+
+            // Once funded, vouchers cannot transmit new value if the payer is blocked.
+            set_blacklisted(&mut registry, admin, recipient_policy, payee, false)?;
+            set_blacklisted(&mut registry, admin, sender_policy, payer, true)?;
+            let digest = escrow.get_voucher_digest(ITIP20ChannelEscrow::getVoucherDigestCall {
+                channelId: channel_id,
+                cumulativeAmount: U96::from(10),
+            })?;
+            let signature =
+                Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
+
+            // Settle enforces the logical payer-as-sender check, not just escrow -> payee.
+            let res = escrow.settle(
+                payee,
+                ITIP20ChannelEscrow::settleCall {
+                    descriptor: descriptor.clone(),
+                    cumulativeAmount: U96::from(10),
+                    signature: signature.clone(),
+                },
+            );
+            assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
+
+            // Close enforces the same check when it would pay additional value to the payee.
+            let res = escrow.close(
+                payee,
+                ITIP20ChannelEscrow::closeCall {
+                    descriptor,
+                    cumulativeAmount: U96::from(10),
+                    captureAmount: U96::from(10),
+                    signature,
+                },
+            );
+            assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_open_settle_close_flow_deletes_state_and_same_tx_reopen_guard() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let payer_signer = PrivateKeySigner::random();
@@ -820,7 +982,7 @@ mod tests {
 
             let digest = escrow.get_voucher_digest(ITIP20ChannelEscrow::getVoucherDigestCall {
                 channelId: channel_id,
-                cumulativeAmount: abi_u96(120),
+                cumulativeAmount: U96::from(120),
             })?;
             let signature =
                 Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
@@ -838,7 +1000,7 @@ mod tests {
                 payee,
                 ITIP20ChannelEscrow::settleCall {
                     descriptor: channel_descriptor.clone(),
-                    cumulativeAmount: abi_u96(120),
+                    cumulativeAmount: U96::from(120),
                     signature,
                 },
             )?;
@@ -846,7 +1008,7 @@ mod tests {
             let close_digest =
                 escrow.get_voucher_digest(ITIP20ChannelEscrow::getVoucherDigestCall {
                     channelId: channel_id,
-                    cumulativeAmount: abi_u96(500),
+                    cumulativeAmount: U96::from(500),
                 })?;
             let close_signature =
                 Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&close_digest)?.as_bytes());
@@ -854,8 +1016,8 @@ mod tests {
                 payee,
                 ITIP20ChannelEscrow::closeCall {
                     descriptor: channel_descriptor,
-                    cumulativeAmount: abi_u96(500),
-                    captureAmount: abi_u96(200),
+                    cumulativeAmount: U96::from(500),
+                    captureAmount: U96::from(200),
                     signature: close_signature,
                 },
             )?;
@@ -902,7 +1064,7 @@ mod tests {
                 escrow.get_channel_state(ITIP20ChannelEscrow::getChannelStateCall {
                     channelId: reopened_channel_id,
                 })?;
-            assert_eq!(reopened_state.deposit, abi_u96(1));
+            assert_eq!(reopened_state.deposit, U96::from(1));
 
             Ok(())
         })
@@ -1054,7 +1216,7 @@ mod tests {
             );
             let digest = escrow.get_voucher_digest(ITIP20ChannelEscrow::getVoucherDigestCall {
                 channelId: channel_id,
-                cumulativeAmount: abi_u96(40),
+                cumulativeAmount: U96::from(40),
             })?;
             let signature =
                 Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
@@ -1063,14 +1225,14 @@ mod tests {
                 operator,
                 ITIP20ChannelEscrow::settleCall {
                     descriptor: channel_descriptor,
-                    cumulativeAmount: abi_u96(40),
+                    cumulativeAmount: U96::from(40),
                     signature,
                 },
             )?;
             let state = escrow.get_channel_state(ITIP20ChannelEscrow::getChannelStateCall {
                 channelId: channel_id,
             })?;
-            assert_eq!(state.settled, abi_u96(40));
+            assert_eq!(state.settled, U96::from(40));
 
             let salt = B256::random();
             let expiring_nonce_hash = seed_expiring_nonce_hash(&mut escrow)?;
@@ -1098,7 +1260,7 @@ mod tests {
                 Address::random(),
                 ITIP20ChannelEscrow::settleCall {
                     descriptor: descriptor_without_operator,
-                    cumulativeAmount: abi_u96(1),
+                    cumulativeAmount: U96::from(1),
                     signature: Bytes::copy_from_slice(&Signature::test_signature().as_bytes()),
                 },
             );
@@ -1144,7 +1306,7 @@ mod tests {
             );
             let digest = escrow.get_voucher_digest(ITIP20ChannelEscrow::getVoucherDigestCall {
                 channelId: channel_id,
-                cumulativeAmount: abi_u96(80),
+                cumulativeAmount: U96::from(80),
             })?;
             let signature =
                 Bytes::copy_from_slice(&payer_signer.sign_hash_sync(&digest)?.as_bytes());
@@ -1153,8 +1315,8 @@ mod tests {
                 operator,
                 ITIP20ChannelEscrow::closeCall {
                     descriptor: channel_descriptor,
-                    cumulativeAmount: abi_u96(80),
-                    captureAmount: abi_u96(40),
+                    cumulativeAmount: U96::from(80),
+                    captureAmount: U96::from(40),
                     signature,
                 },
             )?;
@@ -1191,8 +1353,8 @@ mod tests {
                 Address::random(),
                 ITIP20ChannelEscrow::closeCall {
                     descriptor: descriptor_without_operator,
-                    cumulativeAmount: abi_u96(1),
-                    captureAmount: abi_u96(1),
+                    cumulativeAmount: U96::from(1),
+                    captureAmount: U96::from(1),
                     signature: Bytes::copy_from_slice(&Signature::test_signature().as_bytes()),
                 },
             );
@@ -1258,7 +1420,7 @@ mod tests {
                 payer,
                 ITIP20ChannelEscrow::topUpCall {
                     descriptor: descriptor.clone(),
-                    additionalDeposit: abi_u96(25),
+                    additionalDeposit: U96::from(25),
                 },
             )?;
 
@@ -1280,7 +1442,7 @@ mod tests {
                     payee: Address::random(),
                     operator: Address::ZERO,
                     token: TIP20_CHANNEL_ESCROW_ADDRESS,
-                    deposit: abi_u96(1),
+                    deposit: U96::from(1),
                     salt: B256::ZERO,
                     authorizedSigner: Address::ZERO,
                 }
@@ -1331,7 +1493,7 @@ mod tests {
                         Address::ZERO,
                         expiring_nonce_hash,
                     ),
-                    cumulativeAmount: abi_u96(10),
+                    cumulativeAmount: U96::from(10),
                     signature: Bytes::copy_from_slice(
                         &Signature::test_signature().as_bytes()[..64],
                     ),
@@ -1389,7 +1551,7 @@ mod tests {
                         Address::ZERO,
                         expiring_nonce_hash,
                     ),
-                    cumulativeAmount: abi_u96(10),
+                    cumulativeAmount: U96::from(10),
                     signature: keychain_signature.into(),
                 },
             );
