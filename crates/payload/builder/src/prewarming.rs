@@ -271,6 +271,9 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
+        if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
+            return Some(tx);
+        }
         self.commands_tx
             .send(BestTransactionsCommand::Advance)
             .ok()?;
