@@ -147,7 +147,10 @@ impl PayloadTypes for TempoPayloadTypes {
     type BuiltPayload = TempoBuiltPayload;
     type PayloadAttributes = TempoPayloadAttributes;
 
-    fn block_to_payload(block: SealedBlock<Block>) -> Self::ExecutionData {
+    fn block_to_payload(
+        block: SealedBlock<Block>,
+        _bal: Option<alloy_primitives::Bytes>,
+    ) -> Self::ExecutionData {
         TempoExecutionData {
             block: Arc::new(block),
             validator_set: None,

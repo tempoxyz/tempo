@@ -25,7 +25,7 @@ use reth_node_builder::{
     },
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
-use reth_primitives_traits::{SealedBlock, SealedHeader};
+use reth_primitives_traits::SealedHeader;
 use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
@@ -34,12 +34,12 @@ use reth_rpc_eth_api::{
 };
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
-use std::{default::Default, sync::Arc};
+use std::default::Default;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::TempoConsensus;
 use tempo_evm::TempoEvmConfig;
 use tempo_payload_builder::TempoPayloadBuilder;
-use tempo_payload_types::{TempoExecutionData, TempoPayloadAttributes};
+use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool,
@@ -65,9 +65,9 @@ pub struct TempoNodeArgs {
     #[arg(long = "builder.state-provider-metrics", default_value_t = false)]
     pub builder_state_provider_metrics: bool,
 
-    /// Disable state cache for the payload builder.
-    #[arg(long = "builder.disable-state-cache", default_value_t = false)]
-    pub builder_disable_state_cache: bool,
+    /// Enable prewarming for the payload builder.
+    #[arg(long = "builder.enable-prewarming", default_value_t = false)]
+    pub builder_enable_prewarming: bool,
 }
 
 impl TempoNodeArgs {
@@ -83,7 +83,7 @@ impl TempoNodeArgs {
     pub fn payload_builder_builder(&self) -> TempoPayloadBuilderBuilder {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
-            disable_state_cache: self.builder_disable_state_cache,
+            enable_prewarming: self.builder_enable_prewarming,
         }
     }
 }
@@ -282,14 +282,10 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
     type RpcBlock =
         alloy_rpc_types_eth::Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeader>;
 
-    fn rpc_to_execution_data(rpc_block: Self::RpcBlock) -> TempoExecutionData {
-        let block = rpc_block
+    fn rpc_to_primitive_block(rpc_block: Self::RpcBlock) -> tempo_primitives::Block {
+        rpc_block
             .into_consensus_block()
-            .map_transactions(|tx| tx.into_inner());
-        TempoExecutionData {
-            block: Arc::new(SealedBlock::seal_slow(block)),
-            validator_set: None,
-        }
+            .map_transactions(|tx| tx.into_inner())
     }
 
     fn local_payload_attributes_builder(
@@ -493,8 +489,8 @@ where
 pub struct TempoPayloadBuilderBuilder {
     /// Enable state provider metrics for the payload builder.
     pub state_provider_metrics: bool,
-    /// Disable state cache for the payload builder.
-    pub disable_state_cache: bool,
+    /// Enable prewarming for the payload builder.
+    pub enable_prewarming: bool,
 }
 
 impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
@@ -513,10 +509,11 @@ where
         Ok(TempoPayloadBuilder::new(
             pool,
             ctx.provider().clone(),
+            ctx.task_executor().clone(),
             evm_config,
             ctx.is_dev(),
             self.state_provider_metrics,
-            self.disable_state_cache,
+            self.enable_prewarming,
         ))
     }
 }

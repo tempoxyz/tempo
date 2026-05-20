@@ -13,8 +13,6 @@ import { ITIP20RolesAuthErr } from "tempo-std/interfaces/ITIP20RolesAuth.sol";
 ///      TEMPO-1026-1: `bytes(logoURI()).length <= 256` must always hold.
 ///      TEMPO-1026-2: The legacy 6-argument `createToken` selector and the
 ///                    `TokenCreated` event signature are unchanged by this TIP.
-/// forge-config: default.hardfork = "tempo:T5"
-/// forge-config: fuzz500.hardfork = "tempo:T5"
 contract TIP1026InvariantTest is InvariantBaseTest {
 
     /*//////////////////////////////////////////////////////////////
@@ -57,6 +55,15 @@ contract TIP1026InvariantTest is InvariantBaseTest {
         targetContract(address(this));
         _setupInvariantBase();
         (_actors,) = _buildActors(NUM_ACTORS);
+
+        // Make the token admin one of the fuzz actors so the success path of
+        // `setLogoURI` (and the LogoURITooLong / InvalidLogoURI validation
+        // branches that only fire when `msg.sender == admin`) is reachable.
+        // Without this, `_selectActor` only ever returns one of the
+        // `_buildActors`-generated EOAs and every `setLogoURI` call goes down
+        // the `Unauthorized` path, leaving the admin-side invariants
+        // unexercised.
+        _actors.push(admin);
 
         // TEMPO-1026-2: assert constants up-front. These are immutable after
         // deployment, so a one-shot check in setUp is sufficient — any
@@ -216,7 +223,7 @@ contract TIP1026InvariantTest is InvariantBaseTest {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice TEMPO-1026-1: `bytes(logoURI()).length <= 256` for every tracked token.
-    function invariant_logoURILengthBounded() public view {
+    function invariant_tip1026LogoURILengthBounded() public view {
         for (uint256 i = 0; i < _logoTokens.length; i++) {
             assertLe(
                 bytes(_logoTokens[i].logoURI()).length,

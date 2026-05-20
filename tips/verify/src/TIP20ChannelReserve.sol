@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import { ISignatureVerifier } from "./interfaces/ISignatureVerifier.sol";
-import { ITIP20 } from "./interfaces/ITIP20.sol";
 import { ITIP20ChannelReserve } from "./interfaces/ITIP20ChannelReserve.sol";
+import { ISignatureVerifier } from "tempo-std/interfaces/ISignatureVerifier.sol";
+import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 
 /// @title TIP20ChannelReserve
 /// @notice Reference contract for the TIP-1034 channel model.
 contract TIP20ChannelReserve is ITIP20ChannelReserve {
+
+    error TransferFailed();
 
     address public constant TIP20_CHANNEL_RESERVE = 0x4d50500000000000000000000000000000000000;
     address public constant SIGNATURE_VERIFIER_PRECOMPILE =
@@ -20,6 +22,7 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
 
     uint256 internal constant _DEPOSIT_OFFSET = 96;
     uint256 internal constant _CLOSE_REQUESTED_AT_OFFSET = 192;
+    bytes12 internal constant _TIP20_TOKEN_PREFIX = 0x20c000000000000000000000;
 
     bytes32 internal constant _EIP712_DOMAIN_TYPEHASH = keccak256(
         "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
@@ -61,7 +64,7 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         external
         returns (bytes32 channelId)
     {
-        if (payee == address(0)) revert InvalidPayee();
+        if (payee == address(0) || _isTip20Prefix(payee)) revert InvalidPayee();
         if (token == address(0)) revert InvalidToken();
         if (deposit == 0) revert ZeroDeposit();
 
@@ -198,7 +201,12 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         bytes32 channelId = _channelId(descriptor);
         ChannelState memory channel = _loadChannelState(channelId);
 
-        if (msg.sender != descriptor.payee) revert NotPayee();
+        if (
+            msg.sender != descriptor.payee
+                && (descriptor.operator == address(0) || msg.sender != descriptor.operator)
+        ) {
+            revert NotPayeeOrOperator();
+        }
 
         uint96 previousSettled = channel.settled;
         if (captureAmount < previousSettled || captureAmount > cumulativeAmount) {
@@ -420,6 +428,10 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         expiringNonceHash = _expiringNonceHashContext;
         if (expiringNonceHash == bytes32(0)) revert ExpiringNonceHashNotSet();
         delete _expiringNonceHashContext;
+    }
+
+    function _isTip20Prefix(address account) internal pure returns (bool) {
+        return bytes12(bytes20(account)) == _TIP20_TOKEN_PREFIX;
     }
 
 }

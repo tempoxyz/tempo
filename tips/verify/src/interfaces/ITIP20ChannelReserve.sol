@@ -147,7 +147,6 @@ interface ITIP20ChannelReserve {
     error ChannelAlreadyExists();
     error ChannelNotFound();
     error NotPayer();
-    error NotPayee();
     error NotPayeeOrOperator();
     error InvalidPayee();
     error InvalidToken();
@@ -159,6 +158,5 @@ interface ITIP20ChannelReserve {
     error CaptureAmountInvalid();
     error CloseNotReady();
     error DepositOverflow();
-    error TransferFailed();
 
 }
