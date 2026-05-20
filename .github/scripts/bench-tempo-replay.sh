@@ -316,7 +316,8 @@ run_single() {
     kill "$tail_pid" 2>/dev/null || true
     if [ "${BENCH_SAMPLY:-false}" = "true" ]; then
       sudo pkill -INT -x tempo 2>/dev/null || true
-      for _i in $(seq 1 60); do
+      local samply_wait
+      for samply_wait in $(seq 1 60); do
         sudo pgrep -x samply > /dev/null 2>&1 || break
         sleep 1
       done
@@ -330,15 +331,16 @@ run_single() {
   trap cleanup_run EXIT
 
   # Wait for RPC
-  for i in $(seq 1 120); do
+  local rpc_wait
+  for rpc_wait in $(seq 1 120); do
     if curl -sf http://127.0.0.1:8545 -X POST \
       -H 'Content-Type: application/json' \
       -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
       > /dev/null 2>&1; then
-      echo "tempo ($label) RPC is up after ${i}s"
+      echo "tempo ($label) RPC is up after ${rpc_wait}s"
       break
     fi
-    if [ "$i" -eq 120 ]; then
+    if [ "$rpc_wait" -eq 120 ]; then
       echo "::error::tempo ($label) failed to start within 120s"
       cat "$log"
       exit 1
@@ -347,15 +349,16 @@ run_single() {
   done
 
   # Wait for pipeline to finish (engine transitions to idle)
-  for i in $(seq 1 300); do
+  local sync_wait
+  for sync_wait in $(seq 1 300); do
     SYNC_RESULT=$(curl -sf http://127.0.0.1:8545 -X POST \
       -H 'Content-Type: application/json' \
       -d '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}' 2>/dev/null || true)
     if [ -n "$SYNC_RESULT" ] && jq -e '.result == false' <<< "$SYNC_RESULT" > /dev/null 2>&1; then
-      echo "tempo ($label) pipeline finished after ${i}s, engine is live"
+      echo "tempo ($label) pipeline finished after ${sync_wait}s, engine is live"
       break
     fi
-    if [ "$i" -eq 300 ]; then
+    if [ "$sync_wait" -eq 300 ]; then
       echo "::error::tempo ($label) pipeline did not finish within 300s"
       cat "$log"
       exit 1
@@ -491,8 +494,8 @@ run_progress=0
 baseline_index=0
 feature_index=0
 
-for ((i = 0; i < ${#RUN_ORDER}; i++)); do
-  side="${RUN_ORDER:i:1}"
+for ((run_pos = 0; run_pos < ${#RUN_ORDER}; run_pos++)); do
+  side="${RUN_ORDER:$run_pos:1}"
   if [ "$side" = "B" ]; then
     baseline_index=$((baseline_index + 1))
     run_label="baseline-${baseline_index}"
