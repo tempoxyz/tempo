@@ -52,9 +52,14 @@ on:
           - T6
       preset:
         description: Benchmark preset.
-        type: string
+        type: choice
         required: true
         default: tip20
+        options:
+          - tip20
+          - tip20_random_recipients
+          - mpp
+          - mix
       duration:
         description: Benchmark duration in seconds.
         type: string

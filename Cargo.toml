@@ -44,6 +44,7 @@ manual-string-new = "warn"
 uninlined-format-args = "warn"
 use-self = "warn"
 redundant-clone = "warn"
+cast-lossless = "deny"
 default-constructed-unit-structs = "allow"
 
 [workspace.lints.rust]
@@ -162,6 +163,7 @@ reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", rev = "1be17e
 reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "1be17eb" }
 reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "1be17eb" }
 reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "1be17eb", default-features = false }
+reth-execution-cache = { git = "https://github.com/paradigmxyz/reth", rev = "1be17eb" }
 reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "1be17eb" }
 reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "1be17eb" }
 reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "1be17eb" }

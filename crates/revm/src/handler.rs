@@ -1451,7 +1451,7 @@ where
         // Call collectFeePostTx on TipFeeManager precompile
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
-        let basefee = context.block().basefee() as u128;
+        let basefee = u128::from(context.block().basefee());
         let effective_gas_price = tx.effective_gas_price(basefee);
         let gas = exec_result.gas();
 
@@ -1689,7 +1689,7 @@ where
             let base_fee = if cfg.is_base_fee_check_disabled() {
                 None
             } else {
-                Some(evm.ctx_ref().block().basefee() as u128)
+                Some(u128::from(evm.ctx_ref().block().basefee()))
             };
 
             validation::validate_priority_fee_tx(

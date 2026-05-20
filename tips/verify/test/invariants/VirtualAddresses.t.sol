@@ -831,7 +831,7 @@ contract VirtualAddressesInvariantTest is InvariantBaseTest {
                            GLOBAL INVARIANTS
     //////////////////////////////////////////////////////////////*/
 
-    function invariant_globalInvariants() public view {
+    function invariant_virtualAddressesGlobal() public view {
         for (uint256 i = 0; i < _masters.length; i++) {
             MasterFixture memory fixture = _masters[i];
             bytes32 registrationHash = keccak256(abi.encodePacked(fixture.master, fixture.salt));
