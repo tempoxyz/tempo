@@ -125,6 +125,7 @@ def run-txgen-bench-single [
         --tps $tps
         --duration $duration
         --accounts $accounts
+        --existing-recipient-accounts (state-bloat-accounts-per-token $bloat)
         --max-concurrent-requests $max_concurrent_requests
         --bench-args $bench_args
         --bench-env $bench_env
@@ -418,11 +419,11 @@ def "main run" [
             if $bloat > 0 and not ($bloat_file | path exists) {
                 let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                 if $baseline == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --signable-count (state-bloat-accounts-per-token $bloat) ...$token_args
                 } else {
                     do {
                         cd $baseline_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --signable-count (state-bloat-accounts-per-token $bloat) ...$token_args
                     }
                 }
             }
@@ -479,11 +480,11 @@ def "main run" [
             if $bloat > 0 and not ($bloat_file | path exists) {
                 let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                 if $baseline == "local" {
-                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --signable-count (state-bloat-accounts-per-token $bloat) ...$token_args
                 } else {
                     do {
                         cd $baseline_wt
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --signable-count (state-bloat-accounts-per-token $bloat) ...$token_args
                     }
                 }
             }

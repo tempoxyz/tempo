@@ -22,6 +22,19 @@ const TIP20_TOKEN_IDS = [0, 1, 2, 3]
 # Helper functions
 # ============================================================================
 
+def state-bloat-accounts-per-token [bloat_mib: int] {
+    if $bloat_mib <= 0 {
+        return 0
+    }
+
+    let target_bytes = $bloat_mib * 1024 * 1024
+    let num_tokens = ($TIP20_TOKEN_IDS | length)
+    let overhead_per_token = 40 + 64
+    let available_for_balances = [($target_bytes - ($num_tokens * $overhead_per_token)) 0] | math max
+    let total_balance_entries = ($available_for_balances / 64 | into int)
+    ($total_balance_entries / $num_tokens | into int)
+}
+
 # Convert consensus port to node index (e.g., 8000 -> 0, 8100 -> 1)
 def port-to-node-index [port: int] {
     ($port - 8000) / 100 | into int
@@ -99,7 +112,7 @@ def generate-bloat-file [bloat_size: int, profile: string] {
     }
     print $"Generating state bloat \(($bloat_size) MiB\)..."
     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_size --out $bloat_file ...$token_args
+    cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_size --out $bloat_file --signable-count (state-bloat-accounts-per-token $bloat_size) ...$token_args
 }
 
 # Load the bloat file into a single node's database
@@ -621,6 +634,7 @@ def run-bench-single [
             --tps $tps
             --duration $duration
             --accounts $accounts
+            --existing-recipient-accounts (state-bloat-accounts-per-token $bloat)
             --max-concurrent-requests $max_concurrent_requests
             --bench-args $bench_args
             --bench-env $bench_env
@@ -1825,7 +1839,7 @@ def "main bench-init" [
     if $bloat > 0 {
         print $"Generating state bloat \(($bloat) MiB\)..."
         let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --signable-count (state-bloat-accounts-per-token $bloat) ...$token_args
     }
 
     bench-clean-datadir $datadir
@@ -2155,11 +2169,11 @@ def "main bench" [
                     print $"Generating state bloat \(($bloat) MiB\)..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                     if $baseline == "local" {
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --signable-count (state-bloat-accounts-per-token $bloat) ...$token_args
                     } else {
                         do {
                             cd $baseline_wt
-                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --signable-count (state-bloat-accounts-per-token $bloat) ...$token_args
                         }
                     }
                 }
@@ -2227,11 +2241,11 @@ def "main bench" [
                     print $"Generating state bloat \(($bloat) MiB\) from baseline..."
                     let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
                     if $baseline == "local" {
-                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                        cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --signable-count (state-bloat-accounts-per-token $bloat) ...$token_args
                     } else {
                         do {
                             cd $baseline_wt
-                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file ...$token_args
+                            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat --out $bloat_file --signable-count (state-bloat-accounts-per-token $bloat) ...$token_args
                         }
                     }
                 }
@@ -2312,6 +2326,7 @@ def "main bench" [
                 --genesis-path $run.genesis --datadir $run.datadir
                 --run-label $run.label --results-dir $results_dir
                 --tps $tps --duration $duration --accounts $accounts
+                --existing-recipient-accounts (state-bloat-accounts-per-token $bloat)
                 --max-concurrent-requests $max_concurrent_requests
                 --preset-path $preset_path --bench-args $bench_args
                 --loud=$loud --node-args $effective_node_args --bloat $bloat
@@ -2438,6 +2453,7 @@ def "main bench" [
             --tps $tps
             --duration $duration
             --accounts $accounts
+            --existing-recipient-accounts (state-bloat-accounts-per-token $bloat)
             --max-concurrent-requests $max_concurrent_requests
             --bench-args $bench_args
             --bench-env $bench_env

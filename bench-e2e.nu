@@ -860,6 +860,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --tps $ctx.tps
                 --duration $ctx.duration
                 --accounts $ctx.accounts
+                --existing-recipient-accounts (state-bloat-accounts-per-token $ctx.bloat)
                 --max-concurrent-requests $ctx.max_concurrent_requests
                 --bench-args $ctx.bench_args
                 --bench-env $ctx.bench_env
@@ -1093,7 +1094,7 @@ def "main e2e" [
             ensure-bloat-space $bloat_mib
             print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
             let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
+            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file --signable-count (state-bloat-accounts-per-token $bloat_mib) ...$token_args
         }
 
         let marker = {

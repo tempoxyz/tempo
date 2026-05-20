@@ -173,6 +173,7 @@ def txgen-run-preset-pipeline [
     --tps: int
     --duration: int
     --accounts: int
+    --existing-recipient-accounts: int = 0
     --max-concurrent-requests: int
     --bench-args: string = ""
     --bench-env: string = ""
@@ -192,6 +193,7 @@ def txgen-run-preset-pipeline [
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
     $env.TXGEN_ACCOUNTS = ($accounts | into string)
+    $env.TXGEN_EXISTING_RECIPIENT_ACCOUNTS = ((if $existing_recipient_accounts > 0 { $existing_recipient_accounts } else { $accounts }) | into string)
     let spec_path = ($preset_path | path expand)
     if not ($spec_path | path exists) {
         error make { msg: $"txgen preset file not found: ($spec_path)" }
