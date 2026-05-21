@@ -52,7 +52,7 @@ use tempo_precompiles::{
     },
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
-    tip20_channel_escrow::TIP20ChannelEscrow,
+    tip20_channel_reserve::TIP20ChannelReserve,
 };
 use tempo_primitives::{
     TempoAddressExt,
@@ -425,8 +425,8 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                 keychain.set_tx_origin(ctx.tx.caller())?;
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
-                    let mut channel_escrow = TIP20ChannelEscrow::new();
-                    channel_escrow.set_channel_open_context_hash(channel_open_context_hash)?;
+                    let mut channel_reserve = TIP20ChannelReserve::new();
+                    channel_reserve.set_channel_open_context_hash(channel_open_context_hash)?;
                 }
 
                 Ok::<(), TempoPrecompileError>(())
@@ -1451,7 +1451,7 @@ where
         // Call collectFeePostTx on TipFeeManager precompile
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
-        let basefee = context.block().basefee() as u128;
+        let basefee = u128::from(context.block().basefee());
         let effective_gas_price = tx.effective_gas_price(basefee);
         let gas = exec_result.gas();
 
@@ -1481,7 +1481,7 @@ where
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
 
-        StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
+        let credited = StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
             let mut fee_manager = TipFeeManager::new();
 
             if !actual_spending.is_zero() || !refund_amount.is_zero() {
@@ -1498,11 +1498,16 @@ where
                         fee_token,
                         beneficiary,
                     )
-                    .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
+                    .map_err(|e| EVMError::Custom(format!("{e:?}")))
+            } else {
+                Ok(U256::ZERO)
             }
+        })?;
 
-            Ok(())
-        })
+        // Stash the per-tx credit so `TempoBlockExecutor` can surface it on `TempoTxResult`
+        // for payload scoring. Reset to zero on every tx entry below in `validate_env`.
+        evm.validator_fee = credited;
+        Ok(())
     }
 
     #[inline]
@@ -1523,6 +1528,9 @@ where
     /// - Time window validation (validAfter/validBefore)
     #[inline]
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
+        // Reset per-tx validator fee.
+        evm.validator_fee = U256::ZERO;
+
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;
 
@@ -1681,7 +1689,7 @@ where
             let base_fee = if cfg.is_base_fee_check_disabled() {
                 None
             } else {
-                Some(evm.ctx_ref().block().basefee() as u128)
+                Some(u128::from(evm.ctx_ref().block().basefee()))
             };
 
             validation::validate_priority_fee_tx(

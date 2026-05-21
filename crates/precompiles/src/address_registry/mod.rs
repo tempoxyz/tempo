@@ -19,7 +19,7 @@ use alloy::{
 use tempo_chainspec::hardfork::TempoHardfork;
 pub use tempo_contracts::precompiles::{
     AddrRegistryError, AddrRegistryEvent, IAddressRegistry, STABLECOIN_DEX_ADDRESS,
-    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
 };
 use tempo_precompiles_macros::{Storable, contract};
 pub use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
@@ -32,7 +32,7 @@ pub use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 pub const IMPLICIT_APPROVAL_LIST: &[Address] = &[
     TIP_FEE_MANAGER_ADDRESS,
     STABLECOIN_DEX_ADDRESS,
-    TIP20_CHANNEL_ESCROW_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS,
 ];
 
 /// Returns `true` iff `addr` is on the [`IMPLICIT_APPROVAL_LIST`] for the given hardfork.
@@ -201,7 +201,7 @@ mod tests {
             let registry = AddressRegistry::new();
             assert!(!registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
             assert!(!registry.is_implicitly_approved(STABLECOIN_DEX_ADDRESS));
-            assert!(!registry.is_implicitly_approved(TIP20_CHANNEL_ESCROW_ADDRESS));
+            assert!(!registry.is_implicitly_approved(TIP20_CHANNEL_RESERVE_ADDRESS));
             assert!(!registry.is_implicitly_approved(Address::random()));
             Ok(())
         })
@@ -214,7 +214,7 @@ mod tests {
             let registry = AddressRegistry::new();
             assert!(registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
             assert!(registry.is_implicitly_approved(STABLECOIN_DEX_ADDRESS));
-            assert!(registry.is_implicitly_approved(TIP20_CHANNEL_ESCROW_ADDRESS));
+            assert!(registry.is_implicitly_approved(TIP20_CHANNEL_RESERVE_ADDRESS));
             assert!(!registry.is_implicitly_approved(Address::random()));
             Ok(())
         })

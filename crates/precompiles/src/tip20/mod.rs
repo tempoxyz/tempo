@@ -37,7 +37,7 @@ use alloy::{
 use std::sync::LazyLock;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    DECIMALS as TIP20_DECIMALS, STABLECOIN_DEX_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS,
+    DECIMALS as TIP20_DECIMALS, STABLECOIN_DEX_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
 };
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
@@ -50,7 +50,7 @@ pub const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
 /// System custody addresses added to burn-blocked protection at each hardfork.
 pub const PROTECTED: &[(TempoHardfork, &[Address])] = &[
     (TempoHardfork::Genesis, &[TIP_FEE_MANAGER_ADDRESS, STABLECOIN_DEX_ADDRESS]),
-    (TempoHardfork::T5, &[TIP20_CHANNEL_ESCROW_ADDRESS]),
+    (TempoHardfork::T5, &[TIP20_CHANNEL_RESERVE_ADDRESS]),
 ];
 
 /// Validates that the given token's currency is `"USD"`.
@@ -1050,6 +1050,18 @@ impl TIP20Token {
             return Err(TIP20Error::policy_forbids().into());
         }
 
+        Ok(())
+    }
+
+    /// Check whether a user is authorized by the token's [`TIP403Registry`] policy for a given role.
+    ///
+    /// # Errors
+    /// - `PolicyForbids` — user is not authorized for the requested role by the active transfer policy
+    pub fn ensure_authorized_as(&self, user: Address, role: AuthRole) -> Result<()> {
+        let policy_id = self.transfer_policy_id()?;
+        if !TIP403Registry::new().is_authorized_as(policy_id, user, role)? {
+            return Err(TIP20Error::policy_forbids().into());
+        }
         Ok(())
     }
 
@@ -2564,7 +2576,7 @@ pub(crate) mod tests {
             for protected in [
                 TIP_FEE_MANAGER_ADDRESS,
                 STABLECOIN_DEX_ADDRESS,
-                TIP20_CHANNEL_ESCROW_ADDRESS,
+                TIP20_CHANNEL_RESERVE_ADDRESS,
             ] {
                 let result = token.burn_blocked(
                     burner,
@@ -2584,14 +2596,14 @@ pub(crate) mod tests {
             Ok::<_, TempoPrecompileError>(())
         })?;
 
-        // Pre-T5: TIP20_CHANNEL_ESCROW_ADDRESS is not yet in PROTECTED, so burn_blocked
+        // Pre-T5: TIP20_CHANNEL_RESERVE_ADDRESS is not yet in PROTECTED, so burn_blocked
         // actually burns from it (REJECT_ALL satisfies the sender-policy gate).
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
                 .with_role(burner, *BURN_BLOCKED_ROLE)
-                .with_mint(TIP20_CHANNEL_ESCROW_ADDRESS, amount)
+                .with_mint(TIP20_CHANNEL_RESERVE_ADDRESS, amount)
                 .apply()?;
 
             token.change_transfer_policy_id(
@@ -2604,13 +2616,13 @@ pub(crate) mod tests {
             token.burn_blocked(
                 burner,
                 ITIP20::burnBlockedCall {
-                    from: TIP20_CHANNEL_ESCROW_ADDRESS,
+                    from: TIP20_CHANNEL_RESERVE_ADDRESS,
                     amount: burn_amount,
                 },
             )?;
 
             let balance = token.balance_of(ITIP20::balanceOfCall {
-                account: TIP20_CHANNEL_ESCROW_ADDRESS,
+                account: TIP20_CHANNEL_RESERVE_ADDRESS,
             })?;
             assert_eq!(balance, amount - burn_amount);
 
@@ -3217,7 +3229,7 @@ pub(crate) mod tests {
             );
 
             let sig = signer.sign_hash_sync(&digest).unwrap();
-            let v = sig.v() as u8 + 27;
+            let v = u8::from(sig.v()) + 27;
             let r: B256 = sig.r().into();
             let s: B256 = sig.s().into();
             (v, r, s)

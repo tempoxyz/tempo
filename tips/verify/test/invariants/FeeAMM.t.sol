@@ -9,8 +9,6 @@ import { ITIP403Registry } from "tempo-std/interfaces/ITIP403Registry.sol";
 
 /// @title FeeAMM Invariant Test
 /// @notice Invariant tests for the FeeAMM/FeeManager implementation
-/// forge-config: default.hardfork = "tempo:T5"
-/// forge-config: fuzz500.hardfork = "tempo:T5"
 contract FeeAMMInvariantTest is InvariantBaseTest {
 
     /// @dev Constants from Rust tip_fee_manager/amm.rs
@@ -1213,7 +1211,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     ///      Pre/post-tx state is mocked via `vm.store`. The handler:
     ///        1. Predicts the route locally (mirror of `plan_fee_route`).
     ///        2. Applies the resulting reserve / collected-fees deltas with `vm.store`.
-    ///        3. Records a `TwoHopWitness` so `invariantFeeAMM` can verify TIP-1033 properties.
+    ///        3. Records a `TwoHopWitness` so `invariant_feeAMM` can verify TIP-1033 properties.
     /// @param userSeed Seed for selecting the fee-paying actor.
     /// @param validatorSeed Seed for selecting the validatorToken among `{token1..token4}`.
     /// @param feeAmountRaw Seed for the fee amount.
@@ -1815,7 +1813,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Main invariant function called after each fuzz sequence
-    function invariantFeeAMM() public view {
+    function invariant_feeAMM() public view {
         _invariantPoolStateChecks(); // Unified: AMM13, AMM14, AMM15, AMM20, FEE5
         _invariantRebalanceRoundingFavorsPool();
         _invariantBurnRoundingFavorsPool();
@@ -2188,7 +2186,7 @@ contract FeeAMMInvariantTest is InvariantBaseTest {
     /// dispatches each witness to `_assertDirectWitness` or `_assertFallbackWitness`. Aggregate
     /// checks (cumulative sums, regression-amount sanity, max-fallback) live outside the loop.
     /// Replaces eight separate full-array iterations: with N witnesses up to
-    /// `MAX_TWO_HOP_WITNESSES = 256`, this saves ~25k storage slot reads per `invariantFeeAMM`.
+    /// `MAX_TWO_HOP_WITNESSES = 256`, this saves ~25k storage slot reads per `invariant_feeAMM`.
     /// Same pattern as `_invariantPoolStateChecks` for the AMM/FEE invariants.
     /// Covers: TEMPO-AMM35/36/37, TEMPO-FEE7/8/9/11, and TIP-1033 inv. 2 (single-hop).
     function _invariantTwoHopWitnessChecks() internal view {
