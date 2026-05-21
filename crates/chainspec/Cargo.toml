@@ -59,6 +59,7 @@ reth = [
     "std",
     "dep:commonware-codec",
     "dep:commonware-cryptography",
+    "dep:eyre",
     "dep:reth-chainspec",
     "dep:reth-network-peers",
     "dep:tempo-dkg-onchain-artifacts",
