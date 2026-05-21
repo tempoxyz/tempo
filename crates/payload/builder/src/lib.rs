@@ -37,7 +37,7 @@ use reth_revm::{State, context::Block, database::StateProviderDatabase};
 use reth_storage_api::StateProviderFactory;
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
+    BestTransactions, BestTransactionsAttributes, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::{
@@ -184,9 +184,10 @@ where
         &self,
         args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
+        let timestamp = args.config.attributes.timestamp;
         self.build_payload(
             args,
-            |attributes| self.pool.best_transactions_with_attributes(attributes),
+            |_| self.pool.best_transactions_at_timestamp(timestamp),
             false,
         )
     }

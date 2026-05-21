@@ -1,6 +1,9 @@
 //! An iterator over the best transactions in the tempo pool.
 
-use crate::{transaction::TempoPooledTransaction, tt_2d_pool::BestAA2dTransactions};
+use crate::{
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+    tt_2d_pool::BestAA2dTransactions,
+};
 use alloy_primitives::{Address, U256, map::HashMap};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
@@ -23,6 +26,7 @@ pub struct MergeBestTransactions {
     aa_2d_pool: BestAA2dTransactions,
     next_protocol_pool: Option<BestTransactionWithPriority>,
     next_aa_2d_pool: Option<BestTransactionWithPriority>,
+    timestamp: Option<u64>,
 }
 
 impl MergeBestTransactions {
@@ -36,18 +40,73 @@ impl MergeBestTransactions {
             aa_2d_pool,
             next_protocol_pool: None,
             next_aa_2d_pool: None,
+            timestamp: None,
+        }
+    }
+
+    /// Creates a new iterator that prefilters transactions expired at `timestamp`.
+    pub(crate) fn new_at_timestamp(
+        protocol_pool: BestProtocolTransactions<TxOrdering>,
+        aa_2d_pool: BestAA2dTransactions,
+        timestamp: u64,
+    ) -> Self {
+        Self {
+            protocol_pool,
+            aa_2d_pool,
+            next_protocol_pool: None,
+            next_aa_2d_pool: None,
+            timestamp: Some(timestamp),
         }
     }
 }
 
 impl MergeBestTransactions {
+    fn expired_at_timestamp(&self, tx: &BestTransaction) -> Option<u64> {
+        let timestamp = self.timestamp?;
+        let valid_before = tx.transaction.inner().as_aa()?.tx().valid_before?.get();
+        (valid_before <= timestamp).then_some(valid_before)
+    }
+
+    fn expired_transaction_error(&self, valid_before: u64) -> InvalidPoolTransactionError {
+        InvalidPoolTransactionError::other(TempoPoolTransactionError::InvalidValidBefore {
+            valid_before,
+            min_allowed: self
+                .timestamp
+                .expect("expired_transaction_error only called with timestamp filtering"),
+        })
+    }
+
+    fn next_protocol_pool_tx_and_priority(&mut self) -> Option<BestTransactionWithPriority> {
+        loop {
+            let tx = self.protocol_pool.next_tx_and_priority()?;
+            if let Some(valid_before) = self.expired_at_timestamp(&tx.0) {
+                let kind = self.expired_transaction_error(valid_before);
+                self.protocol_pool.mark_invalid(&tx.0, kind);
+                continue;
+            }
+            return Some(tx);
+        }
+    }
+
+    fn next_aa_2d_pool_tx_and_priority(&mut self) -> Option<BestTransactionWithPriority> {
+        loop {
+            let tx = self.aa_2d_pool.next_tx_and_priority()?;
+            if let Some(valid_before) = self.expired_at_timestamp(&tx.0) {
+                let kind = self.expired_transaction_error(valid_before);
+                self.aa_2d_pool.mark_invalid(&tx.0, kind);
+                continue;
+            }
+            return Some(tx);
+        }
+    }
+
     /// Returns the next transaction from either pool with the higher priority.
     fn next_best(&mut self) -> Option<BestTransactionWithPriority> {
         if self.next_protocol_pool.is_none() {
-            self.next_protocol_pool = self.protocol_pool.next_tx_and_priority();
+            self.next_protocol_pool = self.next_protocol_pool_tx_and_priority();
         }
         if self.next_aa_2d_pool.is_none() {
-            self.next_aa_2d_pool = self.aa_2d_pool.next_tx_and_priority();
+            self.next_aa_2d_pool = self.next_aa_2d_pool_tx_and_priority();
         }
 
         match (&mut self.next_protocol_pool, &mut self.next_aa_2d_pool) {
@@ -239,12 +298,48 @@ mod tests {
         tx_with_nonce_key(U256::ZERO, sender, nonce, priority)
     }
 
+    fn protocol_tx_with_valid_before(
+        sender: Address,
+        nonce: u64,
+        priority: u128,
+        valid_before: u64,
+    ) -> TestTx {
+        Arc::new(wrap_valid_tx(
+            TxBuilder::aa(sender)
+                .nonce_key(U256::ZERO)
+                .nonce(nonce)
+                .valid_before(valid_before)
+                .max_priority_fee(priority)
+                .max_fee(u128::from(TempoHardfork::T1.base_fee()) + priority)
+                .build(),
+            TransactionOrigin::External,
+        ))
+    }
+
     fn aa_2d_tx(nonce: u64, priority: u128) -> TestTx {
         aa_2d_tx_for_sequence(Address::random(), nonce, priority)
     }
 
     fn aa_2d_tx_for_sequence(sender: Address, nonce: u64, priority: u128) -> TestTx {
         tx_with_nonce_key(U256::from(1), sender, nonce, priority)
+    }
+
+    fn aa_2d_tx_with_valid_before(
+        sender: Address,
+        nonce: u64,
+        priority: u128,
+        valid_before: u64,
+    ) -> TestTx {
+        Arc::new(wrap_valid_tx(
+            TxBuilder::aa(sender)
+                .nonce_key(U256::from(1))
+                .nonce(nonce)
+                .valid_before(valid_before)
+                .max_priority_fee(priority)
+                .max_fee(u128::from(TempoHardfork::T1.base_fee()) + priority)
+                .build(),
+            TransactionOrigin::External,
+        ))
     }
 
     fn protocol_best_transactions(txs: Vec<TestTx>) -> BestProtocolTransactions<TxOrdering> {
@@ -299,6 +394,18 @@ mod tests {
         MergeBestTransactions::new(
             protocol_best_transactions(protocol_txs),
             aa_2d_best_transactions(aa_2d_txs),
+        )
+    }
+
+    fn merged_best_transactions_at_timestamp(
+        protocol_txs: Vec<TestTx>,
+        aa_2d_txs: Vec<TestTx>,
+        timestamp: u64,
+    ) -> MergeBestTransactions {
+        MergeBestTransactions::new_at_timestamp(
+            protocol_best_transactions(protocol_txs),
+            aa_2d_best_transactions(aa_2d_txs),
+            timestamp,
         )
     }
 
@@ -375,6 +482,30 @@ mod tests {
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_c.hash()));
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_b.hash())); // equal priority, left preferred
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_d.hash()));
+        assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn test_merge_best_transactions_skips_expired_protocol_aa_transactions() {
+        let timestamp = 100;
+        let expired = protocol_tx_with_valid_before(Address::random(), 0, 10, timestamp);
+        let valid = protocol_tx_with_valid_before(Address::random(), 0, 5, timestamp + 1);
+        let mut merged =
+            merged_best_transactions_at_timestamp(vec![expired, valid.clone()], vec![], timestamp);
+
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*valid.hash()));
+        assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn test_merge_best_transactions_skips_expired_aa_2d_transactions() {
+        let timestamp = 100;
+        let expired = aa_2d_tx_with_valid_before(Address::random(), 0, 10, timestamp);
+        let valid = aa_2d_tx_with_valid_before(Address::random(), 0, 5, timestamp + 1);
+        let mut merged =
+            merged_best_transactions_at_timestamp(vec![], vec![expired, valid.clone()], timestamp);
+
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*valid.hash()));
         assert!(merged.next().is_none());
     }
 

@@ -88,6 +88,17 @@ where
         self.protocol_pool.validator().validator().client()
     }
 
+    pub fn best_transactions_at_timestamp(
+        &self,
+        timestamp: u64,
+    ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
+        let left = self.protocol_pool.inner().best_transactions();
+        let right = self.aa_2d_pool.read().best_transactions();
+        Box::new(MergeBestTransactions::new_at_timestamp(
+            left, right, timestamp,
+        ))
+    }
+
     /// Updates the 2d nonce pool with the given state changes.
     pub(crate) fn notify_aa_pool_on_state_updates(&self, state: &AddressMap<BundleAccount>) {
         let (promoted, _mined) = self.aa_2d_pool.write().on_state_updates(state);
