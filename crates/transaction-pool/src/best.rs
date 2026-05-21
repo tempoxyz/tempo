@@ -1,6 +1,9 @@
 //! An iterator over the best transactions in the tempo pool.
 
-use crate::{transaction::TempoPooledTransaction, tt_2d_pool::BestAA2dTransactions};
+use crate::{
+    transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+    tt_2d_pool::BestAA2dTransactions,
+};
 use alloy_primitives::{Address, U256, map::HashMap};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
@@ -23,6 +26,7 @@ pub struct MergeBestTransactions {
     aa_2d_pool: BestAA2dTransactions,
     next_protocol_pool: Option<BestTransactionWithPriority>,
     next_aa_2d_pool: Option<BestTransactionWithPriority>,
+    block_timestamp: Option<u64>,
 }
 
 impl MergeBestTransactions {
@@ -31,11 +35,21 @@ impl MergeBestTransactions {
         protocol_pool: BestProtocolTransactions<TxOrdering>,
         aa_2d_pool: BestAA2dTransactions,
     ) -> Self {
+        Self::new_with_block_timestamp(protocol_pool, aa_2d_pool, None)
+    }
+
+    /// Creates a new iterator over the given iterators with optional block timestamp filtering.
+    pub(crate) fn new_with_block_timestamp(
+        protocol_pool: BestProtocolTransactions<TxOrdering>,
+        aa_2d_pool: BestAA2dTransactions,
+        block_timestamp: Option<u64>,
+    ) -> Self {
         Self {
             protocol_pool,
             aa_2d_pool,
             next_protocol_pool: None,
             next_aa_2d_pool: None,
+            block_timestamp,
         }
     }
 }
@@ -78,13 +92,34 @@ impl MergeBestTransactions {
             }
         }
     }
+
+    /// Returns the invalid block timestamp error for a transaction, if the timestamp is known.
+    fn invalid_block_timestamp_error(
+        &self,
+        transaction: &BestTransaction,
+    ) -> Option<InvalidPoolTransactionError> {
+        let block_timestamp = self.block_timestamp?;
+        transaction
+            .transaction
+            .ensure_valid_block_timestamp(block_timestamp)
+            .err()
+            .map(|err| InvalidPoolTransactionError::other(TempoPoolTransactionError::Evm(err)))
+    }
 }
 
 impl Iterator for MergeBestTransactions {
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        self.next_best().map(|(tx, _)| tx)
+        loop {
+            let (tx, _) = self.next_best()?;
+            if let Some(err) = self.invalid_block_timestamp_error(&tx) {
+                self.mark_invalid(&tx, err);
+                continue;
+            }
+
+            return Some(tx);
+        }
     }
 }
 
@@ -220,15 +255,32 @@ mod tests {
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 
     fn tx_with_nonce_key(nonce_key: U256, sender: Address, nonce: u64, priority: u128) -> TestTx {
-        Arc::new(wrap_valid_tx(
-            TxBuilder::aa(sender)
-                .nonce_key(nonce_key)
-                .nonce(nonce)
-                .max_priority_fee(priority)
-                .max_fee(u128::from(TempoHardfork::T1.base_fee()) + priority)
-                .build(),
-            TransactionOrigin::External,
-        ))
+        tx_with_nonce_key_and_time_bounds(nonce_key, sender, nonce, priority, None, None)
+    }
+
+    fn tx_with_nonce_key_and_time_bounds(
+        nonce_key: U256,
+        sender: Address,
+        nonce: u64,
+        priority: u128,
+        valid_after: Option<u64>,
+        valid_before: Option<u64>,
+    ) -> TestTx {
+        let mut builder = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .nonce(nonce)
+            .max_priority_fee(priority)
+            .max_fee(u128::from(TempoHardfork::T1.base_fee()) + priority);
+
+        if let Some(valid_after) = valid_after {
+            builder = builder.valid_after(valid_after);
+        }
+
+        if let Some(valid_before) = valid_before {
+            builder = builder.valid_before(valid_before);
+        }
+
+        Arc::new(wrap_valid_tx(builder.build(), TransactionOrigin::External))
     }
 
     fn protocol_tx(nonce: u64, priority: u128) -> TestTx {
@@ -299,6 +351,18 @@ mod tests {
         MergeBestTransactions::new(
             protocol_best_transactions(protocol_txs),
             aa_2d_best_transactions(aa_2d_txs),
+        )
+    }
+
+    fn merged_best_transactions_at(
+        protocol_txs: Vec<TestTx>,
+        aa_2d_txs: Vec<TestTx>,
+        block_timestamp: u64,
+    ) -> MergeBestTransactions {
+        MergeBestTransactions::new_with_block_timestamp(
+            protocol_best_transactions(protocol_txs),
+            aa_2d_best_transactions(aa_2d_txs),
+            Some(block_timestamp),
         )
     }
 
@@ -424,6 +488,68 @@ mod tests {
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*r2.hash())); // 6
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*l3.hash())); // 5
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*r3.hash())); // 4
+        assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn test_block_timestamp_prefilter_skips_expired_valid_before() {
+        let block_timestamp = 1_000;
+        let expired = tx_with_nonce_key_and_time_bounds(
+            U256::ZERO,
+            Address::random(),
+            0,
+            10,
+            None,
+            Some(block_timestamp),
+        );
+        let valid = tx_with_nonce_key_and_time_bounds(
+            U256::ZERO,
+            Address::random(),
+            0,
+            5,
+            None,
+            Some(block_timestamp + 1),
+        );
+        let mut merged =
+            merged_best_transactions_at(vec![expired, valid.clone()], vec![], block_timestamp);
+
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*valid.hash()));
+        assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn test_block_timestamp_prefilter_skips_future_valid_after() {
+        let block_timestamp = 1_000;
+        let future = tx_with_nonce_key_and_time_bounds(
+            U256::from(1),
+            Address::random(),
+            0,
+            10,
+            Some(block_timestamp + 1),
+            None,
+        );
+        let valid = aa_2d_tx(0, 5);
+        let mut merged =
+            merged_best_transactions_at(vec![], vec![future, valid.clone()], block_timestamp);
+
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*valid.hash()));
+        assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn test_block_timestamp_prefilter_is_disabled_without_timestamp() {
+        let block_timestamp = 1_000;
+        let future = tx_with_nonce_key_and_time_bounds(
+            U256::from(1),
+            Address::random(),
+            0,
+            10,
+            Some(block_timestamp + 1),
+            None,
+        );
+        let mut merged = merged_best_transactions(vec![], vec![future.clone()]);
+
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*future.hash()));
         assert!(merged.next().is_none());
     }
 

@@ -75,6 +75,30 @@ impl<Client> TempoTransactionPool<Client>
 where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
 {
+    fn best_transactions_at_block_timestamp(
+        &self,
+        block_timestamp: Option<u64>,
+    ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
+        let left = self.protocol_pool.inner().best_transactions();
+        let right = self.aa_2d_pool.read().best_transactions();
+        let best = match block_timestamp {
+            Some(block_timestamp) => {
+                MergeBestTransactions::new_with_block_timestamp(left, right, Some(block_timestamp))
+            }
+            None => MergeBestTransactions::new(left, right),
+        };
+        Box::new(best)
+    }
+
+    /// Returns best transactions with Tempo block-timestamp pre-filtering when available.
+    pub fn best_transactions_with_block_timestamp(
+        &self,
+        _attributes: BestTransactionsAttributes,
+        block_timestamp: Option<u64>,
+    ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>> {
+        self.best_transactions_at_block_timestamp(block_timestamp)
+    }
+
     /// Obtains a clone of the shared [`AmmLiquidityCache`].
     pub fn amm_liquidity_cache(&self) -> AmmLiquidityCache {
         self.protocol_pool
@@ -810,16 +834,14 @@ where
     fn best_transactions(
         &self,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        let left = self.protocol_pool.inner().best_transactions();
-        let right = self.aa_2d_pool.read().best_transactions();
-        Box::new(MergeBestTransactions::new(left, right))
+        self.best_transactions_at_block_timestamp(None)
     }
 
     fn best_transactions_with_attributes(
         &self,
-        _attributes: BestTransactionsAttributes,
+        attributes: BestTransactionsAttributes,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        self.best_transactions()
+        self.best_transactions_with_block_timestamp(attributes, None)
     }
 
     fn pending_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {

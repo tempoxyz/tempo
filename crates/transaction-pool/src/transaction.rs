@@ -140,6 +140,42 @@ impl TempoPooledTransaction {
         self.expiring_nonce_hash.is_some()
     }
 
+    /// Checks whether this transaction can be included in a block with `block_timestamp`.
+    ///
+    /// Non-AA transactions do not carry Tempo timestamp bounds and always pass. AA transactions
+    /// pass when `block_timestamp` is greater than or equal to `valid_after`, if set, and strictly
+    /// less than `valid_before`, if set. Returns the corresponding `TempoInvalidTransaction`
+    /// rejection when either timestamp bound excludes the block timestamp.
+    pub(crate) fn ensure_valid_block_timestamp(
+        &self,
+        block_timestamp: u64,
+    ) -> Result<(), TempoInvalidTransaction> {
+        let Some(aa_tx) = self.inner().as_aa() else {
+            return Ok(());
+        };
+        let tx = aa_tx.tx();
+
+        if let Some(valid_after) = tx.valid_after
+            && block_timestamp < valid_after.get()
+        {
+            return Err(TempoInvalidTransaction::ValidAfter {
+                current: block_timestamp,
+                valid_after: valid_after.get(),
+            });
+        }
+
+        if let Some(valid_before) = tx.valid_before
+            && block_timestamp >= valid_before.get()
+        {
+            return Err(TempoInvalidTransaction::ValidBefore {
+                current: block_timestamp,
+                valid_before: valid_before.get(),
+            });
+        }
+
+        Ok(())
+    }
+
     /// Extracts the keychain subject (account, key_id, fee_token) from this transaction.
     ///
     /// Returns `None` if:

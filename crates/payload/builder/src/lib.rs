@@ -37,7 +37,7 @@ use reth_revm::{State, context::Block, database::StateProviderDatabase};
 use reth_storage_api::StateProviderFactory;
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
+    BestTransactions, BestTransactionsAttributes, ValidPoolTransaction,
     error::InvalidPoolTransactionError,
 };
 use std::{
@@ -186,7 +186,10 @@ where
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
         self.build_payload(
             args,
-            |attributes| self.pool.best_transactions_with_attributes(attributes),
+            |attributes, block_timestamp| {
+                self.pool
+                    .best_transactions_with_block_timestamp(attributes, block_timestamp)
+            },
             false,
         )
     }
@@ -211,7 +214,7 @@ where
                 Default::default(),
                 Default::default(),
             ),
-            |_| core::iter::empty(),
+            |_, _| core::iter::empty(),
             true,
         )?
         .into_payload()
@@ -235,7 +238,7 @@ where
     fn build_payload<Txs>(
         &self,
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
-        best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
+        best_txs: impl FnOnce(BestTransactionsAttributes, Option<u64>) -> Txs,
         empty: bool,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
@@ -438,14 +441,17 @@ where
 
         let base_fee = builder.evm_mut().block().basefee;
         let pool_fetch_start = Instant::now();
-        let best_txs = best_txs(BestTransactionsAttributes::new(
-            base_fee,
-            builder
-                .evm_mut()
-                .block()
-                .blob_gasprice()
-                .map(|gasprice| gasprice as u64),
-        ));
+        let best_txs = best_txs(
+            BestTransactionsAttributes::new(
+                base_fee,
+                builder
+                    .evm_mut()
+                    .block()
+                    .blob_gasprice()
+                    .map(|gasprice| gasprice as u64),
+            ),
+            Some(attributes.timestamp),
+        );
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
         let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
