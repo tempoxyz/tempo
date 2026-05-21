@@ -14,12 +14,12 @@ use alloy_rpc_types_eth::TransactionRequest;
 use reth_node_api::BuiltPayload;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{
-    IFeeManager, IRolesAuth, ITIP20, ITIP20ChannelEscrow, ITIP20Factory, ITIPFeeAMM,
+    IFeeManager, IRolesAuth, ITIP20, ITIP20ChannelReserve, ITIP20Factory, ITIPFeeAMM,
 };
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS, TIP20_FACTORY_ADDRESS,
-    tip_fee_manager::amm::compute_amount_out, tip20::ISSUER_ROLE,
+    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    TIP20_FACTORY_ADDRESS, tip_fee_manager::amm::compute_amount_out, tip20::ISSUER_ROLE,
 };
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 
@@ -784,22 +784,22 @@ async fn fund_path_usd(
 /// Decode the first `ChannelOpened` event from the latest block.
 async fn decode_channel_opened(
     node: &reth_e2e_test_utils::NodeHelperType<TempoNode>,
-) -> eyre::Result<ITIP20ChannelEscrow::ChannelOpened> {
+) -> eyre::Result<ITIP20ChannelReserve::ChannelOpened> {
     let provider = ProviderBuilder::new().connect_http(node.rpc_url());
     let latest = provider.get_block_number().await?;
     let receipts = provider.get_block_receipts(latest.into()).await?.unwrap();
     receipts
         .iter()
         .flat_map(|r| r.inner.logs())
-        .find_map(|log| ITIP20ChannelEscrow::ChannelOpened::decode_log(&log.inner).ok())
+        .find_map(|log| ITIP20ChannelReserve::ChannelOpened::decode_log(&log.inner).ok())
         .map(|log| log.data)
         .ok_or_else(|| eyre::eyre!("ChannelOpened event not found"))
 }
 
 fn descriptor_from(
-    e: &ITIP20ChannelEscrow::ChannelOpened,
-) -> ITIP20ChannelEscrow::ChannelDescriptor {
-    ITIP20ChannelEscrow::ChannelDescriptor {
+    e: &ITIP20ChannelReserve::ChannelOpened,
+) -> ITIP20ChannelReserve::ChannelDescriptor {
+    ITIP20ChannelReserve::ChannelDescriptor {
         payer: e.payer,
         payee: e.payee,
         operator: e.operator,
@@ -810,10 +810,10 @@ fn descriptor_from(
     }
 }
 
-/// Inject escrow txs: `open` (payment), `topUp` (payment), `requestClose` (payment).
+/// Inject reserve txs: `open` (payment), `topUp` (payment), `requestClose` (payment).
 /// `open` is committed in its own block so subsequent calls find the channel; only `topUp` and
 /// `requestClose` remain in the pool for the caller to drain/count.
-async fn inject_escrow_payment_txs(
+async fn inject_reserve_payment_txs(
     node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
     sender: &PrivateKeySigner,
     chain_id: u64,
@@ -822,14 +822,14 @@ async fn inject_escrow_payment_txs(
     let provider = ProviderBuilder::new()
         .wallet(EthereumWallet::from(sender.clone()))
         .connect_http(node.rpc_url());
-    let escrow = ITIP20ChannelEscrow::new(TIP20_CHANNEL_ESCROW_ADDRESS, provider);
+    let reserve = ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, provider);
 
     // open (payment)
     sign_and_inject(
         node,
         sender,
         chain_id,
-        escrow
+        reserve
             .open(
                 Address::random(),
                 Address::ZERO,
@@ -852,7 +852,7 @@ async fn inject_escrow_payment_txs(
         node,
         sender,
         chain_id,
-        escrow
+        reserve
             .topUp(desc.clone(), U96::from(500u64))
             .into_transaction_request(),
         start_nonce + 1,
@@ -864,7 +864,7 @@ async fn inject_escrow_payment_txs(
         node,
         sender,
         chain_id,
-        escrow.requestClose(desc).into_transaction_request(),
+        reserve.requestClose(desc).into_transaction_request(),
         start_nonce + 2,
     )
     .await?;
@@ -872,10 +872,10 @@ async fn inject_escrow_payment_txs(
     Ok(())
 }
 
-/// Queued escrow payment calls (`topUp`, `requestClose`) are classified as payment_v2 after an
+/// Queued reserve payment calls (`topUp`, `requestClose`) are classified as payment_v2 after an
 /// already-committed `open` creates the channel.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_block_building_channel_escrow_payment_v2() -> eyre::Result<()> {
+async fn test_block_building_channel_reserve_payment_v2() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
@@ -894,7 +894,7 @@ async fn test_block_building_channel_escrow_payment_v2() -> eyre::Result<()> {
     fund_path_usd(&mut setup.node, &funder, &payer, chain_id, 0).await?;
 
     let payer_nonce = provider.get_transaction_count(payer.address()).await?;
-    inject_escrow_payment_txs(&mut setup.node, &payer, chain_id, payer_nonce).await?;
+    inject_reserve_payment_txs(&mut setup.node, &payer, chain_id, payer_nonce).await?;
 
     // Drain pool — topUp + requestClose may already have been consumed by the dev-mode block timer.
     let mut all_user_txs = Vec::new();
@@ -913,9 +913,9 @@ async fn test_block_building_channel_escrow_payment_v2() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Mixed TIP-20 transfers + channel escrow payments + plain txs are classified by `is_payment_v2`.
+/// Mixed TIP-20 transfers + channel reserve payments + plain txs are classified by `is_payment_v2`.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_block_building_mixed_tip20_and_escrow_payments() -> eyre::Result<()> {
+async fn test_block_building_mixed_tip20_and_reserve_payments() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
@@ -925,7 +925,7 @@ async fn test_block_building_mixed_tip20_and_escrow_payments() -> eyre::Result<(
     let tip20_sender = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
         .index(1)?
         .build()?;
-    let escrow_sender = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+    let reserve_sender = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
         .index(2)?
         .build()?;
 
@@ -945,21 +945,21 @@ async fn test_block_building_mixed_tip20_and_escrow_payments() -> eyre::Result<(
     fund_path_usd(
         &mut setup.node,
         &funder,
-        &escrow_sender,
+        &reserve_sender,
         chain_id,
         funder_nonce,
     )
     .await?;
 
     // open is committed in its own setup block; topUp + requestClose are queued as payment txs.
-    let escrow_nonce = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(escrow_sender.clone()))
+    let reserve_nonce = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(reserve_sender.clone()))
         .connect_http(setup.node.rpc_url())
-        .get_transaction_count(escrow_sender.address())
+        .get_transaction_count(reserve_sender.address())
         .await?;
-    inject_escrow_payment_txs(&mut setup.node, &escrow_sender, chain_id, escrow_nonce).await?;
+    inject_reserve_payment_txs(&mut setup.node, &reserve_sender, chain_id, reserve_nonce).await?;
 
-    // Inject after escrow setup so they're still in the pool for the drain loop 3 TIP-20 transfers
+    // Inject after reserve setup so they're still in the pool for the drain loop 3 TIP-20 transfers
     inject_payment_txs_from_sender(
         &mut setup.node,
         &tip20_provider,
