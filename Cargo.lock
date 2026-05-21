@@ -13352,6 +13352,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-signer",
  "alloy-signer-local",
+ "blake3",
  "codspeed-criterion-compat",
  "commonware-codec",
  "commonware-cryptography",
@@ -13380,6 +13381,7 @@ name = "tempo-precompiles-macros"
 version = "1.8.1"
 dependencies = [
  "alloy",
+ "blake3",
  "proc-macro2",
  "quote",
  "syn 2.0.117",
