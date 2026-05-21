@@ -660,13 +660,13 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "label_replace(avg(reth_tempo_payload_builder_builder_finish_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
+          "expr": "label_replace(avg(reth_tempo_payload_builder_payload_finalization_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
           "legendFormat": "{{job}} p{{quantile}}",
           "range": true,
           "refId": "A"
         }
       ],
-      "title": "builder.finish() Latency",
+      "title": "Finalization (state root) Latency",
       "type": "timeseries"
     },
     {
