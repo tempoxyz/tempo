@@ -2,10 +2,6 @@
 
 source ../../tempo.nu
 
-const TXGEN_EXISTING_RECIPIENTS_PRESET = "tip20_existing_recipients"
-const TXGEN_EXISTING_RECIPIENTS_START = 10000
-const TXGEN_EXISTING_RECIPIENTS_END = 4000000
-
 def resolved-runtime-mode [mode: string] {
     if $mode == "e2e" {
         "dev"
@@ -25,20 +21,6 @@ def normalize-tracy-mode [value: any] {
         "full"
     } else {
         error make { msg: $"--tracy must be one of: off, on, full \(got ($value)\)" }
-    }
-}
-
-def txgen-genesis-accounts [preset: string, accounts: int] {
-    let signer_accounts = ([$accounts 3] | math max) + 1
-
-    if $preset == $TXGEN_EXISTING_RECIPIENTS_PRESET {
-        if $accounts > $TXGEN_EXISTING_RECIPIENTS_START {
-            error make { msg: $"preset ($preset) requires --accounts <= ($TXGEN_EXISTING_RECIPIENTS_START) so signer and recipient derivation ranges do not overlap" }
-        }
-
-        [$signer_accounts $TXGEN_EXISTING_RECIPIENTS_END] | math max
-    } else {
-        $signer_accounts
     }
 }
 
@@ -152,6 +134,8 @@ def run-txgen-bench-single [
         --git-ref-label $git_ref_label
         --platform $platform
         --scenario $scenario
+        --bloat-mib $bloat
+        --bloat-token-count ($TIP20_TOKEN_IDS | length)
         --skip-funding=($bloat > 0))
     if not $bench_result.ok {
         error make { msg: $"txgen benchmark run ($run_label) failed with exit code ($bench_result.exit_code)" }
@@ -367,7 +351,7 @@ def "main run" [
         $"($abs_localnet)/reth"
     }
     let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
-    let genesis_accounts = (txgen-genesis-accounts $preset $accounts)
+    let genesis_accounts = ([$accounts 3] | math max) + 1
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
     let txgen_mnemonic = (txgen-account-mnemonic)
     let txgen_genesis_args = ["--mnemonic" $txgen_mnemonic]

@@ -12,12 +12,12 @@ accounts:
       - ${TXGEN_ACCOUNTS}
 
 address_pools:
-  # Keep this range in sync with TXGEN_EXISTING_RECIPIENTS_* in contrib/bench/bench-txgen.nu.
   existing_recipients:
-    mnemonic: "test test test test test test test test test test test junk"
-    range:
-      - 10000
-      - 4000000
+    fast:
+      seed: "test test test test test test test test test test test junk"
+      range:
+        - ${TXGEN_EXISTING_RECIPIENTS_START}
+        - ${TXGEN_EXISTING_RECIPIENTS_END}
 
 artifacts:
   ERC20: ../erc20.abi.json
