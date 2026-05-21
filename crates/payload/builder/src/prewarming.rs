@@ -958,9 +958,13 @@ mod tests {
     #[test]
     fn mark_invalid_filters_already_buffered_invalidated_transactions() {
         let sender = Address::random();
-        let tx1 = test_tx(sender, 0);
-        let tx2 = test_tx(sender, 1);
-        let tx3 = test_tx(Address::random(), 0);
+        let mut sender_nonces = 0..;
+        let tx1 = test_tx(sender, sender_nonces.next().expect("first nonce"));
+        let tx2 = test_tx(sender, sender_nonces.next().expect("second nonce"));
+        let tx3 = test_tx(
+            Address::random(),
+            sender_nonces.next().expect("third nonce"),
+        );
         let log = Arc::new(Mutex::new(TestLog::default()));
 
         let mut prewarming = prewarming(vec![tx1.clone(), tx2.clone(), tx3.clone()], log.clone());
