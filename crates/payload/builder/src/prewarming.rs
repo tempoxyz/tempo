@@ -316,7 +316,7 @@ where
         };
 
         if let Some(cache) = &self.cache {
-            state_provider = Box::new(CachedStateProvider::new(
+            state_provider = Box::new(CachedStateProvider::new_prewarm(
                 state_provider,
                 cache.cache().clone(),
                 CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
