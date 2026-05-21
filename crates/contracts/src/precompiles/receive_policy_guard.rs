@@ -22,7 +22,7 @@ crate::sol! {
             uint8 version;
             /// @notice TIP-20 token whose blocked funds are held by the guard.
             address token;
-            /// @notice Claim authority: originator sentinel, receiver sentinel, or third-party address.
+            /// @notice Address with the authority to claim the blocked funds.
             address recoveryAuthority;
             /// @notice Original sender/originator of the blocked transfer or mint.
             address originator;
@@ -42,6 +42,7 @@ crate::sol! {
 
         function balanceOf(bytes calldata proof) external view returns (uint256 amount);
         function claim(address to, bytes calldata proof) external;
+        function burnBlockedProof(bytes calldata proof) external;
 
         /// @notice Emitted when an inbound TIP-20 transfer or mint is blocked and funds are redirected.
         /// @param token TIP-20 token whose funds are held by the guard.

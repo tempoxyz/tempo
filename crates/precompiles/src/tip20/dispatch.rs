@@ -170,7 +170,9 @@ impl Precompile for TIP20Token {
                     mutate_void(call, msg_sender, |s, c| self.burn_with_memo(s, c))
                 }
                 TIP20Call::TIP20(ITIP20Calls::burnBlocked(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.burn_blocked(s, c))
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.burn_blocked(s, c.from, c.amount, false)
+                    })
                 }
                 TIP20Call::TIP20(ITIP20Calls::transferWithMemo(call)) => {
                     mutate_void(call, msg_sender, |s, c| self.transfer_with_memo(s, c))

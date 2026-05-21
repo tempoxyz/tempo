@@ -25,7 +25,7 @@ use crate::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
-    receive_policy_guard::{InboundKind, ReceivePolicyGuard},
+    receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
@@ -587,7 +587,8 @@ impl TIP20Token {
         self.emit_event(TIP20Event::burn(msg_sender, call.amount))
     }
 
-    /// Burns tokens from addresses blocked by [`TIP403Registry`] policy.
+    /// Burns tokens from addresses blocked by [`TIP403Registry`] policy. Where `owner` refers to
+    /// the account with ownership of the funds, either directly, or via the `ReceivePolicyGuard`.
     ///
     /// # Errors
     /// - `ContractPaused` — (+T3) token is paused
@@ -597,7 +598,9 @@ impl TIP20Token {
     pub fn burn_blocked(
         &mut self,
         msg_sender: Address,
-        call: ITIP20::burnBlockedCall,
+        owner: Address,
+        amount: U256,
+        policed_by_guard: bool,
     ) -> Result<()> {
         let hardfork = self.storage.spec();
 
@@ -608,35 +611,40 @@ impl TIP20Token {
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
         // Prevent burning from system custody addresses to protect accounting invariants.
-        let hardfork = self.storage.spec();
-        if PROTECTED
-            .iter()
-            .any(|(fork, addrs)| hardfork >= *fork && addrs.contains(&call.from))
+        if !policed_by_guard
+            && PROTECTED
+                .iter()
+                .any(|(fork, addrs)| hardfork >= *fork && addrs.contains(&owner))
         {
             return Err(TIP20Error::protected_address().into());
         }
 
         // Check if the address is blocked from transferring (sender authorization)
         let policy_id = self.transfer_policy_id()?;
-        if TIP403Registry::new().is_authorized_as(policy_id, call.from, AuthRole::sender())? {
+        if TIP403Registry::new().is_authorized_as(policy_id, owner, AuthRole::sender())? {
             // Only allow burning from addresses that are blocked from transferring
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        self._transfer(call.from, &Recipient::direct(Address::ZERO), call.amount)?;
+        let burn_from = if policed_by_guard {
+            RECEIVE_POLICY_GUARD_ADDRESS
+        } else {
+            owner
+        };
+        self._transfer(burn_from, &Recipient::direct(Address::ZERO), amount)?;
 
         let total_supply = self.total_supply()?;
         let new_supply =
             total_supply
-                .checked_sub(call.amount)
+                .checked_sub(amount)
                 .ok_or(TIP20Error::insufficient_balance(
                     total_supply,
-                    call.amount,
+                    amount,
                     self.address,
                 ))?;
         self.set_total_supply(new_supply)?;
 
-        self.emit_event(TIP20Event::burn_blocked(call.from, call.amount))
+        self.emit_event(TIP20Event::burn_blocked(owner, amount))
     }
 
     fn _burn(&mut self, msg_sender: Address, amount: U256) -> Result<()> {
@@ -1229,10 +1237,11 @@ impl TIP20Token {
     pub(crate) fn release_blocked_funds(
         &mut self,
         originator: Address,
+        receiver: Address,
         to: Address,
         amount: U256,
-        reroute: bool,
-        recovery_addr: Option<Address>,
+        recovery_mode: RecoveryMode,
+        recovery_auth: Address,
     ) -> Result<()> {
         debug_assert!(
             to != RECEIVE_POLICY_GUARD_ADDRESS,
@@ -1243,19 +1252,18 @@ impl TIP20Token {
         let destination = Recipient::resolve(to)?;
         destination.validate()?;
 
-        if reroute {
-            let registry = TIP403Registry::new();
-            let policy_id = self.transfer_policy_id()?;
-            if !registry.is_authorized_as(policy_id, destination.target, AuthRole::recipient())? {
-                return Err(TIP20Error::policy_forbids().into());
-            }
-            if registry
+        if recovery_mode.is_reroute(to, receiver) {
+            self.ensure_transfer_authorized(
+                recovery_mode.policy_subject(originator, receiver),
+                destination.target,
+            )?;
+            if TIP403Registry::new()
                 .validate_receive_policy(self.address, originator, destination.target)?
                 .is_some()
             {
                 return Err(TIP20Error::policy_forbids().into());
             }
-            if let Some(addr) = recovery_addr {
+            if let Some(addr) = recovery_mode.spending_account(recovery_auth) {
                 self.check_and_update_spending_limit(addr, amount)?;
             }
         }
@@ -1703,7 +1711,7 @@ pub(crate) mod tests {
 
                 let proof = IReceivePolicyGuard::ClaimProofV1::new(
                     token.address,
-                    Address::ZERO,
+                    sender,
                     sender,
                     receiver,
                     BLOCKED_AT,
@@ -1725,7 +1733,7 @@ pub(crate) mod tests {
                         recipient: receiver,
                         amount,
                         blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
-                        recoveryAuthority: Address::ZERO,
+                        recoveryAuthority: sender,
                         memo: B256::ZERO,
                     },
                 )]);
@@ -1765,7 +1773,7 @@ pub(crate) mod tests {
 
                 let proof = IReceivePolicyGuard::ClaimProofV1::new(
                     token.address,
-                    Address::ZERO,
+                    sender,
                     sender,
                     receiver,
                     BLOCKED_AT,
@@ -1787,7 +1795,7 @@ pub(crate) mod tests {
                         recipient: receiver,
                         amount,
                         blockedReason: ITIP403Registry::BlockedReason::TOKEN_FILTER as u8,
-                        recoveryAuthority: Address::ZERO,
+                        recoveryAuthority: sender,
                         memo: B256::ZERO,
                     },
                 )]);
@@ -1867,7 +1875,7 @@ pub(crate) mod tests {
                 })]);
                 let proof = IReceivePolicyGuard::ClaimProofV1::new(
                     token.address,
-                    Address::ZERO,
+                    sender,
                     sender,
                     receiver,
                     BLOCKED_AT,
@@ -1969,7 +1977,7 @@ pub(crate) mod tests {
                 })]);
                 let proof = IReceivePolicyGuard::ClaimProofV1::new(
                     token.address,
-                    Address::ZERO,
+                    sender,
                     sender,
                     receiver,
                     BLOCKED_AT,
@@ -2035,14 +2043,14 @@ pub(crate) mod tests {
                         recipient: receiver,
                         amount,
                         blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
-                        recoveryAuthority: Address::ZERO,
+                        recoveryAuthority: admin,
                         memo: B256::ZERO,
                     },
                 )]);
 
                 let proof = IReceivePolicyGuard::ClaimProofV1::new(
                     token.address,
-                    Address::ZERO,
+                    admin,
                     admin,
                     receiver,
                     BLOCKED_AT,
@@ -3167,13 +3175,7 @@ pub(crate) mod tests {
                 RECEIVE_POLICY_GUARD_ADDRESS,
                 TIP20_CHANNEL_RESERVE_ADDRESS,
             ] {
-                let result = token.burn_blocked(
-                    burner,
-                    ITIP20::burnBlockedCall {
-                        from: protected,
-                        amount: burn_amount,
-                    },
-                );
+                let result = token.burn_blocked(burner, protected, burn_amount, false);
                 assert_eq!(result.unwrap_err(), TIP20Error::protected_address().into());
             }
 
@@ -3199,13 +3201,7 @@ pub(crate) mod tests {
                 STABLECOIN_DEX_ADDRESS,
                 TIP20_CHANNEL_RESERVE_ADDRESS,
             ] {
-                let result = token.burn_blocked(
-                    burner,
-                    ITIP20::burnBlockedCall {
-                        from: protected,
-                        amount: burn_amount,
-                    },
-                );
+                let result = token.burn_blocked(burner, protected, burn_amount, false);
                 assert_eq!(result.unwrap_err(), TIP20Error::protected_address().into());
             }
 
@@ -3218,13 +3214,7 @@ pub(crate) mod tests {
             token.set_balance(RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
             token.set_total_supply(token.total_supply()? + amount)?;
 
-            token.burn_blocked(
-                burner,
-                ITIP20::burnBlockedCall {
-                    from: RECEIVE_POLICY_GUARD_ADDRESS,
-                    amount: burn_amount,
-                },
-            )?;
+            token.burn_blocked(burner, RECEIVE_POLICY_GUARD_ADDRESS, burn_amount, false)?;
 
             let balance = token.balance_of(ITIP20::balanceOfCall {
                 account: RECEIVE_POLICY_GUARD_ADDRESS,
@@ -3251,13 +3241,7 @@ pub(crate) mod tests {
                 },
             )?;
 
-            token.burn_blocked(
-                burner,
-                ITIP20::burnBlockedCall {
-                    from: TIP20_CHANNEL_RESERVE_ADDRESS,
-                    amount: burn_amount,
-                },
-            )?;
+            token.burn_blocked(burner, TIP20_CHANNEL_RESERVE_ADDRESS, burn_amount, false)?;
 
             let balance = token.balance_of(ITIP20::balanceOfCall {
                 account: TIP20_CHANNEL_RESERVE_ADDRESS,
@@ -4504,13 +4488,7 @@ pub(crate) mod tests {
                 // Pause the token
                 token.pause(admin, ITIP20::pauseCall {})?;
 
-                let result = token.burn_blocked(
-                    admin,
-                    ITIP20::burnBlockedCall {
-                        from: blocked,
-                        amount,
-                    },
-                );
+                let result = token.burn_blocked(admin, blocked, amount, false);
 
                 if hardfork.is_t3() {
                     assert_eq!(
