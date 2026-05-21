@@ -210,8 +210,8 @@ impl ITIP20::ITIP20Calls {
 
     /// Returns `true` if `input` matches one of the TIP-1059 discounted pure-payment selectors.
     ///
-    /// This is intentionally narrower than [`Self::is_payment`]: approvals and mints remain
-    /// payment-lane eligible but do not receive the settlement discount.
+    /// Approvals and mints remain payment-lane eligible via [`Self::is_payment`] but do not
+    /// receive the settlement discount.
     pub fn is_discounted_payment(input: &[u8]) -> bool {
         fn is_call<C: SolCall>(input: &[u8]) -> bool {
             input.first_chunk::<4>() == Some(&C::SELECTOR)
