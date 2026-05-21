@@ -212,8 +212,10 @@ impl TempoChainSpec {
             inner,
         });
 
+        // TODO(hamdi): Dev networks are allowed to have a non-dkg outcome in extra data. Update such
+        // that we always require a valid dkg outcome, thus network identity for all networks
         let network_identity =
-            NetworkIdentity::from_extra_data(inner.genesis_header().inner.extra_data.as_ref());
+            NetworkIdentity::from_extra_data(inner.genesis_header().inner.extra_data.as_ref()).ok();
 
         Self {
             inner,
@@ -259,7 +261,7 @@ impl From<ChainSpec> for TempoChainSpec {
         });
 
         let network_identity =
-            NetworkIdentity::from_extra_data(inner.genesis_header().inner.extra_data.as_ref());
+            NetworkIdentity::from_extra_data(inner.genesis_header().inner.extra_data.as_ref()).ok();
 
         Self {
             inner,

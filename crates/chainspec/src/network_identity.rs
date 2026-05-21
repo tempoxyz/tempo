@@ -3,6 +3,7 @@
 use alloy_primitives::hex;
 use commonware_codec::ReadExt as _;
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
+use eyre::Context;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 
 const MODERATO_NETWORK_IDENTITY_EPOCH: u64 = 51;
@@ -50,11 +51,12 @@ impl NetworkIdentity {
         }
     }
 
-    pub(crate) fn from_extra_data(extra_data: &[u8]) -> Option<Self> {
+    pub(crate) fn from_extra_data(extra_data: &[u8]) -> eyre::Result<Self> {
         let mut extra_data = extra_data;
-        let outcome = OnchainDkgOutcome::read(&mut extra_data).ok()?;
+        let outcome =
+            OnchainDkgOutcome::read(&mut extra_data).wrap_err("unable to parse dkg outcome")?;
 
-        Some(Self {
+        Ok(Self {
             from_epoch: outcome.epoch.get(),
             identity: *outcome.network_identity(),
         })
