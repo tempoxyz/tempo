@@ -89,11 +89,11 @@ impl TIP1028Guard {
     ) -> Result<(u64, u64)> {
         debug_assert!(token.is_tip20(), "TIP1028Guard only accepts TIP20 tokens");
 
-        if matches!(
-            blocked_reason,
-            ITIP403Registry::BlockedReason::NONE | ITIP403Registry::BlockedReason::__Invalid
-        ) || kind == ITIP1028Guard::InboundKind::__Invalid
-        {
+        let is_invalid_reason = match blocked_reason {
+            BlockedReason::RECEIVE_POLICY | BlockedReason::TOKEN_FILTER => false,
+            BlockedReason::NONE | BlockedReason::__Invalid => true,
+        };
+        if is_invalid_reason || matches!(kind, InboundKind::__Invalid) {
             return Err(TIP1028GuardError::invalid_proof().into());
         }
 
