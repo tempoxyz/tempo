@@ -412,7 +412,7 @@ impl TIP20ChannelEscrow {
 
         let close_ready = state
             .close_requested_at()
-            .is_some_and(|requested_at| self.now() >= requested_at as u64 + CLOSE_GRACE_PERIOD);
+            .is_some_and(|requested_at| self.now() >= u64::from(requested_at) + CLOSE_GRACE_PERIOD);
         if !close_ready {
             return Err(TIP20ChannelEscrowError::close_not_ready().into());
         }

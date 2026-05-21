@@ -223,7 +223,7 @@ contract TIP1026InvariantTest is InvariantBaseTest {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice TEMPO-1026-1: `bytes(logoURI()).length <= 256` for every tracked token.
-    function invariant_logoURILengthBounded() public view {
+    function invariant_tip1026LogoURILengthBounded() public view {
         for (uint256 i = 0; i < _logoTokens.length; i++) {
             assertLe(
                 bytes(_logoTokens[i].logoURI()).length,

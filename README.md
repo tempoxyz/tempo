@@ -15,6 +15,8 @@
 
 # Tempo
 
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/tempoxyz/tempo?utm_source=badge)
+
 The blockchain for payments at scale.
 
 [Tempo](https://docs.tempo.xyz/) is a blockchain designed specifically for stablecoin payments. Its architecture focuses on high throughput, low cost, and features that financial institutions, payment service providers, and fintech platforms expect from modern payment infrastructure.
