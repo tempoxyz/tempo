@@ -8,6 +8,8 @@ use serde::Serialize;
 
 use crate::genesis_args::GenesisArgs;
 
+const LOCALNET_SIGNING_KEY_SECRET: &str = "tempo-localnet-signing-key-secret";
+
 /// Generates a config file to run a bunch of validators locally.
 ///
 /// This includes generating a genesis.
@@ -102,7 +104,6 @@ impl GenerateLocalnet {
             all_configs.push((
                 validator.clone(),
                 ConfigOutput {
-                    consensus_on_disk_signing_key: signing_key_to_hex(&validator.signing_key),
                     consensus_on_disk_signing_share: validator.signing_share.to_string(),
 
                     consensus_p2p_port,
@@ -130,14 +131,20 @@ impl GenerateLocalnet {
             })?;
 
             let signing_key_dst = validator.dst_signing_key(&output);
-            std::fs::write(&signing_key_dst, config.consensus_on_disk_signing_key).wrap_err_with(
-                || {
+            validator
+                .signing_key
+                .write_to_file_encrypted(
+                    &signing_key_dst,
+                    tempo_commonware_node_config::SigningKeyPassphrase::from(
+                        LOCALNET_SIGNING_KEY_SECRET,
+                    ),
+                )
+                .wrap_err_with(|| {
                     format!(
                         "failed writing signing key to `{}`",
                         signing_key_dst.display()
                     )
-                },
-            )?;
+                })?;
             let signing_share_dst = validator.dst_signing_share(&output);
             std::fs::write(&signing_share_dst, config.consensus_on_disk_signing_share)
                 .wrap_err_with(|| {
@@ -164,6 +171,7 @@ impl GenerateLocalnet {
             let cmd = format!(
                 "cargo run --bin tempo -- node \
                 \\\n--consensus.signing-key {signing_key} \
+                \\\n--consensus.secret <(printf '%s\\n' '{signing_key_secret}') \
                 \\\n--consensus.signing-share {signing_share} \
                 \\\n--consensus.listen-address 127.0.0.1:{listen_port} \
                 \\\n--consensus.metrics-address 127.0.0.1:{metrics_port} \
@@ -175,6 +183,7 @@ impl GenerateLocalnet {
                 \\\n--p2p-secret-key {execution_p2p_secret_key} \
                 \\\n--authrpc.port {authrpc_port}",
                 signing_key = signing_key_dst.display(),
+                signing_key_secret = LOCALNET_SIGNING_KEY_SECRET,
                 signing_share = signing_share_dst.display(),
                 listen_port = config.consensus_p2p_port,
                 metrics_port = config.consensus_p2p_port + 2,
@@ -193,19 +202,9 @@ impl GenerateLocalnet {
 
 #[derive(Debug, Serialize)]
 pub(crate) struct ConfigOutput {
-    consensus_on_disk_signing_key: String,
     consensus_on_disk_signing_share: String,
     consensus_p2p_port: u16,
     execution_p2p_port: u16,
     execution_p2p_disc_key: String,
     execution_p2p_identity: String,
-}
-
-/// Stopgap: serialize the signing key to its on-disk hex representation
-/// via [`SigningKey::to_writer_unencrypted`].
-fn signing_key_to_hex(key: &tempo_commonware_node_config::SigningKey) -> String {
-    let mut buf = Vec::new();
-    key.to_writer_unencrypted(&mut buf)
-        .expect("writing to Vec cannot fail");
-    String::from_utf8(buf).expect("hex output is valid utf-8")
 }
