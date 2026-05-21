@@ -1017,12 +1017,20 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let f_validation = do $compute_quantile_metric_stats $feature_validation_samples
     let compute_gas_stats = { |samples: list<any>|
         let values = ($samples | get value | where { |value| $value != null })
-        if ($values | length) > 0 { $values | math avg | math round --precision 0 } else { 0.0 }
+        let n = ($values | length)
+        {
+            n: $n
+            value: (if $n > 0 { $values | math avg | math round --precision 0 } else { null })
+        }
     }
-    let b_builder_gas = do $compute_gas_stats $baseline_builder_gas_samples
-    let f_builder_gas = do $compute_gas_stats $feature_builder_gas_samples
-    let b_validation_gas = do $compute_gas_stats $baseline_validation_gas_samples
-    let f_validation_gas = do $compute_gas_stats $feature_validation_gas_samples
+    let b_builder_gas_stats = do $compute_gas_stats $baseline_builder_gas_samples
+    let f_builder_gas_stats = do $compute_gas_stats $feature_builder_gas_samples
+    let b_validation_gas_stats = do $compute_gas_stats $baseline_validation_gas_samples
+    let f_validation_gas_stats = do $compute_gas_stats $feature_validation_gas_samples
+    let b_builder_gas = $b_builder_gas_stats.value
+    let f_builder_gas = $f_builder_gas_stats.value
+    let b_validation_gas = $b_validation_gas_stats.value
+    let f_validation_gas = $f_validation_gas_stats.value
 
     let b_bt = do $compute_block_time_stats $baseline_intervals
     let f_bt = do $compute_block_time_stats $feature_intervals
@@ -1041,11 +1049,16 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
 
     # Compute deltas (feature vs baseline)
     let delta = { |base: float, feat: float| if $base != 0.0 { ((($feat - $base) / $base) * 100) | math round --precision 1 } else { 0.0 } }
-    let to_mgas_s = { |value: float| ($value / 1_000_000.0) | math round --precision 1 }
+    let gas_delta = { |base, feat| if $base != null and $feat != null and $base != 0.0 { ((($feat - $base) / $base) * 100) | math round --precision 1 } else { null } }
+    let to_mgas_s = { |value| if $value != null { ($value / 1_000_000.0) | math round --precision 1 } else { null } }
+    let format_optional = { |value| if $value != null { $value | into string } else { "N/A" } }
+    let format_optional_delta = { |value| if $value != null { $"($value)%" } else { "N/A" } }
     let b_builder_mgas = do $to_mgas_s $b_builder_gas
     let f_builder_mgas = do $to_mgas_s $f_builder_gas
     let b_validation_mgas = do $to_mgas_s $b_validation_gas
     let f_validation_mgas = do $to_mgas_s $f_validation_gas
+    let builder_gas_delta = do $gas_delta $b_builder_gas $f_builder_gas
+    let validation_gas_delta = do $gas_delta $b_validation_gas $f_validation_gas
 
     let observability_padding_ms = 5000
     let observability_duration_ms = $duration * ($run_labels | length) * 1000
@@ -1101,7 +1114,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         ""
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
-        $"| Gas Throughput [Mgas/s] | ($b_builder_mgas) | ($f_builder_mgas) | (do $delta $b_builder_gas $f_builder_gas)% |"
+        $"| Gas Throughput [Mgas/s] | (do $format_optional $b_builder_mgas) | (do $format_optional $f_builder_mgas) | (do $format_optional_delta $builder_gas_delta) |"
         $"| P50 [ms] | ($b_builder.p50) | ($f_builder.p50) | (do $delta $b_builder.p50 $f_builder.p50)% |"
         $"| P90 [ms] | ($b_builder.p90) | ($f_builder.p90) | (do $delta $b_builder.p90 $f_builder.p90)% |"
         $"| P99 [ms] | ($b_builder.p99) | ($f_builder.p99) | (do $delta $b_builder.p99 $f_builder.p99)% |"
@@ -1110,7 +1123,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         ""
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
-        $"| Gas Throughput [Mgas/s] | ($b_validation_mgas) | ($f_validation_mgas) | (do $delta $b_validation_gas $f_validation_gas)% |"
+        $"| Gas Throughput [Mgas/s] | (do $format_optional $b_validation_mgas) | (do $format_optional $f_validation_mgas) | (do $format_optional_delta $validation_gas_delta) |"
         $"| P50 [ms] | ($b_validation.p50) | ($f_validation.p50) | (do $delta $b_validation.p50 $f_validation.p50)% |"
         $"| P90 [ms] | ($b_validation.p90) | ($f_validation.p90) | (do $delta $b_validation.p90 $f_validation.p90)% |"
         $"| P99 [ms] | ($b_validation.p99) | ($f_validation.p99) | (do $delta $b_validation.p99 $f_validation.p99)% |"
@@ -1146,6 +1159,16 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             tps: $tps
             duration: $duration
             run_pairs: $run_pairs
+        }
+        metric_sample_counts: {
+            baseline_builder_gas: $b_builder_gas_stats.n
+            feature_builder_gas: $f_builder_gas_stats.n
+            baseline_validation_gas: $b_validation_gas_stats.n
+            feature_validation_gas: $f_validation_gas_stats.n
+            baseline_builder_latency: $b_builder_metric.n
+            feature_builder_latency: $f_builder_metric.n
+            baseline_validation_latency: $b_validation.n
+            feature_validation_latency: $f_validation.n
         }
         results: {
             baseline: {
@@ -1202,7 +1225,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 builder_latency_p50: (do $delta $b_builder.p50 $f_builder.p50)
                 builder_latency_p90: (do $delta $b_builder.p90 $f_builder.p90)
                 builder_latency_p99: (do $delta $b_builder.p99 $f_builder.p99)
-                builder_gas_s: (do $delta $b_builder_gas $f_builder_gas)
+                builder_gas_s: $builder_gas_delta
                 tps: (do $delta $b_tps $f_tps)
                 tps_p50: (do $delta $b_tps_stats.p50 $f_tps_stats.p50)
                 tps_p90: (do $delta $b_tps_stats.p90 $f_tps_stats.p90)
@@ -1214,7 +1237,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 validation_latency_p50: (do $delta $b_validation.p50 $f_validation.p50)
                 validation_latency_p90: (do $delta $b_validation.p90 $f_validation.p90)
                 validation_latency_p99: (do $delta $b_validation.p99 $f_validation.p99)
-                validation_gas_s: (do $delta $b_validation_gas $f_validation_gas)
+                validation_gas_s: $validation_gas_delta
             }
         }
         per_run: $run_data
