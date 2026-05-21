@@ -23,11 +23,10 @@ pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Respons
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::{
-    TempoChainSpec, constants::gas::TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE,
-    hardfork::TempoHardforks,
+    TempoChainSpec, constants::gas::TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE, hardfork::TempoHardforks,
 };
 use tempo_evm::{SSTORE_SET_COST, TempoStateAccess};
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
+use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, tip20::ITIP20};
 use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
 pub use token::{TempoToken, TempoTokenApiServer};
 
@@ -65,8 +64,8 @@ use reth_rpc_eth_types::{
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::TempoEvmConfig;
 use tempo_primitives::{
-    TEMPO_GAS_PRICE_SCALING_FACTOR, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
-    subblock::PartialValidatorKey,
+    TEMPO_GAS_PRICE_SCALING_FACTOR, TempoAddressExt, TempoPrimitives, TempoReceipt,
+    TempoTxEnvelope, subblock::PartialValidatorKey,
 };
 use tokio::sync::{Mutex, broadcast};
 
@@ -465,7 +464,10 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
         let is_t6 = receipts
             .first()
             .is_some_and(|r| self.chain_spec.is_t6_active_at_timestamp(r.meta.timestamp));
-        let receipt_context = receipts.iter().map(|r| (r.tx, r.gas_used)).collect::<Vec<_>>();
+        let receipt_context = receipts
+            .iter()
+            .map(|r| (r.tx, r.gas_used))
+            .collect::<Vec<_>>();
         self.inner
             .convert_receipts(receipts)?
             .into_iter()
@@ -479,7 +481,14 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
                         .fee_payer(tx.signer())
                         .map_err(|_| EthApiError::InvalidTransactionSignature)?,
                 };
-                if is_t6 && tx.is_discounted_payment_candidate() && gas_used <= SSTORE_SET_COST {
+                if is_t6
+                    && tx.is_payment_v2()
+                    && tx.calls().all(|(to, input)| {
+                        matches!(to.to(), Some(to) if to.is_tip20())
+                            && ITIP20::ITIP20Calls::is_discounted_payment_call(input)
+                    })
+                    && gas_used <= SSTORE_SET_COST
+                {
                     receipt.effective_gas_price = TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE as u128;
                 }
 

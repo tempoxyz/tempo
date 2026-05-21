@@ -1456,10 +1456,7 @@ where
         let mut effective_gas_price = tx.effective_gas_price(basefee);
         let gas = exec_result.gas();
         let gas_used = gas.used().saturating_sub(gas.reservoir());
-        if context.cfg.spec.is_t6()
-            && tx.is_discounted_payment_candidate()
-            && gas_used <= SSTORE_SET_COST
-        {
+        if context.cfg.spec.is_t6() && tx.is_discounted_payment() && gas_used <= SSTORE_SET_COST {
             effective_gas_price = TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE as u128;
         }
 
