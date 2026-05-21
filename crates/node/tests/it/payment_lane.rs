@@ -11,7 +11,9 @@ use alloy::{
 };
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
-use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
+use tempo_chainspec::{
+    constants::gas::TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE, spec::TEMPO_T1_BASE_FEE,
+};
 use tempo_contracts::precompiles::{IFeeManager, ITIP20, ITIP20ChannelReserve};
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS};
 
@@ -331,15 +333,18 @@ async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
         payment_receipts.len()
     );
 
-    // Expectation 2: Payment fees should remain low (basefee) as they're not competing with DeFi
+    // Expectation 2: TIP20 payment fees should use the TIP-1059 discount.
     for receipt in &payment_receipts {
         let effective_price = receipt.effective_gas_price();
         assert_eq!(
-            effective_price, TEMPO_T1_BASE_FEE as u128,
-            "Payment tx should pay base fee, not elevated prices"
+            effective_price,
+            u128::from(TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE),
+            "TIP20 payment tx should receive discounted payment gas price"
         );
     }
-    println!("Payment transactions paid base fee ({TEMPO_T1_BASE_FEE})");
+    println!(
+        "Payment transactions paid discounted price ({TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE})"
+    );
 
     // Expectation 3: Both types of transactions coexist in blocks
     let total_non_payment = non_payment_receipts.len() + continued_non_payment_receipts.len();
