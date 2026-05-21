@@ -2982,7 +2982,7 @@ mod tests {
 
             // The flip bid was placed with id = 1 in the helper.
             let flip_order_id = 1u128;
-            assert_eq!(exchange.orders.version(flip_order_id)?, 1);
+            assert_eq!(exchange.orders.version(flip_order_id)?, 0);
             let next_order_id_before = exchange.next_order_id()?;
 
             // Fund bob and consume the flip bid in full.
@@ -2994,7 +2994,7 @@ mod tests {
             assert_eq!(exchange.next_order_id()?, next_order_id_before);
 
             // Storage now holds the flipped ask under the same orderId.
-            assert_eq!(exchange.orders.version(flip_order_id)?, 1);
+            assert_eq!(exchange.orders.version(flip_order_id)?, 0);
             let flipped = exchange.get_order(flip_order_id)?;
             assert_eq!(flipped.order_id(), flip_order_id);
             assert_eq!(flipped.maker(), alice);
@@ -3037,6 +3037,46 @@ mod tests {
             assert_eq!(ask_level.head, 0);
             assert_eq!(ask_level.tail, 0);
             assert_eq!(ask_level.total_liquidity, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_legacy_flip_rewrite_upgrades_to_version_1_on_t6() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let FlipOrderTestCtx {
+                mut exchange,
+                alice,
+                bob,
+                base_token,
+                quote_token,
+                amount,
+                flip_tick,
+                ..
+            } = setup_flip_order_test()?;
+
+            let flip_order_id = 1u128;
+            assert_eq!(exchange.orders.version(flip_order_id)?, 0);
+
+            StorageCtx.set_spec(TempoHardfork::T6);
+
+            let next_order_id_before = exchange.next_order_id()?;
+            exchange.set_balance(bob, base_token, amount)?;
+            exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+
+            assert_eq!(exchange.next_order_id()?, next_order_id_before);
+            assert_eq!(exchange.orders.version(flip_order_id)?, 1);
+
+            let flipped = exchange.get_order(flip_order_id)?;
+            assert_eq!(flipped.order_id(), flip_order_id);
+            assert_eq!(flipped.maker(), alice);
+            assert!(flipped.is_ask());
+            assert!(flipped.is_flip());
+            assert_eq!(flipped.tick(), flip_tick);
+            assert_eq!(flipped.flip_tick(), 100i16);
+            assert_eq!(flipped.remaining(), amount);
 
             Ok(())
         })

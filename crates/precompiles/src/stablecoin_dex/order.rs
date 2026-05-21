@@ -71,8 +71,8 @@ pub struct Order {
 ///
 /// The wrapper intentionally hides the raw mapping so all order reads, writes, and linked-list
 /// pointer mutations pass through a single version discriminator. Legacy orders use storage
-/// version 0. New writes use storage version 1, which stores the version byte in the high byte of
-/// slot 0 and synthesizes `order_id` from the mapping key.
+/// version 0. Starting at T6, new writes use storage version 1, which stores the version byte in
+/// the high byte of slot 0 and synthesizes `order_id` from the mapping key.
 #[derive(Debug, Clone)]
 pub struct Orders {
     base_slot: U256,
@@ -134,15 +134,27 @@ impl Orders {
         packing::extract_from_word(header, Self::VERSION_1_DISCRIMINATOR_OFFSET, 1)
     }
 
+    fn versioned_layout_active() -> bool {
+        StorageCtx.spec().is_t6()
+    }
+
     /// Returns the stored order-layout version for an order ID.
     pub fn version(&self, order_id: u128) -> StorageResult<u8> {
+        if !Self::versioned_layout_active() {
+            return Ok(Self::VERSION_LEGACY);
+        }
+
         let base_slot = self.order_base_slot(order_id);
         let header = self.load_slot(base_slot, 0)?;
         Self::version_from_header(header)
     }
 
-    /// Reads an order from storage, decoding either version 0 or version 1.
+    /// Reads an order from storage, using legacy layout before T6 and versioned dispatch on T6+.
     pub fn read(&self, order_id: u128) -> StorageResult<Order> {
+        if !Self::versioned_layout_active() {
+            return self.legacy[order_id].read();
+        }
+
         let base_slot = self.order_base_slot(order_id);
         let header = self.load_slot(base_slot, 0)?;
 
@@ -155,9 +167,13 @@ impl Orders {
         }
     }
 
-    /// Writes an order using the version 1 storage layout.
+    /// Writes an order using legacy layout before T6 and version 1 on T6+.
     pub fn write(&mut self, order_id: u128, order: Order) -> StorageResult<()> {
         debug_assert_eq!(order_id, order.order_id());
+
+        if !Self::versioned_layout_active() {
+            return self.legacy[order_id].write(order);
+        }
 
         let base_slot = self.order_base_slot(order_id);
         self.store_slot(base_slot, 0, Self::encode_version_1_header(&order)?)?;
@@ -180,6 +196,10 @@ impl Orders {
 
     /// Deletes an order according to its storage layout.
     pub fn delete(&mut self, order_id: u128) -> StorageResult<()> {
+        if !Self::versioned_layout_active() {
+            return self.legacy[order_id].delete();
+        }
+
         match self.version(order_id)? {
             Self::VERSION_LEGACY => self.legacy[order_id].delete(),
             Self::VERSION_1 => {
@@ -197,6 +217,10 @@ impl Orders {
 
     /// Updates the remaining amount without exposing the underlying layout.
     pub fn set_remaining(&mut self, order_id: u128, remaining: u128) -> StorageResult<()> {
+        if !Self::versioned_layout_active() {
+            return self.legacy[order_id].remaining.write(remaining);
+        }
+
         match self.version(order_id)? {
             Self::VERSION_LEGACY => self.legacy[order_id].remaining.write(remaining),
             Self::VERSION_1 => self.update_packed_slot(
@@ -213,6 +237,10 @@ impl Orders {
 
     /// Updates the previous linked-list pointer without exposing the underlying layout.
     pub fn set_prev(&mut self, order_id: u128, prev: u128) -> StorageResult<()> {
+        if !Self::versioned_layout_active() {
+            return self.legacy[order_id].prev.write(prev);
+        }
+
         match self.version(order_id)? {
             Self::VERSION_LEGACY => self.legacy[order_id].prev.write(prev),
             Self::VERSION_1 => self.update_packed_slot(
@@ -229,6 +257,10 @@ impl Orders {
 
     /// Updates the next linked-list pointer without exposing the underlying layout.
     pub fn set_next(&mut self, order_id: u128, next: u128) -> StorageResult<()> {
+        if !Self::versioned_layout_active() {
+            return self.legacy[order_id].next.write(next);
+        }
+
         match self.version(order_id)? {
             Self::VERSION_LEGACY => self.legacy[order_id].next.write(next),
             Self::VERSION_1 => self.update_packed_slot(
@@ -987,7 +1019,7 @@ mod tests {
 
     #[test]
     fn test_store_order() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
 
@@ -1025,8 +1057,45 @@ mod tests {
     }
 
     #[test]
+    fn test_write_before_t6_uses_legacy_layout() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let mut exchange = StablecoinDEX::new();
+
+            let id = 42;
+            let order = Order::new_flip(
+                id,
+                TEST_MAKER,
+                TEST_BOOK_KEY,
+                1000,
+                5,
+                true,
+                10,
+                TempoHardfork::T5,
+            )
+            .unwrap();
+            exchange.orders.write(id, order)?;
+
+            assert_eq!(exchange.orders.version(id)?, 0);
+
+            let loaded_order = exchange.orders.read(id)?;
+            assert_eq!(loaded_order.order_id(), id);
+            assert_eq!(loaded_order.maker(), TEST_MAKER);
+            assert_eq!(loaded_order.book_key(), TEST_BOOK_KEY);
+            assert_eq!(loaded_order.amount(), 1000);
+            assert_eq!(loaded_order.remaining(), 1000);
+            assert_eq!(loaded_order.tick(), 5);
+            assert!(loaded_order.is_bid());
+            assert!(loaded_order.is_flip());
+            assert_eq!(loaded_order.flip_tick(), 10);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_delete_order() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
 
@@ -1064,7 +1133,7 @@ mod tests {
 
     #[test]
     fn test_read_legacy_order_has_zero_version_byte() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
 
@@ -1101,7 +1170,7 @@ mod tests {
 
     #[test]
     fn test_rewrite_legacy_flip_order_upgrades_to_version_1() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
 
@@ -1139,7 +1208,7 @@ mod tests {
 
     #[test]
     fn test_update_version_1_order_links_and_remaining() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
 
@@ -1162,7 +1231,7 @@ mod tests {
 
     #[test]
     fn test_update_mixed_version_order_links() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new(1);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let mut exchange = StablecoinDEX::new();
 
