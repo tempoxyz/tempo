@@ -3,7 +3,7 @@
 //! # Storage Layout
 //!
 //! Fixed-size arrays `[T; N]` use Solidity-compatible array storage:
-//! - **Base slot**: Arrays start directly at `base_slot` (not at keccak256)
+//! - **Base slot**: Arrays start directly at `base_slot` (not hash-derived)
 //! - **Data slots**: Elements are stored sequentially, either packed or unpacked
 //!
 //! ## Packing Strategy
@@ -31,7 +31,7 @@ tempo_precompiles_macros::storable_nested_arrays!();
 /// Type-safe handler for accessing fixed-size arrays `[T; N]` in storage.
 ///
 /// Unlike `VecHandler`, arrays have a fixed compile-time size and store elements
-/// directly at the base slot (not at `keccak256(base_slot)`).
+/// directly at the base slot (not at a hash-derived tail slot).
 ///
 /// # Element Access
 ///

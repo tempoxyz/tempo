@@ -4,7 +4,7 @@
 //! # Storage Layout
 //!
 //! EnumerableSet uses two storage structures:
-//! - **Values Vec**: A `Vec<T>` storing all set elements at `keccak256(base_slot)`
+//! - **Values Vec**: A `Vec<T>` storing all set elements at `blake2s256(base_slot)`
 //! - **Positions Mapping**: A `Mapping<T, u32>` at `base_slot + 1` storing 1-indexed positions
 //!   - Position 0 means the value is not in the set
 //!   - Position N means the value is at index N-1 in the values array
@@ -190,7 +190,7 @@ where
 
 /// Set occupies 2 slots:
 ///
-/// - Slot 0: `Vec` length slot, with data at `keccak256(slot)`
+/// - Slot 0: `Vec` length slot, with data at `blake2s256(slot)`
 /// - Slot 1: `Mapping` base slot for positions
 impl<T> StorableType for Set<T>
 where

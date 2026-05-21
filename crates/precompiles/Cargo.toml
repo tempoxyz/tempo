@@ -20,6 +20,7 @@ alloy = { workspace = true, features = ["sol-types", "consensus"] }
 alloy-evm = { workspace = true, features = ["std"] }
 revm.workspace = true
 
+blake2.workspace = true
 commonware-cryptography.workspace = true
 commonware-codec.workspace = true
 

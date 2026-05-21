@@ -5,6 +5,7 @@ use crate::storage::{
     packing::extract_from_word,
 };
 use alloy::primitives::{Address, U256, keccak256};
+use blake2::{Blake2s256, Digest};
 use proptest::prelude::*;
 use tempo_precompiles::error;
 use tempo_precompiles_macros::{Storable, contract};
@@ -73,9 +74,14 @@ pub(crate) fn test_address(byte: u8) -> Address {
 }
 
 /// Compute the i-th tail slot of a dynamic value (`String`/`Bytes`/`Vec`) whose
-/// base/length slot is `base_slot`. Solidity stores tail data at `keccak256(base_slot) + i`.
+/// base/length slot is `base_slot`. Tempo stores tail data at `blake2s256(base_slot) + i`.
 pub(crate) fn dyn_tail_slot(base_slot: U256, i: u64) -> U256 {
-    U256::from_be_bytes(keccak256(base_slot.to_be_bytes::<32>()).0) + U256::from(i)
+    blake2s256_u256(base_slot.to_be_bytes::<32>()) + U256::from(i)
+}
+
+pub(crate) fn blake2s256_u256(data: impl AsRef<[u8]>) -> U256 {
+    let digest = Blake2s256::digest(data.as_ref());
+    U256::from_be_slice(&digest)
 }
 
 /// Helper to test store + load roundtrip

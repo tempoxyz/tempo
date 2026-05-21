@@ -2,9 +2,9 @@
 //!
 //! # Storage Layout
 //!
-//! Vec uses Solidity-compatible dynamic array storage:
+//! Vec uses BLAKE2-derived dynamic array storage:
 //! - **Base slot**: Stores the array length (number of elements)
-//! - **Data slots**: Start at `keccak256(len_slot)`, elements packed efficiently
+//! - **Data slots**: Start at `blake2s256(len_slot)`, elements packed efficiently
 //!
 //! ## Multi-Slot Support
 //!
@@ -19,7 +19,7 @@ use crate::{
     storage::{
         Handler, Layout, LayoutCtx, Storable, StorableType, StorageCtx, StorageOps,
         packing::{PackedSlot, calc_element_loc, calc_packed_slot_count},
-        types::{HandlerCache, Slot},
+        types::{HandlerCache, Slot, blake2s256_u256},
     },
 };
 
@@ -390,10 +390,10 @@ fn load_checked_len<S: StorageOps>(storage: &S, slot: U256) -> Result<usize> {
 
 /// Calculate the starting slot for dynamic array data.
 ///
-/// For Solidity compatibility, dynamic array data is stored at `keccak256(len_slot)`.
+/// Dynamic array data is stored at `blake2s256(len_slot)`.
 #[inline]
 pub(crate) fn calc_data_slot(len_slot: U256) -> U256 {
-    U256::from_be_bytes(alloy::primitives::keccak256(len_slot.to_be_bytes::<32>()).0)
+    blake2s256_u256(len_slot.to_be_bytes::<32>())
 }
 
 /// Clears storage occupied exclusively by `Vec` elements in the index range `[from, to)`.
@@ -617,14 +617,13 @@ mod tests {
     fn test_vec_data_slot_derivation() {
         let len_slot = U256::random();
 
-        // Verify data slot matches keccak256(len_slot)
+        // Verify data slot matches blake2s256(len_slot)
         let data_slot = calc_data_slot(len_slot);
-        let expected =
-            U256::from_be_bytes(alloy::primitives::keccak256(len_slot.to_be_bytes::<32>()).0);
+        let expected = blake2s256_u256(len_slot.to_be_bytes::<32>());
 
         assert_eq!(
             data_slot, expected,
-            "Data slot should be keccak256(len_slot)"
+            "Data slot should be blake2s256(len_slot)"
         );
     }
 
@@ -1319,7 +1318,7 @@ mod tests {
                 .unwrap();
             assert_eq!(length_value, U256::from(3), "Length slot incorrect");
 
-            // Verify data starts at keccak256(len_slot), not len_slot + 1
+            // Verify data starts at blake2s256(len_slot), not len_slot + 1
             let data_start = calc_data_slot(len_slot);
             assert_ne!(
                 data_start,

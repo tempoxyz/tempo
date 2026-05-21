@@ -22,7 +22,8 @@ use crate::{
     error::Result,
     storage::{StorageOps, packing},
 };
-use alloy::primitives::{Address, U256, keccak256};
+use alloy::primitives::{Address, U256};
+use blake2::{Blake2s256, Digest};
 use std::{cell::RefCell, collections::HashMap, hash::Hash};
 
 /// Describes how a type is laid out in EVM storage.
@@ -177,7 +178,7 @@ pub trait StorableType {
 
     /// Whether this type stores it's data in its base slot or not.
     ///
-    /// Dynamic types (`Bytes`, `String`, `Vec`) store data at keccak256-addressed
+    /// Dynamic types (`Bytes`, `String`, `Vec`) store data at blake2s256-addressed
     /// slots and need special cleanup. Non-dynamic types just zero their slots.
     const IS_DYNAMIC: bool = false;
 
@@ -323,7 +324,7 @@ impl<T: Packable> Storable for T {
 
 /// Trait for types that can be used as storage mapping keys.
 ///
-/// Keys are hashed using keccak256 along with the mapping's base slot
+/// Keys are hashed using blake2s256 along with the mapping's base slot
 /// to determine the final storage location. This trait provides the
 /// byte representation used in that hash.
 ///
@@ -335,7 +336,7 @@ impl<T: Packable> Storable for T {
 ///
 /// # Encoding
 ///
-/// Mapping slots are computed as `keccak256(bytes32(key) | bytes32(slot))`, where the
+/// Mapping slots are computed as `blake2s256(bytes32(key) | bytes32(slot))`, where the
 /// key's raw bytes are left-padded to 32 bytes and the slot is appended in big-endian.
 ///
 /// This differs from Solidity's `keccak256(abi.encode(key, slot))`, where signed integers
@@ -365,8 +366,14 @@ pub trait StorageKey: sealed::OnlyPrimitives {
         buf[32 - key_bytes.len()..32].copy_from_slice(key_bytes);
         buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
 
-        U256::from_be_bytes(keccak256(buf).0)
+        blake2s256_u256(buf)
     }
+}
+
+#[inline]
+pub(crate) fn blake2s256_u256(data: impl AsRef<[u8]>) -> U256 {
+    let digest = Blake2s256::digest(data.as_ref());
+    U256::from_be_slice(&digest)
 }
 
 /// Cache for computed handlers with stable references.
