@@ -208,11 +208,11 @@ impl ITIP20::ITIP20Calls {
             || is_call::<ITIP20::burnWithMemoCall>(input)
     }
 
-    /// Returns `true` if `input` matches one of the TIP-1059 discounted pure-payment selectors.
+    /// Returns `true` if `input` matches one of the TIP-1059 discounted pure-payment call selectors.
     ///
     /// Approvals and mints remain payment-lane eligible via [`Self::is_payment`] but do not
     /// receive the settlement discount.
-    pub fn is_discounted_payment(input: &[u8]) -> bool {
+    pub fn is_discounted_payment_call(input: &[u8]) -> bool {
         fn is_call<C: SolCall>(input: &[u8]) -> bool {
             input.first_chunk::<4>() == Some(&C::SELECTOR)
                 && input.len()
@@ -306,17 +306,17 @@ mod test {
     }
 
     #[test]
-    fn test_is_discounted_payment() {
+    fn test_is_discounted_payment_call() {
         for calldata in discounted_payment_calldatas() {
-            assert!(ITIP20::ITIP20Calls::is_discounted_payment(&calldata))
+            assert!(ITIP20::ITIP20Calls::is_discounted_payment_call(&calldata))
         }
 
         for calldata in non_discounted_payment_calldatas() {
-            assert!(!ITIP20::ITIP20Calls::is_discounted_payment(&calldata))
+            assert!(!ITIP20::ITIP20Calls::is_discounted_payment_call(&calldata))
         }
 
         for calldata in non_payment_calldatas() {
-            assert!(!ITIP20::ITIP20Calls::is_discounted_payment(&calldata))
+            assert!(!ITIP20::ITIP20Calls::is_discounted_payment_call(&calldata))
         }
     }
 }

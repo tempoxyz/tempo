@@ -162,8 +162,8 @@ impl TempoTxEnv {
         }
     }
 
-    /// Returns true if this transaction satisfies the TIP-1059 pure-payment allow-list.
-    pub fn is_discounted_payment(&self) -> bool {
+    /// Returns true if this transaction satisfies the TIP-1059 pure-payment candidate allow-list.
+    pub fn is_discounted_payment_candidate(&self) -> bool {
         if self
             .access_list()
             .is_some_and(|mut list| list.next().is_some())
@@ -191,7 +191,7 @@ impl TempoTxEnv {
 
 fn is_discounted_tip20_call(to: &TxKind, input: &[u8]) -> bool {
     matches!(to, TxKind::Call(to) if to.is_tip20())
-        && ITIP20::ITIP20Calls::is_discounted_payment(input)
+        && ITIP20::ITIP20Calls::is_discounted_payment_call(input)
 }
 
 impl From<TxEnv> for TempoTxEnv {
