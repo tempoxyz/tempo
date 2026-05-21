@@ -115,7 +115,7 @@ impl AASigned {
 
     /// Calculate the expiring nonce dedup hash for replay protection.
     ///
-    /// This hash is `keccak256(encode_for_signing || sender)`. It is:
+    /// This hash is `blake3(encode_for_signing || sender)`. It is:
     /// - **Invariant to fee payer changes**: the fee payer signature and fee token are excluded
     ///   (since `encode_for_signing` doesn't commit to them when a fee payer is present).
     /// - **Unique per sender**: different signers produce different recovered addresses, so the

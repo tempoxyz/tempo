@@ -993,7 +993,7 @@ where
         if is_expiring_nonce {
             // Expiring nonce transaction replay protection:
             // - Pre-T1B: use tx_hash for backwards-compatible behavior.
-            // - T1B+: use the sender-scoped tx identifier (keccak256(encode_for_signing || sender))
+            // - T1B+: use the sender-scoped tx identifier (blake3(encode_for_signing || sender))
             //   to prevent replay via different fee payer signatures.
             let tempo_tx_env = tx
                 .tempo_tx_env

@@ -121,7 +121,7 @@ impl TempoTxEnv {
 
     /// Returns the sender-scoped transaction identifier.
     ///
-    /// This is `keccak256(encode_for_signing || sender)` for every real transaction type. For
+    /// This is `blake3(encode_for_signing || sender)` for every real transaction type. For
     /// Tempo AA transactions, this matches the existing expiring nonce hash helper.
     pub fn unique_tx_identifier(&self) -> Option<B256> {
         self.unique_tx_identifier
