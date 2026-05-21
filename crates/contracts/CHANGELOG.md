@@ -1,10 +1,17 @@
 # Changelog
 
+## `tempo-contracts@1.7.2`
+
+### Patch Changes
+
+- Bumped alloy to `2.0.5` and updated transitive dependencies.
+- Dropped constructor helpers in favor of the newly auto-generated ones by the `sol!` macro. (by @ArseniiKulikov, [#4058](https://github.com/tempoxyz/tempo/pull/4058))
+
 ## `tempo-contracts@1.7.0`
 
 ### Minor Changes
 
-- Added the TIP-20 channel escrow precompile with channel open, settle, top-up, close, request-close, and withdraw flows gated at T5. (by @DerekCofausper, [#4019](https://github.com/tempoxyz/tempo/pull/4019))
+- Added the TIP-20 channel reserve precompile with channel open, settle, top-up, close, request-close, and withdraw flows gated at T5. (by @DerekCofausper, [#4019](https://github.com/tempoxyz/tempo/pull/4019))
 
 ### Patch Changes
 

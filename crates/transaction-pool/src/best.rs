@@ -225,7 +225,7 @@ mod tests {
                 .nonce_key(nonce_key)
                 .nonce(nonce)
                 .max_priority_fee(priority)
-                .max_fee(TempoHardfork::T1.base_fee() as u128 + priority)
+                .max_fee(u128::from(TempoHardfork::T1.base_fee()) + priority)
                 .build(),
             TransactionOrigin::External,
         ))
