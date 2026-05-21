@@ -28,14 +28,6 @@ pub mod gas {
     /// - Economic: 1,000 microdollars = 0.001 USD = 0.1 cents
     pub const TEMPO_T1_BASE_FEE: u64 = 20_000_000_000;
 
-    /// TIP-1059 discounted gas price for pure payment transfers: 12 billion attodollars.
-    pub const TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE: u64 = 12_000_000_000;
-
-    /// TIP-1059 maximum gas used by a transaction that can receive the pure payment discount.
-    ///
-    /// This matches the TIP-1000 new-state-write gas cost at T6.
-    pub const TEMPO_T6_MAX_DISCOUNTED_PAYMENT_GAS_USED: u64 = 250_000;
-
     /// [TIP-1010] general (non-payment) gas limit: 30 million gas per block.
     /// Cap for non-payment transactions.
     ///

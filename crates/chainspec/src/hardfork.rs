@@ -217,22 +217,6 @@ impl TempoHardfork {
         gas::TEMPO_T0_BASE_FEE
     }
 
-    /// Returns the discounted pure-payment gas price active at T6+.
-    pub const fn discounted_payment_gas_price(&self) -> Option<u64> {
-        if self.is_t6() {
-            return Some(gas::TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE);
-        }
-        None
-    }
-
-    /// Returns the maximum gas used by a transaction that can receive the T6 payment discount.
-    pub const fn max_discounted_payment_gas_used(&self) -> Option<u64> {
-        if self.is_t6() {
-            return Some(gas::TEMPO_T6_MAX_DISCOUNTED_PAYMENT_GAS_USED);
-        }
-        None
-    }
-
     /// Returns the fixed general gas limit for T1+, or None for pre-T1.
     /// - Pre-T1: None
     /// - T1+: 30M gas (fixed)

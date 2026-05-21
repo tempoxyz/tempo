@@ -106,11 +106,6 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
         evm_env: &EvmEnv<TempoHardfork, TempoBlockEnv>,
     ) -> Result<TempoTxEnv, Self::Err> {
         let caller_addr = self.inner.from.unwrap_or_default();
-        let discounted_payment_candidate = self
-            .clone()
-            .try_into_sim_tx()
-            .ok()
-            .is_some_and(|tx| tx.is_discounted_payment_candidate());
 
         let fee_payer = if self.fee_payer_signature.is_some() {
             // Try to recover the fee payer address from the signature.
@@ -146,7 +141,6 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
             is_system_tx: false,
             unique_tx_identifier: Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER),
             fee_payer,
-            discounted_payment_candidate,
             tempo_tx_env: if !calls.is_empty()
                 || !tempo_authorization_list.is_empty()
                 || nonce_key.is_some()

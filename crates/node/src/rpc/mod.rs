@@ -22,7 +22,7 @@ use reth_transaction_pool::{PoolPooledTx, TransactionOrigin};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::TempoChainSpec;
 use tempo_evm::TempoStateAccess;
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
 use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
@@ -419,13 +419,12 @@ pub struct TempoReceiptConverter {
         TempoChainSpec,
         fn(TempoReceipt, usize, TransactionMeta) -> ReceiptWithBloom<TempoReceipt<Log>>,
     >,
-    chain_spec: Arc<TempoChainSpec>,
 }
 
 impl TempoReceiptConverter {
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
         Self {
-            inner: EthReceiptConverter::new(chain_spec.clone()).with_builder(
+            inner: EthReceiptConverter::new(chain_spec).with_builder(
                 |receipt: TempoReceipt, next_log_index, meta| {
                     let mut log_index = next_log_index;
                     receipt
@@ -446,7 +445,6 @@ impl TempoReceiptConverter {
                         .into()
                 },
             ),
-            chain_spec,
         }
     }
 }
@@ -459,15 +457,12 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
         &self,
         receipts: Vec<ConvertReceiptInput<'_, TempoPrimitives>>,
     ) -> Result<Vec<Self::RpcReceipt>, Self::Error> {
-        let receipt_context = receipts
-            .iter()
-            .map(|r| (r.tx, r.gas_used, r.meta.timestamp))
-            .collect::<Vec<_>>();
+        let txs = receipts.iter().map(|r| r.tx).collect::<Vec<_>>();
         self.inner
             .convert_receipts(receipts)?
             .into_iter()
-            .zip(receipt_context)
-            .map(|(inner, (tx, gas_used, timestamp))| {
+            .zip(txs)
+            .map(|(inner, tx)| {
                 let mut receipt = TempoTransactionReceipt {
                     inner,
                     fee_token: None,
@@ -476,20 +471,6 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
                         .fee_payer(tx.signer())
                         .map_err(|_| EthApiError::InvalidTransactionSignature)?,
                 };
-                let hardfork = self.chain_spec.tempo_hardfork_at(timestamp);
-                if hardfork.is_t6()
-                    && tx.is_discounted_payment_candidate()
-                    && gas_used
-                        <= hardfork
-                            .max_discounted_payment_gas_used()
-                            .expect("T6 discount cap must exist")
-                {
-                    receipt.effective_gas_price = hardfork
-                        .discounted_payment_gas_price()
-                        .expect("T6 discount price must exist")
-                        as u128;
-                }
-
                 if receipt.effective_gas_price == 0 || receipt.gas_used == 0 {
                     return Ok(receipt);
                 }
