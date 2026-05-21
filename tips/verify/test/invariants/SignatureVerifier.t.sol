@@ -696,10 +696,6 @@ contract SignatureVerifierInvariantTest is TempoTest {
         assertEq(ghost_sv4_wrongError, 0, "SV4: wrong error count > 0");
         assertEq(ghost_sv6_unknownTypeAllowed, 0, "SV6: unknown type allowed count > 0");
         assertEq(ghost_sv7_keychainAllowed, 0, "SV7: keychain allowed count > 0");
-
-        // TODO(@grandizzy): improve SV2 coverage — the corpus-guided fuzzer with sancov +
-        // 32 threads can starve SV2 handlers, causing flaky nightly failures. Investigate
-        // better handler weighting or per-property coverage targets.
     }
 
     /*//////////////////////////////////////////////////////////////
