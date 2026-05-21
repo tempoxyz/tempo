@@ -11,6 +11,7 @@ use revm::context::{
         AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
     },
 };
+use std::sync::Arc;
 use tempo_primitives::{
     AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
     transaction::{
@@ -90,8 +91,8 @@ pub struct TempoTxEnv {
     /// - None corresponds to a transaction without a fee payer
     pub fee_payer: Option<Option<Address>>,
 
-    /// AA-specific transaction environment (boxed to keep TempoTxEnv lean for non-AA tx)
-    pub tempo_tx_env: Option<Box<TempoBatchCallEnv>>,
+    /// AA-specific transaction environment (shared to keep cloned TempoTxEnv lean for AA tx)
+    pub tempo_tx_env: Option<Arc<TempoBatchCallEnv>>,
 }
 
 impl TempoTxEnv {
@@ -348,7 +349,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
             }),
             // Bundle AA-specific fields into TempoBatchCallEnv
-            tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+            tempo_tx_env: Some(Arc::new(TempoBatchCallEnv {
                 signature: signature.clone(),
                 valid_before: valid_before.map(NonZeroU64::get),
                 valid_after: valid_after.map(NonZeroU64::get),
@@ -425,6 +426,7 @@ mod tests {
     use core::num::NonZeroU64;
     use proptest::prelude::*;
     use revm::context::{Transaction, TxEnv, result::InvalidTransaction};
+    use std::sync::Arc;
     use tempo_primitives::{
         TempoTxEnvelope,
         transaction::{
@@ -814,7 +816,7 @@ mod tests {
         let input2 = Bytes::from(vec![0xCC, 0xDD]);
 
         let tx_env = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+            tempo_tx_env: Some(Arc::new(super::TempoBatchCallEnv {
                 aa_calls: vec![
                     Call {
                         to: TxKind::Call(addr1),
@@ -843,7 +845,7 @@ mod tests {
     fn test_first_call_with_empty_aa_calls() {
         // Test with tempo_tx_env but empty calls list
         let tx_env = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+            tempo_tx_env: Some(Arc::new(super::TempoBatchCallEnv {
                 aa_calls: vec![],
                 ..Default::default()
             })),
@@ -881,7 +883,7 @@ mod tests {
 
         // AA transaction with multiple calls
         let aa_tx = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+            tempo_tx_env: Some(Arc::new(super::TempoBatchCallEnv {
                 aa_calls: vec![
                     Call {
                         to: TxKind::Call(addr1),
@@ -914,7 +916,7 @@ mod tests {
 
         // AA transaction with empty calls list
         let empty_aa_tx = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+            tempo_tx_env: Some(Arc::new(super::TempoBatchCallEnv {
                 aa_calls: vec![],
                 ..Default::default()
             })),
@@ -1045,7 +1047,7 @@ mod tests {
         #[test]
         fn proptest_calls_count_aa_tx(num_calls in 0usize..20) {
             let aa_tx = super::TempoTxEnv {
-                tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                tempo_tx_env: Some(Arc::new(super::TempoBatchCallEnv {
                     aa_calls: (0..num_calls)
                         .map(|_| Call {
                             to: TxKind::Call(alloy_primitives::Address::ZERO),

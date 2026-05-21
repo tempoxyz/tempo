@@ -512,7 +512,7 @@ where
         let (mut tx_env, recovered) = tx.into_parts();
         // Remove any prewarming-specific context that was added to the tx env.
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-            tempo_tx_env.expiring_nonce_idx = None;
+            std::sync::Arc::make_mut(tempo_tx_env).expiring_nonce_idx = None;
         }
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
 
