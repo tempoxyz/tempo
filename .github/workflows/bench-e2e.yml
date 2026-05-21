@@ -734,6 +734,7 @@ jobs:
             --tune
             --no-default-features
             --features "$BENCH_FEATURES"
+            --skip-summary
           )
           [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force-bloat)
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
@@ -765,14 +766,16 @@ jobs:
           echo "path=$RESULTS_DIR" >> "$GITHUB_OUTPUT"
           echo "Results directory: $RESULTS_DIR"
 
-      - name: Classify results
+      - name: Generate summary
         if: success()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
         with:
           script: |
+            const { execFileSync } = require('child_process');
             const classify = require('./.github/scripts/bench-e2e-classify.js');
+            execFileSync('nu', ['bench-e2e.nu', 'summarize', process.env.BENCH_RESULTS_DIR], { stdio: 'inherit' });
             classify.main(process.env.BENCH_RESULTS_DIR);
 
       - name: Upload results
