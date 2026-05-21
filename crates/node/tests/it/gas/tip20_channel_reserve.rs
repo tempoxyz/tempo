@@ -6,8 +6,8 @@ use alloy::{
 };
 use alloy_network::ReceiptResponse;
 use tempo_alloy::rpc::TempoTransactionReceipt;
-use tempo_contracts::precompiles::ITIP20ChannelEscrow;
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS};
+use tempo_contracts::precompiles::ITIP20ChannelReserve;
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS};
 
 use super::helpers::{
     GasSnapshot, Receipt, TempoTxSender, fixed_signer, print_gas_snapshot, test_signer,
@@ -18,9 +18,9 @@ const DEPOSIT: u64 = 1_000_000;
 const FUNDING: u64 = 20_000_000;
 
 struct ChannelEnv<P> {
-    contract: ITIP20ChannelEscrow::ITIP20ChannelEscrowInstance<P>,
+    contract: ITIP20ChannelReserve::ITIP20ChannelReserveInstance<P>,
     id: B256,
-    descriptor: ITIP20ChannelEscrow::ChannelDescriptor,
+    descriptor: ITIP20ChannelReserve::ChannelDescriptor,
     open_gas_used: u64,
 }
 
@@ -37,8 +37,8 @@ impl<P: Provider + Clone> ChannelEnv<P> {
     ) -> eyre::Result<Self> {
         let sent = sender
             .send_call(
-                TIP20_CHANNEL_ESCROW_ADDRESS,
-                ITIP20ChannelEscrow::openCall {
+                TIP20_CHANNEL_RESERVE_ADDRESS,
+                ITIP20ChannelReserve::openCall {
                     payee,
                     operator,
                     token: PATH_USD_ADDRESS,
@@ -65,8 +65,8 @@ impl<P: Provider + Clone> ChannelEnv<P> {
         gas.call(
             name,
             sender,
-            TIP20_CHANNEL_ESCROW_ADDRESS,
-            ITIP20ChannelEscrow::topUpCall {
+            TIP20_CHANNEL_RESERVE_ADDRESS,
+            ITIP20ChannelReserve::topUpCall {
                 descriptor: self.descriptor.clone(),
                 additionalDeposit: U96::from(amount),
             },
@@ -86,8 +86,8 @@ impl<P: Provider + Clone> ChannelEnv<P> {
         gas.call(
             name,
             submitter,
-            TIP20_CHANNEL_ESCROW_ADDRESS,
-            ITIP20ChannelEscrow::settleCall {
+            TIP20_CHANNEL_RESERVE_ADDRESS,
+            ITIP20ChannelReserve::settleCall {
                 descriptor: self.descriptor.clone(),
                 cumulativeAmount: U96::from(amount),
                 signature,
@@ -105,8 +105,8 @@ impl<P: Provider + Clone> ChannelEnv<P> {
         let signature = self.voucher_signature(payer, amount).await?;
         submitter
             .send_call(
-                TIP20_CHANNEL_ESCROW_ADDRESS,
-                ITIP20ChannelEscrow::settleCall {
+                TIP20_CHANNEL_RESERVE_ADDRESS,
+                ITIP20ChannelReserve::settleCall {
                     descriptor: self.descriptor.clone(),
                     cumulativeAmount: U96::from(amount),
                     signature,
@@ -127,8 +127,8 @@ impl<P: Provider + Clone> ChannelEnv<P> {
         gas.call(
             name,
             submitter,
-            TIP20_CHANNEL_ESCROW_ADDRESS,
-            ITIP20ChannelEscrow::closeCall {
+            TIP20_CHANNEL_RESERVE_ADDRESS,
+            ITIP20ChannelReserve::closeCall {
                 descriptor: self.descriptor.clone(),
                 cumulativeAmount: U96::from(amount),
                 captureAmount: U96::from(amount),
@@ -147,8 +147,8 @@ impl<P: Provider + Clone> ChannelEnv<P> {
         gas.call(
             name,
             sender,
-            TIP20_CHANNEL_ESCROW_ADDRESS,
-            ITIP20ChannelEscrow::requestCloseCall {
+            TIP20_CHANNEL_RESERVE_ADDRESS,
+            ITIP20ChannelReserve::requestCloseCall {
                 descriptor: self.descriptor.clone(),
             },
         )
@@ -169,16 +169,16 @@ impl<P: Provider + Clone> ChannelEnv<P> {
         let opened = receipt
             .logs()
             .iter()
-            .find_map(|log| ITIP20ChannelEscrow::ChannelOpened::decode_log(&log.inner).ok())
+            .find_map(|log| ITIP20ChannelReserve::ChannelOpened::decode_log(&log.inner).ok())
             .ok_or_else(|| eyre::eyre!("ChannelOpened event not found"))?;
 
         Ok(Self {
-            contract: ITIP20ChannelEscrow::new(
-                TIP20_CHANNEL_ESCROW_ADDRESS,
+            contract: ITIP20ChannelReserve::new(
+                TIP20_CHANNEL_RESERVE_ADDRESS,
                 sender.provider.clone(),
             ),
             id: opened.channelId,
-            descriptor: ITIP20ChannelEscrow::ChannelDescriptor {
+            descriptor: ITIP20ChannelReserve::ChannelDescriptor {
                 payer: opened.payer,
                 payee: opened.payee,
                 operator: opened.operator,
@@ -208,7 +208,7 @@ impl<P: Provider + Clone> ChannelEnv<P> {
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_channel_escrow_gas_snapshots() -> eyre::Result<()> {
+async fn test_tip20_channel_reserve_gas_snapshots() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
@@ -232,11 +232,11 @@ async fn test_tip20_channel_escrow_gas_snapshots() -> eyre::Result<()> {
     let mut gas = GasSnapshot::new();
 
     let first = ChannelEnv::open(&mut payer, payee.address(), 1).await?;
-    gas.record("open_new_channel_first_escrow_balance", first.gas_used());
+    gas.record("open_new_channel_first_reserve_balance", first.gas_used());
 
     let second = ChannelEnv::open(&mut payer, payee.address(), 2).await?;
     gas.record(
-        "open_new_channel_existing_escrow_balance",
+        "open_new_channel_existing_reserve_balance",
         second.gas_used(),
     );
 
@@ -307,7 +307,7 @@ async fn test_tip20_channel_escrow_gas_snapshots() -> eyre::Result<()> {
         )
         .await?;
 
-    print_gas_snapshot("TIP20ChannelEscrow gas snapshot", &gas);
+    print_gas_snapshot("TIP20ChannelReserve gas snapshot", &gas);
 
     insta::assert_yaml_snapshot!(gas);
 

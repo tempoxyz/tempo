@@ -47,7 +47,7 @@ use tempo_evm::{
 };
 use tempo_precompiles::{
     ADDRESS_REGISTRY_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
     error::TempoPrecompileError,
     nonce::NonceManager,
     storage::StorageCtx,
@@ -353,7 +353,7 @@ fn setup_fixed_cache_state(participants: &[Address], block_timestamp: u64) -> Ex
         ADDRESS_REGISTRY_ADDRESS,
         NONCE_PRECOMPILE_ADDRESS,
         SIGNATURE_VERIFIER_ADDRESS,
-        TIP20_CHANNEL_ESCROW_ADDRESS,
+        TIP20_CHANNEL_RESERVE_ADDRESS,
         VALIDATOR_CONFIG_V2_ADDRESS,
     ] {
         if !accounts.contains_key(&address) {

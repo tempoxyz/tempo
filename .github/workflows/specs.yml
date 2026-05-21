@@ -77,8 +77,8 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          # tmp: mablr/bump_alloy_2.0.5
-          ref: 08bf6fcdc3765a421f2239c0bf78cdcc9267104d
+          # tmp: rus/bump-tempo-v1.7
+          ref: 2a70688470dd684e00d54b4ac1a9b165162960be
           path: foundry
           persist-credentials: false
 
@@ -220,8 +220,8 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          # tmp: mablr/bump_alloy_2.0.5
-          ref: 08bf6fcdc3765a421f2239c0bf78cdcc9267104d
+          # tmp: rus/bump-tempo-v1.7
+          ref: 2a70688470dd684e00d54b4ac1a9b165162960be
           path: foundry
           persist-credentials: false
 

@@ -28,7 +28,7 @@ use reth_revm::{
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
-    ADDRESS_REGISTRY_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS,
+    ADDRESS_REGISTRY_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
     VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
@@ -495,7 +495,7 @@ where
             self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
         }
         if self.inner.spec.is_t5_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(TIP20_CHANNEL_ESCROW_ADDRESS)?;
+            self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS)?;
         }
 
         Ok(())
