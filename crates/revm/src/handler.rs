@@ -1454,11 +1454,20 @@ where
         let basefee = u128::from(context.block().basefee());
         let effective_gas_price = tx.effective_gas_price(basefee);
         let gas = exec_result.gas();
+        let gas_used = gas.used().saturating_sub(gas.reservoir());
+        let settlement_gas_price =
+            if tx.receives_discounted_payment_price(context.cfg.spec, gas_used) {
+                context
+                    .cfg
+                    .spec
+                    .discounted_payment_gas_price()
+                    .expect("discounted payment gas price must exist when T6 discount applies")
+                    as u128
+            } else {
+                effective_gas_price
+            };
 
-        let actual_spending = calc_gas_balance_spending(
-            gas.used().saturating_sub(gas.reservoir()),
-            effective_gas_price,
-        );
+        let actual_spending = calc_gas_balance_spending(gas_used, settlement_gas_price);
         let refund_amount = tx.effective_balance_spending(
             context.block.basefee.into(),
             context.block.blob_gasprice().unwrap_or_default(),

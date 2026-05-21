@@ -25,6 +25,7 @@ revm.workspace = true
 alloy-evm = { workspace = true, features = ["std"] }
 alloy-primitives.workspace = true
 alloy-consensus.workspace = true
+alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
 
 auto_impl.workspace = true
@@ -37,7 +38,6 @@ serde = { workspace = true, optional = true }
 eyre.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-eips.workspace = true
-alloy-rlp.workspace = true
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 base64.workspace = true

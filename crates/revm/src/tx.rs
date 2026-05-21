@@ -2,6 +2,7 @@ use crate::TempoInvalidTransaction;
 use alloy_consensus::{Typed2718, crypto::secp256k1};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnvMut};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_rlp::Encodable;
 use core::num::NonZeroU64;
 use revm::context::{
     Transaction, TxEnv,
@@ -11,10 +12,12 @@ use revm::context::{
         AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
     },
 };
+use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
-    AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
+    AASigned, TempoAddressExt, TempoSignature, TempoTransaction, TempoTxEnvelope,
     transaction::{
         Call, RecoveredTempoAuthorization, SignedKeyAuthorization, calc_gas_balance_spending,
+        envelope::KEY_AUTHORIZATION_MAX_RLP_LEN,
     },
 };
 
@@ -158,6 +161,48 @@ impl TempoTxEnv {
             )))
         }
     }
+
+    /// Returns true if the T6 discounted payment settlement price applies for the given gas used.
+    pub fn receives_discounted_payment_price(
+        &self,
+        spec: tempo_chainspec::hardfork::TempoHardfork,
+        gas_used: u64,
+    ) -> bool {
+        self.is_discounted_payment()
+            && spec
+                .max_discounted_payment_gas_used()
+                .is_some_and(|max| gas_used <= max)
+    }
+
+    fn is_discounted_payment(&self) -> bool {
+        if self
+            .access_list()
+            .is_some_and(|mut list| list.next().is_some())
+        {
+            return false;
+        }
+
+        if let Some(aa) = self.tempo_tx_env.as_ref() {
+            !aa.aa_calls.is_empty()
+                && aa.tempo_authorization_list.is_empty()
+                && aa
+                    .key_authorization
+                    .as_ref()
+                    .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
+                && aa
+                    .aa_calls
+                    .iter()
+                    .all(|call| is_discounted_tip20_call(&call.to, &call.input))
+        } else {
+            self.authorization_list_len() == 0
+                && is_discounted_tip20_call(&self.inner.kind, self.input())
+        }
+    }
+}
+
+fn is_discounted_tip20_call(to: &TxKind, input: &[u8]) -> bool {
+    matches!(to, TxKind::Call(to) if to.is_tip20())
+        && ITIP20::ITIP20Calls::is_discounted_payment(input)
 }
 
 impl From<TxEnv> for TempoTxEnv {
