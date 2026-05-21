@@ -79,12 +79,15 @@ function changeFromPct(pct, lowerIsBetter) {
 function fmtChange(change) {
   if (!change || change.pct == null) return '';
   const sign = change.pct >= 0 ? '+' : '';
-  const ci = change.ci_pct ? ` (±${change.ci_pct.toFixed(2)}%)` : '';
+  const details = [];
+  if (change.ci_pct != null) details.push(`±${change.ci_pct.toFixed(2)}%`);
+  if (change.floor_pct != null) details.push(`floor ${change.floor_pct.toFixed(2)}%`);
+  const ci = details.length ? ` (${details.join(', ')})` : '';
   return `${sign}${change.pct.toFixed(2)}%${ci} ${SIG_EMOJI[change.sig] || ''}`.trim();
 }
 
 function verdictFromChanges(changes, neutralLabel = 'No Difference') {
-  const vals = Object.values(changes || {});
+  const vals = Object.values(changes || {}).filter(v => !v.informational);
   const hasBad = vals.some(v => v.sig === 'bad');
   const hasGood = vals.some(v => v.sig === 'good');
   if (hasBad && hasGood) return { emoji: ':warning:', label: 'Mixed Results' };
@@ -94,10 +97,12 @@ function verdictFromChanges(changes, neutralLabel = 'No Difference') {
 }
 
 function hasImprovement(changes) {
-  return Object.values(changes || {}).some(v => v.sig === 'good');
+  return Object.values(changes || {}).some(v => !v.informational && v.sig === 'good');
 }
 
-function e2eChanges(deltas) {
+function e2eChanges(summary) {
+  if (summary.results?.changes) return summary.results.changes;
+  const deltas = summary.results.deltas;
   return {
     tps: changeFromPct(deltas.tps, false),
     tps_p50: changeFromPct(deltas.tps_p50, false),
@@ -130,8 +135,7 @@ function fmtBlockCount(baselineBlocks, featureBlocks) {
 function buildMetricRows(summary) {
   const b = summary.results.baseline;
   const f = summary.results.feature;
-  const d = summary.results.deltas;
-  const c = e2eChanges(d);
+  const c = e2eChanges(summary);
   return [
     { label: 'Avg TPS',         baseline: fmtVal(b.tps, '', 0),     feature: fmtVal(f.tps, '', 0),     change: fmtChange(c.tps) },
     { label: 'TPS P50',         baseline: fmtVal(b.tps_p50, '', 1), feature: fmtVal(f.tps_p50, '', 1), change: fmtChange(c.tps_p50) },
@@ -147,8 +151,10 @@ function buildMetricRows(summary) {
 function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo }) {
   const b = summary.results.baseline;
   const f = summary.results.feature;
-  const d = summary.results.deltas;
-  const { emoji, label } = verdictFromChanges(e2eChanges(d), 'No Significant Change');
+  const changes = e2eChanges(summary);
+  const classified = summary.classification || verdictFromChanges(changes, 'No Significant Change');
+  const emoji = classified.slack_emoji || classified.emoji || ':white_circle:';
+  const label = classified.label || 'No Significant Change';
 
   const prUrl = prNumber ? `https://github.com/${repo}/pull/${prNumber}` : '';
   const commitUrl = `https://github.com/${repo}/commit`;
@@ -174,6 +180,7 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
     '',
     `*Preset:* \`${config.preset}\` | *Bloat:* \`${Math.round(config.bloat / 1000)} GB\``,
     `*Duration:* \`${config.duration}s\` | *Target TPS:* \`${config.tps}\` | *Run pairs:* \`${runPairs}\` | *Blocks:* ${blockCount}`,
+    `*Criteria:* 95% CI clears floor`,
   ].join('\n');
 
   const rows = buildMetricRows(summary);
@@ -284,7 +291,7 @@ async function success({ core, context }) {
   const blocks = buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo });
   const text = `Tempo bench: baseline vs feature (${summary.config?.run_pairs ?? '-'} run pairs)`;
 
-  const changes = e2eChanges(summary.results.deltas);
+  const changes = e2eChanges(summary);
   const channel = process.env.SLACK_BENCH_CHANNEL;
   const slackMode = process.env.BENCH_SLACK || 'always';
   let postedToChannel = false;

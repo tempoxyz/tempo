@@ -828,6 +828,29 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         }
     }
 
+    let compute_quantile_metric_stats = { |samples: list<any>|
+        let quantile_ms = { |q: string|
+            let values = (
+                $samples
+                    | where { |sample| ($sample.labels | get -o quantile | default "") == $q }
+                    | get value
+                    | each { |v| $v * 1000.0 }
+            )
+            if ($values | length) > 0 { $values | math avg | math round --precision 1 } else { 0.0 }
+        }
+        {
+            n: ($samples | length)
+            p50: (do $quantile_ms "0.5")
+            p90: (do $quantile_ms "0.9")
+            p99: (do $quantile_ms "0.99")
+        }
+    }
+
+    let compute_gas_stats = { |samples: list<any>|
+        let values = ($samples | get value | where { |value| $value != null })
+        if ($values | length) > 0 { $values | math avg | math round --precision 0 } else { 0.0 }
+    }
+
     for label in $run_labels {
         let report_path = $"($results_dir)/report-($label).json"
         if not ($report_path | path exists) {
@@ -932,8 +955,16 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         let total_err = ($blocks | get err_count | math sum)
         let total_gas = ($blocks | get gas_used | math sum)
         let latencies = ($blocks | where latency_ms != null | get latency_ms | sort)
+        let latency_mean = if ($latencies | length) > 0 { $latencies | math avg | math round --precision 1 } else { 0.0 }
         let p50_latency = (percentile $latencies 50 | math round --precision 1)
+        let p90_latency = (percentile $latencies 90 | math round --precision 1)
+        let p99_latency = (percentile $latencies 99 | math round --precision 1)
         let num_blocks = ($blocks | length)
+        let run_builder_metric = do $compute_quantile_metric_stats $builder_samples
+        let run_builder = if $run_builder_metric.n > 0 { $run_builder_metric } else { { n: $num_blocks, p50: $p50_latency, p90: $p90_latency, p99: $p99_latency } }
+        let run_validation = do $compute_quantile_metric_stats $validation_samples
+        let run_builder_gas = do $compute_gas_stats $builder_gas_samples
+        let run_validation_gas = do $compute_gas_stats $validation_gas_samples
 
         # Compute TPS from block timestamps (timestamps are in milliseconds)
         let time_span_ms = if ($timestamps | length) > 1 {
@@ -958,7 +989,15 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             ok: $total_ok
             err: $total_err
             total_gas: $total_gas
+            latency_mean: $latency_mean
+            latency_p50: $p50_latency
+            latency_p90: $p90_latency
+            latency_p99: $p99_latency
             p50_latency: $p50_latency
+            builder_latency_p50: $run_builder.p50
+            builder_latency_p90: $run_builder.p90
+            builder_latency_p99: $run_builder.p99
+            builder_gas_s: $run_builder_gas
             tps: $actual_tps
             tps_p50: $run_tps.p50
             tps_p90: $run_tps.p90
@@ -967,6 +1006,10 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             block_time_p50: $run_bt.p50
             block_time_p90: $run_bt.p90
             block_time_p99: $run_bt.p99
+            validation_latency_p50: $run_validation.p50
+            validation_latency_p90: $run_validation.p90
+            validation_latency_p99: $run_validation.p99
+            validation_gas_s: $run_validation_gas
             success_rate: $success_rate
         }])
     }
@@ -991,34 +1034,12 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let b_lat = do $compute_latency_stats $baseline_blocks
     let f_lat = do $compute_latency_stats $feature_blocks
 
-    let compute_quantile_metric_stats = { |samples: list<any>|
-        let quantile_ms = { |q: string|
-            let values = (
-                $samples
-                    | where { |sample| ($sample.labels | get -o quantile | default "") == $q }
-                    | get value
-                    | each { |v| $v * 1000.0 }
-            )
-            if ($values | length) > 0 { $values | math avg | math round --precision 1 } else { 0.0 }
-        }
-        {
-            n: ($samples | length)
-            p50: (do $quantile_ms "0.5")
-            p90: (do $quantile_ms "0.9")
-            p99: (do $quantile_ms "0.99")
-        }
-    }
-
     let b_builder_metric = do $compute_quantile_metric_stats $baseline_builder_samples
     let f_builder_metric = do $compute_quantile_metric_stats $feature_builder_samples
     let b_builder = if $b_builder_metric.n > 0 { $b_builder_metric } else { { n: $b_lat.n, p50: $b_lat.p50, p90: $b_lat.p90, p99: $b_lat.p99 } }
     let f_builder = if $f_builder_metric.n > 0 { $f_builder_metric } else { { n: $f_lat.n, p50: $f_lat.p50, p90: $f_lat.p90, p99: $f_lat.p99 } }
     let b_validation = do $compute_quantile_metric_stats $baseline_validation_samples
     let f_validation = do $compute_quantile_metric_stats $feature_validation_samples
-    let compute_gas_stats = { |samples: list<any>|
-        let values = ($samples | get value | where { |value| $value != null })
-        if ($values | length) > 0 { $values | math avg | math round --precision 0 } else { 0.0 }
-    }
     let b_builder_gas = do $compute_gas_stats $baseline_builder_gas_samples
     let f_builder_gas = do $compute_gas_stats $feature_builder_gas_samples
     let b_validation_gas = do $compute_gas_stats $baseline_validation_gas_samples

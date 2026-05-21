@@ -765,6 +765,10 @@ jobs:
           echo "path=$RESULTS_DIR" >> "$GITHUB_OUTPUT"
           echo "Results directory: $RESULTS_DIR"
 
+      - name: Classify results
+        if: success()
+        run: node .github/scripts/bench-e2e-classify.js "${{ steps.results-dir.outputs.path }}"
+
       - name: Upload results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -792,8 +796,12 @@ jobs:
 
             // Compute observability URLs from summary.json.
             let grafanaSection = '';
+            let resultHeadline = '✅ Benchmark complete!';
             try {
               const meta = JSON.parse(fs.readFileSync(`${resultsDir}/summary.json`, 'utf8'));
+              if (meta.classification?.label) {
+                resultHeadline = `${meta.classification.emoji || '✅'} Benchmark complete: ${meta.classification.label}`;
+              }
               const benchId = meta.benchmark_id;
               const metricsRange = meta.observability_range || {};
               const actualRange = meta.actual_observability_range || metricsRange;
@@ -891,7 +899,7 @@ jobs:
             }
 
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Benchmark complete! [View job](${jobUrl})\n\n${summary}${grafanaSection}${samplySection}${tracySection}`;
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}${grafanaSection}${samplySection}${tracySection}`;
             const ackCommentId = process.env.BENCH_COMMENT_ID;
 
             if (ackCommentId) {
