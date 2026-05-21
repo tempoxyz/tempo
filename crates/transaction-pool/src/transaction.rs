@@ -351,7 +351,7 @@ impl TempoPooledTransaction {
     }
 
     /// Warms the global keccak cache with storage slot hashes that will be accessed
-    /// during block building (TIP-20 balance slots, fee manager mappings).
+    /// during block building (TIP-20 balance/reward slots, fee manager mappings).
     ///
     /// Fee manager slots like `user_tokens[fee_payer]` and `validator_tokens[beneficiary]`
     /// are not warmed here: the former is already cached from `validate_with_evm`, and the
@@ -360,6 +360,7 @@ impl TempoPooledTransaction {
         let sender = self.sender();
         let fee_payer = self.inner().fee_payer(sender).unwrap_or(sender);
         fee_payer.mapping_slot(tip20_slots::BALANCES);
+        fee_payer.mapping_slot(tip20_slots::USER_REWARD_INFO);
 
         // For payment transactions, warm sender + recipient balance and allowance slots.
         if self.is_payment {
@@ -370,6 +371,12 @@ impl TempoPooledTransaction {
                 if let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) {
                     for addr in call.balance_addresses().into_iter().flatten() {
                         addr.mapping_slot(tip20_slots::BALANCES);
+                    }
+                    for addr in reward_account_addresses(sender, &call)
+                        .into_iter()
+                        .flatten()
+                    {
+                        addr.mapping_slot(tip20_slots::USER_REWARD_INFO);
                     }
                     // Allowance slots for transferFrom variants: allowances[from][sender]
                     let from = match &call {
@@ -383,6 +390,22 @@ impl TempoPooledTransaction {
                 }
             }
         }
+    }
+}
+
+/// Returns accounts whose `user_reward_info` mapping slots are touched by TIP-20 reward accounting.
+fn reward_account_addresses(sender: Address, call: &ITIP20::ITIP20Calls) -> [Option<Address>; 2] {
+    match call {
+        ITIP20::ITIP20Calls::transfer(c) => [Some(sender), Some(c.to)],
+        ITIP20::ITIP20Calls::transferWithMemo(c) => [Some(sender), Some(c.to)],
+        ITIP20::ITIP20Calls::transferFrom(c) => [Some(c.from), Some(c.to)],
+        ITIP20::ITIP20Calls::transferFromWithMemo(c) => [Some(c.from), Some(c.to)],
+        ITIP20::ITIP20Calls::mint(c) => [Some(c.to), None],
+        ITIP20::ITIP20Calls::mintWithMemo(c) => [Some(c.to), None],
+        ITIP20::ITIP20Calls::burn(_) | ITIP20::ITIP20Calls::burnWithMemo(_) => {
+            [Some(sender), Some(Address::ZERO)]
+        }
+        _ => [None, None],
     }
 }
 
