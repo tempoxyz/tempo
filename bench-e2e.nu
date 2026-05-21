@@ -840,10 +840,19 @@ def run-local-e2e-phase [run: record, ctx: record] {
 
     let tps_k = ($ctx.tps // 1000)
     let scenario = $"($ctx.preset)-($tps_k)k"
-    let phase_clickhouse_url = if $ctx.clickhouse_url != "" and ($ctx.clickhouse_run == "" or $ctx.clickhouse_run == $phase) {
+    let metric_sample_urls = if $ctx.skip_metric_samples {
+        []
+    } else {
+        ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
+    }
+    let phase_victoriametrics_url = if $ctx.skip_metric_samples { "" } else { $ctx.victoriametrics_url }
+    let phase_clickhouse_url = if ($ctx.skip_metric_samples == false) and $ctx.clickhouse_url != "" and ($ctx.clickhouse_run == "" or $ctx.clickhouse_run == $phase) {
         $ctx.clickhouse_url
     } else {
         ""
+    }
+    if $ctx.skip_metric_samples {
+        print "  Metric sample collection and external sample sinks disabled."
     }
 
     if $phase_exit == 0 {
@@ -855,7 +864,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --preset-path $ctx.preset_path
                 --generate-rpc-url $a_rpc
                 --submit-rpc-url $a_rpc
-                --metrics-url ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
+                --metrics-url $metric_sample_urls
                 --report-path $"($ctx.results_dir)/report-($phase).json"
                 --tps $ctx.tps
                 --duration $ctx.duration
@@ -873,7 +882,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --benchmark-start $ctx.reference_epoch
                 --platform "tempo"
                 --scenario $scenario
-                --victoriametrics-url $ctx.victoriametrics_url
+                --victoriametrics-url $phase_victoriametrics_url
                 --clickhouse-url $phase_clickhouse_url
                 --skip-funding=($ctx.bloat > 0))
             if not $bench_result.ok {
@@ -957,6 +966,7 @@ def "main e2e" [
     --victoriametrics-url: string = ""                  # VictoriaMetrics base URL for txgen metric sample import
     --clickhouse-url: string = ""                       # ClickHouse HTTP endpoint for txgen result upload
     --clickhouse-run: string = "feature-1"              # Run label allowed to use the ClickHouse reporter; empty = every run
+    --skip-metric-samples                               # Disable txgen node metric scraping and metric sample sinks
     --run-pairs: int = 2                                # Number of baseline/feature run pairs
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
@@ -1229,6 +1239,7 @@ def "main e2e" [
         victoriametrics_url: $victoriametrics_url
         clickhouse_url: $clickhouse_url
         clickhouse_run: $clickhouse_run
+        skip_metric_samples: $skip_metric_samples
         run_type: $run_type
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
@@ -1268,7 +1279,7 @@ def "main e2e" [
         }
     }
     let valid_run_labels = ($runs | get phase)
-    if $clickhouse_run != "" and $clickhouse_run not-in $valid_run_labels {
+    if ($skip_metric_samples == false) and $clickhouse_run != "" and $clickhouse_run not-in $valid_run_labels {
         print $"Error: --clickhouse-run must be one of: ($valid_run_labels | str join ', ') \(got '($clickhouse_run)'\)"
         exit 1
     }
