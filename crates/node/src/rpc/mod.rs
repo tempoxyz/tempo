@@ -22,8 +22,10 @@ use reth_transaction_pool::{PoolPooledTx, TransactionOrigin};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_evm::TempoStateAccess;
+use tempo_chainspec::{
+    TempoChainSpec, constants::gas::TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE, hardfork::TempoHardforks,
+};
+use tempo_evm::{SSTORE_SET_COST, TempoStateAccess};
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager};
 use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
 pub use token::{TempoToken, TempoTokenApiServer};
@@ -477,17 +479,8 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
                         .map_err(|_| EthApiError::InvalidTransactionSignature)?,
                 };
                 let hardfork = self.chain_spec.tempo_hardfork_at(timestamp);
-                if hardfork.is_t6()
-                    && tx.is_discounted_payment()
-                    && gas_used
-                        <= hardfork
-                            .max_discounted_payment_gas_used()
-                            .expect("T6 discount cap must exist")
-                {
-                    receipt.effective_gas_price = hardfork
-                        .discounted_payment_gas_price()
-                        .expect("T6 discount price must exist")
-                        as u128;
+                if hardfork.is_t6() && tx.is_discounted_payment() && gas_used <= SSTORE_SET_COST {
+                    receipt.effective_gas_price = TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE as u128;
                 }
 
                 if receipt.effective_gas_price == 0 || receipt.gas_used == 0 {

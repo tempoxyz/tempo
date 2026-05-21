@@ -33,6 +33,7 @@ use revm::{
     },
     precompile::PrecompileError,
 };
+use tempo_chainspec::constants::gas::TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE;
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
@@ -1457,12 +1458,7 @@ where
         let gas_used = gas.used().saturating_sub(gas.reservoir());
         let settlement_gas_price =
             if tx.receives_discounted_payment_price(context.cfg.spec, gas_used) {
-                context
-                    .cfg
-                    .spec
-                    .discounted_payment_gas_price()
-                    .expect("discounted payment gas price must exist when T6 discount applies")
-                    as u128
+                TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE as u128
             } else {
                 effective_gas_price
             };
