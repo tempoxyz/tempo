@@ -1043,24 +1043,25 @@ impl AA2dPool {
 
         let worst_expiring = self
             .expiring_nonce_eviction_order
-            .first()
-            .map(|key| (key.priority.clone(), key.submission_id));
+            .iter()
+            .next()
+            .map(|key| (key.expiring_hash, key.priority.clone(), key.submission_id));
 
         match (worst_2d, worst_expiring) {
-            (Some((id, pri_2d, sid_2d)), Some((pri_exp, sid_exp))) => {
+            (Some((id, pri_2d, sid_2d)), Some((hash, pri_exp, sid_exp))) => {
                 // Same ordering as EvictionKey::Ord: lower priority first, newer first.
                 let evict_expiring = pri_exp
                     .cmp(&pri_2d)
                     .then_with(|| sid_2d.cmp(&sid_exp))
                     .is_le();
                 if evict_expiring {
-                    self.remove_worst_expiring_nonce_tx()
+                    self.remove_expiring_nonce_tx(&hash)
                 } else {
                     self.evict_2d_pending_tx(&id)
                 }
             }
             (Some((id, ..)), None) => self.evict_2d_pending_tx(&id),
-            (None, Some(_)) => self.remove_worst_expiring_nonce_tx(),
+            (None, Some((hash, ..))) => self.remove_expiring_nonce_tx(&hash),
             (None, None) => None,
         }
     }
@@ -1073,22 +1074,6 @@ impl AA2dPool {
         let tx = self.remove_transaction_by_id(id)?;
         self.demote_descendants(id);
         Some(tx)
-    }
-
-    /// Removes the first expiring nonce transaction from the eviction order.
-    fn remove_worst_expiring_nonce_tx(
-        &mut self,
-    ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let eviction_key = self.expiring_nonce_eviction_order.pop_first()?;
-        let Some(pending_tx) = self.expiring_nonce_txs.remove(&eviction_key.expiring_hash) else {
-            debug_assert!(
-                false,
-                "expiring_nonce_eviction_order contains stale key {:?}",
-                eviction_key.expiring_hash
-            );
-            return None;
-        };
-        Some(self.finish_remove_expiring_nonce_tx(pending_tx))
     }
 
     /// Removes an expiring nonce transaction by its expiring nonce hash from all internal sets.
@@ -1105,21 +1090,13 @@ impl AA2dPool {
             pending_tx.submission_id,
         );
         debug_assert!(self.expiring_nonce_eviction_order.remove(&eviction_key));
-        Some(self.finish_remove_expiring_nonce_tx(pending_tx))
-    }
-
-    /// Cleans up secondary indexes for an already-removed expiring nonce transaction.
-    fn finish_remove_expiring_nonce_tx(
-        &mut self,
-        pending_tx: PendingTransaction<TxOrdering>,
-    ) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
         let tx_hash = *pending_tx.transaction.hash();
         self.by_hash.remove(&tx_hash);
         if let Some(slot) = pending_tx.transaction.transaction.expiring_nonce_slot() {
             self.slot_to_expiring_nonce_hash.remove(&slot);
         }
         self.decrement_sender_count(pending_tx.transaction.sender());
-        pending_tx.transaction
+        Some(pending_tx.transaction)
     }
 
     /// Returns a reference to the metrics for this pool
