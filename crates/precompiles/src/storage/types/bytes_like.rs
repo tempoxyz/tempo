@@ -2,20 +2,21 @@
 //!
 //! # Storage Layout
 //!
-//! Bytes-like types use Solidity-compatible:
+//! Bytes-like types use Tempo storage encoding:
 //! **Short strings (≤31 bytes)** are stored inline in a single slot:
 //! - Bytes 0..len: UTF-8 string data (left-aligned)
 //! - Byte 31 (LSB): length * 2 (bit 0 = 0 indicates short string)
 //!
-//! **Long strings (≥32 bytes)** use keccak256-based storage:
+//! **Long strings (≥32 bytes)** use BLAKE3-based storage:
 //! - Base slot: stores `length * 2 + 1` (bit 0 = 1 indicates long string)
-//! - Data slots: stored at `keccak256(main_slot) + i` for each 32-byte chunk
+//! - Data slots: stored at `blake3(main_slot) + i` for each 32-byte chunk
 
+use super::storage_slot_hash;
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{StorageCtx, StorageOps, types::*},
 };
-use alloy::primitives::{Address, Bytes, U256, keccak256};
+use alloy::primitives::{Address, Bytes, U256};
 use std::marker::PhantomData;
 
 impl StorableType for Bytes {
@@ -126,7 +127,7 @@ impl Storable for Bytes {
         store_bytes_like(self.as_ref(), storage, slot, ctx)
     }
 
-    /// Custom delete for bytes-like types: clears keccak256-addressed data slots for long values.
+    /// Custom delete for bytes-like types: clears BLAKE3-addressed data slots for long values.
     #[inline]
     fn delete<S: StorageOps>(storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
         debug_assert!(ctx.is_full(), "Bytes cannot be packed");
@@ -151,7 +152,7 @@ impl Storable for String {
         store_bytes_like(self.as_bytes(), storage, slot, ctx)
     }
 
-    /// Custom delete for bytes-like types: clears keccak256-addressed data slots for long values.
+    /// Custom delete for bytes-like types: clears BLAKE3-addressed data slots for long values.
     #[inline]
     fn delete<S: StorageOps>(storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
         debug_assert!(ctx.is_full(), "String cannot be packed");
@@ -173,7 +174,7 @@ where
     let length = calc_string_length(base_value, is_long)?;
 
     if is_long {
-        // Long string: read data from keccak256(base_slot) + i
+        // Long string: read data from blake3(base_slot) + i
         let slot_start = calc_data_slot(base_slot);
         let chunks = calc_chunks(length);
         let mut data = Vec::new();
@@ -235,7 +236,7 @@ fn store_bytes_like<S: StorageOps>(
     } else {
         storage.store(base_slot, encode_long_string_length(new_len))?;
 
-        // Store data in chunks at keccak256(base_slot) + i
+        // Store data in chunks at blake3(base_slot) + i
         let slot_start = data_slot.unwrap_or_else(|| calc_data_slot(base_slot));
         let chunks = calc_chunks(new_len);
         for i in 0..chunks {
@@ -257,7 +258,7 @@ fn store_bytes_like<S: StorageOps>(
 
 /// Generic delete implementation for byte-like types (String, Bytes) using Solidity's encoding.
 ///
-/// Clears both the main slot and any keccak256-addressed data slots for long strings.
+/// Clears both the main slot and any BLAKE3-addressed data slots for long strings.
 #[inline]
 fn delete_bytes_like<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<()> {
     let base_value = storage.load(base_slot)?;
@@ -282,10 +283,10 @@ fn delete_bytes_like<S: StorageOps>(storage: &mut S, base_slot: U256) -> Result<
 
 /// Compute the storage slot where long string data begins.
 ///
-/// For long strings (≥32 bytes), data is stored starting at `keccak256(base_slot)`.
+/// For long strings (≥32 bytes), data is stored starting at `blake3(base_slot)`.
 #[inline]
 fn calc_data_slot(base_slot: U256) -> U256 {
-    U256::from_be_bytes(keccak256(base_slot.to_be_bytes::<32>()).0)
+    storage_slot_hash(base_slot.to_be_bytes::<32>())
 }
 
 /// Check if a storage slot value represents a long string.
@@ -415,16 +416,16 @@ mod tests {
     // -- UNIT TESTS FOR HELPER FUNCTIONS (NO STORAGE) ------------------------
 
     #[test]
-    fn test_calc_data_slot_matches_manual_keccak() {
+    fn test_calc_data_slot_matches_manual_blake3() {
         let base_slot = U256::random();
         let data_slot = calc_data_slot(base_slot);
 
         // Manual computation
-        let expected = U256::from_be_bytes(keccak256(base_slot.to_be_bytes::<32>()).0);
+        let expected = storage_slot_hash(base_slot.to_be_bytes::<32>());
 
         assert_eq!(
             data_slot, expected,
-            "calc_data_slot should match manual keccak256 computation"
+            "calc_data_slot should match manual BLAKE3 computation"
         );
     }
 
@@ -672,12 +673,12 @@ mod tests {
                 // Calculate how many data slots were used
                 let chunks = calc_chunks(s.len());
 
-                // Verify delete works (clears both main slot and keccak256-addressed data)
+                // Verify delete works (clears both main slot and BLAKE3-addressed data)
                 slot.delete().unwrap();
                 let after_delete = slot.read().unwrap();
                 prop_assert_eq!(after_delete, String::new(), "Long string not empty after delete");
 
-                // Verify all keccak256-addressed data slots are actually zero
+                // Verify all BLAKE3-addressed data slots are actually zero
                 let data_slot_start = calc_data_slot(base_slot);
                 for i in 0..chunks {
                     let slot = Slot::<U256>::new_at_offset(data_slot_start, i, address);
@@ -746,12 +747,12 @@ mod tests {
                 // Calculate how many data slots were used
                 let chunks = calc_chunks(b.len());
 
-                // Verify delete works (clears both main slot and keccak256-addressed data)
+                // Verify delete works (clears both main slot and BLAKE3-addressed data)
                 slot.delete().unwrap();
                 let after_delete = slot.read().unwrap();
                 prop_assert_eq!(after_delete, Bytes::new(), "Long bytes not empty after delete");
 
-                // Verify all keccak256-addressed data slots are actually zero
+                // Verify all BLAKE3-addressed data slots are actually zero
                 let data_slot_start = calc_data_slot(base_slot);
                 for i in 0..chunks {
                     let slot = Slot::<U256>::new_at_offset(data_slot_start, i, address);

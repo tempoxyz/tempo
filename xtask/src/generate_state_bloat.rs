@@ -23,7 +23,7 @@ use std::{
     path::PathBuf,
     sync::Arc,
 };
-use tempo_precompiles::tip20::tip20_slots;
+use tempo_precompiles::{storage::StorageKey, tip20::tip20_slots};
 use tempo_primitives::transaction::TIP20_PAYMENT_PREFIX;
 
 /// Magic bytes for the state bloat binary format (8 bytes)
@@ -265,14 +265,9 @@ fn derive_parent_key(mnemonic_phrase: &str) -> eyre::Result<XPriv> {
     Ok(master)
 }
 
-/// Compute a Solidity mapping slot: keccak256(pad32(key) || pad32(base_slot))
+/// Compute a Tempo mapping slot using the same BLAKE3 encoding as storage macros.
 fn compute_mapping_slot(key: Address, base_slot: U256) -> U256 {
-    let mut buf = [0u8; 64];
-    // Left-pad address to 32 bytes
-    buf[12..32].copy_from_slice(key.as_slice());
-    // Base slot as big-endian 32 bytes
-    buf[32..].copy_from_slice(&base_slot.to_be_bytes::<32>());
-    U256::from_be_bytes(keccak256(buf).0)
+    key.mapping_slot(base_slot)
 }
 
 /// Write a block header to the output.
@@ -311,7 +306,6 @@ mod tests {
 
     #[test]
     fn test_compute_mapping_slot() {
-        // Verify the slot computation matches Solidity's keccak256(abi.encode(key, slot))
         let addr: Address = "0x1234567890123456789012345678901234567890"
             .parse()
             .unwrap();

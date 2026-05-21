@@ -73,9 +73,9 @@ pub(crate) fn test_address(byte: u8) -> Address {
 }
 
 /// Compute the i-th tail slot of a dynamic value (`String`/`Bytes`/`Vec`) whose
-/// base/length slot is `base_slot`. Solidity stores tail data at `keccak256(base_slot) + i`.
+/// base/length slot is `base_slot`. Tempo stores tail data at `blake3(base_slot) + i`.
 pub(crate) fn dyn_tail_slot(base_slot: U256, i: u64) -> U256 {
-    U256::from_be_bytes(keccak256(base_slot.to_be_bytes::<32>()).0) + U256::from(i)
+    U256::from_be_bytes(*blake3::hash(&base_slot.to_be_bytes::<32>()).as_bytes()) + U256::from(i)
 }
 
 /// Helper to test store + load roundtrip
