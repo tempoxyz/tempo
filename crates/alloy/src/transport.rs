@@ -2,15 +2,16 @@
 //!
 //! `RelayTransport` wraps two transports:
 //! - a default Tempo RPC transport for ordinary requests and sign-only broadcasts.
-//! - a sponsor transport for signing or sign-and-relay `eth_sendRawTransaction` submissions.
+//! - a sponsor transport for signing or sign-and-relay raw transaction submissions.
 //!
-//! When a single `eth_sendRawTransaction` request is submitted, the raw unsigned Tempo AA
-//! transaction is locally preflighted. In `SponsorshipMode::SignAndRelay` it is forwarded
-//! unchanged to the sponsor service, which signs, broadcasts, and returns the transaction hash. In
-//! `SponsorshipMode::SignOnly` the sponsor signs via `eth_signRawTransaction`, then the signed raw
-//! transaction is broadcast through the default transport. Non-transaction requests are forwarded
-//! unchanged to the default transport. JSON-RPC batches containing `eth_sendRawTransaction` are
-//! rejected; use Tempo AA native call batching instead.
+//! When a single `eth_sendRawTransaction` or `eth_sendRawTransactionSync` request is submitted, the
+//! raw unsigned Tempo AA transaction is locally preflighted. In `SponsorshipMode::SignAndRelay` it is
+//! forwarded unchanged to the sponsor service, which signs, broadcasts, and returns the transaction
+//! hash or sync response. In `SponsorshipMode::SignOnly` the sponsor signs via
+//! `eth_signRawTransaction`, then the signed raw transaction is broadcast through the default
+//! transport using the original submission method. Non-transaction requests are forwarded unchanged
+//! to the default transport. JSON-RPC batches containing raw transaction submissions are rejected;
+//! use Tempo AA native call batching instead.
 //!
 //! Sign-and-relay can forward original request headers to the sponsor; sign-only never forwards
 //! them to sponsor signing and preserves them only for the final default-transport broadcast.
@@ -41,12 +42,12 @@ pub enum SponsorshipMode {
 
 /// A Tempo transport that routes sponsored `eth_sendRawTransaction` requests.
 ///
-/// Single `eth_sendRawTransaction` requests are validated as unsigned Tempo AA transactions.
-/// In [`SponsorshipMode::SignAndRelay`] they are forwarded to the sponsor relay.
-/// In [`SponsorshipMode::SignOnly`] the sponsor returns a fee-payer signed raw transaction which is
-/// then broadcast through the default transport. All other RPC methods go directly to the default
-/// transport. Batched requests containing `eth_sendRawTransaction` are rejected; use Tempo AA native
-/// batching instead.
+/// Single `eth_sendRawTransaction` and `eth_sendRawTransactionSync` requests are validated as
+/// unsigned Tempo AA transactions. In [`SponsorshipMode::SignAndRelay`] they are forwarded to the
+/// sponsor relay. In [`SponsorshipMode::SignOnly`] the sponsor returns a fee-payer signed raw
+/// transaction which is then broadcast through the default transport using the original submission
+/// method. All other RPC methods go directly to the default transport. Batched requests containing
+/// raw transaction submissions are rejected; use Tempo AA native batching instead.
 ///
 /// Derived requests preserve the original JSON-RPC id. Sign-and-relay can forward original headers
 /// to the sponsor; sign-only keeps sponsor signing isolated and preserves original headers only for
@@ -156,8 +157,8 @@ impl<D, R> RelayTransport<D, R> {
     }
 }
 
-const SEND_RAW_TX: &str = "eth_sendRawTransaction";
-const SIGN_RAW_TX: &str = "eth_signRawTransaction";
+const SEND_METHODS: &[&str] = &["eth_sendRawTransaction", "eth_sendRawTransactionSync"];
+const SIGN_METHOD: &str = "eth_signRawTransaction";
 
 #[rustfmt::skip]
 trait RpcService: tower::Service<RequestPacket, Response = ResponsePacket, Error = TransportError, Future = TransportFut<'static>>
@@ -238,14 +239,16 @@ where
 
     fn call(&mut self, request: RequestPacket) -> Self::Future {
         match request {
-            RequestPacket::Single(req) if req.method() == SEND_RAW_TX => {
+            RequestPacket::Single(req) if SEND_METHODS.contains(&req.method()) => {
                 let mut transport = self.clone();
                 Box::pin(async move { transport.handle_sponsored_send_raw_transaction(req).await })
             }
-            RequestPacket::Batch(reqs) if reqs.iter().any(|req| req.method() == SEND_RAW_TX) => {
+            RequestPacket::Batch(reqs)
+                if reqs.iter().any(|req| SEND_METHODS.contains(&req.method())) =>
+            {
                 Box::pin(async move {
                     Err(TransportErrorKind::custom_str(
-                        "RelayTransport does not support JSON-RPC batches containing eth_sendRawTransaction; use a single Tempo AA transaction with multiple calls",
+                        "RelayTransport does not support JSON-RPC batches containing raw transaction submissions; use a single Tempo AA transaction with multiple calls",
                     ))
                 })
             }
@@ -269,6 +272,8 @@ impl<D, R> RelayTransport<D, R> {
         D: RpcService,
         R: RpcService,
     {
+        let method = request.method();
+        debug_assert!(SEND_METHODS.contains(&method));
         let raw_tx = validate_send_raw_request(&request)?;
         let unsigned_tx = decode_unsigned_tempo_aa(raw_tx)?;
         let sponsor_raw_tx = encode_for_fee_payer_service(&unsigned_tx);
@@ -276,7 +281,7 @@ impl<D, R> RelayTransport<D, R> {
         match self.mode {
             SponsorshipMode::SignAndRelay => {
                 let relay_request = tx_request(
-                    SEND_RAW_TX,
+                    method,
                     &sponsor_raw_tx,
                     &request,
                     self.forward_sponsor_request_headers,
@@ -284,7 +289,7 @@ impl<D, R> RelayTransport<D, R> {
                 self.relay.call(RequestPacket::Single(relay_request)).await
             }
             SponsorshipMode::SignOnly => {
-                let sign_request = tx_request(SIGN_RAW_TX, &sponsor_raw_tx, &request, false)?;
+                let sign_request = tx_request(SIGN_METHOD, &sponsor_raw_tx, &request, false)?;
                 let signed_tx: String =
                     match self.relay.call(RequestPacket::Single(sign_request)).await? {
                         ResponsePacket::Single(response) => match response.payload {
@@ -305,7 +310,7 @@ impl<D, R> RelayTransport<D, R> {
 
                 let signed_tx_envelope = validate_signed_tempo_aa(&signed_tx)?;
                 validate_sponsor_signed_same_payload(&unsigned_tx, &signed_tx_envelope)?;
-                let send_request = tx_request(SEND_RAW_TX, &signed_tx, &request, true)?;
+                let send_request = tx_request(method, &signed_tx, &request, true)?;
                 self.default.call(RequestPacket::Single(send_request)).await
             }
         }
@@ -319,14 +324,15 @@ fn encode_for_fee_payer_service(tx: &AASigned) -> String {
 }
 
 fn tx_request(
-    method: &'static str,
+    method: &str,
     tx: &str,
     original: &SerializedRequest,
     forward_headers: bool,
 ) -> Result<SerializedRequest, TransportError> {
-    let mut request: SerializedRequest = Request::new(method, original.id().clone(), Some([tx]))
-        .try_into()
-        .map_err(TransportErrorKind::non_retryable)?;
+    let mut request: SerializedRequest =
+        Request::new(method.to_owned(), original.id().clone(), Some([tx]))
+            .try_into()
+            .map_err(TransportErrorKind::non_retryable)?;
 
     if forward_headers && let Some(headers) = original.headers() {
         request.headers_mut().extend(headers.clone());
@@ -546,13 +552,13 @@ mod tests {
                 .unwrap(),
         )
     }
-    fn send_req_with_id(raw_tx: &str, id: Id) -> SerializedRequest {
-        Request::new(SEND_RAW_TX, id, Some([raw_tx]))
+    fn send_req_with_id(raw_tx: &str, id: Id, sync: bool) -> SerializedRequest {
+        Request::new(SEND_METHODS[usize::from(sync)], id, Some([raw_tx]))
             .try_into()
             .unwrap()
     }
-    fn make_send_raw_tx_request(raw_tx: &str) -> RequestPacket {
-        RequestPacket::Single(send_req_with_id(raw_tx, Id::Number(1)))
+    fn make_send_raw_tx_request(raw_tx: &str, sync: bool) -> RequestPacket {
+        RequestPacket::Single(send_req_with_id(raw_tx, Id::Number(1), sync))
     }
     fn make_batch_no_send() -> RequestPacket {
         RequestPacket::Batch(vec![
@@ -569,7 +575,7 @@ mod tests {
             Request::new("eth_chainId", Id::Number(1), None::<&RawValue>)
                 .try_into()
                 .unwrap(),
-            Request::new(SEND_RAW_TX, Id::Number(2), Some([raw_tx]))
+            Request::new(SEND_METHODS[0], Id::Number(2), Some([raw_tx]))
                 .try_into()
                 .unwrap(),
         ])
@@ -675,11 +681,31 @@ mod tests {
         relay.push_success(&alloy_primitives::B256::ZERO);
         let mut rpc = RelayTransport::new(default, relay);
         assert!(
-            tower::Service::call(&mut rpc, make_send_raw_tx_request(&raw_tx))
+            tower::Service::call(&mut rpc, make_send_raw_tx_request(&raw_tx, false))
                 .await
                 .is_ok()
         );
-        assert_eq!(rpc.relay.methods(), vec![SEND_RAW_TX]);
+        assert_eq!(rpc.relay.methods(), vec![SEND_METHODS[0]]);
+        assert_eq!(rpc.relay.params(0), serde_json::json!([sponsor_raw_tx]));
+        assert!(rpc.default.methods().is_empty());
+    }
+
+    #[tokio::test]
+    async fn send_raw_tx_sync_forwards_to_relay_with_original_method() {
+        let raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
+        let sponsor_raw_tx =
+            encode_for_fee_payer_service(&decode_unsigned_tempo_aa(&raw_tx).unwrap());
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
+        relay.push_success(&alloy_primitives::B256::ZERO);
+        let mut rpc = RelayTransport::new(default, relay);
+
+        assert!(
+            tower::Service::call(&mut rpc, make_send_raw_tx_request(&raw_tx, true))
+                .await
+                .is_ok()
+        );
+
+        assert_eq!(rpc.relay.methods(), vec![SEND_METHODS[1]]);
         assert_eq!(rpc.relay.params(0), serde_json::json!([sponsor_raw_tx]));
         assert!(rpc.default.methods().is_empty());
     }
@@ -689,7 +715,7 @@ mod tests {
         let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
         let mut rpc = RelayTransport::new(default, relay);
         assert!(
-            tower::Service::call(&mut rpc, make_send_raw_tx_request("0x01"))
+            tower::Service::call(&mut rpc, make_send_raw_tx_request("0x01", false))
                 .await
                 .is_err()
         );
@@ -704,7 +730,7 @@ mod tests {
         assert!(
             tower::Service::call(
                 &mut rpc,
-                make_send_raw_tx_request(&signed_tempo_aa_raw_tx_with_nonce(true, 1))
+                make_send_raw_tx_request(&signed_tempo_aa_raw_tx_with_nonce(true, 1), false)
             )
             .await
             .is_err()
@@ -722,7 +748,7 @@ mod tests {
         default.push_success(&alloy_primitives::B256::ZERO);
         let mut rpc = RelayTransport::with_config(default, relay, SponsorshipMode::SignOnly, true);
 
-        let mut req = send_req_with_id(&unsigned_raw_tx, Id::Number(1));
+        let mut req = send_req_with_id(&unsigned_raw_tx, Id::Number(1), true);
         req.headers_mut()
             .insert("authorization", "Bearer default-rpc-token".parse().unwrap());
         assert!(
@@ -733,10 +759,10 @@ mod tests {
 
         let sponsor_raw_tx =
             encode_for_fee_payer_service(&decode_unsigned_tempo_aa(&unsigned_raw_tx).unwrap());
-        assert_eq!(rpc.relay.methods(), vec![SIGN_RAW_TX]);
+        assert_eq!(rpc.relay.methods(), vec![SIGN_METHOD]);
         assert_eq!(rpc.relay.params(0), serde_json::json!([sponsor_raw_tx]));
         assert_eq!(rpc.relay.header_value(0, "authorization"), None);
-        assert_eq!(rpc.default.methods(), vec![SEND_RAW_TX]);
+        assert_eq!(rpc.default.methods(), vec![SEND_METHODS[1]]);
         assert_eq!(rpc.default.params(0), serde_json::json!([signed_raw_tx]));
         assert_eq!(
             rpc.default.header_value(0, "authorization"),
@@ -753,7 +779,7 @@ mod tests {
             Authorization::bearer("sponsor-token"),
         )
         .unwrap();
-        let mut request = send_req_with_id("0x01", Id::Number(1));
+        let mut request = send_req_with_id("0x01", Id::Number(1), false);
         request
             .headers_mut()
             .insert("authorization", "Bearer original-token".parse().unwrap());
@@ -775,12 +801,12 @@ mod tests {
         relay.push_success(&unsigned_raw_tx);
         let mut rpc = RelayTransport::with_config(default, relay, SponsorshipMode::SignOnly, true);
 
-        let err = tower::Service::call(&mut rpc, make_send_raw_tx_request(&unsigned_raw_tx))
+        let err = tower::Service::call(&mut rpc, make_send_raw_tx_request(&unsigned_raw_tx, false))
             .await
             .unwrap_err();
 
         assert!(err.to_string().contains("fee-payer signature placeholder"));
-        assert_eq!(rpc.relay.methods(), vec![SIGN_RAW_TX]);
+        assert_eq!(rpc.relay.methods(), vec![SIGN_METHOD]);
         assert!(rpc.default.methods().is_empty());
     }
 
@@ -792,12 +818,12 @@ mod tests {
         relay.push_success(&different_signed_raw_tx);
         let mut rpc = RelayTransport::with_config(default, relay, SponsorshipMode::SignOnly, true);
 
-        let err = tower::Service::call(&mut rpc, make_send_raw_tx_request(&unsigned_raw_tx))
+        let err = tower::Service::call(&mut rpc, make_send_raw_tx_request(&unsigned_raw_tx, false))
             .await
             .unwrap_err();
 
         assert!(err.to_string().contains("different"));
-        assert_eq!(rpc.relay.methods(), vec![SIGN_RAW_TX]);
+        assert_eq!(rpc.relay.methods(), vec![SIGN_METHOD]);
         assert!(rpc.default.methods().is_empty());
     }
 
@@ -809,12 +835,12 @@ mod tests {
         assert!(
             tower::Service::call(
                 &mut rpc,
-                make_send_raw_tx_request(&signed_tempo_aa_raw_tx_with_nonce(false, 1))
+                make_send_raw_tx_request(&signed_tempo_aa_raw_tx_with_nonce(false, 1), false)
             )
             .await
             .is_err()
         );
-        assert_eq!(rpc.relay.methods(), vec![SEND_RAW_TX]);
+        assert_eq!(rpc.relay.methods(), vec![SEND_METHODS[0]]);
         assert!(rpc.default.methods().is_empty());
     }
 
@@ -824,7 +850,7 @@ mod tests {
         let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
         relay.push_success(&alloy_primitives::B256::ZERO);
         let mut rpc = RelayTransport::new(default, relay);
-        let req = RequestPacket::Single(send_req_with_id(&raw_tx, Id::String("abc".into())));
+        let req = RequestPacket::Single(send_req_with_id(&raw_tx, Id::String("abc".into()), false));
         assert!(tower::Service::call(&mut rpc, req).await.is_ok());
         assert_eq!(rpc.relay.ids(), vec![Id::String("abc".into())]);
     }
@@ -835,7 +861,7 @@ mod tests {
         let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
         relay.push_success(&alloy_primitives::B256::ZERO);
         let mut rpc = RelayTransport::new(default, relay);
-        let mut req = send_req_with_id(&raw_tx, Id::Number(1));
+        let mut req = send_req_with_id(&raw_tx, Id::Number(1), false);
         req.headers_mut()
             .insert("authorization", "Bearer sponsor-token".parse().unwrap());
         assert!(
@@ -856,7 +882,7 @@ mod tests {
         relay.push_success(&alloy_primitives::B256::ZERO);
         let mut rpc =
             RelayTransport::with_config(default, relay, SponsorshipMode::SignAndRelay, false);
-        let mut req = send_req_with_id(&raw_tx, Id::Number(1));
+        let mut req = send_req_with_id(&raw_tx, Id::Number(1), false);
         req.headers_mut()
             .insert("authorization", "Bearer default-token".parse().unwrap());
 
@@ -880,8 +906,9 @@ mod tests {
         .await
         .unwrap_err();
         assert!(
-            err.to_string()
-                .contains("does not support JSON-RPC batches containing eth_sendRawTransaction")
+            err.to_string().contains(
+                "does not support JSON-RPC batches containing raw transaction submissions"
+            )
         );
         assert!(rpc.default.methods().is_empty());
         assert!(rpc.relay.methods().is_empty());
