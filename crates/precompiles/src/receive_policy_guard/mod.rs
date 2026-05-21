@@ -126,7 +126,7 @@ impl ReceivePolicyGuard {
 
         let proof = ClaimProofV1::try_from(proof)?;
         let receiver = AddressRegistry::new()
-            .resolve_recipient(proof.recipient)
+            .resolve_receiver(proof.recipient)
             .map_err(|_| ReceivePolicyGuardError::invalid_claim_address())?;
 
         let recovery_authority =

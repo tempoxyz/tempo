@@ -34,7 +34,7 @@ impl Precompile for AddressRegistry {
                     Ok(self.get_master(c.masterId)?.unwrap_or(Address::ZERO))
                 }),
                 IAddressRegistryCalls::resolveRecipient(call) => {
-                    view(call, |c| self.resolve_recipient(c.to))
+                    view(call, |c| self.resolve_receiver(c.to))
                 }
                 IAddressRegistryCalls::resolveVirtualAddress(call) => {
                     view(call, |c| self.resolve_virtual_address(c.virtualAddr))
