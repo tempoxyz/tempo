@@ -21,7 +21,7 @@ use tempo_precompiles::{
     receive_policy_guard::{
         BLOCKED_PROOF_VERSION,
         IReceivePolicyGuard::{self, IReceivePolicyGuardErrors as ReceivePolicyGuardError},
-        InboundKind, RECOVERY_RECEIVER,
+        InboundKind,
     },
     tip20::{IRolesAuth, ISSUER_ROLE, ITIP20},
     tip20_factory::ITIP20Factory,
@@ -43,11 +43,12 @@ struct BlockedTransfer {
 fn test_blocked_transfer_claim_no_recovery() {
     run_receive_policy_guard_test(1028, |http_url| async move {
         let amount = U256::from(250);
+        let receiver = wallet(11)?.address();
         let blocked = create_blocked_transfer(
             http_url.clone(),
             10,
             11,
-            RECOVERY_RECEIVER,
+            receiver,
             B256::from([0x01; 32]),
             amount,
         )

@@ -9,7 +9,7 @@ pub mod dispatch;
 
 use crate::{
     StorageCtx,
-    receive_policy_guard::{RECOVERY_ORIGINATOR, RECOVERY_RECEIVER, RecoveryMode},
+    receive_policy_guard::{RECOVERY_ORIGINATOR, RecoveryMode},
 };
 pub use tempo_contracts::precompiles::{
     ITIP403Registry::{self, PolicyType},
@@ -317,7 +317,7 @@ impl TIP403Registry {
     fn receive_policy_recovery(&self, account: Address, mode: RecoveryMode) -> Result<Address> {
         match mode {
             RecoveryMode::Originator => Ok(RECOVERY_ORIGINATOR),
-            RecoveryMode::Receiver => Ok(RECOVERY_RECEIVER),
+            RecoveryMode::Receiver => Ok(account),
             RecoveryMode::ThirdParty => self.receive_policies[account].recovery_address.read(),
         }
     }
@@ -377,15 +377,10 @@ impl TIP403Registry {
             return Err(TIP403RegistryError::virtual_address_not_allowed().into());
         }
 
-        let recovery_mode = call.recoveryAuthority.into();
-        let recovery_address = if matches!(recovery_mode, RecoveryMode::ThirdParty) {
-            call.recoveryAuthority
-        } else {
-            Address::ZERO
-        };
+        let recovery_address = call.recoveryAuthority;
+        let (recovery_mode, recovery_write) = RecoveryMode::encode(recovery_address, msg_sender);
 
         if recovery_address == RECEIVE_POLICY_GUARD_ADDRESS
-            || recovery_address == msg_sender
             || recovery_address.is_tip20()
             || recovery_address.is_virtual()
         {
@@ -404,7 +399,7 @@ impl TIP403Registry {
         self.receive_policies[msg_sender].config.write(config)?;
         self.receive_policies[msg_sender]
             .recovery_address
-            .write(recovery_address)?;
+            .write(recovery_write)?;
 
         self.emit_event(TIP403RegistryEvent::ReceivePolicyUpdated(
             ITIP403Registry::ReceivePolicyUpdated {
@@ -1209,12 +1204,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let mut registry = TIP403Registry::new();
 
-            for recovery_address in [
-                RECEIVE_POLICY_GUARD_ADDRESS,
-                PATH_USD_ADDRESS,
-                virtual_addr,
-                account,
-            ] {
+            for recovery_address in [RECEIVE_POLICY_GUARD_ADDRESS, PATH_USD_ADDRESS, virtual_addr] {
                 let result = registry.set_receive_policy(
                     account,
                     ITIP403Registry::setReceivePolicyCall {
@@ -1229,7 +1219,7 @@ mod tests {
                 );
             }
 
-            // Zero is the originator-recovery sentinel; address(1) is the receiver/self-recovery sentinel.
+            // Zero is the originator-recovery sentinel; the caller's own address selects receiver recovery.
             registry.set_receive_policy(
                 account,
                 ITIP403Registry::setReceivePolicyCall {
@@ -1238,6 +1228,20 @@ mod tests {
                     recoveryAuthority: Address::ZERO,
                 },
             )?;
+            registry.set_receive_policy(
+                account,
+                ITIP403Registry::setReceivePolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    tokenFilterId: ALLOW_ALL_POLICY_ID,
+                    recoveryAuthority: account,
+                },
+            )?;
+            let policy = registry.receive_policy(account)?;
+            assert_eq!(policy.recoveryAuthority, account);
+            assert_eq!(
+                registry.receive_policies[account].recovery_address.read()?,
+                Address::ZERO
+            );
 
             Ok(())
         })

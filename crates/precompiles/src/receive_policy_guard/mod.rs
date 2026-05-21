@@ -1,4 +1,4 @@
-//! [TIP-1028] precompile for blocked inbound TIP-20 transfers and mints.
+//! [TIP-1028] ReceivePolicyGuard precompile for blocked inbound TIP-20 transfers and mints.
 
 pub mod dispatch;
 
@@ -27,9 +27,6 @@ pub const BLOCKED_PROOF_VERSION: u8 = 1;
 /// Recovery-authority sentinel: originator/sender is authorized to claim (`address(0)`).
 pub const RECOVERY_ORIGINATOR: Address = Address::ZERO;
 
-/// Recovery-authority sentinel: receiver is authorized to claim (`address(1)`).
-pub const RECOVERY_RECEIVER: Address = Address::with_last_byte(1);
-
 /// TIP-1028 precompile holding blocked inbound transfers and mints until claimed.
 #[contract(addr = RECEIVE_POLICY_GUARD_ADDRESS)]
 pub struct ReceivePolicyGuard {
@@ -47,14 +44,14 @@ pub(crate) enum RecoveryMode {
     ThirdParty,
 }
 
-impl From<Address> for RecoveryMode {
-    fn from(value: Address) -> Self {
-        if value == RECOVERY_ORIGINATOR {
-            Self::Originator
-        } else if value == RECOVERY_RECEIVER {
-            Self::Receiver
+impl RecoveryMode {
+    pub(crate) fn encode(authority: Address, msg_sender: Address) -> (Self, Address) {
+        if authority == RECOVERY_ORIGINATOR {
+            (Self::Originator, Address::ZERO)
+        } else if authority == msg_sender {
+            (Self::Receiver, Address::ZERO)
         } else {
-            Self::ThirdParty
+            (Self::ThirdParty, authority)
         }
     }
 }
@@ -191,7 +188,7 @@ impl RecoveryAuthority {
     fn from_address(address: Address, receiver: Address, originator: Address) -> Self {
         if address == RECOVERY_ORIGINATOR {
             Self::Originator(originator)
-        } else if address == RECOVERY_RECEIVER {
+        } else if address == receiver {
             Self::Receiver(receiver)
         } else {
             Self::Contract(address)
@@ -240,7 +237,7 @@ mod tests {
         fn address(&self) -> Address {
             match self {
                 Self::Originator(_) => RECOVERY_ORIGINATOR,
-                Self::Receiver(_) => RECOVERY_RECEIVER,
+                Self::Receiver(addr) => *addr,
                 Self::Contract(addr) => *addr,
             }
         }
@@ -461,7 +458,7 @@ mod tests {
                 .with_role(admin, TIP20Token::pause_role())
                 .with_mint(originator, amount)
                 .apply()?;
-            block_all_senders(receiver, RECOVERY_RECEIVER)?;
+            block_all_senders(receiver, receiver)?;
 
             token.transfer(
                 originator,
@@ -474,7 +471,7 @@ mod tests {
 
             let proof = ClaimProofV1::new(
                 token.address(),
-                RECOVERY_RECEIVER,
+                receiver,
                 originator,
                 receiver,
                 blocked_at,
@@ -516,9 +513,9 @@ mod tests {
                 .with_mint(originator, amount_c)
                 .apply()?;
 
-            block_all_senders(receiver_a, RECOVERY_RECEIVER)?;
+            block_all_senders(receiver_a, receiver_a)?;
             block_all_senders(receiver_b, recovery)?;
-            block_all_senders(receiver_c, RECOVERY_RECEIVER)?;
+            block_all_senders(receiver_c, receiver_c)?;
 
             token_a.transfer(
                 originator,
@@ -544,7 +541,7 @@ mod tests {
 
             let proof_a = ClaimProofV1::new(
                 token_a.address(),
-                RECOVERY_RECEIVER,
+                receiver_a,
                 originator,
                 receiver_a,
                 1_728_001,
@@ -566,7 +563,7 @@ mod tests {
             );
             let proof_c = ClaimProofV1::new(
                 token_b.address(),
-                RECOVERY_RECEIVER,
+                receiver_c,
                 originator,
                 receiver_c,
                 1_728_001,
@@ -846,7 +843,7 @@ mod tests {
 
             let proof = ClaimProofV1::new(
                 token.address(),
-                RECOVERY_RECEIVER,
+                receiver,
                 originator,
                 receiver,
                 1_728_003,
@@ -859,7 +856,7 @@ mod tests {
             let mut guard = ReceivePolicyGuard::new();
             assert_invalid_proof(guard.claim(receiver, receiver, proof.abi_encode().into()));
 
-            block_all_senders(receiver, RECOVERY_RECEIVER)?;
+            block_all_senders(receiver, receiver)?;
             token.transfer(
                 originator,
                 ITIP20::transferCall {
@@ -892,7 +889,7 @@ mod tests {
                 .with_issuer(admin)
                 .with_mint(originator, amount * U256::from(2u64))
                 .apply()?;
-            block_all_senders(receiver, RECOVERY_RECEIVER)?;
+            block_all_senders(receiver, receiver)?;
             block_all_senders(recovery_receiver, recovery)?;
 
             token.transfer(
@@ -912,7 +909,7 @@ mod tests {
 
             let self_proof = ClaimProofV1::new(
                 token.address(),
-                RECOVERY_RECEIVER,
+                receiver,
                 originator,
                 receiver,
                 1_728_004,
@@ -967,7 +964,7 @@ mod tests {
                 .with_issuer(admin)
                 .with_mint(originator, amount)
                 .apply()?;
-            block_all_senders(VIRTUAL_MASTER, RECOVERY_RECEIVER)?;
+            block_all_senders(VIRTUAL_MASTER, VIRTUAL_MASTER)?;
             let mut guard = ReceivePolicyGuard::new();
             guard.clear_emitted_events();
             token.transfer(
@@ -980,7 +977,7 @@ mod tests {
 
             let proof = ClaimProofV1::new(
                 token.address(),
-                RECOVERY_RECEIVER,
+                VIRTUAL_MASTER,
                 originator,
                 virtual_addr,
                 1_728_009,
@@ -1000,7 +997,7 @@ mod tests {
                     recipient: virtual_addr,
                     amount,
                     blockedReason: BlockedReason::RECEIVE_POLICY as u8,
-                    recoveryAuthority: RECOVERY_RECEIVER,
+                    recoveryAuthority: VIRTUAL_MASTER,
                     memo: B256::ZERO,
                 },
             )]);
@@ -1016,7 +1013,7 @@ mod tests {
                     blockedAt: 1_728_009,
                     originator,
                     recipient: virtual_addr,
-                    recoveryAuthority: RECOVERY_RECEIVER,
+                    recoveryAuthority: VIRTUAL_MASTER,
                     caller: VIRTUAL_MASTER,
                     to: VIRTUAL_MASTER,
                     amount,

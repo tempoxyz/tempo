@@ -2020,11 +2020,10 @@ pub(crate) mod tests {
                 assert_eq!(token.total_supply()?, amount);
                 assert_eq!(token.get_balance(receiver)?, U256::ZERO);
                 assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
-                token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
-                    from: Address::ZERO,
-                    to: RECEIVE_POLICY_GUARD_ADDRESS,
-                    amount,
-                })]);
+                token.assert_emitted_events(vec![
+                    TIP20Event::transfer(Address::ZERO, RECEIVE_POLICY_GUARD_ADDRESS, amount),
+                    TIP20Event::mint(RECEIVE_POLICY_GUARD_ADDRESS, amount),
+                ]);
                 guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
                     IReceivePolicyGuard::TransferBlocked {
                         token: token.address,

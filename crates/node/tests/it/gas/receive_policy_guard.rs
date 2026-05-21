@@ -12,7 +12,7 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     receive_policy_guard::{
-        BLOCKED_PROOF_VERSION, InboundKind, RECOVERY_ORIGINATOR, RECOVERY_RECEIVER,
+        BLOCKED_PROOF_VERSION, InboundKind, RECOVERY_ORIGINATOR,
     },
     tip20::ISSUER_ROLE,
     tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
