@@ -109,13 +109,13 @@ impl NonceManager {
 
     /// Validates and records an expiring nonce transaction. Uses a
     /// circular buffer that overwrites expired entries as the pointer
-    /// advances. The hash is `keccak256(encode_for_signing || sender)`,
+    /// advances. The hash is `blake3(encode_for_signing || sender)`,
     /// invariant to fee payer changes.
     ///
     /// Uses a circular buffer that overwrites expired entries as the pointer advances.
     ///
     /// The `expiring_nonce_hash` parameter is
-    /// (`keccak256(encode_for_signing || sender)`), which is invariant to fee payer changes.
+    /// (`blake3(encode_for_signing || sender)`), which is invariant to fee payer changes.
     ///
     /// This is called during transaction execution to:
     /// 1. Validate the expiry is within the allowed window

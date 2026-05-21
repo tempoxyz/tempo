@@ -103,7 +103,7 @@ impl TIP20ChannelReserve {
 
     /// Seeds the enclosing transaction's replay-protected context hash for `open` calls.
     ///
-    /// The handler seeds `keccak256(encode_for_signing || sender)` for every real transaction
+    /// The handler seeds `blake3(encode_for_signing || sender)` for every real transaction
     /// type. The value is stored in transient storage so batched `open` calls share the same
     /// transaction-derived hash and the context is automatically cleared before the next
     /// transaction. If this is not called, `open` reads zero from transient storage and reverts.
