@@ -329,6 +329,12 @@ impl Inner<Init> {
                 //
                 // TODO: we are diverging from commonware in that we return the digest
                 // here. Is that ok or can that cause problems?
+                //
+                // `marshal.get_verified` can take a long time if marshal is busy
+                // persisting the parent block, so we race it with payload building to
+                // avoid delaying the usual proposal path. If it finds a verified block,
+                // we always prefer that block and skip the newly built proposal,
+                // even when payload construction finishes first.
                 let already_verified = OptionFuture::some(self.marshal.get_verified(round));
                 futures::pin_mut!(already_verified);
 
