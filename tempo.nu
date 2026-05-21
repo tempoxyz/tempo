@@ -782,7 +782,7 @@ def grafana-performance-url [benchmark_id: string, from_ms: int, to_ms: int] {
 
     let from = (iso-from-epoch-ms $from_ms)
     let to = (iso-from-epoch-ms $to_ms)
-    $"https://tempoxyz.grafana.net/d/dffj6qf1o30oowe/performance?orgId=1&from=($from)&to=($to)&timezone=browser&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=($benchmark_id)&var-group_by=benchmark_run"
+    $"https://tempoxyz.grafana.net/d/performance/performance?orgId=1&from=($from)&to=($to)&timezone=browser&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=($benchmark_id)&var-group_by=benchmark_run"
 }
 
 
