@@ -767,7 +767,13 @@ jobs:
 
       - name: Classify results
         if: success()
-        run: node .github/scripts/bench-e2e-classify.js "${{ steps.results-dir.outputs.path }}"
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        env:
+          BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
+        with:
+          script: |
+            const classify = require('./.github/scripts/bench-e2e-classify.js');
+            classify.main(process.env.BENCH_RESULTS_DIR);
 
       - name: Upload results
         if: ${{ !cancelled() }}

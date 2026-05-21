@@ -195,8 +195,7 @@ function buildMarkdown(summary) {
   return lines.join('\n');
 }
 
-function main() {
-  const resultsDir = process.argv[2];
+function main(resultsDir = process.argv[2]) {
   if (!resultsDir) {
     console.error('usage: bench-e2e-classify.js <results-dir>');
     process.exit(2);
@@ -227,4 +226,8 @@ function main() {
   console.log(`${summary.classification.emoji} ${summary.classification.label}`);
 }
 
-main();
+if (require.main === module) {
+  main();
+}
+
+module.exports = { main };
