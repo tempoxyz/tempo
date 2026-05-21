@@ -12999,7 +12999,6 @@ dependencies = [
  "alloy-consensus",
  "alloy-primitives",
  "alloy-rlp",
- "alloy-sol-types",
  "metrics",
  "reth-basic-payload-builder",
  "reth-chainspec",
