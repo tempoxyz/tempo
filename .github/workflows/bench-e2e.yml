@@ -64,7 +64,7 @@ on:
         description: Benchmark duration in seconds.
         type: string
         required: true
-        default: "300"
+        default: "40"
       bloat:
         description: State bloat size in GiB.
         type: choice
@@ -163,7 +163,7 @@ on:
         description: Number of baseline/feature run pairs.
         type: string
         required: true
-        default: "2"
+        default: "9"
       clickhouse-run:
         description: Benchmark phase that may use the direct ClickHouse reporter.
         type: string
@@ -188,7 +188,7 @@ on:
       duration:
         type: string
         required: false
-        default: "300"
+        default: "40"
       bloat:
         type: string
         required: false
@@ -300,7 +300,7 @@ on:
       run-pairs:
         type: string
         required: false
-        default: "2"
+        default: "9"
       clickhouse-run:
         type: string
         required: false
@@ -383,7 +383,7 @@ jobs:
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
-      BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '2' }}
+      BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '9' }}
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
       BENCHMARK_ID: bench-e2e-${{ github.run_id }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}

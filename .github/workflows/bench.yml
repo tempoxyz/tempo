@@ -108,6 +108,8 @@ jobs:
           script: |
             let pr, actor, mode, preset, duration, bloat, tps, accounts, maxConcurrentRequests, baseline, feature, baselineHardfork, featureHardfork, txgenRef, samply, tracy, tracySeconds, tracyOffset, otlp, baselineArgs, featureArgs, gasLimit, runType, forceBloat, noCache, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv, blocks, warmup, runPairs;
             let explicitWarmup = false;
+            let explicitDuration = false;
+            let explicitRunPairs = false;
 
             pr = String(context.issue.number);
             actor = context.payload.comment.user.login;
@@ -157,6 +159,8 @@ jobs:
                 } else {
                   defaults[key] = value;
                   if (key === 'warmup') explicitWarmup = true;
+                  if (key === 'duration') explicitDuration = true;
+                  if (key === 'run-pairs') explicitRunPairs = true;
                 }
               } else if (refArgs.has(key)) {
                 if (!value) {
@@ -226,6 +230,10 @@ jobs:
             warmup = defaults.warmup;
             runPairs = defaults['run-pairs'];
             var chain = defaults.chain;
+            if (mode === 'e2e') {
+              if (!explicitDuration) duration = '40';
+              if (!explicitRunPairs) runPairs = '9';
+            }
             if (!explicitWarmup) {
               warmup = defaultWarmup(blocks);
             }
