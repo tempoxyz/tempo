@@ -218,6 +218,7 @@ def txgen-run-preset-pipeline [
         "--rpc-url" $submit_rpc_url
         "--tps" $tps
         "--max-concurrent" $max_concurrent_requests
+        "--retries" 0
         ...$metrics_url_args
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
         "--drain-timeout" $TXGEN_HELPER_DRAIN_TIMEOUT_SECS
