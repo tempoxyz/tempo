@@ -3,8 +3,8 @@
 source ../../tempo.nu
 
 const TXGEN_EXISTING_RECIPIENTS_PRESET = "tip20_existing_recipients"
-const TXGEN_EXISTING_RECIPIENTS_START = 50000
-const TXGEN_EXISTING_RECIPIENTS_END = 100000
+const TXGEN_EXISTING_RECIPIENTS_START = 10000
+const TXGEN_EXISTING_RECIPIENTS_END = 4000000
 
 def resolved-runtime-mode [mode: string] {
     if $mode == "e2e" {

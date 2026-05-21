@@ -16,8 +16,8 @@ address_pools:
   existing_recipients:
     mnemonic: "test test test test test test test test test test test junk"
     range:
-      - 50000
-      - 100000
+      - 10000
+      - 4000000
 
 artifacts:
   ERC20: ../erc20.abi.json
