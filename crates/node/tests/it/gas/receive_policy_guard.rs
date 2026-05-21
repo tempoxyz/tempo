@@ -241,7 +241,7 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
             "set_receive_policy_receiver_recovery",
             &receiver_recovery_receiver,
             REJECT_ALL_POLICY_ID,
-            RECOVERY_RECEIVER,
+            receiver_recovery_receiver.address(),
         ),
         (
             "set_receive_policy_third_party_recovery",
@@ -284,7 +284,7 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
     let receiver_blocked = create_blocked_transfer(
         &originator_token,
         receiver_recovery_receiver.address(),
-        RECOVERY_RECEIVER,
+        receiver_recovery_receiver.address(),
         U256::from(2_000),
     )
     .await?;
