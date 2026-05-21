@@ -208,6 +208,25 @@ impl ITIP20::ITIP20Calls {
             || is_call::<ITIP20::burnCall>(input)
             || is_call::<ITIP20::burnWithMemoCall>(input)
     }
+
+    /// Returns `true` if `input` matches one of the TIP-1059 discounted pure-payment selectors.
+    ///
+    /// This is intentionally narrower than [`Self::is_payment`]: approvals and mints remain
+    /// payment-lane eligible but do not receive the settlement discount.
+    pub fn is_discounted_payment(input: &[u8]) -> bool {
+        fn is_call<C: SolCall>(input: &[u8]) -> bool {
+            input.first_chunk::<4>() == Some(&C::SELECTOR)
+                && input.len()
+                    == 4 + <C::Parameters<'_> as SolType>::ENCODED_SIZE.unwrap_or_default()
+        }
+
+        is_call::<ITIP20::transferCall>(input)
+            || is_call::<ITIP20::transferWithMemoCall>(input)
+            || is_call::<ITIP20::transferFromCall>(input)
+            || is_call::<ITIP20::transferFromWithMemoCall>(input)
+            || is_call::<ITIP20::burnCall>(input)
+            || is_call::<ITIP20::burnWithMemoCall>(input)
+    }
 }
 
 impl RolesAuthError {
@@ -370,6 +389,31 @@ mod test {
         ]
     }
 
+    #[rustfmt::skip]
+    fn discounted_payment_calldatas() -> [Vec<u8>; 6] {
+        let (to, from, amount, memo) = (Address::random(), Address::random(), U256::random(), B256::random());
+
+        [
+            ITIP20::transferCall { to, amount }.abi_encode(),
+            ITIP20::transferWithMemoCall { to, amount, memo }.abi_encode(),
+            ITIP20::transferFromCall { from, to, amount }.abi_encode(),
+            ITIP20::transferFromWithMemoCall { from, to, amount, memo }.abi_encode(),
+            ITIP20::burnCall { amount }.abi_encode(),
+            ITIP20::burnWithMemoCall { amount, memo }.abi_encode(),
+        ]
+    }
+
+    #[rustfmt::skip]
+    fn non_discounted_payment_calldatas() -> [Vec<u8>; 3] {
+        let (to, amount, memo) = (Address::random(), U256::random(), B256::random());
+
+        [
+            ITIP20::approveCall { spender: to, amount }.abi_encode(),
+            ITIP20::mintCall { to, amount }.abi_encode(),
+            ITIP20::mintWithMemoCall { to, amount, memo }.abi_encode(),
+        ]
+    }
+
     #[test]
     fn test_is_payment() {
         for calldata in payment_calldatas() {
@@ -378,6 +422,21 @@ mod test {
 
         for calldata in non_payment_calldatas() {
             assert!(!ITIP20::ITIP20Calls::is_payment(&calldata))
+        }
+    }
+
+    #[test]
+    fn test_is_discounted_payment() {
+        for calldata in discounted_payment_calldatas() {
+            assert!(ITIP20::ITIP20Calls::is_discounted_payment(&calldata))
+        }
+
+        for calldata in non_discounted_payment_calldatas() {
+            assert!(!ITIP20::ITIP20Calls::is_discounted_payment(&calldata))
+        }
+
+        for calldata in non_payment_calldatas() {
+            assert!(!ITIP20::ITIP20Calls::is_discounted_payment(&calldata))
         }
     }
 }

@@ -244,6 +244,17 @@ impl TempoTxEnvelope {
         }
     }
 
+    /// Returns true if this transaction is a TIP-1059 discounted pure-payment candidate.
+    ///
+    /// The gas-used cap is checked after execution; this only verifies the calldata and the
+    /// current payment-lane preconditions that can be known before execution.
+    pub fn is_discounted_payment_candidate(&self) -> bool {
+        self.is_payment_v2()
+            && self
+                .calls()
+                .all(|(to, input)| is_tip1059_discounted_call(to.to(), input))
+    }
+
     /// Returns the proposer of the subblock if this is a subblock transaction.
     pub fn subblock_proposer(&self) -> Option<PartialValidatorKey> {
         let Self::AA(tx) = &self else { return None };
@@ -509,6 +520,12 @@ fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
         }
         _ => false,
     }
+}
+
+/// Returns `true` if the call is in the TIP-1059 discounted pure-payment allow-list.
+#[inline]
+fn is_tip1059_discounted_call(to: Option<&Address>, input: &[u8]) -> bool {
+    matches!(to, Some(to) if to.is_tip20()) && ITIP20::ITIP20Calls::is_discounted_payment(input)
 }
 
 #[cfg(feature = "rpc")]
@@ -830,6 +847,53 @@ mod tests {
             for envelope in payment_envelopes(calldata) {
                 assert!(envelope.is_payment_v1(), "V1 must accept valid calldata");
                 assert!(envelope.is_payment_v2(), "V2 must accept valid calldata");
+            }
+        }
+    }
+
+    #[test]
+    fn test_discounted_payment_candidate_accepts_only_transfer_and_burn() {
+        let calldatas = payment_calldatas();
+        for calldata in [
+            &calldatas[0],
+            &calldatas[1],
+            &calldatas[2],
+            &calldatas[3],
+            &calldatas[7],
+            &calldatas[8],
+        ] {
+            for envelope in payment_envelopes(calldata.clone()) {
+                assert!(envelope.is_payment_v2(), "candidate must be payment-v2");
+                assert!(
+                    envelope.is_discounted_payment_candidate(),
+                    "transfer/burn calldata must be a discounted candidate"
+                );
+            }
+        }
+
+        for calldata in [&calldatas[4], &calldatas[5], &calldatas[6]] {
+            for envelope in payment_envelopes(calldata.clone()) {
+                assert!(envelope.is_payment_v2(), "approve/mint remain payment-v2");
+                assert!(
+                    !envelope.is_discounted_payment_candidate(),
+                    "approve/mint calldata must not be a discounted candidate"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_discounted_payment_candidate_rejects_channel_escrow() {
+        for calldata in channel_escrow_payment_calldatas() {
+            for envelope in payment_envelopes_to(TIP20_CHANNEL_ESCROW_ADDRESS, calldata) {
+                assert!(
+                    envelope.is_payment_v2(),
+                    "channel escrow remains payment-v2"
+                );
+                assert!(
+                    !envelope.is_discounted_payment_candidate(),
+                    "TIP-1059 discount is TIP-20 transfer/burn only"
+                );
             }
         }
     }

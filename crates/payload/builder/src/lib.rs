@@ -543,10 +543,25 @@ where
 
                     // Score payload value by actual validator payout, applying the AMM
                     // haircut when the transaction's fee token differs from the validator's.
-                    let nominal_spending = calc_gas_balance_spending(
-                        result.result().result.tx_gas_used(),
-                        effective_gas_price,
-                    );
+                    let tx_gas_used = result.result().result.tx_gas_used();
+                    let settlement_gas_price = if hardfork.is_t6()
+                        && pool_tx
+                            .transaction
+                            .inner()
+                            .is_discounted_payment_candidate()
+                        && tx_gas_used
+                            <= hardfork
+                                .max_discounted_payment_gas_used()
+                                .expect("T6 discount cap must exist")
+                    {
+                        hardfork
+                            .discounted_payment_gas_price()
+                            .expect("T6 discount price must exist") as u128
+                    } else {
+                        effective_gas_price
+                    };
+                    let nominal_spending =
+                        calc_gas_balance_spending(tx_gas_used, settlement_gas_price);
                     if let Some(fee_token) = pool_tx.transaction.resolved_fee_token() {
                         if fee_token == validator_fee_token {
                             total_fees += nominal_spending;

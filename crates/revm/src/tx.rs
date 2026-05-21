@@ -90,6 +90,11 @@ pub struct TempoTxEnv {
     /// - None corresponds to a transaction without a fee payer
     pub fee_payer: Option<Option<Address>>,
 
+    /// Whether the transaction satisfies the pre-execution TIP-1059 pure-payment rules.
+    ///
+    /// The post-execution gas-used cap is checked during fee settlement.
+    pub discounted_payment_candidate: bool,
+
     /// AA-specific transaction environment (boxed to keep TempoTxEnv lean for non-AA tx)
     pub tempo_tx_env: Option<Box<TempoBatchCallEnv>>,
 }
@@ -157,6 +162,18 @@ impl TempoTxEnv {
                 self.inner.input().as_ref(),
             )))
         }
+    }
+
+    /// Returns true if the T6 discounted payment settlement price applies for the given gas used.
+    pub fn receives_discounted_payment_price(
+        &self,
+        spec: tempo_chainspec::hardfork::TempoHardfork,
+        gas_used: u64,
+    ) -> bool {
+        self.discounted_payment_candidate
+            && spec
+                .max_discounted_payment_gas_used()
+                .is_some_and(|max| gas_used <= max)
     }
 }
 
@@ -347,6 +364,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             fee_payer: fee_payer_signature.map(|sig| {
                 secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
             }),
+            discounted_payment_candidate: false,
             // Bundle AA-specific fields into TempoBatchCallEnv
             tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
                 signature: signature.clone(),
@@ -375,14 +393,16 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
 impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
     fn from_recovered_tx(tx: &TempoTxEnvelope, sender: Address) -> Self {
         let unique_tx_identifier = Some(tx.unique_tx_identifier(sender));
+        let discounted_payment_candidate = tx.is_discounted_payment_candidate();
 
-        match tx {
+        let mut env = match tx {
             tx @ TempoTxEnvelope::Legacy(inner) => Self {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
                 fee_token: None,
                 is_system_tx: tx.is_system_tx(),
                 unique_tx_identifier,
                 fee_payer: None,
+                discounted_payment_candidate,
                 tempo_tx_env: None, // Non-AA transaction
             },
             TempoTxEnvelope::Eip2930(inner) => Self {
@@ -401,7 +421,9 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 ..Default::default()
             },
             TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx, sender),
-        }
+        };
+        env.discounted_payment_candidate = discounted_payment_candidate;
+        env
     }
 }
 
