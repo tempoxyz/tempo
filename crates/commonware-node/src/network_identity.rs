@@ -9,7 +9,7 @@ pub(crate) struct NetworkIdentity(pub <MinSig as Variant>::Public);
 
 impl NetworkIdentity {
     pub(crate) fn public_key(&self) -> <MinSig as Variant>::Public {
-        return self.0;
+        self.0
     }
 }
 
