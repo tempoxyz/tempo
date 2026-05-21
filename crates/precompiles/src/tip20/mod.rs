@@ -1251,12 +1251,12 @@ impl TIP20Token {
         self.check_not_paused()?;
         let destination = Recipient::resolve(to)?;
         destination.validate()?;
+        self.ensure_transfer_authorized(
+            recovery_mode.policy_subject(originator, receiver),
+            destination.target,
+        )?;
 
         if recovery_mode.is_reroute(to, receiver) {
-            self.ensure_transfer_authorized(
-                recovery_mode.policy_subject(originator, receiver),
-                destination.target,
-            )?;
             if TIP403Registry::new()
                 .validate_receive_policy(self.address, originator, destination.target)?
                 .is_some()
