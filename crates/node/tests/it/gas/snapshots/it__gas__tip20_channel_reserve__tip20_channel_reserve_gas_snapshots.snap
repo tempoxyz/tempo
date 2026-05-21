@@ -1,5 +1,5 @@
 ---
-source: crates/node/tests/it/gas/tip20_channel_escrow.rs
+source: crates/node/tests/it/gas/tip20_channel_reserve.rs
 expression: gas
 ---
 close_existing_channel_after_settlement: 62973

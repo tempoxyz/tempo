@@ -29,7 +29,7 @@ use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
-    TIP20_CHANNEL_ESCROW_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
@@ -495,7 +495,7 @@ where
             self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
         }
         if self.inner.spec.is_t5_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(TIP20_CHANNEL_ESCROW_ADDRESS)?;
+            self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS)?;
         }
         if self.inner.spec.is_t6_active_at_timestamp(timestamp) {
             self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
@@ -1675,7 +1675,7 @@ mod tests {
     }
 
     #[test]
-    fn test_apply_pre_execution_deploys_escrow_code() {
+    fn test_apply_pre_execution_deploys_guard_code() {
         // Dev chainspec has t6Time: 0, so T6 is active at any timestamp.
         let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
         let mut db = State::builder().with_bundle_update().build();

@@ -39,7 +39,7 @@ use std::sync::LazyLock;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     DECIMALS as TIP20_DECIMALS, ReceivePolicyGuardError, STABLECOIN_DEX_ADDRESS,
-    TIP20_CHANNEL_ESCROW_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS,
 };
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
@@ -135,7 +135,7 @@ pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN
 /// System custody addresses added to burn-blocked protection at each hardfork.
 pub const PROTECTED: &[(TempoHardfork, &[Address])] = &[
     (TempoHardfork::Genesis, &[TIP_FEE_MANAGER_ADDRESS, STABLECOIN_DEX_ADDRESS]),
-    (TempoHardfork::T5, &[TIP20_CHANNEL_ESCROW_ADDRESS]),
+    (TempoHardfork::T5, &[TIP20_CHANNEL_RESERVE_ADDRESS]),
     (TempoHardfork::T6, &[RECEIVE_POLICY_GUARD_ADDRESS]),
 ];
 
@@ -3156,14 +3156,14 @@ pub(crate) mod tests {
                 .with_role(burner, *BURN_BLOCKED_ROLE)
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, amount)
                 .with_mint(STABLECOIN_DEX_ADDRESS, amount)
-                .with_mint(TIP20_CHANNEL_ESCROW_ADDRESS, amount)
+                .with_mint(TIP20_CHANNEL_RESERVE_ADDRESS, amount)
                 .apply()?;
 
             for protected in [
                 TIP_FEE_MANAGER_ADDRESS,
                 STABLECOIN_DEX_ADDRESS,
                 RECEIVE_POLICY_GUARD_ADDRESS,
-                TIP20_CHANNEL_ESCROW_ADDRESS,
+                TIP20_CHANNEL_RESERVE_ADDRESS,
             ] {
                 let result = token.burn_blocked(
                     burner,
@@ -3195,7 +3195,7 @@ pub(crate) mod tests {
             for protected in [
                 TIP_FEE_MANAGER_ADDRESS,
                 STABLECOIN_DEX_ADDRESS,
-                TIP20_CHANNEL_ESCROW_ADDRESS,
+                TIP20_CHANNEL_RESERVE_ADDRESS,
             ] {
                 let result = token.burn_blocked(
                     burner,
@@ -3232,14 +3232,14 @@ pub(crate) mod tests {
             Ok::<_, TempoPrecompileError>(())
         })?;
 
-        // Pre-T5: TIP20_CHANNEL_ESCROW_ADDRESS is not yet in PROTECTED, so burn_blocked
+        // Pre-T5: TIP20_CHANNEL_RESERVE_ADDRESS is not yet in PROTECTED, so burn_blocked
         // actually burns from it (REJECT_ALL satisfies the sender-policy gate).
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
                 .with_issuer(admin)
                 .with_role(burner, *BURN_BLOCKED_ROLE)
-                .with_mint(TIP20_CHANNEL_ESCROW_ADDRESS, amount)
+                .with_mint(TIP20_CHANNEL_RESERVE_ADDRESS, amount)
                 .apply()?;
 
             token.change_transfer_policy_id(
@@ -3252,13 +3252,13 @@ pub(crate) mod tests {
             token.burn_blocked(
                 burner,
                 ITIP20::burnBlockedCall {
-                    from: TIP20_CHANNEL_ESCROW_ADDRESS,
+                    from: TIP20_CHANNEL_RESERVE_ADDRESS,
                     amount: burn_amount,
                 },
             )?;
 
             let balance = token.balance_of(ITIP20::balanceOfCall {
-                account: TIP20_CHANNEL_ESCROW_ADDRESS,
+                account: TIP20_CHANNEL_RESERVE_ADDRESS,
             })?;
             assert_eq!(balance, amount - burn_amount);
 

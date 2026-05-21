@@ -43,7 +43,7 @@ crate::sol! {
         function balanceOf(bytes calldata proof) external view returns (uint256 amount);
         function claim(address to, bytes calldata proof) external;
 
-        /// @notice Emitted when an inbound TIP-20 transfer or mint is blocked and funds are escrowed.
+        /// @notice Emitted when an inbound TIP-20 transfer or mint is blocked and funds are redirected.
         /// @param token TIP-20 token whose funds are held by the guard.
         /// @param from Original sender/originator of the blocked operation.
         /// @param receiver Resolved account where funds would settle; for virtual recipients its their master.
