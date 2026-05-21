@@ -5,12 +5,11 @@
 
 mod attrs;
 
-use alloy_primitives::B256;
+use alloy_primitives::{B256, Bytes, U256};
 pub use attrs::{InterruptHandle, TempoPayloadAttributes};
 use std::sync::Arc;
 
 use alloy_eips::eip7685::Requests;
-use alloy_primitives::U256;
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_api::{BlockBody, ExecutionPayload, PayloadTypes};
@@ -68,12 +67,59 @@ impl BuiltPayload for TempoBuiltPayload {
         self.inner.fees()
     }
 
+    fn block_access_list(&self) -> Option<&Bytes> {
+        self.inner.block_access_list()
+    }
+
     fn executed_block(&self) -> Option<BuiltPayloadExecutedBlock<Self::Primitives>> {
         self.executed_block.clone()
     }
 
     fn requests(&self) -> Option<Requests> {
         self.inner.requests()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempo_primitives::TempoHeader;
+
+    fn empty_sealed_block() -> Arc<SealedBlock<Block>> {
+        let block = Block {
+            header: TempoHeader::default(),
+            body: Default::default(),
+        };
+
+        Arc::new(SealedBlock::seal_slow(block))
+    }
+
+    #[test]
+    fn built_payload_exposes_block_access_list() {
+        let block_access_list = Bytes::from_static(&[0xc0]);
+        let eth_payload = EthBuiltPayload::new(
+            empty_sealed_block(),
+            U256::ZERO,
+            None,
+            Some(block_access_list.clone()),
+        );
+        let payload = TempoBuiltPayload::new(eth_payload, None);
+
+        assert_eq!(payload.block_access_list(), Some(&block_access_list));
+    }
+
+    #[test]
+    fn execution_data_does_not_carry_block_access_list() {
+        let eth_payload = EthBuiltPayload::new(
+            empty_sealed_block(),
+            U256::ZERO,
+            None,
+            Some(Bytes::from_static(&[0xc0])),
+        );
+        let payload = TempoBuiltPayload::new(eth_payload, None);
+        let execution_data = payload.into_execution_data();
+
+        assert_eq!(execution_data.block_access_list(), None);
     }
 }
 

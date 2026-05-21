@@ -68,6 +68,10 @@ pub struct TempoNodeArgs {
     /// Enable prewarming for the payload builder.
     #[arg(long = "builder.enable-prewarming", default_value_t = false)]
     pub builder_enable_prewarming: bool,
+
+    /// Enable EIP-7928 block access list collection in the payload builder.
+    #[arg(long = "builder.enable-bal", default_value_t = false)]
+    pub builder_enable_bal: bool,
 }
 
 impl TempoNodeArgs {
@@ -84,6 +88,7 @@ impl TempoNodeArgs {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
             enable_prewarming: self.builder_enable_prewarming,
+            enable_bal: self.builder_enable_bal,
         }
     }
 }
@@ -491,6 +496,8 @@ pub struct TempoPayloadBuilderBuilder {
     pub state_provider_metrics: bool,
     /// Enable prewarming for the payload builder.
     pub enable_prewarming: bool,
+    /// Enable EIP-7928 block access list collection in the payload builder.
+    pub enable_bal: bool,
 }
 
 impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
@@ -514,6 +521,7 @@ where
             ctx.is_dev(),
             self.state_provider_metrics,
             self.enable_prewarming,
+            self.enable_bal,
         ))
     }
 }

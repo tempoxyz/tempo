@@ -32,8 +32,10 @@ use reth_evm::{
 use reth_execution_types::BlockExecutionOutput;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
-use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
-use reth_revm::{State, context::Block, database::StateProviderDatabase};
+use reth_primitives_traits::{
+    Recovered, RecoveredBlock, transaction::error::InvalidTransactionError,
+};
+use reth_revm::{State, context::Block as _, database::StateProviderDatabase};
 use reth_storage_api::StateProviderFactory;
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
@@ -52,7 +54,7 @@ use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, e
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
-    RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
+    Block as TempoBlock, RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
     subblock::PartialValidatorKey,
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
@@ -97,6 +99,8 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     enable_prewarming: bool,
+    /// Whether to collect EIP-7928 block access lists while building payloads.
+    enable_bal: bool,
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
@@ -108,6 +112,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         is_dev: bool,
         state_provider_metrics: bool,
         enable_prewarming: bool,
+        enable_bal: bool,
     ) -> Self {
         Self {
             pool,
@@ -120,6 +125,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             is_dev,
             state_provider_metrics,
             enable_prewarming,
+            enable_bal,
         }
     }
 }
@@ -298,6 +304,7 @@ where
         let mut db = State::builder()
             .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
             .with_bundle_update()
+            .with_bal_builder_if(self.enable_bal)
             .build();
         drop(_state_setup_span);
         self.metrics
@@ -728,7 +735,7 @@ where
             block,
             hashed_state,
             trie_updates,
-            ..
+            block_access_list,
         } = if let Some(mut handle) = trie_handle {
             // Dropping the hook signals that execution is complete and the sparse trie task can
             // finalize the state root it has been updating incrementally.
@@ -763,6 +770,8 @@ where
         } else {
             builder.finish(finish_provider(), None)?
         };
+        let block_access_list = block_access_list.map(|bal| alloy_rlp::encode(&bal).into());
+        let block = clear_block_access_list_hash(block);
         drop(_finish_span);
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics
@@ -874,7 +883,8 @@ where
             "Built payload"
         );
 
-        let eth_payload = EthBuiltPayload::new(sealed_block, total_fees, requests, None);
+        let eth_payload =
+            EthBuiltPayload::new(sealed_block, total_fees, requests, block_access_list);
 
         let execution_output = BlockExecutionOutput {
             result: execution_result,
@@ -900,6 +910,12 @@ where
             })
         }
     }
+}
+
+fn clear_block_access_list_hash(block: RecoveredBlock<TempoBlock>) -> RecoveredBlock<TempoBlock> {
+    let (mut block, senders) = block.split();
+    block.header.inner.block_access_list_hash = None;
+    RecoveredBlock::new_unhashed(block, senders)
 }
 
 pub fn is_more_subblocks(
@@ -1135,5 +1151,24 @@ mod tests {
         // No valid_before → NOT expired
         let subblock_no_expiry = RecoveredSubBlock::with_valid_before(None);
         assert!(!has_expired_transactions(&subblock_no_expiry, 1000));
+    }
+
+    #[test]
+    fn test_clear_block_access_list_hash() {
+        let mut header = TempoHeader::default();
+        header.inner.block_access_list_hash = Some(B256::random());
+        let block = Block {
+            header,
+            body: BlockBody {
+                transactions: vec![],
+                ommers: vec![],
+                withdrawals: None,
+            },
+        };
+
+        let recovered = RecoveredBlock::new_unhashed(block, vec![]);
+        let cleared = clear_block_access_list_hash(recovered);
+
+        assert_eq!(cleared.header().inner.block_access_list_hash, None);
     }
 }
