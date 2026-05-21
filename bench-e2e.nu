@@ -417,6 +417,14 @@ def taskset-command [cmd: list<string>, cpus: string] {
     }
 }
 
+def shell-quote [arg: string] {
+    $arg | to json --raw
+}
+
+def shell-command [cmd: list<string>] {
+    $cmd | each { |arg| shell-quote $arg } | str join " "
+}
+
 def start-e2e-local-node [
     role: string,
     phase: string,
@@ -437,7 +445,7 @@ def start-e2e-local-node [
     } else { [] }
     let pinned_cmd = taskset-command [$tempo_bin ...$args] $cpus
     let node_cmd = wrap-samply $pinned_cmd $samply $full_samply_args
-    let node_cmd_str = ($node_cmd | str join " ")
+    let node_cmd_str = (shell-command $node_cmd)
     let script = $"($env_prefix)($otel_attrs)($tracy_env_prefix)($node_cmd_str) 2>&1"
     let unit_phase = ($phase | str replace -a "_" "-" | str replace -a "." "-")
     let runner = (systemd-scope-command $"tempo-e2e-($role)-($unit_phase)" $cpus $memory $script)
