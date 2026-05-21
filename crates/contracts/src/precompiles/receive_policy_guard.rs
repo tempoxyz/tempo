@@ -83,7 +83,7 @@ impl IReceivePolicyGuard::ClaimProofV1 {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         token: Address,
-        recovery_auth: Address,
+        recovery_address: Address,
         originator: Address,
         recipient: Address,
         at: u64,
@@ -92,6 +92,13 @@ impl IReceivePolicyGuard::ClaimProofV1 {
         kind: IReceivePolicyGuard::InboundKind,
         memo: B256,
     ) -> Self {
+        // Ensure proof doesn't use the `address(0)` sentinel
+        let recovery_auth = if recovery_address.is_zero() {
+            originator
+        } else {
+            recovery_address
+        };
+
         Self {
             version: 1,
             token,

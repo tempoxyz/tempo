@@ -138,11 +138,7 @@ impl ReceivePolicyGuard {
         let blocked_at = self.storage.timestamp().saturating_to::<u64>();
         let proof = IReceivePolicyGuard::ClaimProofV1::new(
             token,
-            if recovery_address.is_zero() {
-                originator
-            } else {
-                recovery_address
-            },
+            recovery_address,
             originator,
             recipient,
             blocked_at,
