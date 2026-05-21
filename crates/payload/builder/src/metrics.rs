@@ -39,10 +39,6 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) pool_transactions_included_last: Gauge,
     /// Number of pool transaction execution attempts rejected as invalid.
     pub(crate) invalid_pool_transaction_execution_attempts: Histogram,
-    /// Number of invalid pool transaction skip events in the payload.
-    pub(crate) invalid_pool_transaction_skip_events: Histogram,
-    /// Number of nonce-too-low pool transaction skip events in the payload.
-    pub(crate) nonce_too_low_pool_transaction_skip_events: Histogram,
     /// Ratio of yielded pool transactions that were included in the payload.
     pub(crate) pool_transactions_inclusion_ratio: Histogram,
     /// Ratio of yielded pool transactions that were included in the last payload.

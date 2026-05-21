@@ -464,8 +464,6 @@ where
         let mut normal_included_transaction_execution_elapsed = Duration::ZERO;
         let mut normal_invalid_transaction_execution_elapsed = Duration::ZERO;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
-        let mut invalid_pool_transaction_skip_events = 0u64;
-        let mut nonce_too_low_pool_transaction_skip_events = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         let block_build_stop_reason = loop {
             if attributes.is_interrupted() {
@@ -598,10 +596,7 @@ where
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
                         trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
-                        nonce_too_low_pool_transaction_skip_events += 1;
-                        invalid_pool_transaction_skip_events += 1;
                         self.metrics.inc_pool_tx_skipped("nonce_too_low");
-                        self.metrics.inc_pool_tx_skipped("invalid_tx");
                     } else {
                         // if the transaction is invalid, we can skip it and all of its
                         // descendants
@@ -612,7 +607,6 @@ where
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),
                         );
-                        invalid_pool_transaction_skip_events += 1;
                         self.metrics.inc_pool_tx_skipped("invalid_tx");
                     }
                     continue;
@@ -870,12 +864,6 @@ where
             .invalid_pool_transaction_execution_attempts
             .record(invalid_pool_transaction_execution_attempts as f64);
         self.metrics
-            .invalid_pool_transaction_skip_events
-            .record(invalid_pool_transaction_skip_events as f64);
-        self.metrics
-            .nonce_too_low_pool_transaction_skip_events
-            .record(nonce_too_low_pool_transaction_skip_events as f64);
-        self.metrics
             .pool_transactions_inclusion_ratio
             .record(pool_transactions_inclusion_ratio);
         self.metrics
@@ -906,8 +894,6 @@ where
             pool_transactions_yielded,
             pool_transactions_included,
             invalid_pool_transaction_execution_attempts,
-            invalid_pool_transaction_skip_events,
-            nonce_too_low_pool_transaction_skip_events,
             pool_transactions_inclusion_ratio,
             subblock_transactions,
             total_transactions,

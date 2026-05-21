@@ -811,10 +811,10 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     mut feature_builder_invalid_tx_samples = []
     mut baseline_builder_invalid_tx_execution_attempts_samples = []
     mut feature_builder_invalid_tx_execution_attempts_samples = []
-    mut baseline_builder_invalid_tx_skip_events_samples = []
-    mut feature_builder_invalid_tx_skip_events_samples = []
-    mut baseline_builder_nonce_too_low_skip_events_samples = []
-    mut feature_builder_nonce_too_low_skip_events_samples = []
+    mut baseline_builder_invalid_tx_skips = []
+    mut feature_builder_invalid_tx_skips = []
+    mut baseline_builder_nonce_too_low_skips = []
+    mut feature_builder_nonce_too_low_skips = []
     mut baseline_builder_fill_overhead_samples = []
     mut feature_builder_fill_overhead_samples = []
     mut baseline_builder_fill_idle_samples = []
@@ -869,8 +869,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                     "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds"
                     "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds"
                     "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts"
-                    "reth_tempo_payload_builder_invalid_pool_transaction_skip_events"
-                    "reth_tempo_payload_builder_nonce_too_low_pool_transaction_skip_events"
+                    "reth_tempo_payload_builder_pool_transactions_skipped_total"
                     "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds"
                     "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds"
                     "reth_consensus_engine_beacon_new_payload_latency"
@@ -887,8 +886,18 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         let builder_included_tx_samples = ($metric_samples | where name == "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds")
         let builder_invalid_tx_samples = ($metric_samples | where name == "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds")
         let builder_invalid_tx_execution_attempts_samples = ($metric_samples | where name == "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts")
-        let builder_invalid_tx_skip_events_samples = ($metric_samples | where name == "reth_tempo_payload_builder_invalid_pool_transaction_skip_events")
-        let builder_nonce_too_low_skip_events_samples = ($metric_samples | where name == "reth_tempo_payload_builder_nonce_too_low_pool_transaction_skip_events")
+        let builder_pool_tx_skip_samples = ($metric_samples | where name == "reth_tempo_payload_builder_pool_transactions_skipped_total")
+        let builder_pool_tx_skips_for_reason = { |reason: string|
+            let values = (
+                $builder_pool_tx_skip_samples
+                    | where { |sample| ($sample.labels | get -o reason | default "") == $reason }
+                    | get value
+                    | where { |value| $value != null }
+            )
+            if ($values | length) > 0 { $values | math max | math round --precision 0 } else { 0.0 }
+        }
+        let builder_invalid_tx_skips = do $builder_pool_tx_skips_for_reason "invalid_tx"
+        let builder_nonce_too_low_skips = do $builder_pool_tx_skips_for_reason "nonce_too_low"
         let builder_fill_overhead_samples = ($metric_samples | where name == "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds")
         let builder_fill_idle_samples = ($metric_samples | where name == "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds")
         let validation_samples = ($metric_samples | where name == "reth_consensus_engine_beacon_new_payload_latency")
@@ -950,8 +959,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             $baseline_builder_included_tx_samples = ($baseline_builder_included_tx_samples | append $builder_included_tx_samples)
             $baseline_builder_invalid_tx_samples = ($baseline_builder_invalid_tx_samples | append $builder_invalid_tx_samples)
             $baseline_builder_invalid_tx_execution_attempts_samples = ($baseline_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
-            $baseline_builder_invalid_tx_skip_events_samples = ($baseline_builder_invalid_tx_skip_events_samples | append $builder_invalid_tx_skip_events_samples)
-            $baseline_builder_nonce_too_low_skip_events_samples = ($baseline_builder_nonce_too_low_skip_events_samples | append $builder_nonce_too_low_skip_events_samples)
+            $baseline_builder_invalid_tx_skips = ($baseline_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
+            $baseline_builder_nonce_too_low_skips = ($baseline_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
             $baseline_builder_fill_overhead_samples = ($baseline_builder_fill_overhead_samples | append $builder_fill_overhead_samples)
             $baseline_builder_fill_idle_samples = ($baseline_builder_fill_idle_samples | append $builder_fill_idle_samples)
             $baseline_validation_samples = ($baseline_validation_samples | append $validation_samples)
@@ -966,8 +975,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             $feature_builder_included_tx_samples = ($feature_builder_included_tx_samples | append $builder_included_tx_samples)
             $feature_builder_invalid_tx_samples = ($feature_builder_invalid_tx_samples | append $builder_invalid_tx_samples)
             $feature_builder_invalid_tx_execution_attempts_samples = ($feature_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
-            $feature_builder_invalid_tx_skip_events_samples = ($feature_builder_invalid_tx_skip_events_samples | append $builder_invalid_tx_skip_events_samples)
-            $feature_builder_nonce_too_low_skip_events_samples = ($feature_builder_nonce_too_low_skip_events_samples | append $builder_nonce_too_low_skip_events_samples)
+            $feature_builder_invalid_tx_skips = ($feature_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
+            $feature_builder_nonce_too_low_skips = ($feature_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
             $feature_builder_fill_overhead_samples = ($feature_builder_fill_overhead_samples | append $builder_fill_overhead_samples)
             $feature_builder_fill_idle_samples = ($feature_builder_fill_idle_samples | append $builder_fill_idle_samples)
             $feature_validation_samples = ($feature_validation_samples | append $validation_samples)
@@ -1085,10 +1094,10 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let f_builder_invalid_tx = do $compute_quantile_metric_stats $feature_builder_invalid_tx_samples
     let b_builder_invalid_tx_execution_attempts = do $compute_quantile_value_stats $baseline_builder_invalid_tx_execution_attempts_samples
     let f_builder_invalid_tx_execution_attempts = do $compute_quantile_value_stats $feature_builder_invalid_tx_execution_attempts_samples
-    let b_builder_invalid_tx_skip_events = do $compute_quantile_value_stats $baseline_builder_invalid_tx_skip_events_samples
-    let f_builder_invalid_tx_skip_events = do $compute_quantile_value_stats $feature_builder_invalid_tx_skip_events_samples
-    let b_builder_nonce_too_low_skip_events = do $compute_quantile_value_stats $baseline_builder_nonce_too_low_skip_events_samples
-    let f_builder_nonce_too_low_skip_events = do $compute_quantile_value_stats $feature_builder_nonce_too_low_skip_events_samples
+    let b_builder_invalid_tx_skips = if ($baseline_builder_invalid_tx_skips | length) > 0 { $baseline_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_invalid_tx_skips = if ($feature_builder_invalid_tx_skips | length) > 0 { $feature_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
+    let b_builder_nonce_too_low_skips = if ($baseline_builder_nonce_too_low_skips | length) > 0 { $baseline_builder_nonce_too_low_skips | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_nonce_too_low_skips = if ($feature_builder_nonce_too_low_skips | length) > 0 { $feature_builder_nonce_too_low_skips | math sum | math round --precision 0 } else { 0.0 }
     let b_builder_fill_overhead = do $compute_quantile_metric_stats $baseline_builder_fill_overhead_samples
     let f_builder_fill_overhead = do $compute_quantile_metric_stats $feature_builder_fill_overhead_samples
     let b_builder_fill_idle = do $compute_quantile_metric_stats $baseline_builder_fill_idle_samples
@@ -1155,6 +1164,11 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
 
         if $base_value > 0.0 or $feature_value > 0.0 {
             $"| ($label) | (do $fmt_stat $base_stats $field) | (do $fmt_stat $feature_stats $field) | (do $fmt_stat_delta $base_stats $feature_stats $field) |"
+        } else { null }
+    }
+    let nonzero_count_row = { |label: string, base: float, feature: float|
+        if $base > 0.0 or $feature > 0.0 {
+            $"| ($label) | ($base) | ($feature) | (do $delta $base $feature)% |"
         } else { null }
     }
     let to_mgas_s = { |value: float| ($value / 1_000_000.0) | math round --precision 1 }
@@ -1229,10 +1243,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         (do $nonzero_stat_row "Invalid Tx Exec P99 [ms]" $b_builder_invalid_tx $f_builder_invalid_tx p99)
         (do $nonzero_stat_row "Invalid Tx Attempts P50" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p50)
         (do $nonzero_stat_row "Invalid Tx Attempts P99" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p99)
-        (do $nonzero_stat_row "Invalid Tx Skips P50" $b_builder_invalid_tx_skip_events $f_builder_invalid_tx_skip_events p50)
-        (do $nonzero_stat_row "Invalid Tx Skips P99" $b_builder_invalid_tx_skip_events $f_builder_invalid_tx_skip_events p99)
-        (do $nonzero_stat_row "Nonce Too Low Skips P50" $b_builder_nonce_too_low_skip_events $f_builder_nonce_too_low_skip_events p50)
-        (do $nonzero_stat_row "Nonce Too Low Skips P99" $b_builder_nonce_too_low_skip_events $f_builder_nonce_too_low_skip_events p99)
+        (do $nonzero_count_row "Invalid Tx Skips" $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
+        (do $nonzero_count_row "Nonce Too Low Skips" $b_builder_nonce_too_low_skips $f_builder_nonce_too_low_skips)
         (do $nonzero_stat_row "Fill Overhead P50 [ms]" $b_builder_fill_overhead $f_builder_fill_overhead p50)
         (do $nonzero_stat_row "Fill Overhead P99 [ms]" $b_builder_fill_overhead $f_builder_fill_overhead p99)
         (do $nonzero_stat_row "Fill Idle P50 [ms]" $b_builder_fill_idle $f_builder_fill_idle p50)
@@ -1300,12 +1312,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 builder_invalid_tx_execution_attempts_p50: $b_builder_invalid_tx_execution_attempts.p50
                 builder_invalid_tx_execution_attempts_p90: $b_builder_invalid_tx_execution_attempts.p90
                 builder_invalid_tx_execution_attempts_p99: $b_builder_invalid_tx_execution_attempts.p99
-                builder_invalid_tx_skip_events_p50: $b_builder_invalid_tx_skip_events.p50
-                builder_invalid_tx_skip_events_p90: $b_builder_invalid_tx_skip_events.p90
-                builder_invalid_tx_skip_events_p99: $b_builder_invalid_tx_skip_events.p99
-                builder_nonce_too_low_skip_events_p50: $b_builder_nonce_too_low_skip_events.p50
-                builder_nonce_too_low_skip_events_p90: $b_builder_nonce_too_low_skip_events.p90
-                builder_nonce_too_low_skip_events_p99: $b_builder_nonce_too_low_skip_events.p99
+                builder_invalid_tx_skips: $b_builder_invalid_tx_skips
+                builder_nonce_too_low_skips: $b_builder_nonce_too_low_skips
                 builder_fill_overhead_p50: $b_builder_fill_overhead.p50
                 builder_fill_overhead_p90: $b_builder_fill_overhead.p90
                 builder_fill_overhead_p99: $b_builder_fill_overhead.p99
@@ -1347,12 +1355,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 builder_invalid_tx_execution_attempts_p50: $f_builder_invalid_tx_execution_attempts.p50
                 builder_invalid_tx_execution_attempts_p90: $f_builder_invalid_tx_execution_attempts.p90
                 builder_invalid_tx_execution_attempts_p99: $f_builder_invalid_tx_execution_attempts.p99
-                builder_invalid_tx_skip_events_p50: $f_builder_invalid_tx_skip_events.p50
-                builder_invalid_tx_skip_events_p90: $f_builder_invalid_tx_skip_events.p90
-                builder_invalid_tx_skip_events_p99: $f_builder_invalid_tx_skip_events.p99
-                builder_nonce_too_low_skip_events_p50: $f_builder_nonce_too_low_skip_events.p50
-                builder_nonce_too_low_skip_events_p90: $f_builder_nonce_too_low_skip_events.p90
-                builder_nonce_too_low_skip_events_p99: $f_builder_nonce_too_low_skip_events.p99
+                builder_invalid_tx_skips: $f_builder_invalid_tx_skips
+                builder_nonce_too_low_skips: $f_builder_nonce_too_low_skips
                 builder_fill_overhead_p50: $f_builder_fill_overhead.p50
                 builder_fill_overhead_p90: $f_builder_fill_overhead.p90
                 builder_fill_overhead_p99: $f_builder_fill_overhead.p99
@@ -1394,12 +1398,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 builder_invalid_tx_execution_attempts_p50: (do $delta $b_builder_invalid_tx_execution_attempts.p50 $f_builder_invalid_tx_execution_attempts.p50)
                 builder_invalid_tx_execution_attempts_p90: (do $delta $b_builder_invalid_tx_execution_attempts.p90 $f_builder_invalid_tx_execution_attempts.p90)
                 builder_invalid_tx_execution_attempts_p99: (do $delta $b_builder_invalid_tx_execution_attempts.p99 $f_builder_invalid_tx_execution_attempts.p99)
-                builder_invalid_tx_skip_events_p50: (do $delta $b_builder_invalid_tx_skip_events.p50 $f_builder_invalid_tx_skip_events.p50)
-                builder_invalid_tx_skip_events_p90: (do $delta $b_builder_invalid_tx_skip_events.p90 $f_builder_invalid_tx_skip_events.p90)
-                builder_invalid_tx_skip_events_p99: (do $delta $b_builder_invalid_tx_skip_events.p99 $f_builder_invalid_tx_skip_events.p99)
-                builder_nonce_too_low_skip_events_p50: (do $delta $b_builder_nonce_too_low_skip_events.p50 $f_builder_nonce_too_low_skip_events.p50)
-                builder_nonce_too_low_skip_events_p90: (do $delta $b_builder_nonce_too_low_skip_events.p90 $f_builder_nonce_too_low_skip_events.p90)
-                builder_nonce_too_low_skip_events_p99: (do $delta $b_builder_nonce_too_low_skip_events.p99 $f_builder_nonce_too_low_skip_events.p99)
+                builder_invalid_tx_skips: (do $delta $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
+                builder_nonce_too_low_skips: (do $delta $b_builder_nonce_too_low_skips $f_builder_nonce_too_low_skips)
                 builder_fill_overhead_p50: (do $delta $b_builder_fill_overhead.p50 $f_builder_fill_overhead.p50)
                 builder_fill_overhead_p90: (do $delta $b_builder_fill_overhead.p90 $f_builder_fill_overhead.p90)
                 builder_fill_overhead_p99: (do $delta $b_builder_fill_overhead.p99 $f_builder_fill_overhead.p99)
