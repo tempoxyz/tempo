@@ -1147,6 +1147,16 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             $"| ($label) | (do $fmt_stat $base_stats $field) | (do $fmt_stat $feature_stats $field) | (do $fmt_stat_delta $base_stats $feature_stats $field) |"
         } else { null }
     }
+    let nonzero_stat_row = { |label: string, base_stats: record, feature_stats: record, field: string|
+        let base_has_samples = (do $has_samples $base_stats)
+        let feature_has_samples = (do $has_samples $feature_stats)
+        let base_value = if $base_has_samples { $base_stats | get $field } else { 0.0 }
+        let feature_value = if $feature_has_samples { $feature_stats | get $field } else { 0.0 }
+
+        if $base_value > 0.0 or $feature_value > 0.0 {
+            $"| ($label) | (do $fmt_stat $base_stats $field) | (do $fmt_stat $feature_stats $field) | (do $fmt_stat_delta $base_stats $feature_stats $field) |"
+        } else { null }
+    }
     let to_mgas_s = { |value: float| ($value / 1_000_000.0) | math round --precision 1 }
     let b_builder_mgas = do $to_mgas_s $b_builder_gas
     let f_builder_mgas = do $to_mgas_s $f_builder_gas
@@ -1213,20 +1223,20 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         $"| Latency P99 [ms] | ($b_builder.p99) | ($f_builder.p99) | (do $delta $b_builder.p99 $f_builder.p99)% |"
         (do $stat_row "Finish P50 [ms]" $b_builder_finish $f_builder_finish p50)
         (do $stat_row "Finish P99 [ms]" $b_builder_finish $f_builder_finish p99)
-        (do $stat_row "Included Tx Exec P50 [ms]" $b_builder_included_tx $f_builder_included_tx p50)
-        (do $stat_row "Included Tx Exec P99 [ms]" $b_builder_included_tx $f_builder_included_tx p99)
-        (do $stat_row "Invalid Tx Exec P50 [ms]" $b_builder_invalid_tx $f_builder_invalid_tx p50)
-        (do $stat_row "Invalid Tx Exec P99 [ms]" $b_builder_invalid_tx $f_builder_invalid_tx p99)
-        (do $stat_row "Invalid Tx Attempts P50" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p50)
-        (do $stat_row "Invalid Tx Attempts P99" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p99)
-        (do $stat_row "Invalid Tx Skips P50" $b_builder_invalid_tx_skip_events $f_builder_invalid_tx_skip_events p50)
-        (do $stat_row "Invalid Tx Skips P99" $b_builder_invalid_tx_skip_events $f_builder_invalid_tx_skip_events p99)
-        (do $stat_row "Nonce Too Low Skips P50" $b_builder_nonce_too_low_skip_events $f_builder_nonce_too_low_skip_events p50)
-        (do $stat_row "Nonce Too Low Skips P99" $b_builder_nonce_too_low_skip_events $f_builder_nonce_too_low_skip_events p99)
-        (do $stat_row "Fill Overhead P50 [ms]" $b_builder_fill_overhead $f_builder_fill_overhead p50)
-        (do $stat_row "Fill Overhead P99 [ms]" $b_builder_fill_overhead $f_builder_fill_overhead p99)
-        (do $stat_row "Fill Idle P50 [ms]" $b_builder_fill_idle $f_builder_fill_idle p50)
-        (do $stat_row "Fill Idle P99 [ms]" $b_builder_fill_idle $f_builder_fill_idle p99)
+        (do $nonzero_stat_row "Included Tx Exec P50 [ms]" $b_builder_included_tx $f_builder_included_tx p50)
+        (do $nonzero_stat_row "Included Tx Exec P99 [ms]" $b_builder_included_tx $f_builder_included_tx p99)
+        (do $nonzero_stat_row "Invalid Tx Exec P50 [ms]" $b_builder_invalid_tx $f_builder_invalid_tx p50)
+        (do $nonzero_stat_row "Invalid Tx Exec P99 [ms]" $b_builder_invalid_tx $f_builder_invalid_tx p99)
+        (do $nonzero_stat_row "Invalid Tx Attempts P50" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p50)
+        (do $nonzero_stat_row "Invalid Tx Attempts P99" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p99)
+        (do $nonzero_stat_row "Invalid Tx Skips P50" $b_builder_invalid_tx_skip_events $f_builder_invalid_tx_skip_events p50)
+        (do $nonzero_stat_row "Invalid Tx Skips P99" $b_builder_invalid_tx_skip_events $f_builder_invalid_tx_skip_events p99)
+        (do $nonzero_stat_row "Nonce Too Low Skips P50" $b_builder_nonce_too_low_skip_events $f_builder_nonce_too_low_skip_events p50)
+        (do $nonzero_stat_row "Nonce Too Low Skips P99" $b_builder_nonce_too_low_skip_events $f_builder_nonce_too_low_skip_events p99)
+        (do $nonzero_stat_row "Fill Overhead P50 [ms]" $b_builder_fill_overhead $f_builder_fill_overhead p50)
+        (do $nonzero_stat_row "Fill Overhead P99 [ms]" $b_builder_fill_overhead $f_builder_fill_overhead p99)
+        (do $nonzero_stat_row "Fill Idle P50 [ms]" $b_builder_fill_idle $f_builder_fill_idle p50)
+        (do $nonzero_stat_row "Fill Idle P99 [ms]" $b_builder_fill_idle $f_builder_fill_idle p99)
         ""
         "## Validator"
         ""
