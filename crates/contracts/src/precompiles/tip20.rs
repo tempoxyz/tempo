@@ -192,9 +192,11 @@ impl ITIP20::ITIP20Calls {
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment(input: &[u8]) -> bool {
         fn is_call<C: SolCall>(input: &[u8]) -> bool {
-            input.first_chunk::<4>() == Some(&C::SELECTOR)
-                && input.len()
-                    == 4 + <C::Parameters<'_> as SolType>::ENCODED_SIZE.unwrap_or_default()
+            let Some(encoded_size) = <C::Parameters<'_> as SolType>::ENCODED_SIZE else {
+                return false;
+            };
+
+            input.first_chunk::<4>() == Some(&C::SELECTOR) && input.len() == 4 + encoded_size
         }
 
         is_call::<ITIP20::transferCall>(input)
@@ -214,9 +216,11 @@ impl ITIP20::ITIP20Calls {
     /// receive the settlement discount.
     pub fn is_discounted_payment_call(input: &[u8]) -> bool {
         fn is_call<C: SolCall>(input: &[u8]) -> bool {
-            input.first_chunk::<4>() == Some(&C::SELECTOR)
-                && input.len()
-                    == 4 + <C::Parameters<'_> as SolType>::ENCODED_SIZE.unwrap_or_default()
+            let Some(encoded_size) = <C::Parameters<'_> as SolType>::ENCODED_SIZE else {
+                return false;
+            };
+
+            input.first_chunk::<4>() == Some(&C::SELECTOR) && input.len() == 4 + encoded_size
         }
 
         is_call::<ITIP20::transferCall>(input)
