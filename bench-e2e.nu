@@ -719,8 +719,6 @@ def bench-update-pr-status [status: string] {
 
 def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
-    let block_access_list_output = ($run | get -o block_access_list_output | default "")
-    let trie_witness_output = ($run | get -o trie_witness_output | default "")
     print $"=== Starting local e2e phase: ($phase) ==="
     let run_type = if ($phase | str starts-with "baseline") { "baseline" } else { "feature" }
     let genesis = ($run | get -o genesis | default $ctx.genesis)
@@ -763,17 +761,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
         mkdir $dir
     }
 
-    let stale_paths = ([
+    for stale in [
         $"($ctx.results_dir)/report-($phase).json"
         $"($ctx.results_dir)/profile-($phase)-a.json.gz"
         $"($ctx.results_dir)/profile-($phase)-b.json.gz"
         $"($ctx.results_dir)/tracy-profile-($phase).tracy"
         $"($ctx.results_dir)/logs-($phase)-a"
         $"($ctx.results_dir)/logs-($phase)-b"
-    ]
-        | append (if $block_access_list_output != "" { [$block_access_list_output] } else { [] })
-        | append (if $trie_witness_output != "" { [$trie_witness_output] } else { [] }))
-    for stale in $stale_paths {
+    ] {
         if ($stale | path exists) { rm -rf $stale }
     }
     if ("report.json" | path exists) { rm report.json }
@@ -880,8 +875,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --scenario $scenario
                 --victoriametrics-url $ctx.victoriametrics_url
                 --clickhouse-url $phase_clickhouse_url
-                --block-access-list-output $block_access_list_output
-                --trie-witness-output $trie_witness_output
                 --skip-funding=($ctx.bloat > 0))
             if not $bench_result.ok {
                 $bench_result.exit_code
@@ -1330,256 +1323,4 @@ def "main e2e" [
     if $e2e_exit != 0 {
         exit $e2e_exit
     }
-}
-
-# Collect one TIP20 e2e run's block artifacts for CodSpeed benchmarks.
-def "main codspeed-fixtures" [
-    --preset: string = "tip20"                         # Txgen preset name
-    --tps: int = 20000                                  # Target TPS
-    --duration: int = 300                               # Duration in seconds
-    --accounts: int = 1000                              # Number of accounts
-    --max-concurrent-requests: int = 100                # Max concurrent requests
-    --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 1, 10, or 100
-    --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
-    --profile: string = $DEFAULT_PROFILE                # Cargo build profile
-    --features: string = $DEFAULT_FEATURES              # Cargo features
-    --no-default-features                               # Disable Cargo default features
-    --force-bloat                                       # Regenerate and promote both local e2e snapshots
-    --bench-args: string = ""                           # Additional txgen generate arguments
-    --bench-env: string = ""                            # Environment vars for the sender process
-    --node-args: string = ""                            # Additional node args for the fixture run
-    --node-env: string = ""                             # Environment vars for the fixture node processes
-    --output-dir: string = "codspeed-prebench"          # Directory for fixture artifacts
-    --tune                                              # Apply system tuning
-    --loud                                              # Show node debug logs
-] {
-    let preset_path = (txgen-preset-path $preset)
-    let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
-    let validator_list = (
-        $E2E_VALIDATORS
-        | split row ","
-        | each { |v| $v | str trim }
-        | where { |v| $v != "" }
-    )
-    if ($validator_list | length) != 2 {
-        print "Error: E2E_VALIDATORS must contain exactly two comma-separated consensus addresses ordered as a,b"
-        exit 1
-    }
-
-    let a_validator = ($validator_list | get 0)
-    let b_validator = ($validator_list | get 1)
-    let a_ip = ($a_validator | split row ":" | get 0)
-    let a_consensus_port = ($a_validator | split row ":" | get 1 | into int)
-    let b_ip = ($b_validator | split row ":" | get 0)
-    let b_consensus_port = ($b_validator | split row ":" | get 1 | into int)
-    let a_db = $"($E2E_A_MOUNT)/tempo_e2e_($bloat_mib)mb"
-    let b_db = $"($E2E_B_MOUNT)/tempo_e2e_($bloat_mib)mb"
-    let a_identity = $a_db
-    let b_identity = $b_db
-    let genesis_path = $"($a_db)/($BENCH_META_SUBDIR)/genesis.json"
-    let a_trusted_peers_path = $"($a_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
-    let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
-    let snapshot_state_hardfork = (latest-tempo-hardfork)
-    let snapshot_hardfork_args = (hardfork-to-genesis-args $snapshot_state_hardfork)
-
-    let run_started_at = (date now)
-    let timestamp = ($run_started_at | format date "%Y%m%d-%H%M%S-%3f")
-    let current_sha = (git rev-parse HEAD | str trim)
-    let benchmark_id = if (($env | get --optional GITHUB_RUN_ID) != null) {
-        $"codspeed-prebench-($env.GITHUB_RUN_ID)"
-    } else {
-        $"codspeed-prebench-($timestamp)"
-    }
-    let reference_epoch = (($run_started_at | into int) / 1_000_000_000 | into int)
-    let artifact_dir = ($output_dir | path expand)
-    if ($artifact_dir | path exists) { rm -rf $artifact_dir }
-    mkdir $artifact_dir
-    let block_access_list_output = $"($artifact_dir)/block-access-lists.ndjson.gz"
-    let trie_witness_output = $"($artifact_dir)/trie-witnesses.ndjson.gz"
-
-    validate-schelk-state $E2E_A_STATE_PATH $E2E_B_STATE_PATH
-    cleanup-local-e2e-processes
-
-    build-tempo --no-default-features=$no_default_features ["tempo"] $profile $features
-    let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
-    let txgen = txgen-resolve-binaries
-
-    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
-
-    let snapshots_ready = (e2e-snapshots-ready $a_db $b_db)
-    let should_init_snapshots = $force_bloat or (not $snapshots_ready)
-    if (not $snapshots_ready) and (not $force_bloat) {
-        print $"Local e2e snapshot ($bloat) is missing required files; initializing it once."
-        let missing_a = (e2e-snapshot-missing-files $a_db)
-        let missing_b = (e2e-snapshot-missing-files $b_db)
-        if ($missing_a | length) > 0 {
-            print $"  Missing from a: ($missing_a | str join ', ')"
-        }
-        if ($missing_b | length) > 0 {
-            print $"  Missing from b: ($missing_b | str join ', ')"
-        }
-    }
-
-    if $should_init_snapshots {
-        let init_dir = $"($LOCALNET_DIR)/e2e-local-init"
-        let generated_genesis = $"($init_dir)/genesis.json"
-        let bloat_file = $"($E2E_BLOAT_TMP_DIR)/state_bloat.bin"
-        mark-schelk-dirty-at $E2E_A_STATE_PATH
-        mark-schelk-dirty-at $E2E_B_STATE_PATH
-        if ($init_dir | path exists) { rm -rf $init_dir }
-        mkdir $init_dir
-        if ($E2E_BLOAT_TMP_DIR | path exists) { rm -rf $E2E_BLOAT_TMP_DIR }
-        mkdir $E2E_BLOAT_TMP_DIR
-
-        let genesis_accounts = ([$accounts 3] | math max) + 1
-        print $"Generating local e2e localnet config for validators: ($E2E_VALIDATORS)"
-        cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $init_dir --accounts $genesis_accounts --validators $E2E_VALIDATORS --seed $E2E_SEED --force ...$gas_limit_args ...$snapshot_hardfork_args
-
-        let trusted_peers = (trusted-peers-from-localnet $init_dir)
-        if $trusted_peers == "" {
-            print "Error: generated localnet did not produce trusted peers"
-            exit 1
-        }
-        if $bloat_mib > 0 {
-            ensure-bloat-space $bloat_mib
-            print $"Generating local e2e state bloat \(($bloat_mib) MiB\)..."
-            let token_args = ($TIP20_TOKEN_IDS | each { |id| ["--token" $"($id)"] } | flatten)
-            cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
-        }
-
-        let marker = {
-            bloat_mib: $bloat_mib
-            bloat: $bloat
-            accounts: $genesis_accounts
-            validators: $E2E_VALIDATORS
-            seed: $E2E_SEED
-            gas_limit: $gas_limit
-            dkg_in_genesis: true
-            topology: "single-runner"
-            state_hardfork: $snapshot_state_hardfork
-        }
-        init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
-        init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
-        if ($E2E_BLOAT_TMP_DIR | path exists) {
-            rm -rf $E2E_BLOAT_TMP_DIR
-        }
-        bench-promote-at $E2E_A_STATE_PATH $a_db
-        bench-promote-at $E2E_B_STATE_PATH $b_db
-        bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-        bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
-    }
-
-    let trusted_peers = if ($a_trusted_peers_path | path exists) {
-        open $a_trusted_peers_path | str trim
-    } else {
-        let b_trusted_peers_path = $"($b_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
-        if ($b_trusted_peers_path | path exists) {
-            open $b_trusted_peers_path | str trim
-        } else {
-            print $"Error: trusted peers file not found in ($a_trusted_peers_path) or ($b_trusted_peers_path)"
-            exit 1
-        }
-    }
-
-    let ctx = {
-        genesis: $genesis_path
-        trusted_peers: $trusted_peers
-        a: {
-            state_path: $E2E_A_STATE_PATH
-            mount: $E2E_A_MOUNT
-            datadir: $a_db
-            node_dir: $a_identity
-            ip: $a_ip
-            consensus_port: $a_consensus_port
-            cpus: $E2E_A_CPUS
-            memory: $E2E_A_MEMORY
-        }
-        b: {
-            state_path: $E2E_B_STATE_PATH
-            mount: $E2E_B_MOUNT
-            datadir: $b_db
-            node_dir: $b_identity
-            ip: $b_ip
-            consensus_port: $b_consensus_port
-            cpus: $E2E_B_CPUS
-            memory: $E2E_B_MEMORY
-        }
-        preset: $preset
-        preset_path: $preset_path
-        tps: $tps
-        duration: $duration
-        accounts: $accounts
-        max_concurrent_requests: $max_concurrent_requests
-        bloat: $bloat_mib
-        txgen: $txgen
-        results_dir: $artifact_dir
-        profile: $profile
-        samply: false
-        samply_args: []
-        tracy: "off"
-        tracy_filter: "debug"
-        tracy_seconds: 0
-        tracy_offset: 0
-        baseline_args: ""
-        feature_args: $node_args
-        bench_args: $bench_args
-        baseline_env: ""
-        feature_env: $node_env
-        bench_env: $bench_env
-        victoriametrics_url: ""
-        clickhouse_url: ""
-        clickhouse_run: ""
-        run_type: "codspeed-prebench"
-        benchmark_id: $benchmark_id
-        reference_epoch: $reference_epoch
-        tune: $tune
-        loud: $loud
-        gas_limit: $gas_limit
-        tracing_otlp: ""
-    }
-    let run = {
-        phase: "codspeed-prebench"
-        ref: $current_sha
-        ref_label: "codspeed-prebench"
-        tempo: $tempo_bin
-        genesis: $genesis_path
-        hardfork: ""
-        block_access_list_output: $block_access_list_output
-        trie_witness_output: $trie_witness_output
-    }
-
-    let phase_exit = (run-local-e2e-phase $run $ctx)
-    cleanup-local-e2e-processes
-    bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
-    bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
-    if $phase_exit != 0 {
-        exit $phase_exit
-    }
-
-    let report_path = $"($artifact_dir)/report-codspeed-prebench.json"
-    for required in [$block_access_list_output $trie_witness_output $report_path] {
-        if not ($required | path exists) {
-            print $"Error: expected CodSpeed fixture artifact was not written: ($required)"
-            exit 1
-        }
-    }
-
-    {
-        preset: $preset
-        duration_secs: $duration
-        tps: $tps
-        accounts: $accounts
-        max_concurrent_requests: $max_concurrent_requests
-        bloat_gib: $bloat
-        gas_limit: $gas_limit
-        git_ref: $current_sha
-        benchmark_id: $benchmark_id
-        block_access_lists: "block-access-lists.ndjson.gz"
-        trie_witnesses: "trie-witnesses.ndjson.gz"
-        report: "report-codspeed-prebench.json"
-        format: "gzip_ndjson"
-    } | to json | save -f $"($artifact_dir)/manifest.json"
-
-    print $"CodSpeed pre-bench fixtures written to ($artifact_dir)"
 }

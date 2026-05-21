@@ -91,7 +91,7 @@ jobs:
           command -v bench
       - name: Collect block artifacts
         run: |
-          nu bench-e2e.nu codspeed-fixtures \
+          nu codspeed-prebench.nu collect \
             --preset "$CODSPEED_PRE_BENCH_PRESET" \
             --bloat "$CODSPEED_PRE_BENCH_BLOAT" \
             --duration "$CODSPEED_PRE_BENCH_DURATION" \
