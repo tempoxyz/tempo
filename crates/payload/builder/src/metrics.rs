@@ -37,6 +37,12 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) pool_transactions_included: Histogram,
     /// Number of yielded pool transactions included in the last payload.
     pub(crate) pool_transactions_included_last: Gauge,
+    /// Number of pool transaction execution attempts rejected as invalid.
+    pub(crate) invalid_pool_transaction_execution_attempts: Histogram,
+    /// Number of invalid pool transaction skip events in the payload.
+    pub(crate) invalid_pool_transaction_skip_events: Histogram,
+    /// Number of nonce-too-low pool transaction skip events in the payload.
+    pub(crate) nonce_too_low_pool_transaction_skip_events: Histogram,
     /// Ratio of yielded pool transactions that were included in the payload.
     pub(crate) pool_transactions_inclusion_ratio: Histogram,
     /// Ratio of yielded pool transactions that were included in the last payload.
@@ -73,18 +79,24 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) state_setup_duration_seconds: Histogram,
     /// The time it took to prepare system transactions in seconds.
     pub(crate) prepare_system_transactions_duration_seconds: Histogram,
-    /// The time it took to execute one transaction in seconds.
-    pub(crate) transaction_execution_duration_seconds: Histogram,
-    /// The time it took to execute normal transactions in seconds.
-    pub(crate) total_normal_transaction_execution_duration_seconds: Histogram,
+    /// The time it took to prepare and execute one included normal transaction.
+    pub(crate) normal_included_transaction_execution_duration_seconds: Histogram,
+    /// The time it took to prepare and execute one invalid normal transaction attempt.
+    pub(crate) normal_invalid_transaction_execution_duration_seconds: Histogram,
+    /// Total time spent executing transactions included in the payload.
+    pub(crate) total_normal_included_transaction_execution_duration_seconds: Histogram,
+    /// Total time spent preparing and executing invalid normal pool transaction attempts.
+    pub(crate) total_normal_invalid_transaction_execution_duration_seconds: Histogram,
+    /// Time spent waiting for more normal transactions during block fill.
+    pub(crate) normal_transaction_fill_idle_duration_seconds: Histogram,
+    /// Normal block-fill time not spent preparing or executing transactions.
+    pub(crate) normal_transaction_fill_overhead_duration_seconds: Histogram,
     /// The time it took to execute subblock transactions in seconds.
     pub(crate) total_subblock_transaction_execution_duration_seconds: Histogram,
     /// Execution time for a single subblock.
     pub(crate) subblock_execution_duration_seconds: Histogram,
     /// Number of transactions in a single subblock.
     pub(crate) subblock_transaction_count: Histogram,
-    /// The time it took to execute all transactions in seconds.
-    pub(crate) total_transaction_execution_duration_seconds: Histogram,
     /// The time it took to execute system transactions in seconds.
     pub(crate) system_transactions_execution_duration_seconds: Histogram,
     /// The time it took to finalize the payload in seconds. Includes merging transitions and calculating the state root.

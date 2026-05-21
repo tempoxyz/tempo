@@ -561,13 +561,79 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "label_replace(avg(reth_tempo_payload_builder_total_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
-          "legendFormat": "{{job}} p{{quantile}}",
+          "expr": "label_replace(avg(reth_tempo_payload_builder_payload_build_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
+          "legendFormat": "{{job}} builder latency p{{quantile}}",
           "range": true,
           "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "editorMode": "code",
+          "expr": "label_replace(avg(reth_tempo_payload_builder_normal_included_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
+          "legendFormat": "{{job}} included tx each p{{quantile}}",
+          "range": true,
+          "refId": "C"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "editorMode": "code",
+          "expr": "label_replace(avg(reth_tempo_payload_builder_normal_invalid_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
+          "legendFormat": "{{job}} invalid tx each p{{quantile}}",
+          "range": true,
+          "refId": "D"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "editorMode": "code",
+          "expr": "label_replace(avg(reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
+          "legendFormat": "{{job}} included tx total p{{quantile}}",
+          "range": true,
+          "refId": "E"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "editorMode": "code",
+          "expr": "label_replace(avg(reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
+          "legendFormat": "{{job}} invalid tx total p{{quantile}}",
+          "range": true,
+          "refId": "F"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "editorMode": "code",
+          "expr": "label_replace(avg(reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
+          "legendFormat": "{{job}} fill overhead p{{quantile}}",
+          "range": true,
+          "refId": "G"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "editorMode": "code",
+          "expr": "label_replace(avg(reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
+          "legendFormat": "{{job}} fill idle p{{quantile}}",
+          "range": true,
+          "refId": "H"
         }
       ],
-      "title": "Execution Latency",
+      "title": "Builder Latency / Tx Exec / Fill",
       "type": "timeseries"
     },
     {
