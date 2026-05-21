@@ -134,39 +134,47 @@ impl TIP20Token {
         global_reward_per_token: Option<U256>,
         holder_balance: Option<U256>,
     ) -> Result<Address> {
-        let cached_delegate = self.user_reward_info[holder].reward_recipient.read()?;
-        let holder_reward_per_token = self.user_reward_info[holder].reward_per_token.read()?;
-
         let global_reward_per_token =
             global_reward_per_token.map_or_else(|| self.get_global_reward_per_token(), Ok)?;
+
+        // If rewards aren't activated, treat as opted-out
+        if global_reward_per_token.is_zero() {
+            return Ok(Address::ZERO);
+        }
+
+        let holder_reward_per_token = self.user_reward_info[holder].reward_per_token.read()?;
         let reward_per_token_delta = global_reward_per_token
             .checked_sub(holder_reward_per_token)
             .ok_or(TempoPrecompileError::under_overflow())?;
 
-        if reward_per_token_delta != U256::ZERO {
-            if cached_delegate != Address::ZERO {
-                let holder_balance = holder_balance.map_or_else(|| self.get_balance(holder), Ok)?;
-                let reward = holder_balance
-                    .checked_mul(reward_per_token_delta)
-                    .and_then(|v| v.checked_div(ACC_PRECISION))
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-
-                if reward != U256::ZERO {
-                    // Add reward to delegate's balance (or holder's own balance if self-delegated)
-                    let new_reward_balance = self.user_reward_info[cached_delegate]
-                        .reward_balance
-                        .read()?
-                        .checked_add(reward)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
-                    self.user_reward_info[cached_delegate]
-                        .reward_balance
-                        .write(new_reward_balance)?;
-                }
-            }
-            self.user_reward_info[holder]
-                .reward_per_token
-                .write(global_reward_per_token)?;
+        // If user doesn't have rewards, treat as opted-out
+        if reward_per_token_delta == U256::ZERO {
+            return Ok(Address::ZERO);
         }
+
+        let cached_delegate = self.user_reward_info[holder].reward_recipient.read()?;
+        if cached_delegate != Address::ZERO {
+            let holder_balance = holder_balance.map_or_else(|| self.get_balance(holder), Ok)?;
+            let reward = holder_balance
+                .checked_mul(reward_per_token_delta)
+                .and_then(|v| v.checked_div(ACC_PRECISION))
+                .ok_or(TempoPrecompileError::under_overflow())?;
+
+            if reward != U256::ZERO {
+                // Add reward to delegate's balance (or holder's own balance if self-delegated)
+                let new_reward_balance = self.user_reward_info[cached_delegate]
+                    .reward_balance
+                    .read()?
+                    .checked_add(reward)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                self.user_reward_info[cached_delegate]
+                    .reward_balance
+                    .write(new_reward_balance)?;
+            }
+        }
+        self.user_reward_info[holder]
+            .reward_per_token
+            .write(global_reward_per_token)?;
 
         Ok(cached_delegate)
     }
@@ -316,15 +324,13 @@ impl TIP20Token {
             self.update_rewards(from, global_reward_per_token, Some(from_balance))?;
         let to_delegate = self.update_rewards(to, global_reward_per_token, to_balance)?;
 
-        if !from_delegate.is_zero() {
-            if to_delegate.is_zero() {
-                self.update_opted_in_supply(amount, false)?;
-            }
-        } else if !to_delegate.is_zero() {
-            self.update_opted_in_supply(amount, true)?;
+        match (from_delegate, to_delegate) {
+            // Increase supply: from opted-out, to opted-in.
+            (Address::ZERO, to) if !to.is_zero() => self.update_opted_in_supply(amount, true),
+            // Decrease supply: from opted-in, to opted-out.
+            (from, Address::ZERO) if !from.is_zero() => self.update_opted_in_supply(amount, false),
+            _ => Ok(()), // All other cases don't have effect
         }
-
-        Ok(())
     }
 
     /// Handles reward accounting when tokens are minted to an address.
