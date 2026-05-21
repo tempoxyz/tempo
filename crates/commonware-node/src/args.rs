@@ -10,8 +10,6 @@ use eyre::Context;
 use tempo_chainspec::NetworkIdentity;
 use tempo_commonware_node_config::SigningKey;
 
-use crate::alias::BlsPublicKey;
-
 const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
     reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
 
@@ -29,15 +27,14 @@ pub struct Args {
     #[arg(long = "consensus.signing-share")]
     pub signing_share: Option<PathBuf>,
 
-    /// Consensus network BLS public key. Otherwise derived from genesis
+    /// Consensus network bls network identity key. Otherwise derived from genesis
     #[arg(
         long = "consensus.network-identity",
         requires = "network_identity_from_epoch"
     )]
-    pub(crate) network_identity: Option<BlsPublicKeyParser>,
+    pub(crate) network_identity: Option<NetworkIdentityParser>,
 
-    /// Epoch where --consensus.network-identity rotation occurred. If the network identity
-    /// was explicitly set, there must have been a network rotation after genesis.
+    /// First epoch where --consensus.network-identity is set after rotation
     #[arg(
         long = "consensus.network-identity-from-epoch",
         requires = "network_identity"
@@ -273,15 +270,16 @@ pub struct Args {
 }
 
 #[derive(Debug, Clone, Copy)]
-pub(crate) struct BlsPublicKeyParser(BlsPublicKey);
-impl FromStr for BlsPublicKeyParser {
+pub(crate) struct NetworkIdentityParser(crate::alias::NetworkIdentity);
+impl FromStr for NetworkIdentityParser {
     type Err = Box<dyn std::error::Error + Send + Sync + 'static>;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         let bytes = s.parse::<FixedBytes<96>>()?;
 
         let mut bytes = bytes.as_slice();
-        let key = BlsPublicKey::read(&mut bytes).wrap_err("must be a valid BLS public key")?;
+        let key = crate::alias::NetworkIdentity::read(&mut bytes)
+            .wrap_err("must be a valid BLS public key")?;
 
         Ok(Self(key))
     }

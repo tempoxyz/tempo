@@ -32,7 +32,7 @@ pub struct NetworkIdentity {
 impl NetworkIdentity {
     pub(crate) fn moderato() -> Self {
         let identity = <MinSig as Variant>::Public::read(&mut MODERATO_NETWORK_IDENTITY.as_ref())
-            .expect("invalid network identity");
+            .expect("valid network identity");
 
         Self {
             identity,
@@ -42,7 +42,7 @@ impl NetworkIdentity {
 
     pub(crate) fn presto() -> Self {
         let identity = <MinSig as Variant>::Public::read(&mut PRESTO_NETWORK_IDENTITY.as_ref())
-            .expect("invalid network identity");
+            .expect("valid network identity");
 
         Self {
             identity,
@@ -58,5 +58,33 @@ impl NetworkIdentity {
             from_epoch: outcome.epoch.get(),
             identity: *outcome.network_identity(),
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use commonware_codec::Encode as _;
+
+    #[test]
+    fn compiled_moderato_identity_decodes() {
+        let identity = NetworkIdentity::moderato();
+
+        assert_eq!(identity.from_epoch, MODERATO_NETWORK_IDENTITY_EPOCH);
+        assert_eq!(
+            identity.identity.encode().as_ref(),
+            MODERATO_NETWORK_IDENTITY.as_ref()
+        );
+    }
+
+    #[test]
+    fn compiled_presto_identity_decodes() {
+        let identity = NetworkIdentity::presto();
+
+        assert_eq!(identity.from_epoch, PRESTO_NETWORK_IDENTITY_EPOCH);
+        assert_eq!(
+            identity.identity.encode().as_ref(),
+            PRESTO_NETWORK_IDENTITY.as_ref()
+        );
     }
 }

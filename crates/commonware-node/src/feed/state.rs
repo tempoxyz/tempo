@@ -1,6 +1,6 @@
 //! Shared state for the feed module.
 
-use crate::alias::{BlsPublicKey, marshal};
+use crate::alias::{NetworkIdentity, marshal};
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::hex;
 use commonware_codec::{Encode, ReadExt as _};
@@ -8,6 +8,7 @@ use commonware_consensus::{
     marshal::Identifier,
     types::{Epoch, Epocher as _, FixedEpocher, Height, Round, View},
 };
+use commonware_runtime::Network;
 use parking_lot::RwLock;
 use reth_node_core::rpc::compat::FromConsensusHeader;
 use reth_provider::HeaderProvider as _;
@@ -43,12 +44,12 @@ pub(super) struct FeedState {
 struct IdentityTransitionCache {
     /// The epoch from which the chain was built (inclusive).
     from_epoch: u64,
-    /// Public key at `from_epoch`.
-    from_pubkey: BlsPublicKey,
+    /// NetworkIdentity at `from_epoch`.
+    from_pubkey: NetworkIdentity,
     /// The earliest epoch we walked to (0 if we reached genesis).
     to_epoch: u64,
-    /// The public key at `to_epoch`.
-    to_pubkey: BlsPublicKey,
+    /// NetworkIdentity at `to_epoch`.
+    to_pubkey: NetworkIdentity,
     /// Cached transitions, ordered newest to oldest.
     transitions: Arc<Vec<IdentityTransition>>,
 }

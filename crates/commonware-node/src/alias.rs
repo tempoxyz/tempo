@@ -2,7 +2,7 @@
 
 use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 
-pub(crate) type BlsPublicKey = <MinSig as Variant>::Public;
+pub(crate) type NetworkIdentity = <MinSig as Variant>::Public;
 
 pub(crate) mod marshal {
     use commonware_consensus::{
