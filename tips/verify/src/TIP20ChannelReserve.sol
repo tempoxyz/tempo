@@ -92,7 +92,7 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         bool success = ITIP20(token).transferFrom(msg.sender, address(this), deposit);
         if (!success) revert TransferFailed();
 
-        // Mark after the deposit transfer succeeds so failed opens do not poison the guard. The real
+        // Mark after the reserve transfer succeeds so failed opens do not poison the guard. The real
         // precompile marker is transient and only protects the current top-level transaction.
         _openedChannelIdsForTest[channelId] = true;
 
