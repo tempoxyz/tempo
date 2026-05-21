@@ -464,7 +464,7 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
     ) -> Result<Vec<Self::RpcReceipt>, Self::Error> {
         let is_t6 = receipts
             .first()
-            .is_some_and(|r| self.chain_spec.tempo_hardfork_at(r.meta.timestamp).is_t6());
+            .is_some_and(|r| self.chain_spec.is_t6_active_at_timestamp(r.meta.timestamp));
         let receipt_context = receipts.iter().map(|r| (r.tx, r.gas_used)).collect::<Vec<_>>();
         self.inner
             .convert_receipts(receipts)?
