@@ -419,7 +419,7 @@ mod tests {
         assert_ne!(
             tx_env.channel_open_context_hash(),
             Some(B256::ZERO),
-            "RPC simulations must seed a non-zero context hash so TIP20ChannelEscrow.open() does not treat it as unset"
+            "RPC simulations must seed a non-zero context hash so TIP20ChannelReserve.open() does not treat it as unset"
         );
     }
 

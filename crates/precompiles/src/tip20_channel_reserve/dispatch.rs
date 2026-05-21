@@ -1,14 +1,14 @@
-//! ABI dispatch for the [`TIP20ChannelEscrow`] precompile.
+//! ABI dispatch for the [`TIP20ChannelReserve`] precompile.
 
-use super::{CLOSE_GRACE_PERIOD, TIP20ChannelEscrow, VOUCHER_TYPEHASH};
+use super::{CLOSE_GRACE_PERIOD, TIP20ChannelReserve, VOUCHER_TYPEHASH};
 use crate::{Precompile, charge_input_cost, dispatch_call, metadata, mutate, mutate_void, view};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::{
-    ITIP20ChannelEscrow, ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls,
+    ITIP20ChannelReserve, ITIP20ChannelReserve::ITIP20ChannelReserveCalls,
 };
 
-impl Precompile for TIP20ChannelEscrow {
+impl Precompile for TIP20ChannelReserve {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
@@ -17,48 +17,48 @@ impl Precompile for TIP20ChannelEscrow {
         dispatch_call(
             calldata,
             &[],
-            ITIP20ChannelEscrowCalls::abi_decode,
+            ITIP20ChannelReserveCalls::abi_decode,
             |call| match call {
-                ITIP20ChannelEscrowCalls::CLOSE_GRACE_PERIOD(_) => {
-                    metadata::<ITIP20ChannelEscrow::CLOSE_GRACE_PERIODCall>(|| {
+                ITIP20ChannelReserveCalls::CLOSE_GRACE_PERIOD(_) => {
+                    metadata::<ITIP20ChannelReserve::CLOSE_GRACE_PERIODCall>(|| {
                         Ok(CLOSE_GRACE_PERIOD)
                     })
                 }
-                ITIP20ChannelEscrowCalls::VOUCHER_TYPEHASH(_) => {
-                    metadata::<ITIP20ChannelEscrow::VOUCHER_TYPEHASHCall>(|| Ok(*VOUCHER_TYPEHASH))
+                ITIP20ChannelReserveCalls::VOUCHER_TYPEHASH(_) => {
+                    metadata::<ITIP20ChannelReserve::VOUCHER_TYPEHASHCall>(|| Ok(*VOUCHER_TYPEHASH))
                 }
-                ITIP20ChannelEscrowCalls::open(call) => {
+                ITIP20ChannelReserveCalls::open(call) => {
                     mutate(call, msg_sender, |sender, c| self.open(sender, c))
                 }
-                ITIP20ChannelEscrowCalls::settle(call) => {
+                ITIP20ChannelReserveCalls::settle(call) => {
                     mutate_void(call, msg_sender, |sender, c| self.settle(sender, c))
                 }
-                ITIP20ChannelEscrowCalls::topUp(call) => {
+                ITIP20ChannelReserveCalls::topUp(call) => {
                     mutate_void(call, msg_sender, |sender, c| self.top_up(sender, c))
                 }
-                ITIP20ChannelEscrowCalls::close(call) => {
+                ITIP20ChannelReserveCalls::close(call) => {
                     mutate_void(call, msg_sender, |sender, c| self.close(sender, c))
                 }
-                ITIP20ChannelEscrowCalls::requestClose(call) => {
+                ITIP20ChannelReserveCalls::requestClose(call) => {
                     mutate_void(call, msg_sender, |sender, c| self.request_close(sender, c))
                 }
-                ITIP20ChannelEscrowCalls::withdraw(call) => {
+                ITIP20ChannelReserveCalls::withdraw(call) => {
                     mutate_void(call, msg_sender, |sender, c| self.withdraw(sender, c))
                 }
-                ITIP20ChannelEscrowCalls::getChannel(call) => view(call, |c| self.get_channel(c)),
-                ITIP20ChannelEscrowCalls::getChannelState(call) => {
+                ITIP20ChannelReserveCalls::getChannel(call) => view(call, |c| self.get_channel(c)),
+                ITIP20ChannelReserveCalls::getChannelState(call) => {
                     view(call, |c| self.get_channel_state(c))
                 }
-                ITIP20ChannelEscrowCalls::getChannelStatesBatch(call) => {
+                ITIP20ChannelReserveCalls::getChannelStatesBatch(call) => {
                     view(call, |c| self.get_channel_states_batch(c))
                 }
-                ITIP20ChannelEscrowCalls::computeChannelId(call) => {
+                ITIP20ChannelReserveCalls::computeChannelId(call) => {
                     view(call, |c| self.compute_channel_id(c))
                 }
-                ITIP20ChannelEscrowCalls::getVoucherDigest(call) => {
+                ITIP20ChannelReserveCalls::getVoucherDigest(call) => {
                     view(call, |c| self.get_voucher_digest(c))
                 }
-                ITIP20ChannelEscrowCalls::domainSeparator(call) => {
+                ITIP20ChannelReserveCalls::domainSeparator(call) => {
                     view(call, |_| self.domain_separator())
                 }
             },
