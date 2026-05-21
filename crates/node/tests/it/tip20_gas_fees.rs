@@ -242,13 +242,13 @@ async fn test_tip1059_discounted_payment_receipts_and_fees() -> eyre::Result<()>
     );
     assert_eq!(
         receipt.effective_gas_price(),
-        TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE as u128
+        u128::from(TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE)
     );
     assert_eq!(
         fee_balance_before - fee_token.balanceOf(caller).call().await?,
         calc_gas_balance_spending(
             receipt.gas_used,
-            TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE as u128
+            u128::from(TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE)
         )
     );
 

@@ -489,7 +489,7 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
                     })
                     && gas_used <= SSTORE_SET_COST
                 {
-                    receipt.effective_gas_price = TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE as u128;
+                    receipt.effective_gas_price = u128::from(TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE);
                 }
 
                 if receipt.effective_gas_price == 0 || receipt.gas_used == 0 {

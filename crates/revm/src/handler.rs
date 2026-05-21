@@ -1457,7 +1457,7 @@ where
         let gas = exec_result.gas();
         let gas_used = gas.used().saturating_sub(gas.reservoir());
         if context.cfg.spec.is_t6() && tx.is_discounted_payment() && gas_used <= SSTORE_SET_COST {
-            effective_gas_price = TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE as u128;
+            effective_gas_price = u128::from(TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE);
         }
 
         let actual_spending = calc_gas_balance_spending(gas_used, effective_gas_price);
