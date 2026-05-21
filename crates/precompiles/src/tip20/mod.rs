@@ -1210,7 +1210,10 @@ impl TIP20Token {
         let guard = Recipient::direct(RECEIVE_POLICY_GUARD_ADDRESS);
         match kind {
             InboundKind::TRANSFER => self._transfer(originator, &guard, amount)?,
-            InboundKind::MINT => self._mint(&guard, amount, None)?,
+            InboundKind::MINT => {
+                self._mint(&guard, amount, None)?;
+                self.emit_event(TIP20Event::mint(guard.target, amount))?;
+            }
             InboundKind::__Invalid => {
                 return Err(ReceivePolicyGuardError::invalid_proof().into());
             }

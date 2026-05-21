@@ -224,7 +224,9 @@ mod tests {
     };
     use alloy::sol_types::SolValue;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::{ITIP403Registry, ReceivePolicyGuardEvent, TIP20Error};
+    use tempo_contracts::precompiles::{
+        ITIP403Registry, ReceivePolicyGuardEvent, TIP20Error, TIP20Event,
+    };
 
     impl RecoveryAuthority {
         fn claimer(&self) -> Address {
@@ -270,85 +272,173 @@ mod tests {
     }
 
     #[test]
-    fn test_claim_transfer() -> eyre::Result<()> {
+    fn test_claim_blocked_inbound() -> eyre::Result<()> {
         let admin = Address::random();
-        let originator = Address::random();
+        let transfer_originator = Address::random();
         let receiver = Address::random();
         let amount = U256::from(100u64);
         let blocked_at = 1_728_000u64;
 
-        for (recovery_auth, destination) in [
-            (RecoveryAuthority::Originator(originator), originator),
-            (RecoveryAuthority::Receiver(receiver), receiver),
-            (RecoveryAuthority::Contract(Address::random()), receiver),
-        ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-            storage.set_timestamp(U256::from(blocked_at));
+        for kind in [InboundKind::TRANSFER, InboundKind::MINT] {
+            let originator = match kind {
+                InboundKind::TRANSFER => transfer_originator,
+                InboundKind::MINT => admin,
+                InboundKind::__Invalid => unreachable!(),
+            };
 
-            StorageCtx::enter(&mut storage, || {
-                let mut token = TIP20Setup::create("T", "T", admin)
-                    .with_issuer(admin)
-                    .with_mint(originator, amount)
-                    .apply()?;
-                block_all_senders(receiver, recovery_auth.address())?;
+            for recovery_auth in [
+                RecoveryAuthority::Originator(originator),
+                RecoveryAuthority::Receiver(receiver),
+                RecoveryAuthority::Contract(Address::random()),
+            ] {
+                let destination = match recovery_auth {
+                    RecoveryAuthority::Originator(addr) | RecoveryAuthority::Receiver(addr) => addr,
+                    RecoveryAuthority::Contract(_) => Address::random(),
+                };
+                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+                storage.set_timestamp(U256::from(blocked_at));
 
-                let unknown = ClaimProofV1::new(
-                    token.address(),
-                    recovery_auth.address(),
-                    originator,
-                    receiver,
-                    blocked_at,
-                    99,
-                    BlockedReason::RECEIVE_POLICY as u8,
-                    InboundKind::TRANSFER,
-                    B256::ZERO,
-                );
-                let mut guard = ReceivePolicyGuard::new();
-                assert_eq!(guard.balance_of(unknown.abi_encode().into())?, U256::ZERO);
+                StorageCtx::enter(&mut storage, || {
+                    let mut setup = TIP20Setup::create("T", "T", admin).with_issuer(admin);
+                    if matches!(kind, InboundKind::TRANSFER) {
+                        setup = setup.with_mint(originator, amount);
+                    }
+                    let mut token = setup.apply()?;
+                    block_all_senders(receiver, recovery_auth.address())?;
 
-                token.transfer(
-                    originator,
-                    ITIP20::transferCall {
-                        to: receiver,
-                        amount,
-                    },
-                )?;
+                    let unknown = ClaimProofV1::new(
+                        token.address(),
+                        recovery_auth.address(),
+                        originator,
+                        receiver,
+                        blocked_at,
+                        99,
+                        BlockedReason::RECEIVE_POLICY as u8,
+                        kind,
+                        B256::ZERO,
+                    );
+                    let mut guard = ReceivePolicyGuard::new();
+                    assert_eq!(guard.balance_of(unknown.abi_encode().into())?, U256::ZERO);
 
-                let proof = ClaimProofV1::new(
-                    token.address(),
-                    recovery_auth.address(),
-                    originator,
-                    receiver,
-                    blocked_at,
-                    1,
-                    BlockedReason::RECEIVE_POLICY as u8,
-                    InboundKind::TRANSFER,
-                    B256::ZERO,
-                );
-                assert_eq!(guard.balance_of(proof.abi_encode().into())?, amount);
+                    guard.clear_emitted_events();
+                    token.clear_emitted_events();
+                    match kind {
+                        InboundKind::TRANSFER => {
+                            token.transfer(
+                                originator,
+                                ITIP20::transferCall {
+                                    to: receiver,
+                                    amount,
+                                },
+                            )?;
+                            token.assert_emitted_events(vec![TIP20Event::transfer(
+                                originator,
+                                RECEIVE_POLICY_GUARD_ADDRESS,
+                                amount,
+                            )]);
+                        }
+                        InboundKind::MINT => {
+                            token.mint(
+                                admin,
+                                ITIP20::mintCall {
+                                    to: receiver,
+                                    amount,
+                                },
+                            )?;
+                            token.assert_emitted_events(vec![
+                                TIP20Event::transfer(
+                                    Address::ZERO,
+                                    RECEIVE_POLICY_GUARD_ADDRESS,
+                                    amount,
+                                ),
+                                TIP20Event::mint(RECEIVE_POLICY_GUARD_ADDRESS, amount),
+                            ]);
+                        }
+                        InboundKind::__Invalid => unreachable!(),
+                    }
+                    guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
+                        IReceivePolicyGuard::TransferBlocked {
+                            token: token.address(),
+                            from: originator,
+                            receiver,
+                            proofVersion: BLOCKED_PROOF_VERSION,
+                            blockedNonce: 1,
+                            blockedAt: blocked_at,
+                            recipient: receiver,
+                            amount,
+                            blockedReason: BlockedReason::RECEIVE_POLICY as u8,
+                            recoveryAuthority: recovery_auth.address(),
+                            memo: B256::ZERO,
+                        },
+                    )]);
 
-                guard.claim(
-                    recovery_auth.claimer(),
-                    destination,
-                    proof.abi_encode().into(),
-                )?;
+                    let proof = ClaimProofV1::new(
+                        token.address(),
+                        recovery_auth.address(),
+                        originator,
+                        receiver,
+                        blocked_at,
+                        1,
+                        BlockedReason::RECEIVE_POLICY as u8,
+                        kind,
+                        B256::ZERO,
+                    );
+                    assert_eq!(guard.balance_of(proof.abi_encode().into())?, amount);
 
-                assert_eq!(guard.balance_of(proof.abi_encode().into())?, U256::ZERO);
-                assert_eq!(
-                    token.balance_of(ITIP20::balanceOfCall {
-                        account: RECEIVE_POLICY_GUARD_ADDRESS
-                    })?,
-                    U256::ZERO
-                );
-                assert_eq!(
-                    token.balance_of(ITIP20::balanceOfCall {
-                        account: destination
-                    })?,
-                    amount
-                );
+                    if let RecoveryAuthority::Contract(recovery) = recovery_auth {
+                        assert_unauthorized(guard.claim(
+                            receiver,
+                            receiver,
+                            proof.abi_encode().into(),
+                        ));
+                        assert_unauthorized(guard.claim(
+                            Address::random(),
+                            receiver,
+                            proof.abi_encode().into(),
+                        ));
+                        assert_eq!(guard.balance_of(proof.abi_encode().into())?, amount);
+                        assert_eq!(recovery_auth.claimer(), recovery);
+                    }
 
-                Ok::<(), TempoPrecompileError>(())
-            })?;
+                    guard.clear_emitted_events();
+                    guard.claim(
+                        recovery_auth.claimer(),
+                        destination,
+                        proof.abi_encode().into(),
+                    )?;
+                    guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::ProofClaimed(
+                        IReceivePolicyGuard::ProofClaimed {
+                            token: token.address(),
+                            receiver,
+                            proofVersion: BLOCKED_PROOF_VERSION,
+                            blockedNonce: 1,
+                            blockedAt: blocked_at,
+                            originator,
+                            recipient: receiver,
+                            recoveryAuthority: recovery_auth.address(),
+                            caller: recovery_auth.claimer(),
+                            to: destination,
+                            amount,
+                        },
+                    )]);
+
+                    assert_eq!(guard.balance_of(proof.abi_encode().into())?, U256::ZERO);
+                    assert_eq!(
+                        token.balance_of(ITIP20::balanceOfCall {
+                            account: RECEIVE_POLICY_GUARD_ADDRESS
+                        })?,
+                        U256::ZERO
+                    );
+                    assert_eq!(
+                        token.balance_of(ITIP20::balanceOfCall {
+                            account: destination
+                        })?,
+                        amount
+                    );
+
+                    Ok::<(), TempoPrecompileError>(())
+                })?;
+            }
         }
 
         Ok(())
@@ -863,206 +953,6 @@ mod tests {
     }
 
     #[test]
-    fn test_claim_self_recovery() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-        storage.set_timestamp(U256::from(1_728_005u64));
-
-        let admin = Address::random();
-        let originator = Address::random();
-        let receiver = Address::random();
-        let amount = U256::from(125u64);
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("T", "T", admin)
-                .with_issuer(admin)
-                .with_mint(originator, amount)
-                .apply()?;
-            block_all_senders(receiver, RECOVERY_RECEIVER)?;
-            token.transfer(
-                originator,
-                ITIP20::transferCall {
-                    to: receiver,
-                    amount,
-                },
-            )?;
-
-            let proof = ClaimProofV1::new(
-                token.address(),
-                RECOVERY_RECEIVER,
-                originator,
-                receiver,
-                1_728_005,
-                1,
-                BlockedReason::RECEIVE_POLICY as u8,
-                InboundKind::TRANSFER,
-                B256::ZERO,
-            );
-
-            let mut guard = ReceivePolicyGuard::new();
-            guard.clear_emitted_events();
-            guard.claim(receiver, receiver, proof.abi_encode().into())?;
-
-            guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::ProofClaimed(
-                IReceivePolicyGuard::ProofClaimed {
-                    token: token.address(),
-                    receiver,
-                    proofVersion: BLOCKED_PROOF_VERSION,
-                    blockedNonce: 1,
-                    blockedAt: 1_728_005,
-                    originator,
-                    recipient: receiver,
-                    recoveryAuthority: RECOVERY_RECEIVER,
-                    caller: receiver,
-                    to: receiver,
-                    amount,
-                },
-            )]);
-            assert_eq!(guard.balance_of(proof.abi_encode().into())?, U256::ZERO);
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall {
-                    account: RECEIVE_POLICY_GUARD_ADDRESS
-                })?,
-                U256::ZERO
-            );
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall { account: receiver })?,
-                amount
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_claim_via_recovery_contract() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-        storage.set_timestamp(U256::from(1_728_006u64));
-
-        let admin = Address::random();
-        let originator = Address::random();
-        let receiver = Address::random();
-        let recovery = Address::random();
-        let destination = Address::random();
-        let amount = U256::from(75u64);
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("T", "T", admin)
-                .with_issuer(admin)
-                .with_mint(originator, amount)
-                .apply()?;
-            block_all_senders(receiver, recovery)?;
-            token.transfer(
-                originator,
-                ITIP20::transferCall {
-                    to: receiver,
-                    amount,
-                },
-            )?;
-
-            let proof = ClaimProofV1::new(
-                token.address(),
-                recovery,
-                originator,
-                receiver,
-                1_728_006,
-                1,
-                BlockedReason::RECEIVE_POLICY as u8,
-                InboundKind::TRANSFER,
-                B256::ZERO,
-            );
-            let mut guard = ReceivePolicyGuard::new();
-            guard.clear_emitted_events();
-            guard.claim(recovery, destination, proof.abi_encode().into())?;
-
-            guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::ProofClaimed(
-                IReceivePolicyGuard::ProofClaimed {
-                    token: token.address(),
-                    receiver,
-                    proofVersion: BLOCKED_PROOF_VERSION,
-                    blockedNonce: 1,
-                    blockedAt: 1_728_006,
-                    originator,
-                    recipient: receiver,
-                    recoveryAuthority: recovery,
-                    caller: recovery,
-                    to: destination,
-                    amount,
-                },
-            )]);
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall { account: receiver })?,
-                U256::ZERO
-            );
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall {
-                    account: destination
-                })?,
-                amount
-            );
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall {
-                    account: RECEIVE_POLICY_GUARD_ADDRESS
-                })?,
-                U256::ZERO
-            );
-
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_claim_binds_recovery_contract() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-        storage.set_timestamp(U256::from(1_728_008u64));
-
-        let admin = Address::random();
-        let originator = Address::random();
-        let receiver = Address::random();
-        let recovery = Address::random();
-        let other_recovery = Address::random();
-        let amount = U256::from(88u64);
-
-        StorageCtx::enter(&mut storage, || {
-            let mut token = TIP20Setup::create("T", "T", admin)
-                .with_issuer(admin)
-                .with_mint(originator, amount)
-                .apply()?;
-            block_all_senders(receiver, recovery)?;
-            token.transfer(
-                originator,
-                ITIP20::transferCall {
-                    to: receiver,
-                    amount,
-                },
-            )?;
-
-            let proof = ClaimProofV1::new(
-                token.address(),
-                recovery,
-                originator,
-                receiver,
-                1_728_008,
-                1,
-                BlockedReason::RECEIVE_POLICY as u8,
-                InboundKind::TRANSFER,
-                B256::ZERO,
-            );
-            let mut guard = ReceivePolicyGuard::new();
-            assert_eq!(guard.balance_of(proof.abi_encode().into())?, amount);
-
-            assert_unauthorized(guard.claim(receiver, receiver, proof.abi_encode().into()));
-            assert_unauthorized(guard.claim(other_recovery, receiver, proof.abi_encode().into()));
-            guard.claim(recovery, receiver, proof.abi_encode().into())?;
-
-            assert_eq!(
-                token.balance_of(ITIP20::balanceOfCall { account: receiver })?,
-                amount
-            );
-            Ok(())
-        })
-    }
-
-    #[test]
     fn test_claim_virtual_recipient() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_009u64));
@@ -1147,102 +1037,5 @@ mod tests {
 
             Ok(())
         })
-    }
-
-    #[test]
-    fn test_claim_mint() -> eyre::Result<()> {
-        let admin = Address::random();
-        let receiver = Address::random();
-        let amount = U256::from(144u64);
-        let timestamp = 1_728_010u64;
-
-        for (recovery_auth, destination) in [
-            (RecoveryAuthority::Originator(admin), admin),
-            (RecoveryAuthority::Receiver(receiver), receiver),
-            (RecoveryAuthority::Contract(Address::random()), receiver),
-        ] {
-            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-            storage.set_timestamp(U256::from(timestamp));
-
-            StorageCtx::enter(&mut storage, || {
-                let mut token = TIP20Setup::create("T", "T", admin)
-                    .with_issuer(admin)
-                    .apply()?;
-                block_all_senders(receiver, recovery_auth.address())?;
-
-                let mut guard = ReceivePolicyGuard::new();
-                guard.clear_emitted_events();
-                token.mint(
-                    admin,
-                    ITIP20::mintCall {
-                        to: receiver,
-                        amount,
-                    },
-                )?;
-                guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
-                    IReceivePolicyGuard::TransferBlocked {
-                        token: token.address(),
-                        from: admin,
-                        receiver,
-                        proofVersion: BLOCKED_PROOF_VERSION,
-                        blockedNonce: 1,
-                        blockedAt: timestamp,
-                        recipient: receiver,
-                        amount,
-                        blockedReason: BlockedReason::RECEIVE_POLICY as u8,
-                        recoveryAuthority: recovery_auth.address(),
-                        memo: B256::ZERO,
-                    },
-                )]);
-                assert_eq!(token.total_supply()?, amount);
-                assert_eq!(
-                    token.balance_of(ITIP20::balanceOfCall {
-                        account: RECEIVE_POLICY_GUARD_ADDRESS
-                    })?,
-                    amount
-                );
-                assert_eq!(
-                    token.balance_of(ITIP20::balanceOfCall { account: receiver })?,
-                    U256::ZERO
-                );
-
-                let proof = ClaimProofV1::new(
-                    token.address(),
-                    recovery_auth.address(),
-                    admin,
-                    receiver,
-                    timestamp,
-                    1,
-                    BlockedReason::RECEIVE_POLICY as u8,
-                    InboundKind::MINT,
-                    B256::ZERO,
-                );
-                assert_eq!(guard.balance_of(proof.abi_encode().into())?, amount);
-
-                guard.claim(
-                    recovery_auth.claimer(),
-                    destination,
-                    proof.abi_encode().into(),
-                )?;
-
-                assert_eq!(
-                    token.balance_of(ITIP20::balanceOfCall {
-                        account: RECEIVE_POLICY_GUARD_ADDRESS
-                    })?,
-                    U256::ZERO
-                );
-                assert_eq!(
-                    token.balance_of(ITIP20::balanceOfCall {
-                        account: destination
-                    })?,
-                    amount
-                );
-                assert_eq!(guard.balance_of(proof.abi_encode().into())?, U256::ZERO);
-
-                Ok::<(), TempoPrecompileError>(())
-            })?;
-        }
-
-        Ok(())
     }
 }
