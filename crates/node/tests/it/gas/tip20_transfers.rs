@@ -1,5 +1,5 @@
 use alloy::{
-    primitives::{Address, FixedBytes, U256},
+    primitives::{Address, B256, FixedBytes, U256},
     providers::Provider,
     sol_types::SolEvent,
 };
@@ -334,7 +334,7 @@ impl<P: Provider + Clone> TransferGasEnv<P> {
             .await
     }
 
-    async fn virtual_recipient(&mut self) -> eyre::Result<Address> {
+    async fn virtual_recipient(&mut self, case_index: usize) -> eyre::Result<Address> {
         let master_id = match self.virtual_master_id {
             Some(master_id) => master_id,
             None => {
@@ -345,7 +345,10 @@ impl<P: Provider + Clone> TransferGasEnv<P> {
                 master_id
             }
         };
-        Ok(Address::new_virtual(master_id, FixedBytes::random()))
+        Ok(Address::new_virtual(
+            master_id,
+            deterministic_user_tag(case_index, 0x01),
+        ))
     }
 
     async fn transfer(
@@ -386,6 +389,7 @@ impl<P: Provider + Clone> TransferGasEnv<P> {
         &mut self,
         gas: &mut GasSnapshot,
         name: String,
+        case_index: usize,
         scenario: TransferScenario,
     ) -> eyre::Result<Receipt> {
         self.reset_policy().await?;
@@ -418,10 +422,10 @@ impl<P: Provider + Clone> TransferGasEnv<P> {
 
         let to = match &recipient {
             Some(recipient) => recipient.address(),
-            None => self.virtual_recipient().await?,
+            None => self.virtual_recipient(case_index).await?,
         };
-        let shared_delegate = Address::random();
-        let unique_delegate = Address::random();
+        let shared_delegate = deterministic_address(case_index, 0x02);
+        let unique_delegate = deterministic_address(case_index, 0x03);
 
         self.apply_reward_mode(
             &mut sender,
@@ -533,6 +537,19 @@ fn tip20_transfer_gas_cases() -> Vec<TransferScenario> {
     cases
 }
 
+fn deterministic_word(case_index: usize, domain: u64) -> B256 {
+    B256::from(U256::from(((case_index as u64) << 8) | domain))
+}
+
+fn deterministic_user_tag(case_index: usize, domain: u64) -> FixedBytes<6> {
+    let word = deterministic_word(case_index, domain);
+    FixedBytes::from_slice(&word.as_slice()[26..32])
+}
+
+fn deterministic_address(case_index: usize, domain: u64) -> Address {
+    Address::from_word(deterministic_word(case_index, domain))
+}
+
 async fn run_tip20_transfer_gas_cases<P: Provider + Clone>(
     env: &mut TransferGasEnv<P>,
     cases: Vec<TransferScenario>,
@@ -546,7 +563,8 @@ async fn run_tip20_transfer_gas_cases<P: Provider + Clone>(
     for (index, case) in cases.into_iter().enumerate() {
         let name = case.name();
         eprintln!("[{}/{}] {name}", index + 1, total);
-        env.run_transfer_scenario(&mut gas, name, case).await?;
+        env.run_transfer_scenario(&mut gas, name, index, case)
+            .await?;
     }
 
     Ok(gas)
