@@ -1743,6 +1743,7 @@ pub(crate) mod tests {
         }
 
         #[test]
+        #[rustfmt::skip]
         fn test_release_blocked_funds_receive_policy_paths() -> eyre::Result<()> {
             let admin = Address::random();
             let originator = Address::random();
