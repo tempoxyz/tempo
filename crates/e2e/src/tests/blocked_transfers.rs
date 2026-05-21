@@ -17,15 +17,15 @@ use eyre::OptionExt as _;
 use futures::future::join_all;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, TIP1028_GUARD_ADDRESS,
+    PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    receive_policy_guard::{
+        BLOCKED_PROOF_VERSION,
+        IReceivePolicyGuard::{self, IReceivePolicyGuardErrors as ReceivePolicyGuardError},
+        InboundKind, RECOVERY_RECEIVER,
+    },
     tip20::{IRolesAuth, ISSUER_ROLE, ITIP20},
     tip20_factory::ITIP20Factory,
     tip403_registry::{ALLOW_ALL_POLICY_ID, ITIP403Registry, REJECT_ALL_POLICY_ID},
-    tip1028_guard::{
-        BLOCKED_PROOF_VERSION,
-        ITIP1028Guard::{self, ITIP1028GuardErrors as TIP1028GuardError},
-        InboundKind, RECOVERY_RECEIVER,
-    },
 };
 
 use crate::{Setup, execution_runtime::TEST_MNEMONIC, setup_validators};
@@ -41,7 +41,7 @@ struct BlockedTransfer {
 
 #[test_traced]
 fn test_blocked_transfer_claim_no_recovery() {
-    run_tip1028_test(1028, |http_url| async move {
+    run_receive_policy_guard_test(1028, |http_url| async move {
         let amount = U256::from(250);
         let blocked = create_blocked_transfer(
             http_url.clone(),
@@ -58,21 +58,17 @@ fn test_blocked_transfer_claim_no_recovery() {
         let other_provider = ProviderBuilder::new()
             .wallet(other_wallet)
             .connect_http(http_url.clone());
-        let other_tip1028 = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, other_provider);
-        let Err(result) = other_tip1028
-            .claim(other, blocked.proof.clone())
-            .call()
-            .await
-        else {
+        let other_guard = IReceivePolicyGuard::new(RECEIVE_POLICY_GUARD_ADDRESS, other_provider);
+        let Err(result) = other_guard.claim(other, blocked.proof.clone()).call().await else {
             panic!("expected recovery claim without recovery address to fail");
         };
         assert_eq!(
-            result.as_decoded_interface_error::<TIP1028GuardError>(),
-            Some(TIP1028GuardError::unauthorized_claimer())
+            result.as_decoded_interface_error::<ReceivePolicyGuardError>(),
+            Some(ReceivePolicyGuardError::unauthorized_claimer())
         );
         assert_eq!(
             token_view(http_url.clone(), blocked.token)
-                .balanceOf(TIP1028_GUARD_ADDRESS)
+                .balanceOf(RECEIVE_POLICY_GUARD_ADDRESS)
                 .call()
                 .await?,
             amount
@@ -82,8 +78,9 @@ fn test_blocked_transfer_claim_no_recovery() {
         let receiver_provider = ProviderBuilder::new()
             .wallet(receiver_wallet)
             .connect_http(http_url.clone());
-        let receiver_tip1028 = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, receiver_provider);
-        let claim = receiver_tip1028
+        let receiver_guard =
+            IReceivePolicyGuard::new(RECEIVE_POLICY_GUARD_ADDRESS, receiver_provider);
+        let claim = receiver_guard
             .claim(blocked.receiver, blocked.proof.clone())
             .gas(GAS)
             .gas_price(GAS_PRICE)
@@ -96,7 +93,7 @@ fn test_blocked_transfer_claim_no_recovery() {
         let token = token_view(http_url, blocked.token);
         assert_eq!(token.balanceOf(blocked.receiver).call().await?, amount);
         assert_eq!(
-            token.balanceOf(TIP1028_GUARD_ADDRESS).call().await?,
+            token.balanceOf(RECEIVE_POLICY_GUARD_ADDRESS).call().await?,
             U256::ZERO
         );
 
@@ -105,8 +102,8 @@ fn test_blocked_transfer_claim_no_recovery() {
 }
 
 #[test_traced]
-fn test_tip1028_claim_with_recovery() {
-    run_tip1028_test(1029, |http_url| async move {
+fn test_receive_policy_guard_claim_with_recovery() {
+    run_receive_policy_guard_test(1029, |http_url| async move {
         let amount = U256::from(400);
         let recovery = wallet(22)?.address();
         let destination = wallet(23)?.address();
@@ -123,7 +120,8 @@ fn test_tip1028_claim_with_recovery() {
         let recovery_provider = ProviderBuilder::new()
             .wallet(wallet(22)?)
             .connect_http(http_url.clone());
-        let recovery_tip1028 = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, recovery_provider);
+        let recovery_tip1028 =
+            IReceivePolicyGuard::new(RECEIVE_POLICY_GUARD_ADDRESS, recovery_provider);
         let claim = recovery_tip1028
             .claim(destination, blocked.proof)
             .gas(GAS)
@@ -138,7 +136,7 @@ fn test_tip1028_claim_with_recovery() {
         assert_eq!(token.balanceOf(blocked.receiver).call().await?, U256::ZERO);
         assert_eq!(token.balanceOf(destination).call().await?, amount);
         assert_eq!(
-            token.balanceOf(TIP1028_GUARD_ADDRESS).call().await?,
+            token.balanceOf(RECEIVE_POLICY_GUARD_ADDRESS).call().await?,
             U256::ZERO
         );
 
@@ -146,7 +144,7 @@ fn test_tip1028_claim_with_recovery() {
     });
 }
 
-fn run_tip1028_test<F, Fut>(seed: u64, test: F)
+fn run_receive_policy_guard_test<F, Fut>(seed: u64, test: F)
 where
     F: FnOnce(Url) -> Fut + Send + 'static,
     Fut: Future<Output = eyre::Result<()>> + Send + 'static,
@@ -245,7 +243,7 @@ async fn create_blocked_transfer(
         ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8
     );
 
-    let proof: Bytes = ITIP1028Guard::ClaimProofV1 {
+    let proof: Bytes = IReceivePolicyGuard::ClaimProofV1 {
         version: BLOCKED_PROOF_VERSION,
         token,
         recoveryAuthority: recovery,
@@ -260,12 +258,12 @@ async fn create_blocked_transfer(
     .abi_encode()
     .into();
 
-    let tip1028 = ITIP1028Guard::new(
-        TIP1028_GUARD_ADDRESS,
+    let guard = IReceivePolicyGuard::new(
+        RECEIVE_POLICY_GUARD_ADDRESS,
         ProviderBuilder::new().connect_http(http_url.clone()),
     );
     assert_eq!(
-        tip1028.balanceOf(proof.clone()).call().await?,
+        guard.balanceOf(proof.clone()).call().await?,
         amount,
         "blocked event: {blocked:#?}"
     );
@@ -274,7 +272,10 @@ async fn create_blocked_transfer(
     assert_eq!(token_view.balanceOf(sender).call().await?, U256::ZERO);
     assert_eq!(token_view.balanceOf(receiver).call().await?, U256::ZERO);
     assert_eq!(
-        token_view.balanceOf(TIP1028_GUARD_ADDRESS).call().await?,
+        token_view
+            .balanceOf(RECEIVE_POLICY_GUARD_ADDRESS)
+            .call()
+            .await?,
         amount
     );
 
@@ -335,11 +336,13 @@ fn token_view(http_url: Url, token: Address) -> ITIP20::ITIP20Instance<impl Clon
     ITIP20::new(token, ProviderBuilder::new().connect_http(http_url))
 }
 
-fn transfer_blocked(receipt: &TransactionReceipt) -> eyre::Result<ITIP1028Guard::TransferBlocked> {
+fn transfer_blocked(
+    receipt: &TransactionReceipt,
+) -> eyre::Result<IReceivePolicyGuard::TransferBlocked> {
     receipt
         .logs()
         .iter()
-        .filter_map(|log| ITIP1028Guard::TransferBlocked::decode_log(&log.inner).ok())
+        .filter_map(|log| IReceivePolicyGuard::TransferBlocked::decode_log(&log.inner).ok())
         .map(|event| event.data)
         .next()
         .ok_or_eyre("TransferBlocked event missing")

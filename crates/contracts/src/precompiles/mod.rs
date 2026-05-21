@@ -2,9 +2,9 @@ pub mod account_keychain;
 pub mod address_registry;
 pub mod common_errors;
 pub mod nonce;
+pub mod receive_policy_guard;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
-pub mod tip1028_guard;
 pub mod tip20;
 pub mod tip20_channel_escrow;
 pub mod tip20_factory;
@@ -18,6 +18,7 @@ pub use address_registry::*;
 use alloy_primitives::{Address, address};
 pub use common_errors::*;
 pub use nonce::*;
+pub use receive_policy_guard::*;
 pub use signature_verifier::*;
 pub use stablecoin_dex::*;
 pub use tip_fee_manager::*;
@@ -25,7 +26,6 @@ pub use tip20::*;
 pub use tip20_channel_escrow::*;
 pub use tip20_factory::*;
 pub use tip403_registry::*;
-pub use tip1028_guard::*;
 pub use validator_config::*;
 pub use validator_config_v2::*;
 
@@ -47,4 +47,5 @@ pub const ADDRESS_REGISTRY_ADDRESS: Address =
     address!("0xFDC0000000000000000000000000000000000000");
 pub const SIGNATURE_VERIFIER_ADDRESS: Address =
     address!("0x5165300000000000000000000000000000000000");
-pub const TIP1028_GUARD_ADDRESS: Address = address!("0xB10C000000000000000000000000000000000000");
+pub const RECEIVE_POLICY_GUARD_ADDRESS: Address =
+    address!("0xB10C000000000000000000000000000000000000");

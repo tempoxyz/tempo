@@ -21,15 +21,15 @@ pub use tempo_primitives::is_tip20_prefix;
 pub use slots as tip20_slots;
 
 use crate::{
-    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP1028_GUARD_ADDRESS,
+    PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
+    receive_policy_guard::{InboundKind, ReceivePolicyGuard},
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
-    tip1028_guard::{InboundKind, TIP1028Guard},
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
@@ -38,8 +38,8 @@ use alloy::{
 use std::sync::LazyLock;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    DECIMALS as TIP20_DECIMALS, STABLECOIN_DEX_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS,
-    TIP1028GuardError,
+    DECIMALS as TIP20_DECIMALS, ReceivePolicyGuardError, STABLECOIN_DEX_ADDRESS,
+    TIP20_CHANNEL_ESCROW_ADDRESS,
 };
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
@@ -136,7 +136,7 @@ pub static BURN_BLOCKED_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"BURN
 pub const PROTECTED: &[(TempoHardfork, &[Address])] = &[
     (TempoHardfork::Genesis, &[TIP_FEE_MANAGER_ADDRESS, STABLECOIN_DEX_ADDRESS]),
     (TempoHardfork::T5, &[TIP20_CHANNEL_ESCROW_ADDRESS]),
-    (TempoHardfork::T6, &[TIP1028_GUARD_ADDRESS]),
+    (TempoHardfork::T6, &[RECEIVE_POLICY_GUARD_ADDRESS]),
 ];
 
 impl TIP20Token {
@@ -1196,8 +1196,8 @@ impl TIP20Token {
         if !self.storage.spec().is_t6() {
             return Ok(false);
         }
-        if to.target == TIP1028_GUARD_ADDRESS {
-            return Err(TIP1028GuardError::address_reserved().into());
+        if to.target == RECEIVE_POLICY_GUARD_ADDRESS {
+            return Err(ReceivePolicyGuardError::address_reserved().into());
         }
 
         let token = self.address;
@@ -1207,15 +1207,15 @@ impl TIP20Token {
             return Ok(false);
         };
 
-        let guard = Recipient::direct(TIP1028_GUARD_ADDRESS);
+        let guard = Recipient::direct(RECEIVE_POLICY_GUARD_ADDRESS);
         match kind {
             InboundKind::TRANSFER => self._transfer(originator, &guard, amount)?,
             InboundKind::MINT => self._mint(&guard, amount, None)?,
             InboundKind::__Invalid => {
-                return Err(TIP1028GuardError::invalid_proof().into());
+                return Err(ReceivePolicyGuardError::invalid_proof().into());
             }
         }
-        TIP1028Guard::new()
+        ReceivePolicyGuard::new()
             .store_blocked(token, originator, to, recovery, amount, reason, kind, memo)?;
 
         Ok(true)
@@ -1232,8 +1232,8 @@ impl TIP20Token {
         recovery_addr: Option<Address>,
     ) -> Result<()> {
         debug_assert!(
-            to != TIP1028_GUARD_ADDRESS,
-            "checked in TIP1028Guard::claim"
+            to != RECEIVE_POLICY_GUARD_ADDRESS,
+            "checked in ReceivePolicyGuard::claim"
         );
 
         self.check_not_paused()?;
@@ -1257,7 +1257,7 @@ impl TIP20Token {
             }
         }
 
-        self._transfer(TIP1028_GUARD_ADDRESS, &destination, amount)?;
+        self._transfer(RECEIVE_POLICY_GUARD_ADDRESS, &destination, amount)?;
         if let Some(hop) = destination.build_virtual_transfer_event(amount) {
             self.emit_event(hop)?;
         }
@@ -1563,7 +1563,9 @@ mod recipient_tests {
 #[cfg(test)]
 pub(crate) mod tests {
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
-    use tempo_contracts::precompiles::{ITIP1028Guard, TIP1028GuardEvent, createTokenCall};
+    use tempo_contracts::precompiles::{
+        IReceivePolicyGuard, ReceivePolicyGuardEvent, createTokenCall,
+    };
 
     use super::*;
     use crate::{
@@ -1573,9 +1575,9 @@ pub(crate) mod tests {
         },
         address_registry::{AddressRegistry, MasterId, UserTag},
         error::TempoPrecompileError,
+        receive_policy_guard::ReceivePolicyGuard,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master, setup_storage},
-        tip1028_guard::TIP1028Guard,
     };
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -1635,8 +1637,8 @@ pub(crate) mod tests {
     mod tip1028_tests {
         use super::*;
         use crate::{
+            receive_policy_guard::BLOCKED_PROOF_VERSION,
             tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
-            tip1028_guard::BLOCKED_PROOF_VERSION,
         };
 
         const BLOCKED_AT: u64 = 1_728_100;
@@ -1689,14 +1691,14 @@ pub(crate) mod tests {
 
                 assert_eq!(token.get_balance(sender)?, U256::ZERO);
                 assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                assert_eq!(token.get_balance(TIP1028_GUARD_ADDRESS)?, amount);
+                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
                 token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
                     from: sender,
-                    to: TIP1028_GUARD_ADDRESS,
+                    to: RECEIVE_POLICY_GUARD_ADDRESS,
                     amount,
                 })]);
 
-                let proof = ITIP1028Guard::ClaimProofV1::new(
+                let proof = IReceivePolicyGuard::ClaimProofV1::new(
                     token.address,
                     Address::ZERO,
                     sender,
@@ -1707,10 +1709,10 @@ pub(crate) mod tests {
                     InboundKind::TRANSFER,
                     B256::ZERO,
                 );
-                let guard = TIP1028Guard::new();
+                let guard = ReceivePolicyGuard::new();
                 assert_eq!(guard.balance_of(proof.abi_encode().into())?, amount);
-                guard.assert_emitted_events(vec![TIP1028GuardEvent::TransferBlocked(
-                    ITIP1028Guard::TransferBlocked {
+                guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
+                    IReceivePolicyGuard::TransferBlocked {
                         token: token.address,
                         from: sender,
                         receiver,
@@ -1758,7 +1760,7 @@ pub(crate) mod tests {
                     },
                 )?;
 
-                let proof = ITIP1028Guard::ClaimProofV1::new(
+                let proof = IReceivePolicyGuard::ClaimProofV1::new(
                     token.address,
                     Address::ZERO,
                     sender,
@@ -1769,10 +1771,10 @@ pub(crate) mod tests {
                     InboundKind::TRANSFER,
                     B256::ZERO,
                 );
-                let guard = TIP1028Guard::new();
+                let guard = ReceivePolicyGuard::new();
                 assert_eq!(guard.balance_of(proof.abi_encode().into())?, amount);
-                guard.assert_emitted_events(vec![TIP1028GuardEvent::TransferBlocked(
-                    ITIP1028Guard::TransferBlocked {
+                guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
+                    IReceivePolicyGuard::TransferBlocked {
                         token: token.address,
                         from: sender,
                         receiver,
@@ -1807,16 +1809,16 @@ pub(crate) mod tests {
                 let result = token.transfer(
                     sender,
                     ITIP20::transferCall {
-                        to: TIP1028_GUARD_ADDRESS,
+                        to: RECEIVE_POLICY_GUARD_ADDRESS,
                         amount,
                     },
                 );
                 assert!(matches!(
                     result,
-                    Err(e) if e == TIP1028GuardError::address_reserved().into()
+                    Err(e) if e == ReceivePolicyGuardError::address_reserved().into()
                 ));
                 assert_eq!(token.get_balance(sender)?, amount);
-                assert_eq!(token.get_balance(TIP1028_GUARD_ADDRESS)?, U256::ZERO);
+                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
 
                 Ok(())
             })
@@ -1854,13 +1856,13 @@ pub(crate) mod tests {
 
                 assert_eq!(token.get_balance(sender)?, U256::ZERO);
                 assert_eq!(token.get_balance(receiver)?, amount);
-                assert_eq!(token.get_balance(TIP1028_GUARD_ADDRESS)?, U256::ZERO);
+                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
                 token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
                     from: sender,
                     to: receiver,
                     amount,
                 })]);
-                let proof = ITIP1028Guard::ClaimProofV1::new(
+                let proof = IReceivePolicyGuard::ClaimProofV1::new(
                     token.address,
                     Address::ZERO,
                     sender,
@@ -1872,7 +1874,7 @@ pub(crate) mod tests {
                     B256::ZERO,
                 );
                 assert_eq!(
-                    TIP1028Guard::new().balance_of(proof.abi_encode().into())?,
+                    ReceivePolicyGuard::new().balance_of(proof.abi_encode().into())?,
                     U256::ZERO
                 );
 
@@ -1919,7 +1921,7 @@ pub(crate) mod tests {
                 );
                 assert_eq!(token.get_balance(owner)?, U256::ZERO);
                 assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                assert_eq!(token.get_balance(TIP1028_GUARD_ADDRESS)?, amount);
+                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
 
                 Ok(())
             })
@@ -1959,10 +1961,10 @@ pub(crate) mod tests {
 
                 token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
                     from: sender,
-                    to: TIP1028_GUARD_ADDRESS,
+                    to: RECEIVE_POLICY_GUARD_ADDRESS,
                     amount,
                 })]);
-                let proof = ITIP1028Guard::ClaimProofV1::new(
+                let proof = IReceivePolicyGuard::ClaimProofV1::new(
                     token.address,
                     Address::ZERO,
                     sender,
@@ -1974,7 +1976,7 @@ pub(crate) mod tests {
                     memo,
                 );
                 assert_eq!(
-                    TIP1028Guard::new().balance_of(proof.abi_encode().into())?,
+                    ReceivePolicyGuard::new().balance_of(proof.abi_encode().into())?,
                     amount
                 );
 
@@ -2002,7 +2004,7 @@ pub(crate) mod tests {
                     Address::ZERO,
                 )?;
 
-                let mut guard = TIP1028Guard::new();
+                let mut guard = ReceivePolicyGuard::new();
                 guard.clear_emitted_events();
                 token.mint(
                     admin,
@@ -2014,14 +2016,14 @@ pub(crate) mod tests {
 
                 assert_eq!(token.total_supply()?, amount);
                 assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                assert_eq!(token.get_balance(TIP1028_GUARD_ADDRESS)?, amount);
+                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
                 token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
                     from: Address::ZERO,
-                    to: TIP1028_GUARD_ADDRESS,
+                    to: RECEIVE_POLICY_GUARD_ADDRESS,
                     amount,
                 })]);
-                guard.assert_emitted_events(vec![TIP1028GuardEvent::TransferBlocked(
-                    ITIP1028Guard::TransferBlocked {
+                guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
+                    IReceivePolicyGuard::TransferBlocked {
                         token: token.address,
                         from: admin,
                         receiver,
@@ -2036,7 +2038,7 @@ pub(crate) mod tests {
                     },
                 )]);
 
-                let proof = ITIP1028Guard::ClaimProofV1::new(
+                let proof = IReceivePolicyGuard::ClaimProofV1::new(
                     token.address,
                     Address::ZERO,
                     admin,
@@ -3160,7 +3162,7 @@ pub(crate) mod tests {
             for protected in [
                 TIP_FEE_MANAGER_ADDRESS,
                 STABLECOIN_DEX_ADDRESS,
-                TIP1028_GUARD_ADDRESS,
+                RECEIVE_POLICY_GUARD_ADDRESS,
                 TIP20_CHANNEL_ESCROW_ADDRESS,
             ] {
                 let result = token.burn_blocked(
@@ -3181,7 +3183,7 @@ pub(crate) mod tests {
             Ok::<_, TempoPrecompileError>(())
         })?;
 
-        // Pre-T6: TIP1028_GUARD_ADDRESS is not yet in PROTECTED, so burn_blocked
+        // Pre-T6: RECEIVE_POLICY_GUARD_ADDRESS is not yet in PROTECTED, so burn_blocked
         // actually burns from it (REJECT_ALL satisfies the sender-policy gate).
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         StorageCtx::enter(&mut storage, || {
@@ -3211,19 +3213,19 @@ pub(crate) mod tests {
                     newPolicyId: REJECT_ALL_POLICY_ID,
                 },
             )?;
-            token.set_balance(TIP1028_GUARD_ADDRESS, amount)?;
+            token.set_balance(RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
             token.set_total_supply(token.total_supply()? + amount)?;
 
             token.burn_blocked(
                 burner,
                 ITIP20::burnBlockedCall {
-                    from: TIP1028_GUARD_ADDRESS,
+                    from: RECEIVE_POLICY_GUARD_ADDRESS,
                     amount: burn_amount,
                 },
             )?;
 
             let balance = token.balance_of(ITIP20::balanceOfCall {
-                account: TIP1028_GUARD_ADDRESS,
+                account: RECEIVE_POLICY_GUARD_ADDRESS,
             })?;
             assert_eq!(balance, amount - burn_amount);
 

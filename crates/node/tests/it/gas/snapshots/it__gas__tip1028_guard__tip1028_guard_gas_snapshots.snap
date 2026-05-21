@@ -1,5 +1,5 @@
 ---
-source: crates/node/tests/it/gas/tip1028_guard.rs
+source: crates/node/tests/it/gas/receive_policy_guard.rs
 assertion_line: 370
 expression: gas
 ---

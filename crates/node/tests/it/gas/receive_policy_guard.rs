@@ -7,13 +7,15 @@ use alloy::{
 use alloy_rpc_types_eth::TransactionReceipt;
 use eyre::OptionExt;
 use tempo_contracts::precompiles::{
-    IRolesAuth, ITIP20, ITIP20Factory, ITIP403Registry, ITIP1028Guard,
+    IReceivePolicyGuard, IRolesAuth, ITIP20, ITIP20Factory, ITIP403Registry,
 };
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS, TIP1028_GUARD_ADDRESS,
+    PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    receive_policy_guard::{
+        BLOCKED_PROOF_VERSION, InboundKind, RECOVERY_ORIGINATOR, RECOVERY_RECEIVER,
+    },
     tip20::ISSUER_ROLE,
     tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
-    tip1028_guard::{BLOCKED_PROOF_VERSION, InboundKind, RECOVERY_ORIGINATOR, RECOVERY_RECEIVER},
 };
 
 use super::helpers::{GAS_LIMIT, GasSnapshot, print_gas_snapshot, test_signer};
@@ -111,7 +113,7 @@ async fn create_blocked_transfer<P: Provider + Clone>(
         ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8
     );
 
-    let proof_bytes: Bytes = ITIP1028Guard::ClaimProofV1 {
+    let proof_bytes: Bytes = IReceivePolicyGuard::ClaimProofV1 {
         version: 1,
         token: *token.address(),
         recoveryAuthority: recovery,
@@ -155,7 +157,7 @@ async fn create_allowed_transfer<P: Provider + Clone>(
 }
 
 async fn claim_blocked<P: Provider + Clone>(
-    guard: &ITIP1028Guard::ITIP1028GuardInstance<P>,
+    guard: &IReceivePolicyGuard::IReceivePolicyGuardInstance<P>,
     to: Address,
     blocked: &BlockedTransfer,
 ) -> eyre::Result<u64> {
@@ -171,17 +173,19 @@ async fn claim_blocked<P: Provider + Clone>(
     Ok(receipt.gas_used)
 }
 
-fn transfer_blocked(receipt: &TransactionReceipt) -> eyre::Result<ITIP1028Guard::TransferBlocked> {
+fn transfer_blocked(
+    receipt: &TransactionReceipt,
+) -> eyre::Result<IReceivePolicyGuard::TransferBlocked> {
     receipt
         .logs()
         .iter()
-        .find_map(|log| ITIP1028Guard::TransferBlocked::decode_log(&log.inner).ok())
+        .find_map(|log| IReceivePolicyGuard::TransferBlocked::decode_log(&log.inner).ok())
         .map(|event| event.data)
         .ok_or_eyre("TransferBlocked event missing")
 }
 
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip1028_guard_gas_snapshots() -> eyre::Result<()> {
+async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
@@ -312,10 +316,14 @@ async fn test_tip1028_guard_gas_snapshots() -> eyre::Result<()> {
         .await?,
     );
 
-    let originator_guard = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, originator_provider);
-    let receiver_guard =
-        ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, provider(&receiver_recovery_receiver));
-    let recovery_guard = ITIP1028Guard::new(TIP1028_GUARD_ADDRESS, provider(&recovery));
+    let originator_guard =
+        IReceivePolicyGuard::new(RECEIVE_POLICY_GUARD_ADDRESS, originator_provider);
+    let receiver_guard = IReceivePolicyGuard::new(
+        RECEIVE_POLICY_GUARD_ADDRESS,
+        provider(&receiver_recovery_receiver),
+    );
+    let recovery_guard =
+        IReceivePolicyGuard::new(RECEIVE_POLICY_GUARD_ADDRESS, provider(&recovery));
 
     gas.record(
         "claim_originator_recovery_to_destination",
@@ -340,7 +348,7 @@ async fn test_tip1028_guard_gas_snapshots() -> eyre::Result<()> {
         claim_blocked(&recovery_guard, destination.address(), &third_party_blocked).await?,
     );
 
-    print_gas_snapshot("TIP1028Guard gas snapshot", &gas);
+    print_gas_snapshot("ReceivePolicyGuard gas snapshot", &gas);
 
     insta::assert_yaml_snapshot!(gas);
 

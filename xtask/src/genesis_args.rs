@@ -52,6 +52,7 @@ use tempo_precompiles::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     nonce::NonceManager,
+    receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
@@ -59,7 +60,6 @@ use tempo_precompiles::{
     tip20::{ISSUER_ROLE, ITIP20, TIP20Token},
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
-    tip1028_guard::TIP1028Guard,
     validator_config_v2::ValidatorConfigV2,
 };
 
@@ -420,8 +420,8 @@ impl GenesisArgs {
         }
 
         if self.t6_time == 0 {
-            println!("Initializing TIP1028 blocked transfers (T6 active at genesis)");
-            initialize_tip1028_guard(&mut evm)?;
+            println!("Initializing TIP-1028 ReceivePolicyGuard (T6 active at genesis)");
+            initialize_receive_policy_guard(&mut evm)?;
         }
 
         if !self.no_pairwise_liquidity {
@@ -936,14 +936,14 @@ fn initialize_signature_verifier(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::
     Ok(())
 }
 
-fn initialize_tip1028_guard(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+fn initialize_receive_policy_guard(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
     let ctx = evm.ctx_mut();
     StorageCtx::enter_evm(
         &mut ctx.journaled_state,
         &ctx.block,
         &ctx.cfg,
         &ctx.tx,
-        || TIP1028Guard::new().initialize(),
+        || ReceivePolicyGuard::new().initialize(),
     )?;
 
     Ok(())
