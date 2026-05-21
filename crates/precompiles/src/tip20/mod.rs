@@ -1231,12 +1231,12 @@ impl TIP20Token {
         reroute: bool,
         recovery_addr: Option<Address>,
     ) -> Result<()> {
+        debug_assert!(
+            to != TIP1028_GUARD_ADDRESS,
+            "checked in TIP1028Guard::claim"
+        );
+
         self.check_not_paused()?;
-
-        if to == TIP1028_GUARD_ADDRESS {
-            return Err(TIP1028GuardError::address_reserved().into());
-        }
-
         let destination = Recipient::resolve(to)?;
         destination.validate()?;
 
