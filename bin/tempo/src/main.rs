@@ -52,13 +52,16 @@ use futures::{
     FutureExt as _,
     future::{Either, FusedFuture as _},
 };
-use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
+use reth_cli_runner::CliRunner;
+use reth_ethereum::{
+    chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256, tasks::RuntimeConfig,
+};
 use reth_ethereum_cli::Cli;
 use reth_network_api::Peers;
 use reth_network_peers::pk2id;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
-use std::{sync::Arc, thread, time::Duration};
+use std::{num::NonZeroUsize, sync::Arc, thread, time::Duration};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
 use tempo_consensus::TempoConsensus;
@@ -550,7 +553,11 @@ fn main() -> eyre::Result<()> {
     let components =
         |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
 
-    cli.run_with_components::<TempoNode>(components, async move |builder, args| {
+    let mut runtime_config = RuntimeConfig::default();
+    runtime_config.rayon.prewarming_threads =
+        Some(std::thread::available_parallelism().map_or(1, NonZeroUsize::get) * 2);
+    let runner = CliRunner::try_with_runtime_config(runtime_config)?;
+    cli.with_runner_and_components::<TempoNode>(runner, components, async move |builder, args| {
         let faucet_args = args.faucet_args.clone();
         let validator_key = args
             .consensus
