@@ -15,6 +15,8 @@ use crate::{CONSENSUS_NODE_PREFIX, Setup, connect_execution_peers, setup_validat
 
 const PAYLOAD_FINALIZATION_COUNT_METRIC: &str =
     "reth_tempo_payload_builder_payload_finalization_duration_seconds_count";
+const BUILDER_FINISH_COUNT_METRIC: &str =
+    "reth_tempo_payload_builder_builder_finish_duration_seconds_count";
 const STATE_ROOT_WITH_UPDATES_COUNT_METRIC: &str =
     "reth_tempo_payload_builder_state_root_with_updates_duration_seconds_count";
 const POOL_TRANSACTIONS_YIELDED_COUNT_METRIC: &str =
@@ -39,6 +41,10 @@ fn shared_sparse_trie_single_validator_bypasses_sync_state_root() {
     assert!(
         deltas.finalization_count > 0,
         "expected payload builder finalization metrics to increase"
+    );
+    assert!(
+        deltas.builder_finish_count > 0,
+        "expected payload builder finish metrics to increase"
     );
     assert_pool_inclusion_metrics(&deltas);
     assert_eq!(
@@ -73,6 +79,8 @@ fn run_payload_builder_test(
     let metrics_recorder = install_prometheus_recorder();
     let initial_finalization_count =
         prometheus_histogram_count(metrics_recorder, PAYLOAD_FINALIZATION_COUNT_METRIC);
+    let initial_builder_finish_count =
+        prometheus_histogram_count(metrics_recorder, BUILDER_FINISH_COUNT_METRIC);
     let initial_state_root_count =
         prometheus_histogram_count(metrics_recorder, STATE_ROOT_WITH_UPDATES_COUNT_METRIC);
     let initial_pool_transactions_yielded_count =
@@ -115,6 +123,8 @@ fn run_payload_builder_test(
 
     let final_finalization_count =
         prometheus_histogram_count(metrics_recorder, PAYLOAD_FINALIZATION_COUNT_METRIC);
+    let final_builder_finish_count =
+        prometheus_histogram_count(metrics_recorder, BUILDER_FINISH_COUNT_METRIC);
     let final_state_root_count =
         prometheus_histogram_count(metrics_recorder, STATE_ROOT_WITH_UPDATES_COUNT_METRIC);
     let final_pool_transactions_yielded_count =
@@ -132,6 +142,7 @@ fn run_payload_builder_test(
 
     MetricDelta {
         finalization_count: final_finalization_count - initial_finalization_count,
+        builder_finish_count: final_builder_finish_count - initial_builder_finish_count,
         state_root_count: final_state_root_count - initial_state_root_count,
         pool_transactions_yielded_count: final_pool_transactions_yielded_count
             - initial_pool_transactions_yielded_count,
@@ -146,6 +157,7 @@ fn run_payload_builder_test(
 
 struct MetricDelta {
     finalization_count: u64,
+    builder_finish_count: u64,
     state_root_count: u64,
     pool_transactions_yielded_count: u64,
     pool_transactions_included_count: u64,

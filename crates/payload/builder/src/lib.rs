@@ -802,6 +802,9 @@ where
         self.metrics
             .payload_finalization_duration_seconds
             .record(builder_finish_elapsed);
+        self.metrics
+            .builder_finish_duration_seconds
+            .record(builder_finish_elapsed);
 
         let total_transactions = block.transaction_count();
         self.metrics
