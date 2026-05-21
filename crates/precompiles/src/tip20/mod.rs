@@ -1743,6 +1743,76 @@ pub(crate) mod tests {
         }
 
         #[test]
+        fn test_release_blocked_funds_receive_policy_paths() -> eyre::Result<()> {
+            let admin = Address::random();
+            let originator = Address::random();
+            let receiver = Address::random();
+            let third_party = Address::random();
+            let open_destination = Address::random();
+            let blocked_destination = Address::random();
+            let amount = U256::from(10u64);
+
+            for (mode, recovery_auth, destination, destination_policy_blocks, should_succeed) in [
+                // Receiver recovery back to the receiver is a resume: it skips receive-policy
+                // validation, so the original blocking policy does not deadlock the claim.
+                (RecoveryMode::Receiver, receiver, receiver, true, true),
+                // Receiver and originator reroutes re-check the destination receive policy.
+                (RecoveryMode::Receiver, receiver, blocked_destination, true, false),
+                (RecoveryMode::Originator, originator, blocked_destination, true, false),
+                (RecoveryMode::Originator, originator, originator, false, true),
+                // Third-party recovery is always a reroute, including claims back to receiver.
+                (RecoveryMode::ThirdParty, third_party, receiver, true, false),
+                (RecoveryMode::ThirdParty, third_party, open_destination, false, true),
+            ] {
+                let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+                StorageCtx::enter(&mut storage, || {
+                    let mut token = TIP20Setup::create("Test", "TST", admin)
+                        .with_issuer(admin)
+                        .apply()?;
+                    token.set_balance(RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
+
+                    set_receive_policy(
+                        receiver,
+                        REJECT_ALL_POLICY_ID,
+                        ALLOW_ALL_POLICY_ID,
+                        Address::ZERO,
+                    )?;
+                    if destination_policy_blocks && destination != receiver {
+                        set_receive_policy(
+                            destination,
+                            REJECT_ALL_POLICY_ID,
+                            ALLOW_ALL_POLICY_ID,
+                            Address::ZERO,
+                        )?;
+                    }
+
+                    let result = token.release_blocked_funds(
+                        originator,
+                        receiver,
+                        destination,
+                        amount,
+                        mode,
+                        recovery_auth,
+                    );
+
+                    if should_succeed {
+                        result?;
+                        assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
+                        assert_eq!(token.get_balance(destination)?, amount);
+                    } else {
+                        assert_eq!(result.unwrap_err(), TIP20Error::policy_forbids().into());
+                        assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
+                        assert_eq!(token.get_balance(destination)?, U256::ZERO);
+                    }
+
+                    Ok::<(), TempoPrecompileError>(())
+                })?;
+            }
+
+            Ok(())
+        }
+
+        #[test]
         fn test_transfer_blocked_by_token_filter_records_reason() -> eyre::Result<()> {
             let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
             storage.set_timestamp(U256::from(BLOCKED_AT));
