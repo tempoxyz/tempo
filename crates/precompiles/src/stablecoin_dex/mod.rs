@@ -749,6 +749,8 @@ impl StablecoinDEX {
 
         // Prepare the flipped order
         let flipped = order.create_flipped_order(order.order_id);
+        let clear_legacy_extra_slots =
+            self.storage.spec().is_t6() && self.orders.version(order.order_id)? == 0;
 
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount, non_escrow_token) = if flipped.is_bid {
@@ -781,6 +783,9 @@ impl StablecoinDEX {
         self.sub_balance(flipped.maker, escrow_token, escrow_amount)?;
 
         self.commit_order_to_book(flipped)?;
+        if clear_legacy_extra_slots {
+            self.orders.clear_legacy_extra_slots(order.order_id)?;
+        }
 
         // Emit OrderFlipped event for flip order
         self.emit_event(StablecoinDEXEvents::OrderFlipped(
@@ -1656,7 +1661,7 @@ mod tests {
 
     use crate::{
         error::TempoPrecompileError,
-        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{ContractStorage, StorageCtx, StorageKey, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
         tip20::PAUSE_ROLE,
         tip403_registry::{ITIP403Registry, TIP403Registry},
@@ -3077,6 +3082,14 @@ mod tests {
             assert_eq!(flipped.tick(), flip_tick);
             assert_eq!(flipped.flip_tick(), 100i16);
             assert_eq!(flipped.remaining(), amount);
+
+            let order_base_slot = flip_order_id.mapping_slot(slots::ORDERS);
+            let legacy_slot_4 =
+                StorageCtx.sload(STABLECOIN_DEX_ADDRESS, order_base_slot + U256::from(4))?;
+            let legacy_slot_5 =
+                StorageCtx.sload(STABLECOIN_DEX_ADDRESS, order_base_slot + U256::from(5))?;
+            assert_eq!(legacy_slot_4, U256::ZERO);
+            assert_eq!(legacy_slot_5, U256::ZERO);
 
             Ok(())
         })

@@ -108,6 +108,8 @@ impl Orders {
     const VERSION_1_BOOK_KEY_SLOT: u64 = 1;
     const VERSION_1_AMOUNTS_SLOT: u64 = 2;
     const VERSION_1_LINKS_SLOT: u64 = 3;
+    const LEGACY_EXTRA_SLOT_START: u64 = 4;
+    const LEGACY_EXTRA_SLOT_END: u64 = 5;
 
     const VERSION_1_AMOUNT_OFFSET: usize = 0;
     const VERSION_1_REMAINING_OFFSET: usize = 16;
@@ -278,6 +280,14 @@ impl Orders {
     #[cfg(test)]
     pub(crate) fn write_legacy(&mut self, order_id: u128, order: Order) -> StorageResult<()> {
         self.legacy[order_id].write(order)
+    }
+
+    pub(crate) fn clear_legacy_extra_slots(&mut self, order_id: u128) -> StorageResult<()> {
+        let base_slot = self.order_base_slot(order_id);
+        for offset in Self::LEGACY_EXTRA_SLOT_START..=Self::LEGACY_EXTRA_SLOT_END {
+            self.store_slot(base_slot, offset, U256::ZERO)?;
+        }
+        Ok(())
     }
 
     fn read_version_1(
