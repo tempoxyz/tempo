@@ -83,8 +83,9 @@ contract TIP20ChannelReserve is ITIP20ChannelReserve {
         // top-level transaction.
         if (_openedChannelIdsForTest[channelId]) revert ChannelAlreadyExists();
 
-        channelStates[channelId] =
-            _encodeChannelState(ChannelState({ settled: 0, deposit: deposit, closeRequestedAt: 0 }));
+        channelStates[channelId] = _encodeChannelState(
+            ChannelState({ settled: 0, deposit: deposit, closeRequestedAt: 0 })
+        );
 
         // The reference contract keeps ERC-20-style allowance flow for local verification.
         // The enshrined precompile should use TIP-20 `systemTransferFrom` semantics instead.
