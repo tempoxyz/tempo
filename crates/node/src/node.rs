@@ -69,8 +69,13 @@ pub struct TempoNodeArgs {
     #[arg(long = "builder.enable-prewarming", default_value_t = false)]
     pub builder_enable_prewarming: bool,
 
-    /// Enable EIP-7928 block access list collection in the payload builder.
-    #[arg(long = "builder.enable-bal", default_value_t = false)]
+    /// Experimental: enable EIP-7928 block access list collection in the payload builder.
+    #[arg(
+        long = "builder.enable-bal",
+        default_value_t = false,
+        hide = true,
+        help = "EXPERIMENTAL: Enable EIP-7928 block access list collection in the payload builder."
+    )]
     pub builder_enable_bal: bool,
 }
 
