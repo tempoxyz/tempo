@@ -12,7 +12,6 @@ use revm::context::{
         AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
     },
 };
-use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
     AASigned, TempoAddressExt, TempoSignature, TempoTransaction, TempoTxEnvelope,
@@ -163,14 +162,8 @@ impl TempoTxEnv {
         }
     }
 
-    /// Returns true if the T6 discounted payment settlement price applies for the given gas used.
-    pub fn receives_discounted_payment_price(&self, spec: TempoHardfork, gas_used: u64) -> bool {
-        self.is_discounted_payment()
-            && spec.is_t6()
-            && gas_used <= crate::gas_params::SSTORE_SET_COST
-    }
-
-    fn is_discounted_payment(&self) -> bool {
+    /// Returns true if this transaction satisfies the TIP-1059 pure-payment allow-list.
+    pub fn is_discounted_payment(&self) -> bool {
         if self
             .access_list()
             .is_some_and(|mut list| list.next().is_some())

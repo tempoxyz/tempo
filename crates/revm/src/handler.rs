@@ -68,7 +68,7 @@ use crate::{
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
-    gas_params::TempoGasParams,
+    gas_params::{SSTORE_SET_COST, TempoGasParams},
 };
 
 /// Additional gas for P256 signature verification
@@ -1453,17 +1453,14 @@ where
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
         let basefee = u128::from(context.block().basefee());
-        let effective_gas_price = tx.effective_gas_price(basefee);
+        let mut effective_gas_price = tx.effective_gas_price(basefee);
         let gas = exec_result.gas();
         let gas_used = gas.used().saturating_sub(gas.reservoir());
-        let settlement_gas_price =
-            if tx.receives_discounted_payment_price(context.cfg.spec, gas_used) {
-                TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE as u128
-            } else {
-                effective_gas_price
-            };
+        if context.cfg.spec.is_t6() && tx.is_discounted_payment() && gas_used <= SSTORE_SET_COST {
+            effective_gas_price = TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE as u128;
+        }
 
-        let actual_spending = calc_gas_balance_spending(gas_used, settlement_gas_price);
+        let actual_spending = calc_gas_balance_spending(gas_used, effective_gas_price);
         let refund_amount = tx.effective_balance_spending(
             context.block.basefee.into(),
             context.block.blob_gasprice().unwrap_or_default(),
