@@ -41,7 +41,6 @@ use futures::{
 };
 use rand_08::{CryptoRng, Rng};
 use reth_node_builder::{Block as _, BuiltPayload, ConsensusEngineHandle, PayloadKind};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
@@ -640,20 +639,12 @@ impl Inner<Init> {
 
         let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
 
-        let consensus_context = if self
-            .execution_node
-            .chain_spec()
-            .is_t4_active_at_timestamp(timestamp)
-        {
-            Some(TempoConsensusContext {
-                epoch: round.epoch().get(),
-                view: round.view().get(),
-                parent_view: parent_view.get(),
-                proposer: crate::utils::public_key_to_tempo_primitive(&leader),
-            })
-        } else {
-            None
-        };
+        let consensus_context = Some(TempoConsensusContext {
+            epoch: round.epoch().get(),
+            view: round.view().get(),
+            parent_view: parent_view.get(),
+            proposer: crate::utils::public_key_to_tempo_primitive(&leader),
+        });
 
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
@@ -793,7 +784,6 @@ impl Inner<Init> {
             &block,
             (parent_view, parent_digest),
             round,
-            self.execution_node.chain_spec().as_ref(),
             &self.state.dkg_manager,
             &self.epoch_strategy,
             &proposer,
@@ -997,7 +987,6 @@ async fn verify_header(
     block: &Block,
     parent: (View, Digest),
     round: Round,
-    chainspec: &TempoChainSpec,
     dkg_manager: &crate::dkg::manager::Mailbox,
     epoch_strategy: &FixedEpocher,
     proposer: &PublicKey,
@@ -1006,24 +995,20 @@ async fn verify_header(
         .containing(block.height())
         .expect("epoch strategy is for all heights");
 
-    if chainspec.is_t4_active_at_timestamp(block.timestamp()) {
-        let ctx = block
-            .header()
-            .consensus_context
-            .ok_or_eyre("missing consensus context after t4 activation")?;
+    let ctx = block
+        .header()
+        .consensus_context
+        .ok_or_eyre("missing consensus context")?;
 
-        let expected_ctx = TempoConsensusContext {
-            epoch: round.epoch().get(),
-            view: round.view().get(),
-            parent_view: parent.0.get(),
-            proposer: crate::utils::public_key_to_tempo_primitive(proposer),
-        };
+    let expected_ctx = TempoConsensusContext {
+        epoch: round.epoch().get(),
+        view: round.view().get(),
+        parent_view: parent.0.get(),
+        proposer: crate::utils::public_key_to_tempo_primitive(proposer),
+    };
 
-        if ctx != expected_ctx {
-            bail!("mismatching block consensus context");
-        }
-    } else if block.header().consensus_context.is_some() {
-        bail!("block consensus context set prior to activation");
+    if ctx != expected_ctx {
+        bail!("mismatching block consensus context");
     }
 
     if epoch_info.last() == block.height() {
