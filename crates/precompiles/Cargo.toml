@@ -18,6 +18,7 @@ tempo-primitives.workspace = true
 tempo-precompiles-macros.workspace = true
 alloy = { workspace = true, features = ["sol-types", "consensus"] }
 alloy-evm = { workspace = true, features = ["std"] }
+blake2.workspace = true
 revm.workspace = true
 
 commonware-cryptography.workspace = true

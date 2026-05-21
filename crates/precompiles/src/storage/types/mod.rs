@@ -22,7 +22,8 @@ use crate::{
     error::Result,
     storage::{StorageOps, packing},
 };
-use alloy::primitives::{Address, U256, keccak256};
+use alloy::primitives::{Address, U256};
+use blake2::{Blake2s256, Digest};
 use std::{cell::RefCell, collections::HashMap, hash::Hash};
 
 /// Describes how a type is laid out in EVM storage.
@@ -323,7 +324,7 @@ impl<T: Packable> Storable for T {
 
 /// Trait for types that can be used as storage mapping keys.
 ///
-/// Keys are hashed using keccak256 along with the mapping's base slot
+/// Keys are hashed using BLAKE2s-256 along with the mapping's base slot
 /// to determine the final storage location. This trait provides the
 /// byte representation used in that hash.
 ///
@@ -335,7 +336,7 @@ impl<T: Packable> Storable for T {
 ///
 /// # Encoding
 ///
-/// Mapping slots are computed as `keccak256(bytes32(key) | bytes32(slot))`, where the
+/// Mapping slots are computed as `blake2s256(bytes32(key) | bytes32(slot))`, where the
 /// key's raw bytes are left-padded to 32 bytes and the slot is appended in big-endian.
 ///
 /// This differs from Solidity's `keccak256(abi.encode(key, slot))`, where signed integers
@@ -365,7 +366,7 @@ pub trait StorageKey: sealed::OnlyPrimitives {
         buf[32 - key_bytes.len()..32].copy_from_slice(key_bytes);
         buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
 
-        U256::from_be_bytes(keccak256(buf).0)
+        U256::from_be_bytes(Blake2s256::digest(buf).into())
     }
 }
 

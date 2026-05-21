@@ -11,7 +11,7 @@ use crate::storage::{Layout, LayoutCtx, StorableType, StorageKey, types::Handler
 /// Type-safe access wrapper for EVM storage mappings (hash-based key-value storage).
 ///
 /// This struct does not store data itself. Instead, it provides a zero-cost abstraction
-/// for accessing mapping storage slots using Solidity's hash-based layout. It wraps a
+/// for accessing mapping storage slots using hash-based layout. It wraps a
 /// base slot number and provides methods to compute the actual storage slots for keys.
 ///
 /// # Type Parameters
@@ -20,14 +20,14 @@ use crate::storage::{Layout, LayoutCtx, StorableType, StorageKey, types::Handler
 /// - `V`: Value type (must implement `StorableType`)
 ///
 /// `Mapping<K, V>` is essentially a slot computation helper. The `[key]` method
-/// performs the keccak256 hash to compute the actual storage slot and returns a
+/// performs the BLAKE2s-256 hash to compute the actual storage slot and returns a
 /// `Handler` that can be used for read/write operations.
 ///
 /// # Storage Layout
 ///
-/// Mappings use a Solidity-equivalent storage layout:
+/// Mappings use a BLAKE2s-256 storage layout:
 /// - Base slot: stored in `base_slot` field (never accessed directly)
-/// - Actual slot for key `k`: `keccak256(k || base_slot)`
+/// - Actual slot for key `k`: `blake2s256(k || base_slot)`
 ///
 /// # Usage Pattern
 ///
@@ -157,15 +157,15 @@ where
 mod tests {
     use super::*;
     use crate::storage::StorageKey;
-    use alloy::primitives::{Address, B256, keccak256};
+    use alloy::primitives::{Address, B256};
+    use blake2::{Blake2s256, Digest};
 
-    // Backward compatibility helper to verify the trait impl.
-    fn old_mapping_slot<K: AsRef<[u8]>>(key: K, slot: U256) -> U256 {
+    fn expected_mapping_slot<K: AsRef<[u8]>>(key: K, slot: U256) -> U256 {
         let key = key.as_ref();
         let mut buf = [0u8; 64];
         buf[32 - key.len()..32].copy_from_slice(key);
         buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
-        U256::from_be_bytes(keccak256(buf).0)
+        U256::from_be_bytes(Blake2s256::digest(buf).into())
     }
 
     #[test]
@@ -180,32 +180,32 @@ mod tests {
         // Slot in big-endian
         buf[32..].copy_from_slice(&base_slot.to_be_bytes::<32>());
 
-        let expected = U256::from_be_bytes(keccak256(buf).0);
+        let expected = U256::from_be_bytes(Blake2s256::digest(buf).into());
         let computed = key.mapping_slot(base_slot);
 
         assert_eq!(computed, expected, "mapping_slot encoding mismatch");
     }
 
     #[test]
-    fn test_mapping_slot_matches_old_impl() {
+    fn test_mapping_slot_matches_expected_impl() {
         let slot = U256::random();
 
         let addr = Address::random();
         assert_eq!(
             addr.mapping_slot(slot),
-            old_mapping_slot(addr.as_slice(), slot),
+            expected_mapping_slot(addr.as_slice(), slot),
         );
 
         let b256 = B256::random();
         assert_eq!(
             b256.mapping_slot(slot),
-            old_mapping_slot(b256.as_slice(), slot),
+            expected_mapping_slot(b256.as_slice(), slot),
         );
 
         let u256 = U256::random();
         assert_eq!(
             u256.mapping_slot(slot),
-            old_mapping_slot(u256.to_be_bytes::<32>(), slot),
+            expected_mapping_slot(u256.to_be_bytes::<32>(), slot),
         );
     }
 

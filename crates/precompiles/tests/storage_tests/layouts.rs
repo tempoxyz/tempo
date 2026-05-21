@@ -4,6 +4,7 @@
 //! including auto-assignment, explicit slots, base_slot, and string literal slots.
 
 use super::*;
+use blake2::{Blake2s256, Digest};
 use tempo_precompiles::storage::Mapping;
 
 #[test]
@@ -205,7 +206,7 @@ fn test_string_literal_slots() {
     #[contract]
     pub struct Layout {
         #[slot("id")]
-        pub field: U256, // slot: keccak256("id")
+        pub field: U256, // slot: blake2s256("id")
     }
 
     let (mut storage, address) = setup_storage();
@@ -219,7 +220,7 @@ fn test_string_literal_slots() {
         assert_eq!(layout.field.read().unwrap(), U256::ONE);
 
         // Verify slot assignment
-        let slot: U256 = keccak256("id").into();
+        let slot = U256::from_be_bytes(Blake2s256::digest("id").into());
         assert_eq!(layout.field.slot(), slot);
         assert_eq!(slots::FIELD, slot);
 

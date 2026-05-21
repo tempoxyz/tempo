@@ -35,6 +35,7 @@ alloy = { workspace = true, features = [
 ] }
 alloy-json-abi.workspace = true
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
+blake2.workspace = true
 coins-bip32.workspace = true
 clap = { workspace = true, features = ["derive"] }
 commonware-codec.workspace = true

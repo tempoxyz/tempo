@@ -12,6 +12,7 @@ use alloy::{
         utils::secret_key_to_address,
     },
 };
+use blake2::{Blake2s256, Digest};
 use coins_bip32::prelude::*;
 use eyre::{Context as _, ensure};
 use indicatif::{ProgressBar, ProgressStyle};
@@ -265,14 +266,14 @@ fn derive_parent_key(mnemonic_phrase: &str) -> eyre::Result<XPriv> {
     Ok(master)
 }
 
-/// Compute a Solidity mapping slot: keccak256(pad32(key) || pad32(base_slot))
+/// Compute a TIP20 mapping slot: blake2s256(pad32(key) || pad32(base_slot))
 fn compute_mapping_slot(key: Address, base_slot: U256) -> U256 {
     let mut buf = [0u8; 64];
     // Left-pad address to 32 bytes
     buf[12..32].copy_from_slice(key.as_slice());
     // Base slot as big-endian 32 bytes
     buf[32..].copy_from_slice(&base_slot.to_be_bytes::<32>());
-    U256::from_be_bytes(keccak256(buf).0)
+    U256::from_be_bytes(Blake2s256::digest(buf).into())
 }
 
 /// Write a block header to the output.
@@ -311,7 +312,7 @@ mod tests {
 
     #[test]
     fn test_compute_mapping_slot() {
-        // Verify the slot computation matches Solidity's keccak256(abi.encode(key, slot))
+        // Verify the slot computation is deterministic for TIP20's BLAKE2s-256 layout.
         let addr: Address = "0x1234567890123456789012345678901234567890"
             .parse()
             .unwrap();

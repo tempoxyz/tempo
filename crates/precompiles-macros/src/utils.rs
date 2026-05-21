@@ -1,6 +1,7 @@
 //! Utility functions for the contract macro implementation.
 
-use alloy::primitives::{U256, keccak256};
+use alloy::primitives::U256;
+use blake2::{Blake2s256, Digest};
 use syn::{Attribute, Lit, Type};
 
 /// Return type for [`extract_attributes`]: (slot, base_slot)
@@ -10,7 +11,7 @@ type ExtractedAttributes = (Option<U256>, Option<U256>);
 ///
 /// Supports:
 /// - Integer literals: decimal (`42`) or hexadecimal (`0x2a`)
-/// - String literals: computes keccak256 hash of the string
+/// - String literals: computes BLAKE2s-256 hash of the string
 fn parse_slot_value(value: &Lit) -> syn::Result<U256> {
     match value {
         Lit::Int(int) => {
@@ -23,7 +24,9 @@ fn parse_slot_value(value: &Lit) -> syn::Result<U256> {
             .map_err(|_| syn::Error::new_spanned(int, "Invalid slot number"))?;
             Ok(slot)
         }
-        Lit::Str(lit) => Ok(keccak256(lit.value().as_bytes()).into()),
+        Lit::Str(lit) => Ok(U256::from_be_bytes(
+            Blake2s256::digest(lit.value().as_bytes()).into(),
+        )),
         _ => Err(syn::Error::new_spanned(
             value,
             "slot attribute must be an integer or a string literal",
