@@ -188,6 +188,8 @@ def txgen-run-preset-pipeline [
     --scenario: string = ""
     --victoriametrics-url: string = ""
     --clickhouse-url: string = ""
+    --block-access-list-output: string = ""
+    --trie-witness-output: string = ""
     --skip-funding                                   # Skip faucet funding (accounts already funded at genesis via state bloat)
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
@@ -223,6 +225,8 @@ def txgen-run-preset-pipeline [
         "--drain-timeout" $TXGEN_HELPER_DRAIN_TIMEOUT_SECS
     ]
         | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
+        | append (if $block_access_list_output != "" { ["--block-access-list-output" $block_access_list_output] } else { [] })
+        | append (if $trie_witness_output != "" { ["--trie-witness-output" $trie_witness_output] } else { [] })
     let report_args = ["--report" $"json:($report_path)"]
         | append (if $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
         | append (if $clickhouse_url != "" { ["--report" $"clickhouse:($clickhouse_url)"] } else { [] })
