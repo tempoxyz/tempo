@@ -251,6 +251,7 @@ async-trait = "0.1"
 auto_impl = "1"
 axum = "0.8.8"
 base64 = { version = "0.22", features = ["alloc"], default-features = false }
+blake2 = "0.10.6"
 bytes = "1.11.1"
 clap = { version = "4.5.57", features = ["derive", "env"] }
 coins-bip32 = "0.12"

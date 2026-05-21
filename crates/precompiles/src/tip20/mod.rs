@@ -34,6 +34,7 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
     sol_types::SolValue,
 };
+use blake2::{Blake2s256, Digest};
 use std::sync::LazyLock;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
@@ -114,18 +115,26 @@ pub struct TIP20Token {
     user_reward_info: Mapping<Address, UserRewardInfo>,
 }
 
-/// EIP-712 Permit typehash: keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
+fn blake2s256(data: impl AsRef<[u8]>) -> B256 {
+    B256::from_slice(&Blake2s256::digest(data.as_ref()))
+}
+
+/// EIP-712 Permit typehash: blake2s256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
 pub static PERMIT_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
+    blake2s256(
+        b"Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)",
+    )
 });
 
 /// EIP-712 domain separator typehash
 pub static EIP712_DOMAIN_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
-    keccak256(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
+    blake2s256(
+        b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)",
+    )
 });
 
-/// EIP-712 version hash: keccak256("1")
-pub static VERSION_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"1"));
+/// EIP-712 version hash: blake2s256("1")
+pub static VERSION_HASH: LazyLock<B256> = LazyLock::new(|| blake2s256(b"1"));
 
 /// Role hash for pausing token transfers.
 pub static PAUSE_ROLE: LazyLock<B256> = LazyLock::new(|| keccak256(b"PAUSE_ROLE"));
@@ -676,7 +685,7 @@ impl TIP20Token {
     /// Returns the EIP-712 domain separator, computed dynamically from the token name and chain ID.
     pub fn domain_separator(&self) -> Result<B256> {
         let name = self.name()?;
-        let name_hash = self.storage.keccak256(name.as_bytes())?;
+        let name_hash = blake2s256(name.as_bytes());
         let chain_id = U256::from(self.storage.chain_id());
 
         let encoded = (
@@ -688,7 +697,7 @@ impl TIP20Token {
         )
             .abi_encode();
 
-        self.storage.keccak256(&encoded)
+        Ok(blake2s256(&encoded))
     }
 
     /// Sets allowance via a signed [EIP-2612] permit. Validates the ECDSA signature, checks the
@@ -707,8 +716,8 @@ impl TIP20Token {
 
         // 2. Construct EIP-712 struct hash
         let nonce = self.permit_nonces[call.owner].read()?;
-        let struct_hash = self.storage.keccak256(
-            &(
+        let struct_hash = blake2s256(
+            (
                 *PERMIT_TYPEHASH,
                 call.owner,
                 call.spender,
@@ -717,18 +726,18 @@ impl TIP20Token {
                 call.deadline,
             )
                 .abi_encode(),
-        )?;
+        );
 
         // 3. Construct EIP-712 digest
         let domain_separator = self.domain_separator()?;
-        let digest = self.storage.keccak256(
-            &[
+        let digest = blake2s256(
+            [
                 &[0x19, 0x01],
                 domain_separator.as_slice(),
                 struct_hash.as_slice(),
             ]
             .concat(),
-        )?;
+        );
 
         // 4. Validate ECDSA signature
         // Only v=27/28 is accepted; v=0/1 is intentionally NOT normalized (see TIP-1004 spec).
@@ -3208,7 +3217,7 @@ pub(crate) mod tests {
             deadline: U256,
         ) -> (u8, B256, B256) {
             let domain_separator = compute_domain_separator(token_name, token_address);
-            let struct_hash = keccak256(
+            let struct_hash = blake2s256(
                 (
                     *PERMIT_TYPEHASH,
                     signer.address(),
@@ -3219,7 +3228,7 @@ pub(crate) mod tests {
                 )
                     .abi_encode(),
             );
-            let digest = keccak256(
+            let digest = blake2s256(
                 [
                     &[0x19, 0x01],
                     domain_separator.as_slice(),
@@ -3236,10 +3245,10 @@ pub(crate) mod tests {
         }
 
         fn compute_domain_separator(token_name: &str, token_address: Address) -> B256 {
-            keccak256(
+            blake2s256(
                 (
                     *EIP712_DOMAIN_TYPEHASH,
-                    keccak256(token_name.as_bytes()),
+                    blake2s256(token_name.as_bytes()),
                     *VERSION_HASH,
                     U256::from(CHAIN_ID),
                     token_address,
