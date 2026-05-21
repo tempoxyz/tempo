@@ -12622,7 +12622,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-alloy"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "alloy",
  "alloy-consensus",
@@ -12771,7 +12771,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-contracts"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "alloy-contract",
  "alloy-primitives",
@@ -13087,7 +13087,7 @@ dependencies = [
 
 [[package]]
 name = "tempo-primitives"
-version = "1.7.1"
+version = "1.7.2"
 dependencies = [
  "alloy-consensus",
  "alloy-eips 2.0.5",
