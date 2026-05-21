@@ -12968,6 +12968,7 @@ dependencies = [
  "reth-rpc-builder",
  "reth-rpc-eth-api",
  "reth-rpc-eth-types",
+ "reth-storage-api",
  "reth-tracing",
  "reth-transaction-pool",
  "serde",
