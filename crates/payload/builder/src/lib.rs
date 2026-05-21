@@ -748,7 +748,7 @@ where
             .total_normal_included_transaction_execution_duration_seconds
             .record(total_included_transaction_execution_elapsed);
 
-        let builder_finish_start = Instant::now();
+        let payload_finalization_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
         let finish_provider = || InstrumentedFinishProvider {
             inner: &*state_provider,
@@ -757,18 +757,27 @@ where
 
         check_cancel!();
 
-        let BlockBuilderOutcome {
-            execution_result,
-            block,
-            hashed_state,
-            trie_updates,
-            ..
-        } = if let Some(mut handle) = trie_handle {
+        let (
+            BlockBuilderOutcome {
+                execution_result,
+                block,
+                hashed_state,
+                trie_updates,
+                ..
+            },
+            builder_finish_elapsed,
+        ) = if let Some(mut handle) = trie_handle {
             // Dropping the hook signals that execution is complete and the sparse trie task can
             // finalize the state root it has been updating incrementally.
             builder.executor_mut().set_state_hook(None);
 
-            match handle.state_root() {
+            let state_root_wait_start = Instant::now();
+            let state_root_outcome = handle.state_root();
+            self.metrics
+                .sparse_trie_state_root_wait_duration_seconds
+                .record(state_root_wait_start.elapsed());
+
+            match state_root_outcome {
                 Ok(outcome) => {
                     debug!(
                         target: "payload_builder",
@@ -776,13 +785,17 @@ where
                         state_root = ?outcome.state_root,
                         "received state root from sparse trie"
                     );
-                    builder.finish(
+                    let builder_finish_start = Instant::now();
+                    let result = builder.finish(
                         finish_provider(),
                         Some((
                             outcome.state_root,
                             Arc::unwrap_or_clone(outcome.trie_updates),
                         )),
-                    )?
+                    );
+                    let elapsed = builder_finish_start.elapsed();
+                    self.metrics.builder_finish_duration_seconds.record(elapsed);
+                    (result?, elapsed)
                 }
                 Err(err) => {
                     warn!(
@@ -791,20 +804,25 @@ where
                         %err,
                         "sparse trie failed, falling back to sync state root"
                     );
-                    builder.finish(finish_provider(), None)?
+                    let builder_finish_start = Instant::now();
+                    let result = builder.finish(finish_provider(), None);
+                    let elapsed = builder_finish_start.elapsed();
+                    self.metrics.builder_finish_duration_seconds.record(elapsed);
+                    (result?, elapsed)
                 }
             }
         } else {
-            builder.finish(finish_provider(), None)?
+            let builder_finish_start = Instant::now();
+            let result = builder.finish(finish_provider(), None);
+            let elapsed = builder_finish_start.elapsed();
+            self.metrics.builder_finish_duration_seconds.record(elapsed);
+            (result?, elapsed)
         };
         drop(_finish_span);
-        let builder_finish_elapsed = builder_finish_start.elapsed();
+        let payload_finalization_elapsed = payload_finalization_start.elapsed();
         self.metrics
             .payload_finalization_duration_seconds
-            .record(builder_finish_elapsed);
-        self.metrics
-            .builder_finish_duration_seconds
-            .record(builder_finish_elapsed);
+            .record(payload_finalization_elapsed);
 
         let total_transactions = block.transaction_count();
         self.metrics
