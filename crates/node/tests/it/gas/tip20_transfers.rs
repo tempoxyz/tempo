@@ -1,5 +1,5 @@
 use alloy::{
-    primitives::{Address, B256, FixedBytes, U256},
+    primitives::{Address, FixedBytes, U256},
     providers::Provider,
     sol_types::SolEvent,
 };
@@ -537,17 +537,13 @@ fn tip20_transfer_gas_cases() -> Vec<TransferScenario> {
     cases
 }
 
-fn deterministic_word(case_index: usize, domain: u64) -> B256 {
-    B256::from(U256::from(((case_index as u64) << 8) | domain))
-}
-
 fn deterministic_user_tag(case_index: usize, domain: u64) -> FixedBytes<6> {
-    let word = deterministic_word(case_index, domain);
+    let word = U256::from(((case_index as u64) << 8) | domain).to_be_bytes::<32>();
     FixedBytes::from_slice(&word.as_slice()[26..32])
 }
 
 fn deterministic_address(case_index: usize, domain: u64) -> Address {
-    Address::from_word(deterministic_word(case_index, domain))
+    Address::from_word(U256::from(((case_index as u64) << 8) | domain).into())
 }
 
 async fn run_tip20_transfer_gas_cases<P: Provider + Clone>(
