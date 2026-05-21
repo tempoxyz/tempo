@@ -3,11 +3,9 @@ use std::{
     net::SocketAddr, num::NonZeroU32, path::PathBuf, str::FromStr, sync::OnceLock, time::Duration,
 };
 
-use alloy_primitives::FixedBytes;
-use commonware_codec::ReadExt as _;
+use crate::network_identity::NetworkIdentity;
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
-use tempo_chainspec::NetworkIdentity;
 use tempo_commonware_node_config::SigningKey;
 
 const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
@@ -32,7 +30,7 @@ pub struct Args {
         long = "consensus.network-identity",
         requires = "network_identity_from_epoch"
     )]
-    pub(crate) network_identity: Option<NetworkIdentityParser>,
+    pub(crate) network_identity: Option<NetworkIdentity>,
 
     /// First epoch where --consensus.network-identity is set after rotation
     #[arg(
@@ -269,22 +267,6 @@ pub struct Args {
     pub storage_dir: Option<PathBuf>,
 }
 
-#[derive(Debug, Clone, Copy)]
-pub(crate) struct NetworkIdentityParser(crate::alias::NetworkIdentity);
-impl FromStr for NetworkIdentityParser {
-    type Err = Box<dyn std::error::Error + Send + Sync + 'static>;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let bytes = s.parse::<FixedBytes<96>>()?;
-
-        let mut bytes = bytes.as_slice();
-        let key = crate::alias::NetworkIdentity::read(&mut bytes)
-            .wrap_err("must be a valid BLS public key")?;
-
-        Ok(Self(key))
-    }
-}
-
 /// A jiff::SignedDuration that checks that the duration is positive and not zero.
 #[derive(Debug, Clone, Copy)]
 pub struct PositiveDuration(jiff::SignedDuration);
@@ -339,13 +321,13 @@ impl Args {
             .map(|signing_key| signing_key.public_key()))
     }
 
-    pub fn network_identity(&self) -> Option<NetworkIdentity> {
+    pub fn network_identity(&self) -> Option<tempo_chainspec::NetworkIdentity> {
         let identity = self.network_identity?;
         let from_epoch = self
             .network_identity_from_epoch
             .expect("network identity from epoch required");
 
-        Some(NetworkIdentity {
+        Some(tempo_chainspec::NetworkIdentity {
             from_epoch,
             identity: identity.0,
         })

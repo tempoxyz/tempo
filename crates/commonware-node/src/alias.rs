@@ -1,9 +1,5 @@
 //! A collection of aliases for frequently used (primarily commonware) types.
 
-use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
-
-pub(crate) type NetworkIdentity = <MinSig as Variant>::Public;
-
 pub(crate) mod marshal {
     use commonware_consensus::{
         marshal::{core, standard::Standard},

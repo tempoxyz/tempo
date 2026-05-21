@@ -13,12 +13,12 @@ pub(crate) mod executor;
 pub mod feed;
 pub mod follow;
 pub mod metrics;
+pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
 pub(crate) mod storage;
+pub(crate) mod subblocks;
 pub(crate) mod utils;
 pub(crate) mod validators;
-
-pub(crate) mod subblocks;
 
 use std::sync::Arc;
 
