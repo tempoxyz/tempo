@@ -9,6 +9,7 @@ use reth_rpc_convert::{
     FromConsensusHeader, SignTxRequestError, SignableTxRequest, TryIntoSimTx, TryIntoTxEnv,
 };
 use reth_rpc_eth_types::EthApiError;
+use std::sync::Arc;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_evm::TempoBlockEnv;
 use tempo_primitives::{
@@ -174,7 +175,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                     return Err(EthApiError::InvalidParams("empty calls list".to_string()));
                 }
 
-                Some(Box::new(TempoBatchCallEnv {
+                Some(Arc::new(TempoBatchCallEnv {
                     aa_calls: calls,
                     signature: mock_signature,
                     tempo_authorization_list: tempo_authorization_list
@@ -385,9 +386,9 @@ mod tests {
 
         let evm_env = EvmEnv::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
-        let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
+        let estimated_calls = &tx_env.tempo_tx_env.as_ref().expect("tempo_tx_env").aa_calls;
 
-        assert_eq!(estimated_calls, built_calls);
+        assert_eq!(estimated_calls, &built_calls);
     }
 
     #[test]
@@ -565,10 +566,10 @@ mod tests {
 
         let evm_env = EvmEnv::default();
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
-        let aa_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
+        let aa_calls = &tx_env.tempo_tx_env.as_ref().expect("tempo_tx_env").aa_calls;
 
         assert_eq!(
-            aa_calls, calls,
+            aa_calls, &calls,
             "roundtrip via try_into_tx_env must preserve exact call list"
         );
     }
