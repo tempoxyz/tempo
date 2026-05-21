@@ -2,7 +2,7 @@
 name = "tempo-primitives"
 description = "Tempo primitive types"
 
-version = "1.6.0"
+version = "1.7.1"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -83,6 +83,8 @@ std = [
 	"reth-ethereum-primitives?/std",
 	"reth-primitives-traits?/std",
 	"revm/std",
+	"revm/blst",
+	"revm/c-kzg",
 	"serde/std",
 	"serde_json/std",
 	"sha2/std",

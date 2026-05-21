@@ -21,6 +21,11 @@ const T3_ADDED: &[[u8; 4]] = &[
     IAccountKeychain::getAllowedCallsCall::SELECTOR,
 ];
 const T3_DROPPED: &[[u8; 4]] = &[IAccountKeychain::getRemainingLimitCall::SELECTOR];
+const T5_ADDED: &[[u8; 4]] = &[
+    IAccountKeychain::authorizeKey_2Call::SELECTOR,
+    IAccountKeychain::burnKeyAuthorizationWitnessCall::SELECTOR,
+    IAccountKeychain::isKeyAuthorizationWitnessBurnedCall::SELECTOR,
+];
 
 impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -30,16 +35,19 @@ impl Precompile for AccountKeychain {
 
         dispatch_call(
             calldata,
-            &[SelectorSchedule::new(TempoHardfork::T3)
-                .with_added(T3_ADDED)
-                .with_dropped(T3_DROPPED)],
+            &[
+                SelectorSchedule::new(TempoHardfork::T3)
+                    .with_added(T3_ADDED)
+                    .with_dropped(T3_DROPPED),
+                SelectorSchedule::new(TempoHardfork::T5).with_added(T5_ADDED),
+            ],
             IAccountKeychainCalls::abi_decode,
             |call| match call {
                 IAccountKeychainCalls::authorizeKey_0(call) => {
                     if self.storage.spec().is_t3() {
                         return self.storage.error_result(
                             AccountKeychainError::legacy_authorize_key_selector_changed(
-                                authorizeKeyCall::SELECTOR,
+                                authorizeKeyCall::SELECTOR.into(),
                             ),
                         );
                     }
@@ -64,10 +72,30 @@ impl Precompile for AccountKeychain {
                         },
                     };
 
-                    mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
+                    mutate_void(call, msg_sender, |sender, c| {
+                        self.authorize_key(sender, c.keyId, c.signatureType, c.config, None)
+                    })
                 }
                 IAccountKeychainCalls::authorizeKey_1(call) => {
-                    mutate_void(call, msg_sender, |sender, c| self.authorize_key(sender, c))
+                    mutate_void(call, msg_sender, |sender, c| {
+                        self.authorize_key(sender, c.keyId, c.signatureType, c.config, None)
+                    })
+                }
+                IAccountKeychainCalls::authorizeKey_2(call) => {
+                    mutate_void(call, msg_sender, |sender, c| {
+                        self.authorize_key(
+                            sender,
+                            c.keyId,
+                            c.signatureType,
+                            c.config,
+                            Some(c.witness),
+                        )
+                    })
+                }
+                IAccountKeychainCalls::burnKeyAuthorizationWitness(call) => {
+                    mutate_void(call, msg_sender, |sender, c| {
+                        self.burn_key_authorization_witness(sender, c)
+                    })
                 }
                 IAccountKeychainCalls::revokeKey(call) => {
                     mutate_void(call, msg_sender, |sender, c| self.revoke_key(sender, c))
@@ -97,6 +125,9 @@ impl Precompile for AccountKeychain {
                 IAccountKeychainCalls::getAllowedCalls(call) => {
                     view(call, |c| self.get_allowed_calls(c))
                 }
+                IAccountKeychainCalls::isKeyAuthorizationWitnessBurned(call) => {
+                    view(call, |c| self.is_key_authorization_witness_burned(c))
+                }
                 IAccountKeychainCalls::getTransactionKey(call) => {
                     view(call, |c| self.get_transaction_key(c, msg_sender))
                 }
@@ -115,7 +146,7 @@ mod tests {
         test_util::{assert_full_coverage, check_selector_coverage},
     };
     use alloy::{
-        primitives::U256,
+        primitives::{B256, U256},
         sol_types::{SolCall, SolError},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
@@ -123,7 +154,7 @@ mod tests {
 
     #[test]
     fn test_account_keychain_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         StorageCtx::enter(&mut storage, || {
             let mut fee_manager = AccountKeychain::new();
             let selectors: Vec<_> = IAccountKeychainCalls::SELECTORS
@@ -343,6 +374,54 @@ mod tests {
                 decoded.selector.as_slice(),
                 &getRemainingLimitCall::SELECTOR,
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t5_witness_selectors_rejected_pre_t5() -> eyre::Result<()> {
+        let account = Address::random();
+        let witness = B256::repeat_byte(0x53);
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            for (selector, calldata) in [
+                (
+                    IAccountKeychain::authorizeKey_2Call::SELECTOR,
+                    IAccountKeychain::authorizeKey_2Call {
+                        keyId: Address::random(),
+                        signatureType: IAccountKeychain::SignatureType::Secp256k1,
+                        config: KeyRestrictions {
+                            expiry: u64::MAX,
+                            enforceLimits: false,
+                            limits: vec![],
+                            allowAnyCalls: true,
+                            allowedCalls: vec![],
+                        },
+                        witness,
+                    }
+                    .abi_encode(),
+                ),
+                (
+                    IAccountKeychain::burnKeyAuthorizationWitnessCall::SELECTOR,
+                    IAccountKeychain::burnKeyAuthorizationWitnessCall { witness }.abi_encode(),
+                ),
+                (
+                    IAccountKeychain::isKeyAuthorizationWitnessBurnedCall::SELECTOR,
+                    IAccountKeychain::isKeyAuthorizationWitnessBurnedCall { account, witness }
+                        .abi_encode(),
+                ),
+            ] {
+                let result = keychain.call(&calldata, account)?;
+                assert!(result.is_revert(), "expected T5 selector to revert pre-T5");
+
+                let decoded = UnknownFunctionSelector::abi_decode(&result.bytes)?;
+                assert_eq!(decoded.selector.as_slice(), &selector);
+            }
 
             Ok(())
         })

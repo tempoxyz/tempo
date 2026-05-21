@@ -6,18 +6,21 @@ on:
   push:
     branches: [main]
     paths:
+      - "Cargo.lock"
+      - "Cargo.toml"
+      - "crates/**/Cargo.toml"
       - "tips/verify/**"
       - "crates/contracts/**"
       - "crates/precompiles/**"
+      - "scripts/foundry-patch.sh"
       - ".github/workflows/specs.yml"
+      - ".github/workflows/update-reth.yml"
   merge_group:
   pull_request:
 
 env:
   CARGO_TERM_COLOR: always
   RUSTC_WRAPPER: "sccache"
-  # Pinned to mablr/alloy_bump_without_op (alloy 2.0.4 + OP support stripped)
-  FOUNDRY_SHA: "be874c9f6dacaa289b8c3b438f0e94e8d34e9fe0"
 
 jobs:
   check-specs-changes:
@@ -28,6 +31,7 @@ jobs:
       pull-requests: read
     outputs:
       should_run: ${{ steps.filter.outputs.specs }}
+      foundry_smoke: ${{ steps.filter.outputs.foundry_smoke }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
@@ -41,6 +45,52 @@ jobs:
               - 'crates/contracts/**'
               - 'crates/precompiles/**'
               - '.github/workflows/specs.yml'
+            foundry_smoke:
+              - 'Cargo.lock'
+              - 'Cargo.toml'
+              - 'crates/**/Cargo.toml'
+              - 'scripts/foundry-patch.sh'
+              - '.github/workflows/specs.yml'
+              - '.github/workflows/update-reth.yml'
+
+  foundry-resolver-smoke:
+    name: Foundry Resolver Smoke
+    needs: check-specs-changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Skip Foundry resolver smoke
+        if: needs.check-specs-changes.outputs.foundry_smoke != 'true'
+        run: |
+          echo "Skipping Foundry resolver smoke: no dependency-sensitive files changed."
+
+      - name: Checkout tempo
+        if: needs.check-specs-changes.outputs.foundry_smoke == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          path: tempo
+          persist-credentials: false
+
+      - name: Checkout foundry
+        if: needs.check-specs-changes.outputs.foundry_smoke == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: foundry-rs/foundry
+          # tmp: rus/bump-tempo-v1.7
+          ref: 2a70688470dd684e00d54b4ac1a9b165162960be
+          path: foundry
+          persist-credentials: false
+
+      - name: Setup Rust
+        if: needs.check-specs-changes.outputs.foundry_smoke == 'true'
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Patch foundry to use checked-out tempo crates
+        if: needs.check-specs-changes.outputs.foundry_smoke == 'true'
+        env:
+          RUSTC_WRAPPER: ""
+        run: tempo/scripts/foundry-patch.sh "$GITHUB_WORKSPACE/tempo" "$GITHUB_WORKSPACE/foundry"
 
   check-precompiles:
     name: Check precompiles changes
@@ -170,7 +220,8 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          ref: ${{ env.FOUNDRY_SHA }}
+          # tmp: rus/bump-tempo-v1.7
+          ref: 2a70688470dd684e00d54b4ac1a9b165162960be
           path: foundry
           persist-credentials: false
 
@@ -194,7 +245,7 @@ jobs:
       - name: Build foundry forge with coverage instrumentation
         if: needs.check-precompiles.outputs.coverage == 'true'
         working-directory: foundry
-        run: RUSTFLAGS="-C instrument-coverage" cargo build -p forge --profile release
+        run: RUSTFLAGS="-C instrument-coverage" cargo build -p forge --profile release --no-default-features
 
       - name: Run Forge tests with Rust precompiles (with coverage)
         if: needs.check-precompiles.outputs.coverage == 'true'
@@ -207,7 +258,7 @@ jobs:
       - name: Build foundry forge
         if: needs.check-precompiles.outputs.coverage != 'true'
         working-directory: foundry
-        run: cargo build -p forge --profile release
+        run: cargo build -p forge --profile release --no-default-features
 
       - name: Run Forge tests with Rust precompiles
         if: needs.check-precompiles.outputs.coverage != 'true'
@@ -240,6 +291,7 @@ jobs:
     permissions: {}
     needs:
       - check-specs-changes
+      - foundry-resolver-smoke
       - check-precompiles
       - build
       - abi-alignment-check

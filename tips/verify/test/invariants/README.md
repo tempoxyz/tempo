@@ -136,6 +136,43 @@ The FeeManager extends FeeAMM and handles fee token preferences and distribution
 - **TEMPO-FEE5**: Combined solvency - for each token, total pool reserves + collected fees ≤ AMM token balance.
 - **TEMPO-FEE6**: Fee swap rate M is correctly applied - fee output should always be <= fee input.
 
+## TIP-1033: Two-Hop FeeAMM Routing
+
+TIP-1033 (T5+) adds a single fallback path through `userToken.quoteToken()` when the direct
+`(userToken, validatorToken)` pool has insufficient liquidity. Both hops apply the standard
+`M = 0.9970` fee rate **sequentially**, with intermediate rounding: the validator receives
+`floor(floor(actualSpending * M) * M)`, never the fused `(M*M)` result. The Foundry suite mocks
+the protocol's pre/post-tx via `vm.store` (mirroring `simulateFeeCollection`); the route
+predicate in `simulateTwoHopFeeCollection` directly mirrors `plan_fee_route` at T5+ semantics, so
+the model is hardfork-independent. Real hardfork gating is covered by Rust (see TEMPO-FEE16).
+
+### Two-Hop Math Invariants
+
+- **TEMPO-AMM35**: Two-hop fee math is sequential. Validator credit equals `floor(floor(actualSpending * M / SCALE) * M / SCALE)` exactly for every fallback witness; aggregate validator credit equals the aggregate sequential expectation.
+- **TEMPO-AMM36**: Sequential math is not equivalent to fused `(M*M)/SCALE^2`. A fixed regression amount proves the formulas can diverge; every fallback witness must use sequential math, the largest fallback amount sampled is checked explicitly, and any sampled amount where sequential and fused diverge must credit less than the fused result.
+- **TEMPO-AMM37**: Per-hop output equals `floor(amountIn * M / SCALE)` for each leg. Cumulative `_ghostHop1OutputSum ≤ _ghostHop1InputSum` and `_ghostHop2OutputSum ≤ _ghostHop2InputSum`.
+
+### Two-Hop Routing Invariants
+
+- **TEMPO-FEE7**: Direct path is preferred. When the direct pool can settle, neither two-hop leg's reserves change and the direct pool absorbs exactly `out1`.
+- **TEMPO-FEE8**: Two-hop is engaged iff direct insufficient AND both legs sufficient on T5+. Verified per witness against the planning-time reserve snapshots.
+- **TEMPO-FEE9**: Intermediate well-formedness. For every fallback witness: `hopToken != 0`, `hopToken != userToken`, `hopToken != validatorToken`, and `hopToken == TIP20(userToken).quoteToken()` as observed at the current chain state.
+- **TEMPO-FEE10**: Degenerate revert. When `userToken.quoteToken() == validatorToken` AND the direct pool is insufficient, the call reverts with `InsufficientLiquidity` and there is no half-commit (no transient writes, no pool reservations). Modelled as "no state change, no slot-7 leak" since `vm.store`-mocked collection cannot model a reverted protocol call directly.
+- **TEMPO-FEE11**: Reservation covers settlement. For every fallback witness, hop1/hop2 reserve deltas equal `(input, out1)` and `(out1, out2)` respectively; the direct pool's validator-side reserve is unchanged.
+- **TEMPO-FEE13**: Single-hop unchanged. When `userToken == validatorToken` or the direct path succeeds, the persistent slot for `two_hop_intermediate` (slot 7) remains zero — bit-identical observable behaviour to pre-TIP-1033.
+- **TEMPO-FEE14**: Transient lifetime. `two_hop_intermediate` is never observable as persistent storage. `vm.load` reads PERSISTENT storage only; Foundry cannot read TLOAD state, so true cross-transaction transient clearing is covered by Rust unit tests in `crates/precompiles/src/tip_fee_manager/mod.rs`.
+
+### Protocol-Level Invariants (Rust)
+
+The following are enforced at the protocol level and tested in Rust unit tests under
+`crates/precompiles/src/tip_fee_manager/mod.rs`. They cannot be expressed in this Foundry suite
+because they require either (a) observing transient storage mid-transaction, or (b) executing a
+real protocol call rather than a `vm.store`-mocked one.
+
+- **TEMPO-FEE12**: Reservation enforcement against rebalance / burn — the transient leg reservations survive any mid-transaction rebalance or burn that would otherwise drain the reserved liquidity. Covered by Rust unit tests.
+- **TEMPO-FEE15**: Mid-tx `completeQuoteTokenUpdate` does not affect post-tx settlement — `two_hop_intermediate` was captured at pre-tx, so a mid-tx quote-token rotation cannot reroute the post-tx swap. Covered by Rust unit tests.
+- **TEMPO-FEE16**: Hardfork gating — pre-T5 the two-hop fallback is disabled and a missing direct pool reverts with `InsufficientLiquidity` exactly as before TIP-1033. Enforced by `test_collect_fee_pre_tx_two_hop_hardfork_gating` in Rust; this Foundry suite runs at T5+.
+
 ## TIP-1000: State Creation Cost (Gas Pricing)
 
 TIP-1000 defines Tempo's gas pricing for state creation operations, charging 250,000 gas for each new state element to account for long-term storage costs.
@@ -602,3 +639,19 @@ The SignatureVerifier precompile (`0x5165300000000000000000000000000000000000`) 
 - **TEMPO-VA14**: Policy-on-master semantics - recipient and mint-recipient authorization is evaluated on the resolved master, not the alias.
 - **TEMPO-VA15**: Policy-operation rejection - TIP-403 configuration APIs reject virtual aliases as literal policy members.
 - **TEMPO-VA16**: Reward-recipient rejection - `setRewardRecipient` rejects virtual aliases.
+
+## TIP-1026 Token Logo URI
+
+TIP-1026 adds a `logoURI` field to TIP-20 tokens — mutable by the token admin (`setLogoURI`) or set at deploy time via the new 7-arg `createToken` overload — capped at 256 bytes and validated against a scheme allowlist (`https`, `http`, `ipfs`, `data`, ASCII-case-insensitive).
+
+### Global Invariants
+
+- **TEMPO-1026-1**: `bytes(logoURI()).length <= 256` for every TIP-20 token, after every fuzz run.
+- **TEMPO-1026-2**: The legacy 6-argument `createToken` selector (`0x68130445`) and the `TokenCreated` event signature hash are unchanged by this TIP. Asserted as one-shot constants in `setUp`.
+
+### Per-Handler Assertions
+
+These verify correct behavior when the specific function is called:
+
+- **TEMPO-1026-1**: `setLogoURI` reverts with `LogoURITooLong` when `bytes(newLogoURI).length > 256`; reverts with `InvalidLogoURI` when the URI is non-empty and either has no parseable scheme (RFC 3986 §3.1) or its scheme is not in the allowlist; reverts with `Unauthorized` for non-admin callers; on success, persists the URI with length ≤ 256 bytes.
+- **TEMPO-1026 factory**: the 7-arg `createToken` overload validates `logoURI` atomically — a rejected URI must revert and leave the predicted address undeployed. On success, the new token is deployed at the address returned by `getTokenAddress` and `logoURI()` returns the supplied value.

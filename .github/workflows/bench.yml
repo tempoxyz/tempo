@@ -1,7 +1,7 @@
 # Runs tempo benchmarks.
 #
-# Benchmarks use `nu tempo.nu bench` which runs an interleaved B-F-F-B
-# comparison against a schelk-managed snapshot on a self-hosted runner.
+# E2E benchmarks run `nu bench-e2e.nu e2e` against the dual-schelk runner.
+# Replay benchmarks use `nu tempo.nu bench-replay`.
 #
 # Trigger via PR comment (`@decofe bench` or `derek bench`).
 
@@ -17,6 +17,7 @@ name: bench
 
 permissions:
   contents: read
+  issues: write
   pull-requests: write
 
 jobs:
@@ -32,9 +33,12 @@ jobs:
       duration: ${{ steps.args.outputs.duration }}
       bloat: ${{ steps.args.outputs.bloat }}
       tps: ${{ steps.args.outputs.tps }}
+      accounts: ${{ steps.args.outputs.accounts }}
+      max-concurrent-requests: ${{ steps.args.outputs.max-concurrent-requests }}
       baseline: ${{ steps.args.outputs.baseline }}
       feature: ${{ steps.args.outputs.feature }}
-      backend: ${{ steps.args.outputs.backend }}
+      baseline-hardfork: ${{ steps.args.outputs.baseline-hardfork }}
+      feature-hardfork: ${{ steps.args.outputs.feature-hardfork }}
       txgen-ref: ${{ steps.args.outputs.txgen-ref }}
       baseline-name: ${{ steps.args.outputs.baseline-name }}
       feature-name: ${{ steps.args.outputs.feature-name }}
@@ -42,12 +46,13 @@ jobs:
       tracy: ${{ steps.args.outputs.tracy }}
       tracy-seconds: ${{ steps.args.outputs.tracy-seconds }}
       tracy-offset: ${{ steps.args.outputs.tracy-offset }}
+      otlp: ${{ steps.args.outputs.otlp }}
       baseline-args: ${{ steps.args.outputs.baseline-args }}
       feature-args: ${{ steps.args.outputs.feature-args }}
-      baseline-hardfork: ${{ steps.args.outputs.baseline-hardfork }}
-      feature-hardfork: ${{ steps.args.outputs.feature-hardfork }}
+      gas-limit: ${{ steps.args.outputs.gas-limit }}
       run-type: ${{ steps.args.outputs.run-type }}
       force-bloat: ${{ steps.args.outputs.force-bloat }}
+      no-cache: ${{ steps.args.outputs.no-cache }}
       no-slack: ${{ steps.args.outputs.no-slack }}
       bench-args: ${{ steps.args.outputs.bench-args }}
       bench-env: ${{ steps.args.outputs.bench-env }}
@@ -56,25 +61,41 @@ jobs:
       blocks: ${{ steps.args.outputs.blocks }}
       warmup: ${{ steps.args.outputs.warmup }}
       chain: ${{ steps.args.outputs.chain }}
+      run-pairs: ${{ steps.args.outputs.run-pairs }}
       comment-id: ${{ steps.ack.outputs.comment-id }}
+      pr-head-sha: ${{ steps.args.outputs.pr-head-sha }}
+      pr-head-ref: ${{ steps.args.outputs.pr-head-ref }}
     steps:
       - name: Check org membership
         if: github.event_name == 'issue_comment'
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
+          github-token: ${{ secrets.DEREK_BENCH_ACK_TOKEN }}
           script: |
-            const user = context.payload.comment.user.login;
-            try {
-              const { status } = await github.rest.orgs.checkMembershipForUser({
-                org: 'tempoxyz',
-                username: user,
-              });
-              if (status !== 204 && status !== 302) {
-                core.setFailed(`@${user} is not a member of tempoxyz`);
+            const org = 'tempoxyz';
+            const checkMembership = async (username) => {
+              try {
+                const { status } = await github.rest.orgs.checkMembershipForUser({ org, username });
+                return status === 204 || status === 302;
+              } catch {
+                return false;
               }
-            } catch (e) {
-              core.setFailed(`@${user} is not a member of tempoxyz`);
+            };
+
+            const commenter = context.payload.comment.user.login;
+            if (!await checkMembership(commenter)) {
+              core.setFailed(`@${commenter} is not a member of ${org}`);
+              return;
+            }
+
+            const { data: pr } = await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: context.issue.number,
+            });
+            const prAuthor = pr.user.login;
+            if (!await checkMembership(prAuthor)) {
+              core.setFailed(`PR author @${prAuthor} is not a member of ${org}`);
             }
 
       - name: Parse arguments
@@ -83,21 +104,25 @@ jobs:
         env:
           INPUT_REF_NAME: ${{ github.ref_name }}
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
-            let pr, actor, mode, preset, duration, bloat, tps, baseline, feature, backend, txgenRef, samply, tracy, tracySeconds, tracyOffset, baselineArgs, featureArgs, baselineHardfork, featureHardfork, runType, forceBloat, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv, blocks, warmup;
+            let pr, actor, mode, preset, duration, bloat, tps, accounts, maxConcurrentRequests, baseline, feature, baselineHardfork, featureHardfork, txgenRef, samply, tracy, tracySeconds, tracyOffset, otlp, baselineArgs, featureArgs, gasLimit, runType, forceBloat, noCache, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv, blocks, warmup, runPairs;
+            let explicitWarmup = false;
 
             pr = String(context.issue.number);
             actor = context.payload.comment.user.login;
 
             const body = context.payload.comment.body.trim();
-            const intArgs = new Set(['duration', 'bloat', 'tps', 'tracy-seconds', 'tracy-offset', 'blocks', 'warmup']);
+            const intArgs = new Set(['duration', 'bloat', 'tps', 'accounts', 'max-concurrent-requests', 'gas-limit', 'tracy-seconds', 'tracy-offset', 'blocks', 'warmup', 'run-pairs']);
             const refArgs = new Set(['baseline', 'feature', 'txgen-ref']);
-            const stringArgs = new Set(['mode', 'preset', 'backend', 'tracy', 'baseline-args', 'feature-args', 'baseline-hardfork', 'feature-hardfork', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain']);
-            const boolArgs = new Set(['samply', 'force-bloat', 'no-slack', 'no-existing-recipients']);
-            const defaults = { mode: 'e2e', preset: 'tip20', duration: '300', bloat: '100', tps: '10000', baseline: '', feature: '', backend: 'tempo-bench', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', 'baseline-args': '', 'feature-args': '', 'baseline-hardfork': '', 'feature-hardfork': '', 'force-bloat': 'false', 'no-slack': 'false', 'no-existing-recipients': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '1000', chain: 'mainnet' };
+            const stringArgs = new Set(['mode', 'preset', 'tracy', 'baseline-args', 'feature-args', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain', 'baseline-hardfork', 'feature-hardfork']);
+            const boolArgs = new Set(['samply', 'force-bloat', 'no-cache', 'no-slack', 'otlp']);
+            const bloatValues = new Set(['1', '10', '100']);
+            const hardforkValues = new Set(['T0', 'T1', 'T1A', 'T1B', 'T1C', 'T2', 'T3', 'T4', 'T5', 'T6']);
+            const defaults = { mode: 'e2e', preset: 'tip20', duration: '300', bloat: '100', tps: '20000', accounts: '1000', 'max-concurrent-requests': '100', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', otlp: 'true', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet', 'run-pairs': '2' };
             const unknown = [];
             const invalid = [];
+            const defaultWarmup = (blockCount) => String(Math.floor(Number(blockCount) / 4));
             const args = body.replace(/^(?:@decofe|derek) bench\s*/, '');
             // Parse args, handling quoted values like key="value with spaces"
             const parts = [];
@@ -120,11 +145,18 @@ jobs:
               if ((value.startsWith('"') && value.endsWith('"')) || (value.startsWith("'") && value.endsWith("'"))) {
                 value = value.slice(1, -1);
               }
-              if (intArgs.has(key)) {
+              if (key === 'bloat') {
+                if (!bloatValues.has(value)) {
+                  invalid.push(`\`${key}=${value}\` (must be one of: 1, 10, 100)`);
+                } else {
+                  defaults[key] = value;
+                }
+              } else if (intArgs.has(key)) {
                 if (!/^\d+$/.test(value)) {
                   invalid.push(`\`${key}=${value}\` (must be a positive integer)`);
                 } else {
                   defaults[key] = value;
+                  if (key === 'warmup') explicitWarmup = true;
                 }
               } else if (refArgs.has(key)) {
                 if (!value) {
@@ -132,11 +164,9 @@ jobs:
                 } else {
                   defaults[key] = value;
                 }
-              } else if (key === 'existing-recipients') {
-                if (value === 'false') {
-                  defaults['no-existing-recipients'] = 'true';
-                } else if (value === 'true') {
-                  defaults['no-existing-recipients'] = 'false';
+              } else if (boolArgs.has(key)) {
+                if (value === 'true' || value === 'false') {
+                  defaults[key] = value;
                 } else {
                   invalid.push(`\`${key}=${value}\` (must be true or false)`);
                 }
@@ -154,7 +184,7 @@ jobs:
             if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
             if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
             if (errors.length) {
-              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [backend=NAME] [txgen-ref=REF] [samply] [force-bloat] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
+              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [txgen-ref=REF] [samply] [otlp] [force-bloat] [no-cache] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -167,22 +197,26 @@ jobs:
             mode = defaults.mode;
             preset = defaults.preset;
             duration = defaults.duration;
-            bloat = String(parseInt(defaults.bloat, 10) * 1000);
+            bloat = defaults.bloat;
             tps = defaults.tps;
+            accounts = defaults.accounts;
+            maxConcurrentRequests = defaults['max-concurrent-requests'];
             baseline = defaults.baseline;
             feature = defaults.feature;
-            backend = defaults.backend;
+            baselineHardfork = defaults['baseline-hardfork'];
+            featureHardfork = defaults['feature-hardfork'];
             txgenRef = defaults['txgen-ref'];
             samply = defaults.samply;
             tracy = defaults.tracy;
             tracySeconds = defaults['tracy-seconds'];
             tracyOffset = defaults['tracy-offset'];
+            otlp = defaults.otlp;
             baselineArgs = defaults['baseline-args'];
             featureArgs = defaults['feature-args'];
-            baselineHardfork = defaults['baseline-hardfork'];
-            featureHardfork = defaults['feature-hardfork'];
+            gasLimit = defaults['gas-limit'];
             runType = 'manual';
             forceBloat = defaults['force-bloat'];
+            noCache = defaults['no-cache'];
             noSlack = defaults['no-slack'];
             benchArgs = defaults['bench-args'];
             benchEnv = defaults['bench-env'];
@@ -190,13 +224,13 @@ jobs:
             featureEnv = defaults['feature-env'];
             blocks = defaults.blocks;
             warmup = defaults.warmup;
+            runPairs = defaults['run-pairs'];
             var chain = defaults.chain;
+            if (!explicitWarmup) {
+              warmup = defaultWarmup(blocks);
+            }
 
-            const existingRecipients = defaults['no-existing-recipients'] !== 'true';
-            const erFlag = `--existing-recipients=${existingRecipients}`;
-            benchArgs = benchArgs ? `${benchArgs} ${erFlag}` : erFlag;
-
-            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [preset=NAME] [duration=N] [bloat=N] [tps=N] [baseline=REF] [feature=REF] [backend=NAME] [txgen-ref=REF] [samply] [force-bloat] [no-slack] [existing-recipients=BOOL] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [baseline-hardfork=FORK] [feature-hardfork=FORK] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
+            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [txgen-ref=REF] [samply] [otlp] [force-bloat] [no-cache] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
 
             // Validate chain value
             if (!['mainnet', 'testnet'].includes(chain)) {
@@ -224,9 +258,8 @@ jobs:
               return;
             }
 
-            // Validate backend value
-            if (!['tempo-bench', 'txgen'].includes(backend)) {
-              const msg = `❌ **Invalid bench command**\n\n\`backend=${backend}\` is not valid. Must be \`tempo-bench\` or \`txgen\`.\n\n${usageStr}`;
+            if ((baselineHardfork || featureHardfork) && mode !== 'e2e') {
+              const msg = `❌ **Invalid bench command**\n\n\`baseline-hardfork\` and \`feature-hardfork\` are only supported with \`mode=e2e\`.\n\n${usageStr}`;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -235,6 +268,33 @@ jobs:
               });
               core.setFailed(msg);
               return;
+            }
+            if ((baselineHardfork || featureHardfork) && !(baselineHardfork && featureHardfork)) {
+              const msg = `❌ **Invalid bench command**\n\n\`baseline-hardfork\` and \`feature-hardfork\` must be provided together.\n\n${usageStr}`;
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body: msg,
+              });
+              core.setFailed(msg);
+              return;
+            }
+            if (baselineHardfork || featureHardfork) {
+              baselineHardfork = baselineHardfork.toUpperCase();
+              featureHardfork = featureHardfork.toUpperCase();
+              const badHardforks = [baselineHardfork, featureHardfork].filter(value => !hardforkValues.has(value));
+              if (badHardforks.length) {
+                const msg = `❌ **Invalid bench command**\n\nUnknown hardfork(s): \`${badHardforks.join('`, `')}\`. Must be one of: \`${Array.from(hardforkValues).join('`, `')}\`.\n\n${usageStr}`;
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo: context.repo.repo,
+                  issue_number: context.issue.number,
+                  body: msg,
+                });
+                core.setFailed(msg);
+                return;
+              }
             }
 
             // Validate tracy value
@@ -250,9 +310,13 @@ jobs:
               return;
             }
 
-            // Mutual exclusivity: samply and tracy cannot be used together
-            if (samply === 'true' && tracy !== 'off') {
-              const msg = '❌ **Invalid bench command**\n\n`samply` and `tracy` are mutually exclusive. Choose one.';
+            if (!['manual', 'nightly'].includes(runType)) {
+              const msg = `❌ **Invalid benchmark type**\n\n\`run-type=${runType}\` is not valid. Must be \`manual\` or \`nightly\`.`;
+              core.setFailed(msg);
+              return;
+            }
+            if (Number(runPairs) < 1) {
+              const msg = `❌ **Invalid bench command**\n\n\`run-pairs=${runPairs}\` is not valid. Must be a positive integer.\n\n${usageStr}`;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -263,43 +327,20 @@ jobs:
               return;
             }
 
-            // Validate hardfork flags: must both be provided or both empty
-            const validForks = ['T0', 'T1', 'T1A', 'T1B', 'T1C', 'T2'];
-            if ((baselineHardfork && !featureHardfork) || (!baselineHardfork && featureHardfork)) {
-              const msg = '❌ **Invalid bench command**\n\n`baseline-hardfork` and `feature-hardfork` must both be provided.';
-              await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body: msg });
-              core.setFailed(msg);
-              return;
-            }
-            for (const [name, val] of [['baseline-hardfork', baselineHardfork], ['feature-hardfork', featureHardfork]]) {
-              if (val && !validForks.includes(val.toUpperCase())) {
-                const msg = `❌ **Invalid bench command**\n\n\`${name}=${val}\` is not valid. Must be one of: ${validForks.join(', ')}.\n\n${usageStr}`;
-                await github.rest.issues.createComment({ owner: context.repo.owner, repo: context.repo.repo, issue_number: context.issue.number, body: msg });
-                core.setFailed(msg);
-                return;
-              }
-            }
-
-            if (!['manual', 'nightly'].includes(runType)) {
-              const msg = `❌ **Invalid benchmark type**\n\n\`run-type=${runType}\` is not valid. Must be \`manual\` or \`nightly\`.`;
-              core.setFailed(msg);
-              return;
-            }
-
             // Resolve display names for baseline/feature
             let baselineName = baseline || 'main';
             let featureName = feature;
-            if (!featureName) {
-              if (pr) {
-                const { data: prData } = await github.rest.pulls.get({
-                  owner: context.repo.owner,
-                  repo: context.repo.repo,
-                  pull_number: parseInt(pr),
-                });
-                featureName = prData.head.ref;
-              } else {
-                featureName = process.env.INPUT_REF_NAME;
-              }
+            if (pr) {
+              const { data: prData } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: parseInt(pr),
+              });
+              core.setOutput('pr-head-sha', prData.head.sha);
+              core.setOutput('pr-head-ref', prData.head.ref);
+              if (!featureName) featureName = prData.head.ref;
+            } else {
+              if (!featureName) featureName = process.env.INPUT_REF_NAME;
             }
 
             core.setOutput('pr', pr || '');
@@ -309,9 +350,12 @@ jobs:
             core.setOutput('duration', duration);
             core.setOutput('bloat', bloat);
             core.setOutput('tps', tps);
+            core.setOutput('accounts', accounts);
+            core.setOutput('max-concurrent-requests', maxConcurrentRequests);
             core.setOutput('baseline', baseline);
             core.setOutput('feature', feature);
-            core.setOutput('backend', backend);
+            core.setOutput('baseline-hardfork', baselineHardfork || '');
+            core.setOutput('feature-hardfork', featureHardfork || '');
             core.setOutput('txgen-ref', txgenRef || '');
             core.setOutput('baseline-name', baselineName);
             core.setOutput('feature-name', featureName);
@@ -319,12 +363,13 @@ jobs:
             core.setOutput('tracy', tracy);
             core.setOutput('tracy-seconds', tracySeconds);
             core.setOutput('tracy-offset', tracyOffset);
+            core.setOutput('otlp', otlp);
             core.setOutput('baseline-args', baselineArgs || '');
             core.setOutput('feature-args', featureArgs || '');
-            core.setOutput('baseline-hardfork', baselineHardfork || '');
-            core.setOutput('feature-hardfork', featureHardfork || '');
+            core.setOutput('gas-limit', gasLimit);
             core.setOutput('run-type', runType);
             core.setOutput('force-bloat', forceBloat);
+            core.setOutput('no-cache', noCache);
             core.setOutput('no-slack', noSlack);
             core.setOutput('bench-args', benchArgs || '');
             core.setOutput('bench-env', benchEnv || '');
@@ -333,6 +378,7 @@ jobs:
             core.setOutput('blocks', blocks);
             core.setOutput('warmup', warmup);
             core.setOutput('chain', chain);
+            core.setOutput('run-pairs', runPairs);
 
       - name: Acknowledge request
         id: ack
@@ -345,18 +391,23 @@ jobs:
           ACK_DURATION: ${{ steps.args.outputs.duration }}
           ACK_BLOAT: ${{ steps.args.outputs.bloat }}
           ACK_TPS: ${{ steps.args.outputs.tps }}
+          ACK_ACCOUNTS: ${{ steps.args.outputs.accounts }}
+          ACK_MAX_CONCURRENT_REQUESTS: ${{ steps.args.outputs.max-concurrent-requests }}
           ACK_BASELINE_NAME: ${{ steps.args.outputs.baseline-name }}
           ACK_FEATURE_NAME: ${{ steps.args.outputs.feature-name }}
-          ACK_BACKEND: ${{ steps.args.outputs.backend }}
+          ACK_BASELINE_HARDFORK: ${{ steps.args.outputs.baseline-hardfork }}
+          ACK_FEATURE_HARDFORK: ${{ steps.args.outputs.feature-hardfork }}
           ACK_TXGEN_REF: ${{ steps.args.outputs.txgen-ref }}
           ACK_SAMPLY: ${{ steps.args.outputs.samply }}
           ACK_TRACY: ${{ steps.args.outputs.tracy }}
+          ACK_OTLP: ${{ steps.args.outputs.otlp }}
           ACK_BASELINE_ARGS: ${{ steps.args.outputs.baseline-args }}
           ACK_FEATURE_ARGS: ${{ steps.args.outputs.feature-args }}
-          ACK_BASELINE_HARDFORK: ${{ steps.args.outputs.baseline-hardfork }}
-          ACK_FEATURE_HARDFORK: ${{ steps.args.outputs.feature-hardfork }}
+          ACK_GAS_LIMIT: ${{ steps.args.outputs.gas-limit }}
+          ACK_RUN_PAIRS: ${{ steps.args.outputs.run-pairs }}
+          ACK_NO_CACHE: ${{ steps.args.outputs.no-cache }}
         with:
-          github-token: ${{ secrets.DEREK_PAT }}
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             if (context.eventName === 'issue_comment') {
               await github.rest.reactions.createForIssueComment({
@@ -378,21 +429,28 @@ jobs:
             const duration = process.env.ACK_DURATION;
             const bloat = process.env.ACK_BLOAT;
             const tps = process.env.ACK_TPS;
+            const accounts = process.env.ACK_ACCOUNTS;
+            const maxConcurrentRequests = process.env.ACK_MAX_CONCURRENT_REQUESTS;
             const baseline = process.env.ACK_BASELINE_NAME;
             const feature = process.env.ACK_FEATURE_NAME;
-            const backend = process.env.ACK_BACKEND;
+            const baselineHardfork = process.env.ACK_BASELINE_HARDFORK || '';
+            const featureHardfork = process.env.ACK_FEATURE_HARDFORK || '';
             const txgenRef = process.env.ACK_TXGEN_REF || 'default';
             const samply = process.env.ACK_SAMPLY === 'true';
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const tracy = process.env.ACK_TRACY;
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
+            const otlp = process.env.ACK_OTLP === 'true';
+            const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
             const bNa = process.env.ACK_BASELINE_ARGS || '';
             const fNa = process.env.ACK_FEATURE_ARGS || '';
             const naNote = (bNa || fNa) ? `${bNa ? `, baseline-args: \`${bNa}\`` : ''}${fNa ? `, feature-args: \`${fNa}\`` : ''}` : '';
-            const bHf = process.env.ACK_BASELINE_HARDFORK || '';
-            const fHf = process.env.ACK_FEATURE_HARDFORK || '';
-            const hfNote = bHf ? `, baseline-hardfork: \`${bHf}\`, feature-hardfork: \`${fHf}\`` : '';
-            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} MiB\`, tps: \`${tps}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, backend: \`${backend}\`, txgen-ref: \`${txgenRef}\`${samplyNote}${tracyNote}${naNote}${hfNote}`;
+            const gasLimit = process.env.ACK_GAS_LIMIT;
+            const runPairs = process.env.ACK_RUN_PAIRS || '2';
+            const noCache = process.env.ACK_NO_CACHE === 'true';
+            const noCacheNote = noCache ? ', no-cache: `true`' : '';
+            const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
+            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${samplyNote}${tracyNote}${otlpNote}${naNote}${noCacheNote}`;
 
             const { data: comment } = await github.rest.issues.createComment({
               owner: context.repo.owner,
@@ -414,9 +472,12 @@ jobs:
       duration: ${{ needs.tempo-bench-ack.outputs.duration }}
       bloat: ${{ needs.tempo-bench-ack.outputs.bloat }}
       tps: ${{ needs.tempo-bench-ack.outputs.tps }}
+      accounts: ${{ needs.tempo-bench-ack.outputs.accounts }}
+      max-concurrent-requests: ${{ needs.tempo-bench-ack.outputs.max-concurrent-requests }}
       baseline: ${{ needs.tempo-bench-ack.outputs.baseline }}
       feature: ${{ needs.tempo-bench-ack.outputs.feature }}
-      backend: ${{ needs.tempo-bench-ack.outputs.backend }}
+      baseline-hardfork: ${{ needs.tempo-bench-ack.outputs.baseline-hardfork }}
+      feature-hardfork: ${{ needs.tempo-bench-ack.outputs.feature-hardfork }}
       txgen-ref: ${{ needs.tempo-bench-ack.outputs.txgen-ref }}
       baseline-name: ${{ needs.tempo-bench-ack.outputs.baseline-name }}
       feature-name: ${{ needs.tempo-bench-ack.outputs.feature-name }}
@@ -424,25 +485,30 @@ jobs:
       tracy: ${{ needs.tempo-bench-ack.outputs.tracy }}
       tracy-seconds: ${{ needs.tempo-bench-ack.outputs.tracy-seconds }}
       tracy-offset: ${{ needs.tempo-bench-ack.outputs.tracy-offset }}
+      otlp: ${{ needs.tempo-bench-ack.outputs.otlp }}
       baseline-args: ${{ needs.tempo-bench-ack.outputs.baseline-args }}
       feature-args: ${{ needs.tempo-bench-ack.outputs.feature-args }}
-      baseline-hardfork: ${{ needs.tempo-bench-ack.outputs.baseline-hardfork }}
-      feature-hardfork: ${{ needs.tempo-bench-ack.outputs.feature-hardfork }}
+      gas-limit: ${{ needs.tempo-bench-ack.outputs.gas-limit }}
+      run-pairs: ${{ needs.tempo-bench-ack.outputs.run-pairs }}
       run-type: ${{ needs.tempo-bench-ack.outputs.run-type }}
       force-bloat: ${{ needs.tempo-bench-ack.outputs.force-bloat }}
+      no-cache: ${{ needs.tempo-bench-ack.outputs.no-cache }}
       no-slack: ${{ needs.tempo-bench-ack.outputs.no-slack }}
       bench-args: ${{ needs.tempo-bench-ack.outputs.bench-args }}
       bench-env: ${{ needs.tempo-bench-ack.outputs.bench-env }}
       baseline-env: ${{ needs.tempo-bench-ack.outputs.baseline-env }}
       feature-env: ${{ needs.tempo-bench-ack.outputs.feature-env }}
       comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
+      pr-head-sha: ${{ needs.tempo-bench-ack.outputs.pr-head-sha }}
+      pr-head-ref: ${{ needs.tempo-bench-ack.outputs.pr-head-ref }}
     secrets:
-      DEREK_PAT: ${{ secrets.DEREK_PAT }}
+      DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
       GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}
       CLICKHOUSE_URL: ${{ secrets.CLICKHOUSE_URL }}
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
+      BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
 
@@ -459,11 +525,17 @@ jobs:
       baseline-name: ${{ needs.tempo-bench-ack.outputs.baseline-name }}
       feature-name: ${{ needs.tempo-bench-ack.outputs.feature-name }}
       samply: ${{ needs.tempo-bench-ack.outputs.samply }}
+      otlp: ${{ needs.tempo-bench-ack.outputs.otlp }}
       baseline-args: ${{ needs.tempo-bench-ack.outputs.baseline-args }}
       feature-args: ${{ needs.tempo-bench-ack.outputs.feature-args }}
       blocks: ${{ needs.tempo-bench-ack.outputs.blocks }}
       warmup: ${{ needs.tempo-bench-ack.outputs.warmup }}
+      run-pairs: ${{ needs.tempo-bench-ack.outputs.run-pairs }}
       comment-id: ${{ needs.tempo-bench-ack.outputs.comment-id }}
+      pr-head-sha: ${{ needs.tempo-bench-ack.outputs.pr-head-sha }}
+      pr-head-ref: ${{ needs.tempo-bench-ack.outputs.pr-head-ref }}
     secrets:
-      DEREK_PAT: ${{ secrets.DEREK_PAT }}
+      DEREK_BENCH_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN }}
       DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
+      TEMPO_TELEMETRY_URL: ${{ secrets.TEMPO_TELEMETRY_URL }}
+      GRAFANA_TEMPO: ${{ secrets.GRAFANA_TEMPO }}

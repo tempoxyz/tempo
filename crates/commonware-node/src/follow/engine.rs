@@ -13,9 +13,8 @@
 use std::{sync::Arc, time::Duration};
 
 use commonware_broadcast::buffered;
-use commonware_consensus::{Reporters, marshal, types::FixedEpocher};
+use commonware_consensus::{Reporters, types::FixedEpocher};
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_parallel::Sequential;
 use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Pacer, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
@@ -29,6 +28,7 @@ use tracing::{info, info_span};
 
 use super::{driver, resolver, resolver::Resolver, stubs};
 use crate::{
+    alias,
     consensus::{Digest, block::Block},
     epoch::SchemeProvider,
     executor,
@@ -63,6 +63,16 @@ pub struct Config<TUpstream> {
 
     /// Mailbox to an upstream actor running outside of the follower engine.
     pub upstream_mailbox: upstream::Mailbox,
+
+    /// Number of recently finalized blocks retained in the prunable archive
+    /// passed to the marshal actor. Older blocks are served from reth.
+    pub finalized_blocks_retention: u64,
+
+    /// Whether to dual-write each newly finalized block to the legacy
+    /// immutable archive in addition to the prunable archive. Enabled in
+    /// production for rollback safety; disabled in tests that exercise
+    /// the prunable-archive-only restart path.
+    pub with_legacy: bool,
 }
 
 impl<TUpstream> Config<TUpstream> {
@@ -92,50 +102,29 @@ impl<TUpstream> Config<TUpstream> {
             storage::BUFFER_POOL_CAPACITY,
         );
 
-        let finalizations_by_height = storage::init_finalizations_archive(
-            &context,
-            &self.partition_prefix,
-            page_cache_ref.clone(),
-        )
-        .await
-        .wrap_err("failed to initialize finalizations by height archive")?;
-
-        let finalized_blocks = storage::init_finalized_blocks_archive(
-            &context,
-            &self.partition_prefix,
-            page_cache_ref.clone(),
-        )
-        .await
-        .wrap_err("failed to initialize finalized blocks archive")?;
-
         let epoch_strategy = self.epoch_strategy.clone();
 
-        let (marshal_actor, marshal_mailbox, last_finalized_height): (
-            crate::alias::marshal::Actor<TContext>,
-            crate::alias::marshal::Mailbox,
-            _,
-        ) = marshal::core::Actor::init(
-            context.with_label("marshal"),
-            finalizations_by_height,
-            finalized_blocks,
-            marshal::Config {
-                provider: scheme_provider.clone(),
-                epocher: epoch_strategy.clone(),
+        let alias::marshal::Initialized {
+            actor: marshal_actor,
+            mailbox: marshal_mailbox,
+            last_finalized_height,
+        } = alias::marshal::init(
+            context.clone(),
+            page_cache_ref,
+            self.execution_node.clone(),
+            alias::marshal::Config {
                 partition_prefix: self.partition_prefix.clone(),
                 mailbox_size: self.mailbox_size,
                 view_retention_timeout: commonware_consensus::types::ViewDelta::new(1),
-                prunable_items_per_section: storage::PRUNABLE_ITEMS_PER_SECTION,
-                page_cache: page_cache_ref,
-                replay_buffer: storage::REPLAY_BUFFER,
-                key_write_buffer: storage::WRITE_BUFFER,
-                value_write_buffer: storage::WRITE_BUFFER,
-                max_repair: storage::MAX_REPAIR,
                 max_pending_acks: NZUsize!(1),
-                block_codec_config: (),
-                strategy: Sequential,
+                finalized_blocks_retention: self.finalized_blocks_retention,
+                with_legacy: self.with_legacy,
+                epoch_strategy: epoch_strategy.clone(),
+                scheme_provider: scheme_provider.clone(),
             },
         )
-        .await;
+        .await
+        .wrap_err("failed to initialize marshal")?;
 
         info_span!("follow_engine").in_scope(|| {
             info!(
@@ -168,6 +157,7 @@ impl<TUpstream> Config<TUpstream> {
                 last_finalized_height,
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
+                public_key: None,
             },
         )
         .wrap_err("failed to initialize executor")?;

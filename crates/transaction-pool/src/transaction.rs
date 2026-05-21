@@ -33,8 +33,8 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached payment classification for efficient block building
     is_payment: bool,
-    /// Cached expiring nonce classification
-    is_expiring_nonce: bool,
+    /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
+    expiring_nonce_hash: Option<B256>,
     /// Cached slot of the 2D nonce, if any.
     nonce_key_slot: OnceLock<Option<U256>>,
     /// Cached `expiring_nonce_seen` storage slot for expiring nonce transactions.
@@ -62,10 +62,12 @@ impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
     pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
         let is_payment = transaction.is_payment_v2();
-        let is_expiring_nonce = transaction
-            .as_aa()
-            .map(|tx| tx.tx().is_expiring_nonce_tx())
-            .unwrap_or(false);
+        let sender = transaction.signer();
+        let expiring_nonce_hash = transaction.as_aa().and_then(|tx| {
+            tx.tx()
+                .is_expiring_nonce_tx()
+                .then(|| tx.expiring_nonce_hash(sender))
+        });
         Self {
             inner: EthPooledTransaction {
                 cost: calc_gas_balance_spending(
@@ -78,7 +80,7 @@ impl TempoPooledTransaction {
                 transaction,
             },
             is_payment,
-            is_expiring_nonce,
+            expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
@@ -118,16 +120,14 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns whether this is a payment transaction.
-    ///
-    /// Uses strict classification: TIP-20 prefix AND recognized calldata.
+    /// Returns whether this is a payment transaction according to the builder criteria.
     pub fn is_payment(&self) -> bool {
         self.is_payment
     }
 
     /// Returns true if this transaction belongs into the 2D nonce pool:
     /// - AA transaction with a `nonce key != 0` (includes expiring nonce txs)
-    pub(crate) fn is_aa_2d(&self) -> bool {
+    pub fn is_aa_2d(&self) -> bool {
         self.inner
             .transaction
             .as_aa()
@@ -136,8 +136,8 @@ impl TempoPooledTransaction {
     }
 
     /// Returns true if this is an expiring nonce transaction.
-    pub(crate) fn is_expiring_nonce(&self) -> bool {
-        self.is_expiring_nonce
+    pub fn is_expiring_nonce(&self) -> bool {
+        self.expiring_nonce_hash.is_some()
     }
 
     /// Extracts the keychain subject (account, key_id, fee_token) from this transaction.
@@ -164,8 +164,23 @@ impl TempoPooledTransaction {
         })
     }
 
+    /// Extracts the TIP-1053 key-authorization witness carried by this transaction, if any.
+    pub fn key_authorization_witness_subject(&self) -> Option<KeyAuthorizationWitnessSubject> {
+        let aa_tx = self.inner().as_aa()?;
+        let witness = aa_tx
+            .tx()
+            .key_authorization
+            .as_ref()?
+            .authorization
+            .witness()?;
+        Some(KeyAuthorizationWitnessSubject {
+            account: *self.sender_ref(),
+            witness,
+        })
+    }
+
     /// Returns the unique identifier for this AA transaction.
-    pub(crate) fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
+    pub fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
         let nonce_key = self.nonce_key()?;
         let sender = AASequenceId {
             address: self.sender(),
@@ -242,10 +257,23 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns the expiring nonce hash for AA expiring nonce transactions.
+    /// Returns the sender-scoped expiring nonce hash for AA transactions.
+    ///
+    /// Expiring nonce transactions use the precomputed value from construction;
+    /// other AA transactions compute on demand to preserve the helper's existing behavior.
     pub fn expiring_nonce_hash(&self) -> Option<B256> {
+        if let Some(hash) = self.expiring_nonce_hash {
+            return Some(hash);
+        }
+
         let aa_tx = self.inner().as_aa()?;
         Some(aa_tx.expiring_nonce_hash(self.sender()))
+    }
+
+    /// Returns the precomputed hash for transactions already classified as expiring nonce.
+    pub(crate) fn precomputed_expiring_nonce_hash(&self) -> B256 {
+        self.expiring_nonce_hash
+            .expect("expiring nonce hash must be precomputed")
     }
 
     /// Returns the cached `expiring_nonce_seen` storage slot for this transaction.
@@ -871,6 +899,25 @@ mod tests {
                 false,
             ),
             (
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenNotTip20 {
+                    address: Address::repeat_byte(0x20),
+                }),
+                false,
+            ),
+            (
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                    address: Address::repeat_byte(0x20),
+                    currency: "EUR".to_string(),
+                }),
+                false,
+            ),
+            (
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenPaused {
+                    address: Address::repeat_byte(0x20),
+                }),
+                false,
+            ),
+            (
                 TempoPoolTransactionError::AccessKeyExpired {
                     expiry: 100,
                     min_allowed: 200,
@@ -1158,6 +1205,15 @@ pub struct KeychainSubject {
     pub key_id: Address,
     /// The fee token used by this transaction.
     pub fee_token: Address,
+}
+
+/// Key-authorization witness identity extracted from an AA transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyAuthorizationWitnessSubject {
+    /// The account whose key-authorization witness is carried or burned.
+    pub account: Address,
+    /// The TIP-1053 witness.
+    pub witness: B256,
 }
 
 impl KeychainSubject {

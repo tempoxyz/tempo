@@ -105,6 +105,12 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         &mut self.inner
     }
 
+    /// Returns the validator-credited fee amount (post-feeAMM haircut) recorded by the most
+    /// recent `collectFeePostTx`. Reset per-tx in the handler's `validate_env`.
+    pub fn validator_fee(&self) -> alloy_primitives::U256 {
+        self.inner.validator_fee
+    }
+
     /// Sets the inspector for the EVM.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
         TempoEvm {

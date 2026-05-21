@@ -24,25 +24,53 @@ use crate::{
 };
 
 #[test_traced("WARN")]
-fn committee_of_one() {
+fn committee_of_one_no_legacy_archive() {
     SimpleRestart {
         committee_size: 1,
         epoch_length: 10,
         restart_after: 5,
         stop_at: 10,
         connect_execution_layer: false,
+        no_legacy_archive: true,
     }
     .run()
 }
 
-#[test_traced("WARN")]
-fn committee_of_three() {
+#[test_traced]
+fn committee_of_three_no_legacy_archive() {
     SimpleRestart {
         committee_size: 3,
         epoch_length: 10,
         restart_after: 5,
         stop_at: 10,
         connect_execution_layer: false,
+        no_legacy_archive: true,
+    }
+    .run()
+}
+
+#[test_traced("WARN")]
+fn committee_of_one_with_legacy_archive() {
+    SimpleRestart {
+        committee_size: 1,
+        epoch_length: 10,
+        restart_after: 5,
+        stop_at: 10,
+        connect_execution_layer: false,
+        no_legacy_archive: false,
+    }
+    .run()
+}
+
+#[test_traced]
+fn committee_of_three_with_legacy_archive() {
+    SimpleRestart {
+        committee_size: 3,
+        epoch_length: 10,
+        restart_after: 5,
+        stop_at: 10,
+        connect_execution_layer: false,
+        no_legacy_archive: false,
     }
     .run()
 }
@@ -53,6 +81,9 @@ struct SimpleRestart {
     restart_after: u64,
     stop_at: u64,
     connect_execution_layer: bool,
+    /// Whether to disable dual-writing to the legacy immutable archive.
+    /// Forces recovery to only flow through the new hybrid storage.
+    no_legacy_archive: bool,
 }
 
 impl SimpleRestart {
@@ -64,13 +95,15 @@ impl SimpleRestart {
             restart_after,
             stop_at,
             connect_execution_layer,
+            no_legacy_archive,
         } = self;
         let _ = tempo_eyre::install();
 
         let setup = Setup::new()
             .how_many_signers(committee_size)
             .seed(0)
-            .epoch_length(epoch_length);
+            .epoch_length(epoch_length)
+            .no_legacy_archive(no_legacy_archive);
 
         let cfg = deterministic::Config::default().with_seed(setup.seed);
         let executor = Runner::from(cfg);

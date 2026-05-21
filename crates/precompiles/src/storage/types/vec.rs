@@ -17,7 +17,7 @@ use std::ops::{Index, IndexMut};
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{
-        Handler, Layout, LayoutCtx, Storable, StorableType, StorageOps,
+        Handler, Layout, LayoutCtx, Storable, StorableType, StorageCtx, StorageOps,
         packing::{PackedSlot, calc_element_loc, calc_packed_slot_count},
         types::{HandlerCache, Slot},
     },
@@ -42,7 +42,7 @@ where
     T: Storable,
 {
     fn load<S: StorageOps>(storage: &S, len_slot: U256, ctx: LayoutCtx) -> Result<Self> {
-        debug_assert_eq!(ctx, LayoutCtx::FULL, "Dynamic arrays cannot be packed");
+        debug_assert!(ctx.is_full(), "Dynamic arrays cannot be packed");
 
         // Read length from base slot
         let length = load_checked_len(storage, len_slot)?;
@@ -61,9 +61,18 @@ where
     }
 
     fn store<S: StorageOps>(&self, storage: &mut S, len_slot: U256, ctx: LayoutCtx) -> Result<()> {
-        debug_assert_eq!(ctx, LayoutCtx::FULL, "Dynamic arrays cannot be packed");
+        debug_assert!(ctx.is_full(), "Dynamic arrays cannot be packed");
+        let data_start = calc_data_slot(len_slot);
 
-        // Write length to base slot
+        // (T5+) Cleanup stale tail, if necessary.
+        if !ctx.skip_tail_cleanup() && StorageCtx.spec().is_t5() {
+            let (prev_len, new_len) = (load_checked_len(storage, len_slot)?, self.len());
+            if prev_len > new_len {
+                clear_elements::<T, S>(storage, data_start, new_len, prev_len)?;
+            }
+        }
+
+        // Write length to base slot.
         storage.store(len_slot, U256::from(self.len()))?;
 
         if self.is_empty() {
@@ -71,9 +80,8 @@ where
         }
 
         // Pack elements if necessary. Vec elements can't be split across slots.
-        let data_start = calc_data_slot(len_slot);
         if T::BYTES <= 16 {
-            store_packed_elements(self, storage, data_start, T::BYTES)
+            store_packed_elements(self, storage, data_start)
         } else {
             store_unpacked_elements(self, storage, data_start)
         }
@@ -81,7 +89,7 @@ where
 
     /// Custom delete for Vec: clears both length slot and all data slots.
     fn delete<S: StorageOps>(storage: &mut S, len_slot: U256, ctx: LayoutCtx) -> Result<()> {
-        debug_assert_eq!(ctx, LayoutCtx::FULL, "Dynamic arrays cannot be packed");
+        debug_assert!(ctx.is_full(), "Dynamic arrays cannot be packed");
 
         // Read length from base slot to determine how many slots to clear
         let length = load_checked_len(storage, len_slot)?;
@@ -94,21 +102,7 @@ where
         }
 
         let data_start = calc_data_slot(len_slot);
-        if T::BYTES <= 16 {
-            // Clear packed element slots. Vec elements can't be split across slots.
-            let slot_count = calc_packed_slot_count(length, T::BYTES);
-            for slot_idx in 0..slot_count {
-                storage.store(data_start + U256::from(slot_idx), U256::ZERO)?;
-            }
-        } else {
-            // Clear unpacked element slots (multi-slot aware)
-            for elem_idx in 0..length {
-                let elem_slot = data_start + U256::from(elem_idx * T::SLOTS);
-                T::delete(storage, elem_slot, LayoutCtx::FULL)?;
-            }
-        }
-
-        Ok(())
+        clear_elements::<T, S>(storage, data_start, 0, length)
     }
 }
 
@@ -303,9 +297,17 @@ where
             return Err(TempoPrecompileError::Fatal("Vec is at max capacity".into()));
         }
 
-        // Write element at the end
-        let mut elem_slot = Self::compute_handler(self.data_slot(), self.address, length);
-        elem_slot.write(value)?;
+        // Write element at the end. The tail slot is empty by construction.
+        if T::BYTES <= 16 {
+            let mut elem_slot = Self::compute_handler(self.data_slot(), self.address, length);
+            elem_slot.write(value)?;
+        } else {
+            // Handlers always use `FULL` ctx. Since the slot we push to is guaranteed empty,
+            // call `T::store` with `INIT` to skip tail-cleanup SLOADs for dynamic types.
+            let elem_slot = self.data_slot() + U256::from(length * T::SLOTS);
+            let mut storage = Slot::<T>::new(elem_slot, self.address);
+            value.store(&mut storage, elem_slot, LayoutCtx::INIT)?;
+        }
 
         // Increment length
         let mut length_slot = Slot::<U256>::new(self.len_slot, self.address);
@@ -394,19 +396,54 @@ pub(crate) fn calc_data_slot(len_slot: U256) -> U256 {
     U256::from_be_bytes(alloy::primitives::keccak256(len_slot.to_be_bytes::<32>()).0)
 }
 
+/// Clears storage occupied exclusively by `Vec` elements in the index range `[from, to)`.
+///
+/// Packed elements (`T::BYTES <= 16`) share storage words, so this only zeroes whole packed
+/// slots that contain no element before `from`:
+///
+/// - `from = 0` clears from slot 0. This is the delete path and clears every slot that may contain
+///   any element in `[0, to)`; e.g. for 16-byte elements, `[0, 1)` clears slot 0.
+/// - `from > 0` starts at `calc_packed_slot_count(from, T::BYTES)`, intentionally preserving the
+///   boundary slot that may also contain live elements `< from`; e.g. for 16-byte elements,
+///   `[1, 2)` clears nothing because elements 0 and 1 share slot 0. Shrink callers rely on the
+///   subsequent packed-slot rewrite to clear stale lanes in that boundary slot.
+///
+/// Unpacked elements delegate to `T::delete` per element so nested dynamic storables are
+/// recursively cleared.
+fn clear_elements<T: Storable, S: StorageOps>(
+    storage: &mut S,
+    data_start: U256,
+    from: usize,
+    to: usize,
+) -> Result<()> {
+    if from >= to {
+        return Ok(());
+    }
+    if T::BYTES <= 16 {
+        // Vec elements can't be split across slots.
+        let from_slots = calc_packed_slot_count(from, T::BYTES);
+        let to_slots = calc_packed_slot_count(to, T::BYTES);
+        for slot_idx in from_slots..to_slots {
+            storage.store(data_start + U256::from(slot_idx), U256::ZERO)?;
+        }
+    } else {
+        for elem_idx in from..to {
+            let elem_slot = data_start + U256::from(elem_idx * T::SLOTS);
+            T::delete(storage, elem_slot, LayoutCtx::FULL)?;
+        }
+    }
+    Ok(())
+}
+
 /// Load packed elements from storage.
 ///
 /// Used when `T::BYTES <= 16`, allowing multiple elements per slot.
-fn load_packed_elements<T, S>(
+fn load_packed_elements<T: Storable, S: StorageOps>(
     storage: &S,
     data_start: U256,
     length: usize,
     byte_count: usize,
-) -> Result<Vec<T>>
-where
-    T: Storable,
-    S: StorageOps,
-{
+) -> Result<Vec<T>> {
     debug_assert!(
         T::BYTES <= 16,
         "load_packed_elements requires T::BYTES <= 16"
@@ -452,29 +489,24 @@ where
 /// Store packed elements to storage.
 ///
 /// Packs multiple small elements into each 32-byte slot using bit manipulation.
-fn store_packed_elements<T, S>(
+fn store_packed_elements<T: Storable, S: StorageOps>(
     elements: &[T],
     storage: &mut S,
     data_start: U256,
-    byte_count: usize,
-) -> Result<()>
-where
-    T: Storable,
-    S: StorageOps,
-{
+) -> Result<()> {
     debug_assert!(
         T::BYTES <= 16,
         "store_packed_elements requires T::BYTES <= 16"
     );
-    let elements_per_slot = 32 / byte_count;
-    let slot_count = calc_packed_slot_count(elements.len(), byte_count);
+    let elements_per_slot = 32 / T::BYTES;
+    let slot_count = calc_packed_slot_count(elements.len(), T::BYTES);
 
     for slot_idx in 0..slot_count {
         let slot_addr = data_start + U256::from(slot_idx);
         let start_elem = slot_idx * elements_per_slot;
         let end_elem = (start_elem + elements_per_slot).min(elements.len());
 
-        let slot_value = build_packed_slot(&elements[start_elem..end_elem], byte_count)?;
+        let slot_value = build_packed_slot(&elements[start_elem..end_elem], T::BYTES)?;
         storage.store(slot_addr, slot_value)?;
     }
 
@@ -484,10 +516,7 @@ where
 /// Build a packed storage slot from multiple elements.
 ///
 /// Takes a slice of elements and packs them into a single U256 word.
-fn build_packed_slot<T>(elements: &[T], byte_count: usize) -> Result<U256>
-where
-    T: Storable,
-{
+fn build_packed_slot<T: Storable>(elements: &[T], byte_count: usize) -> Result<U256> {
     debug_assert!(T::BYTES <= 16, "build_packed_slot requires T::BYTES <= 16");
     let mut slot_value = PackedSlot(U256::ZERO);
     let mut current_offset = 0;
@@ -508,11 +537,11 @@ where
 ///
 /// Used when elements don't pack efficiently (32 bytes or multi-slot types).
 /// Each element occupies `T::SLOTS` consecutive slots.
-fn load_unpacked_elements<T, S>(storage: &S, data_start: U256, length: usize) -> Result<Vec<T>>
-where
-    T: Storable,
-    S: StorageOps,
-{
+fn load_unpacked_elements<T: Storable, S: StorageOps>(
+    storage: &S,
+    data_start: U256,
+    length: usize,
+) -> Result<Vec<T>> {
     let mut result = Vec::new();
     for index in 0..length {
         // Use T::SLOTS for proper multi-slot element addressing
@@ -526,11 +555,11 @@ where
 /// Store unpacked elements to storage.
 ///
 /// Each element uses `T::SLOTS` consecutive slots.
-fn store_unpacked_elements<T, S>(elements: &[T], storage: &mut S, data_start: U256) -> Result<()>
-where
-    T: Storable,
-    S: StorageOps,
-{
+fn store_unpacked_elements<T: Storable, S: StorageOps>(
+    elements: &[T],
+    storage: &mut S,
+    data_start: U256,
+) -> Result<()> {
     for (elem_idx, elem) in elements.iter().enumerate() {
         // Use T::SLOTS for proper multi-slot element addressing
         let elem_slot = data_start + U256::from(elem_idx * T::SLOTS);
@@ -1643,7 +1672,7 @@ mod tests {
             assert_eq!(handler.len()?, u32::MAX as usize);
 
             // Boundary: u32::MAX + 1 is rejected with under_overflow
-            len_slot.write(U256::from(u32::MAX as u64 + 1))?;
+            len_slot.write(U256::from(u64::from(u32::MAX) + 1))?;
             assert_eq!(handler.len(), Err(TempoPrecompileError::under_overflow()));
 
             // Large but valid values below u32::MAX are accepted (no arbitrary cap)
@@ -1738,8 +1767,8 @@ mod tests {
     prop_compose! {
         fn arb_test_struct() (a in any::<u64>(), b in any::<u64>()) -> TestStruct {
             TestStruct {
-                a: a as u128,
-                b: b as u128,
+                a: u128::from(a),
+                b: u128::from(b),
             }
         }
     }

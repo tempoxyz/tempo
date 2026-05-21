@@ -1369,7 +1369,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     /// @notice Run all invariant checks in a single unified loop
     /// @dev Combines TEMPO-TIP18, TIP19, TIP20, TIP22, and rewards conservation checks
     ///      Decimals (TIP21) and quote token acyclic checks moved to setUp() as they're immutable
-    function invariant_globalInvariants() public view {
+    function invariant_tip20SupplyGlobal() public view {
         for (uint256 i = 0; i < _tokens.length; i++) {
             ITIP20 token = _tokens[i];
             address tokenAddr = address(token);

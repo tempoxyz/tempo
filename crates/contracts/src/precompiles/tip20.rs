@@ -1,6 +1,5 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
-use alloy_primitives::{Address, U256};
 use alloy_sol_types::{SolCall, SolType};
 
 /// Decimal precision for all TIP-20 tokens.
@@ -85,6 +84,8 @@ crate::sol! {
         function supplyCap() external view returns (uint256);
         function paused() external view returns (bool);
         function transferPolicyId() external view returns (uint64);
+        function logoURI() external view returns (string memory);
+        function setLogoURI(string calldata newLogoURI) external;
         function burnBlocked(address from, uint256 amount) external;
         function mintWithMemo(address to, uint256 amount, bytes32 memo) external;
         function burnWithMemo(uint256 amount, bytes32 memo) external;
@@ -149,6 +150,7 @@ crate::sol! {
         event QuoteTokenUpdate(address indexed updater, address indexed newQuoteToken);
         event RewardDistributed(address indexed funder, uint256 amount);
         event RewardRecipientSet(address indexed holder, address indexed recipient);
+        event LogoURIUpdated(address indexed updater, string newLogoURI);
 
         // Errors
         error InsufficientBalance(uint256 available, uint256 required, address token);
@@ -170,6 +172,8 @@ crate::sol! {
         error InvalidTransferPolicyId();
         error PermitExpired();
         error InvalidSignature();
+        error LogoURITooLong();
+        error InvalidLogoURI();
     }
 }
 
@@ -177,6 +181,7 @@ impl ITIP20::ITIP20Calls {
     /// Returns `true` if `input` matches one of the recognized [TIP-20 payment] selectors:
     /// - `transfer` / `transferWithMemo`
     /// - `transferFrom` / `transferFromWithMemo`
+    /// - `approve`
     /// - `mint` / `mintWithMemo`
     /// - `burn` / `burnWithMemo`
     ///
@@ -201,114 +206,6 @@ impl ITIP20::ITIP20Calls {
             || is_call::<ITIP20::mintWithMemoCall>(input)
             || is_call::<ITIP20::burnCall>(input)
             || is_call::<ITIP20::burnWithMemoCall>(input)
-    }
-}
-
-impl RolesAuthError {
-    /// Creates an error for unauthorized access.
-    pub const fn unauthorized() -> Self {
-        Self::Unauthorized(IRolesAuth::Unauthorized {})
-    }
-}
-
-impl TIP20Error {
-    /// Creates an error for insufficient token balance.
-    pub const fn insufficient_balance(available: U256, required: U256, token: Address) -> Self {
-        Self::InsufficientBalance(ITIP20::InsufficientBalance {
-            available,
-            required,
-            token,
-        })
-    }
-
-    /// Creates an error for insufficient spending allowance.
-    pub const fn insufficient_allowance() -> Self {
-        Self::InsufficientAllowance(ITIP20::InsufficientAllowance {})
-    }
-
-    /// Creates an error for unauthorized callers
-    pub const fn unauthorized() -> Self {
-        Self::Unauthorized(ITIP20::Unauthorized {})
-    }
-
-    /// Creates an error when minting would set a supply cap that is too large, or invalid.
-    pub const fn invalid_supply_cap() -> Self {
-        Self::InvalidSupplyCap(ITIP20::InvalidSupplyCap {})
-    }
-
-    /// Creates an error when minting would exceed supply cap.
-    pub const fn supply_cap_exceeded() -> Self {
-        Self::SupplyCapExceeded(ITIP20::SupplyCapExceeded {})
-    }
-
-    /// Creates an error for invalid payload data.
-    pub const fn invalid_payload() -> Self {
-        Self::InvalidPayload(ITIP20::InvalidPayload {})
-    }
-
-    /// Creates an error for invalid quote token.
-    pub const fn invalid_quote_token() -> Self {
-        Self::InvalidQuoteToken(ITIP20::InvalidQuoteToken {})
-    }
-
-    /// Creates an error when transfer is forbidden by policy.
-    pub const fn policy_forbids() -> Self {
-        Self::PolicyForbids(ITIP20::PolicyForbids {})
-    }
-
-    /// Creates an error for invalid recipient address.
-    pub const fn invalid_recipient() -> Self {
-        Self::InvalidRecipient(ITIP20::InvalidRecipient {})
-    }
-
-    /// Creates an error when contract is paused.
-    pub const fn contract_paused() -> Self {
-        Self::ContractPaused(ITIP20::ContractPaused {})
-    }
-
-    /// Creates an error for invalid currency.
-    pub const fn invalid_currency() -> Self {
-        Self::InvalidCurrency(ITIP20::InvalidCurrency {})
-    }
-
-    /// Creates an error for invalid amount.
-    pub const fn invalid_amount() -> Self {
-        Self::InvalidAmount(ITIP20::InvalidAmount {})
-    }
-
-    /// Error for when opted in supply is 0
-    pub const fn no_opted_in_supply() -> Self {
-        Self::NoOptedInSupply(ITIP20::NoOptedInSupply {})
-    }
-
-    /// Error for operations on protected addresses (like burning `FeeManager` tokens)
-    pub const fn protected_address() -> Self {
-        Self::ProtectedAddress(ITIP20::ProtectedAddress {})
-    }
-
-    /// Error when an address is not a valid TIP20 token
-    pub const fn invalid_token() -> Self {
-        Self::InvalidToken(ITIP20::InvalidToken {})
-    }
-
-    /// Error when transfer policy ID does not exist
-    pub const fn invalid_transfer_policy_id() -> Self {
-        Self::InvalidTransferPolicyId(ITIP20::InvalidTransferPolicyId {})
-    }
-
-    /// Error when token is uninitialized (has no bytecode)
-    pub const fn uninitialized() -> Self {
-        Self::Uninitialized(ITIP20::Uninitialized {})
-    }
-
-    /// Error when permit signature has expired (block.timestamp > deadline)
-    pub const fn permit_expired() -> Self {
-        Self::PermitExpired(ITIP20::PermitExpired {})
-    }
-
-    /// Error when permit signature is invalid
-    pub const fn invalid_signature() -> Self {
-        Self::InvalidSignature(ITIP20::InvalidSignature {})
     }
 }
 

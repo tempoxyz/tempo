@@ -15,7 +15,6 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
-use commonware_parallel::Sequential;
 use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
@@ -28,6 +27,7 @@ use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::{
+    alias,
     consensus::application,
     dkg,
     epoch::{self, SchemeProvider},
@@ -76,6 +76,14 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub with_subblocks: bool,
 
     pub feed_state: crate::feed::FeedStateHandle,
+
+    /// Number of recently finalized blocks retained in the prunable archive
+    /// passed to the marshal actor. Older blocks are served from reth.
+    pub finalized_blocks_retention: u64,
+
+    /// Whether to dual-write finalized block to the legacy
+    /// immutable archive in addition to the prunable archive.
+    pub with_legacy: bool,
 }
 
 impl<TBlocker, TPeerManager> Builder<TBlocker, TPeerManager>
@@ -130,49 +138,30 @@ where
 
         let scheme_provider = SchemeProvider::new();
 
-        let finalizations_by_height = storage::init_finalizations_archive(
-            &context,
-            &self.partition_prefix,
+        let alias::marshal::Initialized {
+            actor: marshal,
+            mailbox: marshal_mailbox,
+            last_finalized_height,
+        } = alias::marshal::init(
+            context.clone(),
             page_cache_ref.clone(),
-        )
-        .await
-        .wrap_err("failed to initialize finalizations by height archive")?;
-
-        let finalized_blocks = storage::init_finalized_blocks_archive(
-            &context,
-            &self.partition_prefix,
-            page_cache_ref.clone(),
-        )
-        .await
-        .wrap_err("failed to initialize finalizations by height archive")?;
-
-        // TODO(janis): forward `last_finalized_height` to application so it can
-        // forward missing blocks to EL.
-        let (marshal, marshal_mailbox, last_finalized_height) = marshal::core::Actor::init(
-            context.with_label("marshal"),
-            finalizations_by_height,
-            finalized_blocks,
-            marshal::Config {
-                provider: scheme_provider.clone(),
-                epocher: epoch_strategy.clone(),
+            execution_node.clone(),
+            alias::marshal::Config {
                 partition_prefix: self.partition_prefix.clone(),
                 mailbox_size: self.mailbox_size,
                 view_retention_timeout: ViewDelta::new(
                     self.views_to_track
                         .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
                 ),
-                prunable_items_per_section: storage::PRUNABLE_ITEMS_PER_SECTION,
-                page_cache: page_cache_ref.clone(),
-                replay_buffer: storage::REPLAY_BUFFER,
-                key_write_buffer: storage::WRITE_BUFFER,
-                value_write_buffer: storage::WRITE_BUFFER,
-                max_repair: storage::MAX_REPAIR,
                 max_pending_acks: MAX_PENDING_ACKS,
-                block_codec_config: (),
-                strategy: Sequential,
+                finalized_blocks_retention: self.finalized_blocks_retention,
+                with_legacy: self.with_legacy,
+                epoch_strategy: epoch_strategy.clone(),
+                scheme_provider: scheme_provider.clone(),
             },
         )
-        .await;
+        .await
+        .wrap_err("failed to initialize marshal")?;
 
         let (executor, executor_mailbox) = crate::executor::init(
             context.with_label("executor"),
@@ -181,6 +170,7 @@ where
                 last_finalized_height,
                 marshal: marshal_mailbox.clone(),
                 fcu_heartbeat_interval: self.fcu_heartbeat_interval,
+                public_key: Some(self.signer.public_key()),
             },
         )
         .wrap_err("failed initialization executor actor")?;

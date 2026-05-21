@@ -29,6 +29,18 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) payment_transactions: Histogram,
     /// Number of payment transactions in the payload.
     pub(crate) payment_transactions_last: Gauge,
+    /// Number of pool transactions yielded by the best transactions iterator.
+    pub(crate) pool_transactions_yielded: Histogram,
+    /// Number of pool transactions yielded by the best transactions iterator for the last payload.
+    pub(crate) pool_transactions_yielded_last: Gauge,
+    /// Number of yielded pool transactions included in the payload.
+    pub(crate) pool_transactions_included: Histogram,
+    /// Number of yielded pool transactions included in the last payload.
+    pub(crate) pool_transactions_included_last: Gauge,
+    /// Ratio of yielded pool transactions that were included in the payload.
+    pub(crate) pool_transactions_inclusion_ratio: Histogram,
+    /// Ratio of yielded pool transactions that were included in the last payload.
+    pub(crate) pool_transactions_inclusion_ratio_last: Gauge,
     /// Number of subblocks in the payload.
     pub(crate) subblocks: Histogram,
     /// Number of subblocks in the payload.
@@ -93,6 +105,25 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
 }
 
+/// Reason the payload builder stopped adding pool transactions to the block.
+pub(crate) enum BlockBuildStopReason {
+    TimeLimit,
+    GasLimit,
+    RlpBlockSizeLimit,
+    TxPoolEmpty,
+}
+
+impl BlockBuildStopReason {
+    const fn as_str(&self) -> &'static str {
+        match self {
+            Self::TimeLimit => "time_limit",
+            Self::GasLimit => "gas_limit",
+            Self::RlpBlockSizeLimit => "rlp_block_size_limit",
+            Self::TxPoolEmpty => "tx_pool_empty",
+        }
+    }
+}
+
 impl TempoPayloadBuilderMetrics {
     /// Increments the unified pool transaction skip counter with the given reason label.
     ///
@@ -108,6 +139,13 @@ impl TempoPayloadBuilderMetrics {
     #[inline]
     pub(crate) fn inc_build_failure(&self, reason: &'static str) {
         metrics::counter!("tempo_payload_builder_build_failures_total", "reason" => reason)
+            .increment(1);
+    }
+
+    /// Increments the counter for why the payload builder stopped adding pool transactions.
+    #[inline]
+    pub(crate) fn inc_block_build_stop_reason(&self, reason: BlockBuildStopReason) {
+        metrics::counter!("tempo_payload_builder_block_build_stop_total", "reason" => reason.as_str())
             .increment(1);
     }
 

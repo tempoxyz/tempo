@@ -17,6 +17,13 @@ use tempo_primitives::{
 };
 use tempo_revm::{TempoBatchCallEnv, TempoTxEnv};
 
+/// Non-zero transaction identifier used only for RPC simulations.
+///
+/// RPC requests are not final signed transactions, so gas filling and other request normalization
+/// can make a simulated signing payload differ from the eventual submitted transaction. Use a
+/// fixed sentinel instead of deriving a misleading future channel id from the simulated payload.
+const RPC_SIMULATION_UNIQUE_TX_IDENTIFIER: B256 = B256::new(*b"TEMPO_RPC_SIMULATION_MPP_CONTEXT");
+
 impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
         match self.output_tx_type() {
@@ -132,6 +139,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
         Ok(TempoTxEnv {
             fee_token,
             is_system_tx: false,
+            unique_tx_identifier: Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER),
             fee_payer,
             tempo_tx_env: if !calls.is_empty()
                 || !tempo_authorization_list.is_empty()
@@ -177,13 +185,6 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                     key_authorization,
                     signature_hash: B256::ZERO,
                     tx_hash: B256::ZERO,
-                    // Use a zero sentinel for expiring nonce hash during simulation.
-                    // The real hash is keccak256(encode_for_signing || sender), but we
-                    // don't have a signed transaction here. B256::ZERO lets the handler's
-                    // replay check proceed (it runs against ephemeral simulation state
-                    // that is discarded). Gas accuracy is unaffected — the 13k
-                    // EXPIRING_NONCE_GAS is charged based on nonce_key, not the hash value.
-                    expiring_nonce_hash: Some(B256::ZERO),
                     valid_before: valid_before.map(NonZeroU64::get),
                     valid_after: valid_after.map(NonZeroU64::get),
                     subblock_transaction: false,
@@ -387,6 +388,39 @@ mod tests {
         let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
 
         assert_eq!(estimated_calls, built_calls);
+    }
+
+    #[test]
+    fn test_try_into_tx_env_sets_channel_open_context_hash_for_rpc_simulation() {
+        let sender = address!("0xaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+        let target = address!("0x2222222222222222222222222222222222222222");
+
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(sender),
+                to: Some(TxKind::Call(target)),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        let evm_env = EvmEnv::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+
+        assert_eq!(
+            tx_env.channel_open_context_hash(),
+            Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER)
+        );
+        assert_ne!(
+            tx_env.channel_open_context_hash(),
+            Some(B256::ZERO),
+            "RPC simulations must seed a non-zero context hash so TIP20ChannelReserve.open() does not treat it as unset"
+        );
     }
 
     #[test]

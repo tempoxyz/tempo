@@ -171,7 +171,7 @@ where
     let factory = ITIP20Factory::new(TIP20_FACTORY_ADDRESS, provider.clone());
     let salt = B256::random();
     let receipt = factory
-        .createToken(
+        .createToken_0(
             "Test".to_string(),
             "TEST".to_string(),
             "USD".to_string(),
@@ -179,6 +179,7 @@ where
             caller,
             salt,
         )
+        .from(caller)
         .gas(5_000_000)
         .send()
         .await?
@@ -192,6 +193,7 @@ where
 
     roles
         .grantRole(*ISSUER_ROLE, caller)
+        .from(caller)
         .gas(1_000_000)
         .send()
         .await?

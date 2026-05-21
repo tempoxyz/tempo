@@ -15,6 +15,8 @@
 
 # Tempo
 
+[![CodSpeed](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/tempoxyz/tempo?utm_source=badge)
+
 The blockchain for payments at scale.
 
 [Tempo](https://docs.tempo.xyz/) is a blockchain designed specifically for stablecoin payments. Its architecture focuses on high throughput, low cost, and features that financial institutions, payment service providers, and fintech platforms expect from modern payment infrastructure.
@@ -118,6 +120,12 @@ Install the dependencies:
 just
 ```
 
+Configure Git to run the repository hooks:
+
+```bash
+./scripts/setup-hooks.sh
+```
+
 Build Tempo:
 
 ```bash
@@ -143,6 +151,39 @@ Our contributor guidelines can be found in [`CONTRIBUTING.md`](https://github.co
 ## Security
 
 See [`SECURITY.md`](https://github.com/tempoxyz/tempo?tab=security-ov-file). Note: Tempo is still undergoing audit and does not have an active bug bounty. Submissions will not be eligible for a bounty until audits have concluded.
+
+### Verifying release binaries
+
+Each release ships `<binary>-<version>-<target>.tar.gz` plus `.sha256` (archive checksum) and `.asc` (GPG signature), and is also covered by Sigstore-signed SLSA build provenance.
+
+The [`tempoup`](./tempoup) installer performs these checks automatically on every install. To verify manually, pick **one** of the two paths below — both prove the archive came from the tagged commit, signed by tempoxyz.
+
+**Path A — offline / no GitHub auth required (checksum + GPG):**
+
+```bash
+TAG=v1.6.0
+ARCHIVE=tempo-${TAG}-x86_64-unknown-linux-gnu.tar.gz
+
+gh release download "$TAG" --repo tempoxyz/tempo \
+  -p "$ARCHIVE" -p "$ARCHIVE.sha256" -p "$ARCHIVE.asc"
+
+sha256sum -c "$ARCHIVE.sha256"
+
+# Public key + fingerprint:
+# https://docs.tempo.xyz/guide/node/installation#verifying-releases
+gpg --verify "$ARCHIVE.asc" "$ARCHIVE"
+```
+
+**Path B — Sigstore (requires `gh` installed and authenticated):**
+
+```bash
+TAG=v1.6.0
+ARCHIVE=tempo-${TAG}-x86_64-unknown-linux-gnu.tar.gz
+
+gh release download "$TAG" --repo tempoxyz/tempo -p "$ARCHIVE"
+gh attestation verify "$ARCHIVE" --repo tempoxyz/tempo \
+  --predicate-type https://slsa.dev/provenance/v1
+```
 
 ## License
 

@@ -1,0 +1,11 @@
+---
+source: crates/node/tests/it/stablecoin_dex_gas.rs
+assertion_line: 173
+expression: gas
+---
+cancel_tail_bid_order: 294241
+place_bid_append_same_level: 1612485
+place_bid_empty_level: 2593285
+place_flip_ask_empty_level: 2596119
+swap_exact_in_partial_bid_fill: 374485
+swap_exact_out_full_flip_ask_fill: 669076

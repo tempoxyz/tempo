@@ -6,6 +6,7 @@ use alloy::{
     providers::{Provider, ProviderBuilder},
     rpc::client::BatchRequest,
 };
+use alloy_rlp::Encodable;
 use clap::Parser;
 use eyre::{Context, Result};
 use futures::StreamExt;
@@ -42,7 +43,12 @@ type TempoRpcBlock = <TempoNetwork as Network>::BlockResponse;
 
 /// 3 hrs of blocks at 500ms block time.
 const CACHE_CAPACITY: u64 = 60 * 60 * 6; // 21600
-const HEADER_BATCH_SIZE: usize = 512;
+/// Maximum number of headers to fetch per RPC batch request.
+const HEADER_RPC_BATCH_SIZE: usize = 128;
+/// Maximum number of block headers to serve in a `GetBlockHeaders` response.
+const MAX_HEADERS_SERVE: usize = 1024;
+/// Soft cap on the total encoded body size in a `GetBlockBodies` response.
+const SOFT_BODY_RESPONSE_SIZE_LIMIT: usize = 1024 * 1024; // 1 MiB
 
 #[derive(Parser, Debug)]
 #[command(
@@ -145,10 +151,12 @@ struct NetConfig {
     head: Head,
 }
 
-/// Shared request counters for periodic stats logging.
+/// Shared counters for periodic proxy stats logging.
 struct RequestStats {
-    headers: AtomicU64,
-    bodies: AtomicU64,
+    header_requests_received: AtomicU64,
+    body_requests_received: AtomicU64,
+    headers_served: AtomicU64,
+    bodies_served: AtomicU64,
 }
 
 /// Messages from the request handler to the single block-fetcher service.
@@ -345,10 +353,12 @@ async fn run_p2p_network(
     // Spawn the network
     tokio::spawn(network);
 
-    // Request stats for periodic logging
+    // Proxy stats for periodic logging
     let stats = Arc::new(RequestStats {
-        headers: AtomicU64::new(0),
-        bodies: AtomicU64::new(0),
+        header_requests_received: AtomicU64::new(0),
+        body_requests_received: AtomicU64::new(0),
+        headers_served: AtomicU64::new(0),
+        bodies_served: AtomicU64::new(0),
     });
 
     // Periodic stats logging
@@ -359,10 +369,20 @@ async fn run_p2p_network(
         interval.tick().await; // skip immediate first tick
         loop {
             interval.tick().await;
-            let h = stats_log.headers.load(Ordering::Relaxed);
-            let b = stats_log.bodies.load(Ordering::Relaxed);
+            let header_requests_received =
+                stats_log.header_requests_received.load(Ordering::Relaxed);
+            let body_requests_received = stats_log.body_requests_received.load(Ordering::Relaxed);
+            let headers_served = stats_log.headers_served.load(Ordering::Relaxed);
+            let bodies_served = stats_log.bodies_served.load(Ordering::Relaxed);
             let peers = stats_handle.num_connected_peers();
-            info!(peers, headers_served = h, bodies_served = b, "proxy stats");
+            info!(
+                peers,
+                header_requests_received,
+                body_requests_received,
+                headers_served,
+                bodies_served,
+                "proxy stats"
+            );
         }
     });
 
@@ -375,8 +395,11 @@ async fn run_p2p_network(
                 response,
             } => {
                 debug!(%peer_id, ?request, "received GetBlockHeaders");
-                stats.headers.fetch_add(1, Ordering::Relaxed);
+                stats
+                    .header_requests_received
+                    .fetch_add(1, Ordering::Relaxed);
                 let fetch_tx = fetch_tx.clone();
+                let stats = Arc::clone(&stats);
                 tokio::spawn(async move {
                     let headers = async {
                         let (tx, rx) = oneshot::channel();
@@ -391,7 +414,12 @@ async fn run_p2p_network(
                     }
                     .await
                     .unwrap_or_default();
-                    let _ = response.send(Ok(headers.into()));
+                    let headers_served = headers.len() as u64;
+                    if response.send(Ok(headers.into())).is_ok() {
+                        stats
+                            .headers_served
+                            .fetch_add(headers_served, Ordering::Relaxed);
+                    }
                 });
             }
             IncomingEthRequest::GetBlockBodies {
@@ -400,8 +428,9 @@ async fn run_p2p_network(
                 response,
             } => {
                 debug!(%peer_id, ?request, "received GetBlockBodies");
-                stats.bodies.fetch_add(1, Ordering::Relaxed);
+                stats.body_requests_received.fetch_add(1, Ordering::Relaxed);
                 let fetch_tx = fetch_tx.clone();
+                let stats = Arc::clone(&stats);
                 tokio::spawn(async move {
                     let bodies = async {
                         let (tx, rx) = oneshot::channel();
@@ -416,7 +445,12 @@ async fn run_p2p_network(
                     }
                     .await
                     .unwrap_or_default();
-                    let _ = response.send(Ok(bodies.into()));
+                    let bodies_served = bodies.len() as u64;
+                    if response.send(Ok(bodies.into())).is_ok() {
+                        stats
+                            .bodies_served
+                            .fetch_add(bodies_served, Ordering::Relaxed);
+                    }
                 });
             }
             // All other requests get empty responses
@@ -436,6 +470,9 @@ async fn run_p2p_network(
                 }));
             }
             IncomingEthRequest::GetBlockAccessLists { response, .. } => {
+                let _ = response.send(Ok(Default::default()));
+            }
+            IncomingEthRequest::GetCells { response, .. } => {
                 let _ = response.send(Ok(Default::default()));
             }
         }
@@ -555,7 +592,7 @@ async fn fetch_and_cache_headers(
         .filter(|number| cache.get_by_number(*number).is_none())
         .collect();
 
-    for chunk in missing_numbers.chunks(HEADER_BATCH_SIZE) {
+    for chunk in missing_numbers.chunks(HEADER_RPC_BATCH_SIZE) {
         if fetch_and_cache_header_batch(provider, cache, chunk)
             .await
             .is_err()
@@ -590,7 +627,7 @@ fn requested_header_numbers(
     mut current: u64,
     request: &reth_eth_wire_types::GetBlockHeaders,
 ) -> Vec<u64> {
-    let limit = request.limit.min(HEADER_BATCH_SIZE as u64) as usize;
+    let limit = request.limit.min(MAX_HEADERS_SERVE as u64) as usize;
     let mut numbers = Vec::with_capacity(limit);
     let step = u64::from(request.skip) + 1;
 
@@ -671,18 +708,26 @@ async fn resolve_bodies(
     hashes: &[B256],
 ) -> Vec<tempo_primitives::BlockBody> {
     let mut bodies = Vec::new();
+    let mut total_bytes = 0usize;
 
     for &hash in hashes {
-        if let Some(body) = cache
+        let body = match cache
             .get_by_hash(&hash)
             .and_then(|block| block.body.clone())
         {
-            bodies.push(body);
-            continue;
-        }
+            Some(body) => body,
+            None => match fetch_body_by_hash(provider, cache, hash).await {
+                Some(body) => body,
+                None => break,
+            },
+        };
 
-        if let Some(body) = fetch_body_by_hash(provider, cache, hash).await {
-            bodies.push(body);
+        // At least one body is served as they can be up to ~8MiB.
+        total_bytes = total_bytes.saturating_add(body.length());
+        bodies.push(body);
+
+        if total_bytes >= SOFT_BODY_RESPONSE_SIZE_LIMIT {
+            break;
         }
     }
 
@@ -692,7 +737,10 @@ async fn resolve_bodies(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy::{consensus::BlockHeader, primitives::Sealable};
+    use alloy::{
+        consensus::{BlockHeader, Header},
+        primitives::Sealable,
+    };
     use reth_eth_wire_types::GetBlockHeaders;
 
     const MODERATO_RPC: &str = "https://rpc.moderato.tempo.xyz";
@@ -700,6 +748,123 @@ mod tests {
     fn moderato_provider() -> impl Provider<TempoNetwork> {
         ProviderBuilder::new_with_network::<TempoNetwork>()
             .connect_http(MODERATO_RPC.parse().unwrap())
+    }
+
+    fn cached_body_with_min_size(min_size: usize) -> tempo_primitives::BlockBody {
+        let mut body = tempo_primitives::BlockBody::default();
+        while body.length() < min_size {
+            body.ommers.push(TempoHeader::default());
+        }
+        body
+    }
+
+    fn numbered_hash(number: u64) -> B256 {
+        let mut hash = [0u8; 32];
+        hash[24..].copy_from_slice(&number.to_be_bytes());
+        B256::from(hash)
+    }
+
+    fn insert_test_header(cache: &mut BlockCache, number: u64) {
+        let header = TempoHeader {
+            inner: Header {
+                number,
+                parent_hash: number.checked_sub(1).map_or(B256::default(), numbered_hash),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        cache.insert_header(number, numbered_hash(number), header);
+    }
+
+    #[test]
+    fn requested_header_numbers_allows_reth_default_request_limit() {
+        let request = GetBlockHeaders {
+            start_block: BlockHashOrNumber::Number(10),
+            limit: 1_000,
+            skip: 0,
+            direction: HeadersDirection::Rising,
+        };
+
+        let numbers = requested_header_numbers(10, &request);
+
+        assert_eq!(numbers.len(), 1_000);
+        assert_eq!(numbers[0], 10);
+        assert_eq!(numbers[999], 1_009);
+    }
+
+    #[test]
+    fn requested_header_numbers_caps_at_protocol_header_limit() {
+        let request = GetBlockHeaders {
+            start_block: BlockHashOrNumber::Number(0),
+            limit: MAX_HEADERS_SERVE as u64 + 1,
+            skip: 0,
+            direction: HeadersDirection::Rising,
+        };
+
+        let numbers = requested_header_numbers(0, &request);
+
+        assert_eq!(numbers.len(), MAX_HEADERS_SERVE);
+        assert_eq!(numbers[MAX_HEADERS_SERVE - 1], MAX_HEADERS_SERVE as u64 - 1);
+    }
+
+    #[tokio::test]
+    async fn resolve_headers_serves_more_than_rpc_batch_size_when_cached() {
+        let provider = moderato_provider();
+        let mut cache = BlockCache::new(MAX_HEADERS_SERVE as u64);
+
+        for number in 1..=1_000 {
+            insert_test_header(&mut cache, number);
+        }
+
+        let request = GetBlockHeaders {
+            start_block: BlockHashOrNumber::Number(1),
+            limit: 1_000,
+            skip: 0,
+            direction: HeadersDirection::Rising,
+        };
+        let headers = resolve_headers(&provider, &mut cache, &request).await;
+
+        assert_eq!(headers.len(), 1_000);
+        assert_eq!(headers[0].number(), 1);
+        assert_eq!(headers[999].number(), 1_000);
+    }
+
+    #[tokio::test]
+    async fn resolve_bodies_stops_after_reaching_soft_size_limit() {
+        let provider = moderato_provider();
+        let mut cache = BlockCache::new(100);
+        let body = cached_body_with_min_size(SOFT_BODY_RESPONSE_SIZE_LIMIT / 2 + 1);
+        let first_hash = B256::with_last_byte(1);
+        let second_hash = B256::with_last_byte(2);
+        let third_hash = B256::with_last_byte(3);
+
+        cache.insert_block(1, first_hash, TempoHeader::default(), body.clone());
+        cache.insert_block(2, second_hash, TempoHeader::default(), body.clone());
+        cache.insert_block(3, third_hash, TempoHeader::default(), body);
+
+        let bodies = resolve_bodies(
+            &provider,
+            &mut cache,
+            &[first_hash, second_hash, third_hash],
+        )
+        .await;
+        assert_eq!(bodies.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn resolve_bodies_serves_body_exceeding_soft_size_limit() {
+        let provider = moderato_provider();
+        let mut cache = BlockCache::new(100);
+        let body = cached_body_with_min_size(8 * SOFT_BODY_RESPONSE_SIZE_LIMIT);
+        let first_hash = B256::with_last_byte(1);
+        let second_hash = B256::with_last_byte(2);
+
+        cache.insert_block(1, first_hash, TempoHeader::default(), body.clone());
+        cache.insert_block(2, second_hash, TempoHeader::default(), body);
+
+        let bodies = resolve_bodies(&provider, &mut cache, &[first_hash, second_hash]).await;
+        assert_eq!(bodies.len(), 1);
+        assert!(bodies[0].length() > SOFT_BODY_RESPONSE_SIZE_LIMIT);
     }
 
     #[tokio::test]

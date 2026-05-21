@@ -1,0 +1,75 @@
+[
+  {
+    "type": "function",
+    "name": "placeFlip",
+    "inputs": [
+      {
+        "name": "token",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "amount",
+        "type": "uint128",
+        "internalType": "uint128"
+      },
+      {
+        "name": "isBid",
+        "type": "bool",
+        "internalType": "bool"
+      },
+      {
+        "name": "tick",
+        "type": "int16",
+        "internalType": "int16"
+      },
+      {
+        "name": "flipTick",
+        "type": "int16",
+        "internalType": "int16"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "orderId",
+        "type": "uint128",
+        "internalType": "uint128"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "swapExactAmountIn",
+    "inputs": [
+      {
+        "name": "tokenIn",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "tokenOut",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "amountIn",
+        "type": "uint128",
+        "internalType": "uint128"
+      },
+      {
+        "name": "minAmountOut",
+        "type": "uint128",
+        "internalType": "uint128"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "amountOut",
+        "type": "uint128",
+        "internalType": "uint128"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  }
+]

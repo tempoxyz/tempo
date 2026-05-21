@@ -13,7 +13,7 @@
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{StorageOps, types::*},
+    storage::{StorageCtx, StorageOps, types::*},
 };
 use alloy::primitives::{Address, Bytes, U256, keccak256};
 use std::marker::PhantomData;
@@ -116,20 +116,20 @@ impl<T: Storable> Handler<T> for BytesLikeHandler<T> {
 impl Storable for Bytes {
     #[inline]
     fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
-        debug_assert_eq!(ctx, LayoutCtx::FULL, "Bytes cannot be packed");
+        debug_assert!(ctx.is_full(), "Bytes cannot be packed");
         load_bytes_like(storage, slot, |data| Ok(Self::from(data)))
     }
 
     #[inline]
     fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
-        debug_assert_eq!(ctx, LayoutCtx::FULL, "Bytes cannot be packed");
-        store_bytes_like(self.as_ref(), storage, slot)
+        debug_assert!(ctx.is_full(), "Bytes cannot be packed");
+        store_bytes_like(self.as_ref(), storage, slot, ctx)
     }
 
     /// Custom delete for bytes-like types: clears keccak256-addressed data slots for long values.
     #[inline]
     fn delete<S: StorageOps>(storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
-        debug_assert_eq!(ctx, LayoutCtx::FULL, "Bytes cannot be packed");
+        debug_assert!(ctx.is_full(), "Bytes cannot be packed");
         delete_bytes_like(storage, slot)
     }
 }
@@ -137,7 +137,7 @@ impl Storable for Bytes {
 impl Storable for String {
     #[inline]
     fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
-        debug_assert_eq!(ctx, LayoutCtx::FULL, "String cannot be packed");
+        debug_assert!(ctx.is_full(), "String cannot be packed");
         load_bytes_like(storage, slot, |data| {
             Self::from_utf8(data).map_err(|e| {
                 TempoPrecompileError::Fatal(format!("Invalid UTF-8 in stored string: {e}"))
@@ -147,14 +147,14 @@ impl Storable for String {
 
     #[inline]
     fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
-        debug_assert_eq!(ctx, LayoutCtx::FULL, "String cannot be packed");
-        store_bytes_like(self.as_bytes(), storage, slot)
+        debug_assert!(ctx.is_full(), "String cannot be packed");
+        store_bytes_like(self.as_bytes(), storage, slot, ctx)
     }
 
     /// Custom delete for bytes-like types: clears keccak256-addressed data slots for long values.
     #[inline]
     fn delete<S: StorageOps>(storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
-        debug_assert_eq!(ctx, LayoutCtx::FULL, "String cannot be packed");
+        debug_assert!(ctx.is_full(), "String cannot be packed");
         delete_bytes_like(storage, slot)
     }
 }
@@ -201,22 +201,47 @@ where
 }
 
 /// Generic store implementation for byte-like types (String, Bytes) using Solidity's encoding.
+/// On T5+ performs tail cleanup when the prior value was long and the new one takes fewer slots.
 #[inline]
-fn store_bytes_like<S: StorageOps>(bytes: &[u8], storage: &mut S, base_slot: U256) -> Result<()> {
-    let length = bytes.len();
-    if length <= 31 {
+fn store_bytes_like<S: StorageOps>(
+    bytes: &[u8],
+    storage: &mut S,
+    base_slot: U256,
+    ctx: LayoutCtx,
+) -> Result<()> {
+    let new_len = bytes.len();
+    let new_is_long = new_len > 31;
+    let mut data_slot: Option<U256> = None;
+
+    // (T5+) Cleanup stale tail if necessary.
+    if !ctx.skip_tail_cleanup() && StorageCtx.spec().is_t5() {
+        let prev = storage.load(base_slot)?;
+        // Only applicable to long strings, as short ones always get overridden.
+        if is_long_string(prev) {
+            let prev_chunks = calc_chunks(calc_string_length(prev, true)?);
+            let new_chunks = if new_is_long { calc_chunks(new_len) } else { 0 };
+            if prev_chunks > new_chunks {
+                let slot_start = calc_data_slot(base_slot);
+                for i in new_chunks..prev_chunks {
+                    storage.store(slot_start + U256::from(i), U256::ZERO)?;
+                }
+                data_slot = Some(slot_start);
+            }
+        }
+    }
+
+    if !new_is_long {
         storage.store(base_slot, encode_short_string(bytes))
     } else {
-        storage.store(base_slot, encode_long_string_length(length))?;
+        storage.store(base_slot, encode_long_string_length(new_len))?;
 
         // Store data in chunks at keccak256(base_slot) + i
-        let slot_start = calc_data_slot(base_slot);
-        let chunks = calc_chunks(length);
-
+        let slot_start = data_slot.unwrap_or_else(|| calc_data_slot(base_slot));
+        let chunks = calc_chunks(new_len);
         for i in 0..chunks {
             let slot = slot_start + U256::from(i);
             let chunk_start = i * 32;
-            let chunk_end = (chunk_start + 32).min(length);
+            let chunk_end = (chunk_start + 32).min(new_len);
             let chunk = &bytes[chunk_start..chunk_end];
 
             // Pad chunk to 32 bytes if it's the last chunk
@@ -557,11 +582,11 @@ mod tests {
         );
 
         // Boundary: u32::MAX is accepted
-        let at_max = U256::from(u32::MAX as u64 * 2 + 1);
+        let at_max = U256::from(u64::from(u32::MAX) * 2 + 1);
         assert_eq!(calc_string_length(at_max, true), Ok(u32::MAX as usize));
 
         // Boundary: u32::MAX + 1 is rejected
-        let above_max = U256::from((u32::MAX as u64 + 1) * 2 + 1);
+        let above_max = U256::from((u64::from(u32::MAX) + 1) * 2 + 1);
         assert_eq!(
             calc_string_length(above_max, true),
             Err(TempoPrecompileError::under_overflow())
