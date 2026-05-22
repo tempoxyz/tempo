@@ -757,38 +757,41 @@ where
 
         check_cancel!();
 
-        let state_root_outcome = if let Some(mut handle) = trie_handle {
-            // Dropping the hook signals that execution is complete and the sparse trie task can
-            // finalize the state root it has been updating incrementally.
-            builder.executor_mut().set_state_hook(None);
+        let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
+            if let Some(mut handle) = trie_handle {
+                // Dropping the hook signals that execution is complete and the sparse trie task can
+                // finalize the state root it has been updating incrementally.
+                builder.executor_mut().set_state_hook(None);
 
-            let state_root_wait_start = Instant::now();
-            match handle.state_root() {
-                Ok(outcome) => {
-                    self.metrics
-                        .sparse_trie_state_root_wait_duration_seconds
-                        .record(state_root_wait_start.elapsed());
-                    debug!(
-                        target: "payload_builder",
-                        id = %payload_id,
-                        state_root = ?outcome.state_root,
-                        "received state root from sparse trie"
-                    );
-                    Some(outcome)
+                let state_root_wait_start = Instant::now();
+                match handle.state_root() {
+                    Ok(outcome) => {
+                        let elapsed = state_root_wait_start.elapsed();
+                        self.metrics
+                            .sparse_trie_state_root_wait_duration_seconds
+                            .record(elapsed);
+                        debug!(
+                            target: "payload_builder",
+                            id = %payload_id,
+                            state_root = ?outcome.state_root,
+                            "received state root from sparse trie"
+                        );
+                        Some((outcome, elapsed))
+                    }
+                    Err(err) => {
+                        warn!(
+                            target: "payload_builder",
+                            id = %payload_id,
+                            %err,
+                            "sparse trie failed, falling back to sync state root"
+                        );
+                        None
+                    }
                 }
-                Err(err) => {
-                    warn!(
-                        target: "payload_builder",
-                        id = %payload_id,
-                        %err,
-                        "sparse trie failed, falling back to sync state root"
-                    );
-                    None
-                }
+            } else {
+                None
             }
-        } else {
-            None
-        };
+            .unzip();
 
         let builder_finish_start = Instant::now();
         let BlockBuilderOutcome {
@@ -928,6 +931,7 @@ where
             ?normal_transaction_fill_idle_elapsed,
             ?normal_transaction_fill_overhead_elapsed,
             ?total_subblock_transaction_execution_elapsed,
+            ?sparse_trie_state_root_wait_elapsed,
             ?builder_finish_elapsed,
             "Built payload"
         );
