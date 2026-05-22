@@ -740,3 +740,47 @@ fn main() -> eyre::Result<()> {
     }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use clap::Parser;
+
+    use super::{Commands, TempoCli};
+
+    #[test]
+    fn transaction_execution_wait_default_depends_on_sparse_trie_sharing() {
+        let cli = TempoCli::try_parse_from(["tempo", "node", "--dev"]).unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert_eq!(
+            node_cmd
+                .ext
+                .consensus
+                .time_to_prepare_proposal_transactions
+                .into_duration(),
+            Duration::from_millis(200)
+        );
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--engine.share-sparse-trie-with-payload-builder",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert_eq!(
+            node_cmd
+                .ext
+                .consensus
+                .time_to_prepare_proposal_transactions
+                .into_duration(),
+            Duration::from_millis(350)
+        );
+    }
+}

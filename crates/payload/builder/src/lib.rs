@@ -221,7 +221,8 @@ where
 
 impl<Provider> TempoPayloadBuilder<Provider>
 where
-    Provider: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec>,
+    Provider:
+        StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
 {
     #[instrument(
         target = "payload_builder",
@@ -283,7 +284,7 @@ where
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
         let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
-        if let Some(execution_cache) = execution_cache {
+        if let Some(execution_cache) = &execution_cache {
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
                 execution_cache.cache().clone(),
@@ -449,8 +450,14 @@ where
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
         let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
-            Box::new(BestTransactionsPrewarming::new(&self.executor, best_txs))
-                as Box<dyn BestTransactions<Item = _>>
+            Box::new(BestTransactionsPrewarming::new(
+                self.executor.clone(),
+                self.provider.clone(),
+                execution_cache,
+                parent_header.hash(),
+                builder.evm().evm_env(),
+                best_txs,
+            )) as Box<dyn BestTransactions<Item = _>>
         } else {
             Box::new(best_txs)
         });

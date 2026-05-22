@@ -4,6 +4,8 @@ const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 500
 const TXGEN_HELPER_DRAIN_TIMEOUT_SECS = 300
 const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
+const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESET = "tip20_existing_recipients"
+const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 
 def txgen-shell-quote [value: any] {
     let s = ($value | into string)
@@ -100,6 +102,44 @@ def txgen-account-mnemonic [] {
     $TXGEN_HELPER_ACCOUNT_MNEMONIC
 }
 
+def txgen-bloat-accounts-per-token [bloat_mib: int, token_count: int] {
+    if $bloat_mib <= 0 {
+        error make { msg: "bloat size must be greater than zero" }
+    }
+    if $token_count <= 0 {
+        error make { msg: "bloat token count must be greater than zero" }
+    }
+
+    let target_bytes = $bloat_mib * 1024 * 1024
+    let overhead_per_token = 40 + 64
+    let available_for_balances = $target_bytes - ($token_count * $overhead_per_token)
+    if $available_for_balances <= 0 {
+        error make { msg: $"bloat size ($bloat_mib) MiB is too small for ($token_count) token\(s\)" }
+    }
+
+    (($available_for_balances / 64) / $token_count) | into int
+}
+
+def txgen-configure-existing-recipients-env [preset_path: string, bloat_mib: int, token_count: int] {
+    let preset_name = ($preset_path | path basename | str replace --regex '\.yml$' '')
+    if $preset_name != $TXGEN_HELPER_EXISTING_RECIPIENTS_PRESET {
+        return
+    }
+
+    if $bloat_mib <= 0 {
+        error make { msg: $"preset ($preset_name) requires state bloat" }
+    }
+
+    let recipient_end = (txgen-bloat-accounts-per-token $bloat_mib $token_count)
+    if $recipient_end <= $TXGEN_HELPER_EXISTING_RECIPIENTS_START {
+        error make { msg: $"preset ($preset_name) requires state bloat with more than ($TXGEN_HELPER_EXISTING_RECIPIENTS_START) accounts per token" }
+    }
+
+    $env.TXGEN_EXISTING_RECIPIENTS_START = ($TXGEN_HELPER_EXISTING_RECIPIENTS_START | into string)
+    $env.TXGEN_EXISTING_RECIPIENTS_END = ($recipient_end | into string)
+    print $"  Using existing recipient range ($TXGEN_HELPER_EXISTING_RECIPIENTS_START)..($recipient_end) from ($bloat_mib) MiB state bloat"
+}
+
 def txgen-rpc-call [rpc_url: string, payload: string] {
     let result = (^curl -sf -X POST -H "Content-Type: application/json" -d $payload $rpc_url | complete)
     if $result.exit_code != 0 {
@@ -188,6 +228,8 @@ def txgen-run-preset-pipeline [
     --scenario: string = ""
     --victoriametrics-url: string = ""
     --clickhouse-url: string = ""
+    --bloat-mib: int = 0
+    --bloat-token-count: int = 4
     --skip-funding                                   # Skip faucet funding (accounts already funded at genesis via state bloat)
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
@@ -196,6 +238,7 @@ def txgen-run-preset-pipeline [
     if not ($spec_path | path exists) {
         error make { msg: $"txgen preset file not found: ($spec_path)" }
     }
+    txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
     if not $skip_funding {
         txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
     }
