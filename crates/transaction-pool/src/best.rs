@@ -86,6 +86,19 @@ impl Iterator for MergeBestTransactions {
     fn next(&mut self) -> Option<Self::Item> {
         self.next_best().map(|(tx, _)| tx)
     }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let cached = usize::from(self.next_protocol_pool.is_some())
+            .saturating_add(usize::from(self.next_aa_2d_pool.is_some()));
+        let (_, protocol_upper) = self.protocol_pool.size_hint();
+        let (_, aa_2d_upper) = self.aa_2d_pool.size_hint();
+        let upper = protocol_upper
+            .zip(aa_2d_upper)
+            .and_then(|(protocol, aa_2d)| protocol.checked_add(aa_2d))
+            .and_then(|upper| upper.checked_add(cached));
+
+        (0, upper)
+    }
 }
 
 impl BestTransactions for MergeBestTransactions {
@@ -180,6 +193,11 @@ where
 
             return Some(tx);
         }
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        let (_, upper) = self.inner.size_hint();
+        (0, upper)
     }
 }
 
@@ -326,6 +344,31 @@ mod tests {
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_c.hash())); // priority 3
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_f.hash())); // priority 1
         assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn test_merge_best_transactions_size_hint() {
+        let tx_a = protocol_tx(0, 10);
+        let tx_b = aa_2d_tx(0, 8);
+        let mut merged = merged_best_transactions(vec![tx_a.clone()], vec![tx_b]);
+        merged.no_updates();
+
+        assert_eq!(merged.size_hint().0, 0);
+        assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*tx_a.hash()));
+        assert_eq!(merged.size_hint().0, 0);
+    }
+
+    #[test]
+    fn test_state_aware_best_transactions_size_hint() {
+        let tx_a = aa_2d_tx(0, 10);
+        let tx_b = aa_2d_tx(1, 5);
+        let mut best = StateAwareBestTransactions::new(
+            aa_2d_best_transactions(vec![tx_a, tx_b]).without_updates(),
+        );
+
+        assert_eq!(best.size_hint(), (0, Some(2)));
+        assert!(best.next().is_some());
+        assert_eq!(best.size_hint(), (0, Some(1)));
     }
 
     #[test]

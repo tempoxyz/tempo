@@ -1589,6 +1589,15 @@ pub(crate) struct BestAA2dTransactions {
 }
 
 impl BestAA2dTransactions {
+    fn remaining_len(&self) -> usize {
+        self.by_id.len().saturating_add(
+            self.independent
+                .iter()
+                .filter(|tx| tx.transaction.transaction.is_expiring_nonce())
+                .count(),
+        )
+    }
+
     /// Removes the best transaction from the set
     fn pop_best(&mut self) -> Option<(AA2dTransactionId, PendingTransaction<TxOrdering>)> {
         let tx = self.independent.pop_last()?;
@@ -1688,6 +1697,15 @@ impl Iterator for BestAA2dTransactions {
 
     fn next(&mut self) -> Option<Self::Item> {
         self.next_tx_and_priority().map(|(tx, _)| tx)
+    }
+
+    fn size_hint(&self) -> (usize, Option<usize>) {
+        (
+            0,
+            self.new_transaction_receiver
+                .is_none()
+                .then_some(self.remaining_len()),
+        )
     }
 }
 
@@ -3662,6 +3680,58 @@ mod tests {
 
         let third = best.next();
         assert!(third.is_none());
+    }
+
+    #[test]
+    fn test_best_transactions_size_hint() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        for nonce in 0..3 {
+            let tx = TxBuilder::aa(sender)
+                .nonce_key(U256::ZERO)
+                .nonce(nonce)
+                .build();
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+
+        let mut best = pool.best_transactions();
+        assert_eq!(best.size_hint(), (0, None));
+
+        best.no_updates();
+        assert_eq!(best.size_hint(), (0, Some(3)));
+
+        assert!(best.next().is_some());
+        assert_eq!(best.size_hint(), (0, Some(2)));
+    }
+
+    #[test]
+    fn test_best_transactions_size_hint_includes_expiring_nonce() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let regular = TxBuilder::aa(sender).nonce_key(U256::ZERO).build();
+        let expiring = TxBuilder::aa(sender).nonce_key(U256::MAX).build();
+        for tx in [regular, expiring] {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+
+        let mut best = pool.best_transactions();
+        best.no_updates();
+        assert_eq!(best.size_hint(), (0, Some(2)));
+
+        assert!(best.next().is_some());
+        assert_eq!(best.size_hint(), (0, Some(1)));
     }
 
     #[test]
