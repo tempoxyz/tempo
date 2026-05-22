@@ -27,6 +27,8 @@ const E2E_LOCAL_RETH_ARGS = [
     "--tempo.bootnodes-endpoint" "none"
     "--builder.max-tasks" "1"
     "--engine.share-sparse-trie-with-payload-builder"
+    "--engine.share-execution-cache-with-payload-builder"
+    "--builder.enable-prewarming"
 ]
 
 def run-bench-schelk [...args: string] {
@@ -873,6 +875,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --benchmark-start $ctx.reference_epoch
                 --platform "tempo"
                 --scenario $scenario
+                --bloat-mib $ctx.bloat
+                --bloat-token-count ($TIP20_TOKEN_IDS | length)
                 --victoriametrics-url $ctx.victoriametrics_url
                 --clickhouse-url $phase_clickhouse_url
                 --skip-funding=($ctx.bloat > 0))

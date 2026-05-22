@@ -1,5 +1,12 @@
 # Changelog
 
+## `tempo-primitives@1.7.2`
+
+### Patch Changes
+
+- Bumped alloy to `2.0.5` and updated transitive dependencies.
+- Dropped constructor helpers in favor of the newly auto-generated ones by the `sol!` macro. (by @ArseniiKulikov, [#4058](https://github.com/tempoxyz/tempo/pull/4058))
+
 ## `tempo-primitives@1.7.0`
 
 ### Minor Changes
