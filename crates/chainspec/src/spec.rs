@@ -146,7 +146,7 @@ pub static MODERATO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
         .expect("`./genesis/moderato.json` must be present and deserializable");
 
     TempoChainSpec::from_genesis(genesis)
-        .with_network_identity(NetworkIdentity::moderato())
+        .with_network_identity(NetworkIdentity::testnet())
         .with_default_follow_url("wss://rpc.moderato.tempo.xyz")
         .into()
 });
@@ -156,7 +156,7 @@ pub static PRESTO: LazyLock<Arc<TempoChainSpec>> = LazyLock::new(|| {
         .expect("`./genesis/presto.json` must be present and deserializable");
 
     TempoChainSpec::from_genesis(genesis)
-        .with_network_identity(NetworkIdentity::presto())
+        .with_network_identity(NetworkIdentity::mainnet())
         .with_default_follow_url("wss://rpc.presto.tempo.xyz")
         .into()
 });
@@ -443,22 +443,23 @@ mod tests {
 
     #[test]
     fn named_network_identities_use_compiled_identities() {
-        let moderato = super::TempoChainSpecParser::parse("moderato")
+        let moderato = super::TempoChainSpecParser::parse("testnet")
             .expect("the moderato chainspec must always be well formed");
         assert_eq!(
             moderato.network_identity,
-            Some(super::NetworkIdentity::moderato())
+            Some(super::NetworkIdentity::testnet())
         );
 
-        let testnet = super::TempoChainSpecParser::parse("testnet")
-            .expect("the testnet chainspec must always be well formed");
-        assert_eq!(testnet.network_identity, moderato.network_identity);
+        assert_eq!(
+            moderato.network_identity,
+            Some(super::NetworkIdentity::testnet())
+        );
 
         let presto = super::TempoChainSpecParser::parse("mainnet")
             .expect("the mainnet chainspec must always be well formed");
         assert_eq!(
             presto.network_identity,
-            Some(super::NetworkIdentity::presto())
+            Some(super::NetworkIdentity::mainnet())
         );
     }
 
