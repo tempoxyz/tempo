@@ -34,12 +34,12 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
     sol_types::SolValue,
 };
-use std::sync::LazyLock;
+use std::{ops::Deref, sync::LazyLock};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     DECIMALS as TIP20_DECIMALS, STABLECOIN_DEX_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
 };
-use tempo_precompiles_macros::contract;
+use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::TempoAddressExt;
 use tracing::trace;
 
@@ -100,7 +100,7 @@ pub struct TIP20Token {
 
     // TIP20 Token
     total_supply: U256,
-    balances: Mapping<Address, U256>,
+    balances: Mapping<Address, TIP20Balance>,
     allowances: Mapping<Address, Mapping<Address, U256>>,
     permit_nonces: Mapping<Address, U256>,
     paused: bool,
@@ -112,6 +112,50 @@ pub struct TIP20Token {
     global_reward_per_token: U256,
     opted_in_supply: u128,
     user_reward_info: Mapping<Address, UserRewardInfo>,
+}
+
+#[derive(Debug, Clone, Storable, Copy)]
+struct TIP20Balance {
+    amount: u128,
+    /// (T6+) Reward metadata flag to know if the user opted into rewards
+    opted_in: bool,
+}
+
+impl TIP20Balance {
+    fn new(amount: U256, opted_into_rewards: bool) -> Result<Self> {
+        Ok(Self {
+            amount: u128::try_from(amount).map_err(TempoPrecompileError::under_overflow())?,
+            opted_in: opted_into_rewards,
+        })
+    }
+
+    fn amount(&self) -> U256 {
+        U256::from(self.amount)
+    }
+
+    fn checked_add(&self, amount: U256) -> Result<U256> {
+        self.amount()
+            .checked_add(amount)
+            .ok_or(TempoPrecompileError::under_overflow())
+    }
+
+    fn checked_sub(&self, amount: U256) -> Result<U256> {
+        self.amount()
+            .checked_sub(amount)
+            .ok_or(TempoPrecompileError::under_overflow())
+    }
+
+    fn checked_mul(&self, amount: U256) -> Result<U256> {
+        self.amount()
+            .checked_mul(amount)
+            .ok_or(TempoPrecompileError::under_overflow())
+    }
+
+    fn checked_div(&self, amount: U256) -> Result<U256> {
+        self.amount()
+            .checked_div(amount)
+            .ok_or(TempoPrecompileError::under_overflow())
+    }
 }
 
 /// EIP-712 Permit typehash: keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
@@ -228,7 +272,9 @@ impl TIP20Token {
 
     /// Returns the token balance of `account`.
     pub fn balance_of(&self, call: ITIP20::balanceOfCall) -> Result<U256> {
-        self.balances[call.account].read()
+        self.balances[call.account]
+            .read()
+            .map(|res| U256::from(res.amount))
     }
 
     /// Returns the remaining allowance that `spender` can transfer on behalf of `owner`.
@@ -532,13 +578,16 @@ impl TIP20Token {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
-        self.handle_rewards_on_mint(to.target, amount)?;
+        let to_balance = if self.storage.spec().is_t6() && to.target != Address::ZERO {
+            Some(self.get_balance(to.target)?)
+        } else {
+            None
+        };
+        let to_flag = self.handle_rewards_on_mint(to.target, amount)?;
 
         self.set_total_supply(new_supply)?;
-        let to_balance = self.get_balance(to.target)?;
-        let new_to_balance: alloy::primitives::Uint<256, 4> = to_balance
-            .checked_add(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let mut to_balance = to_balance.map_or_else(|| self.get_balance(to.target), Ok)?;
+        let new_to_balance = TIP20Balance::new(to_balance.checked_add(amount)?, to_flag)?;
         self.set_balance(to.target, new_to_balance)?;
 
         self.emit_event(to.build_transfer_event(Address::ZERO, amount))
@@ -969,11 +1018,11 @@ impl TIP20Token {
         self.grant_default_admin(msg_sender, admin)
     }
 
-    fn get_balance(&self, account: Address) -> Result<U256> {
+    fn get_balance(&self, account: Address) -> Result<TIP20Balance> {
         self.balances[account].read()
     }
 
-    fn set_balance(&mut self, account: Address, amount: U256) -> Result<()> {
+    fn set_balance(&mut self, account: Address, amount: TIP20Balance) -> Result<()> {
         self.balances[account].write(amount)
     }
 
@@ -1078,11 +1127,14 @@ impl TIP20Token {
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
     fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
-        let from_balance = self.get_balance(from)?;
-        if amount > from_balance {
-            return Err(
-                TIP20Error::insufficient_balance(from_balance, amount, self.address).into(),
-            );
+        let mut from_balance = self.get_balance(from)?;
+        if amount > from_balance.amount() {
+            return Err(TIP20Error::insufficient_balance(
+                from_balance.amount(),
+                amount,
+                self.address,
+            )
+            .into());
         }
 
         let to_balance = if self.storage.spec().is_t6() && to.target != Address::ZERO {
@@ -1091,21 +1143,16 @@ impl TIP20Token {
             None
         };
 
-        self.handle_rewards_on_transfer(from, from_balance, to.target, to_balance, amount)?;
+        let (from_flag, to_flag) =
+            self.handle_rewards_on_transfer(from, from_balance, to.target, to_balance, amount)?;
 
         // Adjust balances
-        let new_from_balance = from_balance
-            .checked_sub(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-
+        let new_from_balance = TIP20Balance::new(from_balance.checked_sub(amount)?, from_flag)?;
         self.set_balance(from, new_from_balance)?;
 
         if to.target != Address::ZERO {
-            let to_balance = to_balance.map_or_else(|| self.get_balance(to.target), Ok)?;
-            let new_to_balance = to_balance
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-
+            let mut to_balance = to_balance.map_or_else(|| self.get_balance(to.target), Ok)?;
+            let new_to_balance = TIP20Balance::new(to_balance.checked_add(amount)?, to_flag)?;
             self.set_balance(to.target, new_to_balance)?;
         }
 
