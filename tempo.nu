@@ -785,6 +785,38 @@ def grafana-performance-url [benchmark_id: string, from_ms: int, to_ms: int] {
     $"https://tempoxyz.grafana.net/d/performance/performance?orgId=1&from=($from)&to=($to)&timezone=browser&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=($benchmark_id)&var-group_by=benchmark_run"
 }
 
+# Extract only the metric samples used by the PR summary. The full txgen
+# sidecars can contain millions of samples, so leave the streaming/filtering to
+# Python instead of loading and JSON-parsing the whole file in Nushell.
+def extract-summary-metric-samples [samples_path: string] {
+    let extractor = $"($BENCH_DIR)/extract-metric-samples.py"
+    if not ($extractor | path exists) {
+        print $"Warning: metric sample extractor not found: ($extractor)"
+        return []
+    }
+    if ((which python3 | length) == 0) {
+        print "Warning: python3 not found; skipping metric sample extraction"
+        return []
+    }
+
+    let result = (^python3 $extractor $samples_path | complete)
+    if $result.exit_code != 0 {
+        print $"Warning: metric sample extraction failed for ($samples_path)"
+        if $result.stderr != "" { print $result.stderr }
+        return []
+    }
+
+    let output = ($result.stdout | str trim)
+    if $output == "" {
+        return []
+    }
+
+    try { $output | from json } catch { |e|
+        print $"Warning: failed to parse metric sample extractor output for ($samples_path): ($e.msg)"
+        []
+    }
+}
+
 
 def generate-summary [results_dir: string, baseline_ref: string, feature_ref: string, bloat: int, preset: string, tps: int, duration: int, --benchmark-id: string = "", --reference-epoch: int = 0] {
     let run_order_path = $"($results_dir)/run-order.txt"
@@ -853,33 +885,13 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         let report = (open $report_path)
         let samples_path = $"($results_dir)/report-($label).samples.ndjson"
         let samples_gz_path = $"($samples_path).gz"
-        let samples_raw = if ($samples_path | path exists) {
-            open --raw $samples_path
+        let samples_source_path = if ($samples_path | path exists) {
+            $samples_path
         } else if ($samples_gz_path | path exists) {
-            gzip -dc $samples_gz_path
+            $samples_gz_path
         } else { "" }
-        let metric_samples = if $samples_raw != "" {
-            $samples_raw
-                | lines
-                | where { |line| ($line | str trim) != "" }
-                | each { |line| $line | from json }
-                | where { |sample| $sample.name in [
-                    "reth_tempo_payload_builder_payload_build_duration_seconds"
-                    "reth_tempo_payload_builder_payload_finalization_duration_seconds"
-                    "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds"
-                    "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds"
-                    "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts"
-                    "reth_tempo_payload_builder_pool_transactions_skipped_total"
-                    "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds"
-                    "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds"
-                    "reth_consensus_engine_beacon_new_payload_latency"
-                    "reth_tempo_payload_builder_gas_per_second_last"
-                    "reth_consensus_engine_beacon_new_payload_gas_per_second_last"
-                ] }
-                | where { |sample|
-                    let quantile = ($sample.labels | get -o quantile | default "")
-                    ($quantile in ["0.5" "0.9" "0.99"]) or ($quantile == "")
-                }
+        let metric_samples = if $samples_source_path != "" {
+            extract-summary-metric-samples $samples_source_path
         } else { [] }
         let builder_samples = ($metric_samples | where name == "reth_tempo_payload_builder_payload_build_duration_seconds")
         let builder_finish_samples = ($metric_samples | where name == "reth_tempo_payload_builder_payload_finalization_duration_seconds")

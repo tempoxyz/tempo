@@ -91,10 +91,10 @@ on:
         required: true
         default: "100"
       txgen-ref:
-        description: Optional ref to pin in tempoxyz/txgen.
+        description: Ref to pin in tempoxyz/txgen.
         type: string
         required: false
-        default: ""
+        default: "f30c01574b5cc0afbf88e90b5100e1b683459698"
       profiling:
         description: Profiling.
         type: choice
@@ -225,7 +225,7 @@ on:
       txgen-ref:
         type: string
         required: false
-        default: ""
+        default: "f30c01574b5cc0afbf88e90b5100e1b683459698"
       baseline-name:
         type: string
         required: false
