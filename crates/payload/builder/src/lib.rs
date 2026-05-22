@@ -748,7 +748,7 @@ where
             .total_normal_included_transaction_execution_duration_seconds
             .record(total_included_transaction_execution_elapsed);
 
-        let builder_finish_start = Instant::now();
+        let payload_finalization_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
         let finish_provider = || InstrumentedFinishProvider {
             inner: &*state_provider,
@@ -757,51 +757,69 @@ where
 
         check_cancel!();
 
+        let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
+            if let Some(mut handle) = trie_handle {
+                // Dropping the hook signals that execution is complete and the sparse trie task can
+                // finalize the state root it has been updating incrementally.
+                builder.executor_mut().set_state_hook(None);
+
+                let state_root_wait_start = Instant::now();
+                match handle.state_root() {
+                    Ok(outcome) => {
+                        let elapsed = state_root_wait_start.elapsed();
+                        self.metrics
+                            .sparse_trie_state_root_wait_duration_seconds
+                            .record(elapsed);
+                        debug!(
+                            target: "payload_builder",
+                            id = %payload_id,
+                            state_root = ?outcome.state_root,
+                            "received state root from sparse trie"
+                        );
+                        Some((outcome, elapsed))
+                    }
+                    Err(err) => {
+                        warn!(
+                            target: "payload_builder",
+                            id = %payload_id,
+                            %err,
+                            "sparse trie failed, falling back to sync state root"
+                        );
+                        None
+                    }
+                }
+            } else {
+                None
+            }
+            .unzip();
+
+        let builder_finish_start = Instant::now();
         let BlockBuilderOutcome {
             execution_result,
             block,
             hashed_state,
             trie_updates,
             ..
-        } = if let Some(mut handle) = trie_handle {
-            // Dropping the hook signals that execution is complete and the sparse trie task can
-            // finalize the state root it has been updating incrementally.
-            builder.executor_mut().set_state_hook(None);
-
-            match handle.state_root() {
-                Ok(outcome) => {
-                    debug!(
-                        target: "payload_builder",
-                        id = %payload_id,
-                        state_root = ?outcome.state_root,
-                        "received state root from sparse trie"
-                    );
-                    builder.finish(
-                        finish_provider(),
-                        Some((
-                            outcome.state_root,
-                            Arc::unwrap_or_clone(outcome.trie_updates),
-                        )),
-                    )?
-                }
-                Err(err) => {
-                    warn!(
-                        target: "payload_builder",
-                        id = %payload_id,
-                        %err,
-                        "sparse trie failed, falling back to sync state root"
-                    );
-                    builder.finish(finish_provider(), None)?
-                }
-            }
+        } = if let Some(outcome) = state_root_outcome {
+            builder.finish(
+                finish_provider(),
+                Some((
+                    outcome.state_root,
+                    Arc::unwrap_or_clone(outcome.trie_updates),
+                )),
+            )
         } else {
-            builder.finish(finish_provider(), None)?
-        };
-        drop(_finish_span);
+            builder.finish(finish_provider(), None)
+        }?;
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics
-            .payload_finalization_duration_seconds
+            .builder_finish_duration_seconds
             .record(builder_finish_elapsed);
+        drop(_finish_span);
+        let payload_finalization_elapsed = payload_finalization_start.elapsed();
+        self.metrics
+            .payload_finalization_duration_seconds
+            .record(payload_finalization_elapsed);
 
         let total_transactions = block.transaction_count();
         self.metrics
@@ -913,6 +931,7 @@ where
             ?normal_transaction_fill_idle_elapsed,
             ?normal_transaction_fill_overhead_elapsed,
             ?total_subblock_transaction_execution_elapsed,
+            ?sparse_trie_state_root_wait_elapsed,
             ?builder_finish_elapsed,
             "Built payload"
         );
