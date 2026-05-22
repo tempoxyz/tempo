@@ -4440,7 +4440,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_mint_paused_pre_t6_preserves_sload_count() -> eyre::Result<()> {
+    fn test_mint_paused_pre_t6_short_circuits_before_policy_reads() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let (admin, amount) = (Address::random(), U256::random());
 
@@ -4458,7 +4458,8 @@ pub(crate) mod tests {
                 result,
                 Err(TempoPrecompileError::TIP20(TIP20Error::contract_paused()))
             );
-            assert_eq!(token.storage.counter_sload(), 3);
+            // Pre-T6 paused mint must stop after issuer-role and pause reads.
+            assert_eq!(token.storage.counter_sload(), 2);
 
             Ok::<_, TempoPrecompileError>(())
         })?;

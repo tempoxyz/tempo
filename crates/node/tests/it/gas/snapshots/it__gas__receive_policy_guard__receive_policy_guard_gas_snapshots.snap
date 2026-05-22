@@ -4,7 +4,7 @@ assertion_line: 351
 expression: gas
 ---
 claim_originator_recovery_to_destination: 308369
-claim_receiver_recovery_to_receiver: 304081
+claim_receiver_recovery_to_receiver: 306181
 claim_third_party_recovery_to_destination: 306281
 set_receive_policy_allowed_third_party_recovery: 778029
 set_receive_policy_originator_recovery: 527777
