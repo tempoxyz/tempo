@@ -868,12 +868,111 @@
       "type": "timeseries"
     },
     {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "Prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "axisBorderShow": false,
+            "axisCenteredZero": false,
+            "axisColorMode": "text",
+            "axisLabel": "",
+            "axisPlacement": "auto",
+            "barAlignment": 0,
+            "barWidthFactor": 0.6,
+            "drawStyle": "line",
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "insertNulls": false,
+            "lineInterpolation": "linear",
+            "lineWidth": 1,
+            "pointSize": 5,
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "showPoints": "auto",
+            "showValues": false,
+            "spanNulls": false,
+            "stacking": {
+              "group": "A",
+              "mode": "none"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": 0
+              },
+              {
+                "color": "red",
+                "value": 80
+              }
+            ]
+          },
+          "unit": "short"
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 9,
+        "w": 12,
+        "x": 0,
+        "y": 38
+      },
+      "id": 26,
+      "options": {
+        "legend": {
+          "calcs": [],
+          "displayMode": "list",
+          "placement": "bottom",
+          "showLegend": true
+        },
+        "tooltip": {
+          "hideZeros": false,
+          "mode": "single",
+          "sort": "none"
+        }
+      },
+      "pluginVersion": "12.4.0-19938312174",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "Prometheus"
+          },
+          "editorMode": "code",
+          "expr": "label_replace(avg(reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
+          "legendFormat": "{{job}} p{{quantile}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Invalid Tx Attempts",
+      "type": "timeseries"
+    },
+    {
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 38
+        "y": 47
       },
       "id": 7,
       "panels": [],
@@ -946,7 +1045,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 39
+        "y": 48
       },
       "id": 9,
       "options": {
@@ -1045,7 +1144,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 39
+        "y": 48
       },
       "id": 11,
       "options": {
@@ -1144,7 +1243,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 48
+        "y": 57
       },
       "id": 5,
       "options": {
@@ -1243,7 +1342,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 48
+        "y": 57
       },
       "id": 16,
       "options": {
@@ -1282,7 +1381,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 57
+        "y": 66
       },
       "id": 13,
       "panels": [],
@@ -1355,7 +1454,7 @@
         "h": 9,
         "w": 12,
         "x": 0,
-        "y": 58
+        "y": 67
       },
       "id": 14,
       "options": {
@@ -1466,7 +1565,7 @@
         "h": 9,
         "w": 12,
         "x": 12,
-        "y": 58
+        "y": 67
       },
       "id": 15,
       "options": {
@@ -1517,7 +1616,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 67
+        "y": 76
       },
       "id": 21,
       "panels": [],
@@ -1590,7 +1689,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 68
+        "y": 77
       },
       "id": 22,
       "options": {
@@ -1689,7 +1788,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 68
+        "y": 77
       },
       "id": 23,
       "options": {
@@ -1788,7 +1887,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 76
+        "y": 85
       },
       "id": 24,
       "options": {
@@ -1887,7 +1986,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 76
+        "y": 85
       },
       "id": 25,
       "options": {
