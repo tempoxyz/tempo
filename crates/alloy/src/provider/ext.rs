@@ -291,14 +291,14 @@ pub trait TempoProviderBuilderExt<L, F>: Sized {
     fn sponsor(
         self,
         sponsor_rpc: impl Into<String>,
-    ) -> SponsoredProviderBuilder<L, JoinFill<F, SponsorFiller>, TempoNetwork>;
+    ) -> SponsoredProviderBuilder<L, JoinFill<SponsorFiller, F>, TempoNetwork>;
 
     /// Enable Tempo transaction sponsorship with an explicit sponsor configuration.
     fn sponsor_with_config(
         self,
         sponsor_rpc: impl Into<String>,
         sponsor_config: SponsorConfig,
-    ) -> SponsoredProviderBuilder<L, JoinFill<F, SponsorFiller>, TempoNetwork>;
+    ) -> SponsoredProviderBuilder<L, JoinFill<SponsorFiller, F>, TempoNetwork>;
 
     /// Returns a provider builder with the recommended Tempo fillers and the random 2D nonce filler.
     ///
@@ -342,7 +342,7 @@ where
     fn sponsor(
         self,
         sponsor_rpc: impl Into<String>,
-    ) -> SponsoredProviderBuilder<L, JoinFill<F, SponsorFiller>, TempoNetwork> {
+    ) -> SponsoredProviderBuilder<L, JoinFill<SponsorFiller, F>, TempoNetwork> {
         self.sponsor_with_config(sponsor_rpc, SponsorConfig::default())
     }
 
@@ -350,9 +350,9 @@ where
         self,
         sponsor_rpc: impl Into<String>,
         sponsor_config: SponsorConfig,
-    ) -> SponsoredProviderBuilder<L, JoinFill<F, SponsorFiller>, TempoNetwork> {
+    ) -> SponsoredProviderBuilder<L, JoinFill<SponsorFiller, F>, TempoNetwork> {
         SponsoredProviderBuilder {
-            inner: self.filler(SponsorFiller),
+            inner: self.map_filler(|fillers| JoinFill::new(SponsorFiller, fillers)),
             sponsor_rpc: sponsor_rpc.into(),
             sponsor_config,
         }
