@@ -70,10 +70,6 @@ pub struct TempoNodeArgs {
     #[arg(long = "builder.enable-prewarming", default_value_t = false)]
     pub builder_enable_prewarming: bool,
 
-    /// Disable state cache for the payload builder.
-    #[arg(long = "builder.disable-state-cache", default_value_t = false)]
-    pub builder_disable_state_cache: bool,
-
     /// Include an RLP-encoded block access list in built execution payloads.
     #[arg(long = "builder.enable-bal", default_value_t = false)]
     pub builder_enable_bal: bool,
@@ -93,7 +89,6 @@ impl TempoNodeArgs {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
             enable_prewarming: self.builder_enable_prewarming,
-            disable_state_cache: self.builder_disable_state_cache,
             enable_bal: self.builder_enable_bal,
         }
     }
@@ -502,8 +497,6 @@ pub struct TempoPayloadBuilderBuilder {
     pub state_provider_metrics: bool,
     /// Enable prewarming for the payload builder.
     pub enable_prewarming: bool,
-    /// Disable state cache for the payload builder.
-    pub disable_state_cache: bool,
     /// Include an RLP-encoded block access list in built execution payloads.
     pub enable_bal: bool,
 }
@@ -529,7 +522,6 @@ where
             ctx.is_dev(),
             self.state_provider_metrics,
             self.enable_prewarming,
-            self.disable_state_cache,
             self.enable_bal,
         ))
     }

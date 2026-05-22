@@ -97,8 +97,6 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     enable_prewarming: bool,
-    /// Whether to disable state cache.
-    disable_state_cache: bool,
     /// Whether to include block access lists in built execution payloads.
     enable_bal: bool,
 }
@@ -113,7 +111,6 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         is_dev: bool,
         state_provider_metrics: bool,
         enable_prewarming: bool,
-        disable_state_cache: bool,
         enable_bal: bool,
     ) -> Self {
         Self {
@@ -127,7 +124,6 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             is_dev,
             state_provider_metrics,
             enable_prewarming,
-            disable_state_cache,
             enable_bal,
         }
     }
@@ -293,9 +289,7 @@ where
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
         let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
-        if !self.disable_state_cache
-            && let Some(execution_cache) = &execution_cache
-        {
+        if let Some(execution_cache) = &execution_cache {
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
                 execution_cache.cache().clone(),
