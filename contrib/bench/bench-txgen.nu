@@ -126,6 +126,7 @@ def run-txgen-bench-single [
         --duration $duration
         --accounts $accounts
         --max-concurrent-requests $max_concurrent_requests
+        --bench-args $bench_args
         --bench-env $bench_env
         --git-ref $git_ref
         --build-profile $build_profile
@@ -133,6 +134,8 @@ def run-txgen-bench-single [
         --git-ref-label $git_ref_label
         --platform $platform
         --scenario $scenario
+        --bloat-mib $bloat
+        --bloat-token-count ($TIP20_TOKEN_IDS | length)
         --skip-funding=($bloat > 0))
     if not $bench_result.ok {
         error make { msg: $"txgen benchmark run ($run_label) failed with exit code ($bench_result.exit_code)" }
@@ -246,7 +249,6 @@ def "main run" [
         let tps_k = ($tps // 1000)
         $"($preset)-($tps_k)k"
     }
-    txgen-validate-bench-args $bench_args
     if ($baseline != "" and $feature == "") or ($baseline == "" and $feature != "") {
         error make { msg: "--baseline and --feature must both be provided for txgen comparison mode" }
     }

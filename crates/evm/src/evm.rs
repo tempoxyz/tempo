@@ -95,6 +95,14 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         &self.inner.inner.ctx
     }
 
+    /// Returns the [`EvmEnv`] for the current block.
+    pub fn evm_env(&self) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
+        EvmEnv {
+            cfg_env: self.ctx().cfg.clone(),
+            block_env: self.ctx().block.clone(),
+        }
+    }
+
     /// Provides a mutable reference to the EVM context.
     pub fn ctx_mut(&mut self) -> &mut TempoContext<DB> {
         &mut self.inner.inner.ctx

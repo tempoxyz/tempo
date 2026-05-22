@@ -163,6 +163,7 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
 
   const config = summary.config;
   const blockCount = fmtBlockCount(b.blocks, f.blocks);
+  const runPairs = config.run_pairs ?? '-';
 
   const sectionText = [
     `*Repo:* ${repoLink(repo)}`,
@@ -172,7 +173,7 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
     `*Feature:* ${featureLink}`,
     '',
     `*Preset:* \`${config.preset}\` | *Bloat:* \`${Math.round(config.bloat / 1000)} GB\``,
-    `*Duration:* \`${config.duration}s\` | *Target TPS:* \`${config.tps}\` | *Blocks:* ${blockCount}`,
+    `*Duration:* \`${config.duration}s\` | *Target TPS:* \`${config.tps}\` | *Run pairs:* \`${runPairs}\` | *Blocks:* ${blockCount}`,
   ].join('\n');
 
   const rows = buildMetricRows(summary);
@@ -281,7 +282,7 @@ async function success({ core, context }) {
   const actorSlackId = slackUsers[actor];
 
   const blocks = buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, repo });
-  const text = `Tempo bench: baseline vs feature`;
+  const text = `Tempo bench: baseline vs feature (${summary.config?.run_pairs ?? '-'} run pairs)`;
 
   const changes = e2eChanges(summary.results.deltas);
   const channel = process.env.SLACK_BENCH_CHANNEL;
@@ -397,12 +398,13 @@ function buildReplaySuccessBlocks({ summary, prNumber, actor, actorSlackId, jobU
 
   const blockCount = summary.blocks || blocks || '-';
   const warmupCount = summary.warmup_blocks || warmup || '-';
+  const runPairs = summary.run_pairs || process.env.BENCH_RUN_PAIRS || '-';
   const sectionText = [
     metaParts.join(' | '),
     '',
     `*Baseline:* ${baselineLink}`,
     `*Feature:* ${featureLink}`,
-    `*Chain:* \`${chain || '-'}\` | *Warmup:* \`${warmupCount}\` | *Blocks:* \`${blockCount}\``,
+    `*Chain:* \`${chain || '-'}\` | *Warmup:* \`${warmupCount}\` | *Blocks:* \`${blockCount}\` | *Run pairs:* \`${runPairs}\``,
   ].join('\n');
 
   const rows = buildReplayMetricRows(summary);
@@ -531,7 +533,7 @@ async function replaySuccess({ core, context }) {
     warmup,
     runLabel,
   });
-  const text = `Tempo ${runLabel.toLowerCase()}: ${summary.baseline?.name || 'baseline'} vs ${summary.feature?.name || 'feature'} (${chain})`;
+  const text = `Tempo ${runLabel.toLowerCase()}: ${summary.baseline?.name || 'baseline'} vs ${summary.feature?.name || 'feature'} (${chain}, ${summary.run_pairs ?? process.env.BENCH_RUN_PAIRS ?? '-'} run pairs)`;
 
   async function sendWithThread(channel) {
     const res = await postToSlack(token, channel, slackBlocks, text, core);

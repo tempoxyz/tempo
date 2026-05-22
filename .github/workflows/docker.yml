@@ -217,6 +217,13 @@ jobs:
         run: |
           set -euo pipefail
 
+          DAY_OF_WEEK="$(date -u +%u)"
+          if [ "$DAY_OF_WEEK" = "5" ]; then
+            INVARIANT_TIMEOUT="172800"
+          else
+            INVARIANT_TIMEOUT="18000"
+          fi
+
           echo "$EVENTS_KEY" > "${RUNNER_TEMP}/key"
           echo "$EVENTS_CERT" > "${RUNNER_TEMP}/cert"
 
@@ -231,6 +238,7 @@ jobs:
               \"data\": {
                 \"tag\": \"nightly\",
                 \"sha\": \"${COMMIT_SHA}\",
-                \"branch\": \"${BRANCH_NAME}\"
+                \"branch\": \"${BRANCH_NAME}\",
+                \"invariant_timeout\": \"${INVARIANT_TIMEOUT}\"
               }
             }"
