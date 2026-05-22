@@ -485,13 +485,11 @@ impl TIP20Token {
     /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
-        let Some((to, total_supply)) =
-            self.validate_mint(msg_sender, call.to, call.amount, B256::ZERO)?
-        else {
+        let Some(to) = self.validate_mint(msg_sender, call.to, call.amount, B256::ZERO)? else {
             return Ok(());
         };
 
-        self._mint(&to, call.amount, total_supply)?;
+        self._mint(&to, call.amount)?;
         self.emit_event(TIP20Event::mint(call.to, call.amount))?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
@@ -506,13 +504,11 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
-        let Some((to, total_supply)) =
-            self.validate_mint(msg_sender, call.to, call.amount, call.memo)?
-        else {
+        let Some(to) = self.validate_mint(msg_sender, call.to, call.amount, call.memo)? else {
             return Ok(());
         };
 
-        self._mint(&to, call.amount, total_supply)?;
+        self._mint(&to, call.amount)?;
         self.emit_event(TIP20Event::transfer_with_memo(
             Address::ZERO,
             call.to,
@@ -527,18 +523,9 @@ impl TIP20Token {
     }
 
     /// Internal helper to mint new tokens and update balances.
-    ///
-    /// Accepts an optional pre-fetched `total_supply` to preserve re-execution behavior (pre-T6).
-    /// If `None`, reads from storage.
-    pub(crate) fn _mint(
-        &mut self,
-        to: &Recipient,
-        amount: U256,
-        total_supply: Option<U256>,
-    ) -> Result<()> {
-        let new_supply = total_supply
-            .map(Ok)
-            .unwrap_or_else(|| self.total_supply())?
+    pub(crate) fn _mint(&mut self, to: &Recipient, amount: U256) -> Result<()> {
+        let new_supply = self
+            .total_supply()?
             .checked_add(amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
 
@@ -1065,11 +1052,10 @@ impl TIP20Token {
     }
 
     /// Resolves `to`, checks the issuer role, and ensures TIP-403 mint-recipient authorization.
-    /// To preserve re-execution of old transactions (pre-T6), also reads total_supply.
     /// Additionally (+T3) checks pause state and validates the effective recipient; also
     /// (+T6) applies TIP-1028 address-level receive policies.
     ///
-    /// Returns `Some((to, total_supply))` when the caller should proceed with the regular mint.
+    /// Returns `Some(to)` when the caller should proceed with the regular mint.
     /// Returns `None` when funds were minted and blocked, and the caller should return immediately.
     fn validate_mint(
         &mut self,
@@ -1077,15 +1063,9 @@ impl TIP20Token {
         to: Address,
         amount: U256,
         memo: B256,
-    ) -> Result<Option<(Recipient, Option<U256>)>> {
+    ) -> Result<Option<Recipient>> {
         let to = Recipient::resolve(to)?;
         self.check_role(msg_sender, *ISSUER_ROLE)?;
-
-        let total_supply = if self.storage.spec().is_t6() {
-            None
-        } else {
-            Some(self.total_supply()?)
-        };
 
         if self.storage.spec().is_t3() {
             self.check_not_paused()?;
@@ -1105,7 +1085,7 @@ impl TIP20Token {
             return Ok(None);
         }
 
-        Ok(Some((to, total_supply)))
+        Ok(Some(to))
     }
 
     /// Check whether a transfer is authorized by the token's [`TIP403Registry`] policy.
@@ -1219,7 +1199,7 @@ impl TIP20Token {
         match kind {
             InboundKind::TRANSFER => self._transfer(originator, &guard, amount)?,
             InboundKind::MINT => {
-                self._mint(&guard, amount, None)?;
+                self._mint(&guard, amount)?;
                 self.emit_event(TIP20Event::mint(guard.target, amount))?;
             }
             InboundKind::__Invalid => {
