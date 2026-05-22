@@ -997,12 +997,6 @@ impl TIP20Token {
         self.supply_cap.write(U128_MAX)?;
         self.transfer_policy_id.write(1)?;
 
-        // HACK(T6+): deployer must incur TIP-1028 cold storage (0 -> 1) cost.
-        // We virtually assign 1 unit without increasing supply to warm the address.
-        if self.storage.spec().is_t6() {
-            self.balances[RECEIVE_POLICY_GUARD_ADDRESS].write(U256::ONE)?;
-        }
-
         // Initialize roles system and grant admin role
         self.initialize_roles()?;
         self.grant_default_admin(msg_sender, admin)
