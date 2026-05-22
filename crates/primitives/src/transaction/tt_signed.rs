@@ -36,6 +36,8 @@ pub struct AASigned {
     /// Cached transaction hash
     #[doc(alias = "tx_hash", alias = "transaction_hash")]
     hash: OnceLock<B256>,
+    /// Cached transaction signing hash.
+    signature_hash: OnceLock<B256>,
 }
 
 impl AASigned {
@@ -49,6 +51,7 @@ impl AASigned {
             tx,
             signature,
             hash: value,
+            signature_hash: OnceLock::new(),
         }
     }
 
@@ -59,6 +62,7 @@ impl AASigned {
             tx,
             signature,
             hash: OnceLock::new(),
+            signature_hash: OnceLock::new(),
         }
     }
 
@@ -99,7 +103,10 @@ impl AASigned {
 
     /// Calculate the signing hash for the transaction.
     pub fn signature_hash(&self) -> B256 {
-        self.tx.signature_hash()
+        #[allow(clippy::useless_conversion)]
+        *self
+            .signature_hash
+            .get_or_init(|| self.tx.signature_hash().into())
     }
 
     /// Calculate the expiring nonce dedup hash for replay protection.
@@ -472,6 +479,10 @@ mod serde_impl {
 
             // Serialize to JSON
             let json = serde_json::to_string_pretty(&aa_signed).unwrap();
+            assert!(
+                !json.contains("signature_hash"),
+                "signature_hash cache must not be serialized"
+            );
 
             println!("\n=== AASigned JSON Output ===");
             println!("{json}");
@@ -480,6 +491,7 @@ mod serde_impl {
             // Also test deserialization round-trip
             let deserialized: super::super::AASigned = serde_json::from_str(&json).unwrap();
             assert_eq!(aa_signed.tx(), deserialized.tx());
+            assert_eq!(aa_signed.signature_hash(), deserialized.signature_hash());
         }
     }
 }
@@ -553,6 +565,14 @@ mod tests {
         // Encode
         let mut buf = Vec::new();
         signed.rlp_encode(&mut buf);
+        let encoded_before_cache = buf.clone();
+        let _ = signed.signature_hash();
+        let mut encoded_after_cache = Vec::new();
+        signed.rlp_encode(&mut encoded_after_cache);
+        assert_eq!(
+            encoded_before_cache, encoded_after_cache,
+            "signature_hash cache must not change RLP encoding"
+        );
 
         // Decode
         let decoded = AASigned::rlp_decode(&mut buf.as_slice()).unwrap();

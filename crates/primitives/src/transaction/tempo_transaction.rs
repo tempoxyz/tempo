@@ -242,11 +242,23 @@ pub struct TempoTransaction {
     /// Optional fee payer signature for sponsored transactions (secp256k1 only)
     pub fee_payer_signature: Option<Signature>,
 
-    /// Transaction can only be included in a block before this timestamp
+    /// Upper bound for the transaction validity window, as a Unix timestamp in seconds.
+    ///
+    /// The transaction can only be included in a block with
+    /// `block.timestamp < valid_before`. For expiring nonces, this is the
+    /// `validBefore` bound defined by [TIP-1009].
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
     pub valid_before: Option<NonZeroU64>,
 
-    /// Transaction can only be included in a block after this timestamp
+    /// Lower bound for the transaction validity window, as a Unix timestamp in seconds.
+    ///
+    /// The transaction can only be included in a block with
+    /// `block.timestamp >= valid_after`. For expiring nonces, this is the
+    /// `validAfter` bound defined by [TIP-1009].
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
     pub valid_after: Option<NonZeroU64>,
 
