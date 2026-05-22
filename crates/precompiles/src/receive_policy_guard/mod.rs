@@ -34,66 +34,6 @@ pub struct ReceivePolicyGuard {
     balances: Mapping<B256, U256>,
 }
 
-/// Recovery authority for blocked inbound funds.
-#[derive(Debug, Clone, Copy, Default, Storable, PartialEq)]
-#[repr(u8)]
-pub(crate) enum RecoveryMode {
-    #[default]
-    Originator,
-    Receiver,
-    ThirdParty,
-}
-
-impl RecoveryMode {
-    /// Encodes a configured recovery authority into a mode and stored authority value.
-    pub(crate) fn encode(authority: Address, msg_sender: Address) -> (Self, Address) {
-        if authority == RECOVERY_ORIGINATOR {
-            (Self::Originator, Address::ZERO)
-        } else if authority == msg_sender {
-            (Self::Receiver, Address::ZERO)
-        } else {
-            (Self::ThirdParty, authority)
-        }
-    }
-
-    /// Resolves the recovery mode for a receipt and resolved receiver.
-    pub(crate) fn from(receipt: &ClaimReceiptV1, receiver: Address) -> Self {
-        if receipt.recoveryAuthority == receipt.originator {
-            Self::Originator
-        } else if receipt.recoveryAuthority == receiver {
-            Self::Receiver
-        } else {
-            Self::ThirdParty
-        }
-    }
-
-    /// Returns the address of the account who has effective ownership of the blocked funds.
-    pub(crate) fn policy_subject(self, originator: Address, receiver: Address) -> Address {
-        match self {
-            Self::Originator => originator,
-            Self::Receiver | Self::ThirdParty => receiver,
-        }
-    }
-
-    /// Returns whether a claim is a reroute under TIP-1028.
-    /// Originator-authorized claims are always reroutes; non-originator recovery claims resume
-    /// only when claiming to the receiver.
-    pub(crate) fn is_reroute(self, to: Address, receiver: Address) -> bool {
-        match self {
-            Self::Originator => true,
-            Self::Receiver | Self::ThirdParty => to != receiver,
-        }
-    }
-
-    /// Returns the account charged for access-key spending limits, if any.
-    pub(crate) fn spending_account(self, recovery_authority: Address) -> Option<Address> {
-        match self {
-            Self::Originator | Self::Receiver => Some(recovery_authority),
-            Self::ThirdParty => None,
-        }
-    }
-}
-
 impl ReceivePolicyGuard {
     /// One-time storage initialization.
     pub fn initialize(&mut self) -> Result<()> {
@@ -218,6 +158,66 @@ impl ReceivePolicyGuard {
     /// Content hash over every receipt field. Any mutation yields a different empty slot.
     fn receipt_key(&self, receipt: &IReceivePolicyGuard::ClaimReceiptV1) -> Result<B256> {
         self.storage.keccak256(receipt.abi_encode().as_ref())
+    }
+}
+
+/// Recovery authority for blocked inbound funds.
+#[derive(Debug, Clone, Copy, Default, Storable, PartialEq)]
+#[repr(u8)]
+pub(crate) enum RecoveryMode {
+    #[default]
+    Originator,
+    Receiver,
+    ThirdParty,
+}
+
+impl RecoveryMode {
+    /// Encodes a configured recovery authority into a mode and stored authority value.
+    pub(crate) fn encode(authority: Address, msg_sender: Address) -> (Self, Address) {
+        if authority == RECOVERY_ORIGINATOR {
+            (Self::Originator, Address::ZERO)
+        } else if authority == msg_sender {
+            (Self::Receiver, Address::ZERO)
+        } else {
+            (Self::ThirdParty, authority)
+        }
+    }
+
+    /// Resolves the recovery mode for a receipt and resolved receiver.
+    pub(crate) fn from(receipt: &ClaimReceiptV1, receiver: Address) -> Self {
+        if receipt.recoveryAuthority == receipt.originator {
+            Self::Originator
+        } else if receipt.recoveryAuthority == receiver {
+            Self::Receiver
+        } else {
+            Self::ThirdParty
+        }
+    }
+
+    /// Returns the address of the account who has effective ownership of the blocked funds.
+    pub(crate) fn policy_subject(self, originator: Address, receiver: Address) -> Address {
+        match self {
+            Self::Originator => originator,
+            Self::Receiver | Self::ThirdParty => receiver,
+        }
+    }
+
+    /// Returns whether a claim is a reroute under TIP-1028.
+    /// Originator-authorized claims are always reroutes; non-originator recovery claims resume
+    /// only when claiming to the receiver.
+    pub(crate) fn is_reroute(self, to: Address, receiver: Address) -> bool {
+        match self {
+            Self::Originator => true,
+            Self::Receiver | Self::ThirdParty => to != receiver,
+        }
+    }
+
+    /// Returns the account charged for access-key spending limits, if any.
+    pub(crate) fn spending_account(self, recovery_authority: Address) -> Option<Address> {
+        match self {
+            Self::Originator | Self::Receiver => Some(recovery_authority),
+            Self::ThirdParty => None,
+        }
     }
 }
 
