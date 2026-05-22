@@ -19,7 +19,7 @@ use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     receive_policy_guard::{
-        BLOCKED_PROOF_VERSION,
+        BLOCKED_RECEIPT_VERSION,
         IReceivePolicyGuard::{self, IReceivePolicyGuardErrors as ReceivePolicyGuardError},
         InboundKind,
     },
@@ -36,7 +36,7 @@ const GAS_PRICE: u128 = TEMPO_T1_BASE_FEE as u128;
 struct BlockedTransfer {
     token: Address,
     receiver: Address,
-    proof: Bytes,
+    receipt: Bytes,
 }
 
 #[test_traced]
@@ -60,7 +60,11 @@ fn test_blocked_transfer_claim_no_recovery() {
             .wallet(other_wallet)
             .connect_http(http_url.clone());
         let other_guard = IReceivePolicyGuard::new(RECEIVE_POLICY_GUARD_ADDRESS, other_provider);
-        let Err(result) = other_guard.claim(other, blocked.proof.clone()).call().await else {
+        let Err(result) = other_guard
+            .claim(other, blocked.receipt.clone())
+            .call()
+            .await
+        else {
             panic!("expected recovery claim without recovery address to fail");
         };
         assert_eq!(
@@ -82,7 +86,7 @@ fn test_blocked_transfer_claim_no_recovery() {
         let receiver_guard =
             IReceivePolicyGuard::new(RECEIVE_POLICY_GUARD_ADDRESS, receiver_provider);
         let claim = receiver_guard
-            .claim(blocked.receiver, blocked.proof.clone())
+            .claim(blocked.receiver, blocked.receipt.clone())
             .gas(GAS)
             .gas_price(GAS_PRICE)
             .send()
@@ -124,7 +128,7 @@ fn test_receive_policy_guard_claim_with_recovery() {
         let recovery_tip1028 =
             IReceivePolicyGuard::new(RECEIVE_POLICY_GUARD_ADDRESS, recovery_provider);
         let claim = recovery_tip1028
-            .claim(destination, blocked.proof)
+            .claim(destination, blocked.receipt)
             .gas(GAS)
             .gas_price(GAS_PRICE)
             .send()
@@ -244,8 +248,8 @@ async fn create_blocked_transfer(
         ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8
     );
 
-    let proof: Bytes = IReceivePolicyGuard::ClaimProofV1 {
-        version: BLOCKED_PROOF_VERSION,
+    let receipt: Bytes = IReceivePolicyGuard::ClaimReceiptV1 {
+        version: BLOCKED_RECEIPT_VERSION,
         token,
         recoveryAuthority: recovery,
         originator: blocked.from,
@@ -264,7 +268,7 @@ async fn create_blocked_transfer(
         ProviderBuilder::new().connect_http(http_url.clone()),
     );
     assert_eq!(
-        guard.balanceOf(proof.clone()).call().await?,
+        guard.balanceOf(receipt.clone()).call().await?,
         amount,
         "blocked event: {blocked:#?}"
     );
@@ -283,7 +287,7 @@ async fn create_blocked_transfer(
     let blocked = BlockedTransfer {
         token,
         receiver,
-        proof,
+        receipt,
     };
 
     Ok(blocked)
