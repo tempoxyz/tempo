@@ -1251,14 +1251,11 @@ impl TIP20Token {
         self.check_not_paused()?;
         let destination = Recipient::resolve(to)?;
         destination.validate()?;
-        self.ensure_transfer_authorized(
-            recovery_mode.policy_subject(originator, receiver),
-            destination.target,
-        )?;
-
         if recovery_mode.is_reroute(to, receiver) {
+            let policy_subject = recovery_mode.policy_subject(originator, receiver);
+            self.ensure_transfer_authorized(policy_subject, destination.target)?;
             if TIP403Registry::new()
-                .validate_receive_policy(self.address, originator, destination.target)?
+                .validate_receive_policy(self.address, policy_subject, destination.target)?
                 .is_some()
             {
                 return Err(TIP20Error::policy_forbids().into());
@@ -1266,6 +1263,8 @@ impl TIP20Token {
             if let Some(addr) = recovery_mode.spending_account(recovery_auth) {
                 self.check_and_update_spending_limit(addr, amount)?;
             }
+        } else {
+            self.ensure_authorized_as(destination.target, AuthRole::recipient())?;
         }
 
         self._transfer(RECEIVE_POLICY_GUARD_ADDRESS, &destination, amount)?;
@@ -1810,6 +1809,55 @@ pub(crate) mod tests {
                     Ok::<(), TempoPrecompileError>(())
                 })?;
             }
+
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+            StorageCtx::enter(&mut storage, || {
+                let mut registry = TIP403Registry::new();
+                let recipient_policy = registry.create_policy_with_accounts(
+                    admin,
+                    ITIP403Registry::createPolicyWithAccountsCall {
+                        admin,
+                        policyType: ITIP403Registry::PolicyType::WHITELIST,
+                        accounts: vec![receiver],
+                    },
+                )?;
+                let transfer_policy = registry.create_compound_policy(
+                    admin,
+                    ITIP403Registry::createCompoundPolicyCall {
+                        senderPolicyId: REJECT_ALL_POLICY_ID,
+                        recipientPolicyId: recipient_policy,
+                        mintRecipientPolicyId: ALLOW_ALL_POLICY_ID,
+                    },
+                )?;
+
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .apply()?;
+                token.change_transfer_policy_id(
+                    admin,
+                    ITIP20::changeTransferPolicyIdCall {
+                        newPolicyId: transfer_policy,
+                    },
+                )?;
+                token.set_balance(RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
+
+                // A third-party claim back to the receiver is a resume. It requires the receiver
+                // to be authorized as recipient, but must not require the receiver/policy subject
+                // to be authorized as sender.
+                token.release_blocked_funds(
+                    originator,
+                    receiver,
+                    receiver,
+                    amount,
+                    RecoveryMode::ThirdParty,
+                    third_party,
+                )?;
+
+                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
+                assert_eq!(token.get_balance(receiver)?, amount);
+
+                Ok::<(), TempoPrecompileError>(())
+            })?;
 
             Ok(())
         }
