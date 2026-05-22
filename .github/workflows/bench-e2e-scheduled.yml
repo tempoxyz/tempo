@@ -1,7 +1,7 @@
 # Scheduled e2e regression benchmarks.
 #
 # Runs nightly at 02:00 UTC and on v*.*.* tag pushes for the tip20 preset.
-# Nightly runs compare the latest successful nightly Docker commit against the
+# Nightly runs compare the latest main commit against the
 # last commit that completed this scheduled e2e workflow successfully for the
 # same preset.
 # Tag runs compare the pushed release tag against the previous release tag.
