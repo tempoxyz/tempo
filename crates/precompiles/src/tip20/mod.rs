@@ -26,7 +26,10 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
-    tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
+    tip20::{
+        rewards::{RewardFlag, UserRewardInfo},
+        roles::DEFAULT_ADMIN_ROLE,
+    },
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
 };
@@ -34,7 +37,7 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
     sol_types::SolValue,
 };
-use std::{ops::Deref, sync::LazyLock};
+use std::sync::LazyLock;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     DECIMALS as TIP20_DECIMALS, STABLECOIN_DEX_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
@@ -115,21 +118,27 @@ pub struct TIP20Token {
 }
 
 #[derive(Debug, Clone, Storable, Copy)]
-struct TIP20Balance {
+pub struct TIP20Balance {
     amount: u128,
-    /// (T6+) Reward metadata flag to know if the user opted into rewards
-    opted_in: bool,
+    /// (T6+) Cached reward opt-in status. Tracks `reward_recipient`, which remains the source of truth.
+    flag: RewardFlag,
 }
 
 impl TIP20Balance {
-    fn new(amount: U256, opted_into_rewards: bool) -> Result<Self> {
-        Ok(Self {
-            amount: u128::try_from(amount).map_err(TempoPrecompileError::under_overflow())?,
-            opted_in: opted_into_rewards,
-        })
+    fn new(amount: U256, flag: RewardFlag, hardfork: TempoHardfork) -> Result<Self> {
+        let amount = u128::try_from(amount).map_err(|_| TempoPrecompileError::under_overflow())?;
+
+        // Ensure pre-T6 slots do not cache the reward flag.
+        let flag = if hardfork.is_t6() {
+            flag
+        } else {
+            RewardFlag::Uninitialized
+        };
+
+        Ok(Self { amount, flag })
     }
 
-    fn amount(&self) -> U256 {
+    pub fn amount(&self) -> U256 {
         U256::from(self.amount)
     }
 
@@ -148,12 +157,6 @@ impl TIP20Balance {
     fn checked_mul(&self, amount: U256) -> Result<U256> {
         self.amount()
             .checked_mul(amount)
-            .ok_or(TempoPrecompileError::under_overflow())
-    }
-
-    fn checked_div(&self, amount: U256) -> Result<U256> {
-        self.amount()
-            .checked_div(amount)
             .ok_or(TempoPrecompileError::under_overflow())
     }
 }
@@ -563,6 +566,7 @@ impl TIP20Token {
 
     /// Internal helper to mint new tokens and update balances.
     fn _mint(&mut self, msg_sender: Address, to: &Recipient, amount: U256) -> Result<()> {
+        let hardfork = self.storage.spec();
         self.check_role(msg_sender, *ISSUER_ROLE)?;
         let total_supply = self.total_supply()?;
 
@@ -578,16 +582,16 @@ impl TIP20Token {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
-        let to_balance = if self.storage.spec().is_t6() && to.target != Address::ZERO {
+        let to_balance = if hardfork.is_t6() && to.target != Address::ZERO {
             Some(self.get_balance(to.target)?)
         } else {
             None
         };
-        let to_flag = self.handle_rewards_on_mint(to.target, amount)?;
+        let to_flag = self.handle_rewards_on_mint(to.target, to_balance, amount)?;
 
         self.set_total_supply(new_supply)?;
-        let mut to_balance = to_balance.map_or_else(|| self.get_balance(to.target), Ok)?;
-        let new_to_balance = TIP20Balance::new(to_balance.checked_add(amount)?, to_flag)?;
+        let to_balance = to_balance.map_or_else(|| self.get_balance(to.target), Ok)?;
+        let new_to_balance = TIP20Balance::new(to_balance.checked_add(amount)?, to_flag, hardfork)?;
         self.set_balance(to.target, new_to_balance)?;
 
         self.emit_event(to.build_transfer_event(Address::ZERO, amount))
@@ -1127,7 +1131,9 @@ impl TIP20Token {
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
     fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
-        let mut from_balance = self.get_balance(from)?;
+        let hardfork = self.storage.spec();
+
+        let from_balance = self.get_balance(from)?;
         if amount > from_balance.amount() {
             return Err(TIP20Error::insufficient_balance(
                 from_balance.amount(),
@@ -1137,7 +1143,7 @@ impl TIP20Token {
             .into());
         }
 
-        let to_balance = if self.storage.spec().is_t6() && to.target != Address::ZERO {
+        let to_balance = if hardfork.is_t6() && to.target != Address::ZERO {
             Some(self.get_balance(to.target)?)
         } else {
             None
@@ -1147,12 +1153,14 @@ impl TIP20Token {
             self.handle_rewards_on_transfer(from, from_balance, to.target, to_balance, amount)?;
 
         // Adjust balances
-        let new_from_balance = TIP20Balance::new(from_balance.checked_sub(amount)?, from_flag)?;
+        let new_from_balance =
+            TIP20Balance::new(from_balance.checked_sub(amount)?, from_flag, hardfork)?;
         self.set_balance(from, new_from_balance)?;
 
         if to.target != Address::ZERO {
-            let mut to_balance = to_balance.map_or_else(|| self.get_balance(to.target), Ok)?;
-            let new_to_balance = TIP20Balance::new(to_balance.checked_add(amount)?, to_flag)?;
+            let to_balance = to_balance.map_or_else(|| self.get_balance(to.target), Ok)?;
+            let new_to_balance =
+                TIP20Balance::new(to_balance.checked_add(amount)?, to_flag, hardfork)?;
             self.set_balance(to.target, new_to_balance)?;
         }
 
@@ -1173,44 +1181,33 @@ impl TIP20Token {
         // Apart from this specific refund transfer, no other token transfers can occur after a pause event.
         self.check_not_paused()?;
         let from_balance = self.get_balance(from)?;
-        if amount > from_balance {
-            return Err(
-                TIP20Error::insufficient_balance(from_balance, amount, self.address).into(),
-            );
+        if amount > from_balance.amount() {
+            return Err(TIP20Error::insufficient_balance(
+                from_balance.amount(),
+                amount,
+                self.address,
+            )
+            .into());
         }
 
         self.check_and_update_spending_limit(from, amount)?;
 
         // Update rewards for the sender and get their reward recipient
-        let from_reward_recipient = self.update_rewards(from, None, None)?;
+        let from_flag = self.update_rewards(from, None, Some(from_balance))?;
 
         // If user is opted into rewards, decrease opted-in supply
-        if from_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_sub(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
+        if from_flag.is_opted_in() {
+            self.update_opted_in_supply(amount, false)?;
         }
 
+        let hardfork = self.storage.spec();
         let new_from_balance =
-            from_balance
-                .checked_sub(amount)
-                .ok_or(TIP20Error::insufficient_balance(
-                    from_balance,
-                    amount,
-                    self.address,
-                ))?;
-
+            TIP20Balance::new(from_balance.checked_sub(amount)?, from_flag, hardfork)?;
         self.set_balance(from, new_from_balance)?;
 
         let to_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_to_balance = to_balance
-            .checked_add(amount)
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
+        let new_to_balance =
+            TIP20Balance::new(to_balance.checked_add(amount)?, to_balance.flag, hardfork)?;
         self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_to_balance)
     }
 
@@ -1239,37 +1236,35 @@ impl TIP20Token {
             AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
         }
 
+        let to_balance = self.get_balance(to)?;
+
         // Update rewards for the recipient and get their reward recipient
-        let to_reward_recipient = self.update_rewards(to, None, None)?;
+        let to_flag = self.update_rewards(to, None, Some(to_balance))?;
 
         // If user is opted into rewards, increase opted-in supply by refund amount
-        if to_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(refund)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
+        if to_flag.is_opted_in() {
+            self.update_opted_in_supply(refund, true)?;
         }
 
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_from_balance =
-            from_balance
-                .checked_sub(refund)
-                .ok_or(TIP20Error::insufficient_balance(
-                    from_balance,
-                    refund,
-                    self.address,
-                ))?;
+        if refund > from_balance.amount() {
+            return Err(TIP20Error::insufficient_balance(
+                from_balance.amount(),
+                refund,
+                self.address,
+            )
+            .into());
+        }
 
+        let hardfork = self.storage.spec();
+        let new_from_balance = TIP20Balance::new(
+            from_balance.checked_sub(refund)?,
+            from_balance.flag,
+            hardfork,
+        )?;
         self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_from_balance)?;
 
-        let to_balance = self.get_balance(to)?;
-        let new_to_balance = to_balance
-            .checked_add(refund)
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
+        let new_to_balance = TIP20Balance::new(to_balance.checked_add(refund)?, to_flag, hardfork)?;
         self.set_balance(to, new_to_balance)
     }
 }
@@ -1488,7 +1483,7 @@ pub(crate) mod tests {
 
             token.mint(admin, ITIP20::mintCall { to: addr, amount })?;
 
-            assert_eq!(token.get_balance(addr)?, amount);
+            assert_eq!(token.get_balance(addr)?.amount(), amount);
             assert_eq!(token.total_supply()?, amount);
 
             token.assert_emitted_events(vec![
@@ -1516,8 +1511,8 @@ pub(crate) mod tests {
 
             token.transfer(from, ITIP20::transferCall { to, amount })?;
 
-            assert_eq!(token.get_balance(from)?, U256::ZERO);
-            assert_eq!(token.get_balance(to)?, amount);
+            assert_eq!(token.get_balance(from)?.amount(), U256::ZERO);
+            assert_eq!(token.get_balance(to)?.amount(), amount);
             assert_eq!(token.total_supply()?, amount); // Supply unchanged
 
             token.assert_emitted_events(vec![TIP20Event::transfer(from, to, amount)]);
@@ -1654,8 +1649,11 @@ pub(crate) mod tests {
 
             token.transfer_fee_pre_tx(user, fee_amount)?;
 
-            assert_eq!(token.get_balance(user)?, fee_amount);
-            assert_eq!(token.get_balance(TIP_FEE_MANAGER_ADDRESS)?, fee_amount);
+            assert_eq!(token.get_balance(user)?.amount(), fee_amount);
+            assert_eq!(
+                token.get_balance(TIP_FEE_MANAGER_ADDRESS)?.amount(),
+                fee_amount
+            );
 
             Ok(())
         })
@@ -1728,9 +1726,9 @@ pub(crate) mod tests {
 
             token.transfer_fee_post_tx(user, refund_amount, gas_used)?;
 
-            assert_eq!(token.get_balance(user)?, refund_amount);
+            assert_eq!(token.get_balance(user)?.amount(), refund_amount);
             assert_eq!(
-                token.get_balance(TIP_FEE_MANAGER_ADDRESS)?,
+                token.get_balance(TIP_FEE_MANAGER_ADDRESS)?.amount(),
                 initial_fee - refund_amount
             );
             assert_eq!(
@@ -3039,8 +3037,8 @@ pub(crate) mod tests {
 
                 if hardfork.is_t3() {
                     // T3: master is credited, virtual balance stays zero
-                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, amount);
-                    assert_eq!(token.get_balance(virtual_addr)?, U256::ZERO);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?.amount(), amount);
+                    assert_eq!(token.get_balance(virtual_addr)?.amount(), U256::ZERO);
                     assert_eq!(token.total_supply()?, amount);
 
                     // Events: Transfer(0→virtual) + Mint(virtual) + Transfer(virtual→master)
@@ -3051,12 +3049,12 @@ pub(crate) mod tests {
                     ]);
                 } else {
                     // Pre-T3: virtual address treated as literal, balance goes there
-                    assert_eq!(token.get_balance(virtual_addr)?, amount);
-                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, U256::ZERO);
+                    assert_eq!(token.get_balance(virtual_addr)?.amount(), amount);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?.amount(), U256::ZERO);
                 }
 
                 // mintWithMemo: same resolution behavior
-                let pre = token.get_balance(credited)?;
+                let pre = token.get_balance(credited)?.amount();
                 token.mint_with_memo(
                     admin,
                     ITIP20::mintWithMemoCall {
@@ -3065,7 +3063,7 @@ pub(crate) mod tests {
                         memo: FixedBytes::ZERO,
                     },
                 )?;
-                assert_eq!(token.get_balance(credited)? - pre, amount);
+                assert_eq!(token.get_balance(credited)?.amount() - pre, amount);
 
                 Ok::<_, TempoPrecompileError>(())
             })?;
@@ -3107,8 +3105,8 @@ pub(crate) mod tests {
                 )?;
 
                 if hardfork.is_t3() {
-                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, amount);
-                    assert_eq!(token.get_balance(virtual_addr)?, U256::ZERO);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?.amount(), amount);
+                    assert_eq!(token.get_balance(virtual_addr)?.amount(), U256::ZERO);
 
                     // Events: Transfer(sender→virtual) + Transfer(virtual→master)
                     token.assert_emitted_events(vec![
@@ -3116,12 +3114,12 @@ pub(crate) mod tests {
                         TIP20Event::transfer(virtual_addr, VIRTUAL_MASTER, amount),
                     ]);
                 } else {
-                    assert_eq!(token.get_balance(virtual_addr)?, amount);
-                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, U256::ZERO);
+                    assert_eq!(token.get_balance(virtual_addr)?.amount(), amount);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?.amount(), U256::ZERO);
                 }
 
                 // transferWithMemo: same resolution behavior
-                let pre = token.get_balance(credited)?;
+                let pre = token.get_balance(credited)?.amount();
                 token.transfer_with_memo(
                     sender,
                     ITIP20::transferWithMemoCall {
@@ -3130,7 +3128,7 @@ pub(crate) mod tests {
                         memo: FixedBytes::ZERO,
                     },
                 )?;
-                assert_eq!(token.get_balance(credited)? - pre, amount);
+                assert_eq!(token.get_balance(credited)?.amount() - pre, amount);
 
                 Ok::<_, TempoPrecompileError>(())
             })?;
@@ -3176,15 +3174,15 @@ pub(crate) mod tests {
                 )?;
 
                 if hardfork.is_t3() {
-                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, amount);
-                    assert_eq!(token.get_balance(virtual_addr)?, U256::ZERO);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?.amount(), amount);
+                    assert_eq!(token.get_balance(virtual_addr)?.amount(), U256::ZERO);
                 } else {
-                    assert_eq!(token.get_balance(virtual_addr)?, amount);
-                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, U256::ZERO);
+                    assert_eq!(token.get_balance(virtual_addr)?.amount(), amount);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?.amount(), U256::ZERO);
                 }
 
                 // transferFromWithMemo: same resolution behavior
-                let pre = token.get_balance(credited)?;
+                let pre = token.get_balance(credited)?.amount();
                 token.transfer_from_with_memo(
                     spender,
                     ITIP20::transferFromWithMemoCall {
@@ -3194,7 +3192,7 @@ pub(crate) mod tests {
                         memo: FixedBytes::ZERO,
                     },
                 )?;
-                assert_eq!(token.get_balance(credited)? - pre, amount);
+                assert_eq!(token.get_balance(credited)?.amount() - pre, amount);
 
                 Ok::<_, TempoPrecompileError>(())
             })?;
@@ -3908,7 +3906,7 @@ pub(crate) mod tests {
                 } else {
                     // T2: pause not enforced, burn succeeds
                     assert!(result.is_ok());
-                    assert_eq!(token.get_balance(blocked)?, U256::ZERO);
+                    assert_eq!(token.get_balance(blocked)?.amount(), U256::ZERO);
                 }
 
                 Ok::<_, TempoPrecompileError>(())

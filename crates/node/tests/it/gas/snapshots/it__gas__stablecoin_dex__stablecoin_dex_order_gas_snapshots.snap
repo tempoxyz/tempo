@@ -1,11 +1,10 @@
 ---
 source: crates/node/tests/it/gas/stablecoin_dex.rs
-assertion_line: 220
 expression: gas
 ---
 cancel_tail_bid_order: 294241
 place_bid_append_same_level: 1599785
-place_bid_empty_level: 2580585
-place_flip_ask_empty_level: 2583419
+place_bid_empty_level: 2584785
+place_flip_ask_empty_level: 2587619
 swap_exact_in_partial_bid_fill: 349085
 swap_exact_out_full_flip_ask_fill: 643676
