@@ -749,33 +749,37 @@ mod tests {
 
     use super::{Commands, TempoCli};
 
-    fn parse_node_consensus_wait(args: &[&str]) -> Duration {
-        let cli = TempoCli::try_parse_from(args).unwrap();
+    #[test]
+    fn transaction_execution_wait_default_depends_on_sparse_trie_sharing() {
+        let cli = TempoCli::try_parse_from(["tempo", "node", "--dev"]).unwrap();
         let Commands::Node(node_cmd) = cli.command else {
             panic!("expected node command");
         };
-
-        node_cmd
-            .ext
-            .consensus
-            .time_to_prepare_proposal_transactions
-            .into_duration()
-    }
-
-    #[test]
-    fn transaction_execution_wait_default_depends_on_sparse_trie_sharing() {
         assert_eq!(
-            parse_node_consensus_wait(&["tempo", "node", "--dev"]),
+            node_cmd
+                .ext
+                .consensus
+                .time_to_prepare_proposal_transactions
+                .into_duration(),
             Duration::from_millis(200)
         );
 
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--engine.share-sparse-trie-with-payload-builder",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
         assert_eq!(
-            parse_node_consensus_wait(&[
-                "tempo",
-                "node",
-                "--dev",
-                "--engine.share-sparse-trie-with-payload-builder",
-            ]),
+            node_cmd
+                .ext
+                .consensus
+                .time_to_prepare_proposal_transactions
+                .into_duration(),
             Duration::from_millis(350)
         );
     }
