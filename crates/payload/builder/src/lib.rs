@@ -62,7 +62,7 @@ use tempo_transaction_pool::{
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
-const SHARED_SPARSE_TRIE_INCLUDED_TX_EXEC_LIMIT: Duration = Duration::from_millis(170);
+const SHARED_SPARSE_TRIE_INCLUDED_TX_EXEC_LIMIT: Duration = Duration::from_millis(180);
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
