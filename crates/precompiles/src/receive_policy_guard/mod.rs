@@ -4,7 +4,7 @@ pub mod dispatch;
 
 pub use tempo_contracts::precompiles::IReceivePolicyGuard::{self, InboundKind};
 use tempo_contracts::precompiles::{
-    IReceivePolicyGuard::ClaimProofV1, ITIP403Registry::BlockedReason, ReceivePolicyGuardError,
+    IReceivePolicyGuard::ClaimReceiptV1, ITIP403Registry::BlockedReason, ReceivePolicyGuardError,
 };
 
 use crate::{
@@ -21,8 +21,8 @@ use alloy::{
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::TempoAddressExt;
 
-/// Version tag for the v1 [`IReceivePolicyGuard::ClaimProofV1`] layout.
-pub const BLOCKED_PROOF_VERSION: u8 = 1;
+/// Version tag for the v1 [`IReceivePolicyGuard::ClaimReceiptV1`] layout.
+pub const BLOCKED_RECEIPT_VERSION: u8 = 1;
 
 /// Recovery-authority sentinel: originator/sender is authorized to claim (`address(0)`).
 pub const RECOVERY_ORIGINATOR: Address = Address::ZERO;
@@ -56,11 +56,11 @@ impl RecoveryMode {
         }
     }
 
-    /// Resolves the recovery mode for a proof and resolved receiver.
-    pub(crate) fn from(proof: &ClaimProofV1, receiver: Address) -> Self {
-        if proof.recoveryAuthority == proof.originator {
+    /// Resolves the recovery mode for a receipt and resolved receiver.
+    pub(crate) fn from(receipt: &ClaimReceiptV1, receiver: Address) -> Self {
+        if receipt.recoveryAuthority == receipt.originator {
             Self::Originator
-        } else if proof.recoveryAuthority == receiver {
+        } else if receipt.recoveryAuthority == receiver {
             Self::Receiver
         } else {
             Self::ThirdParty
@@ -98,14 +98,14 @@ impl ReceivePolicyGuard {
         self.__initialize()
     }
 
-    /// Returns the unclaimed amount for a proof, or zero if unknown or already claimed.
-    pub fn balance_of(&self, proof: Bytes) -> Result<U256> {
-        let proof = ClaimProofV1::try_from(proof)?;
-        self.balances[self.proof_key(&proof)?].read()
+    /// Returns the unclaimed amount for a receipt, or zero if unknown or already claimed.
+    pub fn balance_of(&self, receipt: Bytes) -> Result<U256> {
+        let receipt = ClaimReceiptV1::try_from(receipt)?;
+        self.balances[self.receipt_key(&receipt)?].read()
     }
 
     /// Records a blocked inbound transfer or mint and emits `TransferBlocked` event.
-    /// Caller must send the funds into this address, which are claimable with a valid proof.
+    /// Caller must send the funds into this address, which are claimable with a valid receipt.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn store_blocked(
         &mut self,
@@ -128,15 +128,15 @@ impl ReceivePolicyGuard {
             BlockedReason::NONE | BlockedReason::__Invalid => true,
         };
         if is_invalid_reason || matches!(kind, InboundKind::__Invalid) {
-            return Err(ReceivePolicyGuardError::invalid_proof().into());
+            return Err(ReceivePolicyGuardError::invalid_receipt().into());
         }
 
         let receiver = to.target;
         let recipient = to.virtual_addr.unwrap_or(to.target);
 
-        let blocked_nonce = self.next_proof_nonce()?;
+        let blocked_nonce = self.next_receipt_nonce()?;
         let blocked_at = self.storage.timestamp().saturating_to::<u64>();
-        let proof = IReceivePolicyGuard::ClaimProofV1::new(
+        let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
             token,
             recovery_address,
             originator,
@@ -147,61 +147,61 @@ impl ReceivePolicyGuard {
             kind,
             memo,
         );
-        let key = self.proof_key(&proof)?;
+        let key = self.receipt_key(&receipt)?;
         self.balances[key].write(amount)?;
 
-        self.emit_event(proof.blocked_event(receiver, amount))?;
+        self.emit_event(receipt.blocked_event(receiver, amount))?;
         Ok((blocked_nonce, blocked_at))
     }
 
-    /// Given a valid proof, releases blocked funds to the authorized receiver.
-    pub fn claim(&mut self, msg_sender: Address, to: Address, proof: Bytes) -> Result<()> {
+    /// Given a valid receipt, releases blocked funds to the authorized receiver.
+    pub fn claim(&mut self, msg_sender: Address, to: Address, receipt: Bytes) -> Result<()> {
         if to == RECEIVE_POLICY_GUARD_ADDRESS {
             return Err(ReceivePolicyGuardError::invalid_claim_address().into());
         }
 
-        let (proof, receiver, recovery_mode) = resolve_proof(proof)?;
-        if proof.recoveryAuthority != msg_sender {
+        let (receipt, receiver, recovery_mode) = resolve_receipt(receipt)?;
+        if receipt.recoveryAuthority != msg_sender {
             return Err(ReceivePolicyGuardError::unauthorized_claimer().into());
         };
 
-        let key = self.proof_key(&proof)?;
+        let key = self.receipt_key(&receipt)?;
         let amount = self.balances[key].read()?;
         if amount.is_zero() {
-            return Err(ReceivePolicyGuardError::invalid_proof().into());
+            return Err(ReceivePolicyGuardError::invalid_receipt().into());
         }
 
         self.balances[key].write(U256::ZERO)?;
 
-        TIP20Token::from_address(proof.token)?.release_blocked_funds(
-            proof.originator,
+        TIP20Token::from_address(receipt.token)?.release_blocked_funds(
+            receipt.originator,
             receiver,
             to,
             amount,
             recovery_mode,
-            proof.recoveryAuthority,
+            receipt.recoveryAuthority,
         )?;
 
-        self.emit_event(proof.claimed_event(receiver, msg_sender, to, amount))
+        self.emit_event(receipt.claimed_event(receiver, msg_sender, to, amount))
     }
 
-    pub fn burn_blocked_proof(&mut self, msg_sender: Address, proof: Bytes) -> Result<()> {
-        let (proof, receiver, recovery_mode) = resolve_proof(proof)?;
+    pub fn burn_blocked_receipt(&mut self, msg_sender: Address, receipt: Bytes) -> Result<()> {
+        let (receipt, receiver, recovery_mode) = resolve_receipt(receipt)?;
 
-        let key = self.proof_key(&proof)?;
+        let key = self.receipt_key(&receipt)?;
         let amount = self.balances[key].read()?;
         if amount.is_zero() {
-            return Err(ReceivePolicyGuardError::invalid_proof().into());
+            return Err(ReceivePolicyGuardError::invalid_receipt().into());
         }
 
         // Burn from the account with ownership of the funds.
-        let owner = recovery_mode.policy_subject(proof.originator, receiver);
-        TIP20Token::from_address(proof.token)?.burn_blocked(msg_sender, owner, amount, true)?;
+        let owner = recovery_mode.policy_subject(receipt.originator, receiver);
+        TIP20Token::from_address(receipt.token)?.burn_blocked(msg_sender, owner, amount, true)?;
         self.balances[key].write(U256::ZERO)
     }
 
-    /// Allocates the next nonzero proof nonce.
-    fn next_proof_nonce(&mut self) -> Result<u64> {
+    /// Allocates the next nonzero receipt nonce.
+    fn next_receipt_nonce(&mut self) -> Result<u64> {
         let nonce = self.nonce.read()?.max(1);
         self.nonce.write(
             nonce
@@ -211,20 +211,20 @@ impl ReceivePolicyGuard {
         Ok(nonce)
     }
 
-    /// Content hash over every proof field. Any mutation yields a different empty slot.
-    fn proof_key(&self, proof: &IReceivePolicyGuard::ClaimProofV1) -> Result<B256> {
-        self.storage.keccak256(proof.abi_encode().as_ref())
+    /// Content hash over every receipt field. Any mutation yields a different empty slot.
+    fn receipt_key(&self, receipt: &IReceivePolicyGuard::ClaimReceiptV1) -> Result<B256> {
+        self.storage.keccak256(receipt.abi_encode().as_ref())
     }
 }
 
-fn resolve_proof(bytes: Bytes) -> Result<(ClaimProofV1, Address, RecoveryMode)> {
-    let proof = ClaimProofV1::try_from(bytes)?;
+fn resolve_receipt(bytes: Bytes) -> Result<(ClaimReceiptV1, Address, RecoveryMode)> {
+    let receipt = ClaimReceiptV1::try_from(bytes)?;
     let receiver = AddressRegistry::new()
-        .resolve_receiver(proof.recipient)
+        .resolve_receiver(receipt.recipient)
         .map_err(|_| ReceivePolicyGuardError::invalid_claim_address())?;
-    let recovery_mode = RecoveryMode::from(&proof, receiver);
+    let recovery_mode = RecoveryMode::from(&receipt, receiver);
 
-    Ok((proof, receiver, recovery_mode))
+    Ok((receipt, receiver, recovery_mode))
 }
 
 #[cfg(test)]
@@ -255,10 +255,10 @@ mod tests {
         )
     }
 
-    fn assert_invalid_proof(result: Result<()>) {
+    fn assert_invalid_receipt(result: Result<()>) {
         assert_eq!(
             result.unwrap_err(),
-            ReceivePolicyGuardError::invalid_proof().into()
+            ReceivePolicyGuardError::invalid_receipt().into()
         );
     }
 
@@ -301,7 +301,7 @@ mod tests {
                     let mut token = setup.apply()?;
                     block_all_senders(receiver, configured_authority)?;
 
-                    let unknown = ClaimProofV1::new(
+                    let unknown = ClaimReceiptV1::new(
                         token.address(),
                         claimer,
                         originator,
@@ -356,7 +356,7 @@ mod tests {
                             token: token.address(),
                             from: originator,
                             receiver,
-                            proofVersion: BLOCKED_PROOF_VERSION,
+                            receiptVersion: BLOCKED_RECEIPT_VERSION,
                             blockedNonce: 1,
                             blockedAt: blocked_at,
                             recipient: receiver,
@@ -367,7 +367,7 @@ mod tests {
                         },
                     )]);
 
-                    let proof = ClaimProofV1::new(
+                    let receipt = ClaimReceiptV1::new(
                         token.address(),
                         claimer,
                         originator,
@@ -378,29 +378,29 @@ mod tests {
                         kind,
                         B256::ZERO,
                     );
-                    assert_eq!(guard.balance_of(proof.abi_encode().into())?, amount);
+                    assert_eq!(guard.balance_of(receipt.abi_encode().into())?, amount);
 
                     if is_third_party {
                         assert_unauthorized(guard.claim(
                             receiver,
                             receiver,
-                            proof.abi_encode().into(),
+                            receipt.abi_encode().into(),
                         ));
                         assert_unauthorized(guard.claim(
                             Address::random(),
                             receiver,
-                            proof.abi_encode().into(),
+                            receipt.abi_encode().into(),
                         ));
-                        assert_eq!(guard.balance_of(proof.abi_encode().into())?, amount);
+                        assert_eq!(guard.balance_of(receipt.abi_encode().into())?, amount);
                     }
 
                     guard.clear_emitted_events();
-                    guard.claim(claimer, destination, proof.abi_encode().into())?;
-                    guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::ProofClaimed(
-                        IReceivePolicyGuard::ProofClaimed {
+                    guard.claim(claimer, destination, receipt.abi_encode().into())?;
+                    guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::ReceiptClaimed(
+                        IReceivePolicyGuard::ReceiptClaimed {
                             token: token.address(),
                             receiver,
-                            proofVersion: BLOCKED_PROOF_VERSION,
+                            receiptVersion: BLOCKED_RECEIPT_VERSION,
                             blockedNonce: 1,
                             blockedAt: blocked_at,
                             originator,
@@ -412,7 +412,7 @@ mod tests {
                         },
                     )]);
 
-                    assert_eq!(guard.balance_of(proof.abi_encode().into())?, U256::ZERO);
+                    assert_eq!(guard.balance_of(receipt.abi_encode().into())?, U256::ZERO);
                     assert_eq!(
                         token.balance_of(ITIP20::balanceOfCall {
                             account: RECEIVE_POLICY_GUARD_ADDRESS
@@ -462,7 +462,7 @@ mod tests {
             )?;
             token.pause(admin, ITIP20::pauseCall {})?;
 
-            let proof = ClaimProofV1::new(
+            let receipt = ClaimReceiptV1::new(
                 token.address(),
                 receiver,
                 originator,
@@ -474,7 +474,7 @@ mod tests {
                 B256::ZERO,
             );
             let mut guard = ReceivePolicyGuard::new();
-            let result = guard.claim(receiver, receiver, proof.abi_encode().into());
+            let result = guard.claim(receiver, receiver, receipt.abi_encode().into());
             assert_eq!(result.unwrap_err(), TIP20Error::contract_paused().into());
 
             Ok(())
@@ -482,7 +482,7 @@ mod tests {
     }
 
     #[test]
-    fn test_receive_policy_guard_balance_matches_open_proofs() -> eyre::Result<()> {
+    fn test_receive_policy_guard_balance_matches_open_receipts() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_001u64));
 
@@ -532,7 +532,7 @@ mod tests {
                 },
             )?;
 
-            let proof_a = ClaimProofV1::new(
+            let receipt_a = ClaimReceiptV1::new(
                 token_a.address(),
                 receiver_a,
                 originator,
@@ -543,7 +543,7 @@ mod tests {
                 InboundKind::TRANSFER,
                 B256::ZERO,
             );
-            let proof_b = ClaimProofV1::new(
+            let receipt_b = ClaimReceiptV1::new(
                 token_a.address(),
                 recovery,
                 originator,
@@ -554,7 +554,7 @@ mod tests {
                 InboundKind::TRANSFER,
                 B256::ZERO,
             );
-            let proof_c = ClaimProofV1::new(
+            let receipt_c = ClaimReceiptV1::new(
                 token_b.address(),
                 receiver_c,
                 originator,
@@ -571,31 +571,31 @@ mod tests {
                 token_a.balance_of(ITIP20::balanceOfCall {
                     account: RECEIVE_POLICY_GUARD_ADDRESS
                 })?,
-                guard.balance_of(proof_a.abi_encode().into())?
-                    + guard.balance_of(proof_b.abi_encode().into())?
+                guard.balance_of(receipt_a.abi_encode().into())?
+                    + guard.balance_of(receipt_b.abi_encode().into())?
             );
             assert_eq!(
                 token_b.balance_of(ITIP20::balanceOfCall {
                     account: RECEIVE_POLICY_GUARD_ADDRESS
                 })?,
-                guard.balance_of(proof_c.abi_encode().into())?
+                guard.balance_of(receipt_c.abi_encode().into())?
             );
 
-            guard.claim(receiver_a, receiver_a, proof_a.abi_encode().into())?;
+            guard.claim(receiver_a, receiver_a, receipt_a.abi_encode().into())?;
             assert_eq!(
                 token_a.balance_of(ITIP20::balanceOfCall {
                     account: RECEIVE_POLICY_GUARD_ADDRESS
                 })?,
-                guard.balance_of(proof_b.abi_encode().into())?
+                guard.balance_of(receipt_b.abi_encode().into())?
             );
             assert_eq!(
                 token_b.balance_of(ITIP20::balanceOfCall {
                     account: RECEIVE_POLICY_GUARD_ADDRESS
                 })?,
-                guard.balance_of(proof_c.abi_encode().into())?
+                guard.balance_of(receipt_c.abi_encode().into())?
             );
 
-            guard.claim(recovery, recovery, proof_b.abi_encode().into())?;
+            guard.claim(recovery, recovery, receipt_b.abi_encode().into())?;
             assert_eq!(
                 token_a.balance_of(ITIP20::balanceOfCall {
                     account: RECEIVE_POLICY_GUARD_ADDRESS
@@ -606,7 +606,7 @@ mod tests {
                 token_b.balance_of(ITIP20::balanceOfCall {
                     account: RECEIVE_POLICY_GUARD_ADDRESS
                 })?,
-                guard.balance_of(proof_c.abi_encode().into())?
+                guard.balance_of(receipt_c.abi_encode().into())?
             );
 
             Ok(())
@@ -614,7 +614,7 @@ mod tests {
     }
 
     #[test]
-    fn test_proof_rejects_bad_encoding() -> eyre::Result<()> {
+    fn test_receipt_rejects_bad_encoding() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
 
         StorageCtx::enter(&mut storage, || {
@@ -622,7 +622,7 @@ mod tests {
             let result = guard.balance_of(vec![0xde, 0xad, 0xbe, 0xef].into());
             assert!(matches!(
                 result,
-                Err(e) if e == ReceivePolicyGuardError::invalid_proof().into()
+                Err(e) if e == ReceivePolicyGuardError::invalid_receipt().into()
             ));
 
             Ok(())
@@ -655,7 +655,7 @@ mod tests {
                 );
                 assert!(matches!(
                     result,
-                    Err(e) if e == ReceivePolicyGuardError::invalid_proof().into()
+                    Err(e) if e == ReceivePolicyGuardError::invalid_receipt().into()
                 ));
             }
 
@@ -664,7 +664,7 @@ mod tests {
     }
 
     #[test]
-    fn test_proof_key_binds_proof_fields() -> eyre::Result<()> {
+    fn test_receipt_key_binds_receipt_fields() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_002u64));
 
@@ -703,7 +703,7 @@ mod tests {
                 B256::repeat_byte(0x22),
             )?;
 
-            let proof_a = ClaimProofV1::new(
+            let receipt_a = ClaimReceiptV1::new(
                 token_a.address(),
                 recovery,
                 originator_a,
@@ -714,7 +714,7 @@ mod tests {
                 InboundKind::TRANSFER,
                 memo,
             );
-            let proof_b = ClaimProofV1::new(
+            let receipt_b = ClaimReceiptV1::new(
                 token_b.address(),
                 recovery,
                 originator_b,
@@ -726,11 +726,11 @@ mod tests {
                 B256::repeat_byte(0x22),
             );
 
-            assert_eq!(guard.balance_of(proof_a.abi_encode().into())?, amount_a);
-            assert_eq!(guard.balance_of(proof_b.abi_encode().into())?, amount_b);
+            assert_eq!(guard.balance_of(receipt_a.abi_encode().into())?, amount_a);
+            assert_eq!(guard.balance_of(receipt_b.abi_encode().into())?, amount_b);
 
-            let mutated_proofs = [
-                ClaimProofV1::new(
+            let mutated_receipts = [
+                ClaimReceiptV1::new(
                     token_a.address(),
                     recovery,
                     Address::random(),
@@ -741,7 +741,7 @@ mod tests {
                     InboundKind::TRANSFER,
                     memo,
                 ),
-                ClaimProofV1::new(
+                ClaimReceiptV1::new(
                     token_a.address(),
                     recovery,
                     originator_a,
@@ -752,7 +752,7 @@ mod tests {
                     InboundKind::TRANSFER,
                     memo,
                 ),
-                ClaimProofV1::new(
+                ClaimReceiptV1::new(
                     token_a.address(),
                     recovery,
                     originator_a,
@@ -763,7 +763,7 @@ mod tests {
                     InboundKind::TRANSFER,
                     memo,
                 ),
-                ClaimProofV1::new(
+                ClaimReceiptV1::new(
                     token_a.address(),
                     recovery,
                     originator_a,
@@ -774,7 +774,7 @@ mod tests {
                     InboundKind::TRANSFER,
                     memo,
                 ),
-                ClaimProofV1::new(
+                ClaimReceiptV1::new(
                     token_a.address(),
                     recovery,
                     originator_a,
@@ -785,7 +785,7 @@ mod tests {
                     InboundKind::TRANSFER,
                     memo,
                 ),
-                ClaimProofV1::new(
+                ClaimReceiptV1::new(
                     token_a.address(),
                     recovery,
                     originator_a,
@@ -796,7 +796,7 @@ mod tests {
                     InboundKind::MINT,
                     memo,
                 ),
-                ClaimProofV1::new(
+                ClaimReceiptV1::new(
                     token_a.address(),
                     recovery,
                     originator_a,
@@ -809,18 +809,18 @@ mod tests {
                 ),
             ];
 
-            for mutated in mutated_proofs {
+            for mutated in mutated_receipts {
                 assert_eq!(guard.balance_of(mutated.abi_encode().into())?, U256::ZERO);
             }
-            assert_eq!(guard.balance_of(proof_a.abi_encode().into())?, amount_a);
-            assert_eq!(guard.balance_of(proof_b.abi_encode().into())?, amount_b);
+            assert_eq!(guard.balance_of(receipt_a.abi_encode().into())?, amount_a);
+            assert_eq!(guard.balance_of(receipt_b.abi_encode().into())?, amount_b);
 
             Ok(())
         })
     }
 
     #[test]
-    fn test_claim_rejects_missing_proof() -> eyre::Result<()> {
+    fn test_claim_rejects_missing_receipt() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         storage.set_timestamp(U256::from(1_728_003u64));
 
@@ -834,7 +834,7 @@ mod tests {
                 .with_mint(originator, amount)
                 .apply()?;
 
-            let proof = ClaimProofV1::new(
+            let receipt = ClaimReceiptV1::new(
                 token.address(),
                 receiver,
                 originator,
@@ -847,7 +847,7 @@ mod tests {
             );
 
             let mut guard = ReceivePolicyGuard::new();
-            assert_invalid_proof(guard.claim(receiver, receiver, proof.abi_encode().into()));
+            assert_invalid_receipt(guard.claim(receiver, receiver, receipt.abi_encode().into()));
 
             block_all_senders(receiver, receiver)?;
             token.transfer(
@@ -857,8 +857,8 @@ mod tests {
                     amount,
                 },
             )?;
-            guard.claim(receiver, receiver, proof.abi_encode().into())?;
-            assert_invalid_proof(guard.claim(receiver, receiver, proof.abi_encode().into()));
+            guard.claim(receiver, receiver, receipt.abi_encode().into())?;
+            assert_invalid_receipt(guard.claim(receiver, receiver, receipt.abi_encode().into()));
 
             Ok(())
         })
@@ -900,7 +900,7 @@ mod tests {
                 },
             )?;
 
-            let self_proof = ClaimProofV1::new(
+            let self_receipt = ClaimReceiptV1::new(
                 token.address(),
                 receiver,
                 originator,
@@ -911,7 +911,7 @@ mod tests {
                 InboundKind::TRANSFER,
                 B256::ZERO,
             );
-            let recovery_proof = ClaimProofV1::new(
+            let recovery_receipt = ClaimReceiptV1::new(
                 token.address(),
                 recovery,
                 originator,
@@ -924,17 +924,17 @@ mod tests {
             );
 
             let mut guard = ReceivePolicyGuard::new();
-            assert_unauthorized(guard.claim(stranger, receiver, self_proof.abi_encode().into()));
+            assert_unauthorized(guard.claim(stranger, receiver, self_receipt.abi_encode().into()));
             for caller in [recovery_receiver, stranger] {
                 assert_unauthorized(guard.claim(
                     caller,
                     recovery_receiver,
-                    recovery_proof.abi_encode().into(),
+                    recovery_receipt.abi_encode().into(),
                 ));
             }
-            assert_eq!(guard.balance_of(self_proof.abi_encode().into())?, amount);
+            assert_eq!(guard.balance_of(self_receipt.abi_encode().into())?, amount);
             assert_eq!(
-                guard.balance_of(recovery_proof.abi_encode().into())?,
+                guard.balance_of(recovery_receipt.abi_encode().into())?,
                 amount
             );
 
@@ -968,7 +968,7 @@ mod tests {
                 },
             )?;
 
-            let proof = ClaimProofV1::new(
+            let receipt = ClaimReceiptV1::new(
                 token.address(),
                 VIRTUAL_MASTER,
                 originator,
@@ -984,7 +984,7 @@ mod tests {
                     token: token.address(),
                     from: originator,
                     receiver: VIRTUAL_MASTER,
-                    proofVersion: BLOCKED_PROOF_VERSION,
+                    receiptVersion: BLOCKED_RECEIPT_VERSION,
                     blockedNonce: 1,
                     blockedAt: 1_728_009,
                     recipient: virtual_addr,
@@ -995,13 +995,13 @@ mod tests {
                 },
             )]);
             guard.clear_emitted_events();
-            guard.claim(VIRTUAL_MASTER, VIRTUAL_MASTER, proof.abi_encode().into())?;
+            guard.claim(VIRTUAL_MASTER, VIRTUAL_MASTER, receipt.abi_encode().into())?;
 
-            guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::ProofClaimed(
-                IReceivePolicyGuard::ProofClaimed {
+            guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::ReceiptClaimed(
+                IReceivePolicyGuard::ReceiptClaimed {
                     token: token.address(),
                     receiver: VIRTUAL_MASTER,
-                    proofVersion: BLOCKED_PROOF_VERSION,
+                    receiptVersion: BLOCKED_RECEIPT_VERSION,
                     blockedNonce: 1,
                     blockedAt: 1_728_009,
                     originator,

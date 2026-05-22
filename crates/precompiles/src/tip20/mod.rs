@@ -1191,7 +1191,7 @@ impl TIP20Token {
     }
 
     /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
-    /// account and stores a claim proof; returns `true`. Returns `false` when the inbound is
+    /// account and stores a claim receipt; returns `true`. Returns `false` when the inbound is
     /// authorized and the caller should proceed with the normal transfer or mint.
     pub(crate) fn validate_inbound_or_block(
         &mut self,
@@ -1223,7 +1223,7 @@ impl TIP20Token {
                 self.emit_event(TIP20Event::mint(guard.target, amount))?;
             }
             InboundKind::__Invalid => {
-                return Err(ReceivePolicyGuardError::invalid_proof().into());
+                return Err(ReceivePolicyGuardError::invalid_receipt().into());
             }
         }
         ReceivePolicyGuard::new()
@@ -1648,7 +1648,7 @@ pub(crate) mod tests {
     mod tip1028_tests {
         use super::*;
         use crate::{
-            receive_policy_guard::BLOCKED_PROOF_VERSION,
+            receive_policy_guard::BLOCKED_RECEIPT_VERSION,
             tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
         };
 
@@ -1709,7 +1709,7 @@ pub(crate) mod tests {
                     amount,
                 })]);
 
-                let proof = IReceivePolicyGuard::ClaimProofV1::new(
+                let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
                     token.address,
                     sender,
                     sender,
@@ -1721,13 +1721,13 @@ pub(crate) mod tests {
                     B256::ZERO,
                 );
                 let guard = ReceivePolicyGuard::new();
-                assert_eq!(guard.balance_of(proof.abi_encode().into())?, amount);
+                assert_eq!(guard.balance_of(receipt.abi_encode().into())?, amount);
                 guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
                     IReceivePolicyGuard::TransferBlocked {
                         token: token.address,
                         from: sender,
                         receiver,
-                        proofVersion: BLOCKED_PROOF_VERSION,
+                        receiptVersion: BLOCKED_RECEIPT_VERSION,
                         blockedNonce: 1,
                         blockedAt: BLOCKED_AT,
                         recipient: receiver,
@@ -1842,7 +1842,7 @@ pub(crate) mod tests {
                     },
                 )?;
 
-                let proof = IReceivePolicyGuard::ClaimProofV1::new(
+                let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
                     token.address,
                     sender,
                     sender,
@@ -1854,13 +1854,13 @@ pub(crate) mod tests {
                     B256::ZERO,
                 );
                 let guard = ReceivePolicyGuard::new();
-                assert_eq!(guard.balance_of(proof.abi_encode().into())?, amount);
+                assert_eq!(guard.balance_of(receipt.abi_encode().into())?, amount);
                 guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
                     IReceivePolicyGuard::TransferBlocked {
                         token: token.address,
                         from: sender,
                         receiver,
-                        proofVersion: BLOCKED_PROOF_VERSION,
+                        receiptVersion: BLOCKED_RECEIPT_VERSION,
                         blockedNonce: 1,
                         blockedAt: BLOCKED_AT,
                         recipient: receiver,
@@ -1944,7 +1944,7 @@ pub(crate) mod tests {
                     to: receiver,
                     amount,
                 })]);
-                let proof = IReceivePolicyGuard::ClaimProofV1::new(
+                let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
                     token.address,
                     sender,
                     sender,
@@ -1956,7 +1956,7 @@ pub(crate) mod tests {
                     B256::ZERO,
                 );
                 assert_eq!(
-                    ReceivePolicyGuard::new().balance_of(proof.abi_encode().into())?,
+                    ReceivePolicyGuard::new().balance_of(receipt.abi_encode().into())?,
                     U256::ZERO
                 );
 
@@ -2046,7 +2046,7 @@ pub(crate) mod tests {
                     to: RECEIVE_POLICY_GUARD_ADDRESS,
                     amount,
                 })]);
-                let proof = IReceivePolicyGuard::ClaimProofV1::new(
+                let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
                     token.address,
                     sender,
                     sender,
@@ -2058,7 +2058,7 @@ pub(crate) mod tests {
                     memo,
                 );
                 assert_eq!(
-                    ReceivePolicyGuard::new().balance_of(proof.abi_encode().into())?,
+                    ReceivePolicyGuard::new().balance_of(receipt.abi_encode().into())?,
                     amount
                 );
 
@@ -2108,7 +2108,7 @@ pub(crate) mod tests {
                         token: token.address,
                         from: admin,
                         receiver,
-                        proofVersion: BLOCKED_PROOF_VERSION,
+                        receiptVersion: BLOCKED_RECEIPT_VERSION,
                         blockedNonce: 1,
                         blockedAt: BLOCKED_AT,
                         recipient: receiver,
@@ -2119,7 +2119,7 @@ pub(crate) mod tests {
                     },
                 )]);
 
-                let proof = IReceivePolicyGuard::ClaimProofV1::new(
+                let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
                     token.address,
                     admin,
                     admin,
@@ -2130,7 +2130,7 @@ pub(crate) mod tests {
                     InboundKind::MINT,
                     B256::ZERO,
                 );
-                assert_eq!(guard.balance_of(proof.abi_encode().into())?, amount);
+                assert_eq!(guard.balance_of(receipt.abi_encode().into())?, amount);
 
                 Ok(())
             })

@@ -20,13 +20,15 @@ impl Precompile for ReceivePolicyGuard {
             IReceivePolicyGuardCalls::abi_decode,
             |call| match call {
                 IReceivePolicyGuardCalls::balanceOf(call) => {
-                    view(call, |c| self.balance_of(c.proof))
+                    view(call, |c| self.balance_of(c.receipt))
                 }
                 IReceivePolicyGuardCalls::claim(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.claim(s, c.to, c.proof))
+                    mutate_void(call, msg_sender, |s, c| self.claim(s, c.to, c.receipt))
                 }
-                IReceivePolicyGuardCalls::burnBlockedProof(call) => {
-                    mutate_void(call, msg_sender, |s, c| self.burn_blocked_proof(s, c.proof))
+                IReceivePolicyGuardCalls::burnBlockedReceipt(call) => {
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.burn_blocked_receipt(s, c.receipt)
+                    })
                 }
             },
         )
