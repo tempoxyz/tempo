@@ -97,6 +97,10 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) system_transactions_execution_duration_seconds: Histogram,
     /// The time it took to finalize the payload in seconds. Includes merging transitions and calculating the state root.
     pub(crate) payload_finalization_duration_seconds: Histogram,
+    /// Wall-clock time spent waiting for the shared sparse trie state root.
+    pub(crate) sparse_trie_state_root_wait_duration_seconds: Histogram,
+    /// Wall-clock time spent in `builder.finish()`.
+    pub(crate) builder_finish_duration_seconds: Histogram,
     /// Total time it took to build the payload in seconds.
     pub(crate) payload_build_duration_seconds: Histogram,
     /// Gas per second calculated as gas_used / payload_build_duration.
