@@ -75,11 +75,13 @@ impl RecoveryMode {
         }
     }
 
-    /// Returns whether claiming to `to` redirects funds away from the receiver.
+    /// Returns whether a claim is a reroute under TIP-1028.
+    /// Originator-authorized claims are always reroutes; non-originator recovery claims resume
+    /// only when claiming to the receiver.
     pub(crate) fn is_reroute(self, to: Address, receiver: Address) -> bool {
         match self {
-            Self::Receiver => to != receiver,
-            Self::Originator | Self::ThirdParty => true,
+            Self::Originator => true,
+            Self::Receiver | Self::ThirdParty => to != receiver,
         }
     }
 

@@ -1761,8 +1761,9 @@ pub(crate) mod tests {
                 (RecoveryMode::Receiver, receiver, blocked_destination, true, false),
                 (RecoveryMode::Originator, originator, blocked_destination, true, false),
                 (RecoveryMode::Originator, originator, originator, false, true),
-                // Third-party recovery is always a reroute, including claims back to receiver.
-                (RecoveryMode::ThirdParty, third_party, receiver, true, false),
+                // Third-party recovery back to the receiver is also a resume: the receiver selected
+                // that authority, so the claim skips receive-policy validation like receiver recovery.
+                (RecoveryMode::ThirdParty, third_party, receiver, true, true),
                 (RecoveryMode::ThirdParty, third_party, open_destination, false, true),
             ] {
                 let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
