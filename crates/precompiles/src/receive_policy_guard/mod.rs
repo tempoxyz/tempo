@@ -127,6 +127,10 @@ impl ReceivePolicyGuard {
         self.emit_event(receipt.claimed_event(receiver, msg_sender, to, amount))
     }
 
+    /// Burns the blocked funds for one receipt.
+    ///
+    /// Lets token issuers use `burnBlocked` for receipt-backed funds without burning directly from
+    /// the `ReceivePolicyGuard`.
     pub fn burn_blocked_receipt(&mut self, msg_sender: Address, receipt: Bytes) -> Result<()> {
         let (receipt, receiver, recovery_mode) = resolve_receipt(receipt)?;
 
