@@ -610,7 +610,7 @@ impl TIP20Token {
         }
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
-        // Prevent burning from system custody addresses to protect accounting invariants.
+        // Required so the PROTECTED check does not fire on burns invoked through the guard.
         if !policed_by_guard
             && PROTECTED
                 .iter()
