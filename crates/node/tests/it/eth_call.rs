@@ -22,8 +22,11 @@ use tempo_contracts::precompiles::{
     ITIPFeeAMM, IValidatorConfig, UnknownFunctionSelector,
 };
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, error::TempoPrecompileError, storage::ContractStorage,
-    tip20::TIP20Token, validator_config::ValidatorConfig,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
+    error::TempoPrecompileError,
+    storage::{ContractStorage, LayoutCtx, Storable, packing::PackedSlot},
+    tip20::{TIP20Balance, TIP20Token},
+    validator_config::ValidatorConfig,
 };
 use test_case::test_case;
 
@@ -40,6 +43,14 @@ fn under_overflow_revert() -> Bytes {
         .into_precompile_result(0, 0)
         .unwrap()
         .bytes
+}
+
+fn tip20_balance_from_word(word: U256) -> eyre::Result<TIP20Balance> {
+    Ok(<TIP20Balance as Storable>::load(
+        &PackedSlot(word),
+        U256::ZERO,
+        LayoutCtx::FULL,
+    )?)
 }
 
 /// Builds a `StateOverride` targeting `address` with the given slot→value diffs.
@@ -180,8 +191,10 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
     let Delta::Changed(ChangedType { from, to }) = sender_balance else {
         panic!("Unexpected delta");
     };
-    assert_eq!(from.into_u256(), mint_amount);
-    assert_eq!(to.into_u256(), U256::ZERO);
+    let from_word = from.into_u256();
+    let to_word = to.into_u256();
+    assert_eq!(tip20_balance_from_word(from_word)?.amount(), mint_amount);
+    assert_eq!(tip20_balance_from_word(to_word)?.amount(), U256::ZERO);
 
     // Assert recipient token balance is changed
     let slot = TIP20Token::from_address(token_address)
@@ -196,8 +209,10 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
     let Delta::Changed(ChangedType { from, to }) = recipient_balance else {
         panic!("Unexpected delta");
     };
-    assert_eq!(from.into_u256(), U256::ZERO);
-    assert_eq!(to.into_u256(), mint_amount);
+    let from_word = from.into_u256();
+    let to_word = to.into_u256();
+    assert_eq!(tip20_balance_from_word(from_word)?.amount(), U256::ZERO);
+    assert_eq!(tip20_balance_from_word(to_word)?.amount(), mint_amount);
 
     Ok(())
 }
