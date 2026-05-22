@@ -21,9 +21,6 @@ invariant = { runs = 10, depth = 50, fail_on_revert = true, show_solidity = true
 [profile.fuzz500]
 invariant = { runs = 500, depth = 500, fail_on_revert = true, show_solidity = true }
 
-[lint]
-lint_on_build = false
-
 [fmt]
 line_length = 100
 sort_imports = true
