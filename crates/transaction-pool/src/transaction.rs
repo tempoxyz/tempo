@@ -244,9 +244,7 @@ impl TempoPooledTransaction {
         self.resolved_fee_token.get().copied()
     }
 
-    /// Returns the effective fee token for this transaction, applying the
-    /// canonical resolution chain: cached resolved fee token, then the
-    /// transaction's explicit fee token, then [`DEFAULT_FEE_TOKEN`].
+    /// Returns the effective fee token for the transaction
     pub fn effective_fee_token(&self) -> Address {
         self.resolved_fee_token()
             .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN))
