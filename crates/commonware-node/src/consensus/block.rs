@@ -72,6 +72,16 @@ impl Block {
     pub(crate) fn timestamp(&self) -> u64 {
         self.execution_block.timestamp()
     }
+
+    /// Returns the wrapped block.
+    pub(crate) fn block(&self) -> &SealedBlock<tempo_primitives::Block> {
+        &self.execution_block
+    }
+
+    /// Returns the block access list of the wrapped block.
+    pub(crate) fn block_access_list(&self) -> Option<&WireBytes> {
+        self.block_access_list.as_ref()
+    }
 }
 
 impl std::ops::Deref for Block {

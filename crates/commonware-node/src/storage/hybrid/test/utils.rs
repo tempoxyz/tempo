@@ -77,7 +77,7 @@ pub(in crate::storage::hybrid) fn make_block(height: u64, parent_hash: B256) -> 
     };
     let body = BlockBody::default();
     let inner = TempoBlock { header, body };
-    Block::from_execution_block(SealedBlock::seal_slow(inner))
+    Block::from_execution_payload(SealedBlock::seal_slow(inner), None)
 }
 
 /// Build a contiguous chain `[start..start+count]` of [`Block`]s, each

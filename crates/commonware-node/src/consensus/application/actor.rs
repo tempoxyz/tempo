@@ -540,6 +540,23 @@ impl Inner<Init> {
         // next epoch.
         if parent_epoch_info.last() == parent.height() && parent_epoch_info.epoch() == round.epoch()
         {
+            // If the header has a block access list hash but the block itself doesn't
+            // it likely means that the block was fetched from reth database and we need to
+            // additionally fetch the BAL from commonware.
+            let parent = if parent.block().header().block_access_list_hash().is_some()
+                && parent.block_access_list().is_none()
+            {
+                self.marshal
+                    .subscribe_by_digest(
+                        Some(Round::new(round.epoch(), parent_view)),
+                        parent_digest,
+                    )
+                    .await
+                    .await
+                    .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?
+            } else {
+                parent
+            };
             if !self.marshal.verified(round, parent.clone()).await {
                 bail!("marshal rejected re-proposed boundary block");
             }
