@@ -34,7 +34,7 @@ use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     error::Result as TempoPrecompileResult,
     storage::Handler,
@@ -262,11 +262,7 @@ where
             // - evicts when NO validator token has enough liquidity
             // - considers active validators (protects from permissionless `setValidatorToken`)
             if has_active_validator_token_changes && let Some(ref mut provider) = state_provider {
-                let user_token = tx
-                    .transaction
-                    .inner()
-                    .fee_token()
-                    .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+                let user_token = tx.transaction.effective_fee_token();
                 let cost = tx.transaction.fee_token_cost();
 
                 match amm_cache.has_enough_liquidity(user_token, cost, provider) {
@@ -286,12 +282,7 @@ where
             if !updates.fee_balance_changes.is_empty()
                 && let Some(ref mut provider) = state_provider
             {
-                let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
-                    tx.transaction
-                        .inner()
-                        .fee_token()
-                        .unwrap_or(DEFAULT_FEE_TOKEN)
-                });
+                let fee_token = tx.transaction.effective_fee_token();
                 let Ok(fee_payer) = tx.transaction.inner().fee_payer(tx.transaction.sender())
                 else {
                     continue;
@@ -1498,6 +1489,74 @@ mod tests {
         let evicted = pool.evict_invalidated_transactions(&updates);
         assert_eq!(evicted, vec![*pooled.hash()]);
         assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn validator_token_change_uses_resolved_fee_token_for_liquidity_recheck() {
+        let sender = Address::random();
+        let validator_address = Address::random();
+        let resolved_fee_token = address!("20C0000000000000000000000000000000000002");
+        let pooled = crate::test_utils::TxBuilder::aa(sender).build();
+
+        assert_eq!(pooled.inner().fee_token(), None);
+        pooled.set_resolved_fee_token(resolved_fee_token);
+
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        provider.add_block(
+            B256::random(),
+            Block {
+                header: TempoHeader {
+                    inner: Header {
+                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let inner = EthTransactionValidatorBuilder::new(provider, TempoEvmConfig::mainnet())
+            .disable_balance_check()
+            .build(InMemoryBlobStore::default());
+        let amm_cache = AmmLiquidityCache::with_unique_validators(vec![validator_address]);
+        let validator = TempoTransactionValidator::new(
+            inner,
+            crate::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            crate::validator::DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            amm_cache,
+        );
+
+        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let protocol_pool = Pool::new(
+            executor,
+            CoinbaseTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default(),
+        );
+        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+
+        let validated = TransactionValidationOutcome::Valid {
+            balance: *pooled.cost(),
+            state_nonce: pooled.nonce(),
+            bytecode_hash: None,
+            transaction: ValidTransaction::new(pooled.clone(), None),
+            propagate: true,
+            authorities: None,
+        };
+        pool.add_validated_transaction(TransactionOrigin::External, validated)
+            .expect("transaction should be admitted before validator token change");
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates
+            .validator_token_changes
+            .insert(validator_address, resolved_fee_token);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert!(evicted.is_empty());
+        assert!(pool.get(pooled.hash()).is_some());
     }
 
     #[tokio::test]
