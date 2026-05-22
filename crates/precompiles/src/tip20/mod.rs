@@ -587,7 +587,7 @@ impl TIP20Token {
         msg_sender: Address,
         owner: Address,
         amount: U256,
-        policed_by_guard: bool,
+        check_protected: bool,
     ) -> Result<()> {
         let hardfork = self.storage.spec();
 
@@ -597,8 +597,7 @@ impl TIP20Token {
         }
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
-        // Required so the PROTECTED check does not fire on burns invoked through the guard.
-        if !policed_by_guard
+        if check_protected
             && PROTECTED
                 .iter()
                 .any(|(fork, addrs)| hardfork >= *fork && addrs.contains(&owner))
@@ -613,10 +612,10 @@ impl TIP20Token {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        let burn_from = if policed_by_guard {
-            RECEIVE_POLICY_GUARD_ADDRESS
-        } else {
+        let burn_from = if check_protected {
             owner
+        } else {
+            RECEIVE_POLICY_GUARD_ADDRESS
         };
         self._transfer(burn_from, &Recipient::direct(Address::ZERO), amount)?;
 
@@ -3275,7 +3274,7 @@ pub(crate) mod tests {
                 RECEIVE_POLICY_GUARD_ADDRESS,
                 TIP20_CHANNEL_RESERVE_ADDRESS,
             ] {
-                let result = token.burn_blocked(burner, protected, burn_amount, false);
+                let result = token.burn_blocked(burner, protected, burn_amount, true);
                 assert_eq!(result.unwrap_err(), TIP20Error::protected_address().into());
             }
 
@@ -3301,7 +3300,7 @@ pub(crate) mod tests {
                 STABLECOIN_DEX_ADDRESS,
                 TIP20_CHANNEL_RESERVE_ADDRESS,
             ] {
-                let result = token.burn_blocked(burner, protected, burn_amount, false);
+                let result = token.burn_blocked(burner, protected, burn_amount, true);
                 assert_eq!(result.unwrap_err(), TIP20Error::protected_address().into());
             }
 
@@ -3314,7 +3313,7 @@ pub(crate) mod tests {
             token.set_balance(RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
             token.set_total_supply(token.total_supply()? + amount)?;
 
-            token.burn_blocked(burner, RECEIVE_POLICY_GUARD_ADDRESS, burn_amount, false)?;
+            token.burn_blocked(burner, RECEIVE_POLICY_GUARD_ADDRESS, burn_amount, true)?;
 
             let balance = token.balance_of(ITIP20::balanceOfCall {
                 account: RECEIVE_POLICY_GUARD_ADDRESS,
@@ -3341,7 +3340,7 @@ pub(crate) mod tests {
                 },
             )?;
 
-            token.burn_blocked(burner, TIP20_CHANNEL_RESERVE_ADDRESS, burn_amount, false)?;
+            token.burn_blocked(burner, TIP20_CHANNEL_RESERVE_ADDRESS, burn_amount, true)?;
 
             let balance = token.balance_of(ITIP20::balanceOfCall {
                 account: TIP20_CHANNEL_RESERVE_ADDRESS,
@@ -4588,7 +4587,7 @@ pub(crate) mod tests {
                 // Pause the token
                 token.pause(admin, ITIP20::pauseCall {})?;
 
-                let result = token.burn_blocked(admin, blocked, amount, false);
+                let result = token.burn_blocked(admin, blocked, amount, true);
 
                 if hardfork.is_t3() {
                     assert_eq!(

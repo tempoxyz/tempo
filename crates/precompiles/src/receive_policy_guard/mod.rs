@@ -142,7 +142,7 @@ impl ReceivePolicyGuard {
 
         // Burn from the account with ownership of the funds.
         let owner = recovery_mode.policy_subject(receipt.originator, receiver);
-        TIP20Token::from_address(receipt.token)?.burn_blocked(msg_sender, owner, amount, true)?;
+        TIP20Token::from_address(receipt.token)?.burn_blocked(msg_sender, owner, amount, false)?;
         self.balances[key].write(U256::ZERO)?;
 
         self.emit_event(receipt.burned_event(receiver, msg_sender, amount))
