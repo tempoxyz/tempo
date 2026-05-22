@@ -26,13 +26,42 @@ pub type SigningKeyPassphrase = SecretString;
 
 pub const MAX_SIGNING_KEY_PASSPHRASE_BYTES: u64 = 1024;
 
-pub fn read_signing_key_passphrase<R: std::io::Read>(
-    reader: R,
-) -> std::io::Result<SigningKeyPassphrase> {
+/// Reads a signing-key passphrase from `path`.
+///
+/// The returned boolean reports whether the opened handle is a FIFO.
+pub fn read_secret<P: AsRef<Path>>(path: P) -> std::io::Result<(SigningKeyPassphrase, bool)> {
+    use std::os::unix::fs::FileTypeExt as _;
+
+    let file = std::fs::File::open(path)?;
+    let is_fifo = file.metadata()?.file_type().is_fifo();
+
+    Ok((read_secret_inner(file)?, is_fifo))
+}
+
+fn read_secret_inner<R: std::io::Read>(reader: R) -> std::io::Result<SigningKeyPassphrase> {
     let mut reader = reader;
     let mut read_result = Ok(());
     let mut passphrase = SecretBox::init_with_mut(|buf: &mut String| {
-        read_result = read_signing_key_passphrase_into(&mut reader, buf);
+        buf.reserve_exact((MAX_SIGNING_KEY_PASSPHRASE_BYTES + 1) as usize);
+
+        let mut reader =
+            std::io::BufReader::new(&mut reader).take(MAX_SIGNING_KEY_PASSPHRASE_BYTES + 1);
+        read_result = reader.read_to_string(buf).map(|_| ());
+        if read_result.is_err() {
+            return;
+        }
+
+        if buf.len() as u64 > MAX_SIGNING_KEY_PASSPHRASE_BYTES {
+            read_result = Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!("passphrase exceeds {MAX_SIGNING_KEY_PASSPHRASE_BYTES} byte limit"),
+            ));
+            return;
+        }
+
+        while matches!(buf.as_bytes().last(), Some(b'\r' | b'\n')) {
+            buf.pop();
+        }
     });
 
     read_result?;
@@ -42,45 +71,6 @@ pub fn read_signing_key_passphrase<R: std::io::Read>(
     Ok(SecretString::from(std::mem::take(
         passphrase.expose_secret_mut(),
     )))
-}
-
-pub fn read_signing_key_passphrase_from_pipe_path<P: AsRef<Path>>(
-    path: P,
-) -> std::io::Result<SigningKeyPassphrase> {
-    use std::os::unix::fs::FileTypeExt as _;
-
-    let file = std::fs::File::open(path)?;
-    if !file.metadata()?.file_type().is_fifo() {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidInput,
-            "path is not a FIFO",
-        ));
-    }
-
-    read_signing_key_passphrase(file)
-}
-
-fn read_signing_key_passphrase_into<R: std::io::Read>(
-    reader: R,
-    buf: &mut String,
-) -> std::io::Result<()> {
-    buf.reserve_exact((MAX_SIGNING_KEY_PASSPHRASE_BYTES + 1) as usize);
-
-    let mut reader = std::io::BufReader::new(reader).take(MAX_SIGNING_KEY_PASSPHRASE_BYTES + 1);
-    reader.read_to_string(buf)?;
-
-    if buf.len() as u64 > MAX_SIGNING_KEY_PASSPHRASE_BYTES {
-        return Err(std::io::Error::new(
-            std::io::ErrorKind::InvalidData,
-            format!("passphrase exceeds {MAX_SIGNING_KEY_PASSPHRASE_BYTES} byte limit"),
-        ));
-    }
-
-    while matches!(buf.as_bytes().last(), Some(b'\r' | b'\n')) {
-        buf.pop();
-    }
-
-    Ok(())
 }
 
 #[derive(Clone, Debug)]

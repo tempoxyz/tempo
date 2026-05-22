@@ -34,7 +34,7 @@ use reth_ethereum_cli::ExtendedCommand;
 use serde::Serialize;
 use tempo_alloy::TempoNetwork;
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
-use tempo_commonware_node_config::{SigningKey, read_signing_key_passphrase_from_pipe_path};
+use tempo_commonware_node_config::{SigningKey, SigningKeyPassphrase};
 use tempo_contracts::precompiles::{
     IValidatorConfigV2::{self, Validator},
     VALIDATOR_CONFIG_V2_ADDRESS,
@@ -805,9 +805,9 @@ pub(crate) struct GenerateSigningKey {
 
     /// Passphrase source for encrypting the generated signing key.
     ///
-    /// Must be a FIFO path, including shell process substitution like `<(...)`.
+    /// A FIFO path, including shell process substitution like `<(...)`, is preferred.
     /// If omitted, the signing key is written unencrypted for compatibility.
-    #[arg(long, value_name = "PIPE")]
+    #[arg(long, value_name = "PATH")]
     secret: Option<PathBuf>,
 
     /// Whether to override `output`, if it already exists.
@@ -828,9 +828,9 @@ impl GenerateSigningKey {
         let passphrase = secret
             .as_ref()
             .map(|secret| {
-                read_signing_key_passphrase_from_pipe_path(secret).wrap_err_with(|| {
+                read_secret(secret).wrap_err_with(|| {
                     format!(
-                        "failed reading signing-key encryption passphrase from pipe `{}`",
+                        "failed reading signing-key encryption passphrase from `{}`",
                         secret.display()
                     )
                 })
@@ -870,9 +870,22 @@ fn warn_unencrypted_signing_key_deprecation() {
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
 WARNING: generated consensus signing key will be written UNENCRYPTED.
 This compatibility mode is deprecated and will be removed in a future release.
-Pass `--secret <PIPE>` (for example `--secret <(cmd)`) to encrypt the key at rest.
+Pass `--secret <PATH>` (preferably a FIFO, for example `--secret <(cmd)`) to encrypt the key at rest.
 !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!"
     );
+}
+
+fn read_secret<P: AsRef<Path>>(path: P) -> eyre::Result<SigningKeyPassphrase> {
+    let path = path.as_ref();
+    let (passphrase, is_fifo) = tempo_commonware_node_config::read_secret(path)
+        .wrap_err("failed reading from secret path")?;
+    if !is_fifo {
+        eprintln!(
+            "WARNING: signing-key passphrase was read from a non-FIFO path `{}`; prefer a FIFO to avoid persisting the passphrase on disk.",
+            path.display()
+        );
+    }
+    Ok(passphrase)
 }
 
 #[derive(Debug, clap::Args)]
@@ -885,8 +898,8 @@ pub(crate) struct EncryptSigningKey {
     #[arg(long, short, value_name = "FILE")]
     output: PathBuf,
 
-    /// Passphrase source. Must be a FIFO path, including shell process substitution like `<(...)`.
-    #[arg(long, value_name = "PIPE")]
+    /// Passphrase source. A FIFO path, including shell process substitution like `<(...)`, is preferred.
+    #[arg(long, value_name = "PATH")]
     secret: PathBuf,
 
     /// Whether to override `output`, if it already exists.
@@ -909,13 +922,12 @@ impl EncryptSigningKey {
                 input.display()
             )
         })?;
-        let passphrase =
-            read_signing_key_passphrase_from_pipe_path(&secret).wrap_err_with(|| {
-                format!(
-                    "failed reading signing-key encryption passphrase from pipe `{}`",
-                    secret.display()
-                )
-            })?;
+        let passphrase = read_secret(&secret).wrap_err_with(|| {
+            format!(
+                "failed reading signing-key encryption passphrase from `{}`",
+                secret.display()
+            )
+        })?;
 
         OpenOptions::new()
             .write(true)
@@ -949,9 +961,9 @@ pub(crate) struct ShowVerificationKey {
 
     /// Passphrase source for decrypting the signing key.
     ///
-    /// Must be a FIFO path, including shell process substitution like `<(...)`.
+    /// A FIFO path, including shell process substitution like `<(...)`, is preferred.
     /// If omitted, the signing key is read as plaintext hex.
-    #[arg(long, value_name = "PIPE")]
+    #[arg(long, value_name = "PATH")]
     secret: Option<PathBuf>,
 }
 
@@ -963,13 +975,12 @@ impl ShowVerificationKey {
         } = self;
         let private_key = match secret.as_ref() {
             Some(secret) => {
-                let passphrase =
-                    read_signing_key_passphrase_from_pipe_path(secret).wrap_err_with(|| {
-                        format!(
-                            "failed reading signing-key passphrase from pipe `{}`",
-                            secret.display()
-                        )
-                    })?;
+                let passphrase = read_secret(secret).wrap_err_with(|| {
+                    format!(
+                        "failed reading signing-key passphrase from `{}`",
+                        secret.display()
+                    )
+                })?;
 
                 SigningKey::read_from_file_encrypted(&private_key, passphrase).wrap_err_with(
                     || {

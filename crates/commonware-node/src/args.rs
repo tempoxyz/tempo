@@ -10,13 +10,11 @@ use std::{
 
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
-use tempo_commonware_node_config::{
-    SigningKey, SigningKeyPassphrase, read_signing_key_passphrase_from_pipe_path,
-};
+use tempo_commonware_node_config::{SigningKey, SigningKeyPassphrase};
 
 const DEFAULT_MAX_MESSAGE_SIZE_BYTES: u32 =
     reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE as u32;
-const PASSPHRASE_PIPE_WAIT_WARNING_INTERVAL: Duration = Duration::from_secs(5);
+const PASSPHRASE_SECRET_WAIT_WARNING_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Command line arguments for configuring the consensus layer of a tempo node.
 #[derive(Debug, Clone, clap::Args)]
@@ -28,19 +26,19 @@ pub struct Args {
     /// `--consensus.secret` is also provided, the file is instead
     /// treated as a passphrase-encrypted `age` payload whose plaintext is
     /// the raw encoded ed25519 private key bytes; it is decrypted at
-    /// startup using the passphrase read from the pipe.
+    /// startup using the passphrase read from the secret path.
     #[arg(
         long = "consensus.signing-key",
         required_unless_present_any = ["follow", "dev"],
     )]
     signing_key: Option<PathBuf>,
 
-    /// Path to a pipe from which the passphrase used to decrypt
+    /// Path from which the passphrase used to decrypt
     /// `--consensus.signing-key` is read.
     ///
-    /// This accepts a FIFO created by `mkfifo`, or shell process substitution
-    /// like `<(...)`, to avoid leaving the passphrase on disk or in process
-    /// state (like via en env var).
+    /// A FIFO created by `mkfifo`, or shell process substitution like `<(...)`,
+    /// is preferred to avoid leaving the passphrase on disk or in process state
+    /// (like via an env var). Regular files are accepted with a warning.
     #[arg(
         long = "consensus.secret",
         value_name = "PATH",
@@ -337,9 +335,9 @@ impl Args {
 
     async fn load_signing_key(&self) -> eyre::Result<Option<SigningKey>> {
         Ok(match (self.signing_key.as_ref(), self.secret.as_ref()) {
-            (Some(path), Some(pipe)) => {
-                let passphrase = read_passphrase_from_pipe(pipe).await.wrap_err_with(|| {
-                    format!("failed reading secret from pipe `{}`", pipe.display())
+            (Some(path), Some(secret)) => {
+                let passphrase = read_secret(secret).await.wrap_err_with(|| {
+                    format!("failed reading secret from `{}`", secret.display())
                 })?;
                 Some(
                     SigningKey::read_from_file_encrypted(path, passphrase).wrap_err_with(|| {
@@ -358,9 +356,9 @@ impl Args {
                     )
                 })?,
             ),
-            (None, Some(_pipe)) => {
+            (None, Some(_secret)) => {
                 unreachable!(
-                    "`--consensus.secret` requires `--consensus.signing-key` to point at the encrypted key file"
+                    "clap enforces that `--consensus.secret` requires `--consensus.signing-key` to point at the encrypted key file"
                 );
             }
             (None, None) => None,
@@ -376,30 +374,36 @@ impl Args {
     }
 }
 
-/// Read a single passphrase from the FIFO at `path` via blocking std I/O.
-async fn read_passphrase_from_pipe(path: &Path) -> eyre::Result<SigningKeyPassphrase> {
-    let path = path.to_owned();
+/// Read a single passphrase from `path` via blocking std I/O.
+async fn read_secret<P: AsRef<Path>>(path: P) -> eyre::Result<SigningKeyPassphrase> {
+    let path = path.as_ref().to_path_buf();
     let task_path = path.clone();
     let mut read =
-        tokio::task::spawn_blocking(move || read_passphrase_from_pipe_blocking(&task_path));
+        tokio::task::spawn_blocking(move || tempo_commonware_node_config::read_secret(&task_path));
     let mut warning_interval = tokio::time::interval_at(
-        tokio::time::Instant::now() + PASSPHRASE_PIPE_WAIT_WARNING_INTERVAL,
-        PASSPHRASE_PIPE_WAIT_WARNING_INTERVAL,
+        tokio::time::Instant::now() + PASSPHRASE_SECRET_WAIT_WARNING_INTERVAL,
+        PASSPHRASE_SECRET_WAIT_WARNING_INTERVAL,
     );
 
     loop {
         tokio::select! {
             result = &mut read => {
-                return result.wrap_err("signing-key passphrase reader task failed")?;
+                let (passphrase, is_fifo) =
+                    result
+                        .map_err(eyre::Report::new)
+                        .and_then(|res| res.map_err(eyre::Report::new))
+                        .wrap_err("failed reading secret")?;
+                    warn_if_not_fifo(is_fifo, &path);
+                return Ok(passphrase);
             }
             _ = warning_interval.tick() => {
                 tracing::warn_span!(
-                    "signing_key_passphrase_pipe",
+                    "signing_key_passphrase_secret",
                     path = %path.display(),
                 )
                 .in_scope(|| {
                     tracing::warn!(
-                        "still waiting for signing-key passphrase from named pipe; write the passphrase and close the writer"
+                        "still waiting for signing-key passphrase from secret path; if this is a FIFO, write the passphrase and close the writer"
                     );
                 });
             }
@@ -407,8 +411,18 @@ async fn read_passphrase_from_pipe(path: &Path) -> eyre::Result<SigningKeyPassph
     }
 }
 
-fn read_passphrase_from_pipe_blocking(path: &Path) -> eyre::Result<SigningKeyPassphrase> {
-    read_signing_key_passphrase_from_pipe_path(path).wrap_err("failed reading from pipe")
+fn warn_if_not_fifo(is_fifo: bool, path: &Path) {
+    if !is_fifo {
+        tracing::warn_span!(
+        "signing_key_passphrase_secret",
+        path = %path.display(),
+    )
+    .in_scope(|| {
+        tracing::warn!(
+            "signing-key passphrase was read from a non-FIFO path; prefer a FIFO to avoid persisting the passphrase on disk"
+        );
+    });
+    }
 }
 
 #[cfg(test)]
@@ -508,6 +522,33 @@ mod tests {
             .expect("signing key must load")
             .expect("signing key must be Some when --consensus.signing-key is set");
         writer.join().unwrap();
+
+        let expected =
+            tempo_commonware_node_config::SigningKey::try_from_hex(SIGNING_KEY_HEX).unwrap();
+        assert_eq!(key.public_key(), expected.public_key());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn encrypted_signing_key_via_regular_secret_file_roundtrip() {
+        let dir = tempfile::tempdir().unwrap();
+        let key_file = dir.path().join("signing-key.age");
+        let secret_file = dir.path().join("passphrase.txt");
+        std::fs::write(&key_file, encrypt(&raw_private_key_bytes(), PASSPHRASE)).unwrap();
+        std::fs::write(&secret_file, format!("{PASSPHRASE}\n")).unwrap();
+
+        let cli = parse(&[
+            "--consensus.signing-key",
+            key_file.to_str().unwrap(),
+            "--consensus.secret",
+            secret_file.to_str().unwrap(),
+        ]);
+
+        let key = cli
+            .consensus
+            .signing_key()
+            .await
+            .expect("signing key must load")
+            .expect("signing key must be Some when --consensus.signing-key is set");
 
         let expected =
             tempo_commonware_node_config::SigningKey::try_from_hex(SIGNING_KEY_HEX).unwrap();

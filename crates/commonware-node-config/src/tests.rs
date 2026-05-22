@@ -12,7 +12,7 @@ use secrecy::ExposeSecret as _;
 
 use crate::{
     MAX_SIGNING_KEY_PASSPHRASE_BYTES, SigningKey, SigningKeyPassphrase, SigningShare,
-    read_signing_key_passphrase,
+    read_secret, read_secret_inner,
 };
 
 const SIGNING_KEY: &str = "0x7848b5d711bc9883996317a3f9c90269d56771005d540a19184939c9e8d0db2a";
@@ -49,21 +49,29 @@ fn passphrase(value: &str) -> SigningKeyPassphrase {
 
 #[test]
 fn signing_key_passphrase_reader_trims_trailing_newlines() {
-    let passphrase = read_signing_key_passphrase("hunter2\r\n".as_bytes()).unwrap();
+    let passphrase = read_secret_inner("hunter2\r\n".as_bytes()).unwrap();
     assert_eq!(passphrase.expose_secret(), "hunter2");
 }
 
 #[test]
 fn signing_key_passphrase_reader_allows_missing_trailing_newline() {
-    let passphrase = read_signing_key_passphrase("hunter2".as_bytes()).unwrap();
+    let passphrase = read_secret_inner("hunter2".as_bytes()).unwrap();
     assert_eq!(passphrase.expose_secret(), "hunter2");
 }
 
 #[test]
 fn signing_key_passphrase_reader_rejects_over_limit_passphrases() {
     let passphrase = "x".repeat(MAX_SIGNING_KEY_PASSPHRASE_BYTES as usize + 1);
-    let err = read_signing_key_passphrase(passphrase.as_bytes()).unwrap_err();
+    let err = read_secret_inner(passphrase.as_bytes()).unwrap_err();
     assert_eq!(err.kind(), std::io::ErrorKind::InvalidData);
+}
+
+#[test]
+fn signing_key_passphrase_reader_accepts_regular_files() {
+    let file = write_tempfile("hunter2\n");
+    let (passphrase, is_fifo) = read_secret(file.path()).unwrap();
+    assert_eq!(passphrase.expose_secret(), "hunter2");
+    assert!(!is_fifo);
 }
 
 #[test]
