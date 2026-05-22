@@ -2501,7 +2501,7 @@ mod tests {
         // Use PATH_USD_ADDRESS which has the TIP20 prefix
         let token = PATH_USD_ADDRESS;
         let account = Address::random();
-        let expected_balance = U256::random();
+        let expected_balance = U256::random() & U256::from(u128::MAX); // U256::from(u128::random())
 
         // Set up initial balance
         let balance_slot = TIP20Token::from_address(token)?.balances[account].base_slot();
