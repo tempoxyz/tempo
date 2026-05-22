@@ -95,7 +95,8 @@ pub struct Args {
     /// include the state root calculation time. For this reason, we keep it well below `consensus.time-to-build-proposal`.
     #[arg(
         long = "consensus.time-to-prepare-proposal-transactions",
-        default_value = "200ms"
+        default_value = "350ms",
+        default_value_if("share_sparse_trie_with_payload_builder", "false", "200ms")
     )]
     pub time_to_prepare_proposal_transactions: PositiveDuration,
 

@@ -2,12 +2,12 @@
 #
 # Resolves baseline and feature refs for scheduled e2e benchmark runs.
 #
-# Nightly runs compare the latest successful scheduled docker.yml build against
-# the last commit that completed this scheduled e2e workflow successfully.
+# Nightly runs compare the latest main commit against the last commit that
+# completed this scheduled e2e workflow successfully.
 # Release tag runs compare the pushed v*.*.* tag against the previous v*.*.* tag.
 #
 # Usage: bench-e2e-scheduled-refs.sh <force> [preset]
-#   force - "true" to run even if no new nightly commit is available
+#   force - "true" to run even if no new main commit is available
 #   preset - txgen preset name used to scope persisted nightly state
 #
 # Outputs (via GITHUB_OUTPUT):
@@ -28,7 +28,6 @@ FORCE="${1:-false}"
 PRESET="${2:-${BENCH_E2E_PRESET:-tip20}}"
 REPO="${GITHUB_REPOSITORY:-tempoxyz/tempo}"
 STATE_REPO="${BENCH_E2E_STATE_REPO:-decofe/tempo-bench-charts}"
-STALE_THRESHOLD_HOURS="${BENCH_E2E_STALE_THRESHOLD_HOURS:-24}"
 
 if [[ ! "$PRESET" =~ ^[A-Za-z0-9_-]+$ ]]; then
   echo "::error::Invalid preset name: $PRESET"
@@ -128,44 +127,12 @@ fi
 RUN_TYPE="nightly"
 ACTOR="e2e-nightly"
 
-echo "::group::Querying latest nightly docker build"
-RUNS_JSON="$(gh run list \
-  -R "$REPO" \
-  --workflow=docker.yml \
-  --event=schedule \
-  --status=completed \
-  --limit 10 \
-  --json headSha,createdAt,conclusion)"
-
-LATEST="$(echo "$RUNS_JSON" | jq -r '[.[] | select(.conclusion == "success")] | first // empty')"
-if [ -z "$LATEST" ]; then
-  echo "::error::No successful scheduled docker.yml run found in the last 10 runs"
-  echo "Runs found: $RUNS_JSON"
-  exit 1
-fi
-
-FEATURE_REF="$(echo "$LATEST" | jq -r '.headSha')"
-CREATED_AT="$(echo "$LATEST" | jq -r '.createdAt')"
-echo "Latest nightly commit: $FEATURE_REF"
-echo "Built at: $CREATED_AT"
-echo "::endgroup::"
-
-echo "::group::Checking nightly staleness"
-NOW_EPOCH="$(date +%s)"
-CREATED_EPOCH="$(date -d "$CREATED_AT" +%s 2>/dev/null || \
-  date -j -f "%Y-%m-%dT%H:%M:%SZ" "$CREATED_AT" +%s 2>/dev/null || \
-  date -j -f "%Y-%m-%dT%T%z" "$CREATED_AT" +%s 2>/dev/null || \
-  { echo "::error::Cannot parse date: $CREATED_AT"; exit 1; })"
-
-AGE_SECONDS=$(( NOW_EPOCH - CREATED_EPOCH ))
-AGE_HOURS=$(( AGE_SECONDS / 3600 ))
-
-if [ "$AGE_HOURS" -gt "$STALE_THRESHOLD_HOURS" ]; then
-  IS_STALE="true"
-  echo "::warning::Stale nightly Docker build: ${AGE_HOURS}h old (threshold: ${STALE_THRESHOLD_HOURS}h)"
-else
-  echo "Nightly Docker build age: ${AGE_HOURS}h"
-fi
+echo "::group::Resolving latest main commit"
+git fetch --force --quiet --no-recurse-submodules origin main
+FEATURE_REF="$(git rev-parse origin/main)"
+CREATED_AT="$(git log -1 --format=%cI "$FEATURE_REF")"
+echo "Latest main commit: $FEATURE_REF"
+echo "Committed at: $CREATED_AT"
 echo "::endgroup::"
 
 echo "::group::Reading persisted e2e state"
@@ -182,23 +149,20 @@ echo "::endgroup::"
 echo "::group::Resolving refs"
 BASELINE_REF="$FEATURE_REF"
 
-if [ "$IS_STALE" = "true" ]; then
-  BASELINE_REF="${LAST_FEATURE_REF:-$FEATURE_REF}"
-  echo "Stale nightly detected; workflow will fail before benchmarking"
-elif [ -z "$LAST_FEATURE_REF" ]; then
+if [ -z "$LAST_FEATURE_REF" ]; then
   BASELINE_REF="$FEATURE_REF"
-  echo "First run; benchmarking nightly against itself to establish e2e state"
+  echo "First run; benchmarking main against itself to establish e2e state"
 elif [ "$LAST_FEATURE_REF" = "$FEATURE_REF" ]; then
   BASELINE_REF="$LAST_FEATURE_REF"
   if [ "$FORCE" = "true" ] || [ "$FORCE" = "--force" ]; then
-    echo "No new nightly commit, but force=true; running anyway"
+    echo "No new main commit, but force=true; running anyway"
   else
     SHOULD_SKIP="true"
-    echo "No new nightly commit since last successful e2e run; skipping"
+    echo "No new main commit since last successful e2e run; skipping"
   fi
 else
   BASELINE_REF="$LAST_FEATURE_REF"
-  echo "New nightly commit detected"
+  echo "New main commit detected"
 fi
 
 BASELINE_NAME="nightly-$(short_sha "$BASELINE_REF")"
