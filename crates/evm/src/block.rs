@@ -1753,7 +1753,7 @@ mod tests {
             nonce: 7,
             ..Default::default()
         };
-        db.insert_account(addr, original_info.clone().into());
+        db.insert_account(addr, original_info.clone());
 
         let mut executor = TestExecutorBuilder::default()
             .with_parent_beacon_block_root(B256::ZERO)
