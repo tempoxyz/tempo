@@ -1518,10 +1518,9 @@ mod tests {
             },
         );
 
-        let inner =
-            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
-                .disable_balance_check()
-                .build(InMemoryBlobStore::default());
+        let inner = EthTransactionValidatorBuilder::new(provider, TempoEvmConfig::mainnet())
+            .disable_balance_check()
+            .build(InMemoryBlobStore::default());
         let amm_cache = AmmLiquidityCache::with_unique_validators(vec![validator_address]);
         let validator = TempoTransactionValidator::new(
             inner,
