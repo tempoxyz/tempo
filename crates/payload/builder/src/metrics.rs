@@ -123,6 +123,7 @@ pub(crate) enum BlockBuildStopReason {
     GasLimit,
     RlpBlockSizeLimit,
     TxPoolEmpty,
+    IncludedTxExecLimit,
 }
 
 impl BlockBuildStopReason {
@@ -132,6 +133,7 @@ impl BlockBuildStopReason {
             Self::GasLimit => "gas_limit",
             Self::RlpBlockSizeLimit => "rlp_block_size_limit",
             Self::TxPoolEmpty => "tx_pool_empty",
+            Self::IncludedTxExecLimit => "included_tx_exec_limit",
         }
     }
 }

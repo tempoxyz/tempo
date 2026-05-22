@@ -62,6 +62,8 @@ use tempo_transaction_pool::{
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
+const SHARED_SPARSE_TRIE_INCLUDED_TX_EXEC_LIMIT: Duration = Duration::from_millis(170);
+
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
     subblock.transactions.iter().any(|tx| {
@@ -479,6 +481,13 @@ where
 
             check_cancel!();
 
+            if build_until_interrupt
+                && normal_included_transaction_execution_elapsed
+                    >= SHARED_SPARSE_TRIE_INCLUDED_TX_EXEC_LIMIT
+            {
+                break BlockBuildStopReason::IncludedTxExecLimit;
+            }
+
             let Some(pool_tx) = best_txs.next() else {
                 if build_until_interrupt && cumulative_gas_used < non_shared_gas_limit {
                     std::thread::sleep(Duration::from_millis(1));
@@ -629,6 +638,18 @@ where
 
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
+
+            if build_until_interrupt
+                && normal_included_transaction_execution_elapsed
+                    >= SHARED_SPARSE_TRIE_INCLUDED_TX_EXEC_LIMIT
+            {
+                debug!(
+                    target: "payload_builder",
+                    tx_exec_included = ?normal_included_transaction_execution_elapsed,
+                    limit = ?SHARED_SPARSE_TRIE_INCLUDED_TX_EXEC_LIMIT,
+                    "stopping pool transaction execution before finishing payload"
+                );
+            }
         };
         drop(_block_fill_span);
         self.metrics
@@ -954,6 +975,11 @@ where
 
         drop(db);
         if build_until_interrupt {
+            while !attributes.is_interrupted() {
+                check_cancel!();
+                std::thread::sleep(Duration::from_millis(1));
+            }
+
             Ok(BuildOutcome::Freeze(payload))
         } else {
             Ok(BuildOutcome::Better {
