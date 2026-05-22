@@ -118,7 +118,7 @@ fn subblocks_are_included() {
                     let balance_slot = TIP20Token::from_address(DEFAULT_FEE_TOKEN)
                         .unwrap()
                         .balances[*fee_recipient]
-                        .slot();
+                        .base_slot();
                     let slot = fee_token_storage.get(&balance_slot).unwrap();
 
                     assert!(slot.present_value > slot.original_value());
@@ -287,7 +287,7 @@ fn subblocks_are_included_with_failing_txs() {
                 let balance_slot = TIP20Token::from_address(DEFAULT_FEE_TOKEN)
                     .unwrap()
                     .balances[*fee_recipient]
-                    .slot();
+                    .base_slot();
                 let slot = fee_token_storage.get(&balance_slot).unwrap();
 
                 assert_eq!(slot.present_value, slot.original_value() + expected_fee);

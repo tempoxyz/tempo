@@ -170,7 +170,7 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
     let slot = TIP20Token::from_address(token_address)
         .expect("valid TIP20 address")
         .balances[caller]
-        .slot();
+        .base_slot();
     let sender_balance = token_storage_diff
         .get(&B256::from(slot))
         .expect("Could not get recipient balance delta");
@@ -187,7 +187,7 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
     let slot = TIP20Token::from_address(token_address)
         .expect("valid TIP20 address")
         .balances[recipient]
-        .slot();
+        .base_slot();
     let recipient_balance = token_storage_diff
         .get(&B256::from(slot))
         .expect("Could not get recipient balance delta");

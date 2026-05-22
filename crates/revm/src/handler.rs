@@ -2122,10 +2122,10 @@ where
     let balance_slot = TIP20Token::from_address(token)
         .expect("TIP20 prefix already validated")
         .balances[sender]
-        .slot();
-    let balance = journal.sload(token, balance_slot)?.data;
-
-    Ok(balance)
+        .base_slot();
+    let mut balance = journal.sload(token, balance_slot)?.data.to_be_bytes::<32>();
+    balance[..16].fill(0);
+    Ok(U256::from_be_bytes(balance))
 }
 
 impl<DB, I> InspectorHandler for TempoEvmHandler<DB, I>
@@ -2504,7 +2504,7 @@ mod tests {
         let expected_balance = U256::random();
 
         // Set up initial balance
-        let balance_slot = TIP20Token::from_address(token)?.balances[account].slot();
+        let balance_slot = TIP20Token::from_address(token)?.balances[account].base_slot();
         journal.load_account(token)?;
         journal
             .sstore(token, balance_slot, expected_balance)

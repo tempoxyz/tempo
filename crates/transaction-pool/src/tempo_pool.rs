@@ -1383,7 +1383,7 @@ mod tests {
         let balance_slot = TIP20Token::from_address(fee_token)
             .expect("fee token must be a valid TIP20 token")
             .balances[account]
-            .slot();
+            .base_slot();
 
         provider.add_account(
             fee_token,
