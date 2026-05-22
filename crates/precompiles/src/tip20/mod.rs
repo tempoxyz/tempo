@@ -997,6 +997,12 @@ impl TIP20Token {
         self.supply_cap.write(U128_MAX)?;
         self.transfer_policy_id.write(1)?;
 
+        // HACK(T6+): deployer must incur TIP-1028 cold storage (0 -> 1) cost.
+        // We virtually assign 1 unit without increasing supply to warm the address.
+        if self.storage.spec().is_t6() {
+            self.balances[RECEIVE_POLICY_GUARD_ADDRESS].write(U256::ONE)?;
+        }
+
         // Initialize roles system and grant admin role
         self.initialize_roles()?;
         self.grant_default_admin(msg_sender, admin)
@@ -1701,7 +1707,10 @@ pub(crate) mod tests {
 
                 assert_eq!(token.get_balance(sender)?, U256::ZERO);
                 assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
+                assert_eq!(
+                    token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?,
+                    amount + U256::ONE
+                );
                 token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
                     from: sender,
                     to: RECEIVE_POLICY_GUARD_ADDRESS,
@@ -1949,7 +1958,64 @@ pub(crate) mod tests {
                     Err(e) if e == ReceivePolicyGuardError::address_reserved().into()
                 ));
                 assert_eq!(token.get_balance(sender)?, amount);
-                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
+                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ONE);
+
+                Ok(())
+            })
+        }
+
+        #[test]
+        fn test_guard_balance_seed_avoids_later_zero_to_nonzero_writes() -> eyre::Result<()> {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+            storage.set_timestamp(U256::from(BLOCKED_AT));
+            let admin = Address::random();
+            let sender = Address::random();
+            let receiver = Address::random();
+            let amount = U256::from(20u64);
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_mint(sender, amount)
+                    .apply()?;
+
+                assert_eq!(token.total_supply()?, amount);
+                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ONE);
+
+                set_receive_policy(
+                    receiver,
+                    REJECT_ALL_POLICY_ID,
+                    ALLOW_ALL_POLICY_ID,
+                    Address::ZERO,
+                )?;
+                token.transfer(
+                    sender,
+                    ITIP20::transferCall {
+                        to: receiver,
+                        amount,
+                    },
+                )?;
+                assert_eq!(
+                    token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?,
+                    amount + U256::ONE
+                );
+
+                let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
+                    token.address,
+                    sender,
+                    sender,
+                    receiver,
+                    BLOCKED_AT,
+                    1,
+                    ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
+                    InboundKind::TRANSFER,
+                    B256::ZERO,
+                );
+                ReceivePolicyGuard::new().claim(sender, sender, receipt.abi_encode().into())?;
+
+                assert_eq!(token.total_supply()?, amount);
+                assert_eq!(token.get_balance(sender)?, amount);
+                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ONE);
 
                 Ok(())
             })
@@ -2052,7 +2118,10 @@ pub(crate) mod tests {
                 );
                 assert_eq!(token.get_balance(owner)?, U256::ZERO);
                 assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
+                assert_eq!(
+                    token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?,
+                    amount + U256::ONE
+                );
 
                 Ok(())
             })
@@ -2147,7 +2216,10 @@ pub(crate) mod tests {
 
                 assert_eq!(token.total_supply()?, amount);
                 assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
+                assert_eq!(
+                    token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?,
+                    amount + U256::ONE
+                );
                 token.assert_emitted_events(vec![
                     TIP20Event::transfer(Address::ZERO, RECEIVE_POLICY_GUARD_ADDRESS, amount),
                     TIP20Event::mint(RECEIVE_POLICY_GUARD_ADDRESS, amount),
