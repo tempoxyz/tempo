@@ -1448,19 +1448,21 @@ mod tests {
         ])
         .unwrap();
 
-        assert!(matches!(
-            cli.command,
+        let EncryptSigningKey {
+            input,
+            output,
+            secret,
+            force,
+        } = match cli.command {
             reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::EncryptSigningKey(EncryptSigningKey {
-                    input,
-                    output,
-                    secret,
-                    force: false,
-                })
-            )) if input == PathBuf::from("/tmp/signing.key")
-                && output == PathBuf::from("/tmp/signing.key.age")
-                && secret == PathBuf::from("/dev/fd/11")
-        ));
+                ConsensusSubcommand::EncryptSigningKey(cmd),
+            )) => cmd,
+            other => panic!("expected variant EncryptSigningKey, got `{other:?}`"),
+        };
+        assert_eq!(&input, "/tmp/signing.key");
+        assert_eq!(&output, "/tmp/signing.key.age");
+        assert_eq!(&secret, "/dev/fd/11");
+        assert!(!force);
     }
 
     #[test]
@@ -1473,6 +1475,7 @@ mod tests {
         assert_parse_show_verification_key("calculate-public-key");
     }
 
+    #[track_caller]
     fn assert_parse_show_verification_key(command: &str) {
         let cli = TempoCli::try_parse_from([
             "tempo",
@@ -1485,16 +1488,17 @@ mod tests {
         ])
         .unwrap();
 
-        assert!(matches!(
-            cli.command,
+        let ShowVerificationKey {
+            private_key,
+            secret,
+        } = match cli.command {
             reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::ShowVerificationKey(ShowVerificationKey {
-                    private_key,
-                    secret: Some(secret),
-                })
-            )) if private_key == PathBuf::from("/tmp/signing.key.age")
-                && secret == PathBuf::from("/dev/fd/11")
-        ));
+                ConsensusSubcommand::ShowVerificationKey(cmd),
+            )) => cmd,
+            other => panic!("expected ShowVerificationKey, got `{other:?}`"),
+        };
+        assert_eq!(&private_key, "/tmp/signing.key.age");
+        assert_eq!(&secret.unwrap(), "/dev/fd/11");
     }
 
     #[test]
@@ -1520,19 +1524,22 @@ mod tests {
         ])
         .unwrap();
 
-        assert!(matches!(
-            cli.command,
+        let GenerateSigningKey {
+            output,
+            secret,
+            force,
+        } = match cli.command {
             reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::GenerateSigningKey(GenerateSigningKey {
-                    output,
-                    secret: Some(secret),
-                    force: false,
-                })
-            )) if output == PathBuf::from("/tmp/signing.key")
-                && secret == PathBuf::from("/dev/fd/11")
-        ));
+                ConsensusSubcommand::GenerateSigningKey(cmd),
+            )) => cmd,
+            other => panic!("expected GenerateSigningKey, got `{other:?}`"),
+        };
+        assert!(!force);
+        assert_eq!(&output, "/tmp/signing.key");
+        assert_eq!(&secret.unwrap(), "/dev/fd/11");
     }
 
+    #[track_caller]
     fn assert_parse_generate_signing_key(command: &str) {
         let cli = TempoCli::try_parse_from([
             "tempo",
@@ -1543,16 +1550,13 @@ mod tests {
         ])
         .unwrap();
 
-        assert!(matches!(
-            cli.command,
+        let GenerateSigningKey { output, .. } = match cli.command {
             reth_ethereum::cli::Commands::Ext(TempoSubcommand::Consensus(
-                ConsensusSubcommand::GenerateSigningKey(GenerateSigningKey {
-                    output,
-                    secret: None,
-                    force: false,
-                })
-            )) if output == PathBuf::from("/tmp/signing.key")
-        ));
+                ConsensusSubcommand::GenerateSigningKey(cmd),
+            )) => cmd,
+            other => panic!("expected GenerateSigningKey, got `{other:?}`"),
+        };
+        assert_eq!(&output, "/tmp/signing.key");
     }
 
     #[test]

@@ -11,8 +11,8 @@ use rand_08::SeedableRng as _;
 use secrecy::ExposeSecret as _;
 
 use crate::{
-    MAX_SIGNING_KEY_PASSPHRASE_BYTES, SigningKey, SigningKeyPassphrase, SigningShare,
-    read_secret, read_secret_inner,
+    MAX_SIGNING_KEY_PASSPHRASE_BYTES, SigningKey, SigningKeyPassphrase, SigningShare, read_secret,
+    read_secret_inner,
 };
 
 const SIGNING_KEY: &str = "0x7848b5d711bc9883996317a3f9c90269d56771005d540a19184939c9e8d0db2a";
