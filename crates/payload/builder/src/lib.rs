@@ -757,45 +757,24 @@ where
 
         check_cancel!();
 
-        let (
-            BlockBuilderOutcome {
-                execution_result,
-                block,
-                hashed_state,
-                trie_updates,
-                ..
-            },
-            builder_finish_elapsed,
-        ) = if let Some(mut handle) = trie_handle {
+        let state_root_outcome = if let Some(mut handle) = trie_handle {
             // Dropping the hook signals that execution is complete and the sparse trie task can
             // finalize the state root it has been updating incrementally.
             builder.executor_mut().set_state_hook(None);
 
             let state_root_wait_start = Instant::now();
-            let state_root_outcome = handle.state_root();
-            self.metrics
-                .sparse_trie_state_root_wait_duration_seconds
-                .record(state_root_wait_start.elapsed());
-
-            match state_root_outcome {
+            match handle.state_root() {
                 Ok(outcome) => {
+                    self.metrics
+                        .sparse_trie_state_root_wait_duration_seconds
+                        .record(state_root_wait_start.elapsed());
                     debug!(
                         target: "payload_builder",
                         id = %payload_id,
                         state_root = ?outcome.state_root,
                         "received state root from sparse trie"
                     );
-                    let builder_finish_start = Instant::now();
-                    let result = builder.finish(
-                        finish_provider(),
-                        Some((
-                            outcome.state_root,
-                            Arc::unwrap_or_clone(outcome.trie_updates),
-                        )),
-                    );
-                    let elapsed = builder_finish_start.elapsed();
-                    self.metrics.builder_finish_duration_seconds.record(elapsed);
-                    (result?, elapsed)
+                    Some(outcome)
                 }
                 Err(err) => {
                     warn!(
@@ -804,20 +783,35 @@ where
                         %err,
                         "sparse trie failed, falling back to sync state root"
                     );
-                    let builder_finish_start = Instant::now();
-                    let result = builder.finish(finish_provider(), None);
-                    let elapsed = builder_finish_start.elapsed();
-                    self.metrics.builder_finish_duration_seconds.record(elapsed);
-                    (result?, elapsed)
+                    None
                 }
             }
         } else {
-            let builder_finish_start = Instant::now();
-            let result = builder.finish(finish_provider(), None);
-            let elapsed = builder_finish_start.elapsed();
-            self.metrics.builder_finish_duration_seconds.record(elapsed);
-            (result?, elapsed)
+            None
         };
+
+        let builder_finish_start = Instant::now();
+        let BlockBuilderOutcome {
+            execution_result,
+            block,
+            hashed_state,
+            trie_updates,
+            ..
+        } = if let Some(outcome) = state_root_outcome {
+            builder.finish(
+                finish_provider(),
+                Some((
+                    outcome.state_root,
+                    Arc::unwrap_or_clone(outcome.trie_updates),
+                )),
+            )
+        } else {
+            builder.finish(finish_provider(), None)
+        }?;
+        let builder_finish_elapsed = builder_finish_start.elapsed();
+        self.metrics
+            .builder_finish_duration_seconds
+            .record(builder_finish_elapsed);
         drop(_finish_span);
         let payload_finalization_elapsed = payload_finalization_start.elapsed();
         self.metrics
