@@ -74,8 +74,12 @@ struct ReceivePolicyConfig {
     has_receive_policy: bool,
     /// Policy ID authorizing senders for inbound transfers.
     sender_policy_id: u64,
+    /// Type of the sender policy ID; either WHITELIST, or BLACKLIST.
+    sender_policy_type: u8,
     /// Policy ID filtering which tokens may be received.
     token_filter_id: u64,
+    /// Type of the token policy ID; either WHITELIST, or BLACKLIST.
+    token_filter_type: u8,
     /// Recovery authority for blocked inbound funds.
     recovery_mode: RecoveryMode,
 }
@@ -123,7 +127,10 @@ pub enum AuthRole {
 /// TIP403 policy data
 #[derive(Debug, Clone, Storable)]
 pub struct PolicyData {
-    // Policy type, either whitelist, blacklist or compound.
+    /// Policy type, either whitelist, blacklist or compound.
+    ///
+    /// IMPORTANT: `policy_type` is immutable after policy creation. TIP-1028 receive policies
+    /// cache this value and rely on immutability for correctness and gas savings.
     pub policy_type: u8,
     /// Address authorized to modify this policy.
     pub admin: Address,
@@ -158,6 +165,22 @@ impl PolicyData {
     /// Returns `true` if the policy data is the default (uninitialized) value.
     fn is_default(&self) -> bool {
         self.policy_type == 0 && self.admin == Address::ZERO
+    }
+}
+
+impl ReceivePolicyConfig {
+    fn sender_policy_data(&self) -> PolicyData {
+        PolicyData {
+            policy_type: self.sender_policy_type,
+            admin: Address::ZERO,
+        }
+    }
+
+    fn token_filter_data(&self) -> PolicyData {
+        PolicyData {
+            policy_type: self.token_filter_type,
+            admin: Address::ZERO,
+        }
     }
 }
 
@@ -298,7 +321,8 @@ impl TIP403Registry {
             return Ok(None);
         }
 
-        if !self.is_authorized_simple(config.token_filter_id, token)? {
+        let token_filter_data = config.token_filter_data();
+        if !self.is_authorized_simple(config.token_filter_id, token, Some(token_filter_data))? {
             let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
             return Ok(Some((
                 ITIP403Registry::BlockedReason::TOKEN_FILTER,
@@ -306,7 +330,8 @@ impl TIP403Registry {
             )));
         }
 
-        if !self.is_authorized_simple(config.sender_policy_id, sender)? {
+        let sender_policy_data = config.sender_policy_data();
+        if !self.is_authorized_simple(config.sender_policy_id, sender, Some(sender_policy_data))? {
             let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
             return Ok(Some((
                 ITIP403Registry::BlockedReason::RECEIVE_POLICY,
@@ -392,13 +417,15 @@ impl TIP403Registry {
             return Err(TIP403RegistryError::invalid_recovery_authority().into());
         }
 
-        self.validate_receive_policy_id(call.senderPolicyId)?;
-        self.validate_receive_policy_id(call.tokenFilterId)?;
+        let sender_policy_type = self.validate_receive_policy_id(call.senderPolicyId)?;
+        let token_filter_type = self.validate_receive_policy_id(call.tokenFilterId)?;
 
         let config = ReceivePolicyConfig {
             has_receive_policy: true,
             sender_policy_id: call.senderPolicyId,
+            sender_policy_type,
             token_filter_id: call.tokenFilterId,
+            token_filter_type,
             recovery_mode,
         };
         self.receive_policies[msg_sender].config.write(config)?;
@@ -691,21 +718,24 @@ impl TIP403Registry {
         if data.is_compound() {
             let compound = self.policy_records[policy_id].compound.read()?;
             return match role {
-                AuthRole::Sender => self.is_authorized_simple(compound.sender_policy_id, user),
+                AuthRole::Sender => {
+                    self.is_authorized_simple(compound.sender_policy_id, user, None)
+                }
                 AuthRole::Recipient => {
-                    self.is_authorized_simple(compound.recipient_policy_id, user)
+                    self.is_authorized_simple(compound.recipient_policy_id, user, None)
                 }
                 AuthRole::MintRecipient => {
-                    self.is_authorized_simple(compound.mint_recipient_policy_id, user)
+                    self.is_authorized_simple(compound.mint_recipient_policy_id, user, None)
                 }
                 AuthRole::Transfer => {
                     // (spec: +T2) short-circuit and skip recipient check if sender fails
-                    let sender_auth = self.is_authorized_simple(compound.sender_policy_id, user)?;
+                    let sender_auth =
+                        self.is_authorized_simple(compound.sender_policy_id, user, None)?;
                     if hardfork.is_t2() && !sender_auth {
                         return Ok(false);
                     }
                     let recipient_auth =
-                        self.is_authorized_simple(compound.recipient_policy_id, user)?;
+                        self.is_authorized_simple(compound.recipient_policy_id, user, None)?;
                     Ok(sender_auth && recipient_auth)
                 }
             };
@@ -728,11 +758,19 @@ impl TIP403Registry {
     /// Authorization for simple (non-compound) policies only.
     ///
     /// **WARNING:** skips compound check - caller must guarantee policy is simple.
-    fn is_authorized_simple(&self, policy_id: u64, user: Address) -> Result<bool> {
+    fn is_authorized_simple(
+        &self,
+        policy_id: u64,
+        user: Address,
+        cache: Option<PolicyData>,
+    ) -> Result<bool> {
         if let Some(auth) = self.builtin_authorization(policy_id) {
             return Ok(auth);
         }
-        let data = self.get_policy_data(policy_id)?;
+        let data = match cache {
+            Some(data) => data,
+            None => self.get_policy_data(policy_id)?,
+        };
         self.is_simple(policy_id, user, &data)
     }
 
@@ -773,9 +811,10 @@ impl TIP403Registry {
     }
 
     /// Ensures `policy_id` is a built-in or an existing simple policy.
-    fn validate_receive_policy_id(&self, policy_id: u64) -> Result<()> {
+    /// Returns the policy type so that the caller can use it.
+    fn validate_receive_policy_id(&self, policy_id: u64) -> Result<u8> {
         if self.builtin_authorization(policy_id).is_some() {
-            return Ok(());
+            return Ok(policy_id as u8); // safe downcast as it's either 0 or 1.
         }
         if policy_id >= self.policy_id_counter()? {
             return Err(TIP403RegistryError::policy_not_found().into());
@@ -784,7 +823,7 @@ impl TIP403Registry {
         if !data.is_simple() {
             return Err(TIP403RegistryError::invalid_receive_policy_type().into());
         }
-        Ok(())
+        Ok(data.policy_type)
     }
 
     /// Returns the [`PolicyType`] of a receive-policy slot.
@@ -821,6 +860,10 @@ impl TIP403Registry {
         Ok(data)
     }
 
+    /// Sets the policy data for `policy_id`.
+    ///
+    /// IMPORTANT: callers must not change `policy_type` for an existing policy. TIP-1028 receive
+    /// policies cache `policy_type` and rely on it being immutable after creation.
     fn set_policy_data(&mut self, policy_id: u64, data: PolicyData) -> Result<()> {
         self.policy_records[policy_id].base.write(data)
     }
