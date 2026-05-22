@@ -786,7 +786,19 @@ def grafana-performance-url [benchmark_id: string, from_ms: int, to_ms: int] {
 }
 
 
-def generate-summary [results_dir: string, baseline_ref: string, feature_ref: string, bloat: int, preset: string, tps: int, duration: int, --benchmark-id: string = "", --reference-epoch: int = 0] {
+def generate-summary [
+    results_dir: string,
+    baseline_ref: string,
+    feature_ref: string,
+    bloat: int,
+    preset: string,
+    tps: int,
+    duration: int,
+    --benchmark-id: string = "",
+    --reference-epoch: int = 0,
+    --baseline-hardfork: string = "",
+    --feature-hardfork: string = "",
+] {
     let run_order_path = $"($results_dir)/run-order.txt"
     let candidate_run_labels = if ($run_order_path | path exists) {
         open $run_order_path | lines | where { |label| $label != "" }
@@ -1200,7 +1212,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
 
     # Build summary markdown
     let grafana_url = (grafana-performance-url $benchmark_id $observability_from_ms $observability_to_ms)
-    let summary_lines = ([
+    mut config_lines = [
         $"# Bench Comparison: ($baseline_ref) vs ($feature_ref)"
         ""
         "## Configuration"
@@ -1212,8 +1224,16 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         $"- Snapshot: (if (has-schelk) { 'schelk' } else { 'cp fallback' })"
         $"- Baseline blocks: ($b_lat.n)"
         $"- Feature blocks: ($f_lat.n)"
+    ]
+    if $baseline_hardfork != "" {
+        $config_lines = ($config_lines | append $"- Baseline hardfork: ($baseline_hardfork)")
+    }
+    if $feature_hardfork != "" {
+        $config_lines = ($config_lines | append $"- Feature hardfork: ($feature_hardfork)")
+    }
+
+    let summary_lines = ($config_lines | append [
         ""
-    ] | append [
         "## Tempo Metrics"
         ""
         "| Metric | Baseline | Feature | Delta |"
@@ -1290,6 +1310,8 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             tps: $tps
             duration: $duration
             run_pairs: $run_pairs
+            baseline_hardfork: $baseline_hardfork
+            feature_hardfork: $feature_hardfork
         }
         results: {
             baseline: {
@@ -2535,9 +2557,9 @@ def "main bench" [
         }
 
         # Generate summary report
-        let baseline_label = if $dual_hardfork { $"($baseline) \(($baseline_hardfork | str upcase)\)" } else { $baseline }
-        let feature_label = if $dual_hardfork { $"($feature) \(($feature_hardfork | str upcase)\)" } else { $feature }
-        generate-summary $results_dir $baseline_label $feature_label $bloat $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch
+        let baseline_hardfork_label = if $dual_hardfork { $baseline_hardfork | str upcase } else { "" }
+        let feature_hardfork_label = if $dual_hardfork { $feature_hardfork | str upcase } else { "" }
+        generate-summary $results_dir $baseline $feature $bloat $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch --baseline-hardfork $baseline_hardfork_label --feature-hardfork $feature_hardfork_label
 
         # Cleanup worktrees (only those we created)
         if $baseline != "local" or $feature != "local" {
