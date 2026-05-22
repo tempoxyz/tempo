@@ -228,7 +228,7 @@ impl RecoveryMode {
 fn resolve_receipt(bytes: Bytes) -> Result<(ClaimReceiptV1, Address, RecoveryMode)> {
     let receipt = ClaimReceiptV1::try_from(bytes)?;
     let receiver = AddressRegistry::new()
-        .resolve_receiver(receipt.recipient)
+        .resolve_recipient(receipt.recipient)
         .map_err(|_| ReceivePolicyGuardError::invalid_claim_address())?;
     let recovery_mode = RecoveryMode::from(&receipt, receiver);
 
