@@ -35,7 +35,7 @@ pub struct ReceivePolicyGuard {
 }
 
 /// Recovery authority for blocked inbound funds.
-#[derive(Debug, Clone, Copy, Default, Storable)]
+#[derive(Debug, Clone, Copy, Default, Storable, PartialEq)]
 #[repr(u8)]
 pub(crate) enum RecoveryMode {
     #[default]
@@ -45,6 +45,7 @@ pub(crate) enum RecoveryMode {
 }
 
 impl RecoveryMode {
+    /// Encodes a configured recovery authority into a mode and stored authority value.
     pub(crate) fn encode(authority: Address, msg_sender: Address) -> (Self, Address) {
         if authority == RECOVERY_ORIGINATOR {
             (Self::Originator, Address::ZERO)
@@ -52,6 +53,43 @@ impl RecoveryMode {
             (Self::Receiver, Address::ZERO)
         } else {
             (Self::ThirdParty, authority)
+        }
+    }
+
+    /// Resolves the recovery mode for a receipt and resolved receiver.
+    pub(crate) fn from(receipt: &ClaimReceiptV1, receiver: Address) -> Self {
+        if receipt.recoveryAuthority == receipt.originator {
+            Self::Originator
+        } else if receipt.recoveryAuthority == receiver {
+            Self::Receiver
+        } else {
+            Self::ThirdParty
+        }
+    }
+
+    /// Returns the address of the account who has effective ownership of the blocked funds.
+    pub(crate) fn policy_subject(self, originator: Address, receiver: Address) -> Address {
+        match self {
+            Self::Originator => originator,
+            Self::Receiver | Self::ThirdParty => receiver,
+        }
+    }
+
+    /// Returns whether a claim is a reroute under TIP-1028.
+    /// Originator-authorized claims are always reroutes; non-originator recovery claims resume
+    /// only when claiming to the receiver.
+    pub(crate) fn is_reroute(self, to: Address, receiver: Address) -> bool {
+        match self {
+            Self::Originator => true,
+            Self::Receiver | Self::ThirdParty => to != receiver,
+        }
+    }
+
+    /// Returns the account charged for access-key spending limits, if any.
+    pub(crate) fn spending_account(self, recovery_authority: Address) -> Option<Address> {
+        match self {
+            Self::Originator | Self::Receiver => Some(recovery_authority),
+            Self::ThirdParty => None,
         }
     }
 }
@@ -124,17 +162,10 @@ impl ReceivePolicyGuard {
             return Err(ReceivePolicyGuardError::invalid_claim_address().into());
         }
 
-        let receipt = ClaimReceiptV1::try_from(receipt)?;
-        let receiver = AddressRegistry::new()
-            .resolve_receiver(receipt.recipient)
-            .map_err(|_| ReceivePolicyGuardError::invalid_claim_address())?;
-
-        let recovery_authority = RecoveryAuthority::from_address(
-            receipt.recoveryAuthority,
-            receiver,
-            receipt.originator,
-        );
-        recovery_authority.validate_auth(msg_sender)?;
+        let (receipt, receiver, recovery_mode) = resolve_receipt(receipt)?;
+        if receipt.recoveryAuthority != msg_sender {
+            return Err(ReceivePolicyGuardError::unauthorized_claimer().into());
+        };
 
         let key = self.receipt_key(&receipt)?;
         let amount = self.balances[key].read()?;
@@ -144,23 +175,33 @@ impl ReceivePolicyGuard {
 
         self.balances[key].write(U256::ZERO)?;
 
-        let reroute = match recovery_authority {
-            RecoveryAuthority::Originator(_) => true,
-            RecoveryAuthority::Receiver(_) | RecoveryAuthority::Contract(_) => to != receiver,
-        };
-        let recovery_addr = match recovery_authority {
-            RecoveryAuthority::Receiver(addr) | RecoveryAuthority::Originator(addr) => Some(addr),
-            RecoveryAuthority::Contract(_) => None,
-        };
         TIP20Token::from_address(receipt.token)?.release_blocked_funds(
             receipt.originator,
+            receiver,
             to,
             amount,
-            reroute,
-            recovery_addr,
+            recovery_mode,
+            receipt.recoveryAuthority,
         )?;
 
         self.emit_event(receipt.claimed_event(receiver, msg_sender, to, amount))
+    }
+
+    pub fn burn_blocked_receipt(&mut self, msg_sender: Address, receipt: Bytes) -> Result<()> {
+        let (receipt, receiver, recovery_mode) = resolve_receipt(receipt)?;
+
+        let key = self.receipt_key(&receipt)?;
+        let amount = self.balances[key].read()?;
+        if amount.is_zero() {
+            return Err(ReceivePolicyGuardError::invalid_receipt().into());
+        }
+
+        // Burn from the account with ownership of the funds.
+        let owner = recovery_mode.policy_subject(receipt.originator, receiver);
+        TIP20Token::from_address(receipt.token)?.burn_blocked(msg_sender, owner, amount, true)?;
+        self.balances[key].write(U256::ZERO)?;
+
+        self.emit_event(receipt.burned_event(receiver, msg_sender, amount))
     }
 
     /// Allocates the next nonzero receipt nonce.
@@ -180,35 +221,14 @@ impl ReceivePolicyGuard {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum RecoveryAuthority {
-    Originator(Address),
-    Receiver(Address),
-    Contract(Address),
-}
+fn resolve_receipt(bytes: Bytes) -> Result<(ClaimReceiptV1, Address, RecoveryMode)> {
+    let receipt = ClaimReceiptV1::try_from(bytes)?;
+    let receiver = AddressRegistry::new()
+        .resolve_receiver(receipt.recipient)
+        .map_err(|_| ReceivePolicyGuardError::invalid_claim_address())?;
+    let recovery_mode = RecoveryMode::from(&receipt, receiver);
 
-impl RecoveryAuthority {
-    fn from_address(address: Address, receiver: Address, originator: Address) -> Self {
-        if address == RECOVERY_ORIGINATOR {
-            Self::Originator(originator)
-        } else if address == receiver {
-            Self::Receiver(receiver)
-        } else {
-            Self::Contract(address)
-        }
-    }
-
-    fn validate_auth(self, msg_sender: Address) -> Result<()> {
-        let authorized_claimer = match self {
-            Self::Receiver(claimer) | Self::Originator(claimer) | Self::Contract(claimer) => {
-                claimer
-            }
-        };
-        if msg_sender != authorized_claimer {
-            return Err(ReceivePolicyGuardError::unauthorized_claimer().into());
-        }
-        Ok(())
-    }
+    Ok((receipt, receiver, recovery_mode))
 }
 
 #[cfg(test)]
@@ -219,7 +239,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master},
-        tip20::ITIP20,
+        tip20::{BURN_BLOCKED_ROLE, ITIP20},
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID, TIP403Registry},
     };
     use alloy::sol_types::SolValue;
@@ -227,24 +247,6 @@ mod tests {
     use tempo_contracts::precompiles::{
         ITIP403Registry, ReceivePolicyGuardEvent, TIP20Error, TIP20Event,
     };
-
-    impl RecoveryAuthority {
-        fn claimer(&self) -> Address {
-            match self {
-                Self::Originator(addr) => *addr,
-                Self::Receiver(addr) => *addr,
-                Self::Contract(addr) => *addr,
-            }
-        }
-
-        fn address(&self) -> Address {
-            match self {
-                Self::Originator(_) => RECOVERY_ORIGINATOR,
-                Self::Receiver(addr) => *addr,
-                Self::Contract(addr) => *addr,
-            }
-        }
-    }
 
     fn block_all_senders(receiver: Address, recovery_authority: Address) -> Result<()> {
         TIP403Registry::new().set_receive_policy(
@@ -286,15 +288,12 @@ mod tests {
                 InboundKind::__Invalid => unreachable!(),
             };
 
-            for recovery_auth in [
-                RecoveryAuthority::Originator(originator),
-                RecoveryAuthority::Receiver(receiver),
-                RecoveryAuthority::Contract(Address::random()),
+            let third_party = Address::random();
+            for (configured_authority, claimer, destination, is_third_party) in [
+                (RECOVERY_ORIGINATOR, originator, originator, false),
+                (receiver, receiver, receiver, false),
+                (third_party, third_party, Address::random(), true),
             ] {
-                let destination = match recovery_auth {
-                    RecoveryAuthority::Originator(addr) | RecoveryAuthority::Receiver(addr) => addr,
-                    RecoveryAuthority::Contract(_) => Address::random(),
-                };
                 let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
                 storage.set_timestamp(U256::from(blocked_at));
 
@@ -304,11 +303,11 @@ mod tests {
                         setup = setup.with_mint(originator, amount);
                     }
                     let mut token = setup.apply()?;
-                    block_all_senders(receiver, recovery_auth.address())?;
+                    block_all_senders(receiver, configured_authority)?;
 
                     let unknown = ClaimReceiptV1::new(
                         token.address(),
-                        recovery_auth.address(),
+                        claimer,
                         originator,
                         receiver,
                         blocked_at,
@@ -367,14 +366,14 @@ mod tests {
                             recipient: receiver,
                             amount,
                             blockedReason: BlockedReason::RECEIVE_POLICY as u8,
-                            recoveryAuthority: recovery_auth.address(),
+                            recoveryAuthority: claimer,
                             memo: B256::ZERO,
                         },
                     )]);
 
                     let receipt = ClaimReceiptV1::new(
                         token.address(),
-                        recovery_auth.address(),
+                        claimer,
                         originator,
                         receiver,
                         blocked_at,
@@ -385,7 +384,7 @@ mod tests {
                     );
                     assert_eq!(guard.balance_of(receipt.abi_encode().into())?, amount);
 
-                    if let RecoveryAuthority::Contract(recovery) = recovery_auth {
+                    if is_third_party {
                         assert_unauthorized(guard.claim(
                             receiver,
                             receiver,
@@ -397,15 +396,10 @@ mod tests {
                             receipt.abi_encode().into(),
                         ));
                         assert_eq!(guard.balance_of(receipt.abi_encode().into())?, amount);
-                        assert_eq!(recovery_auth.claimer(), recovery);
                     }
 
                     guard.clear_emitted_events();
-                    guard.claim(
-                        recovery_auth.claimer(),
-                        destination,
-                        receipt.abi_encode().into(),
-                    )?;
+                    guard.claim(claimer, destination, receipt.abi_encode().into())?;
                     guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::ReceiptClaimed(
                         IReceivePolicyGuard::ReceiptClaimed {
                             token: token.address(),
@@ -415,8 +409,8 @@ mod tests {
                             blockedAt: blocked_at,
                             originator,
                             recipient: receiver,
-                            recoveryAuthority: recovery_auth.address(),
-                            caller: recovery_auth.claimer(),
+                            recoveryAuthority: claimer,
+                            caller: claimer,
                             to: destination,
                             amount,
                         },
@@ -442,6 +436,94 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn test_burn_blocked_receipt_emits_receipt_burned() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let blocked_at = 1_728_010u64;
+        storage.set_timestamp(U256::from(blocked_at));
+
+        let admin = Address::random();
+        let burner = Address::random();
+        let originator = Address::random();
+        let receiver = Address::random();
+        let amount = U256::from(100u64);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("T", "T", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_BLOCKED_ROLE)
+                .with_mint(originator, amount)
+                .apply()?;
+            block_all_senders(receiver, receiver)?;
+
+            token.transfer(
+                originator,
+                ITIP20::transferCall {
+                    to: receiver,
+                    amount,
+                },
+            )?;
+
+            let receipt = ClaimReceiptV1::new(
+                token.address(),
+                receiver,
+                originator,
+                receiver,
+                blocked_at,
+                1,
+                BlockedReason::RECEIVE_POLICY as u8,
+                InboundKind::TRANSFER,
+                B256::ZERO,
+            );
+
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: receiver,
+                    restricted: true,
+                },
+            )?;
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            let mut guard = ReceivePolicyGuard::new();
+            guard.clear_emitted_events();
+
+            guard.burn_blocked_receipt(burner, receipt.abi_encode().into())?;
+
+            guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::ReceiptBurned(
+                IReceivePolicyGuard::ReceiptBurned {
+                    token: token.address(),
+                    receiver,
+                    receiptVersion: BLOCKED_RECEIPT_VERSION,
+                    blockedNonce: 1,
+                    blockedAt: blocked_at,
+                    originator,
+                    recipient: receiver,
+                    recoveryAuthority: receiver,
+                    caller: burner,
+                    amount,
+                },
+            )]);
+            assert_eq!(guard.balance_of(receipt.abi_encode().into())?, U256::ZERO);
+
+            Ok(())
+        })
     }
 
     #[test]
@@ -605,7 +687,7 @@ mod tests {
                 guard.balance_of(receipt_c.abi_encode().into())?
             );
 
-            guard.claim(recovery, receiver_b, receipt_b.abi_encode().into())?;
+            guard.claim(recovery, recovery, receipt_b.abi_encode().into())?;
             assert_eq!(
                 token_a.balance_of(ITIP20::balanceOfCall {
                     account: RECEIVE_POLICY_GUARD_ADDRESS

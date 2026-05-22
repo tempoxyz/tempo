@@ -23,6 +23,7 @@ use crate::{
     storage::{Handler, Mapping},
 };
 use alloy::primitives::Address;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
 
 /// Built-in policy ID that always rejects authorization.
@@ -30,6 +31,10 @@ pub const REJECT_ALL_POLICY_ID: u64 = 0;
 
 /// Built-in policy ID that always allows authorization.
 pub const ALLOW_ALL_POLICY_ID: u64 = 1;
+
+/// System addresses that cannot be policed.
+pub const ALWAYS_AUTHORIZED: &[(TempoHardfork, &[Address])] =
+    &[(TempoHardfork::T6, &[RECEIVE_POLICY_GUARD_ADDRESS])];
 
 /// Registry for [TIP-403] transfer policies. TIP20 tokens reference an ID from this registry
 /// to police transfers between sender and receiver addresses.
@@ -657,7 +662,8 @@ impl TIP403Registry {
 
     /// Core role-based authorization check ([TIP-1015]). Resolves built-in policies (0 = reject,
     /// 1 = allow) immediately, delegates compound policies to their sub-policies, and evaluates
-    /// simple policies via `is_simple`.
+    /// simple policies via `is_simple`. (T6+) introduces protocol addresses that can't be policed.
+    ///
     ///
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     ///
@@ -666,6 +672,16 @@ impl TIP403Registry {
     /// - `InvalidPolicyType` — stored type cannot be decoded
     /// - `IncompatiblePolicyType` — a compound policy was passed where a simple one is required
     pub fn is_authorized_as(&self, policy_id: u64, user: Address, role: AuthRole) -> Result<bool> {
+        let hardfork = self.storage.spec();
+
+        // (spec: +T6) some protocol addresses can't be policed and are always authorized.
+        if ALWAYS_AUTHORIZED
+            .iter()
+            .any(|(fork, addrs)| hardfork >= *fork && addrs.contains(&user))
+        {
+            return Ok(true);
+        }
+
         if let Some(auth) = self.builtin_authorization(policy_id) {
             return Ok(auth);
         }
@@ -685,7 +701,7 @@ impl TIP403Registry {
                 AuthRole::Transfer => {
                     // (spec: +T2) short-circuit and skip recipient check if sender fails
                     let sender_auth = self.is_authorized_simple(compound.sender_policy_id, user)?;
-                    if self.storage.spec().is_t2() && !sender_auth {
+                    if hardfork.is_t2() && !sender_auth {
                         return Ok(false);
                     }
                     let recipient_auth =
@@ -895,7 +911,6 @@ mod tests {
         sol_types::SolEvent,
     };
     use rand_08::Rng;
-    use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{PATH_USD_ADDRESS, TIP403_REGISTRY_ADDRESS};
     use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 
@@ -943,6 +958,82 @@ mod tests {
 
             // Policy 1 should always allow
             assert!(registry.is_authorized_as(1, user, AuthRole::Transfer)?);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_always_authorized_t6_bypasses_policy_variants() -> eyre::Result<()> {
+        const ROLES: &[AuthRole] = &[
+            AuthRole::Transfer,
+            AuthRole::Sender,
+            AuthRole::Recipient,
+            AuthRole::MintRecipient,
+        ];
+        let admin = Address::random();
+
+        // pre-T6 the address is NOT protected
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T2);
+        StorageCtx::enter(&mut storage, || {
+            let registry = TIP403Registry::new();
+            assert!(!registry.is_authorized_as(
+                REJECT_ALL_POLICY_ID,
+                RECEIVE_POLICY_GUARD_ADDRESS,
+                AuthRole::Transfer,
+            )?);
+            Ok::<(), TempoPrecompileError>(())
+        })?;
+
+        // T6+ the address is protected
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = TIP403Registry::new();
+            let whitelist_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::WHITELIST,
+                },
+            )?;
+            let blacklist_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+            let compound_id = registry.create_compound_policy(
+                admin,
+                ITIP403Registry::createCompoundPolicyCall {
+                    senderPolicyId: REJECT_ALL_POLICY_ID,
+                    recipientPolicyId: REJECT_ALL_POLICY_ID,
+                    mintRecipientPolicyId: REJECT_ALL_POLICY_ID,
+                },
+            )?;
+
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: blacklist_id,
+                    account: RECEIVE_POLICY_GUARD_ADDRESS,
+                    restricted: true,
+                },
+            )?;
+            for (policy_id, roles) in [
+                (REJECT_ALL_POLICY_ID, ROLES),
+                (whitelist_id, &[AuthRole::Transfer][..]),
+                (blacklist_id, &[AuthRole::Transfer][..]),
+                (compound_id, ROLES),
+            ] {
+                for role in roles {
+                    assert!(registry.is_authorized_as(
+                        policy_id,
+                        RECEIVE_POLICY_GUARD_ADDRESS,
+                        *role,
+                    )?);
+                }
+            }
+
             Ok(())
         })
     }

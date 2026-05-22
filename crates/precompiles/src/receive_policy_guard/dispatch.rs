@@ -25,6 +25,11 @@ impl Precompile for ReceivePolicyGuard {
                 IReceivePolicyGuardCalls::claim(call) => {
                     mutate_void(call, msg_sender, |s, c| self.claim(s, c.to, c.receipt))
                 }
+                IReceivePolicyGuardCalls::burnBlockedReceipt(call) => {
+                    mutate_void(call, msg_sender, |s, c| {
+                        self.burn_blocked_receipt(s, c.receipt)
+                    })
+                }
             },
         )
     }

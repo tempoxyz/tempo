@@ -87,7 +87,7 @@ async fn set_receive_policy<P: Provider + Clone>(
 async fn create_blocked_transfer<P: Provider + Clone>(
     token: &ITIP20::ITIP20Instance<P>,
     receiver: Address,
-    recovery: Address,
+    expected_recovery_authority: Address,
     amount: U256,
 ) -> eyre::Result<BlockedTransfer> {
     let receipt = token
@@ -103,7 +103,7 @@ async fn create_blocked_transfer<P: Provider + Clone>(
     assert_eq!(blocked.token, *token.address());
     assert_eq!(blocked.receiver, receiver);
     assert_eq!(blocked.recipient, receiver);
-    assert_eq!(blocked.recoveryAuthority, recovery);
+    assert_eq!(blocked.recoveryAuthority, expected_recovery_authority);
     assert_eq!(blocked.amount, amount);
     assert_eq!(blocked.receiptVersion, BLOCKED_RECEIPT_VERSION);
     assert_eq!(
@@ -114,7 +114,7 @@ async fn create_blocked_transfer<P: Provider + Clone>(
     let receipt_bytes: Bytes = IReceivePolicyGuard::ClaimReceiptV1 {
         version: 1,
         token: *token.address(),
-        recoveryAuthority: recovery,
+        recoveryAuthority: expected_recovery_authority,
         originator: blocked.from,
         recipient: blocked.recipient,
         blockedAt: blocked.blockedAt,
@@ -272,7 +272,7 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
     let originator_blocked = create_blocked_transfer(
         &originator_token,
         originator_recovery_receiver.address(),
-        RECOVERY_ORIGINATOR,
+        originator.address(),
         U256::from(1_000),
     )
     .await?;
