@@ -197,7 +197,9 @@ impl ReceivePolicyGuard {
         // Burn from the account with ownership of the funds.
         let owner = recovery_mode.policy_subject(receipt.originator, receiver);
         TIP20Token::from_address(receipt.token)?.burn_blocked(msg_sender, owner, amount, true)?;
-        self.balances[key].write(U256::ZERO)
+        self.balances[key].write(U256::ZERO)?;
+
+        self.emit_event(receipt.burned_event(receiver, msg_sender, amount))
     }
 
     /// Allocates the next nonzero receipt nonce.
@@ -235,7 +237,7 @@ mod tests {
         error::TempoPrecompileError,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master},
-        tip20::ITIP20,
+        tip20::{BURN_BLOCKED_ROLE, ITIP20},
         tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID, TIP403Registry},
     };
     use alloy::sol_types::SolValue;
@@ -432,6 +434,94 @@ mod tests {
         }
 
         Ok(())
+    }
+
+    #[test]
+    fn test_burn_blocked_receipt_emits_receipt_burned() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let blocked_at = 1_728_010u64;
+        storage.set_timestamp(U256::from(blocked_at));
+
+        let admin = Address::random();
+        let burner = Address::random();
+        let originator = Address::random();
+        let receiver = Address::random();
+        let amount = U256::from(100u64);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("T", "T", admin)
+                .with_issuer(admin)
+                .with_role(burner, *BURN_BLOCKED_ROLE)
+                .with_mint(originator, amount)
+                .apply()?;
+            block_all_senders(receiver, receiver)?;
+
+            token.transfer(
+                originator,
+                ITIP20::transferCall {
+                    to: receiver,
+                    amount,
+                },
+            )?;
+
+            let receipt = ClaimReceiptV1::new(
+                token.address(),
+                receiver,
+                originator,
+                receiver,
+                blocked_at,
+                1,
+                BlockedReason::RECEIVE_POLICY as u8,
+                InboundKind::TRANSFER,
+                B256::ZERO,
+            );
+
+            let mut registry = TIP403Registry::new();
+            let policy_id = registry.create_policy(
+                admin,
+                ITIP403Registry::createPolicyCall {
+                    admin,
+                    policyType: ITIP403Registry::PolicyType::BLACKLIST,
+                },
+            )?;
+            registry.modify_policy_blacklist(
+                admin,
+                ITIP403Registry::modifyPolicyBlacklistCall {
+                    policyId: policy_id,
+                    account: receiver,
+                    restricted: true,
+                },
+            )?;
+            token.change_transfer_policy_id(
+                admin,
+                ITIP20::changeTransferPolicyIdCall {
+                    newPolicyId: policy_id,
+                },
+            )?;
+
+            let mut guard = ReceivePolicyGuard::new();
+            guard.clear_emitted_events();
+
+            guard.burn_blocked_receipt(burner, receipt.abi_encode().into())?;
+
+            guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::ReceiptBurned(
+                IReceivePolicyGuard::ReceiptBurned {
+                    token: token.address(),
+                    receiver,
+                    receiptVersion: BLOCKED_RECEIPT_VERSION,
+                    blockedNonce: 1,
+                    blockedAt: blocked_at,
+                    originator,
+                    recipient: receiver,
+                    recoveryAuthority: receiver,
+                    caller: burner,
+                    amount,
+                },
+            )]);
+            assert_eq!(guard.balance_of(receipt.abi_encode().into())?, U256::ZERO);
+
+            Ok(())
+        })
     }
 
     #[test]
