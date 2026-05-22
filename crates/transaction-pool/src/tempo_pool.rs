@@ -34,7 +34,7 @@ use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     error::Result as TempoPrecompileResult,
     storage::Handler,
@@ -262,12 +262,7 @@ where
             // - evicts when NO validator token has enough liquidity
             // - considers active validators (protects from permissionless `setValidatorToken`)
             if has_active_validator_token_changes && let Some(ref mut provider) = state_provider {
-                let user_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
-                    tx.transaction
-                        .inner()
-                        .fee_token()
-                        .unwrap_or(DEFAULT_FEE_TOKEN)
-                });
+                let user_token = tx.transaction.effective_fee_token();
                 let cost = tx.transaction.fee_token_cost();
 
                 match amm_cache.has_enough_liquidity(user_token, cost, provider) {
@@ -287,12 +282,7 @@ where
             if !updates.fee_balance_changes.is_empty()
                 && let Some(ref mut provider) = state_provider
             {
-                let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
-                    tx.transaction
-                        .inner()
-                        .fee_token()
-                        .unwrap_or(DEFAULT_FEE_TOKEN)
-                });
+                let fee_token = tx.transaction.effective_fee_token();
                 let Ok(fee_payer) = tx.transaction.inner().fee_payer(tx.transaction.sender())
                 else {
                     continue;
