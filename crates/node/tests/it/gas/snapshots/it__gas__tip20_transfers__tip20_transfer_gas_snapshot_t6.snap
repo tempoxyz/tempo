@@ -1,6 +1,5 @@
 ---
 source: crates/node/tests/it/gas/tip20_transfers.rs
-assertion_line: 624
 expression: gas
 ---
 "policy:all_whitelisted::amount:full::rewards_recipient_opted_out": 35046
