@@ -27,6 +27,7 @@ const E2E_LOCAL_RETH_ARGS = [
     "--tempo.bootnodes-endpoint" "none"
     "--builder.max-tasks" "1"
     "--engine.share-sparse-trie-with-payload-builder"
+    "--engine.share-execution-cache-with-payload-builder"
     "--builder.enable-prewarming"
 ]
 
