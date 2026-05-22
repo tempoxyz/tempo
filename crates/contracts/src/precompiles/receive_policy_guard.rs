@@ -72,6 +72,19 @@ crate::sol! {
         /// @param amount Amount of funds released.
         event ReceiptClaimed(address indexed token, address indexed receiver, uint8 receiptVersion, uint64 indexed blockedNonce, uint64 blockedAt, address originator, address recipient, address recoveryAuthority, address caller, address to, uint256 amount);
 
+        /// @notice Emitted when blocked funds are burned with a valid receipt.
+        /// @param token TIP-20 token burned by the guard.
+        /// @param receiver Resolved account where funds would settle; for virtual recipients its their master.
+        /// @param receiptVersion Claim receipt layout version.
+        /// @param blockedNonce Guard nonce from the burned receipt.
+        /// @param blockedAt Block timestamp from the burned receipt.
+        /// @param originator Original sender/originator from the burned receipt.
+        /// @param recipient Addressed recipient from the burned receipt; may be virtual.
+        /// @param recoveryAuthority Claim authority from the burned receipt.
+        /// @param caller Account that submitted the burn.
+        /// @param amount Amount of funds burned.
+        event ProofBurned(address indexed token, address indexed receiver, uint8 receiptVersion, uint64 indexed blockedNonce, uint64 blockedAt, address originator, address recipient, address recoveryAuthority, address caller, uint256 amount);
+
         error InvalidReceipt();
         error InvalidClaimAddress();
         error UnauthorizedClaimer();
@@ -92,17 +105,10 @@ impl IReceivePolicyGuard::ClaimReceiptV1 {
         kind: IReceivePolicyGuard::InboundKind,
         memo: B256,
     ) -> Self {
-        // Ensure receipt doesn't use the `address(0)` sentinel.
-        let recovery_auth = if recovery_address.is_zero() {
-            originator
-        } else {
-            recovery_address
-        };
-
         Self {
             version: 1,
             token,
-            recoveryAuthority: recovery_auth,
+            recoveryAuthority: recovery_address,
             originator,
             recipient,
             blockedAt: at,
@@ -148,6 +154,26 @@ impl IReceivePolicyGuard::ClaimReceiptV1 {
             blockedReason: self.blockedReason,
             recoveryAuthority: self.recoveryAuthority,
             memo: self.memo,
+        })
+    }
+
+    pub fn burned_event(
+        &self,
+        receiver: Address,
+        caller: Address,
+        amount: U256,
+    ) -> ReceivePolicyGuardEvent {
+        ReceivePolicyGuardEvent::ProofBurned(IReceivePolicyGuard::ProofBurned {
+            token: self.token,
+            originator: self.originator,
+            receiver,
+            receiptVersion: self.version,
+            blockedNonce: self.blockedNonce,
+            blockedAt: self.blockedAt,
+            recipient: self.recipient,
+            recoveryAuthority: self.recoveryAuthority,
+            caller,
+            amount,
         })
     }
 }

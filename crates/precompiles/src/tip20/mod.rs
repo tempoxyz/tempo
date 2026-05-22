@@ -1241,7 +1241,6 @@ impl TIP20Token {
         to: Address,
         amount: U256,
         recovery_mode: RecoveryMode,
-        recovery_auth: Address,
     ) -> Result<()> {
         debug_assert!(
             to != RECEIVE_POLICY_GUARD_ADDRESS,
@@ -1251,21 +1250,21 @@ impl TIP20Token {
         self.check_not_paused()?;
         let destination = Recipient::resolve(to)?;
         destination.validate()?;
-        self.ensure_transfer_authorized(
-            recovery_mode.policy_subject(originator, receiver),
-            destination.target,
-        )?;
 
         if recovery_mode.is_reroute(to, receiver) {
+            let policy_subject = recovery_mode.policy_subject(originator, receiver);
+            self.ensure_transfer_authorized(policy_subject, destination.target)?;
             if TIP403Registry::new()
-                .validate_receive_policy(self.address, originator, destination.target)?
+                .validate_receive_policy(self.address, policy_subject, destination.target)?
                 .is_some()
             {
                 return Err(TIP20Error::policy_forbids().into());
             }
-            if let Some(addr) = recovery_mode.spending_account(recovery_auth) {
+            if let Some(addr) = recovery_mode.spending_account(originator, receiver) {
                 self.check_and_update_spending_limit(addr, amount)?;
             }
+        } else {
+            self.ensure_authorized_as(destination.target, AuthRole::recipient())?;
         }
 
         self._transfer(RECEIVE_POLICY_GUARD_ADDRESS, &destination, amount)?;
@@ -1711,7 +1710,7 @@ pub(crate) mod tests {
 
                 let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
                     token.address,
-                    sender,
+                    Address::ZERO,
                     sender,
                     receiver,
                     BLOCKED_AT,
@@ -1733,7 +1732,7 @@ pub(crate) mod tests {
                         recipient: receiver,
                         amount,
                         blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
-                        recoveryAuthority: sender,
+                        recoveryAuthority: Address::ZERO,
                         memo: B256::ZERO,
                     },
                 )]);
@@ -1748,22 +1747,21 @@ pub(crate) mod tests {
             let admin = Address::random();
             let originator = Address::random();
             let receiver = Address::random();
-            let third_party = Address::random();
             let open_destination = Address::random();
             let blocked_destination = Address::random();
             let amount = U256::from(10u64);
 
-            for (mode, recovery_auth, destination, destination_policy_blocks, should_succeed) in [
+            for (mode, destination, destination_policy_blocks, should_succeed) in [
                 // Receiver recovery back to the receiver is a resume: it skips receive-policy
                 // validation, so the original blocking policy does not deadlock the claim.
-                (RecoveryMode::Receiver, receiver, receiver, true, true),
+                (RecoveryMode::Receiver, receiver, true, true),
                 // Receiver and originator reroutes re-check the destination receive policy.
-                (RecoveryMode::Receiver, receiver, blocked_destination, true, false),
-                (RecoveryMode::Originator, originator, blocked_destination, true, false),
-                (RecoveryMode::Originator, originator, originator, false, true),
-                // Third-party recovery is always a reroute, including claims back to receiver.
-                (RecoveryMode::ThirdParty, third_party, receiver, true, false),
-                (RecoveryMode::ThirdParty, third_party, open_destination, false, true),
+                (RecoveryMode::Receiver, blocked_destination, true, false),
+                (RecoveryMode::Originator, blocked_destination, true, false),
+                (RecoveryMode::Originator, originator, false, true),
+                // Third-party recovery back to the receiver is a resume.
+                (RecoveryMode::ThirdParty, receiver, true, true),
+                (RecoveryMode::ThirdParty, open_destination, false, true),
             ] {
                 let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
                 StorageCtx::enter(&mut storage, || {
@@ -1793,7 +1791,6 @@ pub(crate) mod tests {
                         destination,
                         amount,
                         mode,
-                        recovery_auth,
                     );
 
                     if should_succeed {
@@ -1844,7 +1841,7 @@ pub(crate) mod tests {
 
                 let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
                     token.address,
-                    sender,
+                    Address::ZERO,
                     sender,
                     receiver,
                     BLOCKED_AT,
@@ -1866,7 +1863,7 @@ pub(crate) mod tests {
                         recipient: receiver,
                         amount,
                         blockedReason: ITIP403Registry::BlockedReason::TOKEN_FILTER as u8,
-                        recoveryAuthority: sender,
+                        recoveryAuthority: Address::ZERO,
                         memo: B256::ZERO,
                     },
                 )]);
@@ -1946,7 +1943,7 @@ pub(crate) mod tests {
                 })]);
                 let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
                     token.address,
-                    sender,
+                    Address::ZERO,
                     sender,
                     receiver,
                     BLOCKED_AT,
@@ -2048,7 +2045,7 @@ pub(crate) mod tests {
                 })]);
                 let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
                     token.address,
-                    sender,
+                    Address::ZERO,
                     sender,
                     receiver,
                     BLOCKED_AT,
@@ -2114,14 +2111,14 @@ pub(crate) mod tests {
                         recipient: receiver,
                         amount,
                         blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
-                        recoveryAuthority: admin,
+                        recoveryAuthority: Address::ZERO,
                         memo: B256::ZERO,
                     },
                 )]);
 
                 let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
                     token.address,
-                    admin,
+                    Address::ZERO,
                     admin,
                     receiver,
                     BLOCKED_AT,
