@@ -159,6 +159,7 @@ impl<D, R> RelayTransport<D, R> {
 
 const SEND_METHODS: &[&str] = &["eth_sendRawTransaction", "eth_sendRawTransactionSync"];
 const SIGN_METHOD: &str = "eth_signRawTransaction";
+const SPONSOR_SIGNED_TX_HEX_LEN_SLACK: usize = 1024;
 
 #[rustfmt::skip]
 trait RpcService: tower::Service<RequestPacket, Response = ResponsePacket, Error = TransportError, Future = TransportFut<'static>>
@@ -308,6 +309,7 @@ impl<D, R> RelayTransport<D, R> {
                         }
                     };
 
+                validate_sponsor_signed_tx_len(&signed_tx, raw_tx.len())?;
                 let signed_tx_envelope = validate_signed_tempo_aa(&signed_tx)?;
                 validate_sponsor_signed_same_payload(&unsigned_tx, &signed_tx_envelope)?;
                 let send_request = tx_request(method, &signed_tx, &request, true)?;
@@ -359,6 +361,19 @@ fn decode_tempo_envelope(raw_tx: &str) -> Result<TempoTxEnvelope, TransportError
         .ok_or_else(|| TransportErrorKind::custom_str("raw transaction must be 0x-prefixed"))?;
     let bytes = hex::decode(raw_tx).map_err(TransportErrorKind::non_retryable)?;
     TempoTxEnvelope::decode_2718(&mut bytes.as_slice()).map_err(TransportErrorKind::non_retryable)
+}
+
+fn validate_sponsor_signed_tx_len(
+    signed_raw_tx: &str,
+    unsigned_raw_tx_len: usize,
+) -> Result<(), TransportError> {
+    let max_len = unsigned_raw_tx_len.saturating_add(SPONSOR_SIGNED_TX_HEX_LEN_SLACK);
+    if signed_raw_tx.len() > max_len {
+        return Err(TransportErrorKind::custom_str(
+            "sponsor returned raw transaction exceeding expected size",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_signed_tempo_aa(raw_tx: &str) -> Result<AASigned, TransportError> {
@@ -792,6 +807,26 @@ mod tests {
             inner.header_value(0, "authorization"),
             Some("Bearer sponsor-token".to_string())
         );
+    }
+
+    #[tokio::test]
+    async fn sign_only_rejects_oversized_sponsor_response_before_decoding() {
+        let unsigned_raw_tx = signed_tempo_aa_raw_tx_with_nonce(false, 1);
+        let oversized_signed_raw_tx = format!(
+            "0x{}",
+            "00".repeat(unsigned_raw_tx.len() + SPONSOR_SIGNED_TX_HEX_LEN_SLACK)
+        );
+        let (default, relay) = (RecordingTransport::default(), RecordingTransport::default());
+        relay.push_success(&oversized_signed_raw_tx);
+        let mut rpc = RelayTransport::with_config(default, relay, SponsorshipMode::SignOnly, true);
+
+        let err = tower::Service::call(&mut rpc, make_send_raw_tx_request(&unsigned_raw_tx, false))
+            .await
+            .unwrap_err();
+
+        assert!(err.to_string().contains("exceeding expected size"));
+        assert_eq!(rpc.relay.methods(), vec![SIGN_METHOD]);
+        assert!(rpc.default.methods().is_empty());
     }
 
     #[tokio::test]
