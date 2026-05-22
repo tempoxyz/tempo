@@ -11,7 +11,7 @@ use tempo_contracts::precompiles::{
 };
 use tempo_precompiles::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
-    receive_policy_guard::{BLOCKED_PROOF_VERSION, InboundKind, RECOVERY_ORIGINATOR},
+    receive_policy_guard::{BLOCKED_RECEIPT_VERSION, InboundKind, RECOVERY_ORIGINATOR},
     tip20::ISSUER_ROLE,
     tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
 };
@@ -21,7 +21,7 @@ use crate::utils::TestNodeBuilder;
 
 struct BlockedTransfer {
     receiver: Address,
-    proof: Bytes,
+    receipt: Bytes,
     gas_used: u64,
 }
 
@@ -105,13 +105,13 @@ async fn create_blocked_transfer<P: Provider + Clone>(
     assert_eq!(blocked.recipient, receiver);
     assert_eq!(blocked.recoveryAuthority, recovery);
     assert_eq!(blocked.amount, amount);
-    assert_eq!(blocked.proofVersion, BLOCKED_PROOF_VERSION);
+    assert_eq!(blocked.receiptVersion, BLOCKED_RECEIPT_VERSION);
     assert_eq!(
         blocked.blockedReason,
         ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8
     );
 
-    let proof_bytes: Bytes = IReceivePolicyGuard::ClaimProofV1 {
+    let receipt_bytes: Bytes = IReceivePolicyGuard::ClaimReceiptV1 {
         version: 1,
         token: *token.address(),
         recoveryAuthority: recovery,
@@ -128,7 +128,7 @@ async fn create_blocked_transfer<P: Provider + Clone>(
 
     Ok(BlockedTransfer {
         receiver,
-        proof: proof_bytes,
+        receipt: receipt_bytes,
         gas_used: receipt.gas_used,
     })
 }
@@ -160,7 +160,7 @@ async fn claim_blocked<P: Provider + Clone>(
     blocked: &BlockedTransfer,
 ) -> eyre::Result<u64> {
     let receipt = guard
-        .claim(to, blocked.proof.clone())
+        .claim(to, blocked.receipt.clone())
         .gas(GAS_LIMIT)
         .send()
         .await?
