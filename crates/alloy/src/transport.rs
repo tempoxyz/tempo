@@ -6,8 +6,8 @@
 //!
 //! When a single `eth_sendRawTransaction` or `eth_sendRawTransactionSync` request is submitted, the
 //! raw unsigned Tempo AA transaction is locally preflighted. In `SponsorshipMode::SignAndRelay` it is
-//! forwarded unchanged to the sponsor service, which signs, broadcasts, and returns the transaction
-//! hash or sync response. In `SponsorshipMode::SignOnly` the sponsor signs via
+//! re-encoded for the fee-payer service and forwarded to the sponsor, which signs, broadcasts, and
+//! returns the transaction hash or sync response. In `SponsorshipMode::SignOnly` the sponsor signs via
 //! `eth_signRawTransaction`, then the signed raw transaction is broadcast through the default
 //! transport using the original submission method. Non-transaction requests are forwarded unchanged
 //! to the default transport. JSON-RPC batches containing raw transaction submissions are rejected;
