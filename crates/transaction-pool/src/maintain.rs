@@ -8,8 +8,8 @@ use crate::{
 };
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
-    Address, B256, TxHash,
-    map::{AddressMap, HashMap, HashSet},
+    Address, TxHash,
+    map::{AddressMap, AddressSet, B256Map, B256Set},
 };
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
@@ -61,7 +61,7 @@ pub struct TempoPoolUpdates {
     /// resolve to a different token at execution time, causing fee payment failures.
     /// Uses a set since a user can emit multiple events in the same block; we only need to
     /// process each user once. No cleanup needed as this is ephemeral per-block data.
-    pub user_token_changes: HashSet<Address>,
+    pub user_token_changes: AddressSet,
     /// TIP403 blacklist additions: (policy_id, account).
     pub blacklist_additions: Vec<(u64, Address)>,
     /// TIP403 whitelist removals: (policy_id, account).
@@ -71,16 +71,16 @@ pub struct TempoPoolUpdates {
     /// Tokens whose transfer policy was changed via `changeTransferPolicyId()`.
     /// Pending transactions using these tokens as fee tokens need to be re-validated
     /// because the new policy may forbid the fee payer or fee manager.
-    pub transfer_policy_updates: HashSet<Address>,
+    pub transfer_policy_updates: AddressSet,
     /// Tokens whose `quoteToken` was updated via `completeQuoteTokenUpdate()`.
     /// Pending transactions paying in these tokens need to be re-validated because the new
     /// quote token may invalidate the old route.
-    pub quote_token_updates: HashSet<Address>,
+    pub quote_token_updates: AddressSet,
     /// Fee token balance changes keyed by token.
     ///
     /// We only track the debited `from` account from TIP20 `Transfer` logs because credits to the
     /// `to` account cannot make an already-admitted transaction newly invalid.
-    pub fee_balance_changes: AddressMap<HashSet<Address>>,
+    pub fee_balance_changes: AddressMap<AddressSet>,
     /// Spending-limit spends emitted by the account keychain during execution.
     ///
     /// We record the exact `(account, key_id, token)` triples emitted by `AccessKeySpend`
@@ -93,7 +93,7 @@ pub struct TempoPoolUpdates {
     ///
     /// Pending AA transactions carrying the same `(account, witness)` key authorization are no
     /// longer executable once the account explicitly burns that witness.
-    pub key_authorization_witness_burns: AddressMap<HashSet<B256>>,
+    pub key_authorization_witness_burns: AddressMap<B256Set>,
 }
 
 impl TempoPoolUpdates {
@@ -233,7 +233,7 @@ struct TempoPoolState {
     /// Maps timestamp to transactions that are going to be invalidated at that time (due to `valid_after` or keychain-related expiry).
     expiry_map: BTreeMap<u64, Vec<TxHash>>,
     /// Reverse mapping: tx_hash -> valid_before timestamp (for cleanup during drain).
-    tx_to_expiry: HashMap<TxHash, u64>,
+    tx_to_expiry: B256Map<u64>,
     /// Pool for transactions whose fee token is temporarily paused.
     paused_pool: PausedFeeTokenPool,
     /// Tracks pending transaction staleness for DoS mitigation.
@@ -299,7 +299,7 @@ const DEFAULT_PENDING_STALENESS_INTERVAL: u64 = 30 * 60;
 #[derive(Debug)]
 struct PendingStalenessTracker {
     /// Previous snapshot of pending transaction hashes.
-    previous_pending: HashSet<TxHash>,
+    previous_pending: B256Set,
     /// Timestamp of the last snapshot.
     last_snapshot_time: Option<u64>,
     /// Interval in seconds between staleness checks.
@@ -310,7 +310,7 @@ impl PendingStalenessTracker {
     /// Creates a new tracker with the given check interval.
     fn new(interval_secs: u64) -> Self {
         Self {
-            previous_pending: HashSet::default(),
+            previous_pending: B256Set::default(),
             last_snapshot_time: None,
             interval_secs,
         }
@@ -328,13 +328,13 @@ impl PendingStalenessTracker {
     /// (i.e., pending for at least one full interval).
     ///
     /// Call `should_check` first to avoid collecting the pending set on every block.
-    fn check_and_update(&mut self, current_pending: HashSet<TxHash>, now: u64) -> Vec<TxHash> {
+    fn check_and_update(&mut self, current_pending: B256Set, now: u64) -> Vec<TxHash> {
         let previous_pending = std::mem::take(&mut self.previous_pending);
 
         // Split the current snapshot into stale transactions to evict and fresh
         // transactions to track. A transaction is stale if it appears in both
         // the previous and current pending snapshots.
-        let (stale, next_pending): (Vec<TxHash>, HashSet<TxHash>) =
+        let (stale, next_pending): (Vec<TxHash>, B256Set) =
             current_pending.into_iter().partition_map(|hash| {
                 if previous_pending.contains(&hash) {
                     Either::Left(hash)
@@ -700,7 +700,7 @@ where
                 // Only runs once per interval (~30 min) to avoid overhead on every block.
                 // Transactions pending across two consecutive snapshots are considered stale.
                 if state.pending_staleness.should_check(tip_timestamp) {
-                    let current_pending: HashSet<TxHash> =
+                    let current_pending: B256Set =
                         pool.pending_transactions().iter().map(|tx| *tx.hash()).collect();
                     let stale_to_evict =
                         state.pending_staleness.check_and_update(current_pending, tip_timestamp);
@@ -731,7 +731,7 @@ where
 mod tests {
     use super::*;
     use crate::test_utils::TxBuilder;
-    use alloy_primitives::{Address, TxHash};
+    use alloy_primitives::{Address, B256, TxHash};
     use reth_primitives_traits::RecoveredBlock;
     use std::sync::Arc;
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
