@@ -31,6 +31,8 @@ use thiserror::Error;
 #[derive(Debug, Clone)]
 pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
+    /// Cached cost of the transaction in the fee token.
+    fee_token_cost: U256,
     /// Cached payment classification for efficient block building
     is_payment: bool,
     /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
@@ -68,17 +70,19 @@ impl TempoPooledTransaction {
                 .is_expiring_nonce_tx()
                 .then(|| tx.expiring_nonce_hash(sender))
         });
+        let value = transaction.value();
+        let cost =
+            calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
+                .saturating_add(value);
+        let fee_token_cost = cost - value;
         Self {
             inner: EthPooledTransaction {
-                cost: calc_gas_balance_spending(
-                    transaction.gas_limit(),
-                    transaction.max_fee_per_gas(),
-                )
-                .saturating_add(transaction.value()),
+                cost,
                 encoded_length: transaction.encode_2718_len(),
                 blob_sidecar: EthBlobTransactionSidecar::None,
                 transaction,
             },
+            fee_token_cost,
             is_payment,
             expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
@@ -92,7 +96,7 @@ impl TempoPooledTransaction {
 
     /// Get the cost of the transaction in the fee token.
     pub fn fee_token_cost(&self) -> U256 {
-        self.inner.cost - self.inner.value()
+        self.fee_token_cost
     }
 
     /// Returns a reference to inner [`TempoTxEnvelope`].
@@ -784,6 +788,7 @@ mod tests {
         //              = (1_000_000 * 20_000_000_000) / 1_000_000_000_000 = 20000
         let expected_fee_cost = U256::from(20000);
         assert_eq!(tx.fee_token_cost(), expected_fee_cost);
+        assert_eq!(tx.fee_token_cost, expected_fee_cost);
         assert_eq!(tx.inner.cost, expected_fee_cost + value);
     }
 
