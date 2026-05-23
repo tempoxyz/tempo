@@ -12628,9 +12628,11 @@ dependencies = [
  "alloy-consensus",
  "alloy-contract",
  "alloy-eips 2.0.5",
+ "alloy-json-rpc",
  "alloy-network",
  "alloy-primitives",
  "alloy-provider",
+ "alloy-rpc-client",
  "alloy-rpc-types-eth",
  "alloy-serde 2.0.5",
  "alloy-signer",
@@ -12642,6 +12644,8 @@ dependencies = [
  "derive_more",
  "eyre",
  "futures",
+ "http 1.4.0",
+ "reqwest 0.13.3",
  "reth-evm",
  "reth-primitives-traits",
  "reth-rpc-convert",
@@ -12655,6 +12659,7 @@ dependencies = [
  "tempo-revm",
  "test-case",
  "tokio",
+ "tower",
  "tracing",
 ]
 
@@ -12667,6 +12672,8 @@ dependencies = [
  "alloy-genesis",
  "alloy-hardforks",
  "alloy-primitives",
+ "commonware-codec",
+ "commonware-cryptography",
  "eyre",
  "once_cell",
  "paste",
@@ -12675,6 +12682,7 @@ dependencies = [
  "reth-network-peers",
  "serde",
  "serde_json",
+ "tempo-dkg-onchain-artifacts",
  "tempo-primitives",
 ]
 
