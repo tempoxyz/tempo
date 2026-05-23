@@ -70,6 +70,34 @@ impl<Client> TempoTransactionPool<Client> {
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
         }
     }
+
+    /// Retains hashes that are still present in either sub-pool.
+    ///
+    /// This checks the AA 2D pool first under a single read lock because locally tracked
+    /// expiry entries are overwhelmingly AA transactions.
+    pub(crate) fn retain_pooled_hashes<I>(&self, hashes: I) -> Vec<TxHash>
+    where
+        Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
+        I: IntoIterator<Item = TxHash>,
+    {
+        let hashes = hashes.into_iter();
+        let (lower_bound, _) = hashes.size_hint();
+        let mut checked = Vec::with_capacity(lower_bound);
+
+        {
+            let aa_2d_pool = self.aa_2d_pool.read();
+            for hash in hashes {
+                checked.push((hash, aa_2d_pool.contains(&hash)));
+            }
+        }
+
+        checked
+            .into_iter()
+            .filter_map(|(hash, in_aa_2d_pool)| {
+                (in_aa_2d_pool || self.protocol_pool.contains(&hash)).then_some(hash)
+            })
+            .collect()
+    }
 }
 impl<Client> TempoTransactionPool<Client>
 where
@@ -1387,6 +1415,74 @@ mod tests {
                 (balance_slot.into(), balance),
             ]),
         );
+    }
+
+    #[tokio::test]
+    async fn retain_pooled_hashes_filters_existing_hashes_from_both_sub_pools() {
+        let protocol = crate::test_utils::TxBuilder::aa(Address::random()).build();
+        let aa_2d = crate::test_utils::TxBuilder::aa(Address::random())
+            .nonce_key(U256::from(7))
+            .build();
+
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
+        provider.add_account(
+            protocol.sender(),
+            ExtendedAccount::new(protocol.nonce(), U256::MAX),
+        );
+        provider.add_account(
+            aa_2d.sender(),
+            ExtendedAccount::new(aa_2d.nonce(), U256::MAX),
+        );
+        provider.add_block(
+            B256::random(),
+            Block {
+                header: TempoHeader {
+                    inner: Header {
+                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let inner = EthTransactionValidatorBuilder::new(provider, TempoEvmConfig::mainnet())
+            .disable_balance_check()
+            .build(InMemoryBlobStore::default());
+        let validator = TempoTransactionValidator::new(
+            inner,
+            crate::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            crate::validator::DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            AmmLiquidityCache::with_unique_validators(Vec::new()),
+        );
+        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let protocol_pool = Pool::new(
+            executor,
+            CoinbaseTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default(),
+        );
+        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+
+        for pooled in [&protocol, &aa_2d] {
+            let validated = TransactionValidationOutcome::Valid {
+                balance: *pooled.cost(),
+                state_nonce: pooled.nonce(),
+                bytecode_hash: None,
+                transaction: ValidTransaction::new(pooled.clone(), None),
+                propagate: true,
+                authorities: None,
+            };
+            pool.add_validated_transaction(TransactionOrigin::External, validated)
+                .expect("transaction should be admitted");
+        }
+
+        let missing = B256::random();
+        let retained = pool.retain_pooled_hashes(vec![missing, *aa_2d.hash(), *protocol.hash()]);
+
+        assert_eq!(retained, vec![*aa_2d.hash(), *protocol.hash()]);
     }
 
     #[tokio::test]

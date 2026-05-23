@@ -439,7 +439,7 @@ where
 
                 // Add expired transactions (from local tracking state)
                 let expired = state.drain_expired(max_expiry);
-                updates.expired_txs = expired.into_iter().filter(|h| pool.contains(h)).collect();
+                updates.expired_txs = pool.retain_pooled_hashes(expired);
 
                 // 2. Evict expired AA transactions
                 let expired_start = Instant::now();
