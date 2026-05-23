@@ -159,9 +159,11 @@ sol! {
 
 macro_rules! tempo_precompile {
     ($id:expr, $cfg:expr, |$input:ident| $impl:expr) => {{
+        use revm::context::Cfg as _;
         let spec = $cfg.spec;
         let amsterdam_eip8037_enabled = $cfg.enable_amsterdam_eip8037;
         let gas_params = $cfg.gas_params.clone();
+        let cpsb = $cfg.cpsb();
         DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
             if !$input.is_direct_call() {
                 return Ok(PrecompileOutput::revert(
@@ -178,6 +180,7 @@ macro_rules! tempo_precompile {
                 amsterdam_eip8037_enabled,
                 $input.is_static,
                 gas_params.clone(),
+                cpsb,
             );
             crate::storage::StorageCtx::enter(&mut storage, || {
                 $impl.call($input.data, $input.caller)

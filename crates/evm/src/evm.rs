@@ -13,7 +13,7 @@ use alloy_evm::{
 use alloy_primitives::{Address, Bytes, TxKind};
 use reth_revm::{
     InspectSystemCallEvm, MainContext,
-    context::{CfgEnv, result::ExecutionResult},
+    context::{CfgEnv, DBErrorMarker, result::ExecutionResult},
 };
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -460,7 +460,7 @@ mod tests {
         // T1 has tx_eip7702_per_empty_account_cost = 12,500
         let gas_params = &evm.ctx().cfg.gas_params;
         assert_eq!(
-            gas_params.tx_eip7702_per_empty_account_cost(),
+            gas_params.tx_eip7702_per_empty_account_cost(0),
             12_500,
             "T1 should have EIP-7702 per empty account cost of 12,500"
         );
@@ -499,12 +499,12 @@ mod tests {
             .ctx()
             .cfg
             .gas_params
-            .tx_eip7702_per_empty_account_cost();
+            .tx_eip7702_per_empty_account_cost(0);
         let t1_eip7702_cost = t1_evm
             .ctx()
             .cfg
             .gas_params
-            .tx_eip7702_per_empty_account_cost();
+            .tx_eip7702_per_empty_account_cost(0);
 
         assert_eq!(t0_eip7702_cost, 25_000, "T0 should have default 25,000");
         assert_eq!(t1_eip7702_cost, 12_500, "T1 should have reduced 12,500");
