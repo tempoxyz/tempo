@@ -88,6 +88,7 @@ reth-provider.workspace = true
 reth-rpc-server-types.workspace = true
 secp256k1.workspace = true
 reth-storage-api.workspace = true
+reth-tasks = { workspace = true, features = ["rayon"] }
 reth-trie.workspace = true
 reth-trie-db.workspace = true
 clap.workspace = true

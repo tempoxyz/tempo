@@ -52,12 +52,14 @@ use futures::{
     FutureExt as _,
     future::{Either, FusedFuture as _},
 };
+use reth_cli_runner::CliRunner;
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
 use reth_ethereum_cli::Cli;
 use reth_network_api::Peers;
 use reth_network_peers::pk2id;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
 use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
+use reth_tasks::{RayonConfig, RuntimeConfig};
 use std::{sync::Arc, thread, time::Duration};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
 use tempo_commonware_node::{feed as consensus_feed, run_consensus_stack, run_follow_stack};
@@ -80,6 +82,7 @@ type TempoCli =
     Cli<TempoChainSpecParser, TempoArgs, TempoRpcModuleValidator, tempo_cmd::TempoSubcommand>;
 
 const TEMPO_CUSTOM_RPC_MODULES: &[&str] = &["consensus", "operator", "tempo", "token"];
+const PREWARMING_POOL_THREADS: usize = 128;
 
 #[derive(Debug, Clone, Copy)]
 struct TempoRpcModuleValidator;
@@ -550,7 +553,23 @@ fn main() -> eyre::Result<()> {
     let components =
         |spec: Arc<TempoChainSpec>| (TempoEvmConfig::new(spec.clone()), TempoConsensus::new(spec));
 
-    cli.run_with_components::<TempoNode>(components, async move |builder, args| {
+    let runtime_config = match &cli.command {
+        Commands::Node(command) => RuntimeConfig::default().with_rayon(RayonConfig {
+            reserved_cpu_cores: command.engine.reserved_cpu_cores,
+            proof_storage_worker_threads: command.engine.storage_worker_count,
+            proof_account_worker_threads: command.engine.account_worker_count,
+            prewarming_threads: Some(PREWARMING_POOL_THREADS),
+            ..Default::default()
+        }),
+        _ => RuntimeConfig::default().with_rayon(RayonConfig {
+            prewarming_threads: Some(PREWARMING_POOL_THREADS),
+            ..Default::default()
+        }),
+    };
+    let runner = CliRunner::try_with_runtime_config(runtime_config)
+        .wrap_err("failed to build execution runtime")?;
+
+    cli.with_runner_and_components::<TempoNode>(runner, components, async move |builder, args| {
         let faucet_args = args.faucet_args.clone();
         let validator_key = args
             .consensus

@@ -12592,6 +12592,7 @@ dependencies = [
  "reth-provider",
  "reth-rpc-server-types",
  "reth-storage-api",
+ "reth-tasks",
  "reth-trie",
  "reth-trie-db",
  "rustls",
