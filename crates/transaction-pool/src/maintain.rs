@@ -438,8 +438,9 @@ where
                 let max_expiry = tip_timestamp.saturating_add(EVICTION_BUFFER_SECS);
 
                 // Add expired transactions (from local tracking state)
-                let expired = state.drain_expired(max_expiry);
-                updates.expired_txs = pool.retain_pooled_hashes(expired);
+                let mut expired = state.drain_expired(max_expiry);
+                pool.retain_pooled_hashes(&mut expired);
+                updates.expired_txs = expired;
 
                 // 2. Evict expired AA transactions
                 let expired_start = Instant::now();

@@ -75,28 +75,12 @@ impl<Client> TempoTransactionPool<Client> {
     ///
     /// This checks the AA 2D pool first under a single read lock because locally tracked
     /// expiry entries are overwhelmingly AA transactions.
-    pub(crate) fn retain_pooled_hashes<I>(&self, hashes: I) -> Vec<TxHash>
+    pub(crate) fn retain_pooled_hashes(&self, hashes: &mut Vec<TxHash>)
     where
         Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
-        I: IntoIterator<Item = TxHash>,
     {
-        let hashes = hashes.into_iter();
-        let (lower_bound, _) = hashes.size_hint();
-        let mut checked = Vec::with_capacity(lower_bound);
-
-        {
-            let aa_2d_pool = self.aa_2d_pool.read();
-            for hash in hashes {
-                checked.push((hash, aa_2d_pool.contains(&hash)));
-            }
-        }
-
-        checked
-            .into_iter()
-            .filter_map(|(hash, in_aa_2d_pool)| {
-                (in_aa_2d_pool || self.protocol_pool.contains(&hash)).then_some(hash)
-            })
-            .collect()
+        let aa_2d_pool = self.aa_2d_pool.read();
+        hashes.retain(|hash| aa_2d_pool.contains(hash) || self.protocol_pool.contains(hash));
     }
 }
 impl<Client> TempoTransactionPool<Client>
@@ -1479,8 +1463,8 @@ mod tests {
                 .expect("transaction should be admitted");
         }
 
-        let missing = B256::random();
-        let retained = pool.retain_pooled_hashes(vec![missing, *aa_2d.hash(), *protocol.hash()]);
+        let mut retained = vec![B256::random(), *aa_2d.hash(), *protocol.hash()];
+        pool.retain_pooled_hashes(&mut retained);
 
         assert_eq!(retained, vec![*aa_2d.hash(), *protocol.hash()]);
     }
