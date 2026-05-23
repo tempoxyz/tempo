@@ -46,11 +46,6 @@ pub struct TempoPooledTransaction {
     /// `Some(expiry)` for keychain transactions where expiry < u64::MAX (finite expiry).
     /// `None` for non-keychain transactions or keys that never expire.
     key_expiry: OnceLock<Option<u64>>,
-    /// Cached keychain key ID recovered from the transaction signature.
-    ///
-    /// The fee token is intentionally not part of this cache because validation
-    /// may populate `resolved_fee_token` after the first keychain-subject lookup.
-    keychain_key_id: OnceLock<Option<Address>>,
     /// Resolved fee token cached at validation time.
     ///
     /// Used by `keychain_subject()` so pool maintenance matches against the same token
@@ -90,7 +85,6 @@ impl TempoPooledTransaction {
             expiring_nonce_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
-            keychain_key_id: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
         }
@@ -157,9 +151,7 @@ impl TempoPooledTransaction {
     pub fn keychain_subject(&self) -> Option<KeychainSubject> {
         let aa_tx = self.inner().as_aa()?;
         let keychain_sig = aa_tx.signature().as_keychain()?;
-        let key_id = (*self
-            .keychain_key_id
-            .get_or_init(|| keychain_sig.key_id(&aa_tx.signature_hash()).ok()))?;
+        let key_id = keychain_sig.key_id(&aa_tx.signature_hash()).ok()?;
         let fee_token = self.effective_fee_token();
         Some(KeychainSubject {
             account: keychain_sig.user_address,
@@ -808,7 +800,7 @@ mod tests {
 
         let resolved_subject = tx
             .keychain_subject()
-            .expect("cached key id should still produce a subject");
+            .expect("signature-cached key id should still produce a subject");
 
         assert_eq!(resolved_subject.account, initial_subject.account);
         assert_eq!(resolved_subject.key_id, initial_subject.key_id);
