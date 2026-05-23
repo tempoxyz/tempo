@@ -9,7 +9,7 @@ use crate::{
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
     Address, B256, TxHash,
-    map::{AddressMap, HashMap, HashSet},
+    map::{AddressMap, B256Set, HashMap, HashSet},
 };
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
@@ -231,7 +231,7 @@ impl TempoPoolUpdates {
 #[derive(Default)]
 struct TempoPoolState {
     /// Maps timestamp to transactions that are going to be invalidated at that time (due to `valid_after` or keychain-related expiry).
-    expiry_map: BTreeMap<u64, Vec<TxHash>>,
+    expiry_map: BTreeMap<u64, B256Set>,
     /// Reverse mapping: tx_hash -> valid_before timestamp (for cleanup during drain).
     tx_to_expiry: HashMap<TxHash, u64>,
     /// Pool for transactions whose fee token is temporarily paused.
@@ -252,7 +252,10 @@ impl TempoPoolState {
         let expiry = [valid_before, key_expiry].into_iter().flatten().min();
 
         if let Some(expiry) = expiry {
-            self.expiry_map.entry(expiry).or_default().push(*tx.hash());
+            self.expiry_map
+                .entry(expiry)
+                .or_default()
+                .insert(*tx.hash());
             self.tx_to_expiry.insert(*tx.hash(), expiry);
         }
     }
@@ -262,9 +265,37 @@ impl TempoPoolState {
         if let Some(expiry) = self.tx_to_expiry.remove(hash)
             && let Entry::Occupied(mut entry) = self.expiry_map.entry(expiry)
         {
-            entry.get_mut().retain(|h| *h != *hash);
+            entry.get_mut().remove(hash);
             if entry.get().is_empty() {
                 entry.remove();
+            }
+        }
+    }
+
+    /// Removes expiry and key-expiry tracking for a batch of transactions.
+    ///
+    /// Mined transactions often share the same expiry timestamp, so first group
+    /// hashes by their recorded expiry and then touch each expiry bucket once.
+    /// This avoids repeating the `expiry_map` lookup for every mined hash while
+    /// preserving O(1)-ish removal from each `B256Set` bucket.
+    fn untrack_many<'a>(&mut self, hashes: impl IntoIterator<Item = &'a TxHash>) {
+        let mut hashes_by_expiry: BTreeMap<u64, B256Set> = BTreeMap::new();
+
+        for hash in hashes {
+            if let Some(expiry) = self.tx_to_expiry.remove(hash) {
+                hashes_by_expiry.entry(expiry).or_default().insert(*hash);
+            }
+        }
+
+        for (expiry, hashes) in hashes_by_expiry {
+            if let Entry::Occupied(mut entry) = self.expiry_map.entry(expiry) {
+                let bucket = entry.get_mut();
+                for hash in hashes {
+                    bucket.remove(&hash);
+                }
+                if bucket.is_empty() {
+                    entry.remove();
+                }
             }
         }
     }
@@ -277,10 +308,11 @@ impl TempoPoolState {
             && *entry.key() <= tip_timestamp
         {
             let expired_hashes = entry.remove();
-            for tx_hash in &expired_hashes {
-                self.tx_to_expiry.remove(tx_hash);
+            expired.reserve(expired_hashes.len());
+            for tx_hash in expired_hashes {
+                self.tx_to_expiry.remove(&tx_hash);
+                expired.push(tx_hash);
             }
-            expired.extend(expired_hashes);
         }
         expired
     }
@@ -427,11 +459,10 @@ where
                 let mut updates = TempoPoolUpdates::from_chain(tip);
 
                 // Remove expiry tracking for mined transactions.
-                tip.blocks_iter()
+                let mined_hashes = tip.blocks_iter()
                     .flat_map(|block| block.body().transactions())
-                    .for_each(|tx| {
-                    state.untrack(tx.tx_hash())
-                });
+                    .map(|tx| tx.tx_hash());
+                state.untrack_many(mined_hashes);
 
                 // Evict transactions slightly before they expire to prevent
                 // broadcasting near-expiry txs that peers would reject.
@@ -811,17 +842,39 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_mined() {
+    fn track_groups_duplicate_expiries() {
+        let mut state = TempoPoolState::default();
+        let tx_a = TxBuilder::aa(Address::random())
+            .nonce(1)
+            .valid_before(1000)
+            .build();
+        let tx_b = TxBuilder::aa(Address::random())
+            .nonce(2)
+            .valid_before(1000)
+            .build();
+
+        state.track(&tx_a);
+        state.track(&tx_b);
+        state.track(&tx_a);
+
+        let bucket = state.expiry_map.get(&1000).unwrap();
+        assert_eq!(bucket.len(), 2);
+        assert!(bucket.contains(tx_a.hash()));
+        assert!(bucket.contains(tx_b.hash()));
+        assert_eq!(state.tx_to_expiry.get(tx_a.hash()), Some(&1000));
+        assert_eq!(state.tx_to_expiry.get(tx_b.hash()), Some(&1000));
+    }
+
+    #[test]
+    fn untrack_removes_hash_and_empty_bucket() {
         let mut state = TempoPoolState::default();
         let hash_a = TxHash::random();
         let hash_b = TxHash::random();
         let hash_unknown = TxHash::random();
 
         // Track two txs at the same valid_before
-        state.expiry_map.entry(1000).or_default().push(hash_a);
-        state.tx_to_expiry.insert(hash_a, 1000);
-        state.expiry_map.entry(1000).or_default().push(hash_b);
-        state.tx_to_expiry.insert(hash_b, 1000);
+        insert_tracked_hash(&mut state, hash_a, 1000);
+        insert_tracked_hash(&mut state, hash_b, 1000);
 
         // Mine hash_a and an unknown hash
         state.untrack(&hash_a);
@@ -829,12 +882,78 @@ mod tests {
 
         // hash_a removed from both maps
         assert!(!state.tx_to_expiry.contains_key(&hash_a));
-        assert_eq!(state.expiry_map[&1000], vec![hash_b]);
+        let bucket = state.expiry_map.get(&1000).unwrap();
+        assert_eq!(bucket.len(), 1);
+        assert!(bucket.contains(&hash_b));
 
         // Mine hash_b should remove the expiry_map entry entirely
         state.untrack(&hash_b);
         assert!(!state.tx_to_expiry.contains_key(&hash_b));
         assert!(!state.expiry_map.contains_key(&1000));
+    }
+
+    #[test]
+    fn untrack_many_removes_hashes_by_expiry_bucket() {
+        let mut state = TempoPoolState::default();
+        let hash_a = TxHash::random();
+        let hash_b = TxHash::random();
+        let hash_c = TxHash::random();
+        let hash_d = TxHash::random();
+        let hash_unknown = TxHash::random();
+
+        insert_tracked_hash(&mut state, hash_a, 1000);
+        insert_tracked_hash(&mut state, hash_b, 1000);
+        insert_tracked_hash(&mut state, hash_c, 1000);
+        insert_tracked_hash(&mut state, hash_d, 2000);
+
+        state.untrack_many([&hash_a, &hash_b, &hash_unknown, &hash_d]);
+
+        assert!(!state.tx_to_expiry.contains_key(&hash_a));
+        assert!(!state.tx_to_expiry.contains_key(&hash_b));
+        assert!(!state.tx_to_expiry.contains_key(&hash_d));
+        assert_eq!(state.tx_to_expiry.get(&hash_c), Some(&1000));
+
+        let bucket = state.expiry_map.get(&1000).unwrap();
+        assert_eq!(bucket.len(), 1);
+        assert!(bucket.contains(&hash_c));
+        assert!(!state.expiry_map.contains_key(&2000));
+    }
+
+    #[test]
+    fn drain_expired_removes_expired_buckets_and_returns_hashes() {
+        let mut state = TempoPoolState::default();
+        let hash_a = TxHash::random();
+        let hash_b = TxHash::random();
+        let hash_c = TxHash::random();
+        let hash_d = TxHash::random();
+
+        insert_tracked_hash(&mut state, hash_a, 1000);
+        insert_tracked_hash(&mut state, hash_b, 1000);
+        insert_tracked_hash(&mut state, hash_c, 2000);
+        insert_tracked_hash(&mut state, hash_d, 3000);
+
+        let expired = state.drain_expired(2000);
+
+        assert_hashes_eq(expired, &[hash_a, hash_b, hash_c]);
+        assert!(!state.expiry_map.contains_key(&1000));
+        assert!(!state.expiry_map.contains_key(&2000));
+        assert!(state.expiry_map[&3000].contains(&hash_d));
+        assert!(!state.tx_to_expiry.contains_key(&hash_a));
+        assert!(!state.tx_to_expiry.contains_key(&hash_b));
+        assert!(!state.tx_to_expiry.contains_key(&hash_c));
+        assert_eq!(state.tx_to_expiry.get(&hash_d), Some(&3000));
+    }
+
+    fn insert_tracked_hash(state: &mut TempoPoolState, hash: TxHash, expiry: u64) {
+        state.expiry_map.entry(expiry).or_default().insert(hash);
+        state.tx_to_expiry.insert(hash, expiry);
+    }
+
+    fn assert_hashes_eq(actual: Vec<TxHash>, expected: &[TxHash]) {
+        assert_eq!(actual.len(), expected.len());
+        let actual: HashSet<TxHash> = actual.into_iter().collect();
+        let expected: HashSet<TxHash> = expected.iter().copied().collect();
+        assert_eq!(actual, expected);
     }
 
     fn create_test_chain(
