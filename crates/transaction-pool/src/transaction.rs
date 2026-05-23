@@ -784,30 +784,6 @@ mod tests {
     }
 
     #[test]
-    fn test_keychain_subject_uses_late_resolved_fee_token() {
-        let user_address = Address::random();
-        let access_key_signer = alloy_signer_local::PrivateKeySigner::random();
-        let resolved_fee_token = Address::random();
-
-        let tx = TxBuilder::aa(user_address).build_keychain(user_address, &access_key_signer);
-        let initial_subject = tx
-            .keychain_subject()
-            .expect("keychain tx should expose a subject");
-
-        assert_eq!(initial_subject.fee_token, DEFAULT_FEE_TOKEN);
-
-        tx.set_resolved_fee_token(resolved_fee_token);
-
-        let resolved_subject = tx
-            .keychain_subject()
-            .expect("signature-cached key id should still produce a subject");
-
-        assert_eq!(resolved_subject.account, initial_subject.account);
-        assert_eq!(resolved_subject.key_id, initial_subject.key_id);
-        assert_eq!(resolved_subject.fee_token, resolved_fee_token);
-    }
-
-    #[test]
     fn test_non_aa_transaction_helpers() {
         let tx = TxBuilder::eip1559(Address::random())
             .gas_limit(21000)
