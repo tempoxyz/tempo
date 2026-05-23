@@ -1,0 +1,214 @@
+[package]
+name = "alloy-primitives"
+description = "Ethereum primitive types"
+keywords = ["ethers", "primitives", "ethereum", "revm", "reth"]
+categories = ["no-std", "data-structures", "cryptography::cryptocurrencies"]
+homepage = "https://github.com/alloy-rs/core/tree/main/crates/primitives"
+
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+exclude.workspace = true
+
+[package.metadata.docs.rs]
+all-features = true
+rustdoc-args = [
+    "-Zunstable-options",
+    "--generate-link-to-definition",
+    "--show-type-layout",
+]
+
+[lints]
+workspace = true
+
+[dependencies]
+bytes.workspace = true
+hex.workspace = true
+itoa.workspace = true
+ruint.workspace = true
+
+# macros
+cfg-if.workspace = true
+derive_more = { workspace = true, features = [
+    "as_ref",
+    "add",
+    "add_assign",
+    "not",
+    "deref",
+    "deref_mut",
+    "from",
+    "from_str",
+    "index",
+    "index_mut",
+    "into",
+    "into_iterator",
+    "display",
+    "deref",
+] }
+paste.workspace = true
+
+# keccak256
+keccak-asm = { workspace = true, optional = true }
+sha3.workspace = true
+tiny-keccak = { workspace = true, features = ["keccak"], optional = true }
+
+fixed-cache = { workspace = true, optional = true }
+
+# borsh
+borsh = { workspace = true, optional = true, features = ["derive"] }
+
+# rlp
+alloy-rlp = { workspace = true, optional = true }
+
+# serde
+serde = { workspace = true, optional = true, features = ["derive"] }
+
+# schemars
+schemars = { workspace = true, optional = true, default-features = false }
+
+# rkyv
+rkyv = { workspace = true, optional = true }
+
+# getrandom
+getrandom = { workspace = true, optional = true }
+
+# rand
+rand = { workspace = true, optional = true }
+
+# rayon
+rayon = { workspace = true, optional = true }
+
+# k256
+k256 = { workspace = true, optional = true, features = ["ecdsa"] }
+
+# secp256k1
+secp256k1 = { workspace = true, optional = true }
+
+# map
+hashbrown = { workspace = true, optional = true, features = [
+    "default-hasher",
+    "inline-more",
+] }
+indexmap = { workspace = true, optional = true }
+foldhash = { workspace = true, optional = true }
+rapidhash = { workspace = true, optional = true }
+rustc-hash.workspace = true # Always on for FbHasher
+
+# arbitrary
+arbitrary = { workspace = true, optional = true, features = ["derive"] }
+proptest = { workspace = true, optional = true }
+proptest-derive = { workspace = true, optional = true }
+
+# allocative
+allocative = { workspace = true, optional = true }
+
+# postgres
+postgres-types = { workspace = true, optional = true }
+
+# diesel
+diesel = { workspace = true, optional = true }
+
+# sqlx support (optional, for DB integration)
+sqlx-core = { workspace = true, optional = true }
+
+[dev-dependencies]
+bcs.workspace = true
+bincode.workspace = true
+criterion.workspace = true
+serde_json.workspace = true
+
+[features]
+default = ["std", "map", "map-foldhash"]
+std = [
+    "bytes/std",
+    "hex/std",
+    "ruint/std",
+    "alloy-rlp?/std",
+    "foldhash?/std",
+    "rapidhash?/std",
+    "indexmap?/std",
+    "k256?/std",
+    "secp256k1?/std",
+    "keccak-asm?/std",
+    "proptest?/std",
+    "rand?/std",
+    "rand?/thread_rng",
+    "rustc-hash/std",
+    "serde?/std",
+]
+nightly = [
+    "foldhash?/nightly",
+    "rapidhash?/nightly",
+    "hashbrown?/nightly",
+    "hex/nightly",
+    # TODO: Re-enable on next ruint version (>1.17.2)
+    # "ruint/nightly",
+    "rustc-hash/nightly",
+    "fixed-cache?/nightly",
+]
+
+asm-keccak = ["dep:keccak-asm"]
+native-keccak = []
+sha3-keccak = []
+tiny-keccak = ["dep:tiny-keccak"]
+keccak-cache = ["std", "dep:rapidhash", "dep:fixed-cache"]
+keccak-cache-global = ["keccak-cache"]
+
+map = ["dep:hashbrown"]
+map-hashbrown = ["map"]
+map-indexmap = ["map", "dep:indexmap"]
+map-foldhash = ["map", "dep:foldhash"]
+map-rapidhash = ["map", "dep:rapidhash"]
+map-fxhash = ["map"]
+
+getrandom = ["dep:getrandom"]
+k256 = ["dep:k256"]
+secp256k1 = ["dep:secp256k1"]
+rand = [
+    "dep:rand",
+    "getrandom",
+    "ruint/rand-09",
+    "rapidhash?/rand",
+    "rustc-hash/rand",
+]
+rayon = ["dep:rayon", "hashbrown?/rayon", "indexmap?/rayon"]
+rkyv = ["dep:rkyv", "ruint/rkyv"]
+rlp = ["dep:alloy-rlp", "ruint/alloy-rlp"]
+serde = [
+    "dep:serde",
+    "bytes/serde",
+    "hex/serde",
+    "ruint/serde",
+    "hashbrown?/serde",
+    "indexmap?/serde",
+    "rand?/serde",
+]
+schemars = ["dep:schemars"]
+borsh = ["dep:borsh", "ruint/borsh"]
+
+allocative = ["dep:allocative"]
+arbitrary = [
+    "std",
+    "dep:arbitrary",
+    "dep:proptest",
+    "dep:proptest-derive",
+    "ruint/arbitrary",
+    "ruint/proptest",
+    "indexmap?/arbitrary",
+]
+postgres = ["std", "dep:postgres-types", "ruint/postgres"]
+diesel = ["std", "dep:diesel", "ruint/diesel"]
+sqlx = ["std", "dep:sqlx-core", "ruint/sqlx"]
+
+# `const-hex` compatibility feature for `hex`.
+# Should not be needed most of the time.
+hex-compat = ["hex/hex"]
+
+[[bench]]
+name = "primitives"
+path = "benches/primitives.rs"
+harness = false
+required-features = ["rand"]

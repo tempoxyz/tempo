@@ -474,8 +474,6 @@ dependencies = [
 [[package]]
 name = "alloy-primitives"
 version = "1.6.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4885c1409b6936c4898e646ef58baf6ec54edaf6d8179f79df805a7b85b7cf3e"
 dependencies = [
  "alloy-rlp",
  "arbitrary",
@@ -491,6 +489,7 @@ dependencies = [
  "itoa",
  "k256",
  "keccak-asm",
+ "metrics",
  "paste",
  "proptest",
  "proptest-derive 0.8.0",
