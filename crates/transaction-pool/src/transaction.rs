@@ -46,6 +46,11 @@ pub struct TempoPooledTransaction {
     /// `Some(expiry)` for keychain transactions where expiry < u64::MAX (finite expiry).
     /// `None` for non-keychain transactions or keys that never expire.
     key_expiry: OnceLock<Option<u64>>,
+    /// Cached keychain key ID recovered from the transaction signature.
+    ///
+    /// The fee token is intentionally not part of this cache because validation
+    /// may populate `resolved_fee_token` after the first keychain-subject lookup.
+    keychain_key_id: OnceLock<Option<Address>>,
     /// Resolved fee token cached at validation time.
     ///
     /// Used by `keychain_subject()` so pool maintenance matches against the same token
@@ -85,6 +90,7 @@ impl TempoPooledTransaction {
             expiring_nonce_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
+            keychain_key_id: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
         }
@@ -151,12 +157,10 @@ impl TempoPooledTransaction {
     pub fn keychain_subject(&self) -> Option<KeychainSubject> {
         let aa_tx = self.inner().as_aa()?;
         let keychain_sig = aa_tx.signature().as_keychain()?;
-        let key_id = keychain_sig.key_id(&aa_tx.signature_hash()).ok()?;
-        let fee_token = self
-            .resolved_fee_token
-            .get()
-            .copied()
-            .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
+        let key_id = (*self
+            .keychain_key_id
+            .get_or_init(|| keychain_sig.key_id(&aa_tx.signature_hash()).ok()))?;
+        let fee_token = self.effective_fee_token();
         Some(KeychainSubject {
             account: keychain_sig.user_address,
             key_id,
@@ -785,6 +789,30 @@ mod tests {
         let expected_fee_cost = U256::from(20000);
         assert_eq!(tx.fee_token_cost(), expected_fee_cost);
         assert_eq!(tx.inner.cost, expected_fee_cost + value);
+    }
+
+    #[test]
+    fn test_keychain_subject_uses_late_resolved_fee_token() {
+        let user_address = Address::random();
+        let access_key_signer = alloy_signer_local::PrivateKeySigner::random();
+        let resolved_fee_token = Address::random();
+
+        let tx = TxBuilder::aa(user_address).build_keychain(user_address, &access_key_signer);
+        let initial_subject = tx
+            .keychain_subject()
+            .expect("keychain tx should expose a subject");
+
+        assert_eq!(initial_subject.fee_token, DEFAULT_FEE_TOKEN);
+
+        tx.set_resolved_fee_token(resolved_fee_token);
+
+        let resolved_subject = tx
+            .keychain_subject()
+            .expect("cached key id should still produce a subject");
+
+        assert_eq!(resolved_subject.account, initial_subject.account);
+        assert_eq!(resolved_subject.key_id, initial_subject.key_id);
+        assert_eq!(resolved_subject.fee_token, resolved_fee_token);
     }
 
     #[test]
