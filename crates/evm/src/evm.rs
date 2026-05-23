@@ -69,10 +69,16 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
-    pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
+    pub fn new(db: DB, mut input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
         // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
         // and is independent of the T4 hardfork. The caller is responsible for setting the
         // flag on the input `EvmEnv`; here we pass it through unchanged.
+        //
+        // Tempo's TIP-1016 gas params (`tempo_gas_params_with_amsterdam`) store absolute
+        // state-gas values (e.g. 230_000 for SSTORE zero→non-zero). Upstream revm now
+        // multiplies state-gas params by `cpsb` at charge time. Pin `cpsb = 1` so the
+        // multiplication is a no-op and the stored values are charged verbatim.
+        input.cfg_env.cpsb_override.get_or_insert(1);
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
