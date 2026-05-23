@@ -37,8 +37,8 @@ use reth_revm::{State, context::Block, database::StateProviderDatabase};
 use reth_storage_api::StateProviderFactory;
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
-    BestTransactions, BestTransactionsAttributes, TransactionPool, ValidPoolTransaction,
-    error::InvalidPoolTransactionError,
+    BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
+    ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::{
     sync::{
@@ -549,7 +549,7 @@ where
                 payment_transactions += 1;
             }
 
-            let tx_rlp_length = pool_tx.transaction.inner().length();
+            let tx_rlp_length = pool_tx.transaction.encoded_length();
             let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
@@ -570,7 +570,7 @@ where
                 .unwrap_or_default();
 
             let tx_execution_start = Instant::now();
-            let tx_with_env = pool_tx.transaction.clone().into_with_tx_env();
+            let tx_with_env = pool_tx.transaction.clone_into_with_tx_env();
             let execution_result =
                 builder.execute_transaction_with_result_closure(tx_with_env, |result| {
                     cumulative_gas_used += result.block_gas_used();
