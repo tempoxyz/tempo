@@ -219,6 +219,7 @@ alloy-primitives = { version = "1.6.0", default-features = false }
 alloy-provider = { version = "2.0.5", default-features = false }
 alloy-rlp = { version = "0.3.15", default-features = false }
 alloy-rpc-types-admin = "2.0.5"
+alloy-rpc-client = { version = "2.0.5", default-features = false }
 alloy-rpc-types-engine = "2.0.5"
 alloy-rpc-types-eth = { version = "2.0.5" }
 alloy-serde = { version = "2.0.5", default-features = false }
@@ -230,6 +231,7 @@ alloy-signer-local = "2.0.5"
 alloy-signer-trezor = "2.0.5"
 
 alloy-sol-types = { version = "1.6.0", default-features = false }
+alloy-json-rpc = "2.0.5"
 alloy-transport = "2.0.5"
 
 commonware-broadcast = "2026.4.0"
@@ -266,6 +268,7 @@ either = "1"
 eyre = "0.6.12"
 futures = "0.3.31"
 governor = "0.10.4"
+http = "1.4.0"
 indexmap = "2.13.0"
 indicatif = "0.18"
 insta = { version = "1", features = ["yaml"] }
@@ -297,6 +300,7 @@ thiserror = "2.0.18"
 tokio = { version = "1.49.0", features = ["full"] }
 tokio-stream = { version = "0.1.18" }
 tokio-util = "0.7.18"
+tower = { version = "0.5", default-features = false }
 tracy-client = "0.18.4"
 tracing = "0.1.44"
 tracing-subscriber = "0.3.22"

@@ -2,6 +2,9 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+// Ensure HTTPS support is enabled for Alloy's reqwest HTTP transport used by RelayConnector.
+use reqwest as _;
+
 mod network;
 pub use network::*;
 
@@ -12,6 +15,9 @@ pub mod rpc;
 
 /// Transaction fillers.
 pub mod fillers;
+
+/// Relay transport for fee payer / sponsor support.
+pub mod transport;
 
 #[doc(inline)]
 pub use tempo_primitives as primitives;
