@@ -200,10 +200,10 @@ impl TempoPoolUpdates {
                     Some(Tip20PoolEvent::PauseStateUpdate(event)) => {
                         updates.pause_events.push((log.address, event.isPaused));
                     }
-                    Some(Tip20PoolEvent::TransferPolicyUpdate(_)) => {
+                    Some(Tip20PoolEvent::TransferPolicyUpdate) => {
                         updates.transfer_policy_updates.insert(log.address);
                     }
-                    Some(Tip20PoolEvent::QuoteTokenUpdate(_)) => {
+                    Some(Tip20PoolEvent::QuoteTokenUpdate) => {
                         updates.quote_token_updates.insert(log.address);
                     }
                     Some(Tip20PoolEvent::Transfer(event)) => {
@@ -315,9 +315,9 @@ enum Tip20PoolEvent {
     /// [`ITIP20::PauseStateUpdate`] log.
     PauseStateUpdate(ITIP20::PauseStateUpdate),
     /// [`ITIP20::TransferPolicyUpdate`] log.
-    TransferPolicyUpdate(ITIP20::TransferPolicyUpdate),
+    TransferPolicyUpdate,
     /// [`ITIP20::QuoteTokenUpdate`] log.
-    QuoteTokenUpdate(ITIP20::QuoteTokenUpdate),
+    QuoteTokenUpdate,
     /// [`ITIP20::Transfer`] log.
     Transfer(ITIP20::Transfer),
 }
@@ -330,10 +330,11 @@ impl Tip20PoolEvent {
                 decode_event(log).map(Self::PauseStateUpdate)
             }
             ITIP20::TransferPolicyUpdate::SIGNATURE_HASH => {
-                decode_event(log).map(Self::TransferPolicyUpdate)
+                decode_event::<ITIP20::TransferPolicyUpdate>(log)
+                    .map(|_| Self::TransferPolicyUpdate)
             }
             ITIP20::QuoteTokenUpdate::SIGNATURE_HASH => {
-                decode_event(log).map(Self::QuoteTokenUpdate)
+                decode_event::<ITIP20::QuoteTokenUpdate>(log).map(|_| Self::QuoteTokenUpdate)
             }
             ITIP20::Transfer::SIGNATURE_HASH => decode_event(log).map(Self::Transfer),
             _ => None,
@@ -981,6 +982,16 @@ mod tests {
             }};
         }
 
+        macro_rules! assert_decodes_unit_like_generated {
+            ($enum_ty:ident, $variant:ident, $event_ty:ty, $log:expr) => {{
+                let _expected = generated_decode::<$event_ty>(&$log);
+                assert!(
+                    matches!($enum_ty::decode(&$log), Some($enum_ty::$variant)),
+                    "unexpected decoded event"
+                );
+            }};
+        }
+
         fn event_log<T>(address: Address, event: T) -> Log
         where
             T: SolEvent,
@@ -1149,7 +1160,7 @@ mod tests {
                     newPolicyId: 11,
                 },
             );
-            assert_decodes_like_generated!(
+            assert_decodes_unit_like_generated!(
                 Tip20PoolEvent,
                 TransferPolicyUpdate,
                 ITIP20::TransferPolicyUpdate,
@@ -1163,7 +1174,7 @@ mod tests {
                     newQuoteToken: Address::random(),
                 },
             );
-            assert_decodes_like_generated!(
+            assert_decodes_unit_like_generated!(
                 Tip20PoolEvent,
                 QuoteTokenUpdate,
                 ITIP20::QuoteTokenUpdate,
