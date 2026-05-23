@@ -8,7 +8,7 @@ use crate::{
 };
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
-    Address, B256, TxHash,
+    Address, B256, Log, TxHash,
     map::{AddressMap, HashMap, HashSet},
 };
 use alloy_sol_types::SolEvent;
@@ -136,70 +136,84 @@ impl TempoPoolUpdates {
         {
             // Key revocations and spending limit changes
             if log.address == ACCOUNT_KEYCHAIN_ADDRESS {
-                if let Ok(event) = IAccountKeychain::KeyRevoked::decode_log(log) {
-                    updates.revoked_keys.insert(event.account, event.publicKey);
-                } else if let Ok(event) = IAccountKeychain::SpendingLimitUpdated::decode_log(log) {
-                    updates.spending_limit_changes.insert(
-                        event.account,
-                        event.publicKey,
-                        Some(event.token),
-                    );
-                } else if let Ok(event) = IAccountKeychain::AccessKeySpend::decode_log(log) {
-                    updates.spending_limit_spends.insert(
-                        event.account,
-                        event.publicKey,
-                        Some(event.token),
-                    );
-                } else if let Ok(event) =
-                    IAccountKeychain::KeyAuthorizationWitnessBurned::decode_log(log)
-                {
-                    updates
-                        .key_authorization_witness_burns
-                        .entry(event.account)
-                        .or_default()
-                        .insert(event.witness);
+                match AccountKeychainPoolEvent::decode(log) {
+                    Some(AccountKeychainPoolEvent::KeyRevoked(event)) => {
+                        updates.revoked_keys.insert(event.account, event.publicKey);
+                    }
+                    Some(AccountKeychainPoolEvent::SpendingLimitUpdated(event)) => {
+                        updates.spending_limit_changes.insert(
+                            event.account,
+                            event.publicKey,
+                            Some(event.token),
+                        );
+                    }
+                    Some(AccountKeychainPoolEvent::AccessKeySpend(event)) => {
+                        updates.spending_limit_spends.insert(
+                            event.account,
+                            event.publicKey,
+                            Some(event.token),
+                        );
+                    }
+                    Some(AccountKeychainPoolEvent::KeyAuthorizationWitnessBurned(event)) => {
+                        updates
+                            .key_authorization_witness_burns
+                            .entry(event.account)
+                            .or_default()
+                            .insert(event.witness);
+                    }
+                    None => {}
                 }
             }
             // Validator and user token changes
             else if log.address == TIP_FEE_MANAGER_ADDRESS {
-                if let Ok(event) = IFeeManager::ValidatorTokenSet::decode_log(log) {
-                    updates
-                        .validator_token_changes
-                        .insert(event.validator, event.token);
-                } else if let Ok(event) = IFeeManager::UserTokenSet::decode_log(log) {
-                    updates.user_token_changes.insert(event.user);
+                match FeeManagerPoolEvent::decode(log) {
+                    Some(FeeManagerPoolEvent::ValidatorTokenSet(event)) => {
+                        updates
+                            .validator_token_changes
+                            .insert(event.validator, event.token);
+                    }
+                    Some(FeeManagerPoolEvent::UserTokenSet(event)) => {
+                        updates.user_token_changes.insert(event.user);
+                    }
+                    None => {}
                 }
             }
             // TIP403 blacklist additions and whitelist removals
             else if log.address == TIP403_REGISTRY_ADDRESS {
-                if let Ok(event) = ITIP403Registry::BlacklistUpdated::decode_log(log)
-                    && event.restricted
-                {
-                    updates
-                        .blacklist_additions
-                        .push((event.policyId, event.account));
-                } else if let Ok(event) = ITIP403Registry::WhitelistUpdated::decode_log(log)
-                    && !event.allowed
-                {
-                    updates
-                        .whitelist_removals
-                        .push((event.policyId, event.account));
+                match Tip403PoolEvent::decode(log) {
+                    Some(Tip403PoolEvent::BlacklistUpdated(event)) if event.restricted => {
+                        updates
+                            .blacklist_additions
+                            .push((event.policyId, event.account));
+                    }
+                    Some(Tip403PoolEvent::WhitelistUpdated(event)) if !event.allowed => {
+                        updates
+                            .whitelist_removals
+                            .push((event.policyId, event.account));
+                    }
+                    Some(_) | None => {}
                 }
             }
             // Fee token pause events and balance changes
             else if log.address.is_tip20() {
-                if let Ok(event) = ITIP20::PauseStateUpdate::decode_log(log) {
-                    updates.pause_events.push((log.address, event.isPaused));
-                } else if ITIP20::TransferPolicyUpdate::decode_log(log).is_ok() {
-                    updates.transfer_policy_updates.insert(log.address);
-                } else if ITIP20::QuoteTokenUpdate::decode_log(log).is_ok() {
-                    updates.quote_token_updates.insert(log.address);
-                } else if let Ok(event) = ITIP20::Transfer::decode_log(log) {
-                    updates
-                        .fee_balance_changes
-                        .entry(log.address)
-                        .or_default()
-                        .insert(event.from);
+                match Tip20PoolEvent::decode(log) {
+                    Some(Tip20PoolEvent::PauseStateUpdate(event)) => {
+                        updates.pause_events.push((log.address, event.isPaused));
+                    }
+                    Some(Tip20PoolEvent::TransferPolicyUpdate(_)) => {
+                        updates.transfer_policy_updates.insert(log.address);
+                    }
+                    Some(Tip20PoolEvent::QuoteTokenUpdate(_)) => {
+                        updates.quote_token_updates.insert(log.address);
+                    }
+                    Some(Tip20PoolEvent::Transfer(event)) => {
+                        updates
+                            .fee_balance_changes
+                            .entry(log.address)
+                            .or_default()
+                            .insert(event.from);
+                    }
+                    None => {}
                 }
             }
         }
@@ -219,6 +233,122 @@ impl TempoPoolUpdates {
             || !self.fee_balance_changes.is_empty()
             || !self.key_authorization_witness_burns.is_empty()
     }
+}
+
+/// Transaction-pool relevant subset of `IAccountKeychain::IAccountKeychainEvents`.
+enum AccountKeychainPoolEvent {
+    /// [`IAccountKeychain::KeyRevoked`] log.
+    KeyRevoked(IAccountKeychain::KeyRevoked),
+    /// [`IAccountKeychain::SpendingLimitUpdated`] log.
+    SpendingLimitUpdated(IAccountKeychain::SpendingLimitUpdated),
+    /// [`IAccountKeychain::AccessKeySpend`] log.
+    AccessKeySpend(IAccountKeychain::AccessKeySpend),
+    /// [`IAccountKeychain::KeyAuthorizationWitnessBurned`] log.
+    KeyAuthorizationWitnessBurned(IAccountKeychain::KeyAuthorizationWitnessBurned),
+}
+
+impl AccountKeychainPoolEvent {
+    /// Decodes only account-keychain events used by transaction-pool maintenance.
+    fn decode(log: &Log) -> Option<Self> {
+        match first_topic(log)? {
+            IAccountKeychain::KeyRevoked::SIGNATURE_HASH => decode_event(log).map(Self::KeyRevoked),
+            IAccountKeychain::SpendingLimitUpdated::SIGNATURE_HASH => {
+                decode_event(log).map(Self::SpendingLimitUpdated)
+            }
+            IAccountKeychain::AccessKeySpend::SIGNATURE_HASH => {
+                decode_event(log).map(Self::AccessKeySpend)
+            }
+            IAccountKeychain::KeyAuthorizationWitnessBurned::SIGNATURE_HASH => {
+                decode_event(log).map(Self::KeyAuthorizationWitnessBurned)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Transaction-pool relevant subset of `IFeeManager::IFeeManagerEvents`.
+enum FeeManagerPoolEvent {
+    /// [`IFeeManager::ValidatorTokenSet`] log.
+    ValidatorTokenSet(IFeeManager::ValidatorTokenSet),
+    /// [`IFeeManager::UserTokenSet`] log.
+    UserTokenSet(IFeeManager::UserTokenSet),
+}
+
+impl FeeManagerPoolEvent {
+    /// Decodes only fee-manager events used by transaction-pool maintenance.
+    fn decode(log: &Log) -> Option<Self> {
+        match first_topic(log)? {
+            IFeeManager::ValidatorTokenSet::SIGNATURE_HASH => {
+                decode_event(log).map(Self::ValidatorTokenSet)
+            }
+            IFeeManager::UserTokenSet::SIGNATURE_HASH => decode_event(log).map(Self::UserTokenSet),
+            _ => None,
+        }
+    }
+}
+
+/// Transaction-pool relevant subset of `ITIP403Registry::ITIP403RegistryEvents`.
+enum Tip403PoolEvent {
+    /// [`ITIP403Registry::BlacklistUpdated`] log.
+    BlacklistUpdated(ITIP403Registry::BlacklistUpdated),
+    /// [`ITIP403Registry::WhitelistUpdated`] log.
+    WhitelistUpdated(ITIP403Registry::WhitelistUpdated),
+}
+
+impl Tip403PoolEvent {
+    /// Decodes only TIP-403 registry events used by transaction-pool maintenance.
+    fn decode(log: &Log) -> Option<Self> {
+        match first_topic(log)? {
+            ITIP403Registry::BlacklistUpdated::SIGNATURE_HASH => {
+                decode_event(log).map(Self::BlacklistUpdated)
+            }
+            ITIP403Registry::WhitelistUpdated::SIGNATURE_HASH => {
+                decode_event(log).map(Self::WhitelistUpdated)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Transaction-pool relevant subset of `ITIP20::ITIP20Events`.
+enum Tip20PoolEvent {
+    /// [`ITIP20::PauseStateUpdate`] log.
+    PauseStateUpdate(ITIP20::PauseStateUpdate),
+    /// [`ITIP20::TransferPolicyUpdate`] log.
+    TransferPolicyUpdate(ITIP20::TransferPolicyUpdate),
+    /// [`ITIP20::QuoteTokenUpdate`] log.
+    QuoteTokenUpdate(ITIP20::QuoteTokenUpdate),
+    /// [`ITIP20::Transfer`] log.
+    Transfer(ITIP20::Transfer),
+}
+
+impl Tip20PoolEvent {
+    /// Decodes only TIP-20 events used by transaction-pool maintenance.
+    fn decode(log: &Log) -> Option<Self> {
+        match first_topic(log)? {
+            ITIP20::PauseStateUpdate::SIGNATURE_HASH => {
+                decode_event(log).map(Self::PauseStateUpdate)
+            }
+            ITIP20::TransferPolicyUpdate::SIGNATURE_HASH => {
+                decode_event(log).map(Self::TransferPolicyUpdate)
+            }
+            ITIP20::QuoteTokenUpdate::SIGNATURE_HASH => {
+                decode_event(log).map(Self::QuoteTokenUpdate)
+            }
+            ITIP20::Transfer::SIGNATURE_HASH => decode_event(log).map(Self::Transfer),
+            _ => None,
+        }
+    }
+}
+
+fn first_topic(log: &Log) -> Option<B256> {
+    log.topics().first().copied()
+}
+
+/// Decodes after the caller has matched `topic0`, avoiding the allocating
+/// invalid-signature error path for unrelated events.
+fn decode_event<T: SolEvent>(log: &Log) -> Option<T> {
+    T::decode_log(log).ok().map(|event| event.data)
 }
 
 /// Tracking state for pool maintenance operations.
@@ -835,6 +965,221 @@ mod tests {
         state.untrack(&hash_b);
         assert!(!state.tx_to_expiry.contains_key(&hash_b));
         assert!(!state.expiry_map.contains_key(&1000));
+    }
+
+    mod narrow_event_decoding {
+        use super::*;
+        use alloy_primitives::U256;
+
+        macro_rules! assert_decodes_like_generated {
+            ($enum_ty:ident, $variant:ident, $event_ty:ty, $log:expr) => {{
+                let expected = generated_decode::<$event_ty>(&$log);
+                match $enum_ty::decode(&$log) {
+                    Some($enum_ty::$variant(event)) => assert_eq!(event, expected),
+                    _ => panic!("unexpected decoded event"),
+                }
+            }};
+        }
+
+        fn event_log<T>(address: Address, event: T) -> Log
+        where
+            T: SolEvent,
+            for<'a> &'a T: Into<alloy_primitives::LogData>,
+        {
+            Log::new_from_event_unchecked(address, event).reserialize()
+        }
+
+        fn generated_decode<T: SolEvent>(log: &Log) -> T {
+            T::decode_log(log)
+                .expect("generated event decode should succeed")
+                .data
+        }
+
+        #[test]
+        fn account_keychain_decode_matches_generated_event_decoders() {
+            let log = event_log(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                IAccountKeychain::KeyRevoked {
+                    account: Address::random(),
+                    publicKey: Address::random(),
+                },
+            );
+            assert_decodes_like_generated!(
+                AccountKeychainPoolEvent,
+                KeyRevoked,
+                IAccountKeychain::KeyRevoked,
+                log
+            );
+
+            let log = event_log(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                IAccountKeychain::SpendingLimitUpdated {
+                    account: Address::random(),
+                    publicKey: Address::random(),
+                    token: Address::random(),
+                    newLimit: U256::from(12_345),
+                },
+            );
+            assert_decodes_like_generated!(
+                AccountKeychainPoolEvent,
+                SpendingLimitUpdated,
+                IAccountKeychain::SpendingLimitUpdated,
+                log
+            );
+
+            let log = event_log(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                IAccountKeychain::AccessKeySpend {
+                    account: Address::random(),
+                    publicKey: Address::random(),
+                    token: Address::random(),
+                    amount: U256::from(25),
+                    remainingLimit: U256::from(75),
+                },
+            );
+            assert_decodes_like_generated!(
+                AccountKeychainPoolEvent,
+                AccessKeySpend,
+                IAccountKeychain::AccessKeySpend,
+                log
+            );
+
+            let log = event_log(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                IAccountKeychain::KeyAuthorizationWitnessBurned {
+                    account: Address::random(),
+                    witness: B256::random(),
+                },
+            );
+            assert_decodes_like_generated!(
+                AccountKeychainPoolEvent,
+                KeyAuthorizationWitnessBurned,
+                IAccountKeychain::KeyAuthorizationWitnessBurned,
+                log
+            );
+        }
+
+        #[test]
+        fn fee_manager_decode_matches_generated_event_decoders() {
+            let log = event_log(
+                TIP_FEE_MANAGER_ADDRESS,
+                IFeeManager::ValidatorTokenSet {
+                    validator: Address::random(),
+                    token: Address::random(),
+                },
+            );
+            assert_decodes_like_generated!(
+                FeeManagerPoolEvent,
+                ValidatorTokenSet,
+                IFeeManager::ValidatorTokenSet,
+                log
+            );
+
+            let log = event_log(
+                TIP_FEE_MANAGER_ADDRESS,
+                IFeeManager::UserTokenSet {
+                    user: Address::random(),
+                    token: Address::random(),
+                },
+            );
+            assert_decodes_like_generated!(
+                FeeManagerPoolEvent,
+                UserTokenSet,
+                IFeeManager::UserTokenSet,
+                log
+            );
+        }
+
+        #[test]
+        fn tip403_decode_matches_generated_event_decoders() {
+            let log = event_log(
+                TIP403_REGISTRY_ADDRESS,
+                ITIP403Registry::BlacklistUpdated {
+                    policyId: 7,
+                    updater: Address::random(),
+                    account: Address::random(),
+                    restricted: true,
+                },
+            );
+            assert_decodes_like_generated!(
+                Tip403PoolEvent,
+                BlacklistUpdated,
+                ITIP403Registry::BlacklistUpdated,
+                log
+            );
+
+            let log = event_log(
+                TIP403_REGISTRY_ADDRESS,
+                ITIP403Registry::WhitelistUpdated {
+                    policyId: 9,
+                    updater: Address::random(),
+                    account: Address::random(),
+                    allowed: false,
+                },
+            );
+            assert_decodes_like_generated!(
+                Tip403PoolEvent,
+                WhitelistUpdated,
+                ITIP403Registry::WhitelistUpdated,
+                log
+            );
+        }
+
+        #[test]
+        fn tip20_decode_matches_generated_event_decoders() {
+            let token = tempo_precompiles::PATH_USD_ADDRESS;
+            let log = event_log(
+                token,
+                ITIP20::PauseStateUpdate {
+                    updater: Address::random(),
+                    isPaused: true,
+                },
+            );
+            assert_decodes_like_generated!(
+                Tip20PoolEvent,
+                PauseStateUpdate,
+                ITIP20::PauseStateUpdate,
+                log
+            );
+
+            let log = event_log(
+                token,
+                ITIP20::TransferPolicyUpdate {
+                    updater: Address::random(),
+                    newPolicyId: 11,
+                },
+            );
+            assert_decodes_like_generated!(
+                Tip20PoolEvent,
+                TransferPolicyUpdate,
+                ITIP20::TransferPolicyUpdate,
+                log
+            );
+
+            let log = event_log(
+                token,
+                ITIP20::QuoteTokenUpdate {
+                    updater: Address::random(),
+                    newQuoteToken: Address::random(),
+                },
+            );
+            assert_decodes_like_generated!(
+                Tip20PoolEvent,
+                QuoteTokenUpdate,
+                ITIP20::QuoteTokenUpdate,
+                log
+            );
+
+            let log = event_log(
+                token,
+                ITIP20::Transfer {
+                    from: Address::random(),
+                    to: Address::random(),
+                    amount: U256::from(42),
+                },
+            );
+            assert_decodes_like_generated!(Tip20PoolEvent, Transfer, ITIP20::Transfer, log);
+        }
     }
 
     fn create_test_chain(
