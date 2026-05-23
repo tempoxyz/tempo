@@ -78,6 +78,7 @@ pub fn tempo_gas_params_with_amsterdam(
     GasParams::new_spec(spec.into())
 }
 
+/// Builds the cached Amsterdam gas table with the TIP-1016 regular/state split.
 fn amsterdam_gas_params() -> GasParams {
     let mut gas_params = GasParams::new_spec(TempoHardfork::T4.into());
     // TIP-1016: Split storage creation costs into regular gas + state gas.
@@ -122,6 +123,7 @@ fn amsterdam_gas_params() -> GasParams {
     gas_params
 }
 
+/// Builds the cached T1+ gas table with TIP-1000 costs and no state gas split.
 fn t1_gas_params() -> GasParams {
     let mut gas_params = GasParams::new_spec(TempoHardfork::T1.into());
     // TIP-1000: All storage creation costs in regular gas (no state gas split).
