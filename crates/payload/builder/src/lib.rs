@@ -570,7 +570,7 @@ where
                 .unwrap_or_default();
 
             let tx_execution_start = Instant::now();
-            let tx_with_env = pool_tx.transaction.clone().into_with_tx_env();
+            let tx_with_env = pool_tx.transaction.clone_into_with_tx_env();
             let execution_result =
                 builder.execute_transaction_with_result_closure(tx_with_env, |result| {
                     cumulative_gas_used += result.block_gas_used();

@@ -206,8 +206,7 @@ impl BestTransactionsPrewarming {
                     return;
                 }
 
-                if let Err(err) = evm.transact_raw(tx.transaction.clone().into_with_tx_env().tx_env)
-                {
+                if let Err(err) = evm.transact_raw(tx.transaction.clone_tx_env()) {
                     trace!(
                         target: "payload_builder",
                         %err,
