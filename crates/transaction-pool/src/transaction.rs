@@ -91,6 +91,7 @@ impl TempoPooledTransaction {
     }
 
     /// Get the cost of the transaction in the fee token.
+    #[inline]
     pub fn fee_token_cost(&self) -> U256 {
         self.inner.cost - self.inner.value()
     }
