@@ -5,6 +5,6 @@ pub mod ext;
 pub mod keychain;
 
 #[doc(inline)]
-pub use ext::{TempoProviderBuilderExt, TempoProviderExt};
+pub use ext::{SponsoredProviderBuilder, TempoProviderBuilderExt, TempoProviderExt};
 #[doc(inline)]
 pub use keychain::{CallScopeBuilder, KeyRestrictions, KeychainBuildError};

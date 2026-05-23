@@ -21,7 +21,7 @@ tempo-alloy = { git = "https://github.com/tempoxyz/tempo", features = ["reth"] }
 
 ## Development Status
 
-`tempo-alloy` is currently in development and is not yet ready for production use.
+`tempo-alloy` is under active development. It is intended for application developers building on Tempo.
 
 ## Usage
 
@@ -103,3 +103,90 @@ async fn keychain_example() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 ```
+
+### Sponsored transactions
+
+Sponsored transactions are another provider extension. They route unsigned Tempo AA transaction
+submissions to a sponsor relay, which applies policy, adds the fee-payer signature, broadcasts the
+transaction, and returns the transaction hash. The recommended API is to build a normal Tempo
+provider, add a sponsor relay endpoint, then connect to the default RPC:
+
+```rust,no_run
+use alloy::{network::EthereumWallet, providers::{ProviderBuilder, fillers::RecommendedFillers}};
+use tempo_alloy::{
+    TempoNetwork,
+    fillers::Random2DNonceFiller,
+    provider::ext::TempoProviderBuilderExt,
+};
+
+async fn sponsored_provider(
+    rpc_url: &str,
+    sponsor_url: &str,
+    signer: alloy::signers::local::PrivateKeySigner,
+) -> Result<impl alloy::providers::Provider<TempoNetwork>, alloy::transports::TransportError> {
+    ProviderBuilder::<_, _, TempoNetwork>::default()
+        .filler(Random2DNonceFiller)
+        .filler(<TempoNetwork as RecommendedFillers>::recommended_fillers())
+        .wallet(EthereumWallet::from(signer))
+        .sponsor(sponsor_url)
+        .connect(rpc_url)
+        .await
+}
+```
+
+By default, `.sponsor(sponsor_url)` uses sign-and-relay sponsorship: sponsored
+`eth_sendRawTransaction` submissions are sent to the sponsor service, which signs and broadcasts
+them. Use `sponsor_with_config` to set the mode, sponsor auth, or sponsor header forwarding:
+
+```rust,ignore
+use alloy_transport::Authorization;
+use tempo_alloy::provider::ext::SponsorConfig;
+
+ProviderBuilder::<_, _, TempoNetwork>::default()
+    // fillers and wallet omitted
+    .sponsor_with_config(
+        sponsor_url,
+        SponsorConfig::sign_only().with_auth(Authorization::bearer("sponsor-token")),
+    )
+    .connect(rpc_url)
+    .await?;
+```
+
+For advanced users, `tempo_alloy::transport::RelayTransport` wraps two transports:
+
+- the default Tempo RPC transport for ordinary requests, reads, and sign-only broadcasts;
+- the sponsor transport for signing or sign-and-relay `eth_sendRawTransaction` submissions.
+
+Single `eth_sendRawTransaction` requests are locally preflighted as unsigned Tempo AA transactions.
+In the default sign-and-relay mode, they are forwarded to the sponsor service. In sign-only mode,
+`RelayTransport` calls `eth_signRawTransaction` on the sponsor service and then broadcasts the
+returned fee-payer-signed raw transaction through the default RPC. Other methods are forwarded
+unchanged to the default RPC.
+
+Sponsor config controls sponsor auth and original-header forwarding. Sign-and-relay forwards
+original headers by default for compatibility; sign-only sponsor signing never does and preserves
+original headers only for the final default-RPC broadcast.
+
+Lower-level entry points are available when either endpoint needs custom auth, dynamic headers,
+proxies, retry policy, or middleware:
+
+- `RelayConnector::http(default_rpc, sponsor_rpc)` implements Alloy's `TransportConnect`;
+- `RelayConnector::with_config(default, sponsor, mode, forward_headers)` builds from explicit connectors and configures sponsor header forwarding;
+- `RelayTransport::new(default_transport, sponsor_transport)` wraps existing transports directly;
+- `RelayTransport::with_config(default_transport, sponsor_transport, mode, forward_headers)` selects an explicit mode and configures sponsor header forwarding.
+
+Runtime policy is intentionally strict:
+
+- only unsigned Tempo AA raw transactions are sponsored
+- already fee-payer-signed transactions are rejected before the sponsor relay is called
+- JSON-RPC batches containing `eth_sendRawTransaction` are not supported by `RelayTransport`
+
+Use Tempo AA native batching by including multiple calls in one Tempo AA transaction instead of
+putting multiple `eth_sendRawTransaction` requests in a JSON-RPC batch. Validation is always strict,
+and forwarded requests preserve JSON-RPC ids. Sign-and-relay sponsor requests may inherit original
+headers; sign-only sponsor signing uses only sponsor transport headers, while its final default-RPC
+broadcast may preserve original headers.
+
+Sponsor relay services may enforce their own policy, rate limits, and authentication. Applications
+should surface sponsor errors to users and avoid assuming every valid Tempo AA transaction is
+eligible for sponsorship.
