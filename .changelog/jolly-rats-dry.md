@@ -1,5 +1,5 @@
 ---
-tempo-alloy: minor
+tempo-alloy: patch
 ---
 
 Added sponsored transaction support via a new `RelayTransport` that routes `eth_sendRawTransaction` requests through a sponsor service.
