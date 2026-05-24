@@ -25,7 +25,7 @@ use crate::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorageCtx},
     tip20::{
         rewards::{RewardFlag, UserRewardInfo},
         roles::DEFAULT_ADMIN_ROLE,
@@ -103,7 +103,7 @@ pub struct TIP20Token {
 
     // TIP20 Token
     total_supply: U256,
-    balances: Mapping<Address, TIP20Balance>,
+    balances: Mapping<Address, UserState>,
     allowances: Mapping<Address, Mapping<Address, U256>>,
     permit_nonces: Mapping<Address, U256>,
     paused: bool,
@@ -118,18 +118,18 @@ pub struct TIP20Token {
 }
 
 #[derive(Debug, Clone, Storable, Copy)]
-pub struct TIP20Balance {
+pub struct UserState {
     amount: u128,
     /// (T6+) Cached reward opt-in status. Tracks `reward_recipient`, which remains the source of truth.
     flag: RewardFlag,
 }
 
-impl TIP20Balance {
-    fn new(amount: U256, flag: RewardFlag, hardfork: TempoHardfork) -> Result<Self> {
+impl UserState {
+    fn new(amount: U256, flag: RewardFlag) -> Result<Self> {
         let amount = u128::try_from(amount).map_err(|_| TempoPrecompileError::under_overflow())?;
 
         // Ensure pre-T6 slots do not cache the reward flag.
-        let flag = if hardfork.is_t6() {
+        let flag = if StorageCtx.spec().is_t6() {
             flag
         } else {
             RewardFlag::Uninitialized
@@ -566,7 +566,6 @@ impl TIP20Token {
 
     /// Internal helper to mint new tokens and update balances.
     fn _mint(&mut self, msg_sender: Address, to: &Recipient, amount: U256) -> Result<()> {
-        let hardfork = self.storage.spec();
         self.check_role(msg_sender, *ISSUER_ROLE)?;
         let total_supply = self.total_supply()?;
 
@@ -582,17 +581,14 @@ impl TIP20Token {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
-        let to_balance = if hardfork.is_t6() && to.target != Address::ZERO {
-            Some(self.get_balance(to.target)?)
-        } else {
-            None
-        };
-        let to_flag = self.handle_rewards_on_mint(to.target, to_balance, amount)?;
+        let to_flag = self.handle_rewards_on_mint(to.target, amount)?;
 
         self.set_total_supply(new_supply)?;
-        let to_balance = to_balance.map_or_else(|| self.get_balance(to.target), Ok)?;
-        let new_to_balance = TIP20Balance::new(to_balance.checked_add(amount)?, to_flag, hardfork)?;
-        self.set_balance(to.target, new_to_balance)?;
+        let to_balance = self.get_balance(to.target)?;
+        self.set_balance(
+            to.target,
+            UserState::new(to_balance.checked_add(amount)?, to_flag)?,
+        )?;
 
         self.emit_event(to.build_transfer_event(Address::ZERO, amount))
     }
@@ -1022,11 +1018,11 @@ impl TIP20Token {
         self.grant_default_admin(msg_sender, admin)
     }
 
-    fn get_balance(&self, account: Address) -> Result<TIP20Balance> {
+    fn get_balance(&self, account: Address) -> Result<UserState> {
         self.balances[account].read()
     }
 
-    fn set_balance(&mut self, account: Address, amount: TIP20Balance) -> Result<()> {
+    fn set_balance(&mut self, account: Address, amount: UserState) -> Result<()> {
         self.balances[account].write(amount)
     }
 
@@ -1131,8 +1127,6 @@ impl TIP20Token {
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
     fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
-        let hardfork = self.storage.spec();
-
         let from_balance = self.get_balance(from)?;
         if amount > from_balance.amount() {
             return Err(TIP20Error::insufficient_balance(
@@ -1143,25 +1137,20 @@ impl TIP20Token {
             .into());
         }
 
-        let to_balance = if hardfork.is_t6() && to.target != Address::ZERO {
-            Some(self.get_balance(to.target)?)
-        } else {
-            None
-        };
-
-        let (from_flag, to_flag) =
-            self.handle_rewards_on_transfer(from, from_balance, to.target, to_balance, amount)?;
+        let (from_flag, to_flag) = self.handle_rewards_on_transfer(from, to.target, amount)?;
 
         // Adjust balances
-        let new_from_balance =
-            TIP20Balance::new(from_balance.checked_sub(amount)?, from_flag, hardfork)?;
-        self.set_balance(from, new_from_balance)?;
+        self.set_balance(
+            from,
+            UserState::new(from_balance.checked_sub(amount)?, from_flag)?,
+        )?;
 
         if to.target != Address::ZERO {
-            let to_balance = to_balance.map_or_else(|| self.get_balance(to.target), Ok)?;
-            let new_to_balance =
-                TIP20Balance::new(to_balance.checked_add(amount)?, to_flag, hardfork)?;
-            self.set_balance(to.target, new_to_balance)?;
+            let to_balance = self.get_balance(to.target)?;
+            self.set_balance(
+                to.target,
+                UserState::new(to_balance.checked_add(amount)?, to_flag)?,
+            )?;
         }
 
         self.emit_event(to.build_transfer_event(from, amount))
@@ -1193,21 +1182,18 @@ impl TIP20Token {
         self.check_and_update_spending_limit(from, amount)?;
 
         // Update rewards for the sender and get their reward recipient
-        let from_flag = self.update_rewards(from, None, Some(from_balance))?;
+        let from_flag = self.update_rewards(from)?;
 
         // If user is opted into rewards, decrease opted-in supply
         if from_flag.is_opted_in() {
-            self.update_opted_in_supply(amount, false)?;
+            self.decrease_opted_in_supply(amount)?;
         }
 
-        let hardfork = self.storage.spec();
-        let new_from_balance =
-            TIP20Balance::new(from_balance.checked_sub(amount)?, from_flag, hardfork)?;
+        let new_from_balance = UserState::new(from_balance.checked_sub(amount)?, from_flag)?;
         self.set_balance(from, new_from_balance)?;
 
         let to_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_to_balance =
-            TIP20Balance::new(to_balance.checked_add(amount)?, to_balance.flag, hardfork)?;
+        let new_to_balance = UserState::new(to_balance.checked_add(amount)?, to_balance.flag)?;
         self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_to_balance)
     }
 
@@ -1239,32 +1225,23 @@ impl TIP20Token {
         let to_balance = self.get_balance(to)?;
 
         // Update rewards for the recipient and get their reward recipient
-        let to_flag = self.update_rewards(to, None, Some(to_balance))?;
+        let to_flag = self.update_rewards(to)?;
 
         // If user is opted into rewards, increase opted-in supply by refund amount
         if to_flag.is_opted_in() {
-            self.update_opted_in_supply(refund, true)?;
+            self.increase_opted_in_supply(refund)?;
         }
 
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        if refund > from_balance.amount() {
-            return Err(TIP20Error::insufficient_balance(
-                from_balance.amount(),
-                refund,
-                self.address,
-            )
-            .into());
-        }
-
-        let hardfork = self.storage.spec();
-        let new_from_balance = TIP20Balance::new(
-            from_balance.checked_sub(refund)?,
+        let new_from_balance = UserState::new(
+            from_balance.checked_sub(refund).map_err(|_| {
+                TIP20Error::insufficient_balance(from_balance.amount(), refund, self.address)
+            })?,
             from_balance.flag,
-            hardfork,
         )?;
         self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_from_balance)?;
 
-        let new_to_balance = TIP20Balance::new(to_balance.checked_add(refund)?, to_flag, hardfork)?;
+        let new_to_balance = UserState::new(to_balance.checked_add(refund)?, to_flag)?;
         self.set_balance(to, new_to_balance)
     }
 }

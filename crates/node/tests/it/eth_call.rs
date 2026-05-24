@@ -25,7 +25,7 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     error::TempoPrecompileError,
     storage::{ContractStorage, LayoutCtx, Storable, packing::PackedSlot},
-    tip20::{TIP20Balance, TIP20Token},
+    tip20::{TIP20Token, UserState},
     validator_config::ValidatorConfig,
 };
 use test_case::test_case;
@@ -45,8 +45,8 @@ fn under_overflow_revert() -> Bytes {
         .bytes
 }
 
-fn tip20_balance_from_word(word: U256) -> eyre::Result<TIP20Balance> {
-    Ok(<TIP20Balance as Storable>::load(
+fn tip20_balance_from_word(word: U256) -> eyre::Result<UserState> {
+    Ok(<UserState as Storable>::load(
         &PackedSlot(word),
         U256::ZERO,
         LayoutCtx::FULL,
