@@ -90,7 +90,7 @@ where
 
     /// Updates the 2d nonce pool with the given state changes.
     ///
-    /// Returns mined AA transactions so the caller controls where their drop cost is paid.
+    /// Returns mined AA transactions.
     pub(crate) fn notify_aa_pool_on_state_updates(
         &self,
         state: &AddressMap<BundleAccount>,
