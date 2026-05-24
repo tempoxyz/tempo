@@ -440,6 +440,11 @@ where
         to_remove
     }
 
+    /// Adds a validated transaction to the subpool derived from its type and nonce key.
+    ///
+    /// [`TempoPooledTransaction::is_aa_2d`] routes AA transactions with non-zero
+    /// nonce keys, including expiring nonces, to the 2D nonce pool. Everything else
+    /// stays in the protocol pool.
     fn add_validated_transaction(
         &self,
         origin: TransactionOrigin,
