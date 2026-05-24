@@ -235,6 +235,17 @@ impl TempoPoolUpdates {
     }
 }
 
+trait ChainTransactionHashes {
+    /// Returns an iterator over all transaction hashes in the chain.
+    fn transaction_hashes_iter(&self) -> impl Iterator<Item = &TxHash> + '_;
+}
+
+impl ChainTransactionHashes for Chain<TempoPrimitives> {
+    fn transaction_hashes_iter(&self) -> impl Iterator<Item = &TxHash> + '_ {
+        self.transactions_iter().map(|tx| tx.tx_hash())
+    }
+}
+
 /// Transaction-pool relevant subset of `IAccountKeychain::IAccountKeychainEvents`.
 enum AccountKeychainPoolEvent {
     /// [`IAccountKeychain::KeyRevoked`] log.
@@ -590,10 +601,7 @@ where
                 let mut updates = TempoPoolUpdates::from_chain(tip);
 
                 // Remove expiry tracking for mined transactions.
-                let mined_hashes = tip.blocks_iter()
-                    .flat_map(|block| block.body().transactions())
-                    .map(|tx| tx.tx_hash());
-                state.untrack_many(mined_hashes);
+                state.untrack_many(tip.transaction_hashes_iter());
 
                 // Evict transactions slightly before they expire to prevent
                 // broadcasting near-expiry txs that peers would reject.
@@ -1332,6 +1340,23 @@ mod tests {
             },
             Default::default(),
         ))
+    }
+
+    #[test]
+    fn chain_transaction_hashes_iter_returns_mined_hashes() {
+        let sender = Address::random();
+        let tx1 = TxBuilder::aa(sender).nonce(1).build();
+        let tx2 = TxBuilder::aa(sender).nonce(2).build();
+        let hash1 = *tx1.hash();
+        let hash2 = *tx2.hash();
+
+        let block1 = create_block_with_txs(1, vec![extract_envelope(&tx1)], vec![sender]);
+        let block2 = create_block_with_txs(2, vec![extract_envelope(&tx2)], vec![sender]);
+        let chain = create_test_chain(vec![block1, block2]);
+
+        let hashes: Vec<_> = chain.transaction_hashes_iter().copied().collect();
+
+        assert_eq!(hashes, vec![hash1, hash2]);
     }
 
     /// Helper to create a recovered block containing the given transactions.
