@@ -1,5 +1,8 @@
 # Changelog
 
+## `tempo-contracts@1.7.3`
+
+
 ## `tempo-contracts@1.7.2`
 
 ### Patch Changes

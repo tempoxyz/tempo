@@ -1,5 +1,8 @@
 # Changelog
 
+## `tempo-primitives@1.7.3`
+
+
 ## `tempo-primitives@1.7.2`
 
 ### Patch Changes
