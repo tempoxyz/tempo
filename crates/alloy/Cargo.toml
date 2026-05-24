@@ -2,7 +2,7 @@
 name = "tempo-alloy"
 description = "Tempo extensions of Alloy"
 
-version = "1.6.0"
+version = "1.7.2"
 edition.workspace = true
 license.workspace = true
 rust-version.workspace = true
@@ -24,10 +24,12 @@ alloy-eips.workspace = true
 alloy-network.workspace = true
 alloy-primitives = { workspace = true, features = ["rand"] }
 alloy-provider.workspace = true
+alloy-rpc-client = { workspace = true, features = ["reqwest"] }
 alloy-rpc-types-eth.workspace = true
 alloy-serde.workspace = true
 alloy-signer-local.workspace = true
 alloy-sol-types.workspace = true
+alloy-json-rpc.workspace = true
 alloy-transport.workspace = true
 
 reth-evm = { workspace = true, optional = true }
@@ -35,15 +37,19 @@ reth-primitives-traits = { workspace = true, optional = true }
 reth-rpc-convert = { workspace = true, optional = true }
 reth-rpc-eth-types = { workspace = true, optional = true }
 
+tower.workspace = true
 dashmap.workspace = true
 derive_more.workspace = true
 futures.workspace = true
 async-trait.workspace = true
 serde.workspace = true
+serde_json.workspace = true
 tracing.workspace = true
+reqwest.workspace = true
+http.workspace = true
 
 [dev-dependencies]
-alloy = { workspace = true, features = ["providers", "rpc-types-eth", "sol-types"] }
+alloy = { workspace = true, features = ["providers", "reqwest", "rpc-client", "rpc-types-eth", "signers", "signer-local", "sol-types", "transport-http"] }
 alloy-signer.workspace = true
 eyre.workspace = true
 serde_json.workspace = true

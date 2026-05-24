@@ -12,7 +12,6 @@ const DEFAULT_PROFILE = "profiling"
 const DEFAULT_FEATURES = "jemalloc,asm-keccak"
 const BENCH_WORKTREES_DIR = ".bench-worktrees"
 const BENCH_RESULTS_DIR = "bench-results"
-const METRICS_PROXY_SCRIPT = "contrib/bench/bench-metrics-proxy.py"
 const MINIO_BUCKET = "minio/tempo-binaries"
 const BENCH_META_SUBDIR = ".bench-meta"
 
@@ -30,7 +29,7 @@ def port-to-node-index [port: int] {
 
 # Build log filter args based on --loud flag
 def log-filter-args [loud: bool] {
-    if $loud { [] } else { ["--log.stdout.filter" "warn"] }
+    if $loud { [] } else { ["--log.stdout.filter" "info"] }
 }
 
 # Wrap command with samply if enabled
@@ -342,6 +341,19 @@ def resolve-git-ref [ref: string] {
     git rev-parse $ref | str trim
 }
 
+# Resolve a SHA to a human-readable label: tag > branch > fallback.
+def resolve-git-ref-label [sha: string, fallback: string] {
+    let tag = (git tag --points-at $sha | lines | first | default "")
+    if $tag != "" {
+        return $tag
+    }
+    let branch = (git branch -r --points-at $sha | lines | first | default "" | str replace -r '^\s*origin/' '')
+    if $branch != "" {
+        return $branch
+    }
+    $fallback
+}
+
 def bench-cache-key [commit_sha: string, features: string, no_default_features: bool] {
     if not $no_default_features {
         return $commit_sha
@@ -505,7 +517,7 @@ def run-bench-single [
     --txgen-tempo-bin: string
     --txgen-bench-bin: string
     --rpc-urls: string
-    --metrics-url: string
+    --metrics-url: list<string>
     --genesis-path: string
     --datadir: string
     --run-label: string
@@ -539,29 +551,7 @@ def run-bench-single [
     let log_dir = $"($LOCALNET_DIR)/logs-($run_label)"
     mkdir $log_dir
 
-    # Start metrics proxy with labels for this run
     let run_type = if ($run_label | str starts-with "baseline") { "baseline" } else { "feature" }
-    let run_start_epoch = (date now | into int) / 1_000_000_000
-    let labels = {
-        benchmark_run: $run_label
-        run_type: $run_type
-        git_ref: $git_ref
-        benchmark_id: $benchmark_id
-        run_start_epoch: $"($run_start_epoch)"
-        reference_epoch: $"($reference_epoch)"
-    }
-    let labels_file = $"($results_dir)/metrics-labels-($run_label).json"
-    $labels | to json | save -f $labels_file
-
-    let proxy_pid = if ($METRICS_PROXY_SCRIPT | path exists) {
-        let proxy_job = (job spawn {
-            python3 $METRICS_PROXY_SCRIPT --upstream "http://127.0.0.1:9001/" --port 9090 --labels $labels_file
-        })
-        sleep 500ms
-        $proxy_job
-    } else {
-        null
-    }
 
     # Parse extra node args
     let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
@@ -632,10 +622,12 @@ def run-bench-single [
             --duration $duration
             --accounts $accounts
             --max-concurrent-requests $max_concurrent_requests
+            --bench-args $bench_args
             --bench-env $bench_env
             --git-ref $git_ref
             --build-profile $build_profile
-            --benchmark-mode $benchmark_mode)
+            --benchmark-mode $benchmark_mode
+            --skip-funding=($bloat > 0))
         if not $result.ok {
             print $"  Benchmark run ($run_label) failed with exit code ($result.exit_code)"
         }
@@ -700,19 +692,6 @@ def run-bench-single [
         if $wait >= 120 {
             print "  Warning: samply did not exit in time"
         }
-    }
-
-    # Stop metrics proxy
-    if $proxy_pid != null {
-        let proxy_pids = (ps | where name =~ "bench-metrics-proxy" | get pid)
-        for pid in $proxy_pids {
-            kill -s 2 $pid
-        }
-    }
-
-    # Remove stale IPC socket
-    if ("/tmp/reth.ipc" | path exists) {
-        rm --force /tmp/reth.ipc
     }
 
     print $"=== Run ($run_label) complete ==="
@@ -789,9 +768,44 @@ def percentile [sorted_vals: list<any>, pct: int] {
     $sorted_vals | get $clamped
 }
 
+def iso-from-epoch-ms [epoch_ms: int] {
+    let seconds = ($epoch_ms / 1000 | into int)
+    let millis = ($epoch_ms mod 1000 | into int)
+    let base = (^date -u -d $"@($seconds)" "+%Y-%m-%dT%H:%M:%S")
+    $"($base).($millis | into string | fill --alignment right --character '0' --width 3)Z"
+}
 
-def generate-summary [results_dir: string, baseline_ref: string, feature_ref: string, bloat: int, preset: string, tps: int, duration: int, --benchmark-id: string = "", --reference-epoch: int = 0] {
-    let run_labels = ["baseline-1" "feature-1" "feature-2" "baseline-2"]
+def grafana-performance-url [benchmark_id: string, from_ms: int, to_ms: int] {
+    if $benchmark_id == "" or $from_ms <= 0 or $to_ms <= 0 {
+        return ""
+    }
+
+    let from = (iso-from-epoch-ms $from_ms)
+    let to = (iso-from-epoch-ms $to_ms)
+    $"https://tempoxyz.grafana.net/d/performance/performance?orgId=1&from=($from)&to=($to)&timezone=browser&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=($benchmark_id)&var-group_by=benchmark_run"
+}
+
+
+def generate-summary [
+    results_dir: string,
+    baseline_ref: string,
+    feature_ref: string,
+    bloat: int,
+    preset: string,
+    tps: int,
+    duration: int,
+    --benchmark-id: string = "",
+    --reference-epoch: int = 0,
+    --baseline-hardfork: string = "",
+    --feature-hardfork: string = "",
+] {
+    let run_order_path = $"($results_dir)/run-order.txt"
+    let candidate_run_labels = if ($run_order_path | path exists) {
+        open $run_order_path | lines | where { |label| $label != "" }
+    } else {
+        ["baseline-1" "feature-1" "feature-2" "baseline-2"]
+    }
+    let run_labels = ($candidate_run_labels | where { |label| ($"($results_dir)/report-($label).json" | path exists) })
     mut run_data = []
     mut baseline_blocks = []
     mut feature_blocks = []
@@ -799,6 +813,30 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     mut feature_intervals = []
     mut baseline_tps_samples = []
     mut feature_tps_samples = []
+    mut baseline_builder_samples = []
+    mut feature_builder_samples = []
+    mut baseline_builder_finish_samples = []
+    mut feature_builder_finish_samples = []
+    mut baseline_builder_included_tx_samples = []
+    mut feature_builder_included_tx_samples = []
+    mut baseline_builder_invalid_tx_samples = []
+    mut feature_builder_invalid_tx_samples = []
+    mut baseline_builder_invalid_tx_execution_attempts_samples = []
+    mut feature_builder_invalid_tx_execution_attempts_samples = []
+    mut baseline_builder_invalid_tx_skips = []
+    mut feature_builder_invalid_tx_skips = []
+    mut baseline_builder_nonce_too_low_skips = []
+    mut feature_builder_nonce_too_low_skips = []
+    mut baseline_builder_fill_overhead_samples = []
+    mut feature_builder_fill_overhead_samples = []
+    mut baseline_builder_fill_idle_samples = []
+    mut feature_builder_fill_idle_samples = []
+    mut baseline_validation_samples = []
+    mut feature_validation_samples = []
+    mut baseline_builder_gas_samples = []
+    mut feature_builder_gas_samples = []
+    mut baseline_validation_gas_samples = []
+    mut feature_validation_gas_samples = []
 
     let compute_tps_stats = { |samples: list<any>|
         let sorted_samples = ($samples | sort)
@@ -825,6 +863,58 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             continue
         }
         let report = (open $report_path)
+        let samples_path = $"($results_dir)/report-($label).samples.ndjson"
+        let samples_gz_path = $"($samples_path).gz"
+        let samples_raw = if ($samples_path | path exists) {
+            open --raw $samples_path
+        } else if ($samples_gz_path | path exists) {
+            gzip -dc $samples_gz_path
+        } else { "" }
+        let metric_samples = if $samples_raw != "" {
+            $samples_raw
+                | lines
+                | where { |line| ($line | str trim) != "" }
+                | each { |line| $line | from json }
+                | where { |sample| $sample.name in [
+                    "reth_tempo_payload_builder_payload_build_duration_seconds"
+                    "reth_tempo_payload_builder_payload_finalization_duration_seconds"
+                    "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds"
+                    "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds"
+                    "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts"
+                    "reth_tempo_payload_builder_pool_transactions_skipped_total"
+                    "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds"
+                    "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds"
+                    "reth_consensus_engine_beacon_new_payload_latency"
+                    "reth_tempo_payload_builder_gas_per_second_last"
+                    "reth_consensus_engine_beacon_new_payload_gas_per_second_last"
+                ] }
+                | where { |sample|
+                    let quantile = ($sample.labels | get -o quantile | default "")
+                    ($quantile in ["0.5" "0.9" "0.99"]) or ($quantile == "")
+                }
+        } else { [] }
+        let builder_samples = ($metric_samples | where name == "reth_tempo_payload_builder_payload_build_duration_seconds")
+        let builder_finish_samples = ($metric_samples | where name == "reth_tempo_payload_builder_payload_finalization_duration_seconds")
+        let builder_included_tx_samples = ($metric_samples | where name == "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds")
+        let builder_invalid_tx_samples = ($metric_samples | where name == "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds")
+        let builder_invalid_tx_execution_attempts_samples = ($metric_samples | where name == "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts")
+        let builder_pool_tx_skip_samples = ($metric_samples | where name == "reth_tempo_payload_builder_pool_transactions_skipped_total")
+        let builder_pool_tx_skips_for_reason = { |reason: string|
+            let values = (
+                $builder_pool_tx_skip_samples
+                    | where { |sample| ($sample.labels | get -o reason | default "") == $reason }
+                    | get value
+                    | where { |value| $value != null }
+            )
+            if ($values | length) > 0 { $values | math max | math round --precision 0 } else { 0.0 }
+        }
+        let builder_invalid_tx_skips = do $builder_pool_tx_skips_for_reason "invalid_tx"
+        let builder_nonce_too_low_skips = do $builder_pool_tx_skips_for_reason "nonce_too_low"
+        let builder_fill_overhead_samples = ($metric_samples | where name == "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds")
+        let builder_fill_idle_samples = ($metric_samples | where name == "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds")
+        let validation_samples = ($metric_samples | where name == "reth_consensus_engine_beacon_new_payload_latency")
+        let builder_gas_samples = ($metric_samples | where name == "reth_tempo_payload_builder_gas_per_second_last")
+        let validation_gas_samples = ($metric_samples | where name == "reth_consensus_engine_beacon_new_payload_gas_per_second_last")
         let blocks = ($report | get blocks | each { |b|
             let tx_count = ($b | get tx_count)
             let timestamp = if (($b | get -o timestamp | default null) != null) {
@@ -876,10 +966,34 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             $baseline_blocks = ($baseline_blocks | append $blocks)
             $baseline_intervals = ($baseline_intervals | append $block_intervals)
             $baseline_tps_samples = ($baseline_tps_samples | append $block_tps_samples)
+            $baseline_builder_samples = ($baseline_builder_samples | append $builder_samples)
+            $baseline_builder_finish_samples = ($baseline_builder_finish_samples | append $builder_finish_samples)
+            $baseline_builder_included_tx_samples = ($baseline_builder_included_tx_samples | append $builder_included_tx_samples)
+            $baseline_builder_invalid_tx_samples = ($baseline_builder_invalid_tx_samples | append $builder_invalid_tx_samples)
+            $baseline_builder_invalid_tx_execution_attempts_samples = ($baseline_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
+            $baseline_builder_invalid_tx_skips = ($baseline_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
+            $baseline_builder_nonce_too_low_skips = ($baseline_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
+            $baseline_builder_fill_overhead_samples = ($baseline_builder_fill_overhead_samples | append $builder_fill_overhead_samples)
+            $baseline_builder_fill_idle_samples = ($baseline_builder_fill_idle_samples | append $builder_fill_idle_samples)
+            $baseline_validation_samples = ($baseline_validation_samples | append $validation_samples)
+            $baseline_builder_gas_samples = ($baseline_builder_gas_samples | append $builder_gas_samples)
+            $baseline_validation_gas_samples = ($baseline_validation_gas_samples | append $validation_gas_samples)
         } else {
             $feature_blocks = ($feature_blocks | append $blocks)
             $feature_intervals = ($feature_intervals | append $block_intervals)
             $feature_tps_samples = ($feature_tps_samples | append $block_tps_samples)
+            $feature_builder_samples = ($feature_builder_samples | append $builder_samples)
+            $feature_builder_finish_samples = ($feature_builder_finish_samples | append $builder_finish_samples)
+            $feature_builder_included_tx_samples = ($feature_builder_included_tx_samples | append $builder_included_tx_samples)
+            $feature_builder_invalid_tx_samples = ($feature_builder_invalid_tx_samples | append $builder_invalid_tx_samples)
+            $feature_builder_invalid_tx_execution_attempts_samples = ($feature_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
+            $feature_builder_invalid_tx_skips = ($feature_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
+            $feature_builder_nonce_too_low_skips = ($feature_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
+            $feature_builder_fill_overhead_samples = ($feature_builder_fill_overhead_samples | append $builder_fill_overhead_samples)
+            $feature_builder_fill_idle_samples = ($feature_builder_fill_idle_samples | append $builder_fill_idle_samples)
+            $feature_validation_samples = ($feature_validation_samples | append $validation_samples)
+            $feature_builder_gas_samples = ($feature_builder_gas_samples | append $builder_gas_samples)
+            $feature_validation_gas_samples = ($feature_validation_gas_samples | append $validation_gas_samples)
         }
 
         let total_tx = ($blocks | get tx_count | math sum)
@@ -937,7 +1051,6 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         {
             n: ($blocks | length)
             mean: (if ($latencies | length) > 0 { $latencies | math avg | math round --precision 1 } else { 0.0 })
-            stddev: (if ($latencies | length) > 1 { $latencies | math stddev | math round --precision 1 } else { 0.0 })
             p50: (percentile $latencies 50 | math round --precision 1)
             p90: (percentile $latencies 90 | math round --precision 1)
             p99: (percentile $latencies 99 | math round --precision 1)
@@ -947,6 +1060,71 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let b_lat = do $compute_latency_stats $baseline_blocks
     let f_lat = do $compute_latency_stats $feature_blocks
 
+    let compute_quantile_metric_stats = { |samples: list<any>|
+        let quantile_ms = { |q: string|
+            let values = (
+                $samples
+                    | where { |sample| ($sample.labels | get -o quantile | default "") == $q }
+                    | get value
+                    | each { |v| $v * 1000.0 }
+            )
+            if ($values | length) > 0 { $values | math avg | math round --precision 1 } else { 0.0 }
+        }
+        {
+            n: ($samples | length)
+            p50: (do $quantile_ms "0.5")
+            p90: (do $quantile_ms "0.9")
+            p99: (do $quantile_ms "0.99")
+        }
+    }
+    let compute_quantile_value_stats = { |samples: list<any>|
+        let quantile_value = { |q: string|
+            let values = (
+                $samples
+                    | where { |sample| ($sample.labels | get -o quantile | default "") == $q }
+                    | get value
+            )
+            if ($values | length) > 0 { $values | math avg | math round --precision 1 } else { 0.0 }
+        }
+        {
+            n: ($samples | length)
+            p50: (do $quantile_value "0.5")
+            p90: (do $quantile_value "0.9")
+            p99: (do $quantile_value "0.99")
+        }
+    }
+
+    let b_builder_metric = do $compute_quantile_metric_stats $baseline_builder_samples
+    let f_builder_metric = do $compute_quantile_metric_stats $feature_builder_samples
+    let b_builder = if $b_builder_metric.n > 0 { $b_builder_metric } else { { n: $b_lat.n, p50: $b_lat.p50, p90: $b_lat.p90, p99: $b_lat.p99 } }
+    let f_builder = if $f_builder_metric.n > 0 { $f_builder_metric } else { { n: $f_lat.n, p50: $f_lat.p50, p90: $f_lat.p90, p99: $f_lat.p99 } }
+    let b_builder_finish = do $compute_quantile_metric_stats $baseline_builder_finish_samples
+    let f_builder_finish = do $compute_quantile_metric_stats $feature_builder_finish_samples
+    let b_builder_included_tx = do $compute_quantile_metric_stats $baseline_builder_included_tx_samples
+    let f_builder_included_tx = do $compute_quantile_metric_stats $feature_builder_included_tx_samples
+    let b_builder_invalid_tx = do $compute_quantile_metric_stats $baseline_builder_invalid_tx_samples
+    let f_builder_invalid_tx = do $compute_quantile_metric_stats $feature_builder_invalid_tx_samples
+    let b_builder_invalid_tx_execution_attempts = do $compute_quantile_value_stats $baseline_builder_invalid_tx_execution_attempts_samples
+    let f_builder_invalid_tx_execution_attempts = do $compute_quantile_value_stats $feature_builder_invalid_tx_execution_attempts_samples
+    let b_builder_invalid_tx_skips = if ($baseline_builder_invalid_tx_skips | length) > 0 { $baseline_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_invalid_tx_skips = if ($feature_builder_invalid_tx_skips | length) > 0 { $feature_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
+    let b_builder_nonce_too_low_skips = if ($baseline_builder_nonce_too_low_skips | length) > 0 { $baseline_builder_nonce_too_low_skips | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_nonce_too_low_skips = if ($feature_builder_nonce_too_low_skips | length) > 0 { $feature_builder_nonce_too_low_skips | math sum | math round --precision 0 } else { 0.0 }
+    let b_builder_fill_overhead = do $compute_quantile_metric_stats $baseline_builder_fill_overhead_samples
+    let f_builder_fill_overhead = do $compute_quantile_metric_stats $feature_builder_fill_overhead_samples
+    let b_builder_fill_idle = do $compute_quantile_metric_stats $baseline_builder_fill_idle_samples
+    let f_builder_fill_idle = do $compute_quantile_metric_stats $feature_builder_fill_idle_samples
+    let b_validation = do $compute_quantile_metric_stats $baseline_validation_samples
+    let f_validation = do $compute_quantile_metric_stats $feature_validation_samples
+    let compute_gas_stats = { |samples: list<any>|
+        let values = ($samples | get value | where { |value| $value != null })
+        if ($values | length) > 0 { $values | math avg | math round --precision 0 } else { 0.0 }
+    }
+    let b_builder_gas = do $compute_gas_stats $baseline_builder_gas_samples
+    let f_builder_gas = do $compute_gas_stats $feature_builder_gas_samples
+    let b_validation_gas = do $compute_gas_stats $baseline_validation_gas_samples
+    let f_validation_gas = do $compute_gas_stats $feature_validation_gas_samples
+
     let b_bt = do $compute_block_time_stats $baseline_intervals
     let f_bt = do $compute_block_time_stats $feature_intervals
     let b_tps_stats = do $compute_tps_stats $baseline_tps_samples
@@ -955,6 +1133,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     # Aggregate TPS and Mgas/s from per-run totals (total_tx / total_time)
     let baseline_runs = ($run_data | where { |r| $r.label | str starts-with "baseline" })
     let feature_runs = ($run_data | where { |r| $r.label | str starts-with "feature" })
+    let run_pairs = ([($baseline_runs | length) ($feature_runs | length)] | math max)
 
     let b_tps = if ($baseline_runs | length) > 0 { $baseline_runs | get tps | math avg | math round --precision 0 } else { 0.0 }
     let f_tps = if ($feature_runs | length) > 0 { $feature_runs | get tps | math avg | math round --precision 0 } else { 0.0 }
@@ -963,9 +1142,77 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
 
     # Compute deltas (feature vs baseline)
     let delta = { |base: float, feat: float| if $base != 0.0 { ((($feat - $base) / $base) * 100) | math round --precision 1 } else { 0.0 } }
+    let has_samples = { |stats: record| ($stats.n | default 0) > 0 }
+    let fmt_stat = { |stats: record, field: string|
+        if (do $has_samples $stats) {
+            let value = ($stats | get $field)
+            $"($value)"
+        } else { "n/a" }
+    }
+    let fmt_stat_delta = { |base_stats: record, feature_stats: record, field: string|
+        let base_has_samples = (do $has_samples $base_stats)
+        let feature_has_samples = (do $has_samples $feature_stats)
+        if $base_has_samples and $feature_has_samples {
+            let base = ($base_stats | get $field)
+            let feature = ($feature_stats | get $field)
+            $"(do $delta $base $feature)%"
+        } else { "n/a" }
+    }
+    let stat_row = { |label: string, base_stats: record, feature_stats: record, field: string|
+        let base_has_samples = (do $has_samples $base_stats)
+        let feature_has_samples = (do $has_samples $feature_stats)
+        let base_value = if $base_has_samples { $base_stats | get $field } else { 0.0 }
+        let feature_value = if $feature_has_samples { $feature_stats | get $field } else { 0.0 }
+
+        if (not $base_has_samples) or (not $feature_has_samples) or $base_value > 0.0 or $feature_value > 0.0 {
+            $"| ($label) | (do $fmt_stat $base_stats $field) | (do $fmt_stat $feature_stats $field) | (do $fmt_stat_delta $base_stats $feature_stats $field) |"
+        } else { null }
+    }
+    let nonzero_stat_row = { |label: string, base_stats: record, feature_stats: record, field: string|
+        let base_has_samples = (do $has_samples $base_stats)
+        let feature_has_samples = (do $has_samples $feature_stats)
+        let base_value = if $base_has_samples { $base_stats | get $field } else { 0.0 }
+        let feature_value = if $feature_has_samples { $feature_stats | get $field } else { 0.0 }
+
+        if $base_value > 0.0 or $feature_value > 0.0 {
+            $"| ($label) | (do $fmt_stat $base_stats $field) | (do $fmt_stat $feature_stats $field) | (do $fmt_stat_delta $base_stats $feature_stats $field) |"
+        } else { null }
+    }
+    let nonzero_count_row = { |label: string, base: float, feature: float|
+        if $base > 0.0 or $feature > 0.0 {
+            $"| ($label) | ($base) | ($feature) | (do $delta $base $feature)% |"
+        } else { null }
+    }
+    let to_mgas_s = { |value: float| ($value / 1_000_000.0) | math round --precision 1 }
+    let b_builder_mgas = do $to_mgas_s $b_builder_gas
+    let f_builder_mgas = do $to_mgas_s $f_builder_gas
+    let b_validation_mgas = do $to_mgas_s $b_validation_gas
+    let f_validation_mgas = do $to_mgas_s $f_validation_gas
+
+    let observability_padding_ms = 5000
+    let observability_duration_ms = $duration * ($run_labels | length) * 1000
+    let observability_from_ms = if $reference_epoch > 0 {
+        (($reference_epoch * 1000) - $observability_padding_ms)
+    } else { 0 }
+    let observability_to_ms = if $reference_epoch > 0 {
+        (($reference_epoch * 1000) + $observability_duration_ms - $observability_padding_ms)
+    } else { 0 }
+    let phase_ranges = ($run_labels | each { |label|
+        let range_path = $"($results_dir)/phase-range-($label).json"
+        if ($range_path | path exists) { open $range_path } else { null }
+    } | where { |range| $range != null })
+    let phase_start_ms = ($phase_ranges | where started_ms != null | get started_ms | sort)
+    let phase_finish_ms = ($phase_ranges | where finished_ms != null | get finished_ms | sort)
+    let actual_observability_from_ms = if ($phase_start_ms | length) > 0 {
+        $phase_start_ms | first
+    } else { $observability_from_ms }
+    let actual_observability_to_ms = if ($phase_finish_ms | length) > 0 {
+        $phase_finish_ms | last
+    } else { $observability_to_ms }
 
     # Build summary markdown
-    let summary = ([
+    let grafana_url = (grafana-performance-url $benchmark_id $observability_from_ms $observability_to_ms)
+    mut config_lines = [
         $"# Bench Comparison: ($baseline_ref) vs ($feature_ref)"
         ""
         "## Configuration"
@@ -973,9 +1220,19 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         $"- Preset: ($preset)"
         $"- Target TPS: ($tps)"
         $"- Duration: ($duration)s"
+        $"- Run pairs: ($run_pairs)"
         $"- Snapshot: (if (has-schelk) { 'schelk' } else { 'cp fallback' })"
         $"- Baseline blocks: ($b_lat.n)"
         $"- Feature blocks: ($f_lat.n)"
+    ]
+    if $baseline_hardfork != "" {
+        $config_lines = ($config_lines | append $"- Baseline hardfork: ($baseline_hardfork)")
+    }
+    if $feature_hardfork != "" {
+        $config_lines = ($config_lines | append $"- Feature hardfork: ($feature_hardfork)")
+    }
+
+    let summary_lines = ($config_lines | append [
         ""
         "## Tempo Metrics"
         ""
@@ -990,28 +1247,40 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         $"| Block Time P90 [ms] | ($b_bt.p90) | ($f_bt.p90) | (do $delta $b_bt.p90 $f_bt.p90)% |"
         $"| Block Time P99 [ms] | ($b_bt.p99) | ($f_bt.p99) | (do $delta $b_bt.p99 $f_bt.p99)% |"
         ""
-        "## Latency (Secondary)"
+        "## Builder"
         ""
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
-        $"| Latency Mean [ms] | ($b_lat.mean) | ($f_lat.mean) | (do $delta $b_lat.mean $f_lat.mean)% |"
-        $"| Latency Std Dev [ms] | ($b_lat.stddev) | ($f_lat.stddev) | (do $delta $b_lat.stddev $f_lat.stddev)% |"
-        $"| Latency P50 [ms] | ($b_lat.p50) | ($f_lat.p50) | (do $delta $b_lat.p50 $f_lat.p50)% |"
-        $"| Latency P90 [ms] | ($b_lat.p90) | ($f_lat.p90) | (do $delta $b_lat.p90 $f_lat.p90)% |"
-        $"| Latency P99 [ms] | ($b_lat.p99) | ($f_lat.p99) | (do $delta $b_lat.p99 $f_lat.p99)% |"
+        $"| Gas Throughput [Mgas/s] | ($b_builder_mgas) | ($f_builder_mgas) | (do $delta $b_builder_gas $f_builder_gas)% |"
+        $"| Latency P50 [ms] | ($b_builder.p50) | ($f_builder.p50) | (do $delta $b_builder.p50 $f_builder.p50)% |"
+        $"| Latency P90 [ms] | ($b_builder.p90) | ($f_builder.p90) | (do $delta $b_builder.p90 $f_builder.p90)% |"
+        $"| Latency P99 [ms] | ($b_builder.p99) | ($f_builder.p99) | (do $delta $b_builder.p99 $f_builder.p99)% |"
+        (do $stat_row "Finish P50 [ms]" $b_builder_finish $f_builder_finish p50)
+        (do $stat_row "Finish P99 [ms]" $b_builder_finish $f_builder_finish p99)
+        (do $nonzero_stat_row "Included Tx Exec P50 [ms]" $b_builder_included_tx $f_builder_included_tx p50)
+        (do $nonzero_stat_row "Included Tx Exec P99 [ms]" $b_builder_included_tx $f_builder_included_tx p99)
+        (do $nonzero_stat_row "Invalid Tx Exec P50 [ms]" $b_builder_invalid_tx $f_builder_invalid_tx p50)
+        (do $nonzero_stat_row "Invalid Tx Exec P99 [ms]" $b_builder_invalid_tx $f_builder_invalid_tx p99)
+        (do $nonzero_stat_row "Invalid Tx Attempts P50" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p50)
+        (do $nonzero_stat_row "Invalid Tx Attempts P99" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p99)
+        (do $nonzero_count_row "Invalid Tx Skips" $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
+        (do $nonzero_count_row "Nonce Too Low Skips" $b_builder_nonce_too_low_skips $f_builder_nonce_too_low_skips)
+        (do $nonzero_stat_row "Fill Overhead P50 [ms]" $b_builder_fill_overhead $f_builder_fill_overhead p50)
+        (do $nonzero_stat_row "Fill Overhead P99 [ms]" $b_builder_fill_overhead $f_builder_fill_overhead p99)
+        (do $nonzero_stat_row "Fill Idle P50 [ms]" $b_builder_fill_idle $f_builder_fill_idle p50)
+        (do $nonzero_stat_row "Fill Idle P99 [ms]" $b_builder_fill_idle $f_builder_fill_idle p99)
         ""
-        "## Per-Run Details"
+        "## Validator"
         ""
-        "| Run | Blocks | Total Tx | Success | Failed | Avg TPS | Block P50 | Mgas/s |"
-        "|-----|--------|----------|---------|--------|---------|-----------|--------|"
-    ] | str join "\n")
-
-    mut per_run_rows = ""
-    for row in $run_data {
-        $per_run_rows = $"($per_run_rows)| ($row.label) | ($row.blocks) | ($row.total_tx) | ($row.ok) | ($row.err) | ($row.tps) | ($row.block_time_p50) | ($row.mgas_s) |\n"
-    }
-
-    let full_summary = $"($summary)\n($per_run_rows)"
+        "| Metric | Baseline | Feature | Delta |"
+        "|--------|----------|---------|-------|"
+        $"| Gas Throughput [Mgas/s] | ($b_validation_mgas) | ($f_validation_mgas) | (do $delta $b_validation_gas $f_validation_gas)% |"
+        $"| P50 [ms] | ($b_validation.p50) | ($f_validation.p50) | (do $delta $b_validation.p50 $f_validation.p50)% |"
+        $"| P90 [ms] | ($b_validation.p90) | ($f_validation.p90) | (do $delta $b_validation.p90 $f_validation.p90)% |"
+        $"| P99 [ms] | ($b_validation.p99) | ($f_validation.p99) | (do $delta $b_validation.p99 $f_validation.p99)% |"
+        ""
+    ] | where { |line| $line != null })
+    let full_summary = ($summary_lines | str join "\n")
     $full_summary | save -f $"($results_dir)/summary.md"
     print $"Summary saved: ($results_dir)/summary.md"
     print $full_summary
@@ -1020,6 +1289,19 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let summary_json = {
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
+        observability_range: {
+            from_ms: $observability_from_ms
+            to_ms: $observability_to_ms
+            from: (if $observability_from_ms > 0 { iso-from-epoch-ms $observability_from_ms } else { "" })
+            to: (if $observability_to_ms > 0 { iso-from-epoch-ms $observability_to_ms } else { "" })
+        }
+        actual_observability_range: {
+            from_ms: $actual_observability_from_ms
+            to_ms: $actual_observability_to_ms
+            from: (if $actual_observability_from_ms > 0 { iso-from-epoch-ms $actual_observability_from_ms } else { "" })
+            to: (if $actual_observability_to_ms > 0 { iso-from-epoch-ms $actual_observability_to_ms } else { "" })
+        }
+        grafana_url: $grafana_url
         baseline_ref: $baseline_ref
         feature_ref: $feature_ref
         config: {
@@ -1027,14 +1309,40 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             preset: $preset
             tps: $tps
             duration: $duration
+            run_pairs: $run_pairs
+            baseline_hardfork: $baseline_hardfork
+            feature_hardfork: $feature_hardfork
         }
         results: {
             baseline: {
                 latency_mean: $b_lat.mean
-                latency_stddev: $b_lat.stddev
                 latency_p50: $b_lat.p50
                 latency_p90: $b_lat.p90
                 latency_p99: $b_lat.p99
+                builder_latency_p50: $b_builder.p50
+                builder_latency_p90: $b_builder.p90
+                builder_latency_p99: $b_builder.p99
+                builder_finish_p50: $b_builder_finish.p50
+                builder_finish_p90: $b_builder_finish.p90
+                builder_finish_p99: $b_builder_finish.p99
+                builder_included_tx_execution_p50: $b_builder_included_tx.p50
+                builder_included_tx_execution_p90: $b_builder_included_tx.p90
+                builder_included_tx_execution_p99: $b_builder_included_tx.p99
+                builder_invalid_tx_execution_p50: $b_builder_invalid_tx.p50
+                builder_invalid_tx_execution_p90: $b_builder_invalid_tx.p90
+                builder_invalid_tx_execution_p99: $b_builder_invalid_tx.p99
+                builder_invalid_tx_execution_attempts_p50: $b_builder_invalid_tx_execution_attempts.p50
+                builder_invalid_tx_execution_attempts_p90: $b_builder_invalid_tx_execution_attempts.p90
+                builder_invalid_tx_execution_attempts_p99: $b_builder_invalid_tx_execution_attempts.p99
+                builder_invalid_tx_skips: $b_builder_invalid_tx_skips
+                builder_nonce_too_low_skips: $b_builder_nonce_too_low_skips
+                builder_fill_overhead_p50: $b_builder_fill_overhead.p50
+                builder_fill_overhead_p90: $b_builder_fill_overhead.p90
+                builder_fill_overhead_p99: $b_builder_fill_overhead.p99
+                builder_fill_idle_p50: $b_builder_fill_idle.p50
+                builder_fill_idle_p90: $b_builder_fill_idle.p90
+                builder_fill_idle_p99: $b_builder_fill_idle.p99
+                builder_gas_s: $b_builder_gas
                 tps: $b_tps
                 tps_p50: $b_tps_stats.p50
                 tps_p90: $b_tps_stats.p90
@@ -1043,14 +1351,41 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 block_time_p50: $b_bt.p50
                 block_time_p90: $b_bt.p90
                 block_time_p99: $b_bt.p99
+                validation_latency_p50: $b_validation.p50
+                validation_latency_p90: $b_validation.p90
+                validation_latency_p99: $b_validation.p99
+                validation_gas_s: $b_validation_gas
                 blocks: $b_lat.n
             }
             feature: {
                 latency_mean: $f_lat.mean
-                latency_stddev: $f_lat.stddev
                 latency_p50: $f_lat.p50
                 latency_p90: $f_lat.p90
                 latency_p99: $f_lat.p99
+                builder_latency_p50: $f_builder.p50
+                builder_latency_p90: $f_builder.p90
+                builder_latency_p99: $f_builder.p99
+                builder_finish_p50: $f_builder_finish.p50
+                builder_finish_p90: $f_builder_finish.p90
+                builder_finish_p99: $f_builder_finish.p99
+                builder_included_tx_execution_p50: $f_builder_included_tx.p50
+                builder_included_tx_execution_p90: $f_builder_included_tx.p90
+                builder_included_tx_execution_p99: $f_builder_included_tx.p99
+                builder_invalid_tx_execution_p50: $f_builder_invalid_tx.p50
+                builder_invalid_tx_execution_p90: $f_builder_invalid_tx.p90
+                builder_invalid_tx_execution_p99: $f_builder_invalid_tx.p99
+                builder_invalid_tx_execution_attempts_p50: $f_builder_invalid_tx_execution_attempts.p50
+                builder_invalid_tx_execution_attempts_p90: $f_builder_invalid_tx_execution_attempts.p90
+                builder_invalid_tx_execution_attempts_p99: $f_builder_invalid_tx_execution_attempts.p99
+                builder_invalid_tx_skips: $f_builder_invalid_tx_skips
+                builder_nonce_too_low_skips: $f_builder_nonce_too_low_skips
+                builder_fill_overhead_p50: $f_builder_fill_overhead.p50
+                builder_fill_overhead_p90: $f_builder_fill_overhead.p90
+                builder_fill_overhead_p99: $f_builder_fill_overhead.p99
+                builder_fill_idle_p50: $f_builder_fill_idle.p50
+                builder_fill_idle_p90: $f_builder_fill_idle.p90
+                builder_fill_idle_p99: $f_builder_fill_idle.p99
+                builder_gas_s: $f_builder_gas
                 tps: $f_tps
                 tps_p50: $f_tps_stats.p50
                 tps_p90: $f_tps_stats.p90
@@ -1059,14 +1394,41 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 block_time_p50: $f_bt.p50
                 block_time_p90: $f_bt.p90
                 block_time_p99: $f_bt.p99
+                validation_latency_p50: $f_validation.p50
+                validation_latency_p90: $f_validation.p90
+                validation_latency_p99: $f_validation.p99
+                validation_gas_s: $f_validation_gas
                 blocks: $f_lat.n
             }
             deltas: {
                 latency_mean: (do $delta $b_lat.mean $f_lat.mean)
-                latency_stddev: (do $delta $b_lat.stddev $f_lat.stddev)
                 latency_p50: (do $delta $b_lat.p50 $f_lat.p50)
                 latency_p90: (do $delta $b_lat.p90 $f_lat.p90)
                 latency_p99: (do $delta $b_lat.p99 $f_lat.p99)
+                builder_latency_p50: (do $delta $b_builder.p50 $f_builder.p50)
+                builder_latency_p90: (do $delta $b_builder.p90 $f_builder.p90)
+                builder_latency_p99: (do $delta $b_builder.p99 $f_builder.p99)
+                builder_finish_p50: (do $delta $b_builder_finish.p50 $f_builder_finish.p50)
+                builder_finish_p90: (do $delta $b_builder_finish.p90 $f_builder_finish.p90)
+                builder_finish_p99: (do $delta $b_builder_finish.p99 $f_builder_finish.p99)
+                builder_included_tx_execution_p50: (do $delta $b_builder_included_tx.p50 $f_builder_included_tx.p50)
+                builder_included_tx_execution_p90: (do $delta $b_builder_included_tx.p90 $f_builder_included_tx.p90)
+                builder_included_tx_execution_p99: (do $delta $b_builder_included_tx.p99 $f_builder_included_tx.p99)
+                builder_invalid_tx_execution_p50: (do $delta $b_builder_invalid_tx.p50 $f_builder_invalid_tx.p50)
+                builder_invalid_tx_execution_p90: (do $delta $b_builder_invalid_tx.p90 $f_builder_invalid_tx.p90)
+                builder_invalid_tx_execution_p99: (do $delta $b_builder_invalid_tx.p99 $f_builder_invalid_tx.p99)
+                builder_invalid_tx_execution_attempts_p50: (do $delta $b_builder_invalid_tx_execution_attempts.p50 $f_builder_invalid_tx_execution_attempts.p50)
+                builder_invalid_tx_execution_attempts_p90: (do $delta $b_builder_invalid_tx_execution_attempts.p90 $f_builder_invalid_tx_execution_attempts.p90)
+                builder_invalid_tx_execution_attempts_p99: (do $delta $b_builder_invalid_tx_execution_attempts.p99 $f_builder_invalid_tx_execution_attempts.p99)
+                builder_invalid_tx_skips: (do $delta $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
+                builder_nonce_too_low_skips: (do $delta $b_builder_nonce_too_low_skips $f_builder_nonce_too_low_skips)
+                builder_fill_overhead_p50: (do $delta $b_builder_fill_overhead.p50 $f_builder_fill_overhead.p50)
+                builder_fill_overhead_p90: (do $delta $b_builder_fill_overhead.p90 $f_builder_fill_overhead.p90)
+                builder_fill_overhead_p99: (do $delta $b_builder_fill_overhead.p99 $f_builder_fill_overhead.p99)
+                builder_fill_idle_p50: (do $delta $b_builder_fill_idle.p50 $f_builder_fill_idle.p50)
+                builder_fill_idle_p90: (do $delta $b_builder_fill_idle.p90 $f_builder_fill_idle.p90)
+                builder_fill_idle_p99: (do $delta $b_builder_fill_idle.p99 $f_builder_fill_idle.p99)
+                builder_gas_s: (do $delta $b_builder_gas $f_builder_gas)
                 tps: (do $delta $b_tps $f_tps)
                 tps_p50: (do $delta $b_tps_stats.p50 $f_tps_stats.p50)
                 tps_p90: (do $delta $b_tps_stats.p90 $f_tps_stats.p90)
@@ -1075,6 +1437,10 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 block_time_p50: (do $delta $b_bt.p50 $f_bt.p50)
                 block_time_p90: (do $delta $b_bt.p90 $f_bt.p90)
                 block_time_p99: (do $delta $b_bt.p99 $f_bt.p99)
+                validation_latency_p50: (do $delta $b_validation.p50 $f_validation.p50)
+                validation_latency_p90: (do $delta $b_validation.p90 $f_validation.p90)
+                validation_latency_p99: (do $delta $b_validation.p99 $f_validation.p99)
+                validation_gas_s: (do $delta $b_validation_gas $f_validation_gas)
             }
         }
         per_run: $run_data
@@ -1110,19 +1476,13 @@ def "main kill" [
     --prompt    # Prompt before killing (for interactive use)
 ] {
     let pids = (find-tempo-pids)
-    let has_stale_ipc = ("/tmp/reth.ipc" | path exists)
 
-    if ($pids | length) == 0 and not $has_stale_ipc {
-        print "No tempo processes or stale IPC socket found."
+    if ($pids | length) == 0 {
+        print "No tempo processes found."
         return
     }
 
-    if ($pids | length) > 0 {
-        print $"Found ($pids | length) running tempo process\(es\)."
-    }
-    if $has_stale_ipc {
-        print "Found stale /tmp/reth.ipc socket."
-    }
+    print $"Found ($pids | length) running tempo process\(es\)."
 
     let should_kill = if $prompt {
         let answer = (input "Clean up? [Y/n] " | str trim | str downcase)
@@ -1143,11 +1503,6 @@ def "main kill" [
         }
     }
 
-    # Remove stale IPC socket
-    if $has_stale_ipc {
-        rm --force /tmp/reth.ipc
-        print "Removed /tmp/reth.ipc"
-    }
     print "Done."
 }
 
@@ -1157,27 +1512,31 @@ def "main kill" [
 
 # Run Tempo localnet
 def "main localnet" [
-    --mode: string = "dev"      # Mode: "dev" or "consensus"
-    --nodes: int = 3            # Number of validators (consensus mode)
-    --accounts: int = 1000      # Number of genesis accounts
-    --genesis: string = ""      # Custom genesis file path (skips generation)
-    --samply                    # Enable samply profiling (foreground node only)
-    --samply-args: string = ""  # Additional samply arguments (space-separated)
-    --reset                     # Wipe and regenerate localnet data
-    --profile: string = $DEFAULT_PROFILE # Cargo build profile
+    --mode: string = "dev"                 # Mode: "dev" or "consensus"
+    --nodes: int = 3                       # Number of validators (consensus mode)
+    --accounts: int = 1000                 # Number of genesis accounts
+    --epoch-length: int = 302400           # Epoch length in blocks for generated genesis/localnet
+    --genesis: string = ""                 # Custom genesis file path (skips generation)
+    --samply                               # Enable samply profiling (foreground node only)
+    --samply-args: string = ""             # Additional samply arguments (space-separated)
+    --reset                                # Wipe and regenerate localnet data
+    --profile: string = $DEFAULT_PROFILE   # Cargo build profile
     --features: string = $DEFAULT_FEATURES # Cargo features
-    --loud                      # Show all node logs (WARN/ERROR shown by default)
-    --node-args: string = ""    # Additional node arguments (space-separated)
-    --skip-build                # Skip building (assumes binary is already built)
-    --force                     # Kill dangling processes without prompting
-    --bloat: int = 0            # Generate state bloat (size in MiB) for TIP20 tokens
+    --loud                                 # Show all node logs (WARN/ERROR shown by default)
+    --node-args: string = ""               # Additional node arguments (space-separated)
+    --skip-build                           # Skip building (assumes binary is already built)
+    --force                                # Kill dangling processes without prompting
+    --bloat: int = 0                       # Generate state bloat (size in MiB) for TIP20 tokens
 ] {
     validate-mode $mode
+    if $epoch_length <= 0 {
+        print "Error: --epoch-length must be greater than 0"
+        exit 1
+    }
 
-    # Check for dangling processes or stale IPC socket
+    # Check for dangling processes
     let pids = (find-tempo-pids)
-    let has_stale_ipc = ("/tmp/reth.ipc" | path exists)
-    if ($pids | length) > 0 or $has_stale_ipc {
+    if ($pids | length) > 0 {
         main kill --prompt=($force | not $in)
     }
 
@@ -1195,9 +1554,9 @@ def "main localnet" [
             print "Error: --nodes is only valid with --mode consensus"
             exit 1
         }
-        run-dev-node $accounts $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat
+        run-dev-node $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat
     } else {
-        run-consensus-nodes $nodes $accounts $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat
+        run-consensus-nodes $nodes $accounts $epoch_length $genesis $samply $samply_args_list $reset $profile $loud $extra_args $bloat
     }
 }
 
@@ -1205,7 +1564,7 @@ def "main localnet" [
 # Dev mode
 # ============================================================================
 
-def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int] {
+def run-dev-node [accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int] {
     let tempo_bin = if $profile == "dev" {
         "./target/debug/tempo"
     } else {
@@ -1234,7 +1593,7 @@ def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: lis
             rm -rf $LOCALNET_DIR
             mkdir $LOCALNET_DIR
             print $"Generating genesis with ($accounts) accounts..."
-            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $LOCALNET_DIR -a $accounts --no-dkg-in-genesis
+            cargo run -p tempo-xtask --profile $profile -- generate-genesis --output $LOCALNET_DIR -a $accounts --epoch-length $epoch_length --no-dkg-in-genesis
         }
 
         # Apply state bloat if requested (requires fresh init)
@@ -1258,6 +1617,8 @@ def run-dev-node [accounts: int, genesis: string, samply: bool, samply_args: lis
 
 # Build base node arguments shared between dev and consensus modes
 def build-base-args [genesis_path: string, datadir: string, log_dir: string, bind_ip: string, http_port: int, reth_metrics_port: int] {
+    let ipc_path = $"($datadir)/reth.ipc"
+
     [
         "node"
         "--chain" $genesis_path
@@ -1271,6 +1632,7 @@ def build-base-args [genesis_path: string, datadir: string, log_dir: string, bin
         "--ws.port" $"($http_port)"
         "--ws.api" "all"
         "--metrics" $"($bind_ip):($reth_metrics_port)"
+        "--ipcpath" $ipc_path
         "--log.file.directory" $log_dir
         "--faucet.enabled"
         "--faucet.private-key" "0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80"
@@ -1294,7 +1656,7 @@ def build-dev-args [] {
 # Consensus mode
 # ============================================================================
 
-def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int] {
+def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: string, samply: bool, samply_args: list<string>, reset: bool, profile: string, loud: bool, extra_args: list<string>, bloat: int] {
     # Check if we need to generate localnet (only if no custom genesis provided)
     if $genesis == "" {
         let needs_generation = $reset or (not ($LOCALNET_DIR | path exists)) or (
@@ -1314,7 +1676,7 @@ def run-consensus-nodes [nodes: int, accounts: int, genesis: string, samply: boo
             let validators = (0..<$nodes | each { |i| $"127.0.0.($i + 1):($i * 100 + 8000)" } | str join ",")
 
             print $"Generating localnet with ($accounts) accounts and ($nodes) validators..."
-            cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --validators $validators --force | ignore
+            cargo run -p tempo-xtask --profile $profile -- generate-localnet -o $LOCALNET_DIR --accounts $accounts --epoch-length $epoch_length --validators $validators --force | ignore
         }
     }
 
@@ -1444,7 +1806,7 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
         "--consensus.signing-key" $signing_key
         "--consensus.signing-share" $signing_share
         "--consensus.listen-address" $"($ip):($port)"
-        "--consensus.metrics-address" $"($ip):($metrics_port)"
+        "--consensus.metrics-address" $"0.0.0.0:($metrics_port)"
         "--trusted-peers" $trusted_peers
         "--port" $"($execution_p2p_port)"
         "--discovery.port" $"($execution_p2p_port)"
@@ -1468,6 +1830,7 @@ def "main follower" [
     --node-args: string = ""    # Additional node arguments (space-separated)
     --skip-build                # Skip building (assumes binary is already built)
     --reset                     # Wipe follower data before starting
+    --certify                   # Enable experimental consensus certification in follow mode
 ] {
     # Validate localnet exists
     if not ($LOCALNET_DIR | path exists) {
@@ -1482,7 +1845,6 @@ def "main follower" [
     }
 
     let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
-
     if not $skip_build {
         build-tempo ["tempo"] $profile $features
     }
@@ -1495,38 +1857,59 @@ def "main follower" [
 
     # Auto-detect validators from localnet directory structure
     let validator_dirs = (ls $LOCALNET_DIR | where type == "dir" | get name | where { |d| ($d | path basename) =~ '^\d+\.\d+\.\d+\.\d+:\d+$' })
+    if ($validator_dirs | length) == 0 {
+        print "Error: no validator configs found. Run `nu tempo.nu localnet --mode consensus --reset` first."
+        exit 1
+    }
+
     let trusted_peers = ($validator_dirs | each { |d|
         let addr = ($d | path basename)
+        let ip = ($addr | split row ":" | get 0)
         let port = ($addr | split row ":" | get 1 | into int)
         let identity = (open $"($d)/enode.identity" | str trim)
-        $"enode://($identity)@127.0.0.1:($port + 1)"
+        $"enode://($identity)@($ip):($port + 1)"
     } | str join ",")
 
-    let follower_dir = $"($LOCALNET_DIR)/follower"
-
-    if $reset and ($follower_dir | path exists) {
+    let node_dir = $"($LOCALNET_DIR)/follower"
+    if $reset and ($node_dir | path exists) {
         print "Resetting follower data..."
-        rm -rf $follower_dir
+        rm -rf $node_dir
     }
-    mkdir $follower_dir
 
-    # Use ports below the first validator to avoid conflicts
-    let http_port = 8545 - 1
-    let reth_metrics_port = 9001 - 1
-    let el_p2p_port = 30303 - 1
-    let authrpc_port = 8551 - 1
+    mkdir $node_dir
+
     let log_dir = $"($LOGS_DIR)/follower"
     mkdir $log_dir
 
-    let args = (build-base-args $genesis_path $follower_dir $log_dir "0.0.0.0" $http_port $reth_metrics_port)
+    # Use the slot after the last validator and mirror consensus node port formulas.
+    let node_index = (($validator_dirs | each { |d|
+        let addr = ($d | path basename)
+        let port = ($addr | split row ":" | get 1 | into int)
+        port-to-node-index $port
+    } | math max) + 1)
+
+    let consensus_port = ($node_index * 100) + 8000
+
+    let http_port = 8545 + $node_index
+    let reth_metrics_port = 9001 + $node_index
+    let execution_p2p_port = $consensus_port + 1
+    let consensus_metrics_port = $consensus_port + 2
+    let authrpc_port = $consensus_port + 3
+    let discv5_port = $consensus_port + 4
+
+    let args = (build-base-args $genesis_path $node_dir $log_dir "0.0.0.0" $http_port $reth_metrics_port)
         | append [
             "--follow" $"ws://127.0.0.1:8545"
+            "--consensus.metrics-address" $"0.0.0.0:($consensus_metrics_port)"
             "--trusted-peers" $trusted_peers
-            "--port" $"($el_p2p_port)"
-            "--discovery.port" $"($el_p2p_port)"
+            "--port" $"($execution_p2p_port)"
+            "--discovery.port" $"($execution_p2p_port)"
+            "--discovery.v5.port" $"($discv5_port)"
             "--authrpc.port" $"($authrpc_port)"
-            "--ipcdisable"
+            "--consensus.use-local-defaults"
+            "--consensus.bypass-ip-check"
         ]
+        | append (if $certify { ["--follow.experimental.certify"] } else { [] })
         | append (log-filter-args $loud)
         | append $extra_args
 
@@ -1712,7 +2095,7 @@ def "main bench" [
     --node-args: string = ""                        # Additional node arguments (space-separated, applied to all runs)
     --baseline-args: string = ""                    # Additional node arguments for baseline runs only (space-separated)
     --feature-args: string = ""                     # Additional node arguments for feature runs only (space-separated)
-    --bench-args: string = ""                       # Legacy benchmark arguments; only --existing-recipients is ignored for txgen
+    --bench-args: string = ""                       # Additional txgen generate arguments
     --baseline-env: string = ""                     # Environment variables for baseline node runs (KEY=VAL KEY2=VAL2)
     --feature-env: string = ""                      # Environment variables for feature node runs (KEY=VAL KEY2=VAL2)
     --bench-env: string = ""                        # Environment variables for txgen/bench (KEY=VAL KEY2=VAL2)
@@ -1742,7 +2125,6 @@ def "main bench" [
     }
 
     let preset_path = (txgen-preset-path $preset)
-    txgen-validate-bench-args $bench_args
     let txgen = (txgen-resolve-binaries)
 
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
@@ -2158,7 +2540,7 @@ def "main bench" [
                 --txgen-tempo-bin $txgen.txgen_tempo_bin
                 --txgen-bench-bin $txgen.txgen_bench_bin
                 --rpc-urls "http://localhost:8545"
-                --metrics-url "http://127.0.0.1:9090/metrics"
+                --metrics-url ["http://127.0.0.1:9001/metrics"]
                 --genesis-path $run.genesis --datadir $run.datadir
                 --run-label $run.label --results-dir $results_dir
                 --tps $tps --duration $duration --accounts $accounts
@@ -2175,9 +2557,9 @@ def "main bench" [
         }
 
         # Generate summary report
-        let baseline_label = if $dual_hardfork { $"($baseline) \(($baseline_hardfork | str upcase)\)" } else { $baseline }
-        let feature_label = if $dual_hardfork { $"($feature) \(($feature_hardfork | str upcase)\)" } else { $feature }
-        generate-summary $results_dir $baseline_label $feature_label $bloat $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch
+        let baseline_hardfork_label = if $dual_hardfork { $baseline_hardfork | str upcase } else { "" }
+        let feature_hardfork_label = if $dual_hardfork { $feature_hardfork | str upcase } else { "" }
+        generate-summary $results_dir $baseline $feature $bloat $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch --baseline-hardfork $baseline_hardfork_label --feature-hardfork $feature_hardfork_label
 
         # Cleanup worktrees (only those we created)
         if $baseline != "local" or $feature != "local" {
@@ -2283,16 +2665,18 @@ def "main bench" [
             --preset-path $preset_path
             --generate-rpc-url $primary_rpc_url
             --submit-rpc-url $submit_rpc_url
-            --metrics-url "http://127.0.0.1:9001/metrics"
+            --metrics-url ["http://127.0.0.1:9001/metrics"]
             --report-path "report.json"
             --tps $tps
             --duration $duration
             --accounts $accounts
             --max-concurrent-requests $max_concurrent_requests
+            --bench-args $bench_args
             --bench-env $bench_env
             --git-ref $current_sha
             --build-profile $profile
-            --benchmark-mode $mode)
+            --benchmark-mode $mode
+            --skip-funding=($bloat > 0))
         $result
     } catch { |e|
         print $"Benchmark interrupted or failed: ($e.msg)"
@@ -2697,7 +3081,7 @@ tempo-precompiles = { path = '($tempo_root)/crates/precompiles' }
                         --preset-path $live_preset_path
                         --generate-rpc-url "http://localhost:8545"
                         --submit-rpc-url "http://localhost:8545"
-                        --metrics-url "http://127.0.0.1:9001/metrics"
+                        --metrics-url ["http://127.0.0.1:9001/metrics"]
                         --report-path "report.json"
                         --tps $tps
                         --duration $duration
@@ -2794,7 +3178,7 @@ def main [] {
     print "  --node-args <ARGS>       Additional node arguments (space-separated, all runs)"
     print "  --baseline-args <ARGS>       Additional node arguments for baseline runs only"
     print "  --feature-args <ARGS>        Additional node arguments for feature runs only"
-    print "  --bench-args <ARGS>      Legacy benchmark arguments (only --existing-recipients is ignored)"
+    print "  --bench-args <ARGS>      Additional txgen generate arguments"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
     print "  --gas-limit <N>          Block gas limit for genesis (raw number, default: 1000000000000)"
     print ""
@@ -2802,6 +3186,7 @@ def main [] {
     print "  --mode <dev|consensus>   Mode (default: dev)"
     print "  --nodes <N>              Number of validators for consensus (default: 3)"
     print "  --accounts <N>           Genesis accounts (default: 1000)"
+    print "  --epoch-length <N>       Epoch length in blocks for generated genesis/localnet (default: 302400)"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
     print "  --samply                 Enable samply profiling (foreground node only)"
     print "  --samply-args <ARGS>     Additional samply arguments (space-separated)"
@@ -2829,6 +3214,7 @@ def main [] {
     print "Follower flags:"
     print "  --loud                   Show all node logs (WARN/ERROR shown by default)"
     print "  --reset                  Wipe follower data before starting"
+    print "  --certify                Enable experimental consensus certification in follow mode"
     print $"  --profile <P>            Cargo profile \(default: ($DEFAULT_PROFILE)\)"
     print $"  --features <F>           Cargo features \(default: ($DEFAULT_FEATURES)\)"
     print "  --node-args <ARGS>       Additional node arguments (space-separated)"
@@ -2857,4 +3243,5 @@ def main [] {
     print "  Discv5:        8004 + N*100"
     print "  HTTP RPC:      8545 + N"
     print "  Reth Metrics:  9001 + N"
+    print "  Follower:      uses N = validator count"
 }

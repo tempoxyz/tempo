@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: MIT
 pragma solidity >=0.8.20 <0.9.0;
 
-/// @title ITIP20ChannelEscrow
+/// @title ITIP20ChannelReserve
 /// @notice Reference interface for the TIP-1034 channel model.
-interface ITIP20ChannelEscrow {
+interface ITIP20ChannelReserve {
 
     struct ChannelDescriptor {
         address payer;
@@ -147,7 +147,6 @@ interface ITIP20ChannelEscrow {
     error ChannelAlreadyExists();
     error ChannelNotFound();
     error NotPayer();
-    error NotPayee();
     error NotPayeeOrOperator();
     error InvalidPayee();
     error InvalidToken();
@@ -159,6 +158,5 @@ interface ITIP20ChannelEscrow {
     error CaptureAmountInvalid();
     error CloseNotReady();
     error DepositOverflow();
-    error TransferFailed();
 
 }

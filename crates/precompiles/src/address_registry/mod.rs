@@ -19,7 +19,7 @@ use alloy::{
 use tempo_chainspec::hardfork::TempoHardfork;
 pub use tempo_contracts::precompiles::{
     AddrRegistryError, AddrRegistryEvent, IAddressRegistry, STABLECOIN_DEX_ADDRESS,
-    TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
 };
 use tempo_precompiles_macros::{Storable, contract};
 pub use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
@@ -29,7 +29,11 @@ pub use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 /// Precompiles on this list are authorized to call
 /// [`crate::tip20::TIP20Token::system_transfer_from`], pulling TIP-20 tokens from a user without a
 /// prior `approve()`. The list is gated on `TempoHardfork::T5`; before activation it is empty.
-pub const IMPLICIT_APPROVAL_LIST: &[Address] = &[TIP_FEE_MANAGER_ADDRESS, STABLECOIN_DEX_ADDRESS];
+pub const IMPLICIT_APPROVAL_LIST: &[Address] = &[
+    TIP_FEE_MANAGER_ADDRESS,
+    STABLECOIN_DEX_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS,
+];
 
 /// Returns `true` iff `addr` is on the [`IMPLICIT_APPROVAL_LIST`] for the given hardfork.
 ///
@@ -128,12 +132,7 @@ impl AddressRegistry {
         })?;
 
         // Emit event
-        self.emit_event(AddrRegistryEvent::MasterRegistered(
-            IAddressRegistry::MasterRegistered {
-                masterId: master_id,
-                masterAddress: msg_sender,
-            },
-        ))?;
+        self.emit_event(AddrRegistryEvent::master_registered(master_id, msg_sender))?;
 
         Ok(master_id)
     }
@@ -202,6 +201,7 @@ mod tests {
             let registry = AddressRegistry::new();
             assert!(!registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
             assert!(!registry.is_implicitly_approved(STABLECOIN_DEX_ADDRESS));
+            assert!(!registry.is_implicitly_approved(TIP20_CHANNEL_RESERVE_ADDRESS));
             assert!(!registry.is_implicitly_approved(Address::random()));
             Ok(())
         })
@@ -214,6 +214,7 @@ mod tests {
             let registry = AddressRegistry::new();
             assert!(registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
             assert!(registry.is_implicitly_approved(STABLECOIN_DEX_ADDRESS));
+            assert!(registry.is_implicitly_approved(TIP20_CHANNEL_RESERVE_ADDRESS));
             assert!(!registry.is_implicitly_approved(Address::random()));
             Ok(())
         })

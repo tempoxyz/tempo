@@ -34,7 +34,7 @@ use tempo_chainspec::{
     hardfork::{TempoHardfork, TempoHardforks},
 };
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, TIP_FEE_MANAGER_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     error::Result as TempoPrecompileResult,
     storage::Handler,
@@ -105,6 +105,8 @@ where
     ///    changed for a token matching the transaction's fee token
     ///    2b. **Spending limit spends**: AA transactions whose remaining spending limit (re-read
     ///    from state) is now insufficient after included keychain txs decremented it
+    ///    2c. **Key-authorization witness burns**: AA transactions with a witness-bearing
+    ///    inline key authorization whose `(account, witness)` has been manually burned
     /// 3. **Validator token changes**: Transactions that would fail due to insufficient
     ///    liquidity in the new (user_token, validator_token) AMM pool
     /// 4. **Fee payer balance changes**: Transactions whose fee payer no longer has enough
@@ -186,6 +188,7 @@ where
         let mut revoked_count = 0;
         let mut spending_limit_count = 0;
         let mut spending_limit_spend_count = 0;
+        let mut key_authorization_witness_count = 0;
         let mut liquidity_count = 0;
         let mut user_token_count = 0;
         let mut blacklisted_count = 0;
@@ -241,16 +244,25 @@ where
                 continue;
             }
 
+            // Check 2c: TIP-1053 key-authorization witness burns
+            if !updates.key_authorization_witness_burns.is_empty()
+                && let Some(subject) = tx.transaction.key_authorization_witness_subject()
+                && updates
+                    .key_authorization_witness_burns
+                    .get(&subject.account)
+                    .is_some_and(|witnesses| witnesses.contains(&subject.witness))
+            {
+                to_remove.push(*tx.hash());
+                key_authorization_witness_count += 1;
+                continue;
+            }
+
             // Check 3: Validator token changes (re-check liquidity for all transactions)
             // Prevents mass eviction because it only:
             // - evicts when NO validator token has enough liquidity
             // - considers active validators (protects from permissionless `setValidatorToken`)
             if has_active_validator_token_changes && let Some(ref mut provider) = state_provider {
-                let user_token = tx
-                    .transaction
-                    .inner()
-                    .fee_token()
-                    .unwrap_or(tempo_precompiles::DEFAULT_FEE_TOKEN);
+                let user_token = tx.transaction.effective_fee_token();
                 let cost = tx.transaction.fee_token_cost();
 
                 match amm_cache.has_enough_liquidity(user_token, cost, provider) {
@@ -270,12 +282,7 @@ where
             if !updates.fee_balance_changes.is_empty()
                 && let Some(ref mut provider) = state_provider
             {
-                let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
-                    tx.transaction
-                        .inner()
-                        .fee_token()
-                        .unwrap_or(DEFAULT_FEE_TOKEN)
-                });
+                let fee_token = tx.transaction.effective_fee_token();
                 let Ok(fee_payer) = tx.transaction.inner().fee_payer(tx.transaction.sender())
                 else {
                     continue;
@@ -420,6 +427,7 @@ where
                 revoked_count,
                 spending_limit_count,
                 spending_limit_spend_count,
+                key_authorization_witness_count,
                 liquidity_count,
                 user_token_count,
                 blacklisted_count,
@@ -1275,7 +1283,7 @@ mod tests {
     use super::*;
     use crate::{test_utils::MockProviderStorageExt, transaction::KeychainSubject};
     use alloy_consensus::Header;
-    use alloy_primitives::{U256, address, uint};
+    use alloy_primitives::{Signature, U256, address, uint};
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use reth_primitives_traits::Recovered;
@@ -1298,7 +1306,12 @@ mod tests {
         tip20::slots as tip20_slots,
         tip403_registry::{CompoundPolicyData, PolicyData, TIP403Registry},
     };
-    use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoTxEnvelope};
+    use tempo_primitives::{
+        Block, TempoHeader, TempoPrimitives, TempoTxEnvelope,
+        transaction::{
+            KeyAuthorization, PrimitiveSignature, SignatureType, SignedKeyAuthorization,
+        },
+    };
 
     fn provider_with_spending_limit(
         account: Address,
@@ -1476,6 +1489,164 @@ mod tests {
         let evicted = pool.evict_invalidated_transactions(&updates);
         assert_eq!(evicted, vec![*pooled.hash()]);
         assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn validator_token_change_uses_resolved_fee_token_for_liquidity_recheck() {
+        let sender = Address::random();
+        let validator_address = Address::random();
+        let resolved_fee_token = address!("20C0000000000000000000000000000000000002");
+        let pooled = crate::test_utils::TxBuilder::aa(sender).build();
+
+        assert_eq!(pooled.inner().fee_token(), None);
+        pooled.set_resolved_fee_token(resolved_fee_token);
+
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        provider.add_block(
+            B256::random(),
+            Block {
+                header: TempoHeader {
+                    inner: Header {
+                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let inner = EthTransactionValidatorBuilder::new(provider, TempoEvmConfig::mainnet())
+            .disable_balance_check()
+            .build(InMemoryBlobStore::default());
+        let amm_cache = AmmLiquidityCache::with_unique_validators(vec![validator_address]);
+        let validator = TempoTransactionValidator::new(
+            inner,
+            crate::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            crate::validator::DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            amm_cache,
+        );
+
+        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let protocol_pool = Pool::new(
+            executor,
+            CoinbaseTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default(),
+        );
+        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+
+        let validated = TransactionValidationOutcome::Valid {
+            balance: *pooled.cost(),
+            state_nonce: pooled.nonce(),
+            bytecode_hash: None,
+            transaction: ValidTransaction::new(pooled.clone(), None),
+            propagate: true,
+            authorities: None,
+        };
+        pool.add_validated_transaction(TransactionOrigin::External, validated)
+            .expect("transaction should be admitted before validator token change");
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates
+            .validator_token_changes
+            .insert(validator_address, resolved_fee_token);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert!(evicted.is_empty());
+        assert!(pool.get(pooled.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn evicts_transactions_with_burned_key_authorization_witness() {
+        let sender = Address::random();
+        let burned_witness = B256::random();
+        let other_witness = B256::random();
+
+        let key_authorization = |witness| SignedKeyAuthorization {
+            authorization: KeyAuthorization::unrestricted(
+                42431,
+                SignatureType::Secp256k1,
+                Address::random(),
+            )
+            .with_witness(witness),
+            signature: PrimitiveSignature::Secp256k1(Signature::test_signature()),
+        };
+
+        let matching = crate::test_utils::TxBuilder::aa(sender)
+            .nonce(0)
+            .key_authorization(key_authorization(burned_witness))
+            .build();
+        let untouched = crate::test_utils::TxBuilder::aa(sender)
+            .nonce(1)
+            .key_authorization(key_authorization(other_witness))
+            .build();
+
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
+        provider.add_account(sender, ExtendedAccount::new(matching.nonce(), U256::MAX));
+        provider.add_block(
+            B256::random(),
+            Block {
+                header: TempoHeader {
+                    inner: Header {
+                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let inner =
+            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
+                .disable_balance_check()
+                .build(InMemoryBlobStore::default());
+        let amm_cache =
+            AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
+        let validator = TempoTransactionValidator::new(
+            inner,
+            crate::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            crate::validator::DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            amm_cache,
+        );
+
+        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let protocol_pool = Pool::new(
+            executor,
+            CoinbaseTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default(),
+        );
+        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+
+        for pooled in [&matching, &untouched] {
+            let validated = TransactionValidationOutcome::Valid {
+                balance: *pooled.cost(),
+                state_nonce: pooled.nonce(),
+                bytecode_hash: None,
+                transaction: ValidTransaction::new(pooled.clone(), None),
+                propagate: true,
+                authorities: None,
+            };
+            pool.add_validated_transaction(TransactionOrigin::External, validated)
+                .expect("transaction should be admitted");
+        }
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates
+            .key_authorization_witness_burns
+            .entry(sender)
+            .or_default()
+            .insert(burned_witness);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(evicted, vec![*matching.hash()]);
+        assert!(pool.get(matching.hash()).is_none());
+        assert!(pool.get(untouched.hash()).is_some());
     }
 
     /// Eviction must match sub-policy IDs against compound policies.

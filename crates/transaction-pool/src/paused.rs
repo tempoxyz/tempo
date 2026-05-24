@@ -6,7 +6,10 @@
 //! and re-validated.
 
 use crate::{RevokedKeys, SpendingLimitUpdates, transaction::TempoPooledTransaction};
-use alloy_primitives::{Address, TxHash, map::HashMap};
+use alloy_primitives::{
+    Address, TxHash,
+    map::{AddressMap, B256Set},
+};
 use reth_transaction_pool::{PoolTransaction, ValidPoolTransaction};
 use std::{sync::Arc, time::Instant};
 
@@ -47,7 +50,7 @@ struct PausedTokenMeta {
 #[derive(Debug, Default)]
 pub struct PausedFeeTokenPool {
     /// Fee token -> metadata including pause time and entries
-    by_token: HashMap<Address, PausedTokenMeta>,
+    by_token: AddressMap<PausedTokenMeta>,
 }
 
 impl PausedFeeTokenPool {
@@ -203,10 +206,12 @@ impl PausedFeeTokenPool {
         revoked_keys: &RevokedKeys,
         spending_limit_updates: &SpendingLimitUpdates,
         spending_limit_spends: &SpendingLimitUpdates,
+        key_authorization_witness_burns: &AddressMap<B256Set>,
     ) -> usize {
         if revoked_keys.is_empty()
             && spending_limit_updates.is_empty()
             && spending_limit_spends.is_empty()
+            && key_authorization_witness_burns.is_empty()
         {
             return 0;
         }
@@ -216,8 +221,17 @@ impl PausedFeeTokenPool {
             let before = meta.entries.len();
             meta.entries.retain(|entry| {
                 let Some(subject) = entry.tx.transaction.keychain_subject() else {
-                    return true;
+                    let Some(witness_subject) =
+                        entry.tx.transaction.key_authorization_witness_subject()
+                    else {
+                        return true;
+                    };
+
+                    return !key_authorization_witness_burns
+                        .get(&witness_subject.account)
+                        .is_some_and(|witnesses| witnesses.contains(&witness_subject.witness));
                 };
+
                 let matches_limit_update =
                     subject.matches_spending_limit_update(spending_limit_updates);
                 let matches_limit_spend =
@@ -234,10 +248,21 @@ impl PausedFeeTokenPool {
                     false
                 };
 
-                let invalidated = subject.matches_revoked(revoked_keys)
-                    || (sender_paid && (matches_limit_update || matches_limit_spend));
+                if subject.matches_revoked(revoked_keys)
+                    || (sender_paid && (matches_limit_update || matches_limit_spend))
+                {
+                    return false;
+                }
 
-                !invalidated
+                let Some(witness_subject) =
+                    entry.tx.transaction.key_authorization_witness_subject()
+                else {
+                    return true;
+                };
+
+                !key_authorization_witness_burns
+                    .get(&witness_subject.account)
+                    .is_some_and(|witnesses| witnesses.contains(&witness_subject.witness))
             });
             count += before - meta.entries.len();
         }
@@ -256,11 +281,17 @@ impl PausedFeeTokenPool {
 mod tests {
     use super::*;
     use crate::test_utils::{TxBuilder, wrap_valid_tx};
+    use alloy_primitives::B256;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use reth_primitives_traits::Recovered;
     use reth_transaction_pool::TransactionOrigin;
-    use tempo_primitives::{TempoTxEnvelope, transaction::tt_signed::AASigned};
+    use tempo_primitives::{
+        SignatureType, TempoTxEnvelope,
+        transaction::{
+            KeyAuthorization, PrimitiveSignature, SignedKeyAuthorization, tt_signed::AASigned,
+        },
+    };
 
     fn create_valid_tx(sender: Address) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
         let pooled = TxBuilder::aa(sender).build();
@@ -441,8 +472,12 @@ mod tests {
         let mut spends = SpendingLimitUpdates::new();
         spends.insert(user_address, key_id, Some(fee_token));
 
-        let evicted =
-            pool.evict_invalidated(&RevokedKeys::new(), &SpendingLimitUpdates::new(), &spends);
+        let evicted = pool.evict_invalidated(
+            &RevokedKeys::new(),
+            &SpendingLimitUpdates::new(),
+            &spends,
+            &AddressMap::default(),
+        );
 
         assert_eq!(
             evicted, 1,
@@ -476,8 +511,12 @@ mod tests {
         let mut spends = SpendingLimitUpdates::new();
         spends.insert(user_address, key_id, Some(fee_token));
 
-        let evicted =
-            pool.evict_invalidated(&RevokedKeys::new(), &SpendingLimitUpdates::new(), &spends);
+        let evicted = pool.evict_invalidated(
+            &RevokedKeys::new(),
+            &SpendingLimitUpdates::new(),
+            &spends,
+            &AddressMap::default(),
+        );
 
         assert_eq!(evicted, 0, "Sponsored keychain tx should not be evicted");
         assert_eq!(pool.len(), 1);
@@ -508,11 +547,87 @@ mod tests {
         let mut updates = SpendingLimitUpdates::new();
         updates.insert(user_address, key_id, Some(fee_token));
 
-        let evicted =
-            pool.evict_invalidated(&RevokedKeys::new(), &updates, &SpendingLimitUpdates::new());
+        let evicted = pool.evict_invalidated(
+            &RevokedKeys::new(),
+            &updates,
+            &SpendingLimitUpdates::new(),
+            &AddressMap::default(),
+        );
 
         assert_eq!(evicted, 0, "Sponsored keychain tx should not be evicted");
         assert_eq!(pool.len(), 1);
+    }
+
+    #[test]
+    fn test_evict_invalidated_with_key_authorization_witness_burn() {
+        let mut pool = PausedFeeTokenPool::new();
+        let user_address = Address::random();
+        let fee_token = Address::random();
+        let burned_witness = B256::random();
+        let other_witness = B256::random();
+
+        let key_authorization = |witness| SignedKeyAuthorization {
+            authorization: KeyAuthorization::unrestricted(
+                42431,
+                SignatureType::Secp256k1,
+                Address::random(),
+            )
+            .with_witness(witness),
+            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        };
+
+        let matching = Arc::new(wrap_valid_tx(
+            TxBuilder::aa(user_address)
+                .fee_token(fee_token)
+                .key_authorization(key_authorization(burned_witness))
+                .build(),
+            TransactionOrigin::External,
+        ));
+        let untouched = Arc::new(wrap_valid_tx(
+            TxBuilder::aa(user_address)
+                .nonce(1)
+                .fee_token(fee_token)
+                .key_authorization(key_authorization(other_witness))
+                .build(),
+            TransactionOrigin::External,
+        ));
+
+        pool.insert_batch(
+            fee_token,
+            vec![
+                PausedEntry {
+                    tx: matching,
+                    valid_before: None,
+                },
+                PausedEntry {
+                    tx: untouched,
+                    valid_before: None,
+                },
+            ],
+        );
+
+        let mut burned = AddressMap::default();
+        burned
+            .entry(user_address)
+            .or_insert_with(B256Set::default)
+            .insert(burned_witness);
+
+        let evicted = pool.evict_invalidated(
+            &RevokedKeys::new(),
+            &SpendingLimitUpdates::new(),
+            &SpendingLimitUpdates::new(),
+            &burned,
+        );
+
+        assert_eq!(evicted, 1);
+        assert_eq!(pool.len(), 1);
+        assert_eq!(
+            pool.all_entries()
+                .next()
+                .and_then(|entry| entry.tx.transaction.key_authorization_witness_subject())
+                .map(|subject| subject.witness),
+            Some(other_witness)
+        );
     }
 
     #[test]

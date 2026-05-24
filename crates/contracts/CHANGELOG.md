@@ -1,5 +1,22 @@
 # Changelog
 
+## `tempo-contracts@1.7.2`
+
+### Patch Changes
+
+- Bumped alloy to `2.0.5` and updated transitive dependencies.
+- Dropped constructor helpers in favor of the newly auto-generated ones by the `sol!` macro. (by @ArseniiKulikov, [#4058](https://github.com/tempoxyz/tempo/pull/4058))
+
+## `tempo-contracts@1.7.0`
+
+### Minor Changes
+
+- Added the TIP-20 channel reserve precompile with channel open, settle, top-up, close, request-close, and withdraw flows gated at T5. (by @DerekCofausper, [#4019](https://github.com/tempoxyz/tempo/pull/4019))
+
+### Patch Changes
+
+- Enshrined the stricter TIP-1045 payment classifier (`is_payment_v2`) at the T5 hardfork for consensus-level payment lane validation. Relaxed the v2 classifier to allow bounded `key_authorization` (RLP length ≤ 1024 bytes). (by @DerekCofausper, [#4019](https://github.com/tempoxyz/tempo/pull/4019))
+
 ## `tempo-contracts@1.6.0`
 
 

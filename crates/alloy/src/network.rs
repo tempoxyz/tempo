@@ -188,7 +188,7 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
 
     fn output_tx_type_checked(&self) -> Option<TempoTxType> {
         match self.output_tx_type() {
-            TempoTxType::AA => Some(TempoTxType::AA).filter(|_| self.can_build_aa()),
+            TempoTxType::AA => self.can_build_aa().then_some(TempoTxType::AA),
             TempoTxType::Legacy
             | TempoTxType::Eip2930
             | TempoTxType::Eip1559
@@ -315,7 +315,10 @@ mod tests {
     use alloy_rpc_types_eth::{AccessListItem, Authorization, TransactionRequest};
     use tempo_primitives::{
         SignatureType, TempoSignature,
-        transaction::{KeyAuthorization, PrimitiveSignature, TempoSignedAuthorization},
+        transaction::{
+            FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, PrimitiveSignature,
+            TempoSignedAuthorization,
+        },
     };
 
     #[test_case::test_case(
@@ -521,7 +524,7 @@ mod tests {
     #[test]
     fn output_tx_type_fee_payer_signature_is_aa() {
         let req = TempoTransactionRequest {
-            fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
+            fee_payer_signature: Some(FEE_PAYER_SIGNATURE_MARKER),
             ..Default::default()
         };
         assert_eq!(req.output_tx_type(), TempoTxType::AA);

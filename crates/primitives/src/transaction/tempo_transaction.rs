@@ -20,6 +20,9 @@ pub const TEMPO_TX_TYPE_ID: u8 = 0x76;
 /// Magic byte for the fee payer signature
 pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
 
+/// Placeholder signature used to mark transactions that need fee-payer signing.
+pub const FEE_PAYER_SIGNATURE_MARKER: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
+
 /// Signature type constants
 pub const SECP256K1_SIGNATURE_LENGTH: usize = 65;
 pub const P256_SIGNATURE_LENGTH: usize = 129;
@@ -239,11 +242,23 @@ pub struct TempoTransaction {
     /// Optional fee payer signature for sponsored transactions (secp256k1 only)
     pub fee_payer_signature: Option<Signature>,
 
-    /// Transaction can only be included in a block before this timestamp
+    /// Upper bound for the transaction validity window, as a Unix timestamp in seconds.
+    ///
+    /// The transaction can only be included in a block with
+    /// `block.timestamp < valid_before`. For expiring nonces, this is the
+    /// `validBefore` bound defined by [TIP-1009].
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
     pub valid_before: Option<NonZeroU64>,
 
-    /// Transaction can only be included in a block after this timestamp
+    /// Lower bound for the transaction validity window, as a Unix timestamp in seconds.
+    ///
+    /// The transaction can only be included in a block with
+    /// `block.timestamp >= valid_after`. For expiring nonces, this is the
+    /// `validAfter` bound defined by [TIP-1009].
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
     pub valid_after: Option<NonZeroU64>,
 
@@ -406,7 +421,7 @@ impl TempoTransaction {
     /// Outputs the length of the transaction's fields, without a RLP header.
     ///
     /// This is the internal helper that takes closures for flexible encoding.
-    fn rlp_encoded_fields_length(
+    pub(crate) fn rlp_encoded_fields_length(
         &self,
         signature_length: impl FnOnce(&Option<Signature>) -> usize,
         skip_fee_token: bool,
@@ -439,7 +454,7 @@ impl TempoTransaction {
             }
     }
 
-    fn rlp_encode_fields(
+    pub(crate) fn rlp_encode_fields(
         &self,
         out: &mut dyn BufMut,
         encode_signature: impl FnOnce(&Option<Signature>, &mut dyn BufMut),
@@ -511,6 +526,18 @@ impl TempoTransaction {
             },
             false,
         )
+    }
+
+    /// Encodes this transaction for submission to a fee-payer service.
+    ///
+    /// Fee-payer services accept an unsigned sponsorship request with `0x00` fee-payer signature.
+    /// This is a placeholder that tells the sponsor where to insert the real fee-payer signature.
+    pub fn encode_for_fee_payer_service(&self, out: &mut dyn BufMut) {
+        out.put_u8(Self::tx_type());
+
+        let payload_length = self.rlp_encoded_fields_length(|_| 1, true);
+        rlp_header(payload_length).encode(out);
+        self.rlp_encode_fields(out, |_, out| out.put_u8(0x00), true);
     }
 
     /// Decodes the inner TempoTransaction fields from RLP bytes
@@ -1067,6 +1094,49 @@ mod tests {
         assert_eq!(decoded.valid_before, tx.valid_before);
         assert_eq!(decoded.valid_after, tx.valid_after);
         assert_eq!(decoded.fee_payer_signature, tx.fee_payer_signature);
+    }
+
+    #[test]
+    fn test_encode_for_fee_payer_service_uses_signature_placeholder_and_skips_fee_token() {
+        let call = Call {
+            to: TxKind::Call(Address::random()),
+            value: U256::ZERO,
+            input: Bytes::from(vec![1, 2, 3, 4]),
+        };
+
+        let tx = TempoTransaction {
+            chain_id: 1,
+            fee_token: None,
+            max_priority_fee_per_gas: 1000000000,
+            max_fee_per_gas: 2000000000,
+            gas_limit: 21000,
+            calls: vec![call],
+            access_list: Default::default(),
+            nonce_key: U256::ZERO,
+            nonce: 1,
+            fee_payer_signature: None,
+            valid_before: Some(nz(1000000)),
+            valid_after: Some(nz(500000)),
+            key_authorization: None,
+            tempo_authorization_list: vec![],
+        };
+
+        let mut service_encoded = Vec::new();
+        tx.encode_for_fee_payer_service(&mut service_encoded);
+
+        assert_eq!(service_encoded[0], TEMPO_TX_TYPE_ID);
+
+        let mut signing_tx = tx.clone();
+        signing_tx.fee_payer_signature = Some(Signature::new(U256::ZERO, U256::ZERO, false));
+        let mut signing_encoded = Vec::new();
+        signing_tx.encode_for_signing(&mut signing_encoded);
+        assert_eq!(service_encoded, signing_encoded);
+
+        let mut tx_with_different_fee_token = tx;
+        tx_with_different_fee_token.fee_token = Some(Address::random());
+        let mut different_fee_token_encoded = Vec::new();
+        tx_with_different_fee_token.encode_for_fee_payer_service(&mut different_fee_token_encoded);
+        assert_eq!(service_encoded, different_fee_token_encoded);
     }
 
     #[test]
@@ -2089,6 +2159,7 @@ mod compact_tests {
                         period: 86400,
                     }]),
                     allowed_calls: None,
+                    witness: None,
                 },
                 signature: PrimitiveSignature::P256(P256SignatureWithPreHash {
                     r: b256!("0x1111111111111111111111111111111111111111111111111111111111111111"),

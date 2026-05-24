@@ -41,6 +41,7 @@ proptest.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tempo-evm.workspace = true
+tempo-alloy.workspace = true
 tempo-revm.workspace = true
 
 [features]

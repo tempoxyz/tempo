@@ -871,7 +871,7 @@ contract AccountKeychainInvariantTest is InvariantBaseTest {
 
     /// @notice Run all invariant checks in a single pass over actors
     /// @dev Consolidates TEMPO-KEY13, KEY14, KEY15, KEY16 into unified loops
-    function invariant_globalInvariants() public view {
+    function invariant_accountKeychainGlobal() public view {
         // Single pass over all actors and their keys
         for (uint256 a = 0; a < _actors.length; a++) {
             address account = _actors[a];

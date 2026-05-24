@@ -3,6 +3,7 @@ use std::{
     net::SocketAddr, num::NonZeroU32, path::PathBuf, str::FromStr, sync::OnceLock, time::Duration,
 };
 
+use crate::network_identity::NetworkIdentity;
 use commonware_cryptography::ed25519::PublicKey;
 use eyre::Context;
 use tempo_commonware_node_config::SigningKey;
@@ -23,6 +24,20 @@ pub struct Args {
     /// The file containing a share of the bls12-381 threshold signing key.
     #[arg(long = "consensus.signing-share")]
     pub signing_share: Option<PathBuf>,
+
+    /// Consensus network bls network identity key. Otherwise derived from genesis
+    #[arg(
+        long = "consensus.network-identity",
+        requires = "network_identity_from_epoch"
+    )]
+    pub(crate) network_identity: Option<NetworkIdentity>,
+
+    /// First epoch where --consensus.network-identity is set after rotation
+    #[arg(
+        long = "consensus.network-identity-from-epoch",
+        requires = "network_identity"
+    )]
+    pub(crate) network_identity_from_epoch: Option<u64>,
 
     /// The socket address that will be bound to listen for consensus communication from
     /// other nodes.
@@ -95,7 +110,8 @@ pub struct Args {
     /// include the state root calculation time. For this reason, we keep it well below `consensus.time-to-build-proposal`.
     #[arg(
         long = "consensus.time-to-prepare-proposal-transactions",
-        default_value = "200ms"
+        default_value = "350ms",
+        default_value_if("share_sparse_trie_with_payload_builder", "false", "200ms")
     )]
     pub time_to_prepare_proposal_transactions: PositiveDuration,
 
@@ -250,6 +266,25 @@ pub struct Args {
     /// `--datadir`.
     #[arg(long = "consensus.datadir", value_name = "PATH")]
     pub storage_dir: Option<PathBuf>,
+
+    /// Number of recently finalized blocks the marshal actor keeps in its
+    /// prunable archive. Anything older is served from reth's database
+    /// through the hybrid finalized blocks store.
+    #[arg(
+        long = "consensus.finalized-blocks-retention",
+        default_value_t = crate::storage::DEFAULT_FINALIZED_BLOCKS_RETENTION,
+    )]
+    pub finalized_blocks_retention: u64,
+
+    /// Disable dual-writing newly finalized blocks to the legacy immutable
+    /// archive. By default the marshal writes each finalized block to
+    /// both the new prunable archive and the legacy archive so an
+    /// operator can roll back to the previous binary.
+    ///
+    /// Nodes that are started with this set and restarted without are not
+    /// supported.
+    #[arg(long = "consensus.no-legacy-archive")]
+    pub no_legacy_archive: bool,
 }
 
 /// A jiff::SignedDuration that checks that the duration is positive and not zero.
@@ -304,5 +339,17 @@ impl Args {
         Ok(self
             .signing_key()?
             .map(|signing_key| signing_key.public_key()))
+    }
+
+    pub fn network_identity(&self) -> Option<tempo_chainspec::NetworkIdentity> {
+        let identity = self.network_identity?;
+        let from_epoch = self
+            .network_identity_from_epoch
+            .expect("network identity from epoch required");
+
+        Some(tempo_chainspec::NetworkIdentity {
+            from_epoch,
+            identity: identity.0,
+        })
     }
 }

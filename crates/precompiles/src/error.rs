@@ -21,8 +21,9 @@ use revm::{
 };
 use tempo_contracts::precompiles::{
     AccountKeychainError, AddrRegistryError, FeeManagerError, NonceError, RolesAuthError,
-    SignatureVerifierError, StablecoinDEXError, TIP20FactoryError, TIP403RegistryError,
-    TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError, ValidatorConfigV2Error,
+    SignatureVerifierError, StablecoinDEXError, TIP20ChannelReserveError, TIP20FactoryError,
+    TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
+    ValidatorConfigV2Error,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -41,6 +42,10 @@ pub enum TempoPrecompileError {
     /// Error from TIP20 factory
     #[error("TIP20 factory error: {0:?}")]
     TIP20Factory(TIP20FactoryError),
+
+    /// Error from TIP-20 channel reserve
+    #[error("TIP20 channel reserve error: {0:?}")]
+    TIP20ChannelReserveError(TIP20ChannelReserveError),
 
     /// Error from roles auth
     #[error("Roles auth error: {0:?}")]
@@ -137,6 +142,7 @@ impl TempoPrecompileError {
             Self::OutOfGas | Self::Fatal(_) | Self::Panic(_) => true,
             Self::StablecoinDEX(_)
             | Self::TIP20(_)
+            | Self::TIP20ChannelReserveError(_)
             | Self::NonceError(_)
             | Self::TIP20Factory(_)
             | Self::RolesAuthError(_)
@@ -177,6 +183,7 @@ impl TempoPrecompileError {
             Self::StablecoinDEX(e) => e.abi_encode().into(),
             Self::TIP20(e) => e.abi_encode().into(),
             Self::TIP20Factory(e) => e.abi_encode().into(),
+            Self::TIP20ChannelReserveError(e) => e.abi_encode().into(),
             Self::RolesAuthError(e) => e.abi_encode().into(),
             Self::AddrRegistryError(e) => e.abi_encode().into(),
             Self::TIP403RegistryError(e) => e.abi_encode().into(),
@@ -251,6 +258,10 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinDEX);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20Factory);
+    add_errors_to_registry(
+        &mut registry,
+        TempoPrecompileError::TIP20ChannelReserveError,
+    );
     add_errors_to_registry(&mut registry, TempoPrecompileError::RolesAuthError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AddrRegistryError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP403RegistryError);

@@ -13,12 +13,12 @@ pub(crate) mod executor;
 pub mod feed;
 pub mod follow;
 pub mod metrics;
+pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
 pub(crate) mod storage;
+pub(crate) mod subblocks;
 pub(crate) mod utils;
 pub(crate) mod validators;
-
-pub(crate) mod subblocks;
 
 use std::sync::Arc;
 
@@ -122,6 +122,9 @@ pub async fn run_consensus_stack(
         with_subblocks: false,
 
         feed_state,
+
+        finalized_blocks_retention: config.finalized_blocks_retention,
+        with_legacy: !config.no_legacy_archive,
     }
     .try_init(context.with_label("engine"))
     .await
@@ -184,6 +187,8 @@ pub async fn run_follow_stack(
         epoch_strategy: FixedEpocher::new(NZU64!(epoch_length)),
         mailbox_size: config.mailbox_size,
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),
+        finalized_blocks_retention: config.finalized_blocks_retention,
+        with_legacy: !config.no_legacy_archive,
     };
 
     let ret = config

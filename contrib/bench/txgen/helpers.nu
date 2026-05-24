@@ -4,6 +4,8 @@ const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 500
 const TXGEN_HELPER_DRAIN_TIMEOUT_SECS = 300
 const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
+const TXGEN_HELPER_EXISTING_RECIPIENTS_PRESET = "tip20_existing_recipients"
+const TXGEN_HELPER_EXISTING_RECIPIENTS_START = 10000
 
 def txgen-shell-quote [value: any] {
     let s = ($value | into string)
@@ -100,17 +102,42 @@ def txgen-account-mnemonic [] {
     $TXGEN_HELPER_ACCOUNT_MNEMONIC
 }
 
-def txgen-validate-bench-args [bench_args: string] {
-    if $bench_args == "" {
+def txgen-bloat-accounts-per-token [bloat_mib: int, token_count: int] {
+    if $bloat_mib <= 0 {
+        error make { msg: "bloat size must be greater than zero" }
+    }
+    if $token_count <= 0 {
+        error make { msg: "bloat token count must be greater than zero" }
+    }
+
+    let target_bytes = $bloat_mib * 1024 * 1024
+    let overhead_per_token = 40 + 64
+    let available_for_balances = $target_bytes - ($token_count * $overhead_per_token)
+    if $available_for_balances <= 0 {
+        error make { msg: $"bloat size ($bloat_mib) MiB is too small for ($token_count) token\(s\)" }
+    }
+
+    (($available_for_balances / 64) / $token_count) | into int
+}
+
+def txgen-configure-existing-recipients-env [preset_path: string, bloat_mib: int, token_count: int] {
+    let preset_name = ($preset_path | path basename | str replace --regex '\.yml$' '')
+    if $preset_name != $TXGEN_HELPER_EXISTING_RECIPIENTS_PRESET {
         return
     }
 
-    let unsupported = ($bench_args
-        | str replace --all --regex '--existing-recipients(=(true|false))?' ''
-        | str trim)
-    if $unsupported != "" {
-        error make { msg: $"txgen path does not support custom --bench-args yet: ($unsupported)" }
+    if $bloat_mib <= 0 {
+        error make { msg: $"preset ($preset_name) requires state bloat" }
     }
+
+    let recipient_end = (txgen-bloat-accounts-per-token $bloat_mib $token_count)
+    if $recipient_end <= $TXGEN_HELPER_EXISTING_RECIPIENTS_START {
+        error make { msg: $"preset ($preset_name) requires state bloat with more than ($TXGEN_HELPER_EXISTING_RECIPIENTS_START) accounts per token" }
+    }
+
+    $env.TXGEN_EXISTING_RECIPIENTS_START = ($TXGEN_HELPER_EXISTING_RECIPIENTS_START | into string)
+    $env.TXGEN_EXISTING_RECIPIENTS_END = ($recipient_end | into string)
+    print $"  Using existing recipient range ($TXGEN_HELPER_EXISTING_RECIPIENTS_START)..($recipient_end) from ($bloat_mib) MiB state bloat"
 }
 
 def txgen-rpc-call [rpc_url: string, payload: string] {
@@ -181,16 +208,29 @@ def txgen-run-preset-pipeline [
     --preset-path: string
     --generate-rpc-url: string
     --submit-rpc-url: string
-    --metrics-url: string
+    --metrics-url: list<string>
     --report-path: string
     --tps: int
     --duration: int
     --accounts: int
     --max-concurrent-requests: int
+    --bench-args: string = ""
     --bench-env: string = ""
     --git-ref: string = ""
+    --git-ref-label: string = ""
     --build-profile: string = ""
     --benchmark-mode: string = ""
+    --benchmark-id: string = ""
+    --benchmark-run: string = ""
+    --run-type: string = ""
+    --benchmark-start: int = 0
+    --platform: string = ""
+    --scenario: string = ""
+    --victoriametrics-url: string = ""
+    --clickhouse-url: string = ""
+    --bloat-mib: int = 0
+    --bloat-token-count: int = 4
+    --skip-funding                                   # Skip faucet funding (accounts already funded at genesis via state bloat)
 ] {
     let chain_id = (txgen-fetch-chain-id $generate_rpc_url)
     $env.TXGEN_ACCOUNTS = ($accounts | into string)
@@ -198,29 +238,40 @@ def txgen-run-preset-pipeline [
     if not ($spec_path | path exists) {
         error make { msg: $"txgen preset file not found: ($spec_path)" }
     }
-    txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
+    txgen-configure-existing-recipients-env $spec_path $bloat_mib $bloat_token_count
+    if not $skip_funding {
+        txgen-fund-accounts $txgen_tempo_bin $spec_path $generate_rpc_url
+    }
 
     let tx_count = [($tps * $duration) 1] | math max
-    let bench_duration = $"($duration)s"
+    let txgen_duration = $"($duration)s"
     let txgen_cmd = [
         $txgen_tempo_bin
         "generate"
         "-s" $spec_path
         "-n" $tx_count
+        "--duration" $txgen_duration
         "--seed" $TXGEN_HELPER_DEFAULT_SEED
         "--rpc" $generate_rpc_url
     ]
-    let bench_cmd = [
+    let metrics_url_args = ($metrics_url | each { |url| ["--metrics-url" $url] } | flatten)
+    let bench_base_cmd = [
         $txgen_bench_bin
         "send"
         "--rpc-url" $submit_rpc_url
         "--tps" $tps
         "--max-concurrent" $max_concurrent_requests
-        "--metrics-url" $metrics_url
+        "--retries" 0
+        ...$metrics_url_args
         "--scrape-interval-ms" $TXGEN_HELPER_SCRAPE_INTERVAL_MS
         "--drain-timeout" $TXGEN_HELPER_DRAIN_TIMEOUT_SECS
-        "--duration" $bench_duration
-        "--report" $"json:($report_path)"
+    ]
+        | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
+    let report_args = ["--report" $"json:($report_path)"]
+        | append (if $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
+        | append (if $clickhouse_url != "" { ["--report" $"clickhouse:($clickhouse_url)"] } else { [] })
+    let metadata_args = [
+        "-m" "job=github-tempo-bench-e2e"
         "-m" $"chain_id=($chain_id)"
         "-m" $"target_tps=($tps)"
         "-m" $"run_duration_secs=($duration)"
@@ -231,16 +282,29 @@ def txgen-run-preset-pipeline [
         "-m" "swap_weight=0.0"
         "-m" "erc20_weight=0.0"
         "-m" $"node_commit_sha=($git_ref)"
+        "-m" $"git-sha=($git_ref)"
+        "-m" $"git-ref=($git_ref_label)"
         "-m" $"build_profile=($build_profile)"
         "-m" $"mode=($benchmark_mode)"
     ]
+        | append (if $benchmark_id != "" { ["-m" $"benchmark_id=($benchmark_id)"] } else { [] })
+        | append (if $benchmark_run != "" { ["-m" $"benchmark_run=($benchmark_run)"] } else { [] })
+        | append (if $run_type != "" { ["-m" $"run_type=($run_type)"] } else { [] })
+        | append (if $platform != "" { ["-m" $"platform=($platform)"] } else { [] })
+        | append (if $scenario != "" { ["-m" $"scenario=($scenario)"] } else { [] })
+    let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
-    let txgen_cmd_str = (txgen-shell-join $txgen_cmd)
+    let txgen_base_cmd_str = (txgen-shell-join $txgen_cmd)
+    let txgen_cmd_str = if $bench_args == "" {
+        $txgen_base_cmd_str
+    } else {
+        $"($txgen_base_cmd_str) ($bench_args)"
+    }
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
 
-    print $"  Streaming ($tx_count) txgen transaction\(s\) into bench send..."
+    print $"  Streaming up to ($tx_count) txgen transaction\(s\) over ($txgen_duration) into bench send..."
     let result = (bash -lc $pipeline | complete)
     if $result.stdout != "" { print $result.stdout }
     if $result.stderr != "" { print $result.stderr }

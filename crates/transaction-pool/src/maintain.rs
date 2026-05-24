@@ -8,8 +8,8 @@ use crate::{
 };
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
-    Address, TxHash,
-    map::{AddressMap, HashMap, HashSet},
+    Address, B256, Log, TxHash,
+    map::{AddressMap, AddressSet, B256Map, B256Set},
 };
 use alloy_sol_types::SolEvent;
 use futures::StreamExt;
@@ -61,7 +61,7 @@ pub struct TempoPoolUpdates {
     /// resolve to a different token at execution time, causing fee payment failures.
     /// Uses a set since a user can emit multiple events in the same block; we only need to
     /// process each user once. No cleanup needed as this is ephemeral per-block data.
-    pub user_token_changes: HashSet<Address>,
+    pub user_token_changes: AddressSet,
     /// TIP403 blacklist additions: (policy_id, account).
     pub blacklist_additions: Vec<(u64, Address)>,
     /// TIP403 whitelist removals: (policy_id, account).
@@ -71,16 +71,16 @@ pub struct TempoPoolUpdates {
     /// Tokens whose transfer policy was changed via `changeTransferPolicyId()`.
     /// Pending transactions using these tokens as fee tokens need to be re-validated
     /// because the new policy may forbid the fee payer or fee manager.
-    pub transfer_policy_updates: HashSet<Address>,
+    pub transfer_policy_updates: AddressSet,
     /// Tokens whose `quoteToken` was updated via `completeQuoteTokenUpdate()`.
     /// Pending transactions paying in these tokens need to be re-validated because the new
     /// quote token may invalidate the old route.
-    pub quote_token_updates: HashSet<Address>,
+    pub quote_token_updates: AddressSet,
     /// Fee token balance changes keyed by token.
     ///
     /// We only track the debited `from` account from TIP20 `Transfer` logs because credits to the
     /// `to` account cannot make an already-admitted transaction newly invalid.
-    pub fee_balance_changes: AddressMap<HashSet<Address>>,
+    pub fee_balance_changes: AddressMap<AddressSet>,
     /// Spending-limit spends emitted by the account keychain during execution.
     ///
     /// We record the exact `(account, key_id, token)` triples emitted by `AccessKeySpend`
@@ -89,6 +89,11 @@ pub struct TempoPoolUpdates {
     /// with the runtime's actual spending-limit decrements instead of inferring them from
     /// the mined transaction body.
     pub spending_limit_spends: SpendingLimitUpdates,
+    /// TIP-1053 key-authorization witness burns.
+    ///
+    /// Pending AA transactions carrying the same `(account, witness)` key authorization are no
+    /// longer executable once the account explicitly burns that witness.
+    pub key_authorization_witness_burns: AddressMap<B256Set>,
 }
 
 impl TempoPoolUpdates {
@@ -111,6 +116,7 @@ impl TempoPoolUpdates {
             && self.quote_token_updates.is_empty()
             && self.fee_balance_changes.is_empty()
             && self.spending_limit_spends.is_empty()
+            && self.key_authorization_witness_burns.is_empty()
     }
 
     /// Extracts pool updates from a committed chain segment.
@@ -130,62 +136,84 @@ impl TempoPoolUpdates {
         {
             // Key revocations and spending limit changes
             if log.address == ACCOUNT_KEYCHAIN_ADDRESS {
-                if let Ok(event) = IAccountKeychain::KeyRevoked::decode_log(log) {
-                    updates.revoked_keys.insert(event.account, event.publicKey);
-                } else if let Ok(event) = IAccountKeychain::SpendingLimitUpdated::decode_log(log) {
-                    updates.spending_limit_changes.insert(
-                        event.account,
-                        event.publicKey,
-                        Some(event.token),
-                    );
-                } else if let Ok(event) = IAccountKeychain::AccessKeySpend::decode_log(log) {
-                    updates.spending_limit_spends.insert(
-                        event.account,
-                        event.publicKey,
-                        Some(event.token),
-                    );
+                match AccountKeychainPoolEvent::decode(log) {
+                    Some(AccountKeychainPoolEvent::KeyRevoked(event)) => {
+                        updates.revoked_keys.insert(event.account, event.publicKey);
+                    }
+                    Some(AccountKeychainPoolEvent::SpendingLimitUpdated(event)) => {
+                        updates.spending_limit_changes.insert(
+                            event.account,
+                            event.publicKey,
+                            Some(event.token),
+                        );
+                    }
+                    Some(AccountKeychainPoolEvent::AccessKeySpend(event)) => {
+                        updates.spending_limit_spends.insert(
+                            event.account,
+                            event.publicKey,
+                            Some(event.token),
+                        );
+                    }
+                    Some(AccountKeychainPoolEvent::KeyAuthorizationWitnessBurned(event)) => {
+                        updates
+                            .key_authorization_witness_burns
+                            .entry(event.account)
+                            .or_default()
+                            .insert(event.witness);
+                    }
+                    None => {}
                 }
             }
             // Validator and user token changes
             else if log.address == TIP_FEE_MANAGER_ADDRESS {
-                if let Ok(event) = IFeeManager::ValidatorTokenSet::decode_log(log) {
-                    updates
-                        .validator_token_changes
-                        .insert(event.validator, event.token);
-                } else if let Ok(event) = IFeeManager::UserTokenSet::decode_log(log) {
-                    updates.user_token_changes.insert(event.user);
+                match FeeManagerPoolEvent::decode(log) {
+                    Some(FeeManagerPoolEvent::ValidatorTokenSet(event)) => {
+                        updates
+                            .validator_token_changes
+                            .insert(event.validator, event.token);
+                    }
+                    Some(FeeManagerPoolEvent::UserTokenSet(event)) => {
+                        updates.user_token_changes.insert(event.user);
+                    }
+                    None => {}
                 }
             }
             // TIP403 blacklist additions and whitelist removals
             else if log.address == TIP403_REGISTRY_ADDRESS {
-                if let Ok(event) = ITIP403Registry::BlacklistUpdated::decode_log(log)
-                    && event.restricted
-                {
-                    updates
-                        .blacklist_additions
-                        .push((event.policyId, event.account));
-                } else if let Ok(event) = ITIP403Registry::WhitelistUpdated::decode_log(log)
-                    && !event.allowed
-                {
-                    updates
-                        .whitelist_removals
-                        .push((event.policyId, event.account));
+                match Tip403PoolEvent::decode(log) {
+                    Some(Tip403PoolEvent::BlacklistUpdated(event)) if event.restricted => {
+                        updates
+                            .blacklist_additions
+                            .push((event.policyId, event.account));
+                    }
+                    Some(Tip403PoolEvent::WhitelistUpdated(event)) if !event.allowed => {
+                        updates
+                            .whitelist_removals
+                            .push((event.policyId, event.account));
+                    }
+                    Some(_) | None => {}
                 }
             }
             // Fee token pause events and balance changes
             else if log.address.is_tip20() {
-                if let Ok(event) = ITIP20::PauseStateUpdate::decode_log(log) {
-                    updates.pause_events.push((log.address, event.isPaused));
-                } else if ITIP20::TransferPolicyUpdate::decode_log(log).is_ok() {
-                    updates.transfer_policy_updates.insert(log.address);
-                } else if ITIP20::QuoteTokenUpdate::decode_log(log).is_ok() {
-                    updates.quote_token_updates.insert(log.address);
-                } else if let Ok(event) = ITIP20::Transfer::decode_log(log) {
-                    updates
-                        .fee_balance_changes
-                        .entry(log.address)
-                        .or_default()
-                        .insert(event.from);
+                match Tip20PoolEvent::decode(log) {
+                    Some(Tip20PoolEvent::PauseStateUpdate(event)) => {
+                        updates.pause_events.push((log.address, event.isPaused));
+                    }
+                    Some(Tip20PoolEvent::TransferPolicyUpdate) => {
+                        updates.transfer_policy_updates.insert(log.address);
+                    }
+                    Some(Tip20PoolEvent::QuoteTokenUpdate) => {
+                        updates.quote_token_updates.insert(log.address);
+                    }
+                    Some(Tip20PoolEvent::Transfer(event)) => {
+                        updates
+                            .fee_balance_changes
+                            .entry(log.address)
+                            .or_default()
+                            .insert(event.from);
+                    }
+                    None => {}
                 }
             }
         }
@@ -203,7 +231,125 @@ impl TempoPoolUpdates {
             || !self.blacklist_additions.is_empty()
             || !self.whitelist_removals.is_empty()
             || !self.fee_balance_changes.is_empty()
+            || !self.key_authorization_witness_burns.is_empty()
     }
+}
+
+/// Transaction-pool relevant subset of `IAccountKeychain::IAccountKeychainEvents`.
+enum AccountKeychainPoolEvent {
+    /// [`IAccountKeychain::KeyRevoked`] log.
+    KeyRevoked(IAccountKeychain::KeyRevoked),
+    /// [`IAccountKeychain::SpendingLimitUpdated`] log.
+    SpendingLimitUpdated(IAccountKeychain::SpendingLimitUpdated),
+    /// [`IAccountKeychain::AccessKeySpend`] log.
+    AccessKeySpend(IAccountKeychain::AccessKeySpend),
+    /// [`IAccountKeychain::KeyAuthorizationWitnessBurned`] log.
+    KeyAuthorizationWitnessBurned(IAccountKeychain::KeyAuthorizationWitnessBurned),
+}
+
+impl AccountKeychainPoolEvent {
+    /// Decodes only account-keychain events used by transaction-pool maintenance.
+    fn decode(log: &Log) -> Option<Self> {
+        match first_topic(log)? {
+            IAccountKeychain::KeyRevoked::SIGNATURE_HASH => decode_event(log).map(Self::KeyRevoked),
+            IAccountKeychain::SpendingLimitUpdated::SIGNATURE_HASH => {
+                decode_event(log).map(Self::SpendingLimitUpdated)
+            }
+            IAccountKeychain::AccessKeySpend::SIGNATURE_HASH => {
+                decode_event(log).map(Self::AccessKeySpend)
+            }
+            IAccountKeychain::KeyAuthorizationWitnessBurned::SIGNATURE_HASH => {
+                decode_event(log).map(Self::KeyAuthorizationWitnessBurned)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Transaction-pool relevant subset of `IFeeManager::IFeeManagerEvents`.
+enum FeeManagerPoolEvent {
+    /// [`IFeeManager::ValidatorTokenSet`] log.
+    ValidatorTokenSet(IFeeManager::ValidatorTokenSet),
+    /// [`IFeeManager::UserTokenSet`] log.
+    UserTokenSet(IFeeManager::UserTokenSet),
+}
+
+impl FeeManagerPoolEvent {
+    /// Decodes only fee-manager events used by transaction-pool maintenance.
+    fn decode(log: &Log) -> Option<Self> {
+        match first_topic(log)? {
+            IFeeManager::ValidatorTokenSet::SIGNATURE_HASH => {
+                decode_event(log).map(Self::ValidatorTokenSet)
+            }
+            IFeeManager::UserTokenSet::SIGNATURE_HASH => decode_event(log).map(Self::UserTokenSet),
+            _ => None,
+        }
+    }
+}
+
+/// Transaction-pool relevant subset of `ITIP403Registry::ITIP403RegistryEvents`.
+enum Tip403PoolEvent {
+    /// [`ITIP403Registry::BlacklistUpdated`] log.
+    BlacklistUpdated(ITIP403Registry::BlacklistUpdated),
+    /// [`ITIP403Registry::WhitelistUpdated`] log.
+    WhitelistUpdated(ITIP403Registry::WhitelistUpdated),
+}
+
+impl Tip403PoolEvent {
+    /// Decodes only TIP-403 registry events used by transaction-pool maintenance.
+    fn decode(log: &Log) -> Option<Self> {
+        match first_topic(log)? {
+            ITIP403Registry::BlacklistUpdated::SIGNATURE_HASH => {
+                decode_event(log).map(Self::BlacklistUpdated)
+            }
+            ITIP403Registry::WhitelistUpdated::SIGNATURE_HASH => {
+                decode_event(log).map(Self::WhitelistUpdated)
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Transaction-pool relevant subset of `ITIP20::ITIP20Events`.
+enum Tip20PoolEvent {
+    /// [`ITIP20::PauseStateUpdate`] log.
+    PauseStateUpdate(ITIP20::PauseStateUpdate),
+    /// [`ITIP20::TransferPolicyUpdate`] log.
+    TransferPolicyUpdate,
+    /// [`ITIP20::QuoteTokenUpdate`] log.
+    QuoteTokenUpdate,
+    /// [`ITIP20::Transfer`] log.
+    Transfer(ITIP20::Transfer),
+}
+
+impl Tip20PoolEvent {
+    /// Decodes only TIP-20 events used by transaction-pool maintenance.
+    fn decode(log: &Log) -> Option<Self> {
+        match first_topic(log)? {
+            ITIP20::PauseStateUpdate::SIGNATURE_HASH => {
+                decode_event(log).map(Self::PauseStateUpdate)
+            }
+            ITIP20::TransferPolicyUpdate::SIGNATURE_HASH => {
+                decode_event::<ITIP20::TransferPolicyUpdate>(log)
+                    .map(|_| Self::TransferPolicyUpdate)
+            }
+            ITIP20::QuoteTokenUpdate::SIGNATURE_HASH => {
+                decode_event::<ITIP20::QuoteTokenUpdate>(log).map(|_| Self::QuoteTokenUpdate)
+            }
+            ITIP20::Transfer::SIGNATURE_HASH => decode_event(log).map(Self::Transfer),
+            _ => None,
+        }
+    }
+}
+
+fn first_topic(log: &Log) -> Option<B256> {
+    log.topics().first().copied()
+}
+
+/// Decodes after the caller has matched `topic0`, avoiding the allocating
+/// invalid-signature error path for unrelated events.
+fn decode_event<T: SolEvent>(log: &Log) -> Option<T> {
+    T::decode_log(log).ok().map(|event| event.data)
 }
 
 /// Tracking state for pool maintenance operations.
@@ -216,9 +362,9 @@ impl TempoPoolUpdates {
 #[derive(Default)]
 struct TempoPoolState {
     /// Maps timestamp to transactions that are going to be invalidated at that time (due to `valid_after` or keychain-related expiry).
-    expiry_map: BTreeMap<u64, Vec<TxHash>>,
+    expiry_map: BTreeMap<u64, B256Set>,
     /// Reverse mapping: tx_hash -> valid_before timestamp (for cleanup during drain).
-    tx_to_expiry: HashMap<TxHash, u64>,
+    tx_to_expiry: B256Map<u64>,
     /// Pool for transactions whose fee token is temporarily paused.
     paused_pool: PausedFeeTokenPool,
     /// Tracks pending transaction staleness for DoS mitigation.
@@ -237,7 +383,10 @@ impl TempoPoolState {
         let expiry = [valid_before, key_expiry].into_iter().flatten().min();
 
         if let Some(expiry) = expiry {
-            self.expiry_map.entry(expiry).or_default().push(*tx.hash());
+            self.expiry_map
+                .entry(expiry)
+                .or_default()
+                .insert(*tx.hash());
             self.tx_to_expiry.insert(*tx.hash(), expiry);
         }
     }
@@ -247,9 +396,37 @@ impl TempoPoolState {
         if let Some(expiry) = self.tx_to_expiry.remove(hash)
             && let Entry::Occupied(mut entry) = self.expiry_map.entry(expiry)
         {
-            entry.get_mut().retain(|h| *h != *hash);
+            entry.get_mut().remove(hash);
             if entry.get().is_empty() {
                 entry.remove();
+            }
+        }
+    }
+
+    /// Removes expiry and key-expiry tracking for a batch of transactions.
+    ///
+    /// Mined transactions often share the same expiry timestamp, so first group
+    /// hashes by their recorded expiry and then touch each expiry bucket once.
+    /// This avoids repeating the `expiry_map` lookup for every mined hash while
+    /// preserving O(1)-ish removal from each `B256Set` bucket.
+    fn untrack_many<'a>(&mut self, hashes: impl IntoIterator<Item = &'a TxHash>) {
+        let mut hashes_by_expiry: BTreeMap<u64, B256Set> = BTreeMap::new();
+
+        for hash in hashes {
+            if let Some(expiry) = self.tx_to_expiry.remove(hash) {
+                hashes_by_expiry.entry(expiry).or_default().insert(*hash);
+            }
+        }
+
+        for (expiry, hashes) in hashes_by_expiry {
+            if let Entry::Occupied(mut entry) = self.expiry_map.entry(expiry) {
+                let bucket = entry.get_mut();
+                for hash in hashes {
+                    bucket.remove(&hash);
+                }
+                if bucket.is_empty() {
+                    entry.remove();
+                }
             }
         }
     }
@@ -262,10 +439,11 @@ impl TempoPoolState {
             && *entry.key() <= tip_timestamp
         {
             let expired_hashes = entry.remove();
-            for tx_hash in &expired_hashes {
-                self.tx_to_expiry.remove(tx_hash);
+            expired.reserve(expired_hashes.len());
+            for tx_hash in expired_hashes {
+                self.tx_to_expiry.remove(&tx_hash);
+                expired.push(tx_hash);
             }
-            expired.extend(expired_hashes);
         }
         expired
     }
@@ -284,7 +462,7 @@ const DEFAULT_PENDING_STALENESS_INTERVAL: u64 = 30 * 60;
 #[derive(Debug)]
 struct PendingStalenessTracker {
     /// Previous snapshot of pending transaction hashes.
-    previous_pending: HashSet<TxHash>,
+    previous_pending: B256Set,
     /// Timestamp of the last snapshot.
     last_snapshot_time: Option<u64>,
     /// Interval in seconds between staleness checks.
@@ -295,7 +473,7 @@ impl PendingStalenessTracker {
     /// Creates a new tracker with the given check interval.
     fn new(interval_secs: u64) -> Self {
         Self {
-            previous_pending: HashSet::default(),
+            previous_pending: B256Set::default(),
             last_snapshot_time: None,
             interval_secs,
         }
@@ -313,13 +491,13 @@ impl PendingStalenessTracker {
     /// (i.e., pending for at least one full interval).
     ///
     /// Call `should_check` first to avoid collecting the pending set on every block.
-    fn check_and_update(&mut self, current_pending: HashSet<TxHash>, now: u64) -> Vec<TxHash> {
+    fn check_and_update(&mut self, current_pending: B256Set, now: u64) -> Vec<TxHash> {
         let previous_pending = std::mem::take(&mut self.previous_pending);
 
         // Split the current snapshot into stale transactions to evict and fresh
         // transactions to track. A transaction is stale if it appears in both
         // the previous and current pending snapshots.
-        let (stale, next_pending): (Vec<TxHash>, HashSet<TxHash>) =
+        let (stale, next_pending): (Vec<TxHash>, B256Set) =
             current_pending.into_iter().partition_map(|hash| {
                 if previous_pending.contains(&hash) {
                     Either::Left(hash)
@@ -412,11 +590,10 @@ where
                 let mut updates = TempoPoolUpdates::from_chain(tip);
 
                 // Remove expiry tracking for mined transactions.
-                tip.blocks_iter()
+                let mined_hashes = tip.blocks_iter()
                     .flat_map(|block| block.body().transactions())
-                    .for_each(|tx| {
-                    state.untrack(tx.tx_hash())
-                });
+                    .map(|tx| tx.tx_hash());
+                state.untrack_many(mined_hashes);
 
                 // Evict transactions slightly before they expire to prevent
                 // broadcasting near-expiry txs that peers would reject.
@@ -567,11 +744,13 @@ where
                 if !updates.revoked_keys.is_empty()
                     || !updates.spending_limit_changes.is_empty()
                     || !updates.spending_limit_spends.is_empty()
+                    || !updates.key_authorization_witness_burns.is_empty()
                 {
                     state.paused_pool.evict_invalidated(
                         &updates.revoked_keys,
                         &updates.spending_limit_changes,
                         &updates.spending_limit_spends,
+                        &updates.key_authorization_witness_burns,
                     );
                 }
                 metrics.pause_events_duration_seconds.record(pause_start.elapsed());
@@ -683,7 +862,7 @@ where
                 // Only runs once per interval (~30 min) to avoid overhead on every block.
                 // Transactions pending across two consecutive snapshots are considered stale.
                 if state.pending_staleness.should_check(tip_timestamp) {
-                    let current_pending: HashSet<TxHash> =
+                    let current_pending: B256Set =
                         pool.pending_transactions().iter().map(|tx| *tx.hash()).collect();
                     let stale_to_evict =
                         state.pending_staleness.check_and_update(current_pending, tip_timestamp);
@@ -714,9 +893,9 @@ where
 mod tests {
     use super::*;
     use crate::test_utils::TxBuilder;
-    use alloy_primitives::{Address, TxHash};
+    use alloy_primitives::{Address, B256, TxHash};
     use reth_primitives_traits::RecoveredBlock;
-    use std::sync::Arc;
+    use std::{collections::HashSet, sync::Arc};
     use tempo_primitives::{Block, BlockBody, TempoHeader, TempoTxEnvelope};
 
     mod pending_staleness_tracker_tests {
@@ -794,17 +973,39 @@ mod tests {
     }
 
     #[test]
-    fn test_remove_mined() {
+    fn track_groups_duplicate_expiries() {
+        let mut state = TempoPoolState::default();
+        let tx_a = TxBuilder::aa(Address::random())
+            .nonce(1)
+            .valid_before(1000)
+            .build();
+        let tx_b = TxBuilder::aa(Address::random())
+            .nonce(2)
+            .valid_before(1000)
+            .build();
+
+        state.track(&tx_a);
+        state.track(&tx_b);
+        state.track(&tx_a);
+
+        let bucket = state.expiry_map.get(&1000).unwrap();
+        assert_eq!(bucket.len(), 2);
+        assert!(bucket.contains(tx_a.hash()));
+        assert!(bucket.contains(tx_b.hash()));
+        assert_eq!(state.tx_to_expiry.get(tx_a.hash()), Some(&1000));
+        assert_eq!(state.tx_to_expiry.get(tx_b.hash()), Some(&1000));
+    }
+
+    #[test]
+    fn untrack_removes_hash_and_empty_bucket() {
         let mut state = TempoPoolState::default();
         let hash_a = TxHash::random();
         let hash_b = TxHash::random();
         let hash_unknown = TxHash::random();
 
         // Track two txs at the same valid_before
-        state.expiry_map.entry(1000).or_default().push(hash_a);
-        state.tx_to_expiry.insert(hash_a, 1000);
-        state.expiry_map.entry(1000).or_default().push(hash_b);
-        state.tx_to_expiry.insert(hash_b, 1000);
+        insert_tracked_hash(&mut state, hash_a, 1000);
+        insert_tracked_hash(&mut state, hash_b, 1000);
 
         // Mine hash_a and an unknown hash
         state.untrack(&hash_a);
@@ -812,12 +1013,303 @@ mod tests {
 
         // hash_a removed from both maps
         assert!(!state.tx_to_expiry.contains_key(&hash_a));
-        assert_eq!(state.expiry_map[&1000], vec![hash_b]);
+        let bucket = state.expiry_map.get(&1000).unwrap();
+        assert_eq!(bucket.len(), 1);
+        assert!(bucket.contains(&hash_b));
 
         // Mine hash_b should remove the expiry_map entry entirely
         state.untrack(&hash_b);
         assert!(!state.tx_to_expiry.contains_key(&hash_b));
         assert!(!state.expiry_map.contains_key(&1000));
+    }
+
+    #[test]
+    fn untrack_many_removes_hashes_by_expiry_bucket() {
+        let mut state = TempoPoolState::default();
+        let hash_a = TxHash::random();
+        let hash_b = TxHash::random();
+        let hash_c = TxHash::random();
+        let hash_d = TxHash::random();
+        let hash_unknown = TxHash::random();
+
+        insert_tracked_hash(&mut state, hash_a, 1000);
+        insert_tracked_hash(&mut state, hash_b, 1000);
+        insert_tracked_hash(&mut state, hash_c, 1000);
+        insert_tracked_hash(&mut state, hash_d, 2000);
+
+        state.untrack_many([&hash_a, &hash_b, &hash_unknown, &hash_d]);
+
+        assert!(!state.tx_to_expiry.contains_key(&hash_a));
+        assert!(!state.tx_to_expiry.contains_key(&hash_b));
+        assert!(!state.tx_to_expiry.contains_key(&hash_d));
+        assert_eq!(state.tx_to_expiry.get(&hash_c), Some(&1000));
+
+        let bucket = state.expiry_map.get(&1000).unwrap();
+        assert_eq!(bucket.len(), 1);
+        assert!(bucket.contains(&hash_c));
+        assert!(!state.expiry_map.contains_key(&2000));
+    }
+
+    #[test]
+    fn drain_expired_removes_expired_buckets_and_returns_hashes() {
+        let mut state = TempoPoolState::default();
+        let hash_a = TxHash::random();
+        let hash_b = TxHash::random();
+        let hash_c = TxHash::random();
+        let hash_d = TxHash::random();
+
+        insert_tracked_hash(&mut state, hash_a, 1000);
+        insert_tracked_hash(&mut state, hash_b, 1000);
+        insert_tracked_hash(&mut state, hash_c, 2000);
+        insert_tracked_hash(&mut state, hash_d, 3000);
+
+        let expired = state.drain_expired(2000);
+
+        assert_hashes_eq(expired, &[hash_a, hash_b, hash_c]);
+        assert!(!state.expiry_map.contains_key(&1000));
+        assert!(!state.expiry_map.contains_key(&2000));
+        assert!(state.expiry_map[&3000].contains(&hash_d));
+        assert!(!state.tx_to_expiry.contains_key(&hash_a));
+        assert!(!state.tx_to_expiry.contains_key(&hash_b));
+        assert!(!state.tx_to_expiry.contains_key(&hash_c));
+        assert_eq!(state.tx_to_expiry.get(&hash_d), Some(&3000));
+    }
+
+    fn insert_tracked_hash(state: &mut TempoPoolState, hash: TxHash, expiry: u64) {
+        state.expiry_map.entry(expiry).or_default().insert(hash);
+        state.tx_to_expiry.insert(hash, expiry);
+    }
+
+    fn assert_hashes_eq(actual: Vec<TxHash>, expected: &[TxHash]) {
+        assert_eq!(actual.len(), expected.len());
+        let actual: HashSet<TxHash> = actual.into_iter().collect();
+        let expected: HashSet<TxHash> = expected.iter().copied().collect();
+        assert_eq!(actual, expected);
+    }
+
+    mod narrow_event_decoding {
+        use super::*;
+        use alloy_primitives::U256;
+
+        macro_rules! assert_decodes_like_generated {
+            ($enum_ty:ident, $variant:ident, $event_ty:ty, $log:expr) => {{
+                let expected = generated_decode::<$event_ty>(&$log);
+                match $enum_ty::decode(&$log) {
+                    Some($enum_ty::$variant(event)) => assert_eq!(event, expected),
+                    _ => panic!("unexpected decoded event"),
+                }
+            }};
+        }
+
+        macro_rules! assert_decodes_unit_like_generated {
+            ($enum_ty:ident, $variant:ident, $event_ty:ty, $log:expr) => {{
+                let _expected = generated_decode::<$event_ty>(&$log);
+                assert!(
+                    matches!($enum_ty::decode(&$log), Some($enum_ty::$variant)),
+                    "unexpected decoded event"
+                );
+            }};
+        }
+
+        fn event_log<T>(address: Address, event: T) -> Log
+        where
+            T: SolEvent,
+            for<'a> &'a T: Into<alloy_primitives::LogData>,
+        {
+            Log::new_from_event_unchecked(address, event).reserialize()
+        }
+
+        fn generated_decode<T: SolEvent>(log: &Log) -> T {
+            T::decode_log(log)
+                .expect("generated event decode should succeed")
+                .data
+        }
+
+        #[test]
+        fn account_keychain_decode_matches_generated_event_decoders() {
+            let log = event_log(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                IAccountKeychain::KeyRevoked {
+                    account: Address::random(),
+                    publicKey: Address::random(),
+                },
+            );
+            assert_decodes_like_generated!(
+                AccountKeychainPoolEvent,
+                KeyRevoked,
+                IAccountKeychain::KeyRevoked,
+                log
+            );
+
+            let log = event_log(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                IAccountKeychain::SpendingLimitUpdated {
+                    account: Address::random(),
+                    publicKey: Address::random(),
+                    token: Address::random(),
+                    newLimit: U256::from(12_345),
+                },
+            );
+            assert_decodes_like_generated!(
+                AccountKeychainPoolEvent,
+                SpendingLimitUpdated,
+                IAccountKeychain::SpendingLimitUpdated,
+                log
+            );
+
+            let log = event_log(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                IAccountKeychain::AccessKeySpend {
+                    account: Address::random(),
+                    publicKey: Address::random(),
+                    token: Address::random(),
+                    amount: U256::from(25),
+                    remainingLimit: U256::from(75),
+                },
+            );
+            assert_decodes_like_generated!(
+                AccountKeychainPoolEvent,
+                AccessKeySpend,
+                IAccountKeychain::AccessKeySpend,
+                log
+            );
+
+            let log = event_log(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                IAccountKeychain::KeyAuthorizationWitnessBurned {
+                    account: Address::random(),
+                    witness: B256::random(),
+                },
+            );
+            assert_decodes_like_generated!(
+                AccountKeychainPoolEvent,
+                KeyAuthorizationWitnessBurned,
+                IAccountKeychain::KeyAuthorizationWitnessBurned,
+                log
+            );
+        }
+
+        #[test]
+        fn fee_manager_decode_matches_generated_event_decoders() {
+            let log = event_log(
+                TIP_FEE_MANAGER_ADDRESS,
+                IFeeManager::ValidatorTokenSet {
+                    validator: Address::random(),
+                    token: Address::random(),
+                },
+            );
+            assert_decodes_like_generated!(
+                FeeManagerPoolEvent,
+                ValidatorTokenSet,
+                IFeeManager::ValidatorTokenSet,
+                log
+            );
+
+            let log = event_log(
+                TIP_FEE_MANAGER_ADDRESS,
+                IFeeManager::UserTokenSet {
+                    user: Address::random(),
+                    token: Address::random(),
+                },
+            );
+            assert_decodes_like_generated!(
+                FeeManagerPoolEvent,
+                UserTokenSet,
+                IFeeManager::UserTokenSet,
+                log
+            );
+        }
+
+        #[test]
+        fn tip403_decode_matches_generated_event_decoders() {
+            let log = event_log(
+                TIP403_REGISTRY_ADDRESS,
+                ITIP403Registry::BlacklistUpdated {
+                    policyId: 7,
+                    updater: Address::random(),
+                    account: Address::random(),
+                    restricted: true,
+                },
+            );
+            assert_decodes_like_generated!(
+                Tip403PoolEvent,
+                BlacklistUpdated,
+                ITIP403Registry::BlacklistUpdated,
+                log
+            );
+
+            let log = event_log(
+                TIP403_REGISTRY_ADDRESS,
+                ITIP403Registry::WhitelistUpdated {
+                    policyId: 9,
+                    updater: Address::random(),
+                    account: Address::random(),
+                    allowed: false,
+                },
+            );
+            assert_decodes_like_generated!(
+                Tip403PoolEvent,
+                WhitelistUpdated,
+                ITIP403Registry::WhitelistUpdated,
+                log
+            );
+        }
+
+        #[test]
+        fn tip20_decode_matches_generated_event_decoders() {
+            let token = tempo_precompiles::PATH_USD_ADDRESS;
+            let log = event_log(
+                token,
+                ITIP20::PauseStateUpdate {
+                    updater: Address::random(),
+                    isPaused: true,
+                },
+            );
+            assert_decodes_like_generated!(
+                Tip20PoolEvent,
+                PauseStateUpdate,
+                ITIP20::PauseStateUpdate,
+                log
+            );
+
+            let log = event_log(
+                token,
+                ITIP20::TransferPolicyUpdate {
+                    updater: Address::random(),
+                    newPolicyId: 11,
+                },
+            );
+            assert_decodes_unit_like_generated!(
+                Tip20PoolEvent,
+                TransferPolicyUpdate,
+                ITIP20::TransferPolicyUpdate,
+                log
+            );
+
+            let log = event_log(
+                token,
+                ITIP20::QuoteTokenUpdate {
+                    updater: Address::random(),
+                    newQuoteToken: Address::random(),
+                },
+            );
+            assert_decodes_unit_like_generated!(
+                Tip20PoolEvent,
+                QuoteTokenUpdate,
+                ITIP20::QuoteTokenUpdate,
+                log
+            );
+
+            let log = event_log(
+                token,
+                ITIP20::Transfer {
+                    from: Address::random(),
+                    to: Address::random(),
+                    amount: U256::from(42),
+                },
+            );
+            assert_decodes_like_generated!(Tip20PoolEvent, Transfer, ITIP20::Transfer, log);
+        }
     }
 
     fn create_test_chain(
@@ -925,6 +1417,38 @@ mod tests {
                 "Should not infer spends from the tx fee token"
             );
             assert_eq!(updates.spending_limit_spends.len(), 1);
+        }
+
+        #[test]
+        fn extracts_key_authorization_witness_burned_events() {
+            let account = Address::random();
+            let witness = B256::random();
+
+            let log = alloy_primitives::Log::new_from_event_unchecked(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                IAccountKeychain::KeyAuthorizationWitnessBurned { account, witness },
+            )
+            .reserialize();
+            let receipt = tempo_primitives::TempoReceipt {
+                tx_type: tempo_primitives::TempoTxType::AA,
+                success: true,
+                cumulative_gas_used: 1,
+                logs: vec![log],
+            };
+
+            let block = create_block_with_txs(1, vec![], vec![]);
+            let chain = create_test_chain_with_receipts(vec![block], vec![vec![receipt]]);
+
+            let updates = TempoPoolUpdates::from_chain(&chain);
+
+            assert!(
+                updates
+                    .key_authorization_witness_burns
+                    .get(&account)
+                    .is_some_and(|witnesses| witnesses.contains(&witness)),
+                "Should contain the burned (account, witness)"
+            );
+            assert!(updates.has_invalidation_events());
         }
 
         /// The pool should only track actual AccessKeySpend events, not infer spends from the

@@ -1,9 +1,10 @@
 use super::{
     tempo_transaction::{TEMPO_TX_TYPE_ID, TempoTransaction},
     tt_signature::TempoSignature,
+    unique_tx_identifier_from_signable,
 };
 use alloc::vec::Vec;
-use alloy_consensus::{SignableTransaction, Transaction, transaction::TxHashRef};
+use alloy_consensus::{Transaction, transaction::TxHashRef};
 use alloy_eips::{
     Decodable2718, Encodable2718, Typed2718,
     eip2718::{Eip2718Error, Eip2718Result},
@@ -35,6 +36,8 @@ pub struct AASigned {
     /// Cached transaction hash
     #[doc(alias = "tx_hash", alias = "transaction_hash")]
     hash: OnceLock<B256>,
+    /// Cached transaction signing hash.
+    signature_hash: OnceLock<B256>,
 }
 
 impl AASigned {
@@ -48,6 +51,7 @@ impl AASigned {
             tx,
             signature,
             hash: value,
+            signature_hash: OnceLock::new(),
         }
     }
 
@@ -58,6 +62,7 @@ impl AASigned {
             tx,
             signature,
             hash: OnceLock::new(),
+            signature_hash: OnceLock::new(),
         }
     }
 
@@ -98,7 +103,10 @@ impl AASigned {
 
     /// Calculate the signing hash for the transaction.
     pub fn signature_hash(&self) -> B256 {
-        self.tx.signature_hash()
+        #[allow(clippy::useless_conversion)]
+        *self
+            .signature_hash
+            .get_or_init(|| self.tx.signature_hash().into())
     }
 
     /// Calculate the expiring nonce dedup hash for replay protection.
@@ -108,16 +116,8 @@ impl AASigned {
     ///   (since `encode_for_signing` doesn't commit to them when a fee payer is present).
     /// - **Unique per sender**: different signers produce different recovered addresses, so the
     ///   hash differs even for identical transaction payloads.
-    ///
-    /// This prevents a replay attack where two different fee payers sign the same sender-signed
-    /// transaction, producing different `tx_hash` values that would bypass `tx_hash`-based
-    /// replay protection.
     pub fn expiring_nonce_hash(&self, sender: Address) -> B256 {
-        let mut buf =
-            Vec::with_capacity(self.tx.payload_len_for_signature() + sender.as_slice().len());
-        self.tx.encode_for_signing(&mut buf);
-        buf.extend_from_slice(sender.as_slice());
-        alloy_primitives::keccak256(&buf)
+        unique_tx_identifier_from_signable(&self.tx, sender)
     }
 
     /// Returns the RLP header for the transaction and signature, encapsulating both
@@ -140,6 +140,22 @@ impl AASigned {
         self.tx.rlp_encode_fields_default(out);
 
         // Encode signature
+        self.signature.encode(out);
+    }
+
+    /// Encodes this signed transaction for submission to a fee-payer service.
+    pub fn encode_for_fee_payer_service(&self, out: &mut dyn BufMut) {
+        let payload_length =
+            self.tx.rlp_encoded_fields_length(|_| 1, true) + self.signature.length();
+
+        out.put_u8(TEMPO_TX_TYPE_ID);
+        alloy_rlp::Header {
+            list: true,
+            payload_length,
+        }
+        .encode(out);
+        self.tx
+            .rlp_encode_fields(out, |_, out| out.put_u8(0x00), true);
         self.signature.encode(out);
     }
 
@@ -463,6 +479,10 @@ mod serde_impl {
 
             // Serialize to JSON
             let json = serde_json::to_string_pretty(&aa_signed).unwrap();
+            assert!(
+                !json.contains("signature_hash"),
+                "signature_hash cache must not be serialized"
+            );
 
             println!("\n=== AASigned JSON Output ===");
             println!("{json}");
@@ -471,6 +491,7 @@ mod serde_impl {
             // Also test deserialization round-trip
             let deserialized: super::super::AASigned = serde_json::from_str(&json).unwrap();
             assert_eq!(aa_signed.tx(), deserialized.tx());
+            assert_eq!(aa_signed.signature_hash(), deserialized.signature_hash());
         }
     }
 }
@@ -544,6 +565,14 @@ mod tests {
         // Encode
         let mut buf = Vec::new();
         signed.rlp_encode(&mut buf);
+        let encoded_before_cache = buf.clone();
+        let _ = signed.signature_hash();
+        let mut encoded_after_cache = Vec::new();
+        signed.rlp_encode(&mut encoded_after_cache);
+        assert_eq!(
+            encoded_before_cache, encoded_after_cache,
+            "signature_hash cache must not change RLP encoding"
+        );
 
         // Decode
         let decoded = AASigned::rlp_decode(&mut buf.as_slice()).unwrap();

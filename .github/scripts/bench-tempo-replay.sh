@@ -4,18 +4,24 @@
 # (reth-bench new-payload-fcu) against baseline and feature Tempo binaries,
 # using a schelk-managed snapshot for instant rollback between runs.
 #
-# Runs in B-F-F-B interleaved order to reduce systematic bias.
+# Runs in interleaved order to reduce systematic bias.
 #
 # Required env:
 #   BASELINE_REF, FEATURE_REF     – git SHAs to build
 #   BENCH_BLOCKS                  – number of blocks to benchmark
 #   BENCH_WARMUP_BLOCKS           – number of warmup blocks
+#   BENCH_RUN_PAIRS               – number of baseline/feature run pairs
 #   BENCH_BASELINE_ARGS           – extra node args for baseline (optional)
 #   BENCH_FEATURE_ARGS            – extra node args for feature (optional)
 #   BENCH_SAMPLY                  – "true" to enable samply profiling (optional)
+#   BENCH_REPLAY_RPC_URL          – RPC URL override for replay extraction (optional)
 set -euxo pipefail
 
 eval "$(nu bench-schelk.nu detect)"
+
+redact_url() {
+  sed -E 's#(https?://|wss?://)([^/@]+)@#\1***@#' <<< "$1"
+}
 
 BENCH_WORK_DIR="${BENCH_WORK_DIR:-bench-results/replay}"
 SNAPSHOT_BUCKET="r2-tempo-snapshots/tempo-node-snapshots"
@@ -27,27 +33,38 @@ case "$CHAIN" in
   mainnet)
     CHAIN_ID=4217
     CHAIN_NAME="mainnet"
-    REPLAY_RPC_URL="https://rpc.tempo.xyz"
+    DEFAULT_REPLAY_RPC_URL="https://rpc.tempo.xyz"
     ;;
   testnet)
     CHAIN_ID=42431
     CHAIN_NAME="moderato"
-    REPLAY_RPC_URL="https://rpc.moderato.tempo.xyz"
+    DEFAULT_REPLAY_RPC_URL="https://rpc.moderato.tempo.xyz"
     ;;
   *)
     echo "::error::Unknown chain: $CHAIN (must be 'mainnet' or 'testnet')"
     exit 1
     ;;
 esac
+set +x
+REPLAY_RPC_URL="${BENCH_REPLAY_RPC_URL:-$DEFAULT_REPLAY_RPC_URL}"
+if [ -n "${BENCH_REPLAY_RPC_URL:-}" ]; then
+  echo "::add-mask::$BENCH_REPLAY_RPC_URL"
+fi
+set -x
 
 DATADIR="$SCHELK_MOUNT/tempo-replay-${CHAIN_NAME}"
 SNAPSHOT_PREFIX="tempo-${CHAIN_ID}-"
 SNAPSHOT_HASH_FILE="$HOME/.tempo-replay-snapshot-hash-${CHAIN_NAME}"
-echo "Chain: $CHAIN_NAME (id=$CHAIN_ID, rpc=$REPLAY_RPC_URL)"
+echo "Chain: $CHAIN_NAME (id=$CHAIN_ID, rpc=$(redact_url "$REPLAY_RPC_URL"))"
 
 MC="mc"
 BLOCKS="${BENCH_BLOCKS:-5000}"
 WARMUP="${BENCH_WARMUP_BLOCKS:-1000}"
+RUN_PAIRS="${BENCH_RUN_PAIRS:-2}"
+if ! [[ "$RUN_PAIRS" =~ ^[1-9][0-9]*$ ]]; then
+  echo "::error::BENCH_RUN_PAIRS must be a positive integer"
+  exit 1
+fi
 
 mkdir -p "$BENCH_WORK_DIR"
 
@@ -58,6 +75,17 @@ export PATH="$CARGO_BIN_DIR:$PATH"
 TXGEN_TEMPO_BIN="${TXGEN_TEMPO_BIN:-txgen-tempo}"
 TXGEN_BENCH_BIN="${TXGEN_BENCH_BIN:-bench}"
 BENCH_FEATURES="${BENCH_FEATURES:-jemalloc,asm-keccak,keccak-cache-global}"
+if [ -z "${BENCHMARK_ID:-}" ]; then
+  if [ -z "${GITHUB_RUN_ID:-}" ]; then
+    echo "Error: BENCHMARK_ID or GITHUB_RUN_ID must be set for replay benchmarks" >&2
+    exit 1
+  fi
+  BENCHMARK_ID="bench-replay-${GITHUB_RUN_ID}"
+fi
+if [ -z "$BENCHMARK_ID" ]; then
+  echo "Error: BENCHMARK_ID or GITHUB_RUN_ID must be set for replay benchmarks" >&2
+  exit 1
+fi
 
 if [ "${BENCH_OTLP:-false}" = "true" ]; then
   if [ -z "${OTEL_EXPORTER_OTLP_TRACES_ENDPOINT:-}" ] && [ -n "${GRAFANA_TEMPO:-}" ]; then
@@ -76,6 +104,12 @@ fi
 
 bench_schelk() {
   nu bench-schelk.nu "$@"
+}
+
+cleanup_reth_ipc() {
+  if [ -e /tmp/reth.ipc ]; then
+    rm -f /tmp/reth.ipc
+  fi
 }
 
 # ============================================================================
@@ -200,6 +234,7 @@ run_single() {
   # Recover snapshot
   sudo systemctl stop "$TEMPO_SCOPE" 2>/dev/null || true
   sudo systemctl reset-failed "$TEMPO_SCOPE" 2>/dev/null || true
+  cleanup_reth_ipc
   bench_schelk restore "$SCHELK_STATE_PATH" "$SCHELK_MOUNT"
 
   sync
@@ -220,6 +255,10 @@ run_single() {
     --metrics 9001
     --disable-discovery
     --no-persist-peers
+    --debug.startup-sync-state-idle
+    --builder.max-tasks 1
+    --engine.share-sparse-trie-with-payload-builder
+    --engine.share-execution-cache-with-payload-builder
   )
 
   # Per-label extra node args
@@ -247,45 +286,118 @@ run_single() {
     fi
   done
 
-  # Start tempo node
+  # Start tempo node (drop back to runner user, matching bench-e2e.nu)
+  local run_uid run_gid
+  run_uid="$(id -u)"
+  run_gid="$(id -g)"
+
   if [ "${BENCH_SAMPLY:-false}" = "true" ]; then
     local samply_bin
     samply_bin="$(which samply)"
     sudo systemd-run --quiet --scope --collect --unit="$TEMPO_SCOPE" \
+      --uid="$run_uid" --gid="$run_gid" \
       -p MemoryMax="$mem_limit" \
-      "${scope_env[@]}" nice -n -20 \
+      "${scope_env[@]}" \
       "$samply_bin" record --save-only --presymbolicate --rate 10000 \
       --output "$output_dir/samply-profile.json.gz" \
       -- "$binary" "${NODE_ARGS[@]}" \
       > "$log" 2>&1 &
   else
     sudo systemd-run --quiet --scope --collect --unit="$TEMPO_SCOPE" \
+      --uid="$run_uid" --gid="$run_gid" \
       -p MemoryMax="$mem_limit" \
-      "${scope_env[@]}" nice -n -20 "$binary" "${NODE_ARGS[@]}" \
+      "${scope_env[@]}" "$binary" "${NODE_ARGS[@]}" \
       > "$log" 2>&1 &
   fi
   stdbuf -oL tail -f "$log" | sed -u "s/^/[$label] /" &
   local tail_pid=$!
 
+  # Ensure node and tail are cleaned up on any exit from run_single
+  cleanup_run() {
+    kill "$tail_pid" 2>/dev/null || true
+    if [ "${BENCH_SAMPLY:-false}" = "true" ]; then
+      sudo pkill -INT -x tempo 2>/dev/null || true
+      local samply_wait
+      for samply_wait in $(seq 1 60); do
+        sudo pgrep -x samply > /dev/null 2>&1 || break
+        sleep 1
+      done
+    fi
+    sudo systemctl stop "$TEMPO_SCOPE" 2>/dev/null || true
+    sudo systemctl reset-failed "$TEMPO_SCOPE" 2>/dev/null || true
+    cleanup_reth_ipc
+    sudo chown -R "$(id -un):$(id -gn)" "$output_dir" 2>/dev/null || true
+    bench_schelk cleanup "$SCHELK_STATE_PATH" || true
+  }
+  trap cleanup_run EXIT
+
   # Wait for RPC
-  for i in $(seq 1 120); do
+  local rpc_wait
+  for rpc_wait in $(seq 1 120); do
     if curl -sf http://127.0.0.1:8545 -X POST \
       -H 'Content-Type: application/json' \
       -d '{"jsonrpc":"2.0","method":"eth_blockNumber","params":[],"id":1}' \
       > /dev/null 2>&1; then
-      echo "tempo ($label) RPC is up after ${i}s"
+      echo "tempo ($label) RPC is up after ${rpc_wait}s"
       break
     fi
-    if [ "$i" -eq 120 ]; then
+    if [ "$rpc_wait" -eq 120 ]; then
       echo "::error::tempo ($label) failed to start within 120s"
       cat "$log"
-      kill "$tail_pid" 2>/dev/null || true
+      exit 1
+    fi
+    sleep 1
+  done
+
+  # Wait for pipeline to finish (engine transitions to idle)
+  local sync_wait
+  for sync_wait in $(seq 1 300); do
+    SYNC_RESULT=$(curl -sf http://127.0.0.1:8545 -X POST \
+      -H 'Content-Type: application/json' \
+      -d '{"jsonrpc":"2.0","method":"eth_syncing","params":[],"id":1}' 2>/dev/null || true)
+    if [ -n "$SYNC_RESULT" ] && jq -e '.result == false' <<< "$SYNC_RESULT" > /dev/null 2>&1; then
+      echo "tempo ($label) pipeline finished after ${sync_wait}s, engine is live"
+      break
+    fi
+    if [ "$sync_wait" -eq 300 ]; then
+      echo "::error::tempo ($label) pipeline did not finish within 300s"
+      cat "$log"
       exit 1
     fi
     sleep 1
   done
 
   local from_block=$(( SNAPSHOT_BLOCK + 1 ))
+
+  # Resolve git SHA for this run label
+  local git_sha=""
+  case "$label" in
+    baseline*) git_sha="${BASELINE_REF:-}" ;;
+    feature*)  git_sha="${FEATURE_REF:-}" ;;
+  esac
+
+  # Resolve git_ref: tag if tagged, otherwise branch name, otherwise raw SHA
+  local git_ref="$git_sha"
+  if [ -n "$git_sha" ]; then
+    git fetch --tags --quiet 2>/dev/null || true
+    local tag_name
+    tag_name=$(git tag --points-at "$git_sha" 2>/dev/null | head -1)
+    if [ -n "$tag_name" ]; then
+      git_ref="$tag_name"
+    else
+      local branch_name
+      branch_name=$(git branch -r --points-at "$git_sha" 2>/dev/null | sed 's|^ *origin/||' | head -1)
+      if [ -n "$branch_name" ]; then
+        git_ref="$branch_name"
+      fi
+    fi
+  fi
+
+  local run_type="feature"
+  case "$label" in
+    baseline*) run_type="baseline" ;;
+  esac
+  export OTEL_RESOURCE_ATTRIBUTES="benchmark_id=${BENCHMARK_ID},benchmark_run=${label},run_type=${run_type},git_ref=${git_ref},chain=${CHAIN_NAME}"
 
   # Warmup
   if [ "$WARMUP" -gt 0 ]; then
@@ -301,36 +413,106 @@ run_single() {
   # Benchmark
   local bench_to=$(( from_block + BLOCKS - 1 ))
   echo "Running benchmark ($BLOCKS blocks: $from_block..$bench_to)..."
+  local clickhouse_report=()
+  if [ -n "${CLICKHOUSE_URL:-}" ]; then
+    clickhouse_report=(--report "clickhouse:$CLICKHOUSE_URL")
+  fi
+
   "$TXGEN_TEMPO_BIN" extract --rpc "$REPLAY_RPC_URL" --from "$from_block" --to "$bench_to" \
     | "$TXGEN_BENCH_BIN" send-blocks \
       --engine http://127.0.0.1:8551 \
       --jwt-secret "$DATADIR/jwt.hex" \
       --metrics-url http://localhost:9001 \
-      --report "json:$output_dir/report.json" 2>&1 | sed -u "s/^/[bench] /"
+      --report "json:$output_dir/report.json" \
+      "${clickhouse_report[@]}" \
+      -m "git-sha=$git_sha" \
+      -m "git-ref=$git_ref" \
+      -m "platform=tempo" \
+      -m "scenario=replay" \
+      -m "chain=$CHAIN_NAME" \
+      -m "benchmark_id=$BENCHMARK_ID" \
+      -m "benchmark_run=$label" \
+      -m "run_type=$run_type" \
+      -m "blocks=$BLOCKS" 2>&1 | sed -u "s/^/[bench] /"
 
-  # Cleanup
-  kill "$tail_pid" 2>/dev/null || true
-  if [ "${BENCH_SAMPLY:-false}" = "true" ]; then
-    sudo pkill -INT -x tempo 2>/dev/null || true
-    for i in $(seq 1 60); do
-      sudo pgrep -x samply > /dev/null 2>&1 || break
-      sleep 1
-    done
-  fi
-  sudo systemctl stop "$TEMPO_SCOPE" 2>/dev/null || true
-  sudo systemctl reset-failed "$TEMPO_SCOPE" 2>/dev/null || true
-  sudo chown -R "$(id -un):$(id -gn)" "$output_dir" 2>/dev/null || true
-  bench_schelk cleanup "$SCHELK_STATE_PATH" || true
+  # Cleanup (runs via EXIT trap; call explicitly for the success log line)
+  cleanup_run
+  trap - EXIT
   echo "=== Finished run: $label ==="
 }
 
 # ============================================================================
-# B-F-F-B interleaved runs
+# PR comment status helper
 # ============================================================================
 
-run_single baseline-1 "$BASELINE_BIN" "$BENCH_WORK_DIR/baseline-1"
-run_single feature-1  "$FEATURE_BIN"  "$BENCH_WORK_DIR/feature-1"
-run_single feature-2  "$FEATURE_BIN"  "$BENCH_WORK_DIR/feature-2"
-run_single baseline-2 "$BASELINE_BIN" "$BENCH_WORK_DIR/baseline-2"
+update_bench_status() {
+  local status="$1"
+  if [ -z "${BENCH_COMMENT_ID:-}" ] || [ -z "${BENCH_GH_TOKEN:-${DEREK_BENCH_TOKEN:-}}" ]; then
+    return 0
+  fi
+  local token="${BENCH_GH_TOKEN:-${DEREK_BENCH_TOKEN}}"
+  local body
+  body=$(printf 'cc @%s\n\n🚀 Benchmark started! [View job](%s)\n\n⏳ **Status:** %s\n\n%s' \
+    "${BENCH_ACTOR:-}" "${BENCH_JOB_URL:-}" "$status" "${BENCH_CONFIG:-}")
+  local payload
+  payload=$(jq -n --arg body "$body" '{body: $body}')
+  curl -sS -X PATCH \
+    "https://api.github.com/repos/${GITHUB_REPOSITORY}/issues/comments/${BENCH_COMMENT_ID}" \
+    -H "Authorization: token $token" \
+    -H "Accept: application/vnd.github+json" \
+    -d "$payload" > /dev/null || echo "Warning: failed to update PR comment status"
+}
+
+# ============================================================================
+# Interleaved runs. For run-pairs=2 this preserves the previous B-F-F-B order.
+# ============================================================================
+
+build_run_order() {
+  local run_pairs="$1"
+  if [ $((run_pairs % 2)) -eq 0 ]; then
+    printf 'BFFB%.0s' $(seq 1 $((run_pairs / 2)))
+  else
+    printf 'BF%.0s' $(seq 1 "$run_pairs")
+  fi
+  echo
+}
+
+RUN_ORDER="$(build_run_order "$RUN_PAIRS")"
+echo "$RUN_ORDER" > "$BENCH_WORK_DIR/run_order.txt"
+echo "$RUN_ORDER" | grep -o . | while read -r side; do
+  case "$side" in
+    B) echo "baseline" ;;
+    F) echo "feature" ;;
+  esac
+done | awk '
+  $1 == "baseline" { b++; print "baseline-" b; next }
+  $1 == "feature" { f++; print "feature-" f; next }
+' > "$BENCH_WORK_DIR/run-order.txt"
+echo "Run order: $RUN_ORDER (B=baseline, F=feature; run-pairs=$RUN_PAIRS)"
+
+run_total="${#RUN_ORDER}"
+run_progress=0
+baseline_index=0
+feature_index=0
+
+for ((run_pos = 0; run_pos < ${#RUN_ORDER}; run_pos++)); do
+  side="${RUN_ORDER:$run_pos:1}"
+  if [ "$side" = "B" ]; then
+    baseline_index=$((baseline_index + 1))
+    run_label="baseline-${baseline_index}"
+    binary="$BASELINE_BIN"
+  elif [ "$side" = "F" ]; then
+    feature_index=$((feature_index + 1))
+    run_label="feature-${feature_index}"
+    binary="$FEATURE_BIN"
+  else
+    echo "::error::Invalid run-order entry '${side}'"
+    exit 1
+  fi
+
+  run_progress=$((run_progress + 1))
+  update_bench_status "Running replay phase ${run_label} (${run_progress}/${run_total})..."
+  run_single "$run_label" "$binary" "$BENCH_WORK_DIR/$run_label"
+done
 
 echo "All replay benchmark runs complete."

@@ -378,9 +378,18 @@ def main():
         # Track removed deps so we can auto-strip orphaned feature entries
         removed = set()
 
-        # Remove reth and eyre (only used by cli feature) dependency lines
+        # Remove deps only used by stripped reth-gated chainspec code.
         text = strip_dep_lines(text, lambda n: n.startswith('reth-'), removed)
-        text = strip_dep_lines(text, lambda n: n == 'eyre', removed)
+        text = strip_dep_lines(
+            text,
+            lambda n: n in (
+                'commonware-codec',
+                'commonware-cryptography',
+                'eyre',
+                'tempo-dkg-onchain-artifacts',
+            ),
+            removed,
+        )
         # Remove # Reth comment
         text = re.sub(r'^# Reth\n', '', text, flags=re.MULTILINE)
 
