@@ -1089,7 +1089,7 @@ impl AA2dPool {
             pending_tx.priority.clone(),
             pending_tx.submission_id,
         );
-        debug_assert!(self.expiring_nonce_eviction_order.remove(&eviction_key));
+        self.expiring_nonce_eviction_order.remove(&eviction_key);
         let tx_hash = *pending_tx.transaction.hash();
         self.by_hash.remove(&tx_hash);
         if let Some(slot) = pending_tx.transaction.transaction.expiring_nonce_slot() {
@@ -1388,6 +1388,14 @@ impl AA2dPool {
             assert!(
                 pending_tx.transaction.transaction.is_expiring_nonce(),
                 "Transaction in expiring_nonce_txs is not an expiring nonce tx"
+            );
+        }
+
+        for key in &self.expiring_nonce_eviction_order {
+            assert!(
+                self.expiring_nonce_txs.contains_key(&key.expiring_hash),
+                "Expiring nonce eviction key {:?} not in expiring_nonce_txs",
+                key.expiring_hash
             );
         }
     }
