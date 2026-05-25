@@ -382,7 +382,6 @@ mod tests {
                     guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
                         IReceivePolicyGuard::TransferBlocked {
                             token: token.address(),
-                            from: originator,
                             receiver,
                             blockedNonce: 1,
                             receiptVersion: BLOCKED_RECEIPT_VERSION,
@@ -412,9 +411,9 @@ mod tests {
                         IReceivePolicyGuard::ReceiptClaimed {
                             token: token.address(),
                             receiver,
-                            receiptVersion: BLOCKED_RECEIPT_VERSION,
                             blockedNonce: 1,
                             blockedAt: blocked_at,
+                            receiptVersion: BLOCKED_RECEIPT_VERSION,
                             originator,
                             recipient: receiver,
                             recoveryAuthority: configured_authority,
@@ -1082,7 +1081,6 @@ mod tests {
             guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
                 IReceivePolicyGuard::TransferBlocked {
                     token: token.address(),
-                    from: originator,
                     receiver: VIRTUAL_MASTER,
                     blockedNonce: 1,
                     receiptVersion: BLOCKED_RECEIPT_VERSION,
@@ -1097,9 +1095,9 @@ mod tests {
                 IReceivePolicyGuard::ReceiptClaimed {
                     token: token.address(),
                     receiver: VIRTUAL_MASTER,
-                    receiptVersion: BLOCKED_RECEIPT_VERSION,
                     blockedNonce: 1,
                     blockedAt: 1_728_009,
+                    receiptVersion: BLOCKED_RECEIPT_VERSION,
                     originator,
                     recipient: virtual_addr,
                     recoveryAuthority: VIRTUAL_MASTER,

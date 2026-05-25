@@ -86,6 +86,7 @@ async fn set_receive_policy<P: Provider + Clone>(
 
 async fn create_blocked_transfer<P: Provider + Clone>(
     token: &ITIP20::ITIP20Instance<P>,
+    originator: Address,
     receiver: Address,
     expected_recovery_authority: Address,
     amount: U256,
@@ -112,7 +113,7 @@ async fn create_blocked_transfer<P: Provider + Clone>(
         decoded_receipt.recoveryAuthority,
         expected_recovery_authority
     );
-    assert_eq!(decoded_receipt.originator, blocked.from);
+    assert_eq!(decoded_receipt.originator, originator);
     assert_eq!(decoded_receipt.recipient, receiver);
     assert_eq!(
         decoded_receipt.blockedReason,
@@ -268,6 +269,7 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
     let originator_token = ITIP20::new(token, originator_provider.clone());
     let originator_blocked = create_blocked_transfer(
         &originator_token,
+        originator.address(),
         originator_recovery_receiver.address(),
         RECOVERY_ORIGINATOR,
         U256::from(1_000),
@@ -280,6 +282,7 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
 
     let receiver_blocked = create_blocked_transfer(
         &originator_token,
+        originator.address(),
         receiver_recovery_receiver.address(),
         receiver_recovery_receiver.address(),
         U256::from(2_000),
@@ -292,6 +295,7 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
 
     let third_party_blocked = create_blocked_transfer(
         &originator_token,
+        originator.address(),
         third_party_recovery_receiver.address(),
         recovery.address(),
         U256::from(3_000),

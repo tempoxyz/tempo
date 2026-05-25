@@ -1705,7 +1705,6 @@ pub(crate) mod tests {
                 guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
                     IReceivePolicyGuard::TransferBlocked {
                         token: token.address,
-                        from: sender,
                         receiver,
                         blockedNonce: 1,
                         receiptVersion: BLOCKED_RECEIPT_VERSION,
@@ -1884,7 +1883,6 @@ pub(crate) mod tests {
                 guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
                     IReceivePolicyGuard::TransferBlocked {
                         token: token.address,
-                        from: sender,
                         receiver,
                         blockedNonce: 1,
                         receiptVersion: BLOCKED_RECEIPT_VERSION,
@@ -2139,7 +2137,6 @@ pub(crate) mod tests {
                 guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
                     IReceivePolicyGuard::TransferBlocked {
                         token: token.address,
-                        from: admin,
                         receiver,
                         blockedNonce: 1,
                         receiptVersion: BLOCKED_RECEIPT_VERSION,

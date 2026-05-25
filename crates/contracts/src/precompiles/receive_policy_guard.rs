@@ -46,40 +46,39 @@ crate::sol! {
 
         /// @notice Emitted when an inbound TIP-20 transfer or mint is blocked and funds are redirected.
         /// @param token TIP-20 token whose funds are held by the guard.
-        /// @param from Original sender/originator of the blocked operation.
         /// @param receiver Resolved account where funds would settle; for virtual recipients its their master.
         /// @param blockedNonce Guard nonce assigned to the blocked operation.
-        /// @param receiptVersion Claim receipt layout version.
         /// @param amount Amount of blocked funds held by the guard.
+        /// @param receiptVersion Claim receipt layout version.
         /// @param receipt ABI-encoded receipt witness that can be passed to `claim`.
-        event TransferBlocked(address indexed token, address indexed from, address indexed receiver, uint64 blockedNonce, uint8 receiptVersion, uint256 amount, bytes receipt);
+        event TransferBlocked(address indexed token, address indexed receiver, uint64 indexed blockedNonce, uint256 amount, uint8 receiptVersion, bytes receipt);
 
         /// @notice Emitted when blocked funds are claimed with a valid receipt.
         /// @param token TIP-20 token released by the guard.
         /// @param receiver Resolved account where funds would settle; for virtual recipients its their master.
-        /// @param receiptVersion Claim receipt layout version.
         /// @param blockedNonce Guard nonce from the claimed receipt.
         /// @param blockedAt Block timestamp from the claimed receipt.
+        /// @param receiptVersion Claim receipt layout version.
         /// @param originator Original sender/originator from the claimed receipt.
         /// @param recipient Addressed recipient from the claimed receipt; may be virtual.
         /// @param recoveryAuthority Claim authority from the claimed receipt.
         /// @param caller Account that submitted the claim.
         /// @param to Address where released funds were sent.
         /// @param amount Amount of funds released.
-        event ReceiptClaimed(address indexed token, address indexed receiver, uint8 receiptVersion, uint64 indexed blockedNonce, uint64 blockedAt, address originator, address recipient, address recoveryAuthority, address caller, address to, uint256 amount);
+        event ReceiptClaimed(address indexed token, address indexed receiver, uint64 indexed blockedNonce, uint64 blockedAt, uint8 receiptVersion, address originator, address recipient, address recoveryAuthority, address caller, address to, uint256 amount);
 
         /// @notice Emitted when blocked funds are burned with a valid receipt.
         /// @param token TIP-20 token burned by the guard.
         /// @param receiver Resolved account where funds would settle; for virtual recipients its their master.
-        /// @param receiptVersion Claim receipt layout version.
         /// @param blockedNonce Guard nonce from the burned receipt.
         /// @param blockedAt Block timestamp from the burned receipt.
+        /// @param receiptVersion Claim receipt layout version.
         /// @param originator Original sender/originator from the burned receipt.
         /// @param recipient Addressed recipient from the burned receipt; may be virtual.
         /// @param recoveryAuthority Claim authority from the burned receipt.
         /// @param caller Account that submitted the burn.
         /// @param amount Amount of funds burned.
-        event ReceiptBurned(address indexed token, address indexed receiver, uint8 receiptVersion, uint64 indexed blockedNonce, uint64 blockedAt, address originator, address recipient, address recoveryAuthority, address caller, uint256 amount);
+        event ReceiptBurned(address indexed token, address indexed receiver, uint64 indexed blockedNonce, uint64 blockedAt, uint8 receiptVersion, address originator, address recipient, address recoveryAuthority, address caller, uint256 amount);
 
         error InvalidReceipt();
         error InvalidClaimAddress();
@@ -126,9 +125,9 @@ impl IReceivePolicyGuard::ClaimReceiptV1 {
             token: self.token,
             originator: self.originator,
             receiver,
-            receiptVersion: self.version,
             blockedNonce: self.blockedNonce,
             blockedAt: self.blockedAt,
+            receiptVersion: self.version,
             recipient: self.recipient,
             recoveryAuthority: self.recoveryAuthority,
             caller,
@@ -140,7 +139,6 @@ impl IReceivePolicyGuard::ClaimReceiptV1 {
     pub fn blocked_event(&self, receiver: Address, amount: U256) -> ReceivePolicyGuardEvent {
         ReceivePolicyGuardEvent::TransferBlocked(IReceivePolicyGuard::TransferBlocked {
             token: self.token,
-            from: self.originator,
             receiver,
             blockedNonce: self.blockedNonce,
             receiptVersion: self.version,
