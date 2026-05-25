@@ -51,7 +51,7 @@ impl TempoBuiltPayload {
     /// Converts the built payload into [`TempoExecutionData`].
     pub fn into_execution_data(self) -> TempoExecutionData {
         TempoExecutionData {
-            block: Arc::new(self.inner.block().clone()),
+            block: self.inner.block_arc().clone(),
             validator_set: None,
         }
     }
