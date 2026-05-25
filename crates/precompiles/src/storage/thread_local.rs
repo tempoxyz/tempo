@@ -64,6 +64,7 @@ impl StorageCtx {
     ///
     /// # Panics
     /// Panics if no storage context is set.
+    #[inline(always)]
     fn with_storage<F, R>(f: F) -> R
     where
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> R,
@@ -81,6 +82,7 @@ impl StorageCtx {
     }
 
     /// Execute a (fallible) function with access to the current thread-local storage provider.
+    #[inline(always)]
     fn try_with_storage<F, R>(f: F) -> Result<R>
     where
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> Result<R>,
@@ -143,26 +145,31 @@ impl StorageCtx {
     }
 
     /// Performs an SLOAD operation (persistent storage read).
+    #[inline(always)]
     pub fn sload(&self, address: Address, key: U256) -> Result<U256> {
         Self::try_with_storage(|s| s.sload(address, key))
     }
 
     /// Performs a TLOAD operation (transient storage read).
+    #[inline(always)]
     pub fn tload(&self, address: Address, key: U256) -> Result<U256> {
         Self::try_with_storage(|s| s.tload(address, key))
     }
 
     /// Performs an SSTORE operation (persistent storage write).
+    #[inline(always)]
     pub fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.sstore(address, key, value))
     }
 
     /// Performs a TSTORE operation (transient storage write).
+    #[inline(always)]
     pub fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.tstore(address, key, value))
     }
 
     /// Emits an event from the given contract address.
+    #[inline(always)]
     pub fn emit_event(&mut self, address: Address, event: LogData) -> Result<()> {
         Self::try_with_storage(|s| s.emit_event(address, event))
     }
@@ -178,6 +185,7 @@ impl StorageCtx {
     }
 
     /// Returns the gas used so far.
+    #[inline(always)]
     pub fn gas_used(&self) -> u64 {
         Self::with_storage(|s| s.gas_used())
     }
@@ -193,11 +201,13 @@ impl StorageCtx {
     }
 
     /// Returns the reservoir gas.
+    #[inline(always)]
     pub fn reservoir(&self) -> u64 {
         Self::with_storage(|s| s.reservoir())
     }
 
     /// Returns the currently active hardfork.
+    #[inline(always)]
     pub fn spec(&self) -> TempoHardfork {
         Self::with_storage(|s| s.spec())
     }
@@ -209,6 +219,7 @@ impl StorageCtx {
     }
 
     /// Returns whether the current call context is static.
+    #[inline(always)]
     pub fn is_static(&self) -> bool {
         Self::with_storage(|s| s.is_static())
     }
@@ -236,6 +247,7 @@ impl StorageCtx {
     }
 
     /// Deducts gas from the remaining gas and returns an error if insufficient.
+    #[inline(always)]
     pub fn deduct_gas(&mut self, gas: u64) -> Result<()> {
         Self::try_with_storage(|s| s.deduct_gas(gas))
     }
@@ -243,6 +255,7 @@ impl StorageCtx {
     /// Computes keccak256 and charges the appropriate gas.
     ///
     /// Prefer this over naked `keccak256` to ensure gas is accounted for.
+    #[inline(always)]
     pub fn keccak256(&self, data: &[u8]) -> Result<B256> {
         Self::try_with_storage(|s| s.keccak256(data))
     }
