@@ -1,5 +1,5 @@
 ---
-source: crates/node/tests/it/stablecoin_dex_gas.rs
+source: crates/node/tests/it/gas/stablecoin_dex.rs
 expression: gas
 ---
 cancel_tail_bid_order: 294241

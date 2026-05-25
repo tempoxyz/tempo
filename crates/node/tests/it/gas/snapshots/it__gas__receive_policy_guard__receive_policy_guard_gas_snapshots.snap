@@ -1,6 +1,5 @@
 ---
 source: crates/node/tests/it/gas/receive_policy_guard.rs
-assertion_line: 351
 expression: gas
 ---
 claim_originator_recovery_to_destination: 308369
