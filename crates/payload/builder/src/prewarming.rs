@@ -395,7 +395,7 @@ fn storage_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
 ) -> Vec<StorageTouch> {
-    let mut touches = Vec::new();
+    let mut touches = Vec::with_capacity(32);
     let sender = tx.transaction.sender();
     let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
     let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
