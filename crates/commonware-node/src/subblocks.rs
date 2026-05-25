@@ -509,7 +509,7 @@ impl<TContext: Spawner + Metrics + Pacer> Actor<TContext> {
             let _ = network_tx
                 .send(
                     Recipients::One(built.proposer.clone()),
-                    SubblocksMessage::Subblock((*built.subblock).clone()).encode(),
+                    SubblocksMessage::encode_subblock(&built.subblock),
                     true,
                 )
                 .await;
@@ -620,10 +620,15 @@ enum SubblocksMessage {
 }
 
 impl SubblocksMessage {
+    /// Encodes a signed subblock without cloning its transaction vector.
+    fn encode_subblock(subblock: &SignedSubBlock) -> bytes::Bytes {
+        alloy_rlp::encode(subblock).into()
+    }
+
     /// Encodes the message into a [`bytes::Bytes`].
     fn encode(self) -> bytes::Bytes {
         match self {
-            Self::Subblock(subblock) => alloy_rlp::encode(&subblock).into(),
+            Self::Subblock(subblock) => Self::encode_subblock(&subblock),
             Self::Ack(hash) => bytes::Bytes::copy_from_slice(hash.as_ref()),
         }
     }
