@@ -21,9 +21,10 @@ use tempo_chainspec::{
     hardfork::TempoHardforks,
     spec::{SYSTEM_TX_ADDRESSES, SYSTEM_TX_COUNT, TempoChainSpec},
 };
-use tempo_primitives::{
-    Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
-};
+use tempo_primitives::{Block, BlockBody, TempoHeader, TempoPrimitives, TempoReceipt};
+
+#[cfg(test)]
+use tempo_primitives::TempoTxEnvelope;
 
 /// How far in the future the block timestamp can be.
 ///
@@ -186,24 +187,26 @@ impl Consensus<Block> for TempoConsensus {
         // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block system txs
         let end_of_block_system_txs = transactions
             .get(transactions.len().saturating_sub(expected_system_tx_count)..)
-            .map(|slice| {
-                slice
-                    .iter()
-                    .filter(|tx| tx.is_system_tx())
-                    .collect::<Vec<&TempoTxEnvelope>>()
-            })
             .unwrap_or_default();
+        let actual_system_tx_count = end_of_block_system_txs
+            .iter()
+            .filter(|tx| tx.is_system_tx())
+            .count();
 
-        if end_of_block_system_txs.len() != expected_system_tx_count {
+        if actual_system_tx_count != expected_system_tx_count {
             return Err(TempoConsensusError::MissingEndOfBlockSystemTxs {
                 expected: expected_system_tx_count,
-                actual: end_of_block_system_txs.len(),
+                actual: actual_system_tx_count,
             }
             .into());
         }
 
         // Validate that the sequence of end-of-block system txs is correct
-        for (tx, expected_to) in end_of_block_system_txs.into_iter().zip(SYSTEM_TX_ADDRESSES) {
+        for (tx, expected_to) in end_of_block_system_txs
+            .iter()
+            .filter(|tx| tx.is_system_tx())
+            .zip(SYSTEM_TX_ADDRESSES)
+        {
             let actual_to = tx.to().unwrap_or_default();
             if actual_to != expected_to {
                 return Err(TempoConsensusError::InvalidEndOfBlockSystemTxOrder {
