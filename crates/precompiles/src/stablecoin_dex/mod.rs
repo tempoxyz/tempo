@@ -19,8 +19,8 @@ use tempo_contracts::precompiles::PATH_USD_ADDRESS;
 pub use tempo_contracts::precompiles::{IStablecoinDEX, StablecoinDEXError, StablecoinDEXEvents};
 
 use crate::{
-    STABLECOIN_DEX_ADDRESS,
-    error::{Result, TempoPrecompileError},
+    CheckedMath, STABLECOIN_DEX_ADDRESS,
+    error::Result,
     stablecoin_dex::orderbook::{MAX_PRICE, MIN_PRICE, compute_book_key},
     storage::{Handler, Mapping},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
@@ -123,25 +123,13 @@ impl StablecoinDEX {
     /// Add to user's balance
     fn increment_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let current = self.balance_of(user, token)?;
-        self.set_balance(
-            user,
-            token,
-            current
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )
+        self.set_balance(user, token, current.try_add(amount)?)
     }
 
     /// Subtract from user's balance.
     fn sub_balance(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let current = self.balance_of(user, token)?;
-        self.set_balance(
-            user,
-            token,
-            current
-                .checked_sub(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )
+        self.set_balance(user, token, current.try_sub(amount)?)
     }
 
     /// Emit the appropriate OrderFilled event
@@ -223,9 +211,7 @@ impl StablecoinDEX {
             }
             self.sub_balance(sender, token, amount)
         } else {
-            let remaining = amount
-                .checked_sub(user_balance)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let remaining = amount.try_sub(user_balance)?;
 
             self.transfer_from(token, sender, remaining)?;
             self.set_balance(sender, token, 0)
@@ -499,8 +485,7 @@ impl StablecoinDEX {
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
             // For bids, escrow quote tokens based on price
-            let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)
-                .ok_or(StablecoinDEXError::insufficient_balance())?;
+            let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)?;
             (quote_token, quote_amount, token)
         } else {
             // For asks, escrow base tokens
@@ -576,10 +561,7 @@ impl StablecoinDEX {
             level.tail = order.order_id();
         }
 
-        let new_liquidity = level
-            .total_liquidity
-            .checked_add(order.remaining())
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_liquidity = level.total_liquidity.try_add(order.remaining())?;
         level.total_liquidity = new_liquidity;
 
         self.books[order.book_key()]
@@ -666,8 +648,7 @@ impl StablecoinDEX {
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
             // For bids, escrow quote tokens based on price
-            let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)
-                .ok_or(StablecoinDEXError::insufficient_balance())?;
+            let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)?;
             (quote_token, quote_amount, token)
         } else {
             // For asks, escrow base tokens
@@ -755,8 +736,7 @@ impl StablecoinDEX {
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount, non_escrow_token) = if flipped.is_bid {
             // For bids, escrow quote tokens based on price
-            let quote_amount = base_to_quote(flipped.amount, flipped.tick, RoundingDirection::Up)
-                .ok_or(StablecoinDEXError::insufficient_balance())?;
+            let quote_amount = base_to_quote(flipped.amount, flipped.tick, RoundingDirection::Up)?;
             (quote_token, quote_amount, base_token)
         } else {
             // For asks, escrow base tokens
@@ -828,8 +808,7 @@ impl StablecoinDEX {
             } else {
                 RoundingDirection::Up // Ask: maker receives quote, round UP to favor maker
             },
-        )
-        .ok_or(TempoPrecompileError::under_overflow())?;
+        )?;
 
         if order.is_bid() {
             // Bid order maker receives base tokens (exact amount)
@@ -847,10 +826,7 @@ impl StablecoinDEX {
         };
 
         // Update price level total liquidity
-        let new_liquidity = level
-            .total_liquidity
-            .checked_sub(fill_amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_liquidity = level.total_liquidity.try_sub(fill_amount)?;
         level.total_liquidity = new_liquidity;
 
         self.books[order.book_key()]
@@ -885,12 +861,10 @@ impl StablecoinDEX {
             // Bid maker receives base tokens (exact amount)
             self.increment_balance(order.maker(), orderbook.base, fill_amount)?;
             // Taker receives quote tokens - round DOWN
-            base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)
-                .ok_or(TempoPrecompileError::under_overflow())?
+            base_to_quote(fill_amount, order.tick(), RoundingDirection::Down)?
         } else {
             // Ask maker receives quote tokens - round UP to favor maker
-            let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Up)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let quote_amount = base_to_quote(fill_amount, order.tick(), RoundingDirection::Up)?;
 
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
 
@@ -977,10 +951,7 @@ impl StablecoinDEX {
             level.head = order.next();
             self.orders[order.next()].prev.delete()?;
 
-            let new_liquidity = level
-                .total_liquidity
-                .checked_sub(fill_amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let new_liquidity = level.total_liquidity.try_sub(fill_amount)?;
             level.total_liquidity = new_liquidity;
 
             self.books[book_key]
@@ -1013,48 +984,37 @@ impl StablecoinDEX {
             let (fill_amount, amount_in) = if bid {
                 // For bids: amount_out is quote, amount_in is base
                 // Round UP baseNeeded to ensure we collect enough base to cover exact output
-                let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)?;
                 let fill_amount = base_needed.min(order.remaining());
                 (fill_amount, fill_amount)
             } else {
                 // For asks: amount_out is base, amount_in is quote
                 // Taker pays quote, maker receives quote - round UP (zero-sum with maker)
                 let fill_amount = amount_out.min(order.remaining());
-                let amount_in = base_to_quote(fill_amount, tick, RoundingDirection::Up)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                let amount_in = base_to_quote(fill_amount, tick, RoundingDirection::Up)?;
                 (fill_amount, amount_in)
             };
 
             if fill_amount < order.remaining() {
                 self.partial_fill_order(&mut order, &mut level, fill_amount, taker)?;
-                total_amount_in = total_amount_in
-                    .checked_add(amount_in)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                total_amount_in = total_amount_in.try_add(amount_in)?;
                 break;
             } else {
                 let (amount_out_received, next_order_info) =
                     self.fill_order(book_key, &mut order, level, taker)?;
-                total_amount_in = total_amount_in
-                    .checked_add(amount_in)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                total_amount_in = total_amount_in.try_add(amount_in)?;
 
                 // Update remaining amount_out
                 if bid {
                     // Round UP baseNeeded to match the initial calculation
-                    let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    let base_needed = quote_to_base(amount_out, tick, RoundingDirection::Up)?;
                     if base_needed > order.remaining() {
-                        amount_out = amount_out
-                            .checked_sub(amount_out_received)
-                            .ok_or(TempoPrecompileError::under_overflow())?;
+                        amount_out = amount_out.try_sub(amount_out_received)?;
                     } else {
                         amount_out = 0;
                     }
                 } else if amount_out > order.remaining() {
-                    amount_out = amount_out
-                        .checked_sub(amount_out_received)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    amount_out = amount_out.try_sub(amount_out_received)?;
                 } else {
                     amount_out = 0;
                 }
@@ -1096,46 +1056,35 @@ impl StablecoinDEX {
             } else {
                 // For asks: amount_in is quote, convert to base
                 // Round down base_out (user receives less base, favors protocol)
-                let base_out = quote_to_base(amount_in, tick, RoundingDirection::Down)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                let base_out = quote_to_base(amount_in, tick, RoundingDirection::Down)?;
                 base_out.min(order.remaining())
             };
 
             if fill_amount < order.remaining() {
                 let amount_out =
                     self.partial_fill_order(&mut order, &mut level, fill_amount, taker)?;
-                total_amount_out = total_amount_out
-                    .checked_add(amount_out)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                total_amount_out = total_amount_out.try_add(amount_out)?;
                 break;
             } else {
                 let (amount_out, next_order_info) =
                     self.fill_order(book_key, &mut order, level, taker)?;
-                total_amount_out = total_amount_out
-                    .checked_add(amount_out)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                total_amount_out = total_amount_out.try_add(amount_out)?;
 
                 // Set to 0 to avoid rounding errors
                 if bid {
                     if amount_in > order.remaining() {
-                        amount_in = amount_in
-                            .checked_sub(order.remaining())
-                            .ok_or(TempoPrecompileError::under_overflow())?;
+                        amount_in = amount_in.try_sub(order.remaining())?;
                     } else {
                         amount_in = 0;
                     }
                 } else {
                     // For asks: taker pays quote, maker receives quote
-                    let base_out = quote_to_base(amount_in, tick, RoundingDirection::Down)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    let base_out = quote_to_base(amount_in, tick, RoundingDirection::Down)?;
                     if base_out > order.remaining() {
                         // Quote consumed = what maker receives - round UP (zero-sum with maker)
                         let quote_needed =
-                            base_to_quote(order.remaining(), tick, RoundingDirection::Up)
-                                .ok_or(TempoPrecompileError::under_overflow())?;
-                        amount_in = amount_in
-                            .checked_sub(quote_needed)
-                            .ok_or(TempoPrecompileError::under_overflow())?;
+                            base_to_quote(order.remaining(), tick, RoundingDirection::Up)?;
+                        amount_in = amount_in.try_sub(quote_needed)?;
                     } else {
                         amount_in = 0;
                     }
@@ -1221,10 +1170,7 @@ impl StablecoinDEX {
         }
 
         // Update level liquidity
-        let new_liquidity = level
-            .total_liquidity
-            .checked_sub(order.remaining())
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_liquidity = level.total_liquidity.try_sub(order.remaining())?;
         level.total_liquidity = new_liquidity;
 
         // If this was the last order at this tick, clear the bitmap bit
@@ -1263,8 +1209,7 @@ impl StablecoinDEX {
             // Bid orders escrowed quote tokens using RoundingDirection::Up,
             // so refund must also use Up to return the exact escrowed amount
             let quote_amount =
-                base_to_quote(order.remaining(), order.tick(), RoundingDirection::Up)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                base_to_quote(order.remaining(), order.tick(), RoundingDirection::Up)?;
 
             self.increment_balance(order.maker(), orderbook.quote, quote_amount)?;
         } else {
@@ -1383,8 +1328,8 @@ impl StablecoinDEX {
                 // Note: this quote iterates per-tick, but execution iterates per-order.
                 // If multiple orders exist at a tick, execution may charge slightly more
                 // due to ceiling accumulation across order boundaries.
-                let base_needed = quote_to_base(remaining_out, current_tick, RoundingDirection::Up)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                let base_needed =
+                    quote_to_base(remaining_out, current_tick, RoundingDirection::Up)?;
                 let fill_amount = if base_needed > level.total_liquidity {
                     level.total_liquidity
                 } else {
@@ -1399,8 +1344,7 @@ impl StablecoinDEX {
                 } else {
                     remaining_out
                 };
-                let quote_needed = base_to_quote(fill_amount, current_tick, RoundingDirection::Up)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                let quote_needed = base_to_quote(fill_amount, current_tick, RoundingDirection::Up)?;
                 (fill_amount, quote_needed)
             };
 
@@ -1408,17 +1352,14 @@ impl StablecoinDEX {
                 // Round down amount_out_tick (user receives less quote).
                 // Cap at remaining_out to avoid underflow from round-trip rounding:
                 // when tick > 0, base_to_quote(quote_to_base(x, Up), Down) can exceed x by 1.
-                base_to_quote(fill_amount, current_tick, RoundingDirection::Down)
-                    .ok_or(TempoPrecompileError::under_overflow())?
+                base_to_quote(fill_amount, current_tick, RoundingDirection::Down)?
                     .min(remaining_out)
             } else {
                 fill_amount
             };
 
             remaining_out = remaining_out.saturating_sub(amount_out_tick);
-            amount_in = amount_in
-                .checked_add(amount_in_tick)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            amount_in = amount_in.try_add(amount_in_tick)?;
 
             // If we exhausted this level or filled our requirement, move to next tick
             if fill_amount == level.total_liquidity {
@@ -1600,27 +1541,20 @@ impl StablecoinDEX {
                 // For bids: remaining_in is base, amount_out is quote
                 let fill = remaining_in.min(level.total_liquidity);
                 // Round down quote_out (user receives less quote)
-                let quote_out = base_to_quote(fill, current_tick, RoundingDirection::Down)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                let quote_out = base_to_quote(fill, current_tick, RoundingDirection::Down)?;
                 (fill, quote_out, fill)
             } else {
                 // For asks: remaining_in is quote, amount_out is base
                 // Taker pays quote, maker receives quote - round UP (zero-sum with maker)
                 let base_to_get =
-                    quote_to_base(remaining_in, current_tick, RoundingDirection::Down)
-                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    quote_to_base(remaining_in, current_tick, RoundingDirection::Down)?;
                 let fill = base_to_get.min(level.total_liquidity);
-                let quote_consumed = base_to_quote(fill, current_tick, RoundingDirection::Up)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                let quote_consumed = base_to_quote(fill, current_tick, RoundingDirection::Up)?;
                 (fill, fill, quote_consumed)
             };
 
-            remaining_in = remaining_in
-                .checked_sub(amount_consumed)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            amount_out = amount_out
-                .checked_add(amount_out_tick)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            remaining_in = remaining_in.try_sub(amount_consumed)?;
+            amount_out = amount_out.try_add(amount_out_tick)?;
 
             // If we exhausted this level, move to next tick
             if fill_amount == level.total_liquidity {
@@ -4233,8 +4167,8 @@ mod tests {
             // Test is_bid == true: base -> quote
             let quoted_out_bid = exchange.quote_exact_in(book_key, amount, true)?;
             let expected_quote_out = amount
-                .checked_mul(u128::from(price))
-                .and_then(|v| v.checked_div(u128::from(orderbook::PRICE_SCALE)))
+                .try_mul(u128::from(price))
+                .and_then(|v| v.try_div(u128::from(orderbook::PRICE_SCALE)))
                 .expect("calculation");
             assert_eq!(
                 quoted_out_bid, expected_quote_out,
@@ -4248,8 +4182,8 @@ mod tests {
             let quote_in = (amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
             let quoted_out_ask = exchange.quote_exact_in(book_key, quote_in, false)?;
             let expected_base_out = quote_in
-                .checked_mul(u128::from(orderbook::PRICE_SCALE))
-                .and_then(|v| v.checked_div(u128::from(price)))
+                .try_mul(u128::from(orderbook::PRICE_SCALE))
+                .and_then(|v| v.try_div(u128::from(price)))
                 .expect("calculation");
             assert_eq!(
                 quoted_out_ask, expected_base_out,
@@ -5349,7 +5283,7 @@ mod tests {
 
                 let alice_quote_before = exchange.balance_of(alice, quote_token)?;
 
-                // Poison the flip target tick so commit_order_to_book overflows on checked_add
+                // Poison the flip target tick so commit_order_to_book overflows on try_add
                 let poisoned_level = TickLevel::with_values(0, 0, u128::MAX);
                 exchange.books[book_key]
                     .tick_level_handler_mut(flip_tick, false)
@@ -5646,7 +5580,7 @@ mod tests {
                 let next_id_before = exchange.next_order_id()?;
 
                 // Poison the flip target tick so commit_order_to_book
-                // overflows on checked_add — a system error.
+                // overflows on try_add — a system error.
                 let poisoned = TickLevel::with_values(0, 0, u128::MAX);
                 exchange.books[book_key]
                     .tick_level_handler_mut(flip_tick, false)

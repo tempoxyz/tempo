@@ -5,6 +5,9 @@
 pub mod error;
 pub use error::{IntoPrecompileResult, Result};
 
+pub mod math;
+pub use math::CheckedMath;
+
 pub mod storage;
 
 pub(crate) mod ip_validation;

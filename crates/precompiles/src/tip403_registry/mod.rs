@@ -15,7 +15,7 @@ pub use tempo_contracts::precompiles::{
 use tempo_precompiles_macros::{Storable, contract};
 
 use crate::{
-    TIP403_REGISTRY_ADDRESS,
+    CheckedMath, TIP403_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
@@ -245,11 +245,7 @@ impl TIP403Registry {
         let new_policy_id = self.policy_id_counter()?;
 
         // Increment counter
-        self.policy_id_counter.write(
-            new_policy_id
-                .checked_add(1)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
+        self.policy_id_counter.write(new_policy_id.try_add(1)?)?;
 
         // Store policy data
         self.policy_records[new_policy_id].base.write(PolicyData {
@@ -299,11 +295,7 @@ impl TIP403Registry {
         let new_policy_id = self.policy_id_counter()?;
 
         // Increment counter
-        self.policy_id_counter.write(
-            new_policy_id
-                .checked_add(1)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
+        self.policy_id_counter.write(new_policy_id.try_add(1)?)?;
 
         // Store policy data
         self.set_policy_data(new_policy_id, PolicyData { policy_type, admin })?;
@@ -485,11 +477,7 @@ impl TIP403Registry {
         let new_policy_id = self.policy_id_counter()?;
 
         // Increment counter
-        self.policy_id_counter.write(
-            new_policy_id
-                .checked_add(1)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
+        self.policy_id_counter.write(new_policy_id.try_add(1)?)?;
 
         // Store policy record with COMPOUND type and compound data
         self.policy_records[new_policy_id].write(PolicyRecord {

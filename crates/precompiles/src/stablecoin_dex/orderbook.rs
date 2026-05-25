@@ -1,7 +1,7 @@
 //! Orderbook and tick level management for the stablecoin DEX.
 
 use crate::{
-    error::Result,
+    error::{Result, TempoPrecompileError},
     stablecoin_dex::{IStablecoinDEX, TICK_SPACING},
     storage::{Handler, Mapping},
 };
@@ -40,9 +40,9 @@ pub enum RoundingDirection {
 /// * `tick` - Price tick
 /// * `rounding` - Rounding direction
 ///
-/// # Returns
-/// Quote token amount, or None if result exceeds u128
-pub fn base_to_quote(base_amount: u128, tick: i16, rounding: RoundingDirection) -> Option<u128> {
+/// # Errors
+/// Returns [`TempoPrecompileError::under_overflow`] if the result exceeds `u128`.
+pub fn base_to_quote(base_amount: u128, tick: i16, rounding: RoundingDirection) -> Result<u128> {
     let price = U256::from(tick_to_price(tick));
     let base = U256::from(base_amount);
     let scale = U256::from(PRICE_SCALE);
@@ -54,7 +54,9 @@ pub fn base_to_quote(base_amount: u128, tick: i16, rounding: RoundingDirection) 
         RoundingDirection::Up => numerator.div_ceil(scale),
     };
 
-    result.try_into().ok()
+    result
+        .try_into()
+        .map_err(|_| TempoPrecompileError::under_overflow())
 }
 
 /// Convert quote token amount to base token amount at a given tick.
@@ -68,9 +70,9 @@ pub fn base_to_quote(base_amount: u128, tick: i16, rounding: RoundingDirection) 
 /// * `tick` - Price tick
 /// * `rounding` - Rounding direction
 ///
-/// # Returns
-/// Base token amount, or None if result exceeds u128
-pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection) -> Option<u128> {
+/// # Errors
+/// Returns [`TempoPrecompileError::under_overflow`] if the result exceeds `u128`.
+pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection) -> Result<u128> {
     let price = U256::from(tick_to_price(tick));
     let quote = U256::from(quote_amount);
     let scale = U256::from(PRICE_SCALE);
@@ -82,7 +84,9 @@ pub fn quote_to_base(quote_amount: u128, tick: i16, rounding: RoundingDirection)
         RoundingDirection::Up => numerator.div_ceil(price),
     };
 
-    result.try_into().ok()
+    result
+        .try_into()
+        .map_err(|_| TempoPrecompileError::under_overflow())
 }
 
 /// Lowest representable scaled price (`PRICE_SCALE + MIN_TICK`).
@@ -1200,14 +1204,15 @@ mod tests {
             let result = base_to_quote(large_base_amount, MAX_TICK, RoundingDirection::Down);
 
             assert!(
-                result.is_some(),
+                result.is_ok(),
                 "base_to_quote should handle large amounts without overflow using U256"
             );
 
             let expected = large_base_amount
                 .checked_mul(102)
-                .and_then(|v| v.checked_div(100));
-            assert_eq!(result, expected);
+                .and_then(|v| v.checked_div(100))
+                .unwrap();
+            assert_eq!(result.unwrap(), expected);
         }
 
         #[test]
@@ -1224,7 +1229,7 @@ mod tests {
             let result = quote_to_base(large_quote_amount, MAX_TICK, RoundingDirection::Down);
 
             assert!(
-                result.is_some(),
+                result.is_ok(),
                 "quote_to_base should handle large amounts without overflow using U256"
             );
         }

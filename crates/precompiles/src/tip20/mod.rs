@@ -21,7 +21,7 @@ pub use tempo_primitives::is_tip20_prefix;
 pub use slots as tip20_slots;
 
 use crate::{
-    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    CheckedMath, PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
@@ -523,9 +523,7 @@ impl TIP20Token {
         // Check if the resolved target address is authorized to receive minted tokens
         self.validate_mint(to)?;
 
-        let new_supply = total_supply
-            .checked_add(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_supply = total_supply.try_add(amount)?;
 
         let supply_cap = self.supply_cap()?;
         if new_supply > supply_cap {
@@ -536,9 +534,7 @@ impl TIP20Token {
 
         self.set_total_supply(new_supply)?;
         let to_balance = self.get_balance(to.target)?;
-        let new_to_balance: alloy::primitives::Uint<256, 4> = to_balance
-            .checked_add(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_to_balance: alloy::primitives::Uint<256, 4> = to_balance.try_add(amount)?;
         self.set_balance(to.target, new_to_balance)?;
 
         self.emit_event(to.build_transfer_event(Address::ZERO, amount))
@@ -741,11 +737,7 @@ impl TIP20Token {
         }
 
         // 5. Increment nonce
-        self.permit_nonces[call.owner].write(
-            nonce
-                .checked_add(U256::from(1))
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
+        self.permit_nonces[call.owner].write(nonce.try_add(U256::from(1))?)?;
 
         // 6. Set allowance
         self.set_allowance(call.owner, call.spender, call.value)?;
@@ -1088,17 +1080,13 @@ impl TIP20Token {
         self.handle_rewards_on_transfer(from, to.target, amount)?;
 
         // Adjust balances
-        let new_from_balance = from_balance
-            .checked_sub(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_from_balance = from_balance.try_sub(amount)?;
 
         self.set_balance(from, new_from_balance)?;
 
         if to.target != Address::ZERO {
             let to_balance = self.get_balance(to.target)?;
-            let new_to_balance = to_balance
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let new_to_balance = to_balance.try_add(amount)?;
 
             self.set_balance(to.target, new_to_balance)?;
         }
@@ -1133,9 +1121,7 @@ impl TIP20Token {
 
         // If user is opted into rewards, decrease opted-in supply
         if from_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_sub(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?).try_sub(amount)?;
             self.set_opted_in_supply(
                 opted_in_supply
                     .try_into()
@@ -1191,9 +1177,7 @@ impl TIP20Token {
 
         // If user is opted into rewards, increase opted-in supply by refund amount
         if to_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(refund)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?).try_add(refund)?;
             self.set_opted_in_supply(
                 opted_in_supply
                     .try_into()

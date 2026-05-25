@@ -6,6 +6,7 @@ pub mod amm;
 pub mod dispatch;
 
 use crate::{
+    CheckedMath,
     error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
     tip_fee_manager::amm::{FeeRoute, Pool, compute_amount_out},
@@ -276,11 +277,7 @@ impl TipFeeManager {
         }
 
         let collected_fees = self.collected_fees[validator][token].read()?;
-        self.collected_fees[validator][token].write(
-            collected_fees
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
+        self.collected_fees[validator][token].write(collected_fees.try_add(amount)?)?;
 
         Ok(())
     }
