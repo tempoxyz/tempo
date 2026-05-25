@@ -767,6 +767,7 @@ jobs:
           echo "path=$RESULTS_DIR" >> "$GITHUB_OUTPUT"
           echo "Results directory: $RESULTS_DIR"
 
+      # codeql[actions/untrusted-checkout/critical] PR benches are gated to tempoxyz org members in bench.yml and use the pinned PR head SHA.
       - name: Generate summary
         if: success()
         env:
