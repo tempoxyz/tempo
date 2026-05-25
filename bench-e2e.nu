@@ -27,6 +27,8 @@ const E2E_LOCAL_RETH_ARGS = [
     "--tempo.bootnodes-endpoint" "none"
     "--builder.max-tasks" "1"
     "--engine.share-sparse-trie-with-payload-builder"
+    "--engine.share-execution-cache-with-payload-builder"
+    "--builder.enable-prewarming"
 ]
 
 def run-bench-schelk [...args: string] {
@@ -873,6 +875,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --benchmark-start $ctx.reference_epoch
                 --platform "tempo"
                 --scenario $scenario
+                --bloat-mib $ctx.bloat
+                --bloat-token-count ($TIP20_TOKEN_IDS | length)
                 --victoriametrics-url $ctx.victoriametrics_url
                 --clickhouse-url $phase_clickhouse_url
                 --skip-funding=($ctx.bloat > 0))
@@ -941,6 +945,8 @@ def e2e-write-summary-config [
     duration: int
     benchmark_id: string
     reference_epoch: int
+    baseline_hardfork: string
+    feature_hardfork: string
 ] {
     {
         baseline_label: $baseline_label
@@ -951,6 +957,8 @@ def e2e-write-summary-config [
         duration: $duration
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
+        baseline_hardfork: $baseline_hardfork
+        feature_hardfork: $feature_hardfork
     } | to json | save -f $"($results_dir)/summary-config.json"
 }
 
@@ -962,7 +970,9 @@ def e2e-generate-summary [results_dir: string] {
     }
 
     let config = (open $config_path)
-    generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int)
+    let baseline_hardfork = ($config | get -o baseline_hardfork | default "")
+    let feature_hardfork = ($config | get -o feature_hardfork | default "")
+    generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int) --baseline-hardfork $baseline_hardfork --feature-hardfork $feature_hardfork
 }
 
 def "main summarize" [
@@ -1281,8 +1291,6 @@ def "main e2e" [
 
     let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
     let feature_base_label = if $feature_name != "" { $feature_name } else { $feature }
-    let baseline_label = if $hardfork_mode { $"($baseline_base_label) \(($baseline_hardfork_name)\)" } else { $baseline_base_label }
-    let feature_label = if $hardfork_mode { $"($feature_base_label) \(($feature_hardfork_name)\)" } else { $feature_base_label }
 
     mut baseline_run_index = 0
     mut feature_run_index = 0
@@ -1316,7 +1324,7 @@ def "main e2e" [
         exit 1
     }
     $valid_run_labels | str join "\n" | save -f $"($results_dir)/run-order.txt"
-    e2e-write-summary-config $results_dir $baseline_label $feature_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch
+    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $baseline_hardfork_name $feature_hardfork_name
     let num_phases = ($runs | length)
     mut e2e_exit = 0
     for idx in 0..<$num_phases {

@@ -91,6 +91,7 @@ impl TempoPooledTransaction {
     }
 
     /// Get the cost of the transaction in the fee token.
+    #[inline]
     pub fn fee_token_cost(&self) -> U256 {
         self.inner.cost - self.inner.value()
     }
@@ -152,11 +153,7 @@ impl TempoPooledTransaction {
         let aa_tx = self.inner().as_aa()?;
         let keychain_sig = aa_tx.signature().as_keychain()?;
         let key_id = keychain_sig.key_id(&aa_tx.signature_hash()).ok()?;
-        let fee_token = self
-            .resolved_fee_token
-            .get()
-            .copied()
-            .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
+        let fee_token = self.effective_fee_token();
         Some(KeychainSubject {
             account: keychain_sig.user_address,
             key_id,
@@ -205,6 +202,26 @@ impl TempoPooledTransaction {
         self.tx_env.get_or_init(|| self.tx_env_slow())
     }
 
+    /// Returns a cloned [`TempoTxEnv`] for this transaction.
+    ///
+    /// This uses the cached value prepared by [`Self::tx_env`] when available,
+    /// and computes it on-demand otherwise.
+    pub fn clone_tx_env(&self) -> TempoTxEnv {
+        self.tx_env().clone()
+    }
+
+    /// Returns a [`WithTxEnv`] wrapper by cloning the cached [`TempoTxEnv`] and
+    /// recovered transaction.
+    ///
+    /// This avoids cloning the full pooled transaction when the caller only
+    /// needs an owned executable transaction.
+    pub fn clone_into_with_tx_env(&self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
+        WithTxEnv {
+            tx_env: self.clone_tx_env(),
+            tx: Arc::new(self.inner.transaction.clone()),
+        }
+    }
+
     /// Returns a [`WithTxEnv`] wrapper containing the cached [`TempoTxEnv`].
     ///
     /// If the [`TempoTxEnv`] was pre-computed via [`Self::tx_env`], the cached
@@ -242,6 +259,12 @@ impl TempoPooledTransaction {
     /// Returns the resolved fee token cached during validation, if available.
     pub fn resolved_fee_token(&self) -> Option<Address> {
         self.resolved_fee_token.get().copied()
+    }
+
+    /// Returns the effective fee token for the transaction
+    pub fn effective_fee_token(&self) -> Address {
+        self.resolved_fee_token()
+            .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN))
     }
 
     /// Returns the `(fee_token, balance_slot)` pair for this transaction's fee payer,

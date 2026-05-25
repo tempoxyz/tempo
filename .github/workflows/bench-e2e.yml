@@ -58,6 +58,7 @@ on:
         options:
           - tip20
           - tip20_random_recipients
+          - tip20_existing_recipients
           - mpp
           - mix
       duration:

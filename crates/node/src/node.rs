@@ -26,12 +26,13 @@ use reth_node_builder::{
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
 use reth_primitives_traits::SealedHeader;
-use reth_provider::{EthStorage, providers::ProviderFactoryBuilder};
+use reth_provider::providers::ProviderFactoryBuilder;
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
     RpcNodeCore,
     helpers::config::{EthConfigApiServer, EthConfigHandler},
 };
+use reth_storage_api::EmptyBodyStorage;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
 use std::default::Default;
@@ -148,7 +149,7 @@ impl TempoNode {
 impl NodeTypes for TempoNode {
     type Primitives = TempoPrimitives;
     type ChainSpec = TempoChainSpec;
-    type Storage = EthStorage<TempoTxEnvelope, TempoHeader>;
+    type Storage = EmptyBodyStorage<TempoTxEnvelope, TempoHeader>;
     type Payload = TempoPayloadTypes;
 }
 

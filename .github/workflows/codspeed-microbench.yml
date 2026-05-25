@@ -15,12 +15,12 @@ on:
       packages:
         description: "Cargo package(s) containing benchmark targets, separated by spaces"
         required: true
-        default: "tempo-evm tempo-precompiles"
+        default: "tempo-evm"
         type: string
       benchmarks:
         description: "Cargo bench target(s), separated by spaces; leave empty for every bench in the package(s)"
         required: false
-        default: ""
+        default: "tip20_execution"
         type: string
       filters:
         description: "Optional benchmark name filter passed to cargo codspeed run"
@@ -45,7 +45,7 @@ env:
 jobs:
   codspeed:
     name: CodSpeed microbenchmarks
-    runs-on: ubuntu-latest
+    runs-on: depot-ubuntu-latest-4
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -63,8 +63,8 @@ jobs:
       - name: Resolve cargo codspeed arguments
         id: args
         env:
-          INPUT_PACKAGES: ${{ inputs.packages || 'tempo-evm tempo-precompiles' }}
-          INPUT_BENCHMARKS: ${{ inputs.benchmarks || '' }}
+          INPUT_PACKAGES: ${{ inputs.packages || 'tempo-evm' }}
+          INPUT_BENCHMARKS: ${{ inputs.benchmarks || 'tip20_execution' }}
           INPUT_FILTERS: ${{ inputs.filters || '' }}
           INPUT_MEASUREMENT_MODES: ${{ inputs.measurement_modes || 'simulation' }}
         run: |

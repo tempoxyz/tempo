@@ -258,6 +258,7 @@ run_single() {
     --debug.startup-sync-state-idle
     --builder.max-tasks 1
     --engine.share-sparse-trie-with-payload-builder
+    --engine.share-execution-cache-with-payload-builder
   )
 
   # Per-label extra node args

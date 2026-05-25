@@ -20,6 +20,9 @@ pub const TEMPO_TX_TYPE_ID: u8 = 0x76;
 /// Magic byte for the fee payer signature
 pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
 
+/// Placeholder signature used to mark transactions that need fee-payer signing.
+pub const FEE_PAYER_SIGNATURE_MARKER: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
+
 /// Signature type constants
 pub const SECP256K1_SIGNATURE_LENGTH: usize = 65;
 pub const P256_SIGNATURE_LENGTH: usize = 129;
@@ -239,11 +242,23 @@ pub struct TempoTransaction {
     /// Optional fee payer signature for sponsored transactions (secp256k1 only)
     pub fee_payer_signature: Option<Signature>,
 
-    /// Transaction can only be included in a block before this timestamp
+    /// Upper bound for the transaction validity window, as a Unix timestamp in seconds.
+    ///
+    /// The transaction can only be included in a block with
+    /// `block.timestamp < valid_before`. For expiring nonces, this is the
+    /// `validBefore` bound defined by [TIP-1009].
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
     pub valid_before: Option<NonZeroU64>,
 
-    /// Transaction can only be included in a block after this timestamp
+    /// Lower bound for the transaction validity window, as a Unix timestamp in seconds.
+    ///
+    /// The transaction can only be included in a block with
+    /// `block.timestamp >= valid_after`. For expiring nonces, this is the
+    /// `validAfter` bound defined by [TIP-1009].
+    ///
+    /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
     #[cfg_attr(feature = "serde", serde(with = "serde_nonzero_quantity_opt"))]
     pub valid_after: Option<NonZeroU64>,
 
@@ -406,7 +421,7 @@ impl TempoTransaction {
     /// Outputs the length of the transaction's fields, without a RLP header.
     ///
     /// This is the internal helper that takes closures for flexible encoding.
-    fn rlp_encoded_fields_length(
+    pub(crate) fn rlp_encoded_fields_length(
         &self,
         signature_length: impl FnOnce(&Option<Signature>) -> usize,
         skip_fee_token: bool,
@@ -439,7 +454,7 @@ impl TempoTransaction {
             }
     }
 
-    fn rlp_encode_fields(
+    pub(crate) fn rlp_encode_fields(
         &self,
         out: &mut dyn BufMut,
         encode_signature: impl FnOnce(&Option<Signature>, &mut dyn BufMut),
