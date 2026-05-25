@@ -127,7 +127,7 @@ crate::sol! {
         ) external;
 
         /// Burn a TIP-1053 key-authorization witness without authorizing a key.
-        /// @dev Callable by the account root key or an active access key.
+        /// @dev Callable only by the account admin key.
         function burnKeyAuthorizationWitness(bytes32 witness) external;
 
         /// Revoke an authorized key

@@ -20,6 +20,9 @@ pub const TEMPO_TX_TYPE_ID: u8 = 0x76;
 /// Magic byte for the fee payer signature
 pub const FEE_PAYER_SIGNATURE_MAGIC_BYTE: u8 = 0x78;
 
+/// Placeholder signature used to mark transactions that need fee-payer signing.
+pub const FEE_PAYER_SIGNATURE_MARKER: Signature = Signature::new(U256::ZERO, U256::ZERO, false);
+
 /// Signature type constants
 pub const SECP256K1_SIGNATURE_LENGTH: usize = 65;
 pub const P256_SIGNATURE_LENGTH: usize = 129;
@@ -418,7 +421,7 @@ impl TempoTransaction {
     /// Outputs the length of the transaction's fields, without a RLP header.
     ///
     /// This is the internal helper that takes closures for flexible encoding.
-    fn rlp_encoded_fields_length(
+    pub(crate) fn rlp_encoded_fields_length(
         &self,
         signature_length: impl FnOnce(&Option<Signature>) -> usize,
         skip_fee_token: bool,
@@ -451,7 +454,7 @@ impl TempoTransaction {
             }
     }
 
-    fn rlp_encode_fields(
+    pub(crate) fn rlp_encode_fields(
         &self,
         out: &mut dyn BufMut,
         encode_signature: impl FnOnce(&Option<Signature>, &mut dyn BufMut),
