@@ -28,7 +28,9 @@ use crate::{
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
-    tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
+    tip403_registry::{
+        ALLOW_ALL_POLICY_ID, AuthRole, ITIP403Registry, REJECT_ALL_POLICY_ID, TIP403Registry,
+    },
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
@@ -1059,6 +1061,12 @@ impl TIP20Token {
     /// - `PolicyForbids` — user is not authorized for the requested role by the active transfer policy
     pub fn ensure_authorized_as(&self, user: Address, role: AuthRole) -> Result<()> {
         let policy_id = self.transfer_policy_id()?;
+        match policy_id {
+            ALLOW_ALL_POLICY_ID => return Ok(()),
+            REJECT_ALL_POLICY_ID => return Err(TIP20Error::policy_forbids().into()),
+            _ => {}
+        }
+
         if !TIP403Registry::new().is_authorized_as(policy_id, user, role)? {
             return Err(TIP20Error::policy_forbids().into());
         }
