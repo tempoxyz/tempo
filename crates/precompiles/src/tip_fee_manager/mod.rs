@@ -238,25 +238,29 @@ impl TipFeeManager {
         let mut tip20_token = TIP20Token::from_address(fee_token)?;
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
-        // Execute fee swap and track collected fees
-        let hop_token = self.two_hop_intermediate.t_read()?;
+        // Execute fee swap and track collected fees. The common path uses the validator's
+        // preferred token directly and never reserves a two-hop AMM route, so avoid the
+        // transient route read until a token mismatch proves a swap is required.
         let validator_token = self.get_validator_token(beneficiary)?;
 
         let amount = if fee_token == validator_token {
             actual_spending
-        } else if hop_token.is_zero() {
-            // Single-hop (direct) swap
-            if !actual_spending.is_zero() {
-                self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
-            }
-            compute_amount_out(actual_spending)?
         } else {
-            // Two-hop swap (only in T5+): each hop applies M = 9970/10000 sequentially
-            if !actual_spending.is_zero() {
-                let out1 = self.execute_fee_swap(fee_token, hop_token, actual_spending)?;
-                self.execute_fee_swap(hop_token, validator_token, out1)?;
+            let hop_token = self.two_hop_intermediate.t_read()?;
+            if hop_token.is_zero() {
+                // Single-hop (direct) swap
+                if !actual_spending.is_zero() {
+                    self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
+                }
+                compute_amount_out(actual_spending)?
+            } else {
+                // Two-hop swap (only in T5+): each hop applies M = 9970/10000 sequentially
+                if !actual_spending.is_zero() {
+                    let out1 = self.execute_fee_swap(fee_token, hop_token, actual_spending)?;
+                    self.execute_fee_swap(hop_token, validator_token, out1)?;
+                }
+                compute_amount_out(compute_amount_out(actual_spending)?)?
             }
-            compute_amount_out(compute_amount_out(actual_spending)?)?
         };
 
         self.increment_collected_fees(beneficiary, validator_token, amount)?;
