@@ -31,6 +31,8 @@ use thiserror::Error;
 #[derive(Debug, Clone)]
 pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
+    /// Cached fee-token gas cost, excluding any value transfer.
+    fee_token_cost: U256,
     /// Cached payment classification for efficient block building
     is_payment: bool,
     /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
@@ -68,17 +70,18 @@ impl TempoPooledTransaction {
                 .is_expiring_nonce_tx()
                 .then(|| tx.expiring_nonce_hash(sender))
         });
+        let fee_token_cost = calc_gas_balance_spending(
+            transaction.gas_limit(),
+            transaction.max_fee_per_gas(),
+        );
         Self {
             inner: EthPooledTransaction {
-                cost: calc_gas_balance_spending(
-                    transaction.gas_limit(),
-                    transaction.max_fee_per_gas(),
-                )
-                .saturating_add(transaction.value()),
+                cost: fee_token_cost.saturating_add(transaction.value()),
                 encoded_length: transaction.encode_2718_len(),
                 blob_sidecar: EthBlobTransactionSidecar::None,
                 transaction,
             },
+            fee_token_cost,
             is_payment,
             expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
@@ -93,7 +96,7 @@ impl TempoPooledTransaction {
     /// Get the cost of the transaction in the fee token.
     #[inline]
     pub fn fee_token_cost(&self) -> U256 {
-        self.inner.cost - self.inner.value()
+        self.fee_token_cost
     }
 
     /// Returns a reference to inner [`TempoTxEnvelope`].
