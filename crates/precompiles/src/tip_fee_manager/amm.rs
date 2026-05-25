@@ -1,4 +1,5 @@
 use crate::{
+    CheckedMath,
     error::{Result, TempoPrecompileError},
     storage::Handler,
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
@@ -25,10 +26,7 @@ pub const MIN_LIQUIDITY: U256 = uint!(1000_U256);
 /// - `UnderOverflow` — multiplication of `amount_in * M` overflows
 #[inline]
 pub fn compute_amount_out(amount_in: U256) -> Result<U256> {
-    amount_in
-        .checked_mul(M)
-        .map(|product| product / SCALE)
-        .ok_or(TempoPrecompileError::under_overflow())
+    amount_in.try_mul(M).map(|product| product / SCALE)
 }
 
 /// AMM pool reserves for a user-token / validator-token pair.
@@ -145,11 +143,7 @@ impl TipFeeManager {
 
         // Rebalancing swaps are always from validatorToken to userToken
         // Calculate input and update reserves
-        let amount_in = amount_out
-            .checked_mul(N)
-            .and_then(|product| product.checked_div(SCALE))
-            .and_then(|result| result.checked_add(U256::ONE))
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let amount_in = amount_out.try_mul(N)?.try_div(SCALE)?.try_add(U256::ONE)?;
 
         let amount_in: u128 = amount_in
             .try_into()
@@ -247,17 +241,13 @@ impl TipFeeManager {
         let mut total_supply = self.get_total_supply(pool_id)?;
 
         let liquidity = if pool.reserve_user_token == 0 && pool.reserve_validator_token == 0 {
-            let half_amount = amount_validator_token
-                .checked_div(uint!(2_U256))
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let half_amount = amount_validator_token.try_div(uint!(2_U256))?;
 
             if half_amount <= MIN_LIQUIDITY {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
 
-            total_supply = total_supply
-                .checked_add(MIN_LIQUIDITY)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            total_supply = total_supply.try_add(MIN_LIQUIDITY)?;
             self.set_total_supply(pool_id, total_supply)?;
 
             half_amount
@@ -309,21 +299,10 @@ impl TipFeeManager {
         self.pools[pool_id].write(pool)?;
 
         // Mint LP tokens
-        self.set_total_supply(
-            pool_id,
-            total_supply
-                .checked_add(liquidity)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
+        self.set_total_supply(pool_id, total_supply.try_add(liquidity)?)?;
 
         let balance = self.get_liquidity_balances(pool_id, to)?;
-        self.set_liquidity_balances(
-            pool_id,
-            to,
-            balance
-                .checked_add(liquidity)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
+        self.set_liquidity_balances(pool_id, to, balance.try_add(liquidity)?)?;
 
         // Emit Mint event
         self.emit_event(TIPFeeAMMEvent::mint(
@@ -400,20 +379,9 @@ impl TipFeeManager {
         }
 
         // Burn LP tokens
-        self.set_liquidity_balances(
-            pool_id,
-            msg_sender,
-            balance
-                .checked_sub(liquidity)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
+        self.set_liquidity_balances(pool_id, msg_sender, balance.try_sub(liquidity)?)?;
         let total_supply = self.get_total_supply(pool_id)?;
-        self.set_total_supply(
-            pool_id,
-            total_supply
-                .checked_sub(liquidity)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
+        self.set_total_supply(pool_id, total_supply.try_sub(liquidity)?)?;
 
         // Update reserves with underflow checks
         let user_amount: u128 = amount_user_token
@@ -473,13 +441,11 @@ impl TipFeeManager {
     ) -> Result<(U256, U256)> {
         let total_supply = self.get_total_supply(pool_id)?;
         let amount_user_token = liquidity
-            .checked_mul(U256::from(pool.reserve_user_token))
-            .and_then(|product| product.checked_div(total_supply))
-            .ok_or(TempoPrecompileError::under_overflow())?;
+            .try_mul(U256::from(pool.reserve_user_token))?
+            .try_div(total_supply)?;
         let amount_validator_token = liquidity
-            .checked_mul(U256::from(pool.reserve_validator_token))
-            .and_then(|product| product.checked_div(total_supply))
-            .ok_or(TempoPrecompileError::under_overflow())?;
+            .try_mul(U256::from(pool.reserve_validator_token))?
+            .try_div(total_supply)?;
 
         Ok((amount_user_token, amount_validator_token))
     }
@@ -583,14 +549,8 @@ impl TipFeeManager {
             .try_into()
             .map_err(|_| TempoPrecompileError::under_overflow())?;
 
-        pool.reserve_user_token = pool
-            .reserve_user_token
-            .checked_add(amount_in_u128)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        pool.reserve_validator_token = pool
-            .reserve_validator_token
-            .checked_sub(amount_out_u128)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        pool.reserve_user_token = pool.reserve_user_token.try_add(amount_in_u128)?;
+        pool.reserve_validator_token = pool.reserve_validator_token.try_sub(amount_out_u128)?;
 
         self.pools[pool_id].write(pool)?;
 
