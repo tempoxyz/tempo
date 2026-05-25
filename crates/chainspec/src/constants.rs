@@ -41,11 +41,63 @@ pub mod gas {
     ///
     /// TIP-1059 subtracts the base-fee discount from the transaction-derived effective gas price.
     /// Any effective priority-fee component remains payable, so high-priority bids cannot be
-    /// refunded away at settlement.
+    /// refunded away at settlement. This works because the discount is smaller than the T6 base fee
+    /// and is equivalent to computing EIP-1559 pricing with both the base fee and max fee reduced
+    /// by the fixed discount.
     pub fn tempo_t6_discounted_payment_effective_gas_price(
         original_effective_gas_price: u128,
     ) -> u128 {
         original_effective_gas_price.saturating_sub(TEMPO_T6_PAYMENT_GAS_PRICE_DISCOUNT)
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        #[test]
+        fn tip1059_discount_matches_t6_base_fee_delta() {
+            assert!(
+                u128::from(TEMPO_T1_BASE_FEE) > TEMPO_T6_PAYMENT_GAS_PRICE_DISCOUNT,
+                "TIP-1059 discount must not exceed the T6 base fee"
+            );
+            assert_eq!(
+                u128::from(TEMPO_T1_BASE_FEE),
+                u128::from(TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE)
+                    + TEMPO_T6_PAYMENT_GAS_PRICE_DISCOUNT
+            );
+        }
+
+        #[test]
+        fn tip1059_discounted_effective_gas_price_matches_eip1559_pricing() {
+            let discounted_base_fee = TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE;
+
+            for (max_fee, priority_fee) in [
+                (u128::from(TEMPO_T1_BASE_FEE), 0),
+                (u128::from(TEMPO_T1_BASE_FEE) + 3_000_000_000, 3_000_000_000),
+                (u128::from(TEMPO_T1_BASE_FEE), 3_000_000_000),
+                (
+                    u128::from(TEMPO_T1_BASE_FEE) + 10_000_000_000,
+                    3_000_000_000,
+                ),
+            ] {
+                let original_effective_gas_price = alloy_eips::eip1559::calc_effective_gas_price(
+                    max_fee,
+                    priority_fee,
+                    Some(TEMPO_T1_BASE_FEE),
+                );
+                let discounted_effective_gas_price =
+                    tempo_t6_discounted_payment_effective_gas_price(original_effective_gas_price);
+
+                assert_eq!(
+                    discounted_effective_gas_price,
+                    alloy_eips::eip1559::calc_effective_gas_price(
+                        max_fee - TEMPO_T6_PAYMENT_GAS_PRICE_DISCOUNT,
+                        priority_fee,
+                        Some(discounted_base_fee),
+                    )
+                );
+            }
+        }
     }
 
     /// [TIP-1010] general (non-payment) gas limit: 30 million gas per block.
