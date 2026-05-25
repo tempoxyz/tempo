@@ -44,14 +44,14 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
 
         for (idx, tx) in payload.block.body().transactions.iter().enumerate() {
             if tx.is_expiring_nonce() {
-                transactions.push((block.clone(), idx, Some(expiring_nonce_idx)));
+                transactions.push((idx, Some(expiring_nonce_idx)));
                 expiring_nonce_idx += 1;
             } else {
-                transactions.push((block.clone(), idx, None));
+                transactions.push((idx, None));
             }
         }
 
-        Ok((transactions, RecoveredInBlock::new))
+        Ok((transactions, move |tx| RecoveredInBlock::new(&block, tx)))
     }
 }
 
@@ -67,12 +67,14 @@ struct RecoveredInBlock {
 }
 
 impl RecoveredInBlock {
+    #[inline]
     fn new(
-        (block, index, expiring_nonce_idx): (Arc<SealedBlock<Block>>, usize, Option<usize>),
+        block: &Arc<SealedBlock<Block>>,
+        (index, expiring_nonce_idx): (usize, Option<usize>),
     ) -> Result<Self, RecoveryError> {
         let sender = block.body().transactions[index].try_recover()?;
         Ok(Self {
-            block,
+            block: Arc::clone(block),
             index,
             sender,
             expiring_nonce_idx,
