@@ -17,6 +17,7 @@ tempo-primitives.workspace = true
 reth-cli = { workspace = true, optional = true }
 reth-chainspec = { workspace = true, optional = true }
 reth-network-peers = { workspace = true, optional = true }
+tempo-dkg-onchain-artifacts = { workspace = true, optional = true }
 
 alloy-evm.workspace = true
 alloy-genesis.workspace = true
@@ -29,6 +30,8 @@ eyre = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
 paste.workspace = true
+commonware-codec = { workspace = true, optional = true }
+commonware-cryptography = { workspace = true, optional = true }
 
 [dev-dependencies]
 
@@ -54,8 +57,12 @@ serde = [
 ]
 reth = [
     "std",
+    "dep:commonware-codec",
+    "dep:commonware-cryptography",
+    "dep:eyre",
     "dep:reth-chainspec",
     "dep:reth-network-peers",
+    "dep:tempo-dkg-onchain-artifacts",
     "tempo-primitives/reth",
 ]
 cli = ["reth", "dep:reth-cli", "dep:eyre", "tempo-primitives/reth-codec"]

@@ -134,6 +134,8 @@ def run-txgen-bench-single [
         --git-ref-label $git_ref_label
         --platform $platform
         --scenario $scenario
+        --bloat-mib $bloat
+        --bloat-token-count ($TIP20_TOKEN_IDS | length)
         --skip-funding=($bloat > 0))
     if not $bench_result.ok {
         error make { msg: $"txgen benchmark run ($run_label) failed with exit code ($bench_result.exit_code)" }

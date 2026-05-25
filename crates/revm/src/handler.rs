@@ -52,7 +52,7 @@ use tempo_precompiles::{
     },
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
-    tip20_channel_escrow::TIP20ChannelEscrow,
+    tip20_channel_reserve::TIP20ChannelReserve,
 };
 use tempo_primitives::{
     TempoAddressExt,
@@ -425,8 +425,8 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                 keychain.set_tx_origin(ctx.tx.caller())?;
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
-                    let mut channel_escrow = TIP20ChannelEscrow::new();
-                    channel_escrow.set_channel_open_context_hash(channel_open_context_hash)?;
+                    let mut channel_reserve = TIP20ChannelReserve::new();
+                    channel_reserve.set_channel_open_context_hash(channel_open_context_hash)?;
                 }
 
                 Ok::<(), TempoPrecompileError>(())
@@ -1451,7 +1451,7 @@ where
         // Call collectFeePostTx on TipFeeManager precompile
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
-        let basefee = context.block().basefee() as u128;
+        let basefee = u128::from(context.block().basefee());
         let effective_gas_price = tx.effective_gas_price(basefee);
         let gas = exec_result.gas();
 
@@ -1689,7 +1689,7 @@ where
             let base_fee = if cfg.is_base_fee_check_disabled() {
                 None
             } else {
-                Some(evm.ctx_ref().block().basefee() as u128)
+                Some(u128::from(evm.ctx_ref().block().basefee()))
             };
 
             validation::validate_priority_fee_tx(

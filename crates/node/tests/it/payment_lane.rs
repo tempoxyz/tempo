@@ -12,8 +12,8 @@ use alloy::{
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
-use tempo_contracts::precompiles::{IFeeManager, ITIP20, ITIP20ChannelEscrow};
-use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS};
+use tempo_contracts::precompiles::{IFeeManager, ITIP20, ITIP20ChannelReserve};
+use tempo_precompiles::{PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS};
 
 #[tokio::test(flavor = "multi_thread")]
 async fn test_payment_lane_with_mixed_load() -> eyre::Result<()> {
@@ -604,10 +604,10 @@ async fn test_payment_lane_gas_limits() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Channel escrow payment calls (open, topUp, settle) succeed at base fee
+/// Channel reserve payment calls (open, topUp, settle) succeed at base fee
 /// even when non-payment gas is under heavy load.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_payment_lane_gas_limits_channel_escrow() -> eyre::Result<()> {
+async fn test_payment_lane_gas_limits_channel_reserve() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let setup = TestNodeBuilder::new().build_http_only().await?;
@@ -623,7 +623,7 @@ async fn test_payment_lane_gas_limits_channel_escrow() -> eyre::Result<()> {
         .wallet(payer.clone())
         .connect_http(url.clone());
 
-    // Fund payer. Escrow open/topUp use native system movement and must not require allowance.
+    // Fund payer. Reserve open/topUp use native system movement and must not require allowance.
     let token = ITIP20::new(PATH_USD_ADDRESS, funder_provider.clone());
     token
         .transfer(payer.address(), U256::from(20_000_000u64))
@@ -649,10 +649,10 @@ async fn test_payment_lane_gas_limits_channel_escrow() -> eyre::Result<()> {
         assert!(r.status());
     }
 
-    let escrow = ITIP20ChannelEscrow::new(TIP20_CHANNEL_ESCROW_ADDRESS, payer_provider.clone());
+    let reserve = ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, payer_provider.clone());
 
     // open (payment) — set operator=payer so payer can call settle
-    let open_r = escrow
+    let open_r = reserve
         .open(
             Address::random(),
             payer.address(),
@@ -668,15 +668,15 @@ async fn test_payment_lane_gas_limits_channel_escrow() -> eyre::Result<()> {
         .await?
         .get_receipt()
         .await?;
-    assert!(open_r.status(), "escrow open should succeed");
+    assert!(open_r.status(), "reserve open should succeed");
 
     let opened = open_r
         .inner
         .logs()
         .iter()
-        .find_map(|log| ITIP20ChannelEscrow::ChannelOpened::decode_log(&log.inner).ok())
+        .find_map(|log| ITIP20ChannelReserve::ChannelOpened::decode_log(&log.inner).ok())
         .ok_or_else(|| eyre::eyre!("ChannelOpened not found"))?;
-    let desc = ITIP20ChannelEscrow::ChannelDescriptor {
+    let desc = ITIP20ChannelReserve::ChannelDescriptor {
         payer: opened.payer,
         payee: opened.payee,
         operator: opened.operator,
@@ -687,7 +687,7 @@ async fn test_payment_lane_gas_limits_channel_escrow() -> eyre::Result<()> {
     };
 
     // topUp (payment)
-    let topup_r = escrow
+    let topup_r = reserve
         .topUp(desc.clone(), U96::from(500u64))
         .gas(5_000_000)
         .max_fee_per_gas(TEMPO_T1_BASE_FEE as u128)
@@ -696,16 +696,16 @@ async fn test_payment_lane_gas_limits_channel_escrow() -> eyre::Result<()> {
         .await?
         .get_receipt()
         .await?;
-    assert!(topup_r.status(), "escrow topUp should succeed");
+    assert!(topup_r.status(), "reserve topUp should succeed");
 
     // settle (payment, requires voucher signature)
     let settle_amount = U96::from(200u64);
-    let digest = escrow
+    let digest = reserve
         .getVoucherDigest(opened.channelId, settle_amount)
         .call()
         .await?;
     let sig = payer.sign_hash_sync(&digest)?;
-    let settle_r = escrow
+    let settle_r = reserve
         .settle(desc, settle_amount, Bytes::copy_from_slice(&sig.as_bytes()))
         .gas(5_000_000)
         .max_fee_per_gas(TEMPO_T1_BASE_FEE as u128)
@@ -714,7 +714,7 @@ async fn test_payment_lane_gas_limits_channel_escrow() -> eyre::Result<()> {
         .await?
         .get_receipt()
         .await?;
-    assert!(settle_r.status(), "escrow settle should succeed");
+    assert!(settle_r.status(), "reserve settle should succeed");
 
     // All payment calls should pay base fee, not elevated prices
     for (name, r) in [

@@ -124,7 +124,7 @@ impl TempoTxEnv {
         self.unique_tx_identifier
     }
 
-    /// Returns the replay-protected hash used to derive channel escrow IDs for `open`.
+    /// Returns the replay-protected hash used to derive channel reserve IDs for `open`.
     pub fn channel_open_context_hash(&self) -> Option<B256> {
         self.unique_tx_identifier()
     }
