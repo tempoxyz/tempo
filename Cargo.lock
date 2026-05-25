@@ -474,7 +474,7 @@ dependencies = [
 [[package]]
 name = "alloy-primitives"
 version = "1.6.0"
-source = "git+https://github.com/alloy-rs/core?rev=02e89d3#02e89d3e086e24de2cbe5c772c3f552e9fa988b6"
+source = "git+https://github.com/alloy-rs/core?rev=f7551b5#f7551b5ea26929f7cde05a48c1a0a6ab317f75e2"
 dependencies = [
  "alloy-rlp",
  "arbitrary",
