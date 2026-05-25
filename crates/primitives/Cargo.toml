@@ -137,6 +137,7 @@ arbitrary = [
 	"alloy-rpc-types-eth?/arbitrary",
 	"reth-db-api?/arbitrary",
 	"revm/arbitrary",
+	"alloy-sol-types/arbitrary",
 ]
 rpc = [
 	"reth",
