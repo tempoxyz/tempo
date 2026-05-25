@@ -395,7 +395,7 @@ fn storage_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
 ) -> Vec<StorageTouch> {
-    let mut touches = Vec::new();
+    let mut touches = Vec::with_capacity(24);
     let sender = tx.transaction.sender();
     let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
     let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
@@ -496,15 +496,15 @@ fn add_tip20_call_touches(
 
 fn add_tip20_common_touches(touches: &mut Vec<StorageTouch>, token: Address) {
     add_account_touch(touches, token);
-    add_storage_touch(touches, token, tip20_slots::CURRENCY);
-    add_storage_touch(touches, token, tip20_slots::PAUSED);
-    add_storage_touch(touches, token, tip20_slots::TRANSFER_POLICY_ID);
-    add_storage_touch(touches, token, tip20_slots::GLOBAL_REWARD_PER_TOKEN);
-    add_storage_touch(touches, token, tip20_slots::OPTED_IN_SUPPLY);
+    add_storage_slot_touch(touches, token, tip20_slots::CURRENCY);
+    add_storage_slot_touch(touches, token, tip20_slots::PAUSED);
+    add_storage_slot_touch(touches, token, tip20_slots::TRANSFER_POLICY_ID);
+    add_storage_slot_touch(touches, token, tip20_slots::GLOBAL_REWARD_PER_TOKEN);
+    add_storage_slot_touch(touches, token, tip20_slots::OPTED_IN_SUPPLY);
 }
 
 fn add_tip20_balance_touch(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
-    add_storage_touch(touches, token, account.mapping_slot(tip20_slots::BALANCES));
+    add_storage_slot_touch(touches, token, account.mapping_slot(tip20_slots::BALANCES));
 }
 
 fn add_tip20_allowance_touch(
@@ -513,7 +513,7 @@ fn add_tip20_allowance_touch(
     owner: Address,
     spender: Address,
 ) {
-    add_storage_touch(
+    add_storage_slot_touch(
         touches,
         token,
         spender.mapping_slot(owner.mapping_slot(tip20_slots::ALLOWANCES)),
@@ -522,9 +522,9 @@ fn add_tip20_allowance_touch(
 
 fn add_tip20_reward_touches(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
     let base_slot = account.mapping_slot(tip20_slots::USER_REWARD_INFO);
-    add_storage_touch(touches, token, base_slot);
-    add_storage_touch(touches, token, base_slot + U256::from(1));
-    add_storage_touch(touches, token, base_slot + U256::from(2));
+    add_storage_slot_touch(touches, token, base_slot);
+    add_storage_slot_touch(touches, token, base_slot + U256::from(1));
+    add_storage_slot_touch(touches, token, base_slot + U256::from(2));
 }
 
 fn add_fee_manager_touches(
@@ -533,12 +533,12 @@ fn add_fee_manager_touches(
     fee_token: Address,
 ) {
     add_account_touch(touches, TIP_FEE_MANAGER_ADDRESS);
-    add_storage_touch(
+    add_storage_slot_touch(
         touches,
         TIP_FEE_MANAGER_ADDRESS,
         fee_recipient.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS),
     );
-    add_storage_touch(
+    add_storage_slot_touch(
         touches,
         TIP_FEE_MANAGER_ADDRESS,
         fee_token.mapping_slot(fee_recipient.mapping_slot(fee_manager_slots::COLLECTED_FEES)),
@@ -551,8 +551,8 @@ fn add_expiring_nonce_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransact
     };
 
     add_account_touch(touches, NONCE_PRECOMPILE_ADDRESS);
-    add_storage_touch(touches, NONCE_PRECOMPILE_ADDRESS, expiring_nonce_slot);
-    add_storage_touch(
+    add_storage_slot_touch(touches, NONCE_PRECOMPILE_ADDRESS, expiring_nonce_slot);
+    add_storage_slot_touch(
         touches,
         NONCE_PRECOMPILE_ADDRESS,
         nonce_slots::EXPIRING_NONCE_RING_PTR,
@@ -563,8 +563,7 @@ fn add_account_touch(touches: &mut Vec<StorageTouch>, address: Address) {
     add_unique_touch(touches, StorageTouch::Account(address));
 }
 
-fn add_storage_touch(touches: &mut Vec<StorageTouch>, address: Address, slot: U256) {
-    add_account_touch(touches, address);
+fn add_storage_slot_touch(touches: &mut Vec<StorageTouch>, address: Address, slot: U256) {
     add_unique_touch(touches, StorageTouch::Storage { address, slot });
 }
 
