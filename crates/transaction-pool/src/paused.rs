@@ -7,8 +7,8 @@
 
 use crate::{RevokedKeys, SpendingLimitUpdates, transaction::TempoPooledTransaction};
 use alloy_primitives::{
-    Address, B256, TxHash,
-    map::{AddressMap, HashMap, HashSet},
+    Address, TxHash,
+    map::{AddressMap, B256Set},
 };
 use reth_transaction_pool::{PoolTransaction, ValidPoolTransaction};
 use std::{sync::Arc, time::Instant};
@@ -50,7 +50,7 @@ struct PausedTokenMeta {
 #[derive(Debug, Default)]
 pub struct PausedFeeTokenPool {
     /// Fee token -> metadata including pause time and entries
-    by_token: HashMap<Address, PausedTokenMeta>,
+    by_token: AddressMap<PausedTokenMeta>,
 }
 
 impl PausedFeeTokenPool {
@@ -206,7 +206,7 @@ impl PausedFeeTokenPool {
         revoked_keys: &RevokedKeys,
         spending_limit_updates: &SpendingLimitUpdates,
         spending_limit_spends: &SpendingLimitUpdates,
-        key_authorization_witness_burns: &AddressMap<HashSet<B256>>,
+        key_authorization_witness_burns: &AddressMap<B256Set>,
     ) -> usize {
         if revoked_keys.is_empty()
             && spending_limit_updates.is_empty()
@@ -281,6 +281,7 @@ impl PausedFeeTokenPool {
 mod tests {
     use super::*;
     use crate::test_utils::{TxBuilder, wrap_valid_tx};
+    use alloy_primitives::B256;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use reth_primitives_traits::Recovered;
@@ -608,7 +609,7 @@ mod tests {
         let mut burned = AddressMap::default();
         burned
             .entry(user_address)
-            .or_insert_with(HashSet::default)
+            .or_insert_with(B256Set::default)
             .insert(burned_witness);
 
         let evicted = pool.evict_invalidated(
