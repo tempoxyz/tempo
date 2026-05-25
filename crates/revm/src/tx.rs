@@ -162,7 +162,13 @@ impl TempoTxEnv {
         }
     }
 
-    /// Returns true if this transaction satisfies the TIP-1059 discounted-payment allow-list.
+    /// Returns true if this transaction satisfies the TIP-1059 discounted-payment call allow-list.
+    ///
+    /// This checks only the transaction shape: no access list, no EIP-7702 authorizations, and
+    /// either one direct TIP-20 payment call or a non-empty AA batch where every call is an eligible
+    /// TIP-20 payment call. T6 activation and the gas-used cap are enforced by the caller.
+    ///
+    /// See: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#eligibility-rules>
     pub fn is_discounted_payment(&self) -> bool {
         if self
             .access_list()

@@ -1457,6 +1457,9 @@ where
         let gas = exec_result.gas();
         let gas_used = gas.used().saturating_sub(gas.reservoir());
         if context.cfg.spec.is_t6() && tx.is_discounted_payment() && gas_used <= SSTORE_SET_COST {
+            // For pure TIP-20 payment transactions, patch the transaction-derived effective gas
+            // price with TIP-1059's post-execution settlement discount before calculating actual spending:
+            // https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#applying-the-discount
             effective_gas_price = u128::from(TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE);
         }
 
