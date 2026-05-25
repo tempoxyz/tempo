@@ -2903,7 +2903,7 @@ tempo-precompiles = { path = '($tempo_root)/crates/precompiles' }
                 # Update Cargo.lock to resolve patched crate versions
                 cargo update
                 with-env { RUSTFLAGS: "-C instrument-coverage", RUSTC_WRAPPER: "" } {
-                    cargo build -p forge --profile release
+                    cargo build --bin forge --profile release
                 }
             }
         } catch { |e|
