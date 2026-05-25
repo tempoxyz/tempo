@@ -755,26 +755,25 @@ jobs:
           [ -n "$BENCH_CLICKHOUSE_RUN" ] && cmd+=(--clickhouse-run "$BENCH_CLICKHOUSE_RUN")
           "${cmd[@]}"
 
+          RESULTS_DIR=$(find bench-results -mindepth 1 -maxdepth 1 -type d | sort | tail -1)
+          if [ -z "$RESULTS_DIR" ]; then
+            echo "::error::No results directory found"
+            exit 1
+          fi
+          nu bench-e2e.nu summarize "$RESULTS_DIR"
+          node .github/scripts/bench-e2e-classify.js "$RESULTS_DIR"
+
       - name: Find results directory
         id: results-dir
         if: success()
         run: |
-          RESULTS_DIR=$(ls -d bench-results/*/ 2>/dev/null | tail -1 | sed 's:/$::')
+          RESULTS_DIR=$(find bench-results -mindepth 1 -maxdepth 1 -type d | sort | tail -1)
           if [ -z "$RESULTS_DIR" ]; then
             echo "::error::No results directory found"
             exit 1
           fi
           echo "path=$RESULTS_DIR" >> "$GITHUB_OUTPUT"
           echo "Results directory: $RESULTS_DIR"
-
-      # codeql[actions/untrusted-checkout/critical] PR benches are gated to tempoxyz org members in bench.yml and use the pinned PR head SHA.
-      - name: Generate summary
-        if: success()
-        env:
-          BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
-        run: |
-          nu bench-e2e.nu summarize "$BENCH_RESULTS_DIR"
-          node .github/scripts/bench-e2e-classify.js "$BENCH_RESULTS_DIR"
 
       - name: Upload results
         if: ${{ !cancelled() }}
