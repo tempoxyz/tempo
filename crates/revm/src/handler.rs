@@ -48,12 +48,15 @@ use tempo_precompiles::{
         NonceManager,
     },
     storage::{
-        Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
+        Handler as _, PrecompileStorageProvider, StorageCtx, StorageKey,
+        evm::EvmPrecompileStorageProvider,
     },
     tip_fee_manager::TipFeeManager,
-    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
+    tip20::{ITIP20::InsufficientBalance, TIP20Error, tip20_slots},
     tip20_channel_reserve::TIP20ChannelReserve,
 };
+#[cfg(test)]
+use tempo_precompiles::tip20::TIP20Token;
 use tempo_primitives::{
     TempoAddressExt,
     transaction::{
@@ -2119,10 +2122,7 @@ where
 {
     // Address has already been validated as having TIP20 prefix
     journal.load_account(token)?;
-    let balance_slot = TIP20Token::from_address(token)
-        .expect("TIP20 prefix already validated")
-        .balances[sender]
-        .slot();
+    let balance_slot = sender.mapping_slot(tip20_slots::BALANCES);
     let balance = journal.sload(token, balance_slot)?.data;
 
     Ok(balance)

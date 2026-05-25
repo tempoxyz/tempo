@@ -15,9 +15,9 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     error::{Result as TempoResult, TempoPrecompileError},
-    storage::{Handler, PrecompileStorageProvider, StorageCtx},
+    storage::{Handler, PrecompileStorageProvider, StorageCtx, StorageKey},
     tip_fee_manager::TipFeeManager,
-    tip20::{ITIP20, TIP20Token},
+    tip20::{ITIP20, TIP20Token, tip20_slots},
     tip403_registry::{AuthRole, TIP403Registry},
 };
 use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
@@ -304,8 +304,8 @@ pub trait TempoStateAccess<M = ()> {
         Self: Sized,
     {
         self.with_read_only_storage_ctx(spec, || {
-            // Load the token balance for the given account.
-            TIP20Token::from_address(token)?.balances[account].read()
+            let storage = StorageCtx;
+            storage.sload(token, account.mapping_slot(tip20_slots::BALANCES))
         })
     }
 }
