@@ -813,6 +813,8 @@ def generate-summary [
     mut feature_intervals = []
     mut baseline_tps_samples = []
     mut feature_tps_samples = []
+    mut baseline_builder_latency_values = []
+    mut feature_builder_latency_values = []
     mut baseline_builder_samples = []
     mut feature_builder_samples = []
     mut baseline_builder_finish_samples = []
@@ -831,10 +833,16 @@ def generate-summary [
     mut feature_builder_fill_overhead_samples = []
     mut baseline_builder_fill_idle_samples = []
     mut feature_builder_fill_idle_samples = []
+    mut baseline_validation_latency_values = []
+    mut feature_validation_latency_values = []
     mut baseline_validation_samples = []
     mut feature_validation_samples = []
+    mut baseline_builder_gas_values = []
+    mut feature_builder_gas_values = []
     mut baseline_builder_gas_samples = []
     mut feature_builder_gas_samples = []
+    mut baseline_validation_gas_values = []
+    mut feature_validation_gas_values = []
     mut baseline_validation_gas_samples = []
     mut feature_validation_gas_samples = []
 
@@ -874,6 +882,16 @@ def generate-summary [
         }
     }
 
+    let compute_value_stats = { |values: list<any>|
+        let sorted_values = ($values | where { |value| $value != null } | sort)
+        {
+            n: ($sorted_values | length)
+            p50: (percentile $sorted_values 50 | math round --precision 1)
+            p90: (percentile $sorted_values 90 | math round --precision 1)
+            p99: (percentile $sorted_values 99 | math round --precision 1)
+        }
+    }
+
     let compute_quantile_value_stats = { |samples: list<any>|
         let quantile_value = { |q: string|
             let values = (
@@ -894,6 +912,56 @@ def generate-summary [
     let compute_gas_stats = { |samples: list<any>|
         let values = ($samples | get value | where { |value| $value != null })
         if ($values | length) > 0 { $values | math avg | math round --precision 0 } else { 0.0 }
+    }
+
+    let compute_value_mean = { |values: list<any>|
+        let clean_values = ($values | where { |value| $value != null })
+        if ($clean_values | length) > 0 { $clean_values | math avg | math round --precision 0 } else { 0.0 }
+    }
+
+    let counter_delta_values = { |samples: list<any>, metric: string, scale: float|
+        let sum_name = $"($metric)_sum"
+        let count_name = $"($metric)_count"
+        let counter_samples = ($samples | where { |sample| $sample.name in [$sum_name $count_name] })
+        $counter_samples
+            | group-by { |sample| $sample.labels | to json --raw }
+            | transpose labels samples
+            | each { |series|
+                let points = (
+                    $series.samples
+                        | group-by unix_ms
+                        | transpose unix_ms samples
+                        | each { |point|
+                            let sum_values = ($point.samples | where name == $sum_name | get value)
+                            let count_values = ($point.samples | where name == $count_name | get value)
+                            if (($sum_values | length) > 0) and (($count_values | length) > 0) {
+                                {
+                                    unix_ms: ($point.unix_ms | into int)
+                                    sum: ($sum_values | first)
+                                    count: ($count_values | first)
+                                }
+                            } else { null }
+                        }
+                        | where { |point| $point != null }
+                        | sort-by unix_ms
+                )
+                if ($points | length) > 1 {
+                    $points
+                        | window 2
+                        | each { |pair|
+                            let prev = ($pair | first)
+                            let curr = ($pair | last)
+                            let delta_count = (($curr.count - $prev.count) | into int)
+                            let delta_sum = ($curr.sum - $prev.sum)
+                            if $delta_count > 0 and $delta_sum >= 0 {
+                                let value = (($delta_sum / $delta_count) * $scale)
+                                0..<$delta_count | each { $value }
+                            } else { [] }
+                        }
+                        | flatten
+                } else { [] }
+            }
+            | flatten
     }
 
     for label in $run_labels {
@@ -925,6 +993,14 @@ def generate-summary [
                     "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds"
                     "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds"
                     "reth_consensus_engine_beacon_new_payload_latency"
+                    "reth_tempo_payload_builder_payload_build_duration_seconds_sum"
+                    "reth_tempo_payload_builder_payload_build_duration_seconds_count"
+                    "reth_consensus_engine_beacon_new_payload_latency_sum"
+                    "reth_consensus_engine_beacon_new_payload_latency_count"
+                    "reth_tempo_payload_builder_gas_per_second_sum"
+                    "reth_tempo_payload_builder_gas_per_second_count"
+                    "reth_consensus_engine_beacon_new_payload_gas_per_second_sum"
+                    "reth_consensus_engine_beacon_new_payload_gas_per_second_count"
                     "reth_tempo_payload_builder_gas_per_second_last"
                     "reth_consensus_engine_beacon_new_payload_gas_per_second_last"
                 ] }
@@ -934,6 +1010,7 @@ def generate-summary [
                 }
         } else { [] }
         let builder_samples = ($metric_samples | where name == "reth_tempo_payload_builder_payload_build_duration_seconds")
+        let builder_latency_values = (do $counter_delta_values $metric_samples "reth_tempo_payload_builder_payload_build_duration_seconds" 1000.0)
         let builder_finish_samples = ($metric_samples | where name == "reth_tempo_payload_builder_payload_finalization_duration_seconds")
         let builder_included_tx_samples = ($metric_samples | where name == "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds")
         let builder_invalid_tx_samples = ($metric_samples | where name == "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds")
@@ -953,7 +1030,10 @@ def generate-summary [
         let builder_fill_overhead_samples = ($metric_samples | where name == "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds")
         let builder_fill_idle_samples = ($metric_samples | where name == "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds")
         let validation_samples = ($metric_samples | where name == "reth_consensus_engine_beacon_new_payload_latency")
+        let validation_latency_values = (do $counter_delta_values $metric_samples "reth_consensus_engine_beacon_new_payload_latency" 1000.0)
+        let builder_gas_values = (do $counter_delta_values $metric_samples "reth_tempo_payload_builder_gas_per_second" 1.0)
         let builder_gas_samples = ($metric_samples | where name == "reth_tempo_payload_builder_gas_per_second_last")
+        let validation_gas_values = (do $counter_delta_values $metric_samples "reth_consensus_engine_beacon_new_payload_gas_per_second" 1.0)
         let validation_gas_samples = ($metric_samples | where name == "reth_consensus_engine_beacon_new_payload_gas_per_second_last")
         let blocks = ($report | get blocks | each { |b|
             let tx_count = ($b | get tx_count)
@@ -1006,6 +1086,7 @@ def generate-summary [
             $baseline_blocks = ($baseline_blocks | append $blocks)
             $baseline_intervals = ($baseline_intervals | append $block_intervals)
             $baseline_tps_samples = ($baseline_tps_samples | append $block_tps_samples)
+            $baseline_builder_latency_values = ($baseline_builder_latency_values | append $builder_latency_values)
             $baseline_builder_samples = ($baseline_builder_samples | append $builder_samples)
             $baseline_builder_finish_samples = ($baseline_builder_finish_samples | append $builder_finish_samples)
             $baseline_builder_included_tx_samples = ($baseline_builder_included_tx_samples | append $builder_included_tx_samples)
@@ -1015,13 +1096,17 @@ def generate-summary [
             $baseline_builder_nonce_too_low_skips = ($baseline_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
             $baseline_builder_fill_overhead_samples = ($baseline_builder_fill_overhead_samples | append $builder_fill_overhead_samples)
             $baseline_builder_fill_idle_samples = ($baseline_builder_fill_idle_samples | append $builder_fill_idle_samples)
+            $baseline_validation_latency_values = ($baseline_validation_latency_values | append $validation_latency_values)
             $baseline_validation_samples = ($baseline_validation_samples | append $validation_samples)
+            $baseline_builder_gas_values = ($baseline_builder_gas_values | append $builder_gas_values)
             $baseline_builder_gas_samples = ($baseline_builder_gas_samples | append $builder_gas_samples)
+            $baseline_validation_gas_values = ($baseline_validation_gas_values | append $validation_gas_values)
             $baseline_validation_gas_samples = ($baseline_validation_gas_samples | append $validation_gas_samples)
         } else {
             $feature_blocks = ($feature_blocks | append $blocks)
             $feature_intervals = ($feature_intervals | append $block_intervals)
             $feature_tps_samples = ($feature_tps_samples | append $block_tps_samples)
+            $feature_builder_latency_values = ($feature_builder_latency_values | append $builder_latency_values)
             $feature_builder_samples = ($feature_builder_samples | append $builder_samples)
             $feature_builder_finish_samples = ($feature_builder_finish_samples | append $builder_finish_samples)
             $feature_builder_included_tx_samples = ($feature_builder_included_tx_samples | append $builder_included_tx_samples)
@@ -1031,8 +1116,11 @@ def generate-summary [
             $feature_builder_nonce_too_low_skips = ($feature_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
             $feature_builder_fill_overhead_samples = ($feature_builder_fill_overhead_samples | append $builder_fill_overhead_samples)
             $feature_builder_fill_idle_samples = ($feature_builder_fill_idle_samples | append $builder_fill_idle_samples)
+            $feature_validation_latency_values = ($feature_validation_latency_values | append $validation_latency_values)
             $feature_validation_samples = ($feature_validation_samples | append $validation_samples)
+            $feature_builder_gas_values = ($feature_builder_gas_values | append $builder_gas_values)
             $feature_builder_gas_samples = ($feature_builder_gas_samples | append $builder_gas_samples)
+            $feature_validation_gas_values = ($feature_validation_gas_values | append $validation_gas_values)
             $feature_validation_gas_samples = ($feature_validation_gas_samples | append $validation_gas_samples)
         }
 
@@ -1046,11 +1134,13 @@ def generate-summary [
         let p90_latency = (percentile $latencies 90 | math round --precision 1)
         let p99_latency = (percentile $latencies 99 | math round --precision 1)
         let num_blocks = ($blocks | length)
-        let run_builder_metric = do $compute_quantile_metric_stats $builder_samples
+        let run_builder_values = do $compute_value_stats $builder_latency_values
+        let run_builder_metric = if $run_builder_values.n > 0 { $run_builder_values } else { do $compute_quantile_metric_stats $builder_samples }
         let run_builder = if $run_builder_metric.n > 0 { $run_builder_metric } else { { n: $num_blocks, p50: $p50_latency, p90: $p90_latency, p99: $p99_latency } }
-        let run_validation = do $compute_quantile_metric_stats $validation_samples
-        let run_builder_gas = do $compute_gas_stats $builder_gas_samples
-        let run_validation_gas = do $compute_gas_stats $validation_gas_samples
+        let run_validation_values = do $compute_value_stats $validation_latency_values
+        let run_validation = if $run_validation_values.n > 0 { $run_validation_values } else { do $compute_quantile_metric_stats $validation_samples }
+        let run_builder_gas = if ($builder_gas_values | length) > 0 { do $compute_value_mean $builder_gas_values } else { do $compute_gas_stats $builder_gas_samples }
+        let run_validation_gas = if ($validation_gas_values | length) > 0 { do $compute_value_mean $validation_gas_values } else { do $compute_gas_stats $validation_gas_samples }
 
         # Compute TPS from block timestamps (timestamps are in milliseconds)
         let time_span_ms = if ($timestamps | length) > 1 {
@@ -1120,8 +1210,10 @@ def generate-summary [
     let b_lat = do $compute_latency_stats $baseline_blocks
     let f_lat = do $compute_latency_stats $feature_blocks
 
-    let b_builder_metric = do $compute_quantile_metric_stats $baseline_builder_samples
-    let f_builder_metric = do $compute_quantile_metric_stats $feature_builder_samples
+    let b_builder_values = do $compute_value_stats $baseline_builder_latency_values
+    let f_builder_values = do $compute_value_stats $feature_builder_latency_values
+    let b_builder_metric = if $b_builder_values.n > 0 { $b_builder_values } else { do $compute_quantile_metric_stats $baseline_builder_samples }
+    let f_builder_metric = if $f_builder_values.n > 0 { $f_builder_values } else { do $compute_quantile_metric_stats $feature_builder_samples }
     let b_builder = if $b_builder_metric.n > 0 { $b_builder_metric } else { { n: $b_lat.n, p50: $b_lat.p50, p90: $b_lat.p90, p99: $b_lat.p99 } }
     let f_builder = if $f_builder_metric.n > 0 { $f_builder_metric } else { { n: $f_lat.n, p50: $f_lat.p50, p90: $f_lat.p90, p99: $f_lat.p99 } }
     let b_builder_finish = do $compute_quantile_metric_stats $baseline_builder_finish_samples
@@ -1140,12 +1232,14 @@ def generate-summary [
     let f_builder_fill_overhead = do $compute_quantile_metric_stats $feature_builder_fill_overhead_samples
     let b_builder_fill_idle = do $compute_quantile_metric_stats $baseline_builder_fill_idle_samples
     let f_builder_fill_idle = do $compute_quantile_metric_stats $feature_builder_fill_idle_samples
-    let b_validation = do $compute_quantile_metric_stats $baseline_validation_samples
-    let f_validation = do $compute_quantile_metric_stats $feature_validation_samples
-    let b_builder_gas = do $compute_gas_stats $baseline_builder_gas_samples
-    let f_builder_gas = do $compute_gas_stats $feature_builder_gas_samples
-    let b_validation_gas = do $compute_gas_stats $baseline_validation_gas_samples
-    let f_validation_gas = do $compute_gas_stats $feature_validation_gas_samples
+    let b_validation_values = do $compute_value_stats $baseline_validation_latency_values
+    let f_validation_values = do $compute_value_stats $feature_validation_latency_values
+    let b_validation = if $b_validation_values.n > 0 { $b_validation_values } else { do $compute_quantile_metric_stats $baseline_validation_samples }
+    let f_validation = if $f_validation_values.n > 0 { $f_validation_values } else { do $compute_quantile_metric_stats $feature_validation_samples }
+    let b_builder_gas = if ($baseline_builder_gas_values | length) > 0 { do $compute_value_mean $baseline_builder_gas_values } else { do $compute_gas_stats $baseline_builder_gas_samples }
+    let f_builder_gas = if ($feature_builder_gas_values | length) > 0 { do $compute_value_mean $feature_builder_gas_values } else { do $compute_gas_stats $feature_builder_gas_samples }
+    let b_validation_gas = if ($baseline_validation_gas_values | length) > 0 { do $compute_value_mean $baseline_validation_gas_values } else { do $compute_gas_stats $baseline_validation_gas_samples }
+    let f_validation_gas = if ($feature_validation_gas_values | length) > 0 { do $compute_value_mean $feature_validation_gas_values } else { do $compute_gas_stats $feature_validation_gas_samples }
 
     let b_bt = do $compute_block_time_stats $baseline_intervals
     let f_bt = do $compute_block_time_stats $feature_intervals
