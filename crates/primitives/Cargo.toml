@@ -29,7 +29,6 @@ alloy-consensus = { workspace = true, features = ["k256"] }
 alloy-eips.workspace = true
 alloy-primitives.workspace = true
 alloy-rlp.workspace = true
-alloy-sol-types.workspace = true
 alloy-serde = { workspace = true, optional = true }
 alloy-rpc-types-eth = { workspace = true, optional = true }
 alloy-network = { workspace = true, optional = true }
@@ -89,7 +88,6 @@ std = [
 	"serde/std",
 	"serde_json/std",
 	"sha2/std",
-	"alloy-sol-types/std",
 	"tempo-contracts/std",
 	"reth-codecs?/std"
 ]
@@ -139,7 +137,6 @@ arbitrary = [
 	"alloy-rpc-types-eth?/arbitrary",
 	"reth-db-api?/arbitrary",
 	"revm/arbitrary",
-	"alloy-sol-types/arbitrary",
 ]
 rpc = [
 	"reth",
