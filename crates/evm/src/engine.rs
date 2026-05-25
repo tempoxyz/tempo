@@ -39,20 +39,35 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         payload: &TempoExecutionData,
     ) -> Result<impl ExecutableTxIterator<Self>, Self::Error> {
         let block = payload.block.clone();
-        let mut transactions = Vec::with_capacity(payload.block.body().transactions.len());
-        let mut expiring_nonce_idx = 0;
+        let transactions = 0..payload.block.body().transactions.len();
+        let expiring_nonce_indices = expiring_nonce_indices(&payload.block.body().transactions);
 
-        for (idx, tx) in payload.block.body().transactions.iter().enumerate() {
-            if tx.is_expiring_nonce() {
-                transactions.push((block.clone(), idx, Some(expiring_nonce_idx)));
-                expiring_nonce_idx += 1;
-            } else {
-                transactions.push((block.clone(), idx, None));
-            }
-        }
-
-        Ok((transactions, RecoveredInBlock::new))
+        Ok((transactions, move |index| {
+            RecoveredInBlock::new(block.clone(), index, expiring_nonce_indices.clone())
+        }))
     }
+}
+
+fn expiring_nonce_indices(transactions: &[TempoTxEnvelope]) -> Option<Arc<[Option<usize>]>> {
+    if !transactions.iter().any(TempoTxEnvelope::is_expiring_nonce) {
+        return None;
+    }
+
+    let mut next_expiring_nonce_idx = 0;
+    let indices = transactions
+        .iter()
+        .map(|tx| {
+            if tx.is_expiring_nonce() {
+                let index = next_expiring_nonce_idx;
+                next_expiring_nonce_idx += 1;
+                Some(index)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<_>>();
+
+    Some(Arc::from(indices.into_boxed_slice()))
 }
 
 /// A [`reth_evm::execute::ExecutableTxFor`] implementation that contains a pointer to the
@@ -68,9 +83,12 @@ struct RecoveredInBlock {
 
 impl RecoveredInBlock {
     fn new(
-        (block, index, expiring_nonce_idx): (Arc<SealedBlock<Block>>, usize, Option<usize>),
+        block: Arc<SealedBlock<Block>>,
+        index: usize,
+        expiring_nonce_indices: Option<Arc<[Option<usize>]>>,
     ) -> Result<Self, RecoveryError> {
         let sender = block.body().transactions[index].try_recover()?;
+        let expiring_nonce_idx = expiring_nonce_indices.and_then(|indices| indices[index]);
         Ok(Self {
             block,
             index,
