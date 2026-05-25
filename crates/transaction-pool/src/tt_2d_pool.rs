@@ -1667,7 +1667,7 @@ impl BestAA2dTransactions {
         loop {
             self.add_new_transactions();
             let (id, best) = self.pop_best()?;
-            if self.invalid.contains(&id.seq_id) {
+            if !self.invalid.is_empty() && self.invalid.contains(&id.seq_id) {
                 continue;
             }
             // Advance transaction that just got unlocked, if any.
