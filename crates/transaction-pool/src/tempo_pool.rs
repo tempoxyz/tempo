@@ -23,7 +23,7 @@ use reth_transaction_pool::{
     TransactionEvents, TransactionOrigin, TransactionPool, TransactionPoolExt,
     TransactionValidationOutcome, TransactionValidationTaskExecutor, TransactionValidator,
     ValidPoolTransaction,
-    blobstore::InMemoryBlobStore,
+    blobstore::{BlobStore, InMemoryBlobStore},
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
 };
@@ -1143,6 +1143,10 @@ where
     > {
         self.protocol_pool
             .get_blobs_for_versioned_hashes_v4(versioned_hashes, indices_bitarray)
+    }
+
+    fn blob_store(&self) -> Box<dyn BlobStore> {
+        Box::new(self.protocol_pool.blob_store().clone())
     }
 }
 
