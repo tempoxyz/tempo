@@ -5,7 +5,7 @@ use std::sync::{
 };
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
-use alloy_sol_types::SolInterface;
+use alloy_sol_types::{SolCall, SolInterface};
 use reth_engine_tree::tree::{CachedStateMetrics, CachedStateProvider, SavedCache};
 use reth_evm::{Database, Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
@@ -382,12 +382,16 @@ fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
         return false;
     }
 
+    let Some(selector) = input.first_chunk::<4>() else {
+        return false;
+    };
+
     matches!(
-        ITIP20::ITIP20Calls::abi_decode(input),
-        Ok(ITIP20::ITIP20Calls::transfer(_)
-            | ITIP20::ITIP20Calls::transferWithMemo(_)
-            | ITIP20::ITIP20Calls::transferFrom(_)
-            | ITIP20::ITIP20Calls::transferFromWithMemo(_))
+        (*selector, input.len()),
+        (ITIP20::transferCall::SELECTOR, 68)
+            | (ITIP20::transferWithMemoCall::SELECTOR, 100)
+            | (ITIP20::transferFromCall::SELECTOR, 100)
+            | (ITIP20::transferFromWithMemoCall::SELECTOR, 132)
     )
 }
 
