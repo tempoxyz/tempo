@@ -485,11 +485,13 @@ impl TIP20Token {
     /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
-        let Some(to) = self.validate_mint(msg_sender, call.to, call.amount, B256::ZERO)? else {
+        let Some((total_supply, to)) =
+            self.validate_mint(msg_sender, call.to, call.amount, B256::ZERO)?
+        else {
             return Ok(());
         };
 
-        self._mint(&to, call.amount)?;
+        self._mint(&to, total_supply, call.amount)?;
         self.emit_event(TIP20Event::mint(call.to, call.amount))?;
         if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
             self.emit_event(hop)?;
@@ -504,11 +506,13 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::mintWithMemoCall,
     ) -> Result<()> {
-        let Some(to) = self.validate_mint(msg_sender, call.to, call.amount, call.memo)? else {
+        let Some((total_supply, to)) =
+            self.validate_mint(msg_sender, call.to, call.amount, call.memo)?
+        else {
             return Ok(());
         };
 
-        self._mint(&to, call.amount)?;
+        self._mint(&to, total_supply, call.amount)?;
         self.emit_event(TIP20Event::transfer_with_memo(
             Address::ZERO,
             call.to,
@@ -523,9 +527,8 @@ impl TIP20Token {
     }
 
     /// Internal helper to mint new tokens and update balances.
-    pub(crate) fn _mint(&mut self, to: &Recipient, amount: U256) -> Result<()> {
-        let new_supply = self
-            .total_supply()?
+    pub(crate) fn _mint(&mut self, to: &Recipient, total_supply: U256, amount: U256) -> Result<()> {
+        let new_supply = total_supply
             .checked_add(amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
 
@@ -1043,7 +1046,7 @@ impl TIP20Token {
             self.check_and_update_spending_limit(from, amount)?;
         }
 
-        if self.validate_inbound_or_block(from, &to, amount, InboundKind::TRANSFER, memo)? {
+        if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
             return Ok(None);
         }
 
@@ -1062,9 +1065,10 @@ impl TIP20Token {
         to: Address,
         amount: U256,
         memo: B256,
-    ) -> Result<Option<Recipient>> {
+    ) -> Result<Option<(U256, Recipient)>> {
         let to = Recipient::resolve(to)?;
         self.check_role(msg_sender, *ISSUER_ROLE)?;
+        let total_supply = self.total_supply()?;
 
         if self.storage.spec().is_t3() {
             self.check_not_paused()?;
@@ -1080,11 +1084,11 @@ impl TIP20Token {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        if self.validate_inbound_or_block(msg_sender, &to, amount, InboundKind::MINT, memo)? {
+        if self.validate_inbound_or_block(msg_sender, &to, amount, Some(total_supply), memo)? {
             return Ok(None);
         }
 
-        Ok(Some(to))
+        Ok(Some((total_supply, to)))
     }
 
     /// Check whether a transfer is authorized by the token's [`TIP403Registry`] policy.
@@ -1177,7 +1181,7 @@ impl TIP20Token {
         originator: Address,
         to: &Recipient,
         amount: U256,
-        kind: InboundKind,
+        mint_total_supply: Option<U256>,
         memo: B256,
     ) -> Result<bool> {
         if !self.storage.spec().is_t6() {
@@ -1195,16 +1199,14 @@ impl TIP20Token {
         };
 
         let guard = Recipient::direct(RECEIVE_POLICY_GUARD_ADDRESS);
-        match kind {
-            InboundKind::TRANSFER => self._transfer(originator, &guard, amount)?,
-            InboundKind::MINT => {
-                self._mint(&guard, amount)?;
-                self.emit_event(TIP20Event::mint(guard.target, amount))?;
-            }
-            InboundKind::__Invalid => {
-                return Err(ReceivePolicyGuardError::invalid_receipt().into());
-            }
-        }
+        let kind = if let Some(total_supply) = mint_total_supply {
+            self._mint(&guard, total_supply, amount)?;
+            self.emit_event(TIP20Event::mint(guard.target, amount))?;
+            InboundKind::MINT
+        } else {
+            self._transfer(originator, &guard, amount)?;
+            InboundKind::TRANSFER
+        };
         ReceivePolicyGuard::new()
             .store_blocked(token, originator, to, recovery, amount, reason, kind, memo)?;
 
