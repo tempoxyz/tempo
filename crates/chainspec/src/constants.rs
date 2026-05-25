@@ -31,6 +31,23 @@ pub mod gas {
     /// TIP-1059 discounted gas price for pure payment transfers: 12 billion attodollars.
     pub const TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE: u64 = 12_000_000_000;
 
+    /// TIP-1059 pure-payment discount from the T6 base fee.
+    ///
+    /// T6 inherits the T1 base fee of 20 billion attodollars/gas and discounts eligible pure
+    /// payments to 12 billion attodollars/gas, so the discount is 8 billion attodollars/gas.
+    pub const TEMPO_T6_PAYMENT_GAS_PRICE_DISCOUNT: u128 = 8_000_000_000;
+
+    /// Returns the TIP-1059 discounted effective gas price.
+    ///
+    /// TIP-1059 subtracts the base-fee discount from the transaction-derived effective gas price.
+    /// Any effective priority-fee component remains payable, so high-priority bids cannot be
+    /// refunded away at settlement.
+    pub fn tempo_t6_discounted_payment_effective_gas_price(
+        original_effective_gas_price: u128,
+    ) -> u128 {
+        original_effective_gas_price.saturating_sub(TEMPO_T6_PAYMENT_GAS_PRICE_DISCOUNT)
+    }
+
     /// [TIP-1010] general (non-payment) gas limit: 30 million gas per block.
     /// Cap for non-payment transactions.
     ///

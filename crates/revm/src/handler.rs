@@ -33,7 +33,7 @@ use revm::{
     },
     precompile::PrecompileError,
 };
-use tempo_chainspec::constants::gas::TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE;
+use tempo_chainspec::constants::gas::tempo_t6_discounted_payment_effective_gas_price;
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
@@ -1457,10 +1457,11 @@ where
         let gas = exec_result.gas();
         let gas_used = gas.used().saturating_sub(gas.reservoir());
         if context.cfg.spec.is_t6() && tx.is_discounted_payment() && gas_used <= SSTORE_SET_COST {
-            // For pure TIP-20 payment transactions, patch the transaction-derived effective gas
-            // price with TIP-1059's post-execution settlement discount before calculating actual spending:
+            // TIP-1059 subtracts only the base-fee discount. The transaction-derived priority-fee
+            // component remains payable.
             // https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#applying-the-discount
-            effective_gas_price = u128::from(TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE);
+            effective_gas_price =
+                tempo_t6_discounted_payment_effective_gas_price(effective_gas_price);
         }
 
         let actual_spending = calc_gas_balance_spending(gas_used, effective_gas_price);

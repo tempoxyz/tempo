@@ -252,6 +252,36 @@ async fn test_tip1059_discounted_payment_receipts_and_fees() -> eyre::Result<()>
         )
     );
 
+    const PRIORITY_FEE: u128 = 3_000_000_000;
+    let discounted_price_with_priority =
+        u128::from(TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE) + PRIORITY_FEE;
+    let fee_balance_before = fee_token.balanceOf(caller).call().await?;
+    let tx_hash = token
+        .transfer(recipient, U256::from(1))
+        .max_fee_per_gas(TEMPO_T1_BASE_FEE as u128 + PRIORITY_FEE)
+        .max_priority_fee_per_gas(PRIORITY_FEE)
+        .gas(1_000_000)
+        .send()
+        .await?
+        .watch()
+        .await?;
+    let receipt = provider
+        .raw_request::<_, TempoTransactionReceipt>("eth_getTransactionReceipt".into(), (tx_hash,))
+        .await?;
+    assert!(receipt.status());
+    assert!(
+        receipt.gas_used <= SSTORE_SET_COST,
+        "existing-balance transfer with priority fee must stay within TIP-1059 gas cap"
+    );
+    assert_eq!(
+        receipt.effective_gas_price(),
+        discounted_price_with_priority
+    );
+    assert_eq!(
+        fee_balance_before - fee_token.balanceOf(caller).call().await?,
+        calc_gas_balance_spending(receipt.gas_used, discounted_price_with_priority)
+    );
+
     let fee_balance_before = fee_token.balanceOf(caller).call().await?;
     let tx_hash = token
         .transfer(Address::random(), U256::from(1))

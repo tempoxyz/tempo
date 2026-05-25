@@ -23,7 +23,8 @@ pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Respons
 use std::sync::Arc;
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::{
-    TempoChainSpec, constants::gas::TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE, hardfork::TempoHardforks,
+    TempoChainSpec, constants::gas::tempo_t6_discounted_payment_effective_gas_price,
+    hardfork::TempoHardforks,
 };
 use tempo_evm::{SSTORE_SET_COST, TempoStateAccess};
 use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, tip20::ITIP20};
@@ -489,10 +490,12 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
                     })
                     && gas_used <= SSTORE_SET_COST
                 {
-                    // For pure TIP-20 payment transactions, patch the transaction-derived
-                    // `effective_gas_price` with TIP-1059's settlement discount:
+                    // Mirror execution settlement: subtract only the base-fee discount and keep
+                    // the transaction-derived priority-fee component payable.
                     // https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#applying-the-discount
-                    receipt.effective_gas_price = u128::from(TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE);
+                    receipt.effective_gas_price = tempo_t6_discounted_payment_effective_gas_price(
+                        receipt.effective_gas_price,
+                    );
                 }
 
                 if receipt.effective_gas_price == 0 || receipt.gas_used == 0 {
