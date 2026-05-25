@@ -489,6 +489,9 @@ impl ReceiptConverter<TempoPrimitives> for TempoReceiptConverter {
                     })
                     && gas_used <= SSTORE_SET_COST
                 {
+                    // For pure TIP-20 payment transactions, patch the transaction-derived
+                    // `effective_gas_price` with TIP-1059's settlement discount:
+                    // https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#applying-the-discount
                     receipt.effective_gas_price = u128::from(TEMPO_T6_DISCOUNTED_PAYMENT_GAS_PRICE);
                 }
 
