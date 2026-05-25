@@ -856,6 +856,56 @@ def generate-summary [
         }
     }
 
+    let metric_sample_names = [
+        "reth_tempo_payload_builder_payload_build_duration_seconds"
+        "reth_tempo_payload_builder_payload_finalization_duration_seconds"
+        "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds"
+        "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds"
+        "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts"
+        "reth_tempo_payload_builder_pool_transactions_skipped_total"
+        "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds"
+        "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds"
+        "reth_consensus_engine_beacon_new_payload_latency"
+        "reth_tempo_payload_builder_gas_per_second_last"
+        "reth_consensus_engine_beacon_new_payload_gas_per_second_last"
+    ]
+    let metric_sample_match_args = ($metric_sample_names | each { |name| ["-e" $name] } | flatten)
+    let has_rg = ((which rg | length) > 0)
+
+    let load_metric_samples = { |samples_path: string, samples_gz_path: string|
+        let filter_result = if ($samples_path | path exists) {
+            if $has_rg {
+                rg --fixed-strings --no-heading --no-filename --color never ...$metric_sample_match_args $samples_path | complete
+            } else {
+                grep -F ...$metric_sample_match_args $samples_path | complete
+            }
+        } else if ($samples_gz_path | path exists) {
+            if $has_rg {
+                gzip -dc $samples_gz_path | rg --fixed-strings --no-heading --no-filename --color never ...$metric_sample_match_args | complete
+            } else {
+                gzip -dc $samples_gz_path | grep -F ...$metric_sample_match_args | complete
+            }
+        } else {
+            { stdout: "", stderr: "", exit_code: 0 }
+        }
+
+        if $filter_result.exit_code not-in [0 1] {
+            error make { msg: $"Failed to filter metric samples from ($samples_path): ($filter_result.stderr)" }
+        }
+
+        if $filter_result.stdout != "" {
+            $filter_result.stdout
+                | lines
+                | where { |line| ($line | str trim) != "" }
+                | each { |line| $line | from json }
+                | where { |sample| $sample.name in $metric_sample_names }
+                | where { |sample|
+                    let quantile = ($sample.labels | get -o quantile | default "")
+                    ($quantile in ["0.5" "0.9" "0.99"]) or ($quantile == "")
+                }
+        } else { [] }
+    }
+
     for label in $run_labels {
         let report_path = $"($results_dir)/report-($label).json"
         if not ($report_path | path exists) {
@@ -865,34 +915,7 @@ def generate-summary [
         let report = (open $report_path)
         let samples_path = $"($results_dir)/report-($label).samples.ndjson"
         let samples_gz_path = $"($samples_path).gz"
-        let samples_raw = if ($samples_path | path exists) {
-            open --raw $samples_path
-        } else if ($samples_gz_path | path exists) {
-            gzip -dc $samples_gz_path
-        } else { "" }
-        let metric_samples = if $samples_raw != "" {
-            $samples_raw
-                | lines
-                | where { |line| ($line | str trim) != "" }
-                | each { |line| $line | from json }
-                | where { |sample| $sample.name in [
-                    "reth_tempo_payload_builder_payload_build_duration_seconds"
-                    "reth_tempo_payload_builder_payload_finalization_duration_seconds"
-                    "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds"
-                    "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds"
-                    "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts"
-                    "reth_tempo_payload_builder_pool_transactions_skipped_total"
-                    "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds"
-                    "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds"
-                    "reth_consensus_engine_beacon_new_payload_latency"
-                    "reth_tempo_payload_builder_gas_per_second_last"
-                    "reth_consensus_engine_beacon_new_payload_gas_per_second_last"
-                ] }
-                | where { |sample|
-                    let quantile = ($sample.labels | get -o quantile | default "")
-                    ($quantile in ["0.5" "0.9" "0.99"]) or ($quantile == "")
-                }
-        } else { [] }
+        let metric_samples = (do $load_metric_samples $samples_path $samples_gz_path)
         let builder_samples = ($metric_samples | where name == "reth_tempo_payload_builder_payload_build_duration_seconds")
         let builder_finish_samples = ($metric_samples | where name == "reth_tempo_payload_builder_payload_finalization_duration_seconds")
         let builder_included_tx_samples = ($metric_samples | where name == "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds")
