@@ -334,6 +334,10 @@ on:
         required: false
       BENCH_VICTORIAMETRICS_URL:
         required: false
+      BENCH_VALSCOPE_VM_URL:
+        required: false
+      BENCH_VALSCOPE_VLOGS_URL:
+        required: false
       SLACK_BENCH_BOT_TOKEN:
         required: false
       SLACK_BENCH_CHANNEL:
@@ -393,6 +397,8 @@ jobs:
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
       BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+      VALSCOPE_VM_URL: ${{ secrets.BENCH_VALSCOPE_VM_URL || secrets.BENCH_VICTORIAMETRICS_URL }}
+      VALSCOPE_VLOGS_URL: ${{ secrets.BENCH_VALSCOPE_VLOGS_URL }}
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
@@ -422,6 +428,12 @@ jobs:
       - name: Mask VictoriaMetrics URL
         if: env.BENCH_VICTORIAMETRICS_URL
         run: echo "::add-mask::$BENCH_VICTORIAMETRICS_URL"
+
+      - name: Mask ValScope datasource URLs
+        if: env.VALSCOPE_VM_URL || env.VALSCOPE_VLOGS_URL
+        run: |
+          [ -n "$VALSCOPE_VM_URL" ] && echo "::add-mask::$VALSCOPE_VM_URL"
+          [ -n "$VALSCOPE_VLOGS_URL" ] && echo "::add-mask::$VALSCOPE_VLOGS_URL"
 
       - name: Clean up previous results
         run: sudo rm -rf bench-results/ 2>/dev/null || true
@@ -456,6 +468,14 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
           ref: ${{ steps.checkout-ref.outputs.ref }}
+
+      - name: Checkout ValScope report builder
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: tempoxyz/valscope
+          path: valscope
+          persist-credentials: false
+          token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
 
       - name: Resolve job URL and update status
         if: env.BENCH_COMMENT_ID
@@ -751,6 +771,14 @@ jobs:
           [ -n "$CLICKHOUSE_URL" ] && cmd+=(--clickhouse-url "$CLICKHOUSE_URL")
           [ -n "$BENCH_RUN_TYPE" ] && cmd+=(--run-type "$BENCH_RUN_TYPE")
           [ -n "$BENCH_CLICKHOUSE_RUN" ] && cmd+=(--clickhouse-run "$BENCH_CLICKHOUSE_RUN")
+          if [ -f "valscope/apps/api/Cargo.toml" ]; then
+            cmd+=(--valscope-static-report --valscope-dir "valscope")
+          elif [ -f "../valscope/apps/api/Cargo.toml" ]; then
+            cmd+=(--valscope-static-report --valscope-dir "../valscope")
+          else
+            echo "::error::ValScope static report builder not found"
+            exit 1
+          fi
           "${cmd[@]}"
 
       - name: Find results directory
@@ -766,17 +794,28 @@ jobs:
           echo "Results directory: $RESULTS_DIR"
 
       - name: Upload results
+        id: upload-results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tempo-bench-results
           path: bench-results/
 
+      - name: Upload ValScope static reports
+        id: upload-valscope-static
+        if: success() && hashFiles('bench-results/*/valscope-static/index.html') != ''
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: tempo-bench-valscope-static
+          path: ${{ steps.results-dir.outputs.path }}/valscope-static/
+
       - name: Post results to PR
         if: success()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
+          BENCH_RESULTS_ARTIFACT_URL: ${{ steps.upload-results.outputs.artifact-url }}
+          BENCH_VALSCOPE_ARTIFACT_URL: ${{ steps.upload-valscope-static.outputs.artifact-url }}
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
@@ -789,59 +828,6 @@ jobs:
             } catch (e) {
               summary = '⚠️ Benchmark completed but failed to read summary.';
             }
-
-            // Compute observability URLs from summary.json.
-            let grafanaSection = '';
-            try {
-              const meta = JSON.parse(fs.readFileSync(`${resultsDir}/summary.json`, 'utf8'));
-              const benchId = meta.benchmark_id;
-              const metricsRange = meta.observability_range || {};
-              const actualRange = meta.actual_observability_range || metricsRange;
-              const metricsFrom = metricsRange.from || (metricsRange.from_ms ? String(metricsRange.from_ms) : '');
-              const metricsTo = metricsRange.to || (metricsRange.to_ms ? String(metricsRange.to_ms) : '');
-              const actualFrom = actualRange.from || (actualRange.from_ms ? String(actualRange.from_ms) : '');
-              const actualTo = actualRange.to || (actualRange.to_ms ? String(actualRange.to_ms) : '');
-              if (benchId && metricsFrom && metricsTo && actualFrom && actualTo) {
-                const traceqlQuery = `{resource.benchmark_id="${benchId}"}`;
-                const grafanaUrl = meta.grafana_url || `https://tempoxyz.grafana.net/d/dffj6qf1o30oowe/performance?orgId=1&from=${encodeURIComponent(metricsFrom)}&to=${encodeURIComponent(metricsTo)}&timezone=browser&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=${encodeURIComponent(benchId)}&var-group_by=benchmark_run`;
-                const logsPane = JSON.stringify({
-                  pw4: {
-                    datasource: 'cfk1hzy08xekgd',
-                    queries: [{
-                      refId: 'A',
-                      datasource: { type: 'victoriametrics-logs-datasource', uid: 'cfk1hzy08xekgd' },
-                      editorMode: 'code',
-                      expr: `benchmark_id:${benchId}`,
-                      queryType: 'instant',
-                    }],
-                    range: { from: actualFrom, to: actualTo },
-                    panelsState: { logs: { sortOrder: 'Descending', columns: ['Time', 'Line'], visualisationType: 'table', labelFieldName: 'labels' } },
-                    compact: false,
-                  },
-                });
-                const logsUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(logsPane)}&orgId=1`;
-                const tracesPane = JSON.stringify({
-                  g39: {
-                    datasource: 'dfk1hrnxca9s0a',
-                    queries: [{
-                      refId: 'A',
-                      datasource: { type: 'tempo', uid: 'dfk1hrnxca9s0a' },
-                      queryType: 'traceqlSearch',
-                      serviceMapUseNativeHistograms: false,
-                      filters: [
-                        { id: 'benchmark-id', operator: '=', scope: 'resource', tag: 'benchmark_id', value: [benchId], valueType: 'string', isCustomValue: true },
-                      ],
-                      query: traceqlQuery,
-                    }],
-                    range: { from: actualFrom, to: actualTo },
-                    panelsState: { logs: { visualisationType: 'table' } },
-                    compact: false,
-                  },
-                });
-                const tracesUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(tracesPane)}&orgId=1`;
-                grafanaSection = `\n\n### Observability\n\n- [Metrics dashboard](${grafanaUrl})\n- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n`;
-              }
-            } catch (e) {}
 
             let runs = [];
             try {
@@ -890,8 +876,22 @@ jobs:
               }
             }
 
+            let valscopeSection = '';
+            try {
+              const manifestPath = `${resultsDir}/valscope-static/reports.json`;
+              const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+              const artifactUrl = process.env.BENCH_VALSCOPE_ARTIFACT_URL || process.env.BENCH_RESULTS_ARTIFACT_URL || '';
+              const links = (manifest.runs || []).map(run => {
+                if (artifactUrl) return `- **${run.run}**: [ValScope static report](${artifactUrl}) (\`${run.path}\`)`;
+                return `- **${run.run}**: \`${run.path}\` in the uploaded benchmark artifact`;
+              });
+              if (links.length > 0) {
+                valscopeSection = `\n\n### ValScope Static Reports\n\n${links.join('\n')}\n`;
+              }
+            } catch (e) {}
+
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Benchmark complete! [View job](${jobUrl})\n\n${summary}${grafanaSection}${samplySection}${tracySection}`;
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Benchmark complete! [View job](${jobUrl})\n\n${summary}${valscopeSection}${samplySection}${tracySection}`;
             const ackCommentId = process.env.BENCH_COMMENT_ID;
 
             if (ackCommentId) {

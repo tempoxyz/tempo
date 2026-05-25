@@ -786,7 +786,18 @@ def grafana-performance-url [benchmark_id: string, from_ms: int, to_ms: int] {
 }
 
 
-def generate-summary [results_dir: string, baseline_ref: string, feature_ref: string, bloat: int, preset: string, tps: int, duration: int, --benchmark-id: string = "", --reference-epoch: int = 0] {
+def generate-summary [
+    results_dir: string,
+    baseline_ref: string,
+    feature_ref: string,
+    bloat: int,
+    preset: string,
+    tps: int,
+    duration: int,
+    --benchmark-id: string = "",
+    --reference-epoch: int = 0,
+    --no-grafana-url
+] {
     let run_order_path = $"($results_dir)/run-order.txt"
     let candidate_run_labels = if ($run_order_path | path exists) {
         open $run_order_path | lines | where { |label| $label != "" }
@@ -1069,7 +1080,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     } else { $observability_to_ms }
 
     # Build summary markdown
-    let grafana_url = (grafana-performance-url $benchmark_id $observability_from_ms $observability_to_ms)
+    let grafana_url = if $no_grafana_url { "" } else { grafana-performance-url $benchmark_id $observability_from_ms $observability_to_ms }
     let summary_lines = ([
         $"# Bench Comparison: ($baseline_ref) vs ($feature_ref)"
         ""

@@ -717,6 +717,58 @@ def bench-update-pr-status [status: string] {
     }
 }
 
+def build-valscope-static-reports [
+    results_dir: string,
+    benchmark_id: string,
+    valscope_dir: string,
+] {
+    let manifest = $"($valscope_dir)/apps/api/Cargo.toml"
+    if not ($manifest | path exists) {
+        print $"Error: ValScope API Cargo manifest not found at ($manifest)"
+        exit 1
+    }
+
+    let vm_url = ($env | get -o VALSCOPE_VM_URL | default "")
+    let vlogs_url = ($env | get -o VALSCOPE_VLOGS_URL | default "")
+    if $vm_url == "" {
+        print "Error: VALSCOPE_VM_URL is required to generate ValScope static reports"
+        exit 1
+    }
+    if $vlogs_url == "" {
+        print "Error: VALSCOPE_VLOGS_URL is required to generate ValScope static reports"
+        exit 1
+    }
+
+    print "Generating ValScope static reports with configured VM/VLogs datasources"
+    let out_dir = $"($results_dir)/valscope-static"
+    let web_dir = $"($valscope_dir)/apps/web"
+    let web_dist = $"($web_dir)/dist"
+    let npm_ci = (run-external "npm" "--prefix" $web_dir "ci" | complete)
+    if $npm_ci.stdout != "" { print $npm_ci.stdout }
+    if $npm_ci.stderr != "" { print $npm_ci.stderr }
+    if $npm_ci.exit_code != 0 {
+        print $"Error: ValScope web dependency install failed with exit code ($npm_ci.exit_code)"
+        exit $npm_ci.exit_code
+    }
+    let web_build = (run-external "npm" "--prefix" $web_dir "run" "build:static-report-app" | complete)
+    if $web_build.stdout != "" { print $web_build.stdout }
+    if $web_build.stderr != "" { print $web_build.stderr }
+    if $web_build.exit_code != 0 {
+        print $"Error: ValScope static web build failed with exit code ($web_build.exit_code)"
+        exit $web_build.exit_code
+    }
+    let result = (with-env { VALSCOPE_VM_URL: $vm_url, VALSCOPE_VLOGS_URL: $vlogs_url } {
+        run-external "cargo" "run" "--manifest-path" $manifest "--bin" "valscope-bench-report" "--" "--results-dir" $results_dir "--out-dir" $out_dir "--web-dist" $web_dist "--benchmark-id" $benchmark_id | complete
+    })
+    if $result.stdout != "" { print $result.stdout }
+    if $result.stderr != "" { print $result.stderr }
+    if $result.exit_code != 0 {
+        if ($out_dir | path exists) { rm -rf $out_dir }
+        print $"Error: ValScope static report generation failed with exit code ($result.exit_code)"
+        exit $result.exit_code
+    }
+}
+
 def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
     print $"=== Starting local e2e phase: ($phase) ==="
@@ -972,6 +1024,8 @@ def "main e2e" [
     --tune                                              # Apply system tuning
     --loud                                              # Show node debug logs
     --no-cache                                           # Skip binary cache
+    --valscope-static-report                             # Generate static ValScope reports under the results directory
+    --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
 ] {
     let preset_path = (txgen-preset-path $preset)
     if $tracy not-in ["off" "on" "full"] {
@@ -1312,7 +1366,10 @@ def "main e2e" [
     let baseline_label = if $hardfork_mode { $"($baseline_base_label) \(($baseline_hardfork_name)\)" } else { $baseline_base_label }
     let feature_label = if $hardfork_mode { $"($feature_base_label) \(($feature_hardfork_name)\)" } else { $feature_base_label }
     if $e2e_exit == 0 {
-        generate-summary $results_dir $baseline_label $feature_label $bloat_mib $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch
+        generate-summary $results_dir $baseline_label $feature_label $bloat_mib $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch --no-grafana-url
+        if $valscope_static_report {
+            build-valscope-static-reports $results_dir $benchmark_id $valscope_dir
+        }
     }
 
     try { git worktree remove --force $baseline_wt } catch { }
