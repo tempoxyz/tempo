@@ -103,7 +103,8 @@ impl ReceivePolicyGuard {
         }
 
         let (receipt, receiver, recovery_mode) = resolve_receipt(receipt)?;
-        if receipt.recoveryAuthority != msg_sender {
+        let recovery_authority = recovery_mode.authority(&receipt);
+        if recovery_authority != msg_sender {
             return Err(ReceivePolicyGuardError::unauthorized_claimer().into());
         };
 
@@ -121,7 +122,7 @@ impl ReceivePolicyGuard {
             to,
             amount,
             recovery_mode,
-            receipt.recoveryAuthority,
+            recovery_authority,
         )?;
 
         self.emit_event(receipt.claimed_event(receiver, msg_sender, to, amount))
@@ -189,12 +190,20 @@ impl RecoveryMode {
 
     /// Resolves the recovery mode for a receipt and resolved receiver.
     pub(crate) fn from(receipt: &ClaimReceiptV1, receiver: Address) -> Self {
-        if receipt.recoveryAuthority == receipt.originator {
+        if receipt.recoveryAuthority == RECOVERY_ORIGINATOR {
             Self::Originator
         } else if receipt.recoveryAuthority == receiver {
             Self::Receiver
         } else {
             Self::ThirdParty
+        }
+    }
+
+    /// Returns the authorized claimer address for this mode.
+    pub(crate) fn authority(self, receipt: &ClaimReceiptV1) -> Address {
+        match self {
+            Self::Originator => receipt.originator,
+            Self::Receiver | Self::ThirdParty => receipt.recoveryAuthority,
         }
     }
 
@@ -311,7 +320,7 @@ mod tests {
 
                     let unknown = ClaimReceiptV1::new(
                         token.address(),
-                        claimer,
+                        configured_authority,
                         originator,
                         receiver,
                         blocked_at,
@@ -370,14 +379,14 @@ mod tests {
                             recipient: receiver,
                             amount,
                             blockedReason: BlockedReason::RECEIVE_POLICY as u8,
-                            recoveryAuthority: claimer,
+                            recoveryAuthority: configured_authority,
                             memo: B256::ZERO,
                         },
                     )]);
 
                     let receipt = ClaimReceiptV1::new(
                         token.address(),
-                        claimer,
+                        configured_authority,
                         originator,
                         receiver,
                         blocked_at,
@@ -413,7 +422,7 @@ mod tests {
                             blockedAt: blocked_at,
                             originator,
                             recipient: receiver,
-                            recoveryAuthority: claimer,
+                            recoveryAuthority: configured_authority,
                             caller: claimer,
                             to: destination,
                             amount,

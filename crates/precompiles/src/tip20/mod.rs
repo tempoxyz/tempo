@@ -1691,7 +1691,7 @@ pub(crate) mod tests {
 
                 let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
                     token.address,
-                    sender,
+                    Address::ZERO,
                     sender,
                     receiver,
                     BLOCKED_AT,
@@ -1713,7 +1713,7 @@ pub(crate) mod tests {
                         recipient: receiver,
                         amount,
                         blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
-                        recoveryAuthority: sender,
+                        recoveryAuthority: Address::ZERO,
                         memo: B256::ZERO,
                     },
                 )]);
@@ -1874,7 +1874,7 @@ pub(crate) mod tests {
 
                 let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
                     token.address,
-                    sender,
+                    Address::ZERO,
                     sender,
                     receiver,
                     BLOCKED_AT,
@@ -1896,7 +1896,7 @@ pub(crate) mod tests {
                         recipient: receiver,
                         amount,
                         blockedReason: ITIP403Registry::BlockedReason::TOKEN_FILTER as u8,
-                        recoveryAuthority: sender,
+                        recoveryAuthority: Address::ZERO,
                         memo: B256::ZERO,
                     },
                 )]);
@@ -2078,7 +2078,7 @@ pub(crate) mod tests {
                 })]);
                 let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
                     token.address,
-                    sender,
+                    Address::ZERO,
                     sender,
                     receiver,
                     BLOCKED_AT,
@@ -2144,14 +2144,14 @@ pub(crate) mod tests {
                         recipient: receiver,
                         amount,
                         blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
-                        recoveryAuthority: admin,
+                        recoveryAuthority: Address::ZERO,
                         memo: B256::ZERO,
                     },
                 )]);
 
                 let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
                     token.address,
-                    admin,
+                    Address::ZERO,
                     admin,
                     receiver,
                     BLOCKED_AT,
