@@ -1221,7 +1221,7 @@ where
 
             let skip_liquidity_check = evm.skip_liquidity_check;
             let result = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
-                TipFeeManager::new().collect_fee_pre_tx(
+                TipFeeManager::new().collect_fee_pre_tx_with_validator(
                     fee_payer,
                     fee_token,
                     gas_balance_spending,
@@ -1230,41 +1230,45 @@ where
                 )
             });
 
-            if let Err(err) = result {
-                // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
-                journal.checkpoint_revert(checkpoint);
+            let (_, validator_token) = match result {
+                Ok(tokens) => tokens,
+                Err(err) => {
+                    // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
+                    journal.checkpoint_revert(checkpoint);
 
-                // Map fee collection errors to transaction validation errors since they
-                // indicate the transaction cannot be included (e.g., insufficient liquidity
-                // in FeeAMM pool for fee swaps)
-                return Err(match err {
-                    TempoPrecompileError::TIPFeeAMMError(
-                        TIPFeeAMMError::InsufficientLiquidity(_),
-                    ) => FeePaymentError::InsufficientAmmLiquidity {
-                        fee: gas_balance_spending,
-                    }
-                    .into(),
+                    // Map fee collection errors to transaction validation errors since they
+                    // indicate the transaction cannot be included (e.g., insufficient liquidity
+                    // in FeeAMM pool for fee swaps)
+                    return Err(match err {
+                        TempoPrecompileError::TIPFeeAMMError(
+                            TIPFeeAMMError::InsufficientLiquidity(_),
+                        ) => FeePaymentError::InsufficientAmmLiquidity {
+                            fee: gas_balance_spending,
+                        }
+                        .into(),
 
-                    TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
-                        InsufficientBalance { available, .. },
-                    )) => FeePaymentError::InsufficientFeeTokenBalance {
-                        fee: gas_balance_spending,
-                        balance: available,
-                    }
-                    .into(),
+                        TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
+                            InsufficientBalance { available, .. },
+                        )) => FeePaymentError::InsufficientFeeTokenBalance {
+                            fee: gas_balance_spending,
+                            balance: available,
+                        }
+                        .into(),
 
-                    TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
-                        TempoInvalidTransaction::FeeTokenPaused { address: fee_token }.into()
-                    }
+                        TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
+                            TempoInvalidTransaction::FeeTokenPaused { address: fee_token }.into()
+                        }
 
-                    TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
+                        TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
 
-                    _ => FeePaymentError::Other(err.to_string()).into(),
-                });
-            }
+                        _ => FeePaymentError::Other(err.to_string()).into(),
+                    });
+                }
+            };
 
             journal.checkpoint_commit();
             evm.collected_fee = gas_balance_spending;
+            evm.validator_token = Some(validator_token);
         }
 
         // If the transaction includes a KeyAuthorization, validate and authorize the key
@@ -1495,14 +1499,22 @@ where
                 let fee_token = evm
                     .fee_token
                     .expect("set in `validate_against_state_and_deduct_caller`");
+                let validator_token = if let Some(validator_token) = evm.validator_token {
+                    validator_token
+                } else {
+                    fee_manager
+                        .get_validator_token(beneficiary)
+                        .map_err(|e| EVMError::Custom(format!("{e:?}")))?
+                };
                 // Call collectFeePostTx (handles both refund and fee queuing)
                 fee_manager
-                    .collect_fee_post_tx(
+                    .collect_fee_post_tx_with_validator(
                         fee_payer,
                         actual_spending,
                         refund_amount,
                         fee_token,
                         beneficiary,
+                        validator_token,
                     )
                     .map_err(|e| EVMError::Custom(format!("{e:?}")))
             } else {
