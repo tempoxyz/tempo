@@ -769,15 +769,11 @@ jobs:
 
       - name: Generate summary
         if: success()
-        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
-        with:
-          script: |
-            const { execFileSync } = require('child_process');
-            const classify = require('./.github/scripts/bench-e2e-classify.js');
-            execFileSync('nu', ['bench-e2e.nu', 'summarize', process.env.BENCH_RESULTS_DIR], { stdio: 'inherit' });
-            classify.main(process.env.BENCH_RESULTS_DIR);
+        run: |
+          nu bench-e2e.nu summarize "$BENCH_RESULTS_DIR"
+          node .github/scripts/bench-e2e-classify.js "$BENCH_RESULTS_DIR"
 
       - name: Upload results
         if: ${{ !cancelled() }}
