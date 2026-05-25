@@ -11,12 +11,10 @@ use alloy_consensus::{
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rlp::Encodable;
-use alloy_sol_types::SolCall;
+use alloy_sol_types::{SolCall, SolType};
 use core::fmt;
 use tempo_contracts::precompiles::{
-    ITIP20,
-    ITIP20ChannelReserve::{ITIP20ChannelReserveCalls, closeCall, settleCall},
-    TIP20_CHANNEL_RESERVE_ADDRESS,
+    ITIP20, ITIP20ChannelReserve, MAX_PAYMENT_CALLDATA_LEN, TIP20_CHANNEL_RESERVE_ADDRESS,
 };
 
 /// Maximum RLP-encoded size of a `key_authorization` permitted in a payment transaction
@@ -509,22 +507,35 @@ fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
         // TIP20 call + payment calldata constraints
         Some(to) if to.is_tip20() => ITIP20::ITIP20Calls::is_payment(input),
         // TIP20ChannelReserve call + payment calldata constraints
-        Some(to) if *to == TIP20_CHANNEL_RESERVE_ADDRESS => {
-            ITIP20ChannelReserveCalls::is_payment(input)
-                && has_valid_channel_reserve_signature_encoding(input)
-        }
+        Some(to) if *to == TIP20_CHANNEL_RESERVE_ADDRESS => is_tip20_channel_reserve_payment(input),
         _ => false,
     }
 }
 
-fn has_valid_channel_reserve_signature_encoding(input: &[u8]) -> bool {
-    match input.first_chunk::<4>() {
-        Some(&closeCall::SELECTOR) => closeCall::abi_decode_validate(input)
-            .is_ok_and(|call| TempoSignature::from_bytes(&call.signature).is_ok()),
-        Some(&settleCall::SELECTOR) => settleCall::abi_decode_validate(input)
-            .is_ok_and(|call| TempoSignature::from_bytes(&call.signature).is_ok()),
-        _ => true,
+fn is_tip20_channel_reserve_payment(input: &[u8]) -> bool {
+    fn is_static_call<C: SolCall>(input: &[u8]) -> bool {
+        input.first_chunk::<4>() == Some(&C::SELECTOR)
+            && <C::Parameters<'_> as SolType>::ENCODED_SIZE
+                .is_some_and(|canonical_size| input.len() == 4 + canonical_size)
     }
+
+    fn decode_dynamic_call<C: SolCall>(input: &[u8]) -> Option<C> {
+        if input.first_chunk::<4>() != Some(&C::SELECTOR) || input.len() > MAX_PAYMENT_CALLDATA_LEN
+        {
+            return None;
+        }
+
+        C::abi_decode_validate(input).ok()
+    }
+
+    is_static_call::<ITIP20ChannelReserve::openCall>(input)
+        || is_static_call::<ITIP20ChannelReserve::topUpCall>(input)
+        || decode_dynamic_call::<ITIP20ChannelReserve::closeCall>(input)
+            .is_some_and(|call| TempoSignature::from_bytes(&call.signature).is_ok())
+        || decode_dynamic_call::<ITIP20ChannelReserve::settleCall>(input)
+            .is_some_and(|call| TempoSignature::from_bytes(&call.signature).is_ok())
+        || is_static_call::<ITIP20ChannelReserve::requestCloseCall>(input)
+        || is_static_call::<ITIP20ChannelReserve::withdrawCall>(input)
 }
 
 #[cfg(feature = "rpc")]
