@@ -238,14 +238,6 @@ impl ITIP20ChannelReserve::ITIP20ChannelReserveCalls {
     ///
     /// [TIP-20 channel reserve payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment(input: &[u8]) -> bool {
-        Self::is_payment_with_valid_signature(input, |_| true)
-    }
-
-    /// Like [`Self::is_payment`], but validates the `signature` argument for `settle` and `close`.
-    pub fn is_payment_with_valid_signature(
-        input: &[u8],
-        validate_signature: impl Fn(&[u8]) -> bool,
-    ) -> bool {
         fn is_call<C: SolCall>(input: &[u8]) -> bool {
             if input.first_chunk::<4>() != Some(&C::SELECTOR) {
                 return false;
@@ -260,12 +252,8 @@ impl ITIP20ChannelReserve::ITIP20ChannelReserveCalls {
 
         is_call::<ITIP20ChannelReserve::openCall>(input)
             || is_call::<ITIP20ChannelReserve::topUpCall>(input)
-            || (is_call::<ITIP20ChannelReserve::closeCall>(input)
-                && ITIP20ChannelReserve::closeCall::abi_decode_validate(input)
-                    .is_ok_and(|call| validate_signature(&call.signature)))
-            || (is_call::<ITIP20ChannelReserve::settleCall>(input)
-                && ITIP20ChannelReserve::settleCall::abi_decode_validate(input)
-                    .is_ok_and(|call| validate_signature(&call.signature)))
+            || is_call::<ITIP20ChannelReserve::closeCall>(input)
+            || is_call::<ITIP20ChannelReserve::settleCall>(input)
             || is_call::<ITIP20ChannelReserve::requestCloseCall>(input)
             || is_call::<ITIP20ChannelReserve::withdrawCall>(input)
     }

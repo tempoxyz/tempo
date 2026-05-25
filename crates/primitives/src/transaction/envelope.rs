@@ -11,10 +11,11 @@ use alloy_consensus::{
 };
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rlp::Encodable;
+use alloy_sol_types::SolCall;
 use core::fmt;
 use tempo_contracts::precompiles::{
     ITIP20,
-    ITIP20ChannelReserve::{self, ITIP20ChannelReserveCalls},
+    ITIP20ChannelReserve::{ITIP20ChannelReserveCalls, closeCall, settleCall},
     TIP20_CHANNEL_RESERVE_ADDRESS,
 };
 
@@ -509,11 +510,20 @@ fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
         Some(to) if to.is_tip20() => ITIP20::ITIP20Calls::is_payment(input),
         // TIP20ChannelReserve call + payment calldata constraints
         Some(to) if *to == TIP20_CHANNEL_RESERVE_ADDRESS => {
-            ITIP20ChannelReserveCalls::is_payment_with_valid_signature(input, |signature| {
-                TempoSignature::from_bytes(signature).is_ok()
-            })
+            ITIP20ChannelReserveCalls::is_payment(input)
+                && has_valid_channel_reserve_signature_encoding(input)
         }
         _ => false,
+    }
+}
+
+fn has_valid_channel_reserve_signature_encoding(input: &[u8]) -> bool {
+    match input.first_chunk::<4>() {
+        Some(&closeCall::SELECTOR) => closeCall::abi_decode_validate(input)
+            .is_ok_and(|call| TempoSignature::from_bytes(&call.signature).is_ok()),
+        Some(&settleCall::SELECTOR) => settleCall::abi_decode_validate(input)
+            .is_ok_and(|call| TempoSignature::from_bytes(&call.signature).is_ok()),
+        _ => true,
     }
 }
 
