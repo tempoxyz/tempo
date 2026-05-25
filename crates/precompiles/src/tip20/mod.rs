@@ -4460,8 +4460,8 @@ pub(crate) mod tests {
                 result,
                 Err(TempoPrecompileError::TIP20(TIP20Error::contract_paused()))
             );
-            // Pre-T6 paused mint must stop after issuer-role and pause reads.
-            assert_eq!(token.storage.counter_sload(), 2);
+            // Pre-T6 paused mint must stop after issuer-role, pause and total supply reads.
+            assert_eq!(token.storage.counter_sload(), 3);
 
             Ok::<_, TempoPrecompileError>(())
         })?;
