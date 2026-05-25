@@ -345,14 +345,14 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{TxKind, U256, address};
+    use alloy_primitives::{TxKind, address};
     use alloy_rpc_types_eth::TransactionRequest;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use reth_rpc_convert::TryIntoTxEnv;
     use tempo_primitives::{
         TempoTransaction,
-        transaction::{Call, tt_signature::PrimitiveSignature},
+        transaction::{Call, FEE_PAYER_SIGNATURE_MARKER, tt_signature::PrimitiveSignature},
     };
 
     #[test]
@@ -589,7 +589,7 @@ mod tests {
                 chain_id: Some(4217),
                 ..Default::default()
             },
-            fee_payer_signature: Some(Signature::new(U256::ZERO, U256::ZERO, false)),
+            fee_payer_signature: Some(FEE_PAYER_SIGNATURE_MARKER),
             ..Default::default()
         };
 

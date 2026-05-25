@@ -113,12 +113,18 @@ where
     }
 
     /// Updates the 2d nonce pool with the given state changes.
-    pub(crate) fn notify_aa_pool_on_state_updates(&self, state: &AddressMap<BundleAccount>) {
-        let (promoted, _mined) = self.aa_2d_pool.write().on_state_updates(state);
+    ///
+    /// Returns mined AA transactions.
+    pub(crate) fn notify_aa_pool_on_state_updates(
+        &self,
+        state: &AddressMap<BundleAccount>,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let (promoted, mined) = self.aa_2d_pool.write().on_state_updates(state);
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
             .inner()
             .notify_on_transaction_updates(promoted, Vec::new());
+        mined
     }
 
     /// Evicts transactions that are no longer valid due to on-chain events.
@@ -464,6 +470,11 @@ where
         to_remove
     }
 
+    /// Adds a validated transaction to the subpool derived from its type and nonce key.
+    ///
+    /// [`TempoPooledTransaction::is_aa_2d`] routes AA transactions with non-zero
+    /// nonce keys, including expiring nonces, to the 2D nonce pool. Everything else
+    /// stays in the protocol pool.
     fn add_validated_transaction(
         &self,
         origin: TransactionOrigin,
