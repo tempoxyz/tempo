@@ -1210,9 +1210,8 @@ mod tests {
 
             let expected = large_base_amount
                 .checked_mul(102)
-                .and_then(|v| v.checked_div(100))
-                .unwrap();
-            assert_eq!(result.unwrap(), expected);
+                .and_then(|v| v.checked_div(100));
+            assert_eq!(result.unwrap(), expected.unwrap());
         }
 
         #[test]

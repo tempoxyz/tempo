@@ -1,15 +1,11 @@
-//! Checked arithmetic helpers for Tempo precompile code.
-
-use alloy::primitives::Uint;
+//! Checked arithmetic helpers for Tempo precompiles.
 
 use crate::error::{Result, TempoPrecompileError};
+use alloy::primitives::Uint;
 
 /// Checked arithmetic helpers that convert arithmetic failure into a Tempo precompile error.
 ///
-/// This trait is implemented for all Alloy unsigned integer types (`Uint<BITS, LIMBS>`),
-/// including aliases like `U256`, and for Rust primitive unsigned integers. It preserves the
-/// checked arithmetic semantics of `checked_add`, `checked_sub`, `checked_mul`, and `checked_div`,
-/// but returns the crate's [`Result`] so callers can use `?` directly.
+/// Implemented for all Alloy and Rust primitive unsigned integer types.
 pub trait CheckedMath<Rhs = Self>: Sized {
     /// Adds `rhs`, returning [`TempoPrecompileError::under_overflow`] on overflow.
     fn try_add(self, rhs: Rhs) -> Result<Self>;
@@ -77,5 +73,4 @@ macro_rules! impl_checked_math_for_unsigned_primitives {
         )+
     };
 }
-
 impl_checked_math_for_unsigned_primitives!(u8, u16, u32, u64, u128);
