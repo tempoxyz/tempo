@@ -133,7 +133,7 @@ impl TIP20Token {
         let global_reward_per_token = self.get_global_reward_per_token()?;
 
         // If rewards aren't activated yet, preserve opted-in state without touching reward storage.
-        if global_reward_per_token.is_zero() && holder_balance.flag.is_init() {
+        if global_reward_per_token.is_zero() && holder_balance.flag.is_opted_in() {
             return Ok(RewardFlag::OptedIn);
         }
 
@@ -143,7 +143,7 @@ impl TIP20Token {
             .ok_or(TempoPrecompileError::under_overflow())?;
 
         // If user doesn't have rewards yet, preserve opted-in state without touching reward storage.
-        if reward_per_token_delta == U256::ZERO && holder_balance.flag.is_init() {
+        if reward_per_token_delta == U256::ZERO && holder_balance.flag.is_opted_in() {
             return Ok(RewardFlag::OptedIn);
         }
 
@@ -432,10 +432,6 @@ impl RewardFlag {
 
     pub fn is_opted_in(&self) -> bool {
         matches!(self, Self::OptedIn)
-    }
-
-    pub fn is_init(&self) -> bool {
-        matches!(self, Self::OptedOut | Self::OptedIn)
     }
 
     pub fn from_delegate(delegate: Address) -> Self {
