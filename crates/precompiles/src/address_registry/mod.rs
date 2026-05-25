@@ -151,7 +151,7 @@ impl AddressRegistry {
     ///
     /// # Errors
     /// - `VirtualAddressUnregistered` — `to` is a virtual address whose `masterId` is not registered
-    pub fn resolve_receiver(&self, to: Address) -> Result<Address> {
+    pub fn resolve_recipient(&self, to: Address) -> Result<Address> {
         // Explicit check because it isn't exclusively a view function.
         // It is also used by `tip20::Recipient`.
         if !self.storage.spec().is_t3() {
@@ -383,7 +383,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let registry = AddressRegistry::new();
 
-            let resolved = registry.resolve_receiver(normal_addr)?;
+            let resolved = registry.resolve_recipient(normal_addr)?;
             assert_eq!(resolved, normal_addr);
 
             Ok(())
@@ -398,7 +398,7 @@ mod tests {
         StorageCtx::enter(&mut storage, || {
             let registry = AddressRegistry::new();
 
-            let result = registry.resolve_receiver(virtual_addr);
+            let result = registry.resolve_recipient(virtual_addr);
             assert!(matches!(
                 result.unwrap_err(),
                 TempoPrecompileError::AddrRegistryError(
@@ -425,7 +425,7 @@ mod tests {
 
             let virtual_addr = Address::new_virtual(master_id, UserTag::new(hex!("010203040506")));
 
-            let resolved = registry.resolve_receiver(virtual_addr)?;
+            let resolved = registry.resolve_recipient(virtual_addr)?;
             assert_eq!(resolved, master);
 
             Ok(())
@@ -472,7 +472,7 @@ mod tests {
 
         StorageCtx::enter(&mut storage, || {
             let registry = AddressRegistry::new();
-            assert_eq!(registry.resolve_receiver(virtual_addr)?, virtual_addr);
+            assert_eq!(registry.resolve_recipient(virtual_addr)?, virtual_addr);
             Ok(())
         })
     }
