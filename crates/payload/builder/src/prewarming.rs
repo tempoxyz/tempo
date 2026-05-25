@@ -410,7 +410,7 @@ fn storage_touches_for_transaction(
 
     if tx.transaction.is_payment() {
         for (kind, input) in tx.transaction.inner().calls() {
-            add_tip20_call_touches(&mut touches, sender, kind, input);
+            add_tip20_call_touches(&mut touches, sender, fee_token, kind, input);
         }
     }
 
@@ -433,6 +433,7 @@ fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fe
 fn add_tip20_call_touches(
     touches: &mut Vec<StorageTouch>,
     sender: Address,
+    fee_token: Address,
     kind: TxKind,
     input: &[u8],
 ) {
@@ -443,7 +444,9 @@ fn add_tip20_call_touches(
         return;
     }
 
-    add_tip20_common_touches(touches, token);
+    if token != fee_token {
+        add_tip20_common_touches(touches, token);
+    }
     let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) else {
         return;
     };
@@ -838,6 +841,7 @@ mod tests {
         add_tip20_call_touches(
             &mut touches,
             sender,
+            token,
             TxKind::Call(token),
             &ITIP20::transferCall {
                 to: recipient,
