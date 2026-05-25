@@ -15,11 +15,13 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     error::{Result as TempoResult, TempoPrecompileError},
-    storage::{Handler, PrecompileStorageProvider, StorageCtx},
-    tip_fee_manager::TipFeeManager,
+    storage::{Handler, PrecompileStorageProvider, StorageCtx, StorageKey},
+    tip_fee_manager::slots as fee_manager_slots,
     tip20::{ITIP20, TIP20Token},
     tip403_registry::{AuthRole, TIP403Registry},
 };
+#[cfg(test)]
+use tempo_precompiles::tip_fee_manager::TipFeeManager;
 use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
 
 /// Returns true if the calldata is for a TIP-20 function that should trigger fee token inference.
@@ -143,8 +145,13 @@ pub trait TempoStateAccess<M = ()> {
 
         // Check stored user token preference
         let user_token = self.with_read_only_storage_ctx(spec, || {
-            // ensure TIP_FEE_MANAGER_ADDRESS is loaded
-            TipFeeManager::new().user_tokens[fee_payer].read()
+            let storage = StorageCtx;
+            storage
+                .sload(
+                    TIP_FEE_MANAGER_ADDRESS,
+                    fee_payer.mapping_slot(fee_manager_slots::USER_TOKENS),
+                )
+                .map(|token| Address::from_word(token.into()))
         })?;
 
         if !user_token.is_zero() {
