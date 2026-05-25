@@ -36,6 +36,8 @@ use revm::{
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
+#[cfg(test)]
+use tempo_precompiles::tip20::TIP20Token;
 use tempo_precompiles::{
     ECRECOVER_GAS,
     account_keychain::{
@@ -55,8 +57,6 @@ use tempo_precompiles::{
     tip20::{ITIP20::InsufficientBalance, TIP20Error, tip20_slots},
     tip20_channel_reserve::TIP20ChannelReserve,
 };
-#[cfg(test)]
-use tempo_precompiles::tip20::TIP20Token;
 use tempo_primitives::{
     TempoAddressExt,
     transaction::{
