@@ -520,7 +520,7 @@ where
             }
 
             let is_payment = if hardfork.is_t5() {
-                pool_tx.transaction.inner().is_payment_v2()
+                pool_tx.transaction.is_payment()
             } else {
                 pool_tx.transaction.inner().is_payment_v1()
             };
