@@ -596,9 +596,6 @@ where
                 {
                     invalid_pool_transaction_execution_attempts += 1;
                     normal_invalid_transaction_execution_elapsed += elapsed;
-                    self.metrics
-                        .normal_invalid_transaction_execution_duration_seconds
-                        .record(elapsed);
 
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
@@ -622,9 +619,6 @@ where
                 }
             };
             normal_included_transaction_execution_elapsed += elapsed;
-            self.metrics
-                .normal_included_transaction_execution_duration_seconds
-                .record(elapsed);
             trace!(?elapsed, "Transaction executed");
 
             pool_transactions_included += 1;
