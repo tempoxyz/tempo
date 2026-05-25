@@ -243,9 +243,6 @@ impl Iterator for BestTransactionsPrewarming {
         if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
             return Some(tx);
         }
-        self.commands_tx
-            .send(BestTransactionsCommand::Advance)
-            .ok()?;
         self.transactions_rx.recv().ok().flatten()
     }
 }
@@ -939,7 +936,7 @@ mod tests {
     }
 
     #[test]
-    fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
+    fn empty_source_is_only_polled_for_eager_advances() {
         let executor = TaskExecutor::test();
         let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
         let log = Arc::new(Mutex::new(TestLog::default()));
@@ -948,10 +945,10 @@ mod tests {
         wait_until(|| log.lock().unwrap().empty_polls == eager_advances);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 1);
+        assert_eq!(log.lock().unwrap().empty_polls, eager_advances);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 2);
+        assert_eq!(log.lock().unwrap().empty_polls, eager_advances);
     }
 
     #[test]
