@@ -17,10 +17,13 @@ use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
     storage::{Handler, PrecompileStorageProvider, StorageCtx},
     tip_fee_manager::TipFeeManager,
-    tip20::{ITIP20, TIP20Token},
+    tip20::{ITIP20, TIP20Token, tip20_slots},
     tip403_registry::{AuthRole, TIP403Registry},
 };
 use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
+
+const USD_CURRENCY_STORAGE_VALUE: U256 =
+    alloy_primitives::uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
 
 /// Returns true if the calldata is for a TIP-20 function that should trigger fee token inference.
 /// Only `transfer`, `transferWithMemo`, and `distributeReward` qualify.
@@ -202,9 +205,8 @@ pub trait TempoStateAccess<M = ()> {
         Self: Sized,
     {
         self.with_read_only_storage_ctx(spec, || {
-            // SAFETY: caller must ensure prefix is already checked
-            let token = TIP20Token::from_address_unchecked(fee_token);
-            Ok(token.currency.len()? == 3 && token.currency.read()?.as_str() == "USD")
+            let storage = StorageCtx;
+            Ok(storage.sload(fee_token, tip20_slots::CURRENCY)? == USD_CURRENCY_STORAGE_VALUE)
         })
     }
 
@@ -220,6 +222,11 @@ pub trait TempoStateAccess<M = ()> {
         Self: Sized,
     {
         self.with_read_only_storage_ctx(spec, || {
+            let storage = StorageCtx;
+            if storage.sload(fee_token, tip20_slots::CURRENCY)? == USD_CURRENCY_STORAGE_VALUE {
+                return Ok(Ok(()));
+            }
+
             // SAFETY: caller must ensure prefix is already checked
             let token = TIP20Token::from_address_unchecked(fee_token);
             let len = token.currency.len()?;
