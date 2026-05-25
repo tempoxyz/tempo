@@ -19,7 +19,6 @@ use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_precompiles::{
     PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
     receive_policy_guard::{
-        BLOCKED_RECEIPT_VERSION,
         IReceivePolicyGuard::{self, IReceivePolicyGuardErrors as ReceivePolicyGuardError},
         InboundKind,
     },
@@ -237,31 +236,25 @@ async fn create_blocked_transfer(
     assert!(transfer.status());
 
     let blocked = transfer_blocked(&transfer)?;
+    let decoded_receipt = IReceivePolicyGuard::ClaimReceiptV1::abi_decode(&blocked.receipt)?;
     assert_eq!(blocked.token, token);
     assert_eq!(blocked.from, sender);
     assert_eq!(blocked.receiver, receiver);
-    assert_eq!(blocked.recipient, receiver);
-    assert_eq!(blocked.recoveryAuthority, recovery);
-    assert_eq!(blocked.amount, amount);
+    assert_eq!(blocked.blockedNonce, decoded_receipt.blockedNonce);
+    assert_eq!(blocked.receiptVersion, decoded_receipt.version);
+    assert_eq!(decoded_receipt.token, token);
+    assert_eq!(decoded_receipt.recoveryAuthority, recovery);
+    assert_eq!(decoded_receipt.originator, sender);
+    assert_eq!(decoded_receipt.recipient, receiver);
     assert_eq!(
-        blocked.blockedReason,
+        decoded_receipt.blockedReason,
         ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8
     );
+    assert_eq!(decoded_receipt.kind, InboundKind::TRANSFER);
+    assert_eq!(decoded_receipt.memo, B256::ZERO);
+    assert_eq!(blocked.amount, amount);
 
-    let receipt: Bytes = IReceivePolicyGuard::ClaimReceiptV1 {
-        version: BLOCKED_RECEIPT_VERSION,
-        token,
-        recoveryAuthority: recovery,
-        originator: blocked.from,
-        recipient: blocked.recipient,
-        blockedAt: blocked.blockedAt,
-        blockedNonce: blocked.blockedNonce,
-        blockedReason: blocked.blockedReason,
-        kind: InboundKind::TRANSFER,
-        memo: blocked.memo,
-    }
-    .abi_encode()
-    .into();
+    let receipt = blocked.receipt.clone();
 
     let guard = IReceivePolicyGuard::new(
         RECEIVE_POLICY_GUARD_ADDRESS,

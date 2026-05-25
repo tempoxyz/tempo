@@ -48,15 +48,11 @@ crate::sol! {
         /// @param token TIP-20 token whose funds are held by the guard.
         /// @param from Original sender/originator of the blocked operation.
         /// @param receiver Resolved account where funds would settle; for virtual recipients its their master.
-        /// @param receiptVersion Claim receipt layout version.
         /// @param blockedNonce Guard nonce assigned to the blocked operation.
-        /// @param blockedAt Block timestamp when the operation was blocked.
-        /// @param recipient Addressed recipient from the inbound operation; may be virtual.
+        /// @param receiptVersion Claim receipt layout version.
         /// @param amount Amount of blocked funds held by the guard.
-        /// @param blockedReason TIP-403 blocked reason encoded as a `BlockedReason` discriminant.
-        /// @param recoveryAuthority Claim authority: originator, receiver, or third-party address.
-        /// @param memo Application memo copied from the blocked inbound operation.
-        event TransferBlocked(address indexed token, address indexed from, address indexed receiver, uint8 receiptVersion, uint64 blockedNonce, uint64 blockedAt, address recipient, uint256 amount, uint8 blockedReason, address recoveryAuthority, bytes32 memo);
+        /// @param receipt ABI-encoded receipt witness that can be passed to `claim`.
+        event TransferBlocked(address indexed token, address indexed from, address indexed receiver, uint64 blockedNonce, uint8 receiptVersion, uint256 amount, bytes receipt);
 
         /// @notice Emitted when blocked funds are claimed with a valid receipt.
         /// @param token TIP-20 token released by the guard.
@@ -146,14 +142,10 @@ impl IReceivePolicyGuard::ClaimReceiptV1 {
             token: self.token,
             from: self.originator,
             receiver,
-            receiptVersion: self.version,
             blockedNonce: self.blockedNonce,
-            blockedAt: self.blockedAt,
-            recipient: self.recipient,
+            receiptVersion: self.version,
             amount,
-            blockedReason: self.blockedReason,
-            recoveryAuthority: self.recoveryAuthority,
-            memo: self.memo,
+            receipt: self.abi_encode().into(),
         })
     }
 

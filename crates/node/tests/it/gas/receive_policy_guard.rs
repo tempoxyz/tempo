@@ -100,31 +100,28 @@ async fn create_blocked_transfer<P: Provider + Clone>(
     assert!(receipt.status(), "blocked transfer failed");
 
     let blocked = transfer_blocked(&receipt)?;
+    let decoded_receipt = IReceivePolicyGuard::ClaimReceiptV1::abi_decode(&blocked.receipt)?;
     assert_eq!(blocked.token, *token.address());
     assert_eq!(blocked.receiver, receiver);
-    assert_eq!(blocked.recipient, receiver);
-    assert_eq!(blocked.recoveryAuthority, expected_recovery_authority);
+    assert_eq!(blocked.blockedNonce, decoded_receipt.blockedNonce);
     assert_eq!(blocked.amount, amount);
     assert_eq!(blocked.receiptVersion, BLOCKED_RECEIPT_VERSION);
+    assert_eq!(blocked.receiptVersion, decoded_receipt.version);
+    assert_eq!(decoded_receipt.token, *token.address());
     assert_eq!(
-        blocked.blockedReason,
+        decoded_receipt.recoveryAuthority,
+        expected_recovery_authority
+    );
+    assert_eq!(decoded_receipt.originator, blocked.from);
+    assert_eq!(decoded_receipt.recipient, receiver);
+    assert_eq!(
+        decoded_receipt.blockedReason,
         ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8
     );
+    assert_eq!(decoded_receipt.kind, InboundKind::TRANSFER);
+    assert_eq!(decoded_receipt.memo, B256::ZERO);
 
-    let receipt_bytes: Bytes = IReceivePolicyGuard::ClaimReceiptV1 {
-        version: 1,
-        token: *token.address(),
-        recoveryAuthority: expected_recovery_authority,
-        originator: blocked.from,
-        recipient: blocked.recipient,
-        blockedAt: blocked.blockedAt,
-        blockedNonce: blocked.blockedNonce,
-        blockedReason: blocked.blockedReason,
-        kind: InboundKind::TRANSFER,
-        memo: blocked.memo,
-    }
-    .abi_encode()
-    .into();
+    let receipt_bytes = blocked.receipt;
 
     Ok(BlockedTransfer {
         receiver,
@@ -272,7 +269,7 @@ async fn test_receive_policy_guard_gas_snapshots() -> eyre::Result<()> {
     let originator_blocked = create_blocked_transfer(
         &originator_token,
         originator_recovery_receiver.address(),
-        originator.address(),
+        RECOVERY_ORIGINATOR,
         U256::from(1_000),
     )
     .await?;

@@ -1707,14 +1707,10 @@ pub(crate) mod tests {
                         token: token.address,
                         from: sender,
                         receiver,
-                        receiptVersion: BLOCKED_RECEIPT_VERSION,
                         blockedNonce: 1,
-                        blockedAt: BLOCKED_AT,
-                        recipient: receiver,
+                        receiptVersion: BLOCKED_RECEIPT_VERSION,
                         amount,
-                        blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
-                        recoveryAuthority: Address::ZERO,
-                        memo: B256::ZERO,
+                        receipt: receipt.abi_encode().into(),
                     },
                 )]);
 
@@ -1890,14 +1886,10 @@ pub(crate) mod tests {
                         token: token.address,
                         from: sender,
                         receiver,
-                        receiptVersion: BLOCKED_RECEIPT_VERSION,
                         blockedNonce: 1,
-                        blockedAt: BLOCKED_AT,
-                        recipient: receiver,
+                        receiptVersion: BLOCKED_RECEIPT_VERSION,
                         amount,
-                        blockedReason: ITIP403Registry::BlockedReason::TOKEN_FILTER as u8,
-                        recoveryAuthority: Address::ZERO,
-                        memo: B256::ZERO,
+                        receipt: receipt.abi_encode().into(),
                     },
                 )]);
 
@@ -2133,22 +2125,6 @@ pub(crate) mod tests {
                     TIP20Event::transfer(Address::ZERO, RECEIVE_POLICY_GUARD_ADDRESS, amount),
                     TIP20Event::mint(RECEIVE_POLICY_GUARD_ADDRESS, amount),
                 ]);
-                guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
-                    IReceivePolicyGuard::TransferBlocked {
-                        token: token.address,
-                        from: admin,
-                        receiver,
-                        receiptVersion: BLOCKED_RECEIPT_VERSION,
-                        blockedNonce: 1,
-                        blockedAt: BLOCKED_AT,
-                        recipient: receiver,
-                        amount,
-                        blockedReason: ITIP403Registry::BlockedReason::RECEIVE_POLICY as u8,
-                        recoveryAuthority: Address::ZERO,
-                        memo: B256::ZERO,
-                    },
-                )]);
-
                 let receipt = IReceivePolicyGuard::ClaimReceiptV1::new(
                     token.address,
                     Address::ZERO,
@@ -2160,6 +2136,17 @@ pub(crate) mod tests {
                     InboundKind::MINT,
                     B256::ZERO,
                 );
+                guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
+                    IReceivePolicyGuard::TransferBlocked {
+                        token: token.address,
+                        from: admin,
+                        receiver,
+                        blockedNonce: 1,
+                        receiptVersion: BLOCKED_RECEIPT_VERSION,
+                        amount,
+                        receipt: receipt.abi_encode().into(),
+                    },
+                )]);
                 assert_eq!(guard.balance_of(receipt.abi_encode().into())?, amount);
 
                 Ok(())

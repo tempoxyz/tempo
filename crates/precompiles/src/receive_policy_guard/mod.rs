@@ -368,22 +368,6 @@ mod tests {
                         }
                         InboundKind::__Invalid => unreachable!(),
                     }
-                    guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
-                        IReceivePolicyGuard::TransferBlocked {
-                            token: token.address(),
-                            from: originator,
-                            receiver,
-                            receiptVersion: BLOCKED_RECEIPT_VERSION,
-                            blockedNonce: 1,
-                            blockedAt: blocked_at,
-                            recipient: receiver,
-                            amount,
-                            blockedReason: BlockedReason::RECEIVE_POLICY as u8,
-                            recoveryAuthority: configured_authority,
-                            memo: B256::ZERO,
-                        },
-                    )]);
-
                     let receipt = ClaimReceiptV1::new(
                         token.address(),
                         configured_authority,
@@ -395,6 +379,17 @@ mod tests {
                         kind,
                         B256::ZERO,
                     );
+                    guard.assert_emitted_events(vec![ReceivePolicyGuardEvent::TransferBlocked(
+                        IReceivePolicyGuard::TransferBlocked {
+                            token: token.address(),
+                            from: originator,
+                            receiver,
+                            blockedNonce: 1,
+                            receiptVersion: BLOCKED_RECEIPT_VERSION,
+                            amount,
+                            receipt: receipt.abi_encode().into(),
+                        },
+                    )]);
                     assert_eq!(guard.balance_of(receipt.abi_encode().into())?, amount);
 
                     if is_third_party {
@@ -1089,14 +1084,10 @@ mod tests {
                     token: token.address(),
                     from: originator,
                     receiver: VIRTUAL_MASTER,
-                    receiptVersion: BLOCKED_RECEIPT_VERSION,
                     blockedNonce: 1,
-                    blockedAt: 1_728_009,
-                    recipient: virtual_addr,
+                    receiptVersion: BLOCKED_RECEIPT_VERSION,
                     amount,
-                    blockedReason: BlockedReason::RECEIVE_POLICY as u8,
-                    recoveryAuthority: VIRTUAL_MASTER,
-                    memo: B256::ZERO,
+                    receipt: receipt.abi_encode().into(),
                 },
             )]);
             guard.clear_emitted_events();
