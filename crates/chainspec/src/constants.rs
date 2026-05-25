@@ -50,6 +50,29 @@ pub mod gas {
         original_effective_gas_price.saturating_sub(TEMPO_T6_PAYMENT_GAS_PRICE_DISCOUNT)
     }
 
+    /// [TIP-1010] general (non-payment) gas limit: 30 million gas per block.
+    /// Cap for non-payment transactions.
+    ///
+    /// [TIP-1010]: <https://docs.tempo.xyz/protocol/tips/tip-1010>
+    pub const TEMPO_T1_GENERAL_GAS_LIMIT: u64 = 30_000_000;
+
+    /// TIP-1010 per-transaction gas limit cap: 30 million gas.
+    /// Allows maximum-sized contract deployments under [TIP-1000] state creation costs.
+    ///
+    /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
+    pub const TEMPO_T1_TX_GAS_LIMIT_CAP: u64 = 30_000_000;
+
+    /// Gas cost for using an existing 2D nonce key (cold SLOAD + warm SSTORE reset).
+    pub const TEMPO_T1_EXISTING_NONCE_KEY_GAS: u64 = COLD_SLOAD + WARM_SSTORE_RESET;
+    /// T2 adds 2 warm SLOADs for the extended nonce key lookup.
+    pub const TEMPO_T2_EXISTING_NONCE_KEY_GAS: u64 =
+        TEMPO_T1_EXISTING_NONCE_KEY_GAS + 2 * WARM_SLOAD;
+
+    /// Gas cost for using a new 2D nonce key (cold SLOAD + SSTORE set for 0 -> non-zero).
+    pub const TEMPO_T1_NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD + SSTORE_SET;
+    /// T2 adds 2 warm SLOADs for the extended nonce key lookup.
+    pub const TEMPO_T2_NEW_NONCE_KEY_GAS: u64 = TEMPO_T1_NEW_NONCE_KEY_GAS + 2 * WARM_SLOAD;
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -99,29 +122,6 @@ pub mod gas {
             }
         }
     }
-
-    /// [TIP-1010] general (non-payment) gas limit: 30 million gas per block.
-    /// Cap for non-payment transactions.
-    ///
-    /// [TIP-1010]: <https://docs.tempo.xyz/protocol/tips/tip-1010>
-    pub const TEMPO_T1_GENERAL_GAS_LIMIT: u64 = 30_000_000;
-
-    /// TIP-1010 per-transaction gas limit cap: 30 million gas.
-    /// Allows maximum-sized contract deployments under [TIP-1000] state creation costs.
-    ///
-    /// [TIP-1000]: <https://docs.tempo.xyz/protocol/tips/tip-1000>
-    pub const TEMPO_T1_TX_GAS_LIMIT_CAP: u64 = 30_000_000;
-
-    /// Gas cost for using an existing 2D nonce key (cold SLOAD + warm SSTORE reset).
-    pub const TEMPO_T1_EXISTING_NONCE_KEY_GAS: u64 = COLD_SLOAD + WARM_SSTORE_RESET;
-    /// T2 adds 2 warm SLOADs for the extended nonce key lookup.
-    pub const TEMPO_T2_EXISTING_NONCE_KEY_GAS: u64 =
-        TEMPO_T1_EXISTING_NONCE_KEY_GAS + 2 * WARM_SLOAD;
-
-    /// Gas cost for using a new 2D nonce key (cold SLOAD + SSTORE set for 0 -> non-zero).
-    pub const TEMPO_T1_NEW_NONCE_KEY_GAS: u64 = COLD_SLOAD + SSTORE_SET;
-    /// T2 adds 2 warm SLOADs for the extended nonce key lookup.
-    pub const TEMPO_T2_NEW_NONCE_KEY_GAS: u64 = TEMPO_T1_NEW_NONCE_KEY_GAS + 2 * WARM_SLOAD;
 }
 
 pub mod mainnet {
