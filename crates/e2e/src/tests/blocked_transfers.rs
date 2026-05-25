@@ -32,6 +32,7 @@ use crate::{Setup, execution_runtime::TEST_MNEMONIC, setup_validators};
 
 const GAS: u64 = 5_000_000;
 const GAS_PRICE: u128 = TEMPO_T1_BASE_FEE as u128;
+const GUARD_WARM_BALANCE: U256 = U256::ONE;
 
 struct BlockedTransfer {
     token: Address,
@@ -76,7 +77,7 @@ fn test_blocked_transfer_claim_no_recovery() {
                 .balanceOf(RECEIVE_POLICY_GUARD_ADDRESS)
                 .call()
                 .await?,
-            amount
+            amount + GUARD_WARM_BALANCE
         );
 
         let receiver_wallet = wallet(11)?;
@@ -99,7 +100,7 @@ fn test_blocked_transfer_claim_no_recovery() {
         assert_eq!(token.balanceOf(blocked.receiver).call().await?, amount);
         assert_eq!(
             token.balanceOf(RECEIVE_POLICY_GUARD_ADDRESS).call().await?,
-            U256::ZERO
+            GUARD_WARM_BALANCE
         );
 
         Ok(())
@@ -142,7 +143,7 @@ fn test_receive_policy_guard_claim_with_recovery() {
         assert_eq!(token.balanceOf(destination).call().await?, amount);
         assert_eq!(
             token.balanceOf(RECEIVE_POLICY_GUARD_ADDRESS).call().await?,
-            U256::ZERO
+            GUARD_WARM_BALANCE
         );
 
         Ok(())
@@ -281,7 +282,7 @@ async fn create_blocked_transfer(
             .balanceOf(RECEIVE_POLICY_GUARD_ADDRESS)
             .call()
             .await?,
-        amount
+        amount + GUARD_WARM_BALANCE
     );
 
     let blocked = BlockedTransfer {

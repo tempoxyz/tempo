@@ -252,6 +252,8 @@ mod tests {
         ITIP403Registry, ReceivePolicyGuardEvent, TIP20Error, TIP20Event,
     };
 
+    const GUARD_WARM_BALANCE: U256 = U256::ONE;
+
     fn block_all_senders(receiver: Address, recovery_authority: Address) -> Result<()> {
         TIP403Registry::new().set_receive_policy(
             receiver,
@@ -425,7 +427,7 @@ mod tests {
                         token.balance_of(ITIP20::balanceOfCall {
                             account: RECEIVE_POLICY_GUARD_ADDRESS
                         })?,
-                        U256::ZERO
+                        GUARD_WARM_BALANCE
                     );
                     assert_eq!(
                         token.balance_of(ITIP20::balanceOfCall {
@@ -667,14 +669,15 @@ mod tests {
                 token_a.balance_of(ITIP20::balanceOfCall {
                     account: RECEIVE_POLICY_GUARD_ADDRESS
                 })?,
-                guard.balance_of(receipt_a.abi_encode().into())?
+                GUARD_WARM_BALANCE
+                    + guard.balance_of(receipt_a.abi_encode().into())?
                     + guard.balance_of(receipt_b.abi_encode().into())?
             );
             assert_eq!(
                 token_b.balance_of(ITIP20::balanceOfCall {
                     account: RECEIVE_POLICY_GUARD_ADDRESS
                 })?,
-                guard.balance_of(receipt_c.abi_encode().into())?
+                GUARD_WARM_BALANCE + guard.balance_of(receipt_c.abi_encode().into())?
             );
 
             guard.claim(receiver_a, receiver_a, receipt_a.abi_encode().into())?;
@@ -682,13 +685,13 @@ mod tests {
                 token_a.balance_of(ITIP20::balanceOfCall {
                     account: RECEIVE_POLICY_GUARD_ADDRESS
                 })?,
-                guard.balance_of(receipt_b.abi_encode().into())?
+                GUARD_WARM_BALANCE + guard.balance_of(receipt_b.abi_encode().into())?
             );
             assert_eq!(
                 token_b.balance_of(ITIP20::balanceOfCall {
                     account: RECEIVE_POLICY_GUARD_ADDRESS
                 })?,
-                guard.balance_of(receipt_c.abi_encode().into())?
+                GUARD_WARM_BALANCE + guard.balance_of(receipt_c.abi_encode().into())?
             );
 
             guard.claim(recovery, recovery, receipt_b.abi_encode().into())?;
@@ -696,13 +699,13 @@ mod tests {
                 token_a.balance_of(ITIP20::balanceOfCall {
                     account: RECEIVE_POLICY_GUARD_ADDRESS
                 })?,
-                U256::ZERO
+                GUARD_WARM_BALANCE
             );
             assert_eq!(
                 token_b.balance_of(ITIP20::balanceOfCall {
                     account: RECEIVE_POLICY_GUARD_ADDRESS
                 })?,
-                guard.balance_of(receipt_c.abi_encode().into())?
+                GUARD_WARM_BALANCE + guard.balance_of(receipt_c.abi_encode().into())?
             );
 
             Ok(())
