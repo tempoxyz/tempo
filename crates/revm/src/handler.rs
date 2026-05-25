@@ -637,19 +637,30 @@ where
             // Execute call with NO additional initial gas (already deducted upfront in validation)
             let frame_result = execute_single(self, evm, remaining_gas, reservoir);
 
-            // Restore original TxEnv immediately after execution, even if execution failed
-            {
-                let tx = &mut evm.ctx().tx;
-                tx.inner.kind = original_kind;
-                tx.inner.value = original_value;
-                tx.inner.data = original_data.clone();
-                tx.inner.gas_limit = original_gas_limit;
-            }
-
-            let mut frame_result = frame_result?;
+            let mut frame_result = match frame_result {
+                Ok(frame_result) => frame_result,
+                Err(err) => {
+                    let tx = &mut evm.ctx().tx;
+                    tx.inner.kind = original_kind;
+                    tx.inner.value = original_value;
+                    tx.inner.data = original_data.clone();
+                    tx.inner.gas_limit = original_gas_limit;
+                    return Err(err);
+                }
+            };
 
             // Check if call succeeded
             if !frame_result.instruction_result().is_ok() {
+                // Restore the top-level transaction environment before failure handling that may
+                // inspect transaction metadata such as nonce mode or gas limit.
+                {
+                    let tx = &mut evm.ctx().tx;
+                    tx.inner.kind = original_kind;
+                    tx.inner.value = original_value;
+                    tx.inner.data = original_data.clone();
+                    tx.inner.gas_limit = original_gas_limit;
+                }
+
                 // Revert checkpoint - rolls back ALL state changes from all executed calls.
                 evm.ctx().journal_mut().checkpoint_revert(checkpoint);
 
@@ -703,6 +714,17 @@ where
 
         // All calls succeeded - commit checkpoint to finalize ALL state changes
         evm.ctx().journal_mut().checkpoint_commit();
+
+        // Restore the top-level transaction environment once for the successful batch. Each
+        // iteration overwrites the per-call fields before execution, so restoring after every
+        // successful call only clones calldata without changing execution semantics.
+        {
+            let tx = &mut evm.ctx().tx;
+            tx.inner.kind = original_kind;
+            tx.inner.value = original_value;
+            tx.inner.data = original_data;
+            tx.inner.gas_limit = original_gas_limit;
+        }
 
         // Fix gas accounting for the entire batch
         let mut result =
