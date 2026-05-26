@@ -1286,19 +1286,24 @@ where
                     .into());
                 }
 
-                let is_admin = StorageCtx::enter_precompile(
+                let admin_key = StorageCtx::enter_precompile(
                     journal,
                     block,
                     cfg,
                     tx,
                     |keychain: AccountKeychain| {
                         keychain
-                            .is_admin_key_for(tx.caller, auth_signer)
+                            .validate_keychain_authorization(
+                                tx.caller,
+                                auth_signer,
+                                block.timestamp().to::<u64>(),
+                                Some(key_auth.signature.signature_type().into()),
+                            )
                             .map_err(|e| EVMError::Custom(e.to_string()))
                     },
                 )?;
 
-                if !is_admin {
+                if !admin_key.is_admin {
                     return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
                         expected: tx.caller,
                         actual: auth_signer,
@@ -5192,6 +5197,44 @@ mod tests {
                         if reason.contains("admin-signed key authorization account mismatch")
                 ),
                 "admin-signed non-admin authorization without account binding should fail, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t6_admin_key_authorization_rejects_admin_signature_type_mismatch() {
+            let (admin_signer, admin_key) = generate_keypair();
+            let user = Address::random();
+            let child_key = Address::random();
+            let signed = sign_key_auth(
+                &admin_signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key)
+                    .with_account(user),
+            );
+            let (mut evm, h) = make_evm(
+                user,
+                admin_key,
+                Some(signed),
+                TempoHardfork::T6,
+                None,
+                false,
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let mut keychain = AccountKeychain::new();
+                keychain
+                    .authorize_admin_key(user, admin_key, PrecompileSignatureType::WebAuthn, None)
+                    .expect("root authorizes WebAuthn admin key");
+            });
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("SignatureTypeMismatch")
+                ),
+                "admin-signed key authorization should reject sidecar signature type mismatch, got: {result:?}"
             );
         }
 
