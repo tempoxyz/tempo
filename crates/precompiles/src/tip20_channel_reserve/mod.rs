@@ -112,9 +112,9 @@ impl TIP20ChannelReserve {
         msg_sender: Address,
         call: ITIP20ChannelReserve::openCall,
     ) -> Result<B256> {
-        if call.payee == Address::ZERO
+        if call.payee.is_zero()
             || is_tip20_prefix(call.payee)
-            || (call.payee.is_virtual() && call.operator.is_zero())
+            || (call.payee.is_virtual() && (call.operator.is_zero() || call.operator.is_virtual()))
         {
             return Err(TIP20ChannelReserveError::invalid_payee().into());
         }
@@ -835,21 +835,23 @@ mod tests {
             seed_expiring_nonce_hash(&mut reserve)?;
 
             for invalid_payee in &[token.address(), virtual_payee] {
-                let result = reserve.open(
-                    payer,
-                    open_call(
-                        *invalid_payee,
-                        Address::ZERO,
-                        token.address(),
-                        1,
-                        B256::random(),
-                        Address::ZERO,
-                    ),
-                );
-                assert_eq!(
-                    result.unwrap_err(),
-                    TIP20ChannelReserveError::invalid_payee().into()
-                );
+                for invalid_operator_for_virtual_payee in &[Address::ZERO, virtual_payee] {
+                    let result = reserve.open(
+                        payer,
+                        open_call(
+                            *invalid_payee,
+                            *invalid_operator_for_virtual_payee,
+                            token.address(),
+                            1,
+                            B256::random(),
+                            Address::ZERO,
+                        ),
+                    );
+                    assert_eq!(
+                        result.unwrap_err(),
+                        TIP20ChannelReserveError::invalid_payee().into()
+                    );
+                }
             }
 
             // Virtual payees are valid when an operator is set to submit vouchers on their behalf.
