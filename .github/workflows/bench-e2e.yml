@@ -889,7 +889,7 @@ jobs:
                 });
                 const tracesUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(tracesPane)}&orgId=1`;
                 const internalPerfLine = internalPerfUrl ? `- [Internal dashboard](${internalPerfUrl})\n` : '';
-                grafanaSection = `\n\n### Observability\n\n${internalPerfLine}- [Metrics dashboard](${grafanaUrl})\n- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n`;
+                grafanaSection = `\n\n### Observability\n\n${internalPerfLine}- [Grafana](${grafanaUrl})\n- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n`;
               }
             } catch (e) {}
 

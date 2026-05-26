@@ -1266,7 +1266,6 @@ def generate-summary [
         $"- Duration: ($duration)s"
         $"- Run pairs: ($run_pairs)"
         $"- Snapshot: (if (has-schelk) { 'schelk' } else { 'cp fallback' })"
-        (if $internal_perf_url != "" { $"- Internal dashboard: [Internal dashboard]($internal_perf_url)" } else { "" })
         $"- Baseline blocks: ($b_lat.n)"
         $"- Feature blocks: ($f_lat.n)"
     ])
