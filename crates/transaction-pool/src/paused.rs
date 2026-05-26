@@ -10,7 +10,7 @@ use alloy_primitives::{
     Address, TxHash,
     map::{AddressMap, B256Set},
 };
-use reth_transaction_pool::{PoolTransaction, ValidPoolTransaction};
+use reth_transaction_pool::ValidPoolTransaction;
 use std::{sync::Arc, time::Instant};
 
 /// Duration after which paused transactions are expired and removed.
@@ -233,17 +233,7 @@ impl PausedFeeTokenPool {
 
                 let matches_limit_update =
                     subject.matches_spending_limit_update(spending_limit_updates);
-                let sender_paid = if matches_limit_update {
-                    let sender = *entry.tx.transaction.sender_ref();
-                    entry
-                        .tx
-                        .transaction
-                        .inner()
-                        .fee_payer(sender)
-                        .map_or(true, |fee_payer| fee_payer == sender)
-                } else {
-                    false
-                };
+                let sender_paid = matches_limit_update && entry.tx.transaction.is_sender_paid_fee();
 
                 if subject.matches_revoked(revoked_keys) || (sender_paid && matches_limit_update) {
                     return false;

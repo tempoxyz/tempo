@@ -224,6 +224,7 @@ where
                 if !updates.spending_limit_changes.is_empty()
                     && let Some(ref subject) = keychain_subject
                     && subject.matches_spending_limit_update(&updates.spending_limit_changes)
+                    && tx.transaction.is_sender_paid_fee()
                 {
                     to_remove.push(*tx.hash());
                     spending_limit_count += 1;
@@ -238,6 +239,7 @@ where
                 if !updates.spending_limit_spends.is_empty()
                     && let Some(ref subject) = keychain_subject
                     && subject.matches_spending_limit_update(&updates.spending_limit_spends)
+                    && tx.transaction.is_sender_paid_fee()
                     && let Some(ref mut provider) = state_provider
                     && exceeds_spending_limit(
                         provider,
@@ -1420,6 +1422,32 @@ mod tests {
         );
     }
 
+    fn set_keychain_spending_limit(
+        provider: &MockEthProvider<TempoPrimitives, TempoChainSpec>,
+        account: Address,
+        key_id: Address,
+        fee_token: Address,
+        remaining: U256,
+    ) {
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                let mut keychain = AccountKeychain::new();
+                keychain.keys[account][key_id].write(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: u64::MAX,
+                    enforce_limits: true,
+                    is_revoked: false,
+                })?;
+                let limit_key = AccountKeychain::spending_limit_key(account, key_id);
+                keychain.spending_limits[limit_key][fee_token].write(SpendingLimitState {
+                    remaining,
+                    ..Default::default()
+                })?;
+                Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
+            })
+            .unwrap();
+    }
+
     fn create_test_pool(
         provider: MockEthProvider<TempoPrimitives, TempoChainSpec>,
     ) -> TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
@@ -1460,6 +1488,97 @@ mod tests {
         };
         pool.add_validated_transaction(TransactionOrigin::External, validated)
             .expect("transaction should be admitted");
+    }
+
+    fn create_provider_with_tip() -> MockEthProvider<TempoPrimitives, TempoChainSpec> {
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
+        provider.add_block(
+            B256::random(),
+            Block {
+                header: TempoHeader {
+                    inner: Header {
+                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        provider
+    }
+
+    fn sponsored_keychain_transaction(
+        sender: Address,
+        fee_token: Address,
+    ) -> (TempoPooledTransaction, Address) {
+        let access_key_signer = PrivateKeySigner::random();
+        let key_id = access_key_signer.address();
+        let envelope = crate::test_utils::TxBuilder::aa(sender)
+            .fee_token(fee_token)
+            .build_keychain(sender, &access_key_signer)
+            .inner()
+            .clone()
+            .into_inner();
+        let TempoTxEnvelope::AA(mut signed) = envelope else {
+            panic!("expected AA transaction");
+        };
+
+        let sponsor = PrivateKeySigner::random();
+        signed.tx_mut().fee_payer_signature = Some(Signature::new(U256::ZERO, U256::ZERO, false));
+        let fee_payer_hash = signed.tx().fee_payer_signature_hash(sender);
+        signed.tx_mut().fee_payer_signature = Some(
+            sponsor
+                .sign_hash_sync(&fee_payer_hash)
+                .expect("fee payer signing should succeed"),
+        );
+
+        (
+            TempoPooledTransaction::new(Recovered::new_unchecked(
+                TempoTxEnvelope::AA(signed),
+                sender,
+            )),
+            key_id,
+        )
+    }
+
+    #[tokio::test]
+    async fn keeps_sponsored_keychain_transaction_on_spending_limit_invalidations() {
+        let sender = Address::random();
+        let fee_token = PATH_USD_ADDRESS;
+        let (pooled, key_id) = sponsored_keychain_transaction(sender, fee_token);
+
+        let provider = create_provider_with_tip();
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        set_keychain_spending_limit(
+            &provider,
+            sender,
+            key_id,
+            fee_token,
+            pooled.fee_token_cost() - U256::from(1_u64),
+        );
+        let pool = create_test_pool(provider);
+        add_validated(&pool, pooled.clone());
+
+        let mut limit_change = crate::maintain::TempoPoolUpdates::new();
+        limit_change
+            .spending_limit_changes
+            .insert(sender, key_id, Some(fee_token));
+
+        assert!(
+            pool.evict_invalidated_transactions(&limit_change)
+                .is_empty()
+        );
+        assert!(pool.get(pooled.hash()).is_some());
+
+        let mut limit_spend = crate::maintain::TempoPoolUpdates::new();
+        limit_spend
+            .spending_limit_spends
+            .insert(sender, key_id, Some(fee_token));
+
+        assert!(pool.evict_invalidated_transactions(&limit_spend).is_empty());
+        assert!(pool.get(pooled.hash()).is_some());
     }
 
     #[tokio::test]
