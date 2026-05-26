@@ -12,7 +12,7 @@ use crate::{
         Handler, Layout, LayoutCtx, Slot, Storable, StorableType, StorageCtx, StorageOps,
         packing::PackedSlot,
     },
-    tip20::rewards::RewardFlag,
+    tip20::{U128_MAX, rewards::RewardFlag},
 };
 use alloy::primitives::{Address, U256};
 use tempo_precompiles_macros::StorableLayout;
@@ -22,6 +22,16 @@ pub struct UserState {
     pub(super) amount: u128,
     /// (T6+) Cached reward opt-in status. Tracks `reward_recipient`, which remains the source of truth.
     pub(super) flag: RewardFlag,
+}
+
+/// Decodes the token balance amount from a raw TIP-20 `balances[account]` storage word.
+///
+/// T6 packs [`UserState`] into the legacy balance slot with the amount in the low 128 bits and
+/// reward metadata in the high bits. Use this helper when reading balance slots through raw storage
+/// APIs instead of typed storage handlers.
+#[inline]
+pub fn decode_tip20_balance(slot_value: U256) -> U256 {
+    slot_value & U128_MAX
 }
 
 impl UserState {
@@ -166,5 +176,20 @@ impl Storable for UserState {
             LayoutCtx::packed(__packing_user_state::FLAG_OFFSET),
         )?;
         storage.store(slot, packed.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decode_tip20_balance_masks_user_state_cache() {
+        let balance = U256::from(1000u64);
+        let packed = U256::MAX ^ (decode_tip20_balance(U256::MAX) ^ balance);
+        assert_eq!(decode_tip20_balance(packed), balance);
+
+        let packed = U256::MAX;
+        assert_eq!(decode_tip20_balance(packed), U128_MAX);
     }
 }
