@@ -28,6 +28,8 @@ use tracing::trace;
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
+const PREWARM_BATCH_SIZE: usize = 4;
+
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
 /// [`BestTransactions`] iterator with the source order and invalidations triggered
@@ -104,17 +106,32 @@ impl BestTransactionsPrewarming {
                 pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
             });
 
-            let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
-                let Some(tx) = ctx.best_txs.next() else {
-                    let _ = ctx.transactions_tx.send(None);
+            let advance_batch = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
+                let mut txs = Vec::with_capacity(PREWARM_BATCH_SIZE);
+                for _ in 0..PREWARM_BATCH_SIZE {
+                    let Some(tx) = ctx.best_txs.next() else {
+                        if txs.is_empty() {
+                            let _ = ctx.transactions_tx.send(None);
+                        }
+                        break;
+                    };
+                    let _ = ctx.transactions_tx.send(Some(tx.clone()));
+                    txs.push(tx);
+                }
+
+                if txs.is_empty() {
                     return;
-                };
-                let _ = ctx.transactions_tx.send(Some(tx.clone()));
+                }
 
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
                 scope.spawn(move |_| {
-                    Self::prewarm_transaction(prewarm, tx.clone());
+                    for tx in txs {
+                        if prewarm.is_stopped() {
+                            break;
+                        }
+                        Self::prewarm_transaction(prewarm.clone(), tx);
+                    }
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
             };
@@ -122,14 +139,16 @@ impl BestTransactionsPrewarming {
             // Fill the initial batch of transactions to execute and prewarm.
             //
             // We schedule 2x the number of threads to make sure that workers are never idle.
-            for _ in 0..pool.current_num_threads() * 2 {
-                advance(&mut ctx);
+            let lookahead = pool.current_num_threads() * 2;
+            let initial_batches = lookahead.div_ceil(PREWARM_BATCH_SIZE);
+            for _ in 0..initial_batches {
+                advance_batch(&mut ctx);
             }
 
             while let Ok(command) = ctx.commands_rx.recv() {
                 match command {
                     BestTransactionsCommand::Advance => {
-                        advance(&mut ctx);
+                        advance_batch(&mut ctx);
                     }
                     BestTransactionsCommand::Invalid {
                         invalid,
@@ -941,7 +960,8 @@ mod tests {
     #[test]
     fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
         let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
+        let eager_advances =
+            (executor.prewarming_pool().current_num_threads() * 2).div_ceil(PREWARM_BATCH_SIZE);
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 
