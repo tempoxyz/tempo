@@ -99,11 +99,6 @@ impl BestTransactionsPrewarming {
         let pool = executor.prewarming_pool();
 
         pool.in_place_scope(|scope| {
-            let prewarm = ctx.prewarm.clone();
-            scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-            });
-
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
