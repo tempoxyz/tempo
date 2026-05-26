@@ -23,7 +23,7 @@ use tempo_precompiles::{
     tip20::{ITIP20, tip20_slots},
 };
 use tempo_primitives::TempoAddressExt;
-use tempo_transaction_pool::best::BestTransaction;
+use tempo_transaction_pool::{AASequenceId, best::BestTransaction};
 use tracing::trace;
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
@@ -136,13 +136,12 @@ impl BestTransactionsPrewarming {
                         old_rx,
                         new_tx,
                     } => {
+                        let invalidation = BufferedInvalidation::for_transaction(&invalid.tx);
                         ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
                         ctx.transactions_tx = new_tx;
 
                         for tx in old_rx {
-                            if let Some(tx) = tx
-                                && !is_invalidated_buffered_transaction(&invalid.tx, &tx)
-                            {
+                            if let Some(tx) = tx && !invalidation.invalidates(&tx) {
                                 let _ = ctx.transactions_tx.send(Some(tx));
                             }
                         }
@@ -595,26 +594,51 @@ struct InvalidTransaction {
     kind: InvalidPoolTransactionError,
 }
 
+#[derive(Debug, Clone, Copy)]
+enum BufferedInvalidation {
+    None,
+    Aa2d(AASequenceId),
+    Sender(Address),
+}
+
+impl BufferedInvalidation {
+    fn for_transaction(transaction: &BestTransaction) -> Self {
+        // Skip invalidation for expiring nonce transactions - they are independent
+        // and should not block other expiring nonce txs from the same sender
+        if transaction.transaction.is_expiring_nonce() {
+            return Self::None;
+        }
+
+        if transaction.transaction.is_aa_2d() {
+            transaction
+                .transaction
+                .aa_transaction_id()
+                .map(|id| Self::Aa2d(*id.seq_id()))
+                .unwrap_or(Self::None)
+        } else {
+            Self::Sender(transaction.transaction.sender())
+        }
+    }
+
+    fn invalidates(self, candidate: &BestTransaction) -> bool {
+        match self {
+            Self::None => false,
+            Self::Aa2d(invalid_seq_id) => candidate
+                .transaction
+                .aa_transaction_id()
+                .is_some_and(|candidate_id| candidate_id.seq_id() == &invalid_seq_id),
+            Self::Sender(sender) => candidate.transaction.sender() == sender,
+        }
+    }
+}
+
 /// Returns whether the candidate transaction is invalidated by the given invalid transaction.
+#[cfg(test)]
 fn is_invalidated_buffered_transaction(
     invalid: &BestTransaction,
     candidate: &BestTransaction,
 ) -> bool {
-    // Skip invalidation for expiring nonce transactions - they are independent
-    // and should not block other expiring nonce txs from the same sender
-    if invalid.transaction.is_expiring_nonce() {
-        return false;
-    }
-
-    if invalid.transaction.is_aa_2d() {
-        candidate
-            .transaction
-            .aa_transaction_id()
-            .zip(invalid.transaction.aa_transaction_id())
-            .is_some_and(|(candidate_id, invalid_id)| candidate_id.seq_id() == invalid_id.seq_id())
-    } else {
-        candidate.transaction.sender() == invalid.transaction.sender()
-    }
+    BufferedInvalidation::for_transaction(invalid).invalidates(candidate)
 }
 
 #[cfg(test)]
