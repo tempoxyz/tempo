@@ -26,7 +26,7 @@ impl TempoGasParams for GasParams {
 }
 
 // TIP-1000 total gas costs (used by T1)
-const SSTORE_SET_COST: u64 = 250_000;
+pub const SSTORE_SET_COST: u64 = 250_000;
 const CREATE_COST: u64 = 500_000;
 const NEW_ACCOUNT_COST: u64 = 250_000;
 const CODE_DEPOSIT_COST_T1: u64 = 1_000;

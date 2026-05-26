@@ -199,6 +199,22 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
       action_id: 'diff_button',
     });
   }
+  if (summary.internal_perf_url) {
+    buttons.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'Internal dashboard', emoji: true },
+      url: summary.internal_perf_url,
+      action_id: 'internal_perf_button',
+    });
+  }
+  if (summary.grafana_url) {
+    buttons.push({
+      type: 'button',
+      text: { type: 'plain_text', text: 'Grafana', emoji: true },
+      url: summary.grafana_url,
+      action_id: 'grafana_button',
+    });
+  }
 
   return [
     {

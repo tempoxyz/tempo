@@ -223,15 +223,20 @@ impl TempoPoolUpdates {
 
     /// Returns true if there are any invalidation events that require scanning the pool.
     pub fn has_invalidation_events(&self) -> bool {
-        !self.revoked_keys.is_empty()
-            || !self.spending_limit_changes.is_empty()
-            || !self.spending_limit_spends.is_empty()
+        self.has_keychain_subject_updates()
             || !self.validator_token_changes.is_empty()
             || !self.user_token_changes.is_empty()
             || !self.blacklist_additions.is_empty()
             || !self.whitelist_removals.is_empty()
             || !self.fee_balance_changes.is_empty()
             || !self.key_authorization_witness_burns.is_empty()
+    }
+
+    /// Returns true if updates may invalidate keychain-signature transactions.
+    pub fn has_keychain_subject_updates(&self) -> bool {
+        !self.revoked_keys.is_empty()
+            || !self.spending_limit_changes.is_empty()
+            || !self.spending_limit_spends.is_empty()
     }
 }
 
@@ -740,16 +745,15 @@ where
                     );
                 }
 
-                // 5. Evict revoked keys and spending limit updates from paused pool
+                // 5. Evict hard keychain invalidations from paused pool
+                // Ignore spending_limit_spends here: AccessKeySpend only proves partial limit consumption, and paused txs are fully revalidated on unpause.
                 if !updates.revoked_keys.is_empty()
                     || !updates.spending_limit_changes.is_empty()
-                    || !updates.spending_limit_spends.is_empty()
                     || !updates.key_authorization_witness_burns.is_empty()
                 {
                     state.paused_pool.evict_invalidated(
                         &updates.revoked_keys,
                         &updates.spending_limit_changes,
-                        &updates.spending_limit_spends,
                         &updates.key_authorization_witness_burns,
                     );
                 }
@@ -820,7 +824,7 @@ where
                 // 6. Update 2D nonce pool (also removes included expiring nonce txs
                 // via slot changes on the nonce precompile)
                 let nonce_pool_start = Instant::now();
-                pool.notify_aa_pool_on_state_updates(bundle_state);
+                let _mined_aa_txs = pool.notify_aa_pool_on_state_updates(bundle_state);
                 metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
 
                 // 7. Update AMM liquidity cache (must happen before validator token eviction)
