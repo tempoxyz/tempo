@@ -200,54 +200,57 @@ where
         let mut blacklisted_count = 0;
         let mut unwhitelisted_count = 0;
         let mut insolvent_fee_payer_count = 0;
+        let has_keychain_subject_updates = updates.has_keychain_subject_updates();
         let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
 
         let all_txs = self.all_transactions();
         for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
-            // Extract keychain subject once per transaction (if applicable)
-            let keychain_subject = tx.transaction.keychain_subject();
+            // Avoid recovering key ids unless a keychain invalidation can use them.
+            if has_keychain_subject_updates {
+                let keychain_subject = tx.transaction.keychain_subject();
 
-            // Check 1: Revoked keychain keys
-            if !updates.revoked_keys.is_empty()
-                && let Some(ref subject) = keychain_subject
-                && subject.matches_revoked(&updates.revoked_keys)
-            {
-                to_remove.push(*tx.hash());
-                revoked_count += 1;
-                continue;
-            }
+                // Check 1: Revoked keychain keys
+                if !updates.revoked_keys.is_empty()
+                    && let Some(ref subject) = keychain_subject
+                    && subject.matches_revoked(&updates.revoked_keys)
+                {
+                    to_remove.push(*tx.hash());
+                    revoked_count += 1;
+                    continue;
+                }
 
-            // Check 2: Spending limit updates
-            // Only evict if the transaction's fee token matches the token whose limit changed.
-            if !updates.spending_limit_changes.is_empty()
-                && let Some(ref subject) = keychain_subject
-                && subject.matches_spending_limit_update(&updates.spending_limit_changes)
-            {
-                to_remove.push(*tx.hash());
-                spending_limit_count += 1;
-                continue;
-            }
+                // Check 2: Spending limit updates
+                // Only evict if the transaction's fee token matches the token whose limit changed.
+                if !updates.spending_limit_changes.is_empty()
+                    && let Some(ref subject) = keychain_subject
+                    && subject.matches_spending_limit_update(&updates.spending_limit_changes)
+                {
+                    to_remove.push(*tx.hash());
+                    spending_limit_count += 1;
+                    continue;
+                }
 
-            // Check 2b: Spending limit spends
-            // AccessKeySpend receipt logs identify the exact (account, key_id, token)
-            // triples whose remaining limit changed during execution. We re-read the
-            // current remaining limit from state for matching pending txs and evict if
-            // the tx's fee cost now exceeds that remaining limit.
-            if !updates.spending_limit_spends.is_empty()
-                && let Some(ref subject) = keychain_subject
-                && subject.matches_spending_limit_update(&updates.spending_limit_spends)
-                && let Some(ref mut provider) = state_provider
-                && exceeds_spending_limit(
-                    provider,
-                    subject,
-                    tx.transaction.fee_token_cost(),
-                    tip_timestamp,
-                    spec,
-                )
-            {
-                to_remove.push(*tx.hash());
-                spending_limit_spend_count += 1;
-                continue;
+                // Check 2b: Spending limit spends
+                // AccessKeySpend receipt logs identify the exact (account, key_id, token)
+                // triples whose remaining limit changed during execution. We re-read the
+                // current remaining limit from state for matching pending txs and evict if
+                // the tx's fee cost now exceeds that remaining limit.
+                if !updates.spending_limit_spends.is_empty()
+                    && let Some(ref subject) = keychain_subject
+                    && subject.matches_spending_limit_update(&updates.spending_limit_spends)
+                    && let Some(ref mut provider) = state_provider
+                    && exceeds_spending_limit(
+                        provider,
+                        subject,
+                        tx.transaction.fee_token_cost(),
+                        tip_timestamp,
+                        spec,
+                    )
+                {
+                    to_remove.push(*tx.hash());
+                    spending_limit_spend_count += 1;
+                    continue;
+                }
             }
 
             // Check 2c: TIP-1053 key-authorization witness burns
