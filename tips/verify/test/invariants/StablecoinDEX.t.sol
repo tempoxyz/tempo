@@ -11,8 +11,6 @@ import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
 /// @dev Tests invariants TEMPO-DEX1 through TEMPO-DEX19 as documented in README.md.
 /// Pinned to T5 so TEMPO-DEX17 covers TIP-1030's same-tick flip path
 /// (`flipTick == tick`).
-/// forge-config: default.hardfork = "tempo:T5"
-/// forge-config: fuzz500.hardfork = "tempo:T5"
 contract StablecoinDEXInvariantTest is InvariantBaseTest {
 
     /// @dev Mapping of actor address to their placed order IDs
@@ -738,7 +736,7 @@ contract StablecoinDEXInvariantTest is InvariantBaseTest {
     /// @notice Main invariant function called after each fuzz sequence
     /// @dev Verifies TEMPO-DEX10 (balance solvency), TEMPO-DEX11/15 (tick consistency), TEMPO-DEX12/13 (best tick)
     ///      Optimized: unified loops over actors and tokens to reduce iteration overhead
-    function invariantStablecoinDEX() public view {
+    function invariant_stablecoinDEX() public view {
         // Compute expected escrowed amounts from all orders (including flip-created orders)
         (uint256 expectedPathUsdEscrowed, uint256[] memory expectedTokenEscrowed,) =
             _computeExpectedEscrow();

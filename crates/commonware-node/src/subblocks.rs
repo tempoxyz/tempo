@@ -853,8 +853,8 @@ async fn validate_subblock(
     // Bound subblock size at a value proportional to shared_gas_limit.
     //
     // This ensures we never collect too many subblocks to fit into a new proposal.
-    let max_size = (MAX_RLP_BLOCK_SIZE as u128 * shared_gas_limit as u128
-        / evm.block().gas_limit as u128
+    let max_size = (MAX_RLP_BLOCK_SIZE as u128 * u128::from(shared_gas_limit)
+        / u128::from(evm.block().gas_limit)
         / participants as u128) as usize;
     if subblock.total_tx_size() > max_size {
         warn!(

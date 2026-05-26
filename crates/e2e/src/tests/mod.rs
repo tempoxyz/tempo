@@ -20,6 +20,7 @@ mod simple;
 mod snapshot;
 // FIXME: subblocks are currently flaky.
 // mod subblocks;
+mod blocked_transfers;
 mod sync;
 mod v4_at_genesis;
 

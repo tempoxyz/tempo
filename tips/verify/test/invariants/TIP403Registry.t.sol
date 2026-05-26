@@ -486,7 +486,7 @@ contract TIP403RegistryInvariantTest is InvariantBaseTest {
     /// @notice Run all invariant checks in a single unified loop
     /// @dev Combines TEMPO-REG3, REG15, REG16, REG19 checks
     ///      Special policies check (REG13) moved to setUp() as they're immutable
-    function invariant_globalInvariants() public {
+    function invariant_tip403RegistryGlobal() public {
         // TEMPO-REG15: Counter monotonicity (done once, not per-policy)
         uint64 counter = registry.policyIdCounter();
         assertTrue(counter >= 2, "TEMPO-REG15: Counter should be at least 2");

@@ -6,7 +6,7 @@ This directory contains Solidity spec verification tests and fuzz harnesses for 
 
 ## Profiles
 
-The checked-in `foundry.toml` uses two profiles, which always run against a Tempo-native EVM with enabled Rust precompiles:
+The checked-in `foundry.toml` uses two profiles, which default to the Tempo T5 hardfork and run against a Tempo-native EVM with enabled Rust precompiles:
 
 - `default`: config for standard Foundry build/fmt/ABI tasks. Lighter optimizer and fuzz/invariant settings, for quicker output.
 - `fuzz500`: config for extended invariant runs.

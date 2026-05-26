@@ -31,6 +31,11 @@ pub struct TempoEvm<DB: Database, I> {
     >,
     /// The fee collected in `collectFeePreTx` call.
     pub(crate) collected_fee: U256,
+    /// The validator-credited amount (post-feeAMM haircut, in the validator's fee token) returned
+    /// by the most recent `collectFeePostTx` call.
+    ///
+    /// Reset to zero before each transaction so it reflects only the current tx.
+    pub validator_fee: U256,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
     /// The expiry timestamp of the access key used by the current transaction.
@@ -77,6 +82,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         Self {
             inner,
             collected_fee: U256::ZERO,
+            validator_fee: U256::ZERO,
             fee_token: None,
             key_expiry: None,
             skip_valid_after_check: false,

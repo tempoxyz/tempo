@@ -1,23 +1,23 @@
-pub use ITIP20ChannelEscrow::{
-    ITIP20ChannelEscrowErrors as TIP20ChannelEscrowError,
-    ITIP20ChannelEscrowEvents as TIP20ChannelEscrowEvent,
+pub use ITIP20ChannelReserve::{
+    ITIP20ChannelReserveErrors as TIP20ChannelReserveError,
+    ITIP20ChannelReserveEvents as TIP20ChannelReserveEvent,
 };
 use alloy_primitives::{Address, address};
 use alloy_sol_types::{SolCall, SolType};
 
-/// Native TIP-1034 channel escrow precompile address.
-pub const TIP20_CHANNEL_ESCROW_ADDRESS: Address =
+/// Native TIP-1034 channel reserve precompile address.
+pub const TIP20_CHANNEL_RESERVE_ADDRESS: Address =
     address!("0x4D50500000000000000000000000000000000000");
 
 crate::sol! {
-    /// TIP-20 channel escrow ABI.
+    /// TIP-20 channel reserve ABI.
     ///
-    /// The escrow locks payer deposits, verifies EIP-712 cumulative vouchers, pays the payee
+    /// The reserve locks payer deposits, verifies EIP-712 cumulative vouchers, pays the payee
     /// incrementally, and lets the payer withdraw the remaining balance after a close grace period.
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
     #[allow(clippy::too_many_arguments)]
-    interface ITIP20ChannelEscrow {
+    interface ITIP20ChannelReserve {
         /// Immutable channel identity supplied to all descriptor-based methods.
         struct ChannelDescriptor {
             /// Account that funded the channel and receives refunds.
@@ -205,8 +205,6 @@ crate::sol! {
         error NotPayeeOrOperator();
         /// Payee is zero or a TIP-20-prefix address.
         error InvalidPayee();
-        /// Token is not a TIP-20-prefix address.
-        error InvalidToken();
         /// Initial deposit cannot be zero.
         error ZeroDeposit();
         /// Handler did not seed the transaction-scoped open context hash.
@@ -229,35 +227,45 @@ crate::sol! {
 /// TIP-1045 Maximum calldata length (in bytes) for payment-eligible calls with dynamic params.
 pub const MAX_PAYMENT_CALLDATA_LEN: usize = 2048;
 
-impl ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls {
-    /// Returns `true` if `input` matches one of the recognized [TIP-20 channel escrow payment]
+impl ITIP20ChannelReserve::ITIP20ChannelReserveCalls {
+    /// Returns `true` if `input` matches one of the recognized [TIP-20 channel reserve payment]
     /// selectors: `open`, `topUp`, `settle`, `close`, `requestClose`, `withdraw`.
     ///
     /// # NOTES
-    /// - Only validates calldata; caller must check that `to == TIP20_CHANNEL_ESCROW_ADDRESS`.
+    /// - Only validates calldata; caller must check that `to == TIP20_CHANNEL_RESERVE_ADDRESS`.
     /// - Static-only calls require exact ABI-encoded length.
-    /// - Dynamic calls require valid ABI decoding + calldata length <= [`MAX_PAYMENT_CALLDATA_LEN`]
+    /// - Dynamic calls require valid ABI decoding and calldata length <= [`MAX_PAYMENT_CALLDATA_LEN`].
+    /// - Dynamic calls also require valid `signature` encoding.
     ///
-    /// [TIP-20 channel escrow payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
-    pub fn is_payment(input: &[u8]) -> bool {
-        fn is_call<C: SolCall>(input: &[u8]) -> bool {
-            if input.first_chunk::<4>() != Some(&C::SELECTOR) {
-                return false;
-            }
-
-            if let Some(canonical_size) = <C::Parameters<'_> as SolType>::ENCODED_SIZE {
-                input.len() == 4 + canonical_size
-            } else {
-                input.len() <= MAX_PAYMENT_CALLDATA_LEN && C::abi_decode_validate(input).is_ok()
-            }
+    /// [TIP-20 channel reserve payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
+    pub fn is_payment_with_valid_signature(
+        input: &[u8],
+        validate_signature: impl Fn(&[u8]) -> bool,
+    ) -> bool {
+        fn is_static_call<C: SolCall>(input: &[u8]) -> bool {
+            input.first_chunk::<4>() == Some(&C::SELECTOR)
+                && <C::Parameters<'_> as SolType>::ENCODED_SIZE
+                    .is_some_and(|canonical_size| input.len() == 4 + canonical_size)
         }
 
-        is_call::<ITIP20ChannelEscrow::openCall>(input)
-            || is_call::<ITIP20ChannelEscrow::topUpCall>(input)
-            || is_call::<ITIP20ChannelEscrow::closeCall>(input)
-            || is_call::<ITIP20ChannelEscrow::settleCall>(input)
-            || is_call::<ITIP20ChannelEscrow::requestCloseCall>(input)
-            || is_call::<ITIP20ChannelEscrow::withdrawCall>(input)
+        fn decode_dynamic_call<C: SolCall>(input: &[u8]) -> Option<C> {
+            if input.first_chunk::<4>() != Some(&C::SELECTOR)
+                || input.len() > MAX_PAYMENT_CALLDATA_LEN
+            {
+                return None;
+            }
+
+            C::abi_decode_validate(input).ok()
+        }
+
+        is_static_call::<ITIP20ChannelReserve::openCall>(input)
+            || is_static_call::<ITIP20ChannelReserve::topUpCall>(input)
+            || decode_dynamic_call::<ITIP20ChannelReserve::closeCall>(input)
+                .is_some_and(|call| validate_signature(call.signature.as_ref()))
+            || decode_dynamic_call::<ITIP20ChannelReserve::settleCall>(input)
+                .is_some_and(|call| validate_signature(call.signature.as_ref()))
+            || is_static_call::<ITIP20ChannelReserve::requestCloseCall>(input)
+            || is_static_call::<ITIP20ChannelReserve::withdrawCall>(input)
     }
 }
 
@@ -267,8 +275,16 @@ mod tests {
     use alloc::{vec, vec::Vec};
     use alloy_primitives::{B256, aliases::U96};
 
-    fn descriptor() -> ITIP20ChannelEscrow::ChannelDescriptor {
-        ITIP20ChannelEscrow::ChannelDescriptor {
+    impl ITIP20ChannelReserve::ITIP20ChannelReserveCalls {
+        /// Test-only helper that accepts any decoded signature.
+        /// Avoids depending on `tempo-primitives`, which performs real signature validation.
+        fn is_payment(input: &[u8]) -> bool {
+            Self::is_payment_with_valid_signature(input, |_| true)
+        }
+    }
+
+    fn descriptor() -> ITIP20ChannelReserve::ChannelDescriptor {
+        ITIP20ChannelReserve::ChannelDescriptor {
             payer: Address::random(),
             payee: Address::random(),
             operator: Address::random(),
@@ -283,33 +299,31 @@ mod tests {
     fn payment_calldatas() -> [Vec<u8>; 6] {
         let descriptor = descriptor();
         [
-            ITIP20ChannelEscrow::openCall { payee: Address::random(), operator: Address::random(), token: Address::random(), deposit: U96::from(1), salt: B256::random(), authorizedSigner: Address::random() }.abi_encode(),
-            ITIP20ChannelEscrow::topUpCall { descriptor: descriptor.clone(), additionalDeposit: U96::ONE }.abi_encode(),
-            ITIP20ChannelEscrow::settleCall { descriptor: descriptor.clone(), cumulativeAmount: U96::ONE, signature: vec![1, 2, 3].into() }.abi_encode(),
-            ITIP20ChannelEscrow::closeCall { descriptor: descriptor.clone(), cumulativeAmount: U96::ONE, captureAmount: U96::ONE, signature: vec![1, 2, 3].into() }.abi_encode(),
-            ITIP20ChannelEscrow::requestCloseCall { descriptor: descriptor.clone() }.abi_encode(),
-            ITIP20ChannelEscrow::withdrawCall { descriptor }.abi_encode(),
+            ITIP20ChannelReserve::openCall { payee: Address::random(), operator: Address::random(), token: Address::random(), deposit: U96::from(1), salt: B256::random(), authorizedSigner: Address::random() }.abi_encode(),
+            ITIP20ChannelReserve::topUpCall { descriptor: descriptor.clone(), additionalDeposit: U96::ONE }.abi_encode(),
+            ITIP20ChannelReserve::settleCall { descriptor: descriptor.clone(), cumulativeAmount: U96::ONE, signature: vec![1, 2, 3].into() }.abi_encode(),
+            ITIP20ChannelReserve::closeCall { descriptor: descriptor.clone(), cumulativeAmount: U96::ONE, captureAmount: U96::ONE, signature: vec![1, 2, 3].into() }.abi_encode(),
+            ITIP20ChannelReserve::requestCloseCall { descriptor: descriptor.clone() }.abi_encode(),
+            ITIP20ChannelReserve::withdrawCall { descriptor }.abi_encode(),
         ]
     }
 
     #[test]
     fn test_is_payment() {
         for calldata in payment_calldatas() {
-            assert!(ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
+            assert!(ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(
                 &calldata
             ));
         }
 
         let mut unknown = payment_calldatas()[0].clone();
         unknown[..4].copy_from_slice(&[0xde, 0xad, 0xbe, 0xef]);
-        assert!(!ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
-            &unknown
-        ));
+        assert!(!ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(&unknown));
     }
 
     #[test]
     fn test_is_payment_rejects_malformed_dynamic_calldata() {
-        let mut calldata = ITIP20ChannelEscrow::settleCall {
+        let mut calldata = ITIP20ChannelReserve::settleCall {
             descriptor: descriptor(),
             cumulativeAmount: U96::from(1),
             signature: vec![1, 2, 3].into(),
@@ -317,24 +331,18 @@ mod tests {
         .abi_encode();
         // Corrupt the dynamic `signature` offset word.
         calldata[4 + 8 * 32 + 31] = 0;
-        assert!(!ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
-            &calldata
-        ));
+        assert!(!ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(&calldata));
 
-        let mut oversized = ITIP20ChannelEscrow::settleCall {
+        let mut oversized = ITIP20ChannelReserve::settleCall {
             descriptor: descriptor(),
             cumulativeAmount: U96::from(1),
             signature: vec![0; 2048].into(),
         }
         .abi_encode();
         assert!(oversized.len() > 2048);
-        assert!(!ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
-            &oversized
-        ));
+        assert!(!ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(&oversized));
 
         oversized.truncate(4);
-        assert!(!ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls::is_payment(
-            &oversized
-        ));
+        assert!(!ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment(&oversized));
     }
 }

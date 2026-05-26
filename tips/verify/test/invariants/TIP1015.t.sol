@@ -921,7 +921,7 @@ contract TIP1015InvariantTest is InvariantBaseTest {
 
     /// @notice Combined invariant check - single loop through compound policies
     /// @dev Checks TEMPO-1015-2, TEMPO-1015-3, TEMPO-1015-5, TEMPO-1015-6 in one pass
-    function invariant_globalInvariants() public view {
+    function invariant_tip1015PolicyGlobal() public view {
         _invariantSimplePolicyEquivalence();
         _invariantCompoundPoliciesCombined();
     }

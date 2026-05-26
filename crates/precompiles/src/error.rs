@@ -20,10 +20,10 @@ use revm::{
     precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
 use tempo_contracts::precompiles::{
-    AccountKeychainError, AddrRegistryError, FeeManagerError, NonceError, RolesAuthError,
-    SignatureVerifierError, StablecoinDEXError, TIP20ChannelEscrowError, TIP20FactoryError,
-    TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector, ValidatorConfigError,
-    ValidatorConfigV2Error,
+    AccountKeychainError, AddrRegistryError, FeeManagerError, NonceError, ReceivePolicyGuardError,
+    RolesAuthError, SignatureVerifierError, StablecoinDEXError, TIP20ChannelReserveError,
+    TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
+    ValidatorConfigError, ValidatorConfigV2Error,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -43,9 +43,9 @@ pub enum TempoPrecompileError {
     #[error("TIP20 factory error: {0:?}")]
     TIP20Factory(TIP20FactoryError),
 
-    /// Error from TIP-20 channel escrow
-    #[error("TIP20 channel escrow error: {0:?}")]
-    TIP20ChannelEscrowError(TIP20ChannelEscrowError),
+    /// Error from TIP-20 channel reserve
+    #[error("TIP20 channel reserve error: {0:?}")]
+    TIP20ChannelReserveError(TIP20ChannelReserveError),
 
     /// Error from roles auth
     #[error("Roles auth error: {0:?}")]
@@ -90,6 +90,10 @@ pub enum TempoPrecompileError {
     /// Error from signature verifier precompile
     #[error("Signature verifier error: {0:?}")]
     SignatureVerifierError(SignatureVerifierError),
+
+    /// Error from TIP-1028 blocked transfers precompile
+    #[error("TIP1028 blocked transfers error: {0:?}")]
+    ReceivePolicyGuardError(ReceivePolicyGuardError),
 
     /// Gas limit exceeded during precompile execution.
     #[error("Gas limit exceeded")]
@@ -142,7 +146,7 @@ impl TempoPrecompileError {
             Self::OutOfGas | Self::Fatal(_) | Self::Panic(_) => true,
             Self::StablecoinDEX(_)
             | Self::TIP20(_)
-            | Self::TIP20ChannelEscrowError(_)
+            | Self::TIP20ChannelReserveError(_)
             | Self::NonceError(_)
             | Self::TIP20Factory(_)
             | Self::RolesAuthError(_)
@@ -154,6 +158,7 @@ impl TempoPrecompileError {
             | Self::ValidatorConfigV2Error(_)
             | Self::AccountKeychainError(_)
             | Self::SignatureVerifierError(_)
+            | Self::ReceivePolicyGuardError(_)
             | Self::UnknownFunctionSelector(_) => false,
         }
     }
@@ -183,7 +188,7 @@ impl TempoPrecompileError {
             Self::StablecoinDEX(e) => e.abi_encode().into(),
             Self::TIP20(e) => e.abi_encode().into(),
             Self::TIP20Factory(e) => e.abi_encode().into(),
-            Self::TIP20ChannelEscrowError(e) => e.abi_encode().into(),
+            Self::TIP20ChannelReserveError(e) => e.abi_encode().into(),
             Self::RolesAuthError(e) => e.abi_encode().into(),
             Self::AddrRegistryError(e) => e.abi_encode().into(),
             Self::TIP403RegistryError(e) => e.abi_encode().into(),
@@ -201,6 +206,7 @@ impl TempoPrecompileError {
             Self::ValidatorConfigV2Error(e) => e.abi_encode().into(),
             Self::AccountKeychainError(e) => e.abi_encode().into(),
             Self::SignatureVerifierError(e) => e.abi_encode().into(),
+            Self::ReceivePolicyGuardError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
             }
@@ -258,7 +264,10 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::StablecoinDEX);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20Factory);
-    add_errors_to_registry(&mut registry, TempoPrecompileError::TIP20ChannelEscrowError);
+    add_errors_to_registry(
+        &mut registry,
+        TempoPrecompileError::TIP20ChannelReserveError,
+    );
     add_errors_to_registry(&mut registry, TempoPrecompileError::RolesAuthError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AddrRegistryError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::TIP403RegistryError);
@@ -269,6 +278,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigV2Error);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AccountKeychainError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::SignatureVerifierError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::ReceivePolicyGuardError);
 
     registry
 }
