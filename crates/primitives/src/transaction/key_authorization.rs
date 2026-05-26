@@ -166,7 +166,7 @@ impl From<SelectorRule> for AbiSelectorRule {
 /// The transaction must be signed by the root key, or by an active admin key when authorizing for
 /// the admin key's account.
 ///
-/// RLP encoding: `[chain_id, key_type, key_id, expiry?, limits?, allowed_calls?, witness?, admin_account?]`
+/// RLP encoding: `[chain_id, key_type, key_id, expiry?, limits?, allowed_calls?, witness?, is_admin?, account?]`
 /// - Non-optional fields come first, followed by optional (trailing) fields
 /// - `expiry`: `None` (omitted or 0x80) = key never expires, `Some(timestamp)` = expires at timestamp
 /// - `limits`: `None` (omitted or 0x80) = unlimited spending, `Some([])` = no spending, `Some([...])` = specific limits
@@ -174,8 +174,7 @@ impl From<SelectorRule> for AbiSelectorRule {
 ///   `Some([])` = scoped with no allowed calls, `Some([...])` = scoped calls
 /// - `witness`: `None` (canonically omitted) = no TIP-1053 witness,
 ///   `Some(bytes32)` = arbitrary signed witness checked against the account's burned set.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable)]
-#[rlp(trailing(canonical))]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
@@ -218,11 +217,15 @@ pub struct KeyAuthorization {
     /// `witness == B256::ZERO`.
     pub witness: Option<B256>,
 
-    /// Account this admin authorization targets.
+    /// Whether this authorization creates an admin access key.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub is_admin: bool,
+
+    /// Account this authorization targets.
     ///
-    /// `None` means this authorization creates a non-admin access key. `Some(account)` means this
-    /// authorization creates an admin key for `account`.
-    pub admin_account: Option<Address>,
+    /// Required for admin-signed authorizations and admin-key creation so signatures cannot be
+    /// replayed across accounts that share the same admin key.
+    pub account: Option<Address>,
 }
 
 impl KeyAuthorization {
@@ -237,7 +240,8 @@ impl KeyAuthorization {
             limits: None,
             allowed_calls: None,
             witness: None,
-            admin_account: None,
+            is_admin: false,
+            account: None,
         }
     }
 
@@ -284,13 +288,20 @@ impl KeyAuthorization {
 
     /// Convert this authorization into an account-bound admin-key authorization.
     pub fn into_admin(mut self, account: Address) -> Self {
-        self.admin_account = Some(account);
+        self.is_admin = true;
+        self.account = Some(account);
+        self
+    }
+
+    /// Bind this authorization to a target account without making the authorized key admin.
+    pub fn with_account(mut self, account: Address) -> Self {
+        self.account = Some(account);
         self
     }
 
     /// Returns whether this authorization creates an admin key.
     pub fn is_admin(&self) -> bool {
-        self.admin_account.is_some()
+        self.is_admin
     }
 
     /// Computes the authorization message hash for this key authorization.
@@ -332,7 +343,8 @@ impl KeyAuthorization {
         !(self.has_periodic_limits()
             || self.has_call_scopes()
             || self.has_witness()
-            || self.admin_account.is_some())
+            || self.is_admin
+            || self.account.is_some())
     }
 
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
@@ -440,7 +452,8 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
             limits: u.arbitrary()?,
             allowed_calls: u.arbitrary()?,
             witness: u.arbitrary::<Option<[u8; 32]>>()?.map(B256::from),
-            admin_account: u.arbitrary()?,
+            is_admin: u.arbitrary()?,
+            account: u.arbitrary()?,
         })
     }
 }
@@ -477,6 +490,90 @@ pub mod serde_nonzero_quantity_opt {
 mod rlp {
     use super::*;
     use alloy_rlp::{Decodable, Encodable};
+
+    #[derive(
+        Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable,
+    )]
+    #[rlp(trailing(canonical))]
+    struct KeyAuthorizationWire {
+        chain_id: u64,
+        key_type: SignatureType,
+        key_id: Address,
+        expiry: Option<NonZeroU64>,
+        limits: Option<Vec<TokenLimit>>,
+        allowed_calls: Option<Vec<CallScope>>,
+        witness: Option<B256>,
+        is_admin: Option<NonZeroU64>,
+        account: Option<Address>,
+    }
+
+    impl From<&KeyAuthorization> for KeyAuthorizationWire {
+        fn from(value: &KeyAuthorization) -> Self {
+            let KeyAuthorization {
+                chain_id,
+                key_type,
+                key_id,
+                expiry,
+                limits,
+                allowed_calls,
+                witness,
+                is_admin,
+                account,
+            } = value;
+
+            Self {
+                chain_id: *chain_id,
+                key_type: *key_type,
+                key_id: *key_id,
+                expiry: *expiry,
+                limits: limits.clone(),
+                allowed_calls: allowed_calls.clone(),
+                witness: *witness,
+                is_admin: is_admin.then_some(NonZeroU64::MIN),
+                account: *account,
+            }
+        }
+    }
+
+    impl TryFrom<KeyAuthorizationWire> for KeyAuthorization {
+        type Error = alloy_rlp::Error;
+
+        fn try_from(value: KeyAuthorizationWire) -> alloy_rlp::Result<Self> {
+            if value.is_admin.is_some_and(|marker| marker.get() != 1) {
+                return Err(alloy_rlp::Error::Custom(
+                    "invalid admin key authorization marker",
+                ));
+            }
+
+            Ok(Self {
+                chain_id: value.chain_id,
+                key_type: value.key_type,
+                key_id: value.key_id,
+                expiry: value.expiry,
+                limits: value.limits,
+                allowed_calls: value.allowed_calls,
+                witness: value.witness,
+                is_admin: value.is_admin.is_some(),
+                account: value.account,
+            })
+        }
+    }
+
+    impl Decodable for KeyAuthorization {
+        fn decode(buf: &mut &[u8]) -> alloy_rlp::Result<Self> {
+            KeyAuthorizationWire::decode(buf).and_then(TryInto::try_into)
+        }
+    }
+
+    impl Encodable for KeyAuthorization {
+        fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
+            KeyAuthorizationWire::from(self).encode(out);
+        }
+
+        fn length(&self) -> usize {
+            KeyAuthorizationWire::from(self).length()
+        }
+    }
 
     #[derive(
         Clone, Debug, PartialEq, Eq, Hash, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable,
@@ -582,7 +679,8 @@ mod tests {
             limits,
             allowed_calls: None,
             witness: None,
-            admin_account: None,
+            is_admin: false,
+            account: None,
         }
     }
 
@@ -630,7 +728,7 @@ mod tests {
     }
 
     #[test]
-    fn test_admin_account_roundtrip_and_signature_binding() {
+    fn test_account_roundtrip_and_signature_binding() {
         let account = Address::repeat_byte(0x11);
         let other_account = Address::repeat_byte(0x22);
         let key_id = Address::repeat_byte(0x33);
@@ -640,11 +738,18 @@ mod tests {
             .with_witness(witness);
         let admin = normal.clone().into_admin(account);
         let other_admin = normal.clone().into_admin(other_account);
+        let account_bound = normal.clone().with_account(account);
+        let other_account_bound = normal.clone().with_account(other_account);
 
         assert!(!normal.is_admin());
         assert!(admin.is_admin());
-        assert_eq!(admin.admin_account, Some(account));
+        assert!(admin.is_admin);
+        assert_eq!(admin.account, Some(account));
         assert!(!admin.is_legacy_compatible());
+        assert!(!account_bound.is_admin());
+        assert!(!account_bound.is_admin);
+        assert_eq!(account_bound.account, Some(account));
+        assert!(!account_bound.is_legacy_compatible());
 
         let mut encoded = Vec::new();
         admin.encode(&mut encoded);
@@ -652,10 +757,16 @@ mod tests {
             <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
         assert_eq!(decoded, admin);
         assert_eq!(decoded.witness(), Some(witness));
-        assert_eq!(decoded.admin_account, Some(account));
+        assert!(decoded.is_admin);
+        assert_eq!(decoded.account, Some(account));
 
         assert_ne!(admin.signature_hash(), normal.signature_hash());
         assert_ne!(admin.signature_hash(), other_admin.signature_hash());
+        assert_ne!(account_bound.signature_hash(), normal.signature_hash());
+        assert_ne!(
+            account_bound.signature_hash(),
+            other_account_bound.signature_hash()
+        );
     }
 
     #[test]
@@ -840,7 +951,8 @@ mod tests {
             limits: None,
             allowed_calls: None,
             witness: None,
-            admin_account: None,
+            is_admin: false,
+            account: None,
         }
     }
 

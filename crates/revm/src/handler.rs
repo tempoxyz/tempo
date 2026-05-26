@@ -1276,6 +1276,13 @@ where
                 .recover_signer()
                 .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
             if auth_signer != tx.caller {
+                if key_auth.account != Some(tx.caller) {
+                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                        reason: "admin-signed key authorization account mismatch".to_string(),
+                    }
+                    .into());
+                }
+
                 let is_admin = StorageCtx::enter_precompile(
                     journal,
                     block,
@@ -1731,15 +1738,17 @@ where
                     }
                 }
 
-                if key_auth.admin_account.is_some() {
+                if key_auth.is_admin || key_auth.account.is_some() {
                     if !cfg.spec.is_t6() {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                            reason: "admin key authorization fields are not active before T6"
+                            reason: "T6 key authorization fields are not active before T6"
                                 .to_string(),
                         }
                         .into());
                     }
+                }
 
+                if key_auth.is_admin() {
                     if key_auth.expiry.is_some()
                         || key_auth.limits.is_some()
                         || key_auth.allowed_calls.is_some()
@@ -1751,7 +1760,7 @@ where
                         .into());
                     }
 
-                    if key_auth.admin_account != Some(tx.caller) {
+                    if key_auth.account != Some(tx.caller) {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
                             reason: "admin key authorization account mismatch".to_string(),
                         }
@@ -5131,6 +5140,116 @@ mod tests {
                     "child key should be registered as admin"
                 );
             });
+        }
+
+        #[test]
+        fn test_t6_admin_access_key_non_admin_authorization_requires_account_binding() {
+            let (admin_signer, admin_key) = generate_keypair();
+            let user = Address::random();
+            let child_key = Address::random();
+            let signed = sign_key_auth(
+                &admin_signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key),
+            );
+            let (mut evm, h) = make_evm(
+                user,
+                admin_key,
+                Some(signed),
+                TempoHardfork::T6,
+                None,
+                false,
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let mut keychain = AccountKeychain::new();
+                keychain
+                    .authorize_admin_key(user, admin_key, PrecompileSignatureType::Secp256k1, None)
+                    .expect("root authorizes admin key");
+            });
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("admin-signed key authorization account mismatch")
+                ),
+                "admin-signed non-admin authorization without account binding should fail, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t6_admin_access_key_non_admin_authorization_rejects_account_replay() {
+            use tempo_precompiles::account_keychain::getKeyCall;
+
+            let (admin_signer, admin_key) = generate_keypair();
+            let alice = Address::random();
+            let bob = Address::random();
+            let child_key = Address::random();
+            let signed = sign_key_auth(
+                &admin_signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key)
+                    .with_account(alice),
+            );
+
+            let (mut alice_evm, alice_handler) = make_evm(
+                alice,
+                admin_key,
+                Some(signed.clone()),
+                TempoHardfork::T6,
+                None,
+                false,
+            );
+            StorageCtx::enter_ctx(&mut alice_evm.inner.ctx, || {
+                let mut keychain = AccountKeychain::new();
+                keychain
+                    .authorize_admin_key(alice, admin_key, PrecompileSignatureType::Secp256k1, None)
+                    .expect("root authorizes Alice admin key");
+            });
+
+            let alice_result = alice_handler
+                .validate_against_state_and_deduct_caller(&mut alice_evm, &mut Default::default());
+            assert!(
+                alice_result.is_ok(),
+                "account-bound admin-signed non-admin authorization should pass for Alice, got: {alice_result:?}"
+            );
+            StorageCtx::enter_ctx(&mut alice_evm.inner.ctx, || {
+                let keychain = AccountKeychain::new();
+                let key = keychain
+                    .get_key(getKeyCall {
+                        account: alice,
+                        keyId: child_key,
+                    })
+                    .expect("child key read succeeds");
+                assert_eq!(key.keyId, child_key, "child key should be registered");
+                assert!(
+                    !keychain
+                        .is_admin_key_for(alice, child_key)
+                        .expect("admin key status read succeeds"),
+                    "child key should not be admin"
+                );
+            });
+
+            let (mut bob_evm, bob_handler) =
+                make_evm(bob, admin_key, Some(signed), TempoHardfork::T6, None, false);
+            StorageCtx::enter_ctx(&mut bob_evm.inner.ctx, || {
+                let mut keychain = AccountKeychain::new();
+                keychain
+                    .authorize_admin_key(bob, admin_key, PrecompileSignatureType::Secp256k1, None)
+                    .expect("root authorizes Bob admin key");
+            });
+
+            let bob_result = bob_handler
+                .validate_against_state_and_deduct_caller(&mut bob_evm, &mut Default::default());
+            assert!(
+                matches!(
+                    &bob_result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("admin-signed key authorization account mismatch")
+                ),
+                "Alice-bound authorization should not replay for Bob, got: {bob_result:?}"
+            );
         }
 
         #[test]
