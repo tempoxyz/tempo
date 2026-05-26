@@ -146,7 +146,7 @@ impl TIP20Token {
         holder: Address,
         checkpoint_opted_out_rewards: bool,
     ) -> Result<RewardFlag> {
-        // Ensure the user is opted into rewards.
+        // On T6, once initialized, the balance flag is the source of truth for user reward state.
         let holder_balance = self.get_balance(holder)?;
         if holder_balance.flag.is_opted_out() {
             if checkpoint_opted_out_rewards {
@@ -160,7 +160,8 @@ impl TIP20Token {
 
         let global_reward_per_token = self.get_global_reward_per_token()?;
 
-        // If rewards aren't activated yet, preserve opted-in state without touching reward storage.
+        // No rewards have been distributed yet, so there is no delegate to consult.
+        // Preserve the canonical opted-in flag without consulting legacy delegate storage.
         if global_reward_per_token.is_zero() && holder_balance.flag.is_opted_in() {
             return Ok(RewardFlag::OptedIn);
         }
@@ -170,13 +171,14 @@ impl TIP20Token {
             .checked_sub(holder_reward_per_token)
             .ok_or(TempoPrecompileError::under_overflow())?;
 
-        // If user doesn't have rewards yet, preserve opted-in state without touching reward storage.
+        // The holder is already checkpointed at the current rewards-per-token.
+        // Preserve the canonical opted-in flag without consulting legacy delegate storage.
         if reward_per_token_delta == U256::ZERO && holder_balance.flag.is_opted_in() {
             return Ok(RewardFlag::OptedIn);
         }
 
-        // Get the rewards delegate, and ensure user is opted into rewards.
-        // NOTE: delegate value and balance flag will be misaligned after T6 activation until the first transfer.
+        // A nonzero rewards-per-token delta needs a delegate to receive accrued rewards.
+        // If migrated delegate storage is zero, treat the account as effectively opted out.
         let delegate = self.user_reward_info[holder].reward_recipient.read()?;
         if delegate.is_zero() {
             if checkpoint_opted_out_rewards {
