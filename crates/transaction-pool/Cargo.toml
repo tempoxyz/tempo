@@ -60,6 +60,7 @@ test-utils = [
 ]
 
 [dev-dependencies]
+criterion.workspace = true
 reth-ethereum-primitives = { workspace = true, features = ["test-utils"] }
 reth-transaction-pool = { workspace = true, features = ["test-utils"] }
 reth-provider = { workspace = true, features = ["test-utils"] }
@@ -70,3 +71,13 @@ alloy-signer.workspace = true
 alloy-signer-local.workspace = true
 tokio.workspace = true
 test-case.workspace = true
+
+[[bench]]
+name = "best_transactions"
+harness = false
+required-features = ["test-utils"]
+
+[[bench]]
+name = "txpool_maintenance"
+harness = false
+required-features = ["test-utils"]

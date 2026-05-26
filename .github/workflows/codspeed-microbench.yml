@@ -15,17 +15,17 @@ on:
       packages:
         description: "Cargo package(s) containing benchmark targets, separated by spaces"
         required: true
-        default: "tempo-evm"
+        default: "tempo-evm tempo-transaction-pool"
         type: string
       benchmarks:
         description: "Cargo bench target(s), separated by spaces; leave empty for every bench in the package(s)"
         required: false
-        default: "tip20_execution"
+        default: "tip20_execution best_transactions txpool_maintenance"
         type: string
       filters:
         description: "Optional benchmark name filter passed to cargo codspeed run"
         required: false
-        default: "tip20_"
+        default: ""
         type: string
       measurement_modes:
         description: "CodSpeed measurement mode(s), separated by commas"
@@ -63,9 +63,9 @@ jobs:
       - name: Resolve cargo codspeed arguments
         id: args
         env:
-          INPUT_PACKAGES: ${{ inputs.packages || 'tempo-evm' }}
-          INPUT_BENCHMARKS: ${{ inputs.benchmarks || 'tip20_execution' }}
-          INPUT_FILTERS: ${{ inputs.filters || 'tip20_' }}
+          INPUT_PACKAGES: ${{ inputs.packages || 'tempo-evm tempo-transaction-pool' }}
+          INPUT_BENCHMARKS: ${{ inputs.benchmarks || 'tip20_execution best_transactions txpool_maintenance' }}
+          INPUT_FILTERS: ${{ inputs.filters || '' }}
           INPUT_MEASUREMENT_MODES: ${{ inputs.measurement_modes || 'simulation' }}
         run: |
           set -euo pipefail
@@ -86,14 +86,18 @@ jobs:
             [ -n "$benchmark" ] && cargo_args+=("--bench" "$benchmark")
           done < <(split_words "$INPUT_BENCHMARKS")
 
-          # tempo-precompiles benchmarks require the test-utils feature;
+          # Some benchmark targets require package-scoped test-utils features;
           # --features is only valid for `cargo codspeed build`, not `run`.
           feature_args=()
           while IFS= read -r package; do
-            if [ "$package" = "tempo-precompiles" ]; then
-              feature_args+=("--features" "tempo-precompiles/test-utils")
-              break
-            fi
+            case "$package" in
+              tempo-precompiles)
+                feature_args+=("--features" "tempo-precompiles/test-utils")
+                ;;
+              tempo-transaction-pool)
+                feature_args+=("--features" "tempo-transaction-pool/test-utils")
+                ;;
+            esac
           done < <(split_words "$INPUT_PACKAGES")
 
           build_args=("${cargo_args[@]}" "${feature_args[@]}")
