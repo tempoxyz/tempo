@@ -47,6 +47,9 @@ pub trait TempoTx {
     /// Returns an iterator over the transaction's calls.
     fn calls(&self) -> impl Iterator<Item = (TxKind, &Bytes)>;
 
+    /// Returns the first transaction call without constructing the generic call iterator.
+    fn first_call(&self) -> Option<(TxKind, &Bytes)>;
+
     /// Returns the transaction's caller address.
     fn caller(&self) -> Address;
 }
@@ -68,6 +71,14 @@ impl TempoTx for TempoTxEnv {
         }
     }
 
+    fn first_call(&self) -> Option<(TxKind, &Bytes)> {
+        if let Some(aa) = self.tempo_tx_env.as_ref() {
+            aa.aa_calls.first().map(|call| (call.to, &call.input))
+        } else {
+            Some((self.inner.kind, &self.inner.data))
+        }
+    }
+
     fn caller(&self) -> Address {
         self.inner.caller
     }
@@ -84,6 +95,10 @@ impl TempoTx for Recovered<TempoTxEnvelope> {
 
     fn calls(&self) -> impl Iterator<Item = (TxKind, &Bytes)> {
         self.inner().calls()
+    }
+
+    fn first_call(&self) -> Option<(TxKind, &Bytes)> {
+        self.inner().calls().next()
     }
 
     fn caller(&self) -> Address {
@@ -129,12 +144,16 @@ pub trait TempoStateAccess<M = ()> {
             return Ok(fee_token);
         }
 
+        let is_aa = tx.is_aa();
+        let caller = tx.caller();
+        let first_call = tx.first_call();
+
         // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
         // new preference, the newly set preference should be used immediately instead of the
         // previously stored one
-        if !tx.is_aa()
-            && fee_payer == tx.caller()
-            && let Some((kind, input)) = tx.calls().next()
+        if !is_aa
+            && fee_payer == caller
+            && let Some((kind, input)) = first_call
             && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
             && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
         {
@@ -152,11 +171,15 @@ pub trait TempoStateAccess<M = ()> {
         }
 
         // Check if the fee can be inferred from the TIP20 token being called
-        if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied()) {
+        if let Some((first_kind, first_input)) = first_call
+            && let Some(to) = first_kind.to().copied()
+        {
             let can_infer_tip20 =
                 // AA txs only when fee_payer == tx.origin.
-                if tx.is_aa() && fee_payer != tx.caller() {
+                if is_aa && fee_payer != caller {
                     false
+                } else if !is_aa {
+                    is_tip20_fee_inference_call(first_input)
                 }
                 // Otherwise, restricted to transfer/transferWithMemo/distributeReward,
                 else {
@@ -177,7 +200,7 @@ pub trait TempoStateAccess<M = ()> {
         let mut calls = tx.calls();
         if let Some((kind, input)) = calls.next()
             && kind.to() == Some(&STABLECOIN_DEX_ADDRESS)
-            && (!tx.is_aa() || calls.next().is_none())
+            && (!is_aa || calls.next().is_none())
         {
             if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input)
                 && self.is_valid_fee_token(spec, call.tokenIn)?
