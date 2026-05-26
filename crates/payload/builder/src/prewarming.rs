@@ -55,13 +55,13 @@ impl BestTransactionsPrewarming {
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
-        let prewarm = PrewarmingExecutionContext {
+        let prewarm = Arc::new(PrewarmingExecutionContext {
             provider,
             parent_hash,
             cache,
             evm_env,
             stop: stop.clone(),
-        };
+        });
 
         let this = Self {
             transactions_rx,
@@ -165,7 +165,7 @@ impl BestTransactionsPrewarming {
     }
 
     fn prewarm_transaction<Provider>(
-        prewarm: PrewarmingExecutionContext<Provider>,
+        prewarm: Arc<PrewarmingExecutionContext<Provider>>,
         tx: BestTransaction,
     ) where
         Provider: StateProviderFactory + Clone + 'static,
@@ -281,7 +281,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     transactions_tx: Sender<Option<BestTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
-    prewarm: PrewarmingExecutionContext<Provider>,
+    prewarm: Arc<PrewarmingExecutionContext<Provider>>,
 }
 
 /// Context needed to prewarm transaction storage independently of the real builder.
