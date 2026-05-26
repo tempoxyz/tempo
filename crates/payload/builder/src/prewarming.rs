@@ -397,7 +397,6 @@ fn storage_touches_for_transaction(
 ) -> Vec<StorageTouch> {
     let mut touches = Vec::new();
     let sender = tx.transaction.sender();
-    let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
     let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
         tx.transaction
             .inner()
@@ -405,7 +404,7 @@ fn storage_touches_for_transaction(
             .unwrap_or(DEFAULT_FEE_TOKEN)
     });
 
-    add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
+    add_tip20_fee_touches(&mut touches, tx, sender, fee_token);
     add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
 
     if tx.transaction.is_payment() {
@@ -419,14 +418,36 @@ fn storage_touches_for_transaction(
     touches
 }
 
-fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
+fn add_tip20_fee_touches(
+    touches: &mut Vec<StorageTouch>,
+    tx: &BestTransaction,
+    sender: Address,
+    fee_token: Address,
+) {
     if !fee_token.is_tip20() {
         return;
     }
 
     add_tip20_common_touches(touches, fee_token);
-    add_tip20_balance_touch(touches, fee_token, fee_payer);
+    if let Some((cached_fee_token, fee_balance_slot)) = tx.transaction.fee_balance_slot()
+        && cached_fee_token == fee_token
+    {
+        add_storage_touch(touches, fee_token, fee_balance_slot);
+        let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
+        add_tip20_reward_touches(touches, fee_token, fee_payer);
+    } else {
+        let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
+        add_tip20_fee_payer_touches(touches, fee_token, fee_payer);
+    }
     add_tip20_balance_touch(touches, fee_token, TIP_FEE_MANAGER_ADDRESS);
+}
+
+fn add_tip20_fee_payer_touches(
+    touches: &mut Vec<StorageTouch>,
+    fee_token: Address,
+    fee_payer: Address,
+) {
+    add_tip20_balance_touch(touches, fee_token, fee_payer);
     add_tip20_reward_touches(touches, fee_token, fee_payer);
 }
 
@@ -834,7 +855,9 @@ mod tests {
         let token = DEFAULT_FEE_TOKEN;
         let mut touches = Vec::new();
 
-        add_tip20_fee_touches(&mut touches, token, sender);
+        add_tip20_common_touches(&mut touches, token);
+        add_tip20_fee_payer_touches(&mut touches, token, sender);
+        add_tip20_balance_touch(&mut touches, token, TIP_FEE_MANAGER_ADDRESS);
         add_tip20_call_touches(
             &mut touches,
             sender,
