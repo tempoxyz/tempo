@@ -841,9 +841,9 @@ def generate-summary [
     let compute_tps_stats = { |samples: list<any>|
         let sorted_samples = ($samples | sort)
         {
+            p1: (percentile $sorted_samples 1 | math round --precision 1)
+            p10: (percentile $sorted_samples 10 | math round --precision 1)
             p50: (percentile $sorted_samples 50 | math round --precision 1)
-            p90: (percentile $sorted_samples 90 | math round --precision 1)
-            p99: (percentile $sorted_samples 99 | math round --precision 1)
         }
     }
 
@@ -1052,9 +1052,9 @@ def generate-summary [
             total_gas: $total_gas
             p50_latency: $p50_latency
             tps: $actual_tps
+            tps_p1: $run_tps.p1
+            tps_p10: $run_tps.p10
             tps_p50: $run_tps.p50
-            tps_p90: $run_tps.p90
-            tps_p99: $run_tps.p99
             mgas_s: $mgas_per_sec
             block_time_p50: $run_bt.p50
             block_time_p90: $run_bt.p90
@@ -1268,9 +1268,9 @@ def generate-summary [
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
         $"| Avg TPS | ($b_tps) | ($f_tps) | (do $delta $b_tps $f_tps)% |"
+        $"| TPS P1 | ($b_tps_stats.p1) | ($f_tps_stats.p1) | (do $delta $b_tps_stats.p1 $f_tps_stats.p1)% |"
+        $"| TPS P10 | ($b_tps_stats.p10) | ($f_tps_stats.p10) | (do $delta $b_tps_stats.p10 $f_tps_stats.p10)% |"
         $"| TPS P50 | ($b_tps_stats.p50) | ($f_tps_stats.p50) | (do $delta $b_tps_stats.p50 $f_tps_stats.p50)% |"
-        $"| TPS P90 | ($b_tps_stats.p90) | ($f_tps_stats.p90) | (do $delta $b_tps_stats.p90 $f_tps_stats.p90)% |"
-        $"| TPS P99 | ($b_tps_stats.p99) | ($f_tps_stats.p99) | (do $delta $b_tps_stats.p99 $f_tps_stats.p99)% |"
         $"| Gas Throughput [Mgas/s] | ($b_mgas) | ($f_mgas) | (do $delta $b_mgas $f_mgas)% |"
         $"| Block Time P50 [ms] | ($b_bt.p50) | ($f_bt.p50) | (do $delta $b_bt.p50 $f_bt.p50)% |"
         $"| Block Time P90 [ms] | ($b_bt.p90) | ($f_bt.p90) | (do $delta $b_bt.p90 $f_bt.p90)% |"
@@ -1373,9 +1373,9 @@ def generate-summary [
                 builder_fill_idle_p99: $b_builder_fill_idle.p99
                 builder_gas_s: $b_builder_gas
                 tps: $b_tps
+                tps_p1: $b_tps_stats.p1
+                tps_p10: $b_tps_stats.p10
                 tps_p50: $b_tps_stats.p50
-                tps_p90: $b_tps_stats.p90
-                tps_p99: $b_tps_stats.p99
                 mgas_s: $b_mgas
                 block_time_p50: $b_bt.p50
                 block_time_p90: $b_bt.p90
@@ -1416,9 +1416,9 @@ def generate-summary [
                 builder_fill_idle_p99: $f_builder_fill_idle.p99
                 builder_gas_s: $f_builder_gas
                 tps: $f_tps
+                tps_p1: $f_tps_stats.p1
+                tps_p10: $f_tps_stats.p10
                 tps_p50: $f_tps_stats.p50
-                tps_p90: $f_tps_stats.p90
-                tps_p99: $f_tps_stats.p99
                 mgas_s: $f_mgas
                 block_time_p50: $f_bt.p50
                 block_time_p90: $f_bt.p90
@@ -1459,9 +1459,9 @@ def generate-summary [
                 builder_fill_idle_p99: (do $delta $b_builder_fill_idle.p99 $f_builder_fill_idle.p99)
                 builder_gas_s: (do $delta $b_builder_gas $f_builder_gas)
                 tps: (do $delta $b_tps $f_tps)
+                tps_p1: (do $delta $b_tps_stats.p1 $f_tps_stats.p1)
+                tps_p10: (do $delta $b_tps_stats.p10 $f_tps_stats.p10)
                 tps_p50: (do $delta $b_tps_stats.p50 $f_tps_stats.p50)
-                tps_p90: (do $delta $b_tps_stats.p90 $f_tps_stats.p90)
-                tps_p99: (do $delta $b_tps_stats.p99 $f_tps_stats.p99)
                 mgas_s: (do $delta $b_mgas $f_mgas)
                 block_time_p50: (do $delta $b_bt.p50 $f_bt.p50)
                 block_time_p90: (do $delta $b_bt.p90 $f_bt.p90)
