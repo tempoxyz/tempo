@@ -1580,7 +1580,7 @@ pub(crate) struct BestAA2dTransactions {
     /// pending, executable transactions sorted by their priority.
     independent: BTreeSet<PendingTransaction<TxOrdering>>,
     /// _All_ transactions that are currently inside the pool grouped by their unique identifier.
-    by_id: BTreeMap<AA2dTransactionId, PendingTransaction<TxOrdering>>,
+    by_id: HashMap<AA2dTransactionId, PendingTransaction<TxOrdering>>,
 
     /// There might be the case where a yielded transactions is invalid, this will track it.
     invalid: HashSet<AASequenceId>,
