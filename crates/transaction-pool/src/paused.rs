@@ -196,9 +196,10 @@ impl PausedFeeTokenPool {
 
     /// Removes transactions matching invalidation criteria from the paused pool.
     ///
-    /// This handles hard invalidations in a single pass. `AccessKeySpend` events are not
-    /// applied here because they only prove partial limit consumption; paused transactions are
-    /// fully revalidated when their fee token unpauses.
+    /// This handles hard keychain invalidations in a single pass. Keychain
+    /// `IAccountKeychain::AccessKeySpend` events are intentionally omitted: they only prove
+    /// partial spending-limit consumption, and paused transactions are fully revalidated when
+    /// their fee token unpauses.
     /// Uses account-keyed indexes for O(1) account lookup per transaction.
     /// Returns the number of transactions removed.
     pub fn evict_invalidated(
