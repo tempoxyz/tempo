@@ -79,7 +79,16 @@ impl TIP20Token {
     /// Returns the holder's delegated recipient address.
     pub fn update_rewards(&mut self, holder: Address) -> Result<RewardFlag> {
         if self.storage.spec().is_t6() {
-            self.update_rewards_t6(holder)
+            self.update_rewards_t6(holder, false)
+        } else {
+            self.update_rewards_legacy(holder)
+        }
+    }
+
+    /// Updates rewards and ensures the holder is checkpointed before cold-path state transitions.
+    fn update_rewards_with_checkpoint(&mut self, holder: Address) -> Result<RewardFlag> {
+        if self.storage.spec().is_t6() {
+            self.update_rewards_t6(holder, true)
         } else {
             self.update_rewards_legacy(holder)
         }
@@ -123,10 +132,20 @@ impl TIP20Token {
         Ok(RewardFlag::from_delegate(cached_delegate))
     }
 
-    fn update_rewards_t6(&mut self, holder: Address) -> Result<RewardFlag> {
+    fn update_rewards_t6(
+        &mut self,
+        holder: Address,
+        checkpoint_opted_out_rewards: bool,
+    ) -> Result<RewardFlag> {
         // Ensure the user is opted into rewards.
         let holder_balance = self.get_balance(holder)?;
         if holder_balance.flag.is_opted_out() {
+            if checkpoint_opted_out_rewards {
+                let global_reward_per_token = self.get_global_reward_per_token()?;
+                self.user_reward_info[holder]
+                    .reward_per_token
+                    .write(global_reward_per_token)?;
+            }
             return Ok(RewardFlag::OptedOut);
         }
 
@@ -151,6 +170,11 @@ impl TIP20Token {
         // NOTE: delegate value and balance flag will be misaligned after T6 activation until the first transfer.
         let delegate = self.user_reward_info[holder].reward_recipient.read()?;
         if delegate.is_zero() {
+            if checkpoint_opted_out_rewards {
+                self.user_reward_info[holder]
+                    .reward_per_token
+                    .write(global_reward_per_token)?;
+            }
             return Ok(RewardFlag::OptedOut);
         }
 
@@ -206,7 +230,7 @@ impl TIP20Token {
             RewardFlag::OptedIn
         };
 
-        let old_flag = self.update_rewards(msg_sender)?;
+        let old_flag = self.update_rewards_with_checkpoint(msg_sender)?;
 
         let holder_balance = self.get_balance(msg_sender)?;
 
@@ -255,8 +279,7 @@ impl TIP20Token {
         self.check_not_paused()?;
         self.ensure_transfer_authorized(self.address, msg_sender)?;
 
-        let flag = self.update_rewards(msg_sender)?;
-
+        let flag = self.update_rewards_with_checkpoint(msg_sender)?;
         let mut info = self.user_reward_info[msg_sender].read()?;
         let amount = info.reward_balance;
         let contract_address = self.address;
@@ -279,13 +302,6 @@ impl TIP20Token {
 
             if flag.is_opted_in() {
                 self.increase_opted_in_supply(max_amount)?;
-            }
-            // since T6+ uses the cached value for opted out users, `update_rewards` bails early
-            else if self.storage.spec().is_t6() {
-                let global_reward_per_token = self.get_global_reward_per_token()?;
-                self.user_reward_info[msg_sender]
-                    .reward_per_token
-                    .write(global_reward_per_token)?;
             }
 
             self.emit_event(TIP20Event::transfer(
@@ -485,6 +501,34 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{ITIP403Registry, TIP20Error};
 
+    fn set_recipient(token: &mut TIP20Token, holder: Address, recipient: Address) -> Result<()> {
+        token.set_reward_recipient(holder, ITIP20::setRewardRecipientCall { recipient })
+    }
+
+    fn distribute(token: &mut TIP20Token, from: Address, amount: U256) -> Result<()> {
+        token.distribute_reward(from, ITIP20::distributeRewardCall { amount })
+    }
+
+    fn transfer(token: &mut TIP20Token, from: Address, to: Address, amount: U256) -> Result<bool> {
+        token.transfer(from, ITIP20::transferCall { to, amount })
+    }
+
+    fn user_rpt(token: &TIP20Token, user: Address) -> Result<U256> {
+        token.user_reward_info[user].reward_per_token.read()
+    }
+
+    fn assert_claims(token: &mut TIP20Token, account: Address, amount: U256) -> Result<()> {
+        assert_eq!(U256::from(token.get_pending_rewards(account)?), amount);
+        assert_eq!(token.claim_rewards(account)?, amount);
+        assert_eq!(token.get_pending_rewards(account)?, 0u128);
+        Ok(())
+    }
+
+    fn assert_checkpointed(token: &TIP20Token, account: Address, rpt: U256) -> Result<()> {
+        assert_eq!(user_rpt(token, account)?, rpt);
+        Ok(())
+    }
+
     #[test]
     fn test_set_reward_recipient() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
@@ -572,7 +616,7 @@ mod tests {
                 admin,
                 ITIP20::mintCall {
                     to: admin,
-                    amount: U256::from(1),
+                    amount: U256::ONE,
                 },
             )?;
             let result =
@@ -735,7 +779,7 @@ mod tests {
                 let claimed = token.claim_rewards(bob)?;
                 assert_eq!(claimed, reward_amount, "hardfork: {hardfork:?}");
                 assert_eq!(
-                    token.user_reward_info[bob].reward_per_token.read()?,
+                    user_rpt(&token, bob)?,
                     token.get_global_reward_per_token()?,
                     "hardfork: {hardfork:?}"
                 );
@@ -793,6 +837,218 @@ mod tests {
             let bob_pending = token.get_pending_rewards(bob)?;
             assert_eq!(bob_pending, 0u128);
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t6_set_reward_recipient_scenarios() -> eyre::Result<()> {
+        let (alice, bob, charlie) = (Address::random(), Address::random(), Address::random());
+        let (balance, rewards) = (U256::from(1000), U256::from(100));
+        let admin = Address::random();
+
+        // OptedOut -> OptedOut -> OptedIn: checkpoint past rewards, then only future rewards accrue.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, balance)
+                .with_mint(bob, balance)
+                .with_mint(admin, rewards * U256::from(2))
+                .apply()?;
+
+            set_recipient(&mut token, bob, bob)?;
+            distribute(&mut token, admin, rewards)?;
+            let rpt_after_first = token.get_global_reward_per_token()?;
+
+            // Alice stays opted out, but is checkpointed past the first distribution.
+            set_recipient(&mut token, alice, Address::ZERO)?;
+            assert_eq!(user_rpt(&token, alice)?, rpt_after_first);
+            assert_eq!(token.claim_rewards(alice)?, U256::ZERO);
+
+            // Alice opts in later and still cannot claim retroactive rewards.
+            transfer(&mut token, bob, alice, U256::ONE)?;
+            set_recipient(&mut token, alice, alice)?;
+            assert_eq!(token.claim_rewards(alice)?, U256::ZERO);
+
+            // Only post-opt-in distribution creates Alice's pending rewards.
+            distribute(&mut token, admin, rewards)?;
+            assert_claims(&mut token, alice, rewards / U256::from(2))
+        })?;
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, balance)
+                .with_mint(bob, balance)
+                .with_mint(admin, rewards * U256::from(2))
+                .apply()?;
+
+            // OptedOut -> OptedIn: no retroactive rewards, but new distributions accrue.
+            set_recipient(&mut token, bob, bob)?;
+            distribute(&mut token, admin, rewards)?;
+            let rpt_after_first = token.get_global_reward_per_token()?;
+
+            // Alice opts in after the first distribution, so her checkpoint starts at the current RPT.
+            set_recipient(&mut token, alice, alice)?;
+            assert_eq!(user_rpt(&token, alice)?, rpt_after_first);
+            assert_eq!(token.claim_rewards(alice)?, U256::ZERO);
+
+            // The second distribution is split between Alice and Bob because both are now opted in.
+            distribute(&mut token, admin, rewards)?;
+            assert_claims(&mut token, alice, rewards / U256::from(2))?;
+            assert_claims(&mut token, bob, rewards + rewards / U256::from(2))
+        })?;
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, balance)
+                .with_mint(bob, balance)
+                .with_mint(admin, rewards * U256::from(2))
+                .apply()?;
+
+            // OptedIn -> OptedIn: old recipient keeps accrued rewards; new recipient gets future rewards.
+            set_recipient(&mut token, alice, alice)?;
+            set_recipient(&mut token, bob, bob)?;
+            distribute(&mut token, admin, rewards)?;
+            let rpt_after_first = token.get_global_reward_per_token()?;
+
+            // Switching delegates first checkpoints Alice's accrued rewards to the old recipient.
+            set_recipient(&mut token, alice, charlie)?;
+            assert_eq!(user_rpt(&token, alice)?, rpt_after_first);
+            assert_eq!(
+                U256::from(token.get_pending_rewards(alice)?),
+                rewards / U256::from(2)
+            );
+            assert_eq!(token.get_pending_rewards(charlie)?, 0u128);
+
+            // Future rewards follow Alice's new delegate once Alice is updated again.
+            distribute(&mut token, admin, rewards)?;
+            token.update_rewards(alice)?;
+            assert_claims(&mut token, alice, rewards / U256::from(2))?;
+            assert_claims(&mut token, charlie, rewards / U256::from(2))
+        })?;
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, balance)
+                .with_mint(bob, balance)
+                .with_mint(admin, rewards * U256::from(2))
+                .apply()?;
+
+            // OptedIn -> OptedOut: keep prior rewards, skip distributions while opted out.
+            set_recipient(&mut token, alice, alice)?;
+            set_recipient(&mut token, bob, bob)?;
+            distribute(&mut token, admin, rewards)?;
+            let rpt_after_first = token.get_global_reward_per_token()?;
+
+            // Opting out checkpoints Alice, preserves already-accrued rewards, and removes her supply.
+            set_recipient(&mut token, alice, Address::ZERO)?;
+            assert_eq!(user_rpt(&token, alice)?, rpt_after_first);
+            assert_eq!(token.get_opted_in_supply()?, balance.to::<u128>());
+            assert_eq!(
+                U256::from(token.get_pending_rewards(alice)?),
+                rewards / U256::from(2)
+            );
+
+            // While Alice is opted out, the next distribution goes entirely to Bob.
+            distribute(&mut token, admin, rewards)?;
+            set_recipient(&mut token, alice, alice)?;
+            assert_claims(&mut token, alice, rewards / U256::from(2))?;
+            assert_claims(&mut token, bob, rewards / U256::from(2) + rewards)
+        })?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_t6_claim_rewards_scenarios() -> eyre::Result<()> {
+        let admin = Address::random();
+        let (alice, bob, charlie) = (Address::random(), Address::random(), Address::random());
+        let balance = U256::from(1000);
+        let rewards = U256::from(100);
+
+        // OptedOut -> OptedIn: zero-amount claim checkpoints past rewards before later opt-in.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, balance)
+                .with_mint(admin, rewards)
+                .apply()?;
+
+            set_recipient(&mut token, alice, alice)?;
+            distribute(&mut token, admin, rewards)?;
+            let rpt_after_first = token.get_global_reward_per_token()?;
+
+            // Charlie has no rewards, but claim still moves his checkpoint to the current RPT.
+            assert_claims(&mut token, charlie, U256::ZERO)?;
+            assert_checkpointed(&token, charlie, rpt_after_first)?;
+
+            // After receiving tokens and opting in, Charlie cannot claim retroactive rewards.
+            transfer(&mut token, alice, charlie, U256::ONE)?;
+            set_recipient(&mut token, charlie, charlie)?;
+            assert_claims(&mut token, charlie, U256::ZERO)?;
+
+            Ok(())
+        })?;
+
+        // OptedIn -> OptedIn: claiming checkpoints accrued rewards and opts claimed tokens in.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, balance)
+                .with_mint(admin, rewards)
+                .apply()?;
+
+            set_recipient(&mut token, alice, alice)?;
+            distribute(&mut token, admin, rewards)?;
+            let rpt_after_first = token.get_global_reward_per_token()?;
+
+            // Alice claims her accrued rewards and her checkpoint advances to the current RPT.
+            assert_claims(&mut token, alice, rewards)?;
+            assert_checkpointed(&token, alice, rpt_after_first)?;
+
+            // Claimed tokens are added to Alice's balance and remain opted into rewards.
+            assert_eq!(token.get_balance(alice)?.amount(), balance + rewards);
+            assert_eq!(
+                token.get_opted_in_supply()?,
+                (balance + rewards).to::<u128>()
+            );
+
+            Ok(())
+        })?;
+
+        // OptedOut recipient with delegated balance: claim checkpoints before balance increase.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || -> eyre::Result<()> {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(alice, balance)
+                .with_mint(admin, rewards)
+                .apply()?;
+
+            set_recipient(&mut token, alice, bob)?;
+            distribute(&mut token, admin, rewards)?;
+            token.update_rewards(alice)?;
+            let rpt_after_first = token.get_global_reward_per_token()?;
+            let delegated_reward = token.user_reward_info[bob].reward_balance.read()?;
+
+            // Bob is opted out, but claiming delegated rewards still checkpoints him first.
+            assert_claims(&mut token, bob, delegated_reward)?;
+            assert_checkpointed(&token, bob, rpt_after_first)?;
+
+            // Bob can opt in and receive tokens without retroactively earning Alice's distribution.
+            set_recipient(&mut token, bob, bob)?;
+            assert_claims(&mut token, bob, U256::ZERO)?;
+            transfer(&mut token, alice, bob, U256::ONE)?;
+            assert_claims(&mut token, bob, U256::ZERO)?;
             Ok(())
         })
     }
