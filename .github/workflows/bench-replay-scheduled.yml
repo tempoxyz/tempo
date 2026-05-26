@@ -140,6 +140,7 @@ jobs:
           DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
           GITHUB_REPOSITORY: ${{ github.repository }}
           INPUT_FORCE: ${{ inputs.force || 'false' }}
+          BENCH_REPLAY_CHAIN: ${{ steps.config.outputs.chain }}
         run: bash .github/scripts/bench-replay-scheduled-refs.sh "$INPUT_FORCE"
 
       - name: Alert on stale nightly
@@ -257,9 +258,11 @@ jobs:
         env:
           DEREK_TOKEN: ${{ secrets.DEREK_TOKEN }}
           FEATURE_REF: ${{ needs.resolve-refs.outputs.feature-ref }}
+          BENCH_REPLAY_CHAIN: ${{ needs.resolve-refs.outputs.chain }}
         run: |
           CHARTS_REPO="https://x-access-token:${DEREK_TOKEN}@github.com/decofe/tempo-bench-charts.git"
           TMP_DIR=$(mktemp -d)
+          STATE_FILE="replay-nightly-${BENCH_REPLAY_CHAIN}-last-feature-ref"
 
           if git clone --depth 1 --branch state "${CHARTS_REPO}" "${TMP_DIR}" 2>/dev/null; then
             true
@@ -269,10 +272,10 @@ jobs:
           fi
 
           mkdir -p "${TMP_DIR}/state"
-          echo "${FEATURE_REF}" > "${TMP_DIR}/state/replay-nightly-last-feature-ref"
+          echo "${FEATURE_REF}" > "${TMP_DIR}/state/${STATE_FILE}"
           git -C "${TMP_DIR}" add state/
           git -C "${TMP_DIR}" diff --cached --quiet && echo "No state change" && exit 0
           git -C "${TMP_DIR}" -c user.name="github-actions" -c user.email="github-actions@github.com" \
-            commit -m "bench: update replay nightly state to ${FEATURE_REF}"
+            commit -m "bench: update ${BENCH_REPLAY_CHAIN} replay nightly state to ${FEATURE_REF}"
           git -C "${TMP_DIR}" push origin HEAD:state
           rm -rf "${TMP_DIR}"
