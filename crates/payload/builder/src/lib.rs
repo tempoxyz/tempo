@@ -56,7 +56,7 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
-use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
+use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
@@ -523,6 +523,7 @@ where
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
+        let marshal_persist = marshal_persist_estimate();
         let block_build_stop_reason = loop {
             check_cancel!();
 
@@ -533,12 +534,17 @@ where
                     normal_transaction_fill_idle_elapsed,
                     build_time_multiplier,
                     build_budget,
+                    marshal_persist,
+                    block_size_used,
                 ) {
+                    let estimated_marshal_persist = marshal_persist.estimate(block_size_used);
                     debug!(
                         target: "payload_builder",
                         ?elapsed,
                         ?normal_transaction_fill_idle_elapsed,
                         ?build_budget,
+                        ?estimated_marshal_persist,
+                        block_size_used,
                         build_time_multiplier = build_time_multiplier as f64
                             / BUILD_TIME_MULTIPLIER_SCALE as f64,
                         "stopping pool transaction execution before payload build budget is exhausted"
@@ -1027,8 +1033,12 @@ where
             trie_updates: Arc::new(trie_updates),
         };
 
-        let payload =
-            TempoBuiltPayload::new(eth_payload, Some(executed_block), validation_work_duration);
+        let payload = TempoBuiltPayload::new(
+            eth_payload,
+            Some(executed_block),
+            validation_work_duration,
+            rlp_length,
+        );
 
         drop(db);
         if build_once_with_shared_trie {
@@ -1204,8 +1214,9 @@ mod tests {
             },
         };
         let sealed = Arc::new(SealedBlock::seal_slow(block));
+        let rlp_length = sealed.rlp_length();
         let eth = EthBuiltPayload::new(sealed, U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None, Duration::ZERO)
+        TempoBuiltPayload::new(eth, None, Duration::ZERO, rlp_length)
     }
 
     #[test]

@@ -2,10 +2,13 @@
 //!
 //! The builder can stop transaction execution, but it still has to finish
 //! non-interruptible finalization work like state hashing, state root updates,
-//! and block assembly. These helpers learn the relation between tx execution
-//! cutoff time and total replayable build work.
+//! block assembly, and marshal persistence. These helpers learn the relation
+//! between tx execution cutoff time, total replayable build work, and the
+//! size-dependent cost of persisting large blocks through consensus.
 
 use std::time::Duration;
+
+use tempo_payload_types::MarshalPersistEstimate;
 
 /// Fixed-point scale for build time multipliers.
 pub(crate) const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
@@ -42,12 +45,17 @@ pub(crate) fn payload_budget_exhausted(
     idle_elapsed: Duration,
     multiplier: u64,
     budget: Duration,
+    marshal_persist: MarshalPersistEstimate,
+    block_size_bytes: usize,
 ) -> bool {
     let work_elapsed = elapsed.saturating_sub(idle_elapsed);
     let predicted_work = scaled_duration(work_elapsed, multiplier);
+    let marshal_persist = marshal_persist.estimate(block_size_bytes);
     idle_elapsed
         .saturating_add(predicted_work)
         .saturating_add(predicted_work)
+        .saturating_add(marshal_persist)
+        .saturating_add(marshal_persist)
         >= budget
 }
 
@@ -104,25 +112,55 @@ mod tests {
             Duration::from_millis(100),
             Duration::ZERO,
             1_350_000,
-            Duration::from_millis(270)
+            Duration::from_millis(270),
+            MarshalPersistEstimate::default(),
+            0
         ));
         assert!(!payload_budget_exhausted(
             Duration::from_millis(100),
             Duration::ZERO,
             1_350_000,
-            Duration::from_millis(271)
+            Duration::from_millis(271),
+            MarshalPersistEstimate::default(),
+            0
         ));
         assert!(payload_budget_exhausted(
             Duration::from_millis(350),
             Duration::from_millis(250),
             1_350_000,
-            Duration::from_millis(520)
+            Duration::from_millis(520),
+            MarshalPersistEstimate::default(),
+            0
         ));
         assert!(!payload_budget_exhausted(
             Duration::from_millis(350),
             Duration::from_millis(250),
             1_350_000,
-            Duration::from_millis(521)
+            Duration::from_millis(521),
+            MarshalPersistEstimate::default(),
+            0
+        ));
+    }
+
+    #[test]
+    fn payload_budget_accounts_for_marshal_persist_twice() {
+        let marshal_persist = MarshalPersistEstimate::from_ns_per_byte(1_000);
+
+        assert!(payload_budget_exhausted(
+            Duration::from_millis(100),
+            Duration::ZERO,
+            1_350_000,
+            Duration::from_millis(300),
+            marshal_persist,
+            15_000
+        ));
+        assert!(!payload_budget_exhausted(
+            Duration::from_millis(100),
+            Duration::ZERO,
+            1_350_000,
+            Duration::from_millis(300),
+            marshal_persist,
+            14_999
         ));
     }
 

@@ -4,9 +4,11 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod attrs;
+mod budget;
 
 use alloy_primitives::B256;
 pub use attrs::TempoPayloadAttributes;
+pub use budget::{MarshalPersistEstimate, marshal_persist_estimate, observe_marshal_persist};
 use std::{sync::Arc, time::Duration};
 
 use alloy_eips::eip7685::Requests;
@@ -36,6 +38,8 @@ pub struct TempoBuiltPayload {
     executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
     /// Estimated time validators spend reproducing the build work.
     validation_work_duration: Duration,
+    /// RLP-encoded block size in bytes.
+    rlp_block_size_bytes: usize,
 }
 
 impl TempoBuiltPayload {
@@ -44,17 +48,24 @@ impl TempoBuiltPayload {
         inner: EthBuiltPayload<TempoPrimitives>,
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
         validation_work_duration: Duration,
+        rlp_block_size_bytes: usize,
     ) -> Self {
         Self {
             inner,
             executed_block,
             validation_work_duration,
+            rlp_block_size_bytes,
         }
     }
 
     /// Returns the estimated validation work duration for this payload.
     pub fn validation_work_duration(&self) -> Duration {
         self.validation_work_duration
+    }
+
+    /// Returns the RLP-encoded block size in bytes.
+    pub fn rlp_block_size_bytes(&self) -> usize {
+        self.rlp_block_size_bytes
     }
 
     /// Converts the built payload into [`TempoExecutionData`].
