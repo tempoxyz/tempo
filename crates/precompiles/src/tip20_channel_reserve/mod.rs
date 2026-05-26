@@ -105,7 +105,7 @@ impl TIP20ChannelReserve {
 
     /// Opens a channel and pulls the initial deposit from the payer into reserve.
     ///
-    /// Payees cannot be zero or TIP-20-prefix addresses. Virtual payees require an operator.
+    /// Payees cannot be zero or TIP-20 addresses. Virtual payees require a non-virtual operator.
     /// This prevents channels whose payee cannot receive direct payouts or submit vouchers itself.
     pub fn open(
         &mut self,
@@ -854,7 +854,7 @@ mod tests {
                 }
             }
 
-            // Virtual payees are valid when an operator is set to submit vouchers on their behalf.
+            // Virtual payees are valid when a non-virtual operator is set to submit vouchers on their behalf.
             reserve.open(
                 payer,
                 open_call(
