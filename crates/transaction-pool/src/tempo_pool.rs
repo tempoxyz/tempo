@@ -9,7 +9,7 @@ use crate::{
 use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, AddressSet, HashMap},
+    map::{AddressMap, AddressSet, Entry, HashMap},
 };
 use parking_lot::RwLock;
 use reth_chainspec::ChainSpecProvider;
@@ -302,16 +302,16 @@ where
                     .get(&fee_token)
                     .is_some_and(|accounts| accounts.contains(&fee_payer))
                 {
-                    let key = (fee_token, fee_payer);
-                    let balance = if let Some(balance) = fee_balance_cache.get(&key).copied() {
-                        balance
-                    } else {
-                        let Ok(balance) = provider.get_token_balance(fee_token, fee_payer, spec)
-                        else {
-                            continue;
-                        };
-                        fee_balance_cache.insert(key, balance);
-                        balance
+                    let balance = match fee_balance_cache.entry((fee_token, fee_payer)) {
+                        Entry::Occupied(entry) => *entry.get(),
+                        Entry::Vacant(entry) => {
+                            let Ok(balance) =
+                                provider.get_token_balance(fee_token, fee_payer, spec)
+                            else {
+                                continue;
+                            };
+                            *entry.insert(balance)
+                        }
                     };
 
                     if balance < tx.transaction.fee_token_cost() {
