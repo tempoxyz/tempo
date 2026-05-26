@@ -1,5 +1,6 @@
 use crate::{
     amm::AmmLiquidityCache,
+    prewarm::prewarm_transaction_storage,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 
@@ -31,6 +32,7 @@ use tempo_revm::{
     TempoBlockEnv, TempoInvalidTransaction, TempoStateAccess, ValidationContext,
     error::FeePaymentError,
 };
+use tracing::trace;
 
 // Reject AA txs where `valid_before` is too close to current time (or already expired) to prevent block invalidation.
 const AA_VALID_BEFORE_MIN_SECS: u64 = 3;
@@ -547,6 +549,30 @@ where
                                 .into(),
                             );
                         }
+                    }
+                }
+
+                let fee_recipient = self.cached_evm_env.read().block_env.beneficiary;
+                match prewarm_transaction_storage(
+                    &state_provider,
+                    transaction.transaction(),
+                    fee_recipient,
+                ) {
+                    Ok(touched) => {
+                        trace!(
+                            target: "txpool",
+                            touched,
+                            tx_hash = ?transaction.hash(),
+                            "Prewarmed transaction storage"
+                        );
+                    }
+                    Err(err) => {
+                        trace!(
+                            target: "txpool",
+                            %err,
+                            tx_hash = ?transaction.hash(),
+                            "Failed to prewarm transaction storage"
+                        );
                     }
                 }
 

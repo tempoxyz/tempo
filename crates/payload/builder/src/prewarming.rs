@@ -14,7 +14,7 @@ use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
-use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
+use tempo_evm::{TempoEvmConfig, TempoStorageTouch, evm::TempoEvm};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     nonce::slots as nonce_slots,
@@ -182,14 +182,19 @@ impl BestTransactionsPrewarming {
             let tx_hash = *tx.hash();
 
             let touched = if is_tip20_transfer_transaction(&tx) {
-                let touches =
-                    storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary);
+                let tx_env = tx.transaction.clone_tx_env();
+                let tx_env_touches = tx_env.prewarm_storage_touches();
+                let touches = if tx_env_touches.is_empty() {
+                    storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary)
+                } else {
+                    tx_env_touches.to_vec()
+                };
 
                 for touch in &touches {
                     if prewarm.is_stopped() {
                         return;
                     }
-                    if let Err(err) = touch.warm(evm) {
+                    if let Err(err) = warm_storage_touch(touch, evm) {
                         trace!(
                             target: "payload_builder",
                             %err,
@@ -338,25 +343,23 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StorageTouch {
-    Account(Address),
-    Storage { address: Address, slot: U256 },
-}
-
-impl StorageTouch {
-    fn warm<DB: Database>(&self, evm: &mut TempoEvm<DB>) -> Result<(), DB::Error> {
-        match *self {
-            Self::Account(address) => {
-                let _ = evm.db_mut().basic(address)?;
-            }
-            Self::Storage { address, slot } => {
-                let _ = evm.db_mut().storage(address, slot)?;
-            }
+fn warm_storage_touch<DB>(
+    touch: &TempoStorageTouch,
+    evm: &mut TempoEvm<DB>,
+) -> Result<(), DB::Error>
+where
+    DB: Database,
+{
+    match *touch {
+        TempoStorageTouch::Account(address) => {
+            let _ = evm.db_mut().basic(address)?;
         }
-
-        Ok(())
+        TempoStorageTouch::Storage { address, slot } => {
+            let _ = evm.db_mut().storage(address, slot)?;
+        }
     }
+
+    Ok(())
 }
 
 fn is_tip20_transfer_transaction(tx: &BestTransaction) -> bool {
@@ -394,7 +397,7 @@ fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
 fn storage_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
-) -> Vec<StorageTouch> {
+) -> Vec<TempoStorageTouch> {
     let mut touches = Vec::new();
     let sender = tx.transaction.sender();
     let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
@@ -419,7 +422,11 @@ fn storage_touches_for_transaction(
     touches
 }
 
-fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
+fn add_tip20_fee_touches(
+    touches: &mut Vec<TempoStorageTouch>,
+    fee_token: Address,
+    fee_payer: Address,
+) {
     if !fee_token.is_tip20() {
         return;
     }
@@ -431,7 +438,7 @@ fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fe
 }
 
 fn add_tip20_call_touches(
-    touches: &mut Vec<StorageTouch>,
+    touches: &mut Vec<TempoStorageTouch>,
     sender: Address,
     kind: TxKind,
     input: &[u8],
@@ -494,7 +501,7 @@ fn add_tip20_call_touches(
     }
 }
 
-fn add_tip20_common_touches(touches: &mut Vec<StorageTouch>, token: Address) {
+fn add_tip20_common_touches(touches: &mut Vec<TempoStorageTouch>, token: Address) {
     add_account_touch(touches, token);
     add_storage_touch(touches, token, tip20_slots::CURRENCY);
     add_storage_touch(touches, token, tip20_slots::PAUSED);
@@ -503,12 +510,12 @@ fn add_tip20_common_touches(touches: &mut Vec<StorageTouch>, token: Address) {
     add_storage_touch(touches, token, tip20_slots::OPTED_IN_SUPPLY);
 }
 
-fn add_tip20_balance_touch(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
+fn add_tip20_balance_touch(touches: &mut Vec<TempoStorageTouch>, token: Address, account: Address) {
     add_storage_touch(touches, token, account.mapping_slot(tip20_slots::BALANCES));
 }
 
 fn add_tip20_allowance_touch(
-    touches: &mut Vec<StorageTouch>,
+    touches: &mut Vec<TempoStorageTouch>,
     token: Address,
     owner: Address,
     spender: Address,
@@ -520,7 +527,11 @@ fn add_tip20_allowance_touch(
     );
 }
 
-fn add_tip20_reward_touches(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
+fn add_tip20_reward_touches(
+    touches: &mut Vec<TempoStorageTouch>,
+    token: Address,
+    account: Address,
+) {
     let base_slot = account.mapping_slot(tip20_slots::USER_REWARD_INFO);
     add_storage_touch(touches, token, base_slot);
     add_storage_touch(touches, token, base_slot + U256::from(1));
@@ -528,7 +539,7 @@ fn add_tip20_reward_touches(touches: &mut Vec<StorageTouch>, token: Address, acc
 }
 
 fn add_fee_manager_touches(
-    touches: &mut Vec<StorageTouch>,
+    touches: &mut Vec<TempoStorageTouch>,
     fee_recipient: Address,
     fee_token: Address,
 ) {
@@ -545,7 +556,7 @@ fn add_fee_manager_touches(
     );
 }
 
-fn add_expiring_nonce_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransaction) {
+fn add_expiring_nonce_touches(touches: &mut Vec<TempoStorageTouch>, tx: &BestTransaction) {
     let Some(expiring_nonce_slot) = tx.transaction.expiring_nonce_slot() else {
         return;
     };
@@ -559,16 +570,16 @@ fn add_expiring_nonce_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransact
     );
 }
 
-fn add_account_touch(touches: &mut Vec<StorageTouch>, address: Address) {
-    add_unique_touch(touches, StorageTouch::Account(address));
+fn add_account_touch(touches: &mut Vec<TempoStorageTouch>, address: Address) {
+    add_unique_touch(touches, TempoStorageTouch::Account(address));
 }
 
-fn add_storage_touch(touches: &mut Vec<StorageTouch>, address: Address, slot: U256) {
+fn add_storage_touch(touches: &mut Vec<TempoStorageTouch>, address: Address, slot: U256) {
     add_account_touch(touches, address);
-    add_unique_touch(touches, StorageTouch::Storage { address, slot });
+    add_unique_touch(touches, TempoStorageTouch::Storage { address, slot });
 }
 
-fn add_unique_touch(touches: &mut Vec<StorageTouch>, touch: StorageTouch) {
+fn add_unique_touch(touches: &mut Vec<TempoStorageTouch>, touch: TempoStorageTouch) {
     if !touches.contains(&touch) {
         touches.push(touch);
     }
@@ -853,12 +864,12 @@ mod tests {
             );
         }
 
-        assert!(touches.contains(&StorageTouch::Account(token)));
-        assert!(touches.contains(&StorageTouch::Storage {
+        assert!(touches.contains(&TempoStorageTouch::Account(token)));
+        assert!(touches.contains(&TempoStorageTouch::Storage {
             address: token,
             slot: sender.mapping_slot(tip20_slots::BALANCES)
         }));
-        assert!(touches.contains(&StorageTouch::Storage {
+        assert!(touches.contains(&TempoStorageTouch::Storage {
             address: token,
             slot: recipient.mapping_slot(tip20_slots::BALANCES)
         }));

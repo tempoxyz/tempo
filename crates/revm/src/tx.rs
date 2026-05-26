@@ -12,6 +12,7 @@ use revm::context::{
         AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
     },
 };
+use std::sync::{Arc, OnceLock};
 use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
     AASigned, TempoAddressExt, TempoSignature, TempoTransaction, TempoTxEnvelope,
@@ -20,6 +21,15 @@ use tempo_primitives::{
         envelope::KEY_AUTHORIZATION_MAX_RLP_LEN,
     },
 };
+
+/// Account or storage location to read for transaction prewarming.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TempoStorageTouch {
+    /// Account metadata/code touch.
+    Account(Address),
+    /// Contract storage slot touch.
+    Storage { address: Address, slot: U256 },
+}
 
 /// Tempo transaction environment for AA features.
 #[derive(Debug, Clone, Default)]
@@ -95,9 +105,29 @@ pub struct TempoTxEnv {
 
     /// AA-specific transaction environment (boxed to keep TempoTxEnv lean for non-AA tx)
     pub tempo_tx_env: Option<Box<TempoBatchCallEnv>>,
+
+    /// Predicted account/storage locations touched by execution.
+    ///
+    /// This is populated by pool validation after fee-token and block-context dependent
+    /// state has been resolved. The `OnceLock` is shared across clones so a transaction
+    /// environment created during validation can be enriched before payload building.
+    pub prewarm_storage_touches: Arc<OnceLock<Vec<TempoStorageTouch>>>,
 }
 
 impl TempoTxEnv {
+    /// Stores predicted storage touches if they have not already been populated.
+    pub fn set_prewarm_storage_touches(&self, touches: Vec<TempoStorageTouch>) {
+        let _ = self.prewarm_storage_touches.set(touches);
+    }
+
+    /// Returns predicted storage touches for this transaction.
+    pub fn prewarm_storage_touches(&self) -> &[TempoStorageTouch] {
+        self.prewarm_storage_touches
+            .get()
+            .map(Vec::as_slice)
+            .unwrap_or(&[])
+    }
+
     /// Resolves fee payer from the signature.
     pub fn fee_payer(&self) -> Result<Address, TempoInvalidTransaction> {
         if let Some(fee_payer) = self.fee_payer {
@@ -408,6 +438,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 // can only be derived when given an entire block
                 expiring_nonce_idx: None,
             })),
+            prewarm_storage_touches: Default::default(),
         }
     }
 }
@@ -424,6 +455,7 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 unique_tx_identifier,
                 fee_payer: None,
                 tempo_tx_env: None, // Non-AA transaction
+                prewarm_storage_touches: Default::default(),
             },
             TempoTxEnvelope::Eip2930(inner) => Self {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
