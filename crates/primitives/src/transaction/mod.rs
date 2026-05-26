@@ -28,7 +28,7 @@ pub use tt_signed::AASigned;
 
 use alloc::vec::Vec;
 use alloy_consensus::SignableTransaction;
-use alloy_primitives::{Address, B256, Signature, U256, uint};
+use alloy_primitives::{Address, B256, Keccak256, Signature, U256, uint};
 
 /// Computes the sender-scoped transaction identifier used for replay-sensitive features.
 ///
@@ -38,10 +38,13 @@ pub(crate) fn unique_tx_identifier_from_signable<T>(tx: &T, sender: Address) -> 
 where
     T: SignableTransaction<Signature>,
 {
-    let mut buf = Vec::with_capacity(tx.payload_len_for_signature() + sender.as_slice().len());
+    let mut buf = Vec::with_capacity(tx.payload_len_for_signature());
     tx.encode_for_signing(&mut buf);
-    buf.extend_from_slice(sender.as_slice());
-    alloy_primitives::keccak256(buf)
+
+    let mut hasher = Keccak256::new();
+    hasher.update(&buf);
+    hasher.update(sender.as_slice());
+    hasher.finalize()
 }
 
 /// Scaling factor for converting gas prices (attodollars) to TIP-20 token amounts (microdollars).
