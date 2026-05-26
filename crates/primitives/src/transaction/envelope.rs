@@ -263,9 +263,9 @@ impl TempoTxEnvelope {
         self.as_aa().map(|tx| tx.tx().nonce_key)
     }
 
-    /// Returns true if this is a Tempo transaction
+    /// Returns true if this envelope contains an [`AASigned`] transaction.
     pub fn is_aa(&self) -> bool {
-        matches!(self, Self::AA(_))
+        self.as_aa().is_some()
     }
 
     /// Returns iterator over the calls in the transaction.
