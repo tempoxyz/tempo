@@ -47,6 +47,7 @@ fn blocks_have_consensus_context() {
             context.sleep(Duration::from_secs(1)).await;
         }
 
+        // Genesis block should not have a consensus context.
         let genesis = provider.block_by_number(0).ok().flatten().unwrap();
         assert_eq!(genesis.header.consensus_context, None);
 

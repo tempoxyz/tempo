@@ -1007,9 +1007,11 @@ async fn verify_header(
         proposer: crate::utils::public_key_to_tempo_primitive(proposer),
     };
 
-    if ctx != expected_ctx {
-        bail!("mismatching block consensus context");
-    }
+    ensure!(
+        ctx == expected_ctx,
+        "mismatch in consensus context for block `{}`. expected `{expected_ctx:?}`. got `{ctx:?}`",
+        block.digest()
+    );
 
     if epoch_info.last() == block.height() {
         info!(
