@@ -164,14 +164,15 @@ where
                 continue;
             };
 
+            let fee_token_cost = tx.transaction.fee_token_cost();
             if let Some(&balance) = self.decreased_balances.get(&key)
-                && balance < tx.transaction.fee_token_cost()
+                && balance < fee_token_cost
             {
                 self.inner.mark_invalid(
                     &tx,
                     InvalidPoolTransactionError::Consensus(
                         InvalidTransactionError::InsufficientFunds(
-                            (balance, tx.transaction.fee_token_cost()).into(),
+                            (balance, fee_token_cost).into(),
                         ),
                     ),
                 );
