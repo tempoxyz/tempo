@@ -106,20 +106,15 @@ on:
           - Tracy
           - Both
       otlp:
-        description: Export OTLP traces and logs.
-        type: boolean
+        description: OTLP mode.
+        type: choice
         required: true
-        default: true
-      baseline-otlp:
-        description: Override OTLP for baseline phases (true/false, empty inherits otlp).
-        type: string
-        required: false
-        default: ""
-      feature-otlp:
-        description: Override OTLP for feature phases (true/false, empty inherits otlp).
-        type: string
-        required: false
-        default: ""
+        default: "true"
+        options:
+          - "true"
+          - "false"
+          - baseline
+          - feature
       baseline-args:
         description: Extra args passed only to the baseline node.
         type: string
@@ -389,9 +384,9 @@ jobs:
       BENCH_TRACY: ${{ (inputs.profiling == 'Tracy' || inputs.profiling == 'Both') && 'on' || ((inputs.profiling == 'Off' || inputs.profiling == 'Samply') && 'off' || inputs.tracy) }}
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '30' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset || '120' }}
-      BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' && 'true' || 'false' }}
-      BENCH_BASELINE_OTLP: ${{ inputs.baseline-otlp != '' && inputs.baseline-otlp || ((inputs.otlp != false && inputs.otlp != 'false') && 'true' || 'false') }}
-      BENCH_FEATURE_OTLP: ${{ inputs.feature-otlp != '' && inputs.feature-otlp || ((inputs.otlp != false && inputs.otlp != 'false') && 'true' || 'false') }}
+      BENCH_OTLP: ${{ inputs.otlp || 'true' }}
+      BENCH_BASELINE_OTLP: ${{ inputs.baseline-otlp != '' && inputs.baseline-otlp || ((inputs.otlp == false || inputs.otlp == 'false' || inputs.otlp == 'feature') && 'false' || 'true') }}
+      BENCH_FEATURE_OTLP: ${{ inputs.feature-otlp != '' && inputs.feature-otlp || ((inputs.otlp == false || inputs.otlp == 'false' || inputs.otlp == 'baseline') && 'false' || 'true') }}
       BENCH_BASE_FEATURES: jemalloc,asm-keccak,keccak-cache-global
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
