@@ -1719,7 +1719,8 @@ where
                         );
                     }
 
-                    if cfg.spec.is_t3()
+                    if same_tx_auth_use
+                        && cfg.spec.is_t3()
                         && key_auth.key_type != keychain_sig.signature.signature_type()
                     {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
@@ -5095,7 +5096,7 @@ mod tests {
             let child_key = Address::random();
             let signed = sign_key_auth(
                 &admin_signer,
-                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key)
+                KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, child_key)
                     .into_admin(user),
             );
             let (mut evm, h) = make_evm(
