@@ -4,7 +4,7 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, U256};
 use alloy_sol_types::SolInterface;
 use reth_engine_tree::tree::{CachedStateMetrics, CachedStateProvider, SavedCache};
 use reth_evm::{Database, Evm, EvmEnvFor};
@@ -181,10 +181,9 @@ impl BestTransactionsPrewarming {
 
             let tx_hash = *tx.hash();
 
-            let touched = if is_tip20_transfer_transaction(&tx) {
-                let touches =
-                    storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary);
-
+            let touched = if let Some(touches) =
+                tip20_transfer_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary)
+            {
                 for touch in &touches {
                     if prewarm.is_stopped() {
                         return;
@@ -359,11 +358,10 @@ impl StorageTouch {
     }
 }
 
-fn is_tip20_transfer_transaction(tx: &BestTransaction) -> bool {
-    tx.transaction.is_payment() && is_tip20_transfer_calls(tx.transaction.inner().calls())
-}
-
-fn is_tip20_transfer_calls<'a>(calls: impl IntoIterator<Item = (TxKind, &'a Bytes)>) -> bool {
+#[cfg(test)]
+fn is_tip20_transfer_calls<'a>(
+    calls: impl IntoIterator<Item = (alloy_primitives::TxKind, &'a alloy_primitives::Bytes)>,
+) -> bool {
     let mut has_call = false;
     for (kind, input) in calls {
         has_call = true;
@@ -374,7 +372,8 @@ fn is_tip20_transfer_calls<'a>(calls: impl IntoIterator<Item = (TxKind, &'a Byte
     has_call
 }
 
-fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
+#[cfg(test)]
+fn is_tip20_transfer_call(kind: alloy_primitives::TxKind, input: &[u8]) -> bool {
     let Some(token) = kind.to().copied() else {
         return false;
     };
@@ -391,10 +390,14 @@ fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
     )
 }
 
-fn storage_touches_for_transaction(
+fn tip20_transfer_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
-) -> Vec<StorageTouch> {
+) -> Option<Vec<StorageTouch>> {
+    if !tx.transaction.is_payment() {
+        return None;
+    }
+
     let mut touches = Vec::new();
     let sender = tx.transaction.sender();
     let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
@@ -408,15 +411,27 @@ fn storage_touches_for_transaction(
     add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
     add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
 
-    if tx.transaction.is_payment() {
-        for (kind, input) in tx.transaction.inner().calls() {
-            add_tip20_call_touches(&mut touches, sender, kind, input);
+    let mut has_call = false;
+    for (kind, input) in tx.transaction.inner().calls() {
+        has_call = true;
+        let token = kind.to().copied()?;
+        if !token.is_tip20() {
+            return None;
         }
+
+        let call = ITIP20::ITIP20Calls::abi_decode(input).ok()?;
+        if !add_tip20_transfer_call_touches(&mut touches, sender, token, call) {
+            return None;
+        }
+    }
+
+    if !has_call {
+        return None;
     }
 
     add_expiring_nonce_touches(&mut touches, tx);
 
-    touches
+    Some(touches)
 }
 
 fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
@@ -430,10 +445,11 @@ fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fe
     add_tip20_reward_touches(touches, fee_token, fee_payer);
 }
 
+#[cfg(test)]
 fn add_tip20_call_touches(
     touches: &mut Vec<StorageTouch>,
     sender: Address,
-    kind: TxKind,
+    kind: alloy_primitives::TxKind,
     input: &[u8],
 ) {
     let Some(token) = kind.to().copied() else {
@@ -443,38 +459,21 @@ fn add_tip20_call_touches(
         return;
     }
 
+    let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) else {
+        return;
+    };
+
+    if add_tip20_transfer_call_touches(touches, sender, token, call) {
+        return;
+    }
+
     add_tip20_common_touches(touches, token);
+
     let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) else {
         return;
     };
 
     match call {
-        ITIP20::ITIP20Calls::transfer(call) => {
-            add_tip20_balance_touch(touches, token, sender);
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_reward_touches(touches, token, sender);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::transferWithMemo(call) => {
-            add_tip20_balance_touch(touches, token, sender);
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_reward_touches(touches, token, sender);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::transferFrom(call) => {
-            add_tip20_balance_touch(touches, token, call.from);
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_allowance_touch(touches, token, call.from, sender);
-            add_tip20_reward_touches(touches, token, call.from);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::transferFromWithMemo(call) => {
-            add_tip20_balance_touch(touches, token, call.from);
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_allowance_touch(touches, token, call.from, sender);
-            add_tip20_reward_touches(touches, token, call.from);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
         ITIP20::ITIP20Calls::approve(call) => {
             add_tip20_allowance_touch(touches, token, sender, call.spender);
         }
@@ -492,6 +491,49 @@ fn add_tip20_call_touches(
         }
         _ => {}
     }
+}
+
+fn add_tip20_transfer_call_touches(
+    touches: &mut Vec<StorageTouch>,
+    sender: Address,
+    token: Address,
+    call: ITIP20::ITIP20Calls,
+) -> bool {
+    match call {
+        ITIP20::ITIP20Calls::transfer(call) => {
+            add_tip20_common_touches(touches, token);
+            add_tip20_balance_touch(touches, token, sender);
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_reward_touches(touches, token, sender);
+            add_tip20_reward_touches(touches, token, call.to);
+        }
+        ITIP20::ITIP20Calls::transferWithMemo(call) => {
+            add_tip20_common_touches(touches, token);
+            add_tip20_balance_touch(touches, token, sender);
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_reward_touches(touches, token, sender);
+            add_tip20_reward_touches(touches, token, call.to);
+        }
+        ITIP20::ITIP20Calls::transferFrom(call) => {
+            add_tip20_common_touches(touches, token);
+            add_tip20_balance_touch(touches, token, call.from);
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_allowance_touch(touches, token, call.from, sender);
+            add_tip20_reward_touches(touches, token, call.from);
+            add_tip20_reward_touches(touches, token, call.to);
+        }
+        ITIP20::ITIP20Calls::transferFromWithMemo(call) => {
+            add_tip20_common_touches(touches, token);
+            add_tip20_balance_touch(touches, token, call.from);
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_allowance_touch(touches, token, call.from, sender);
+            add_tip20_reward_touches(touches, token, call.from);
+            add_tip20_reward_touches(touches, token, call.to);
+        }
+        _ => return false,
+    }
+
+    true
 }
 
 fn add_tip20_common_touches(touches: &mut Vec<StorageTouch>, token: Address) {
