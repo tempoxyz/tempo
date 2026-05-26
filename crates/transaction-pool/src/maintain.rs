@@ -640,14 +640,18 @@ where
                 if !pause_tokens.is_empty() {
                     let all_txs = pool.all_transactions();
 
-                    // Group transactions by fee token for efficient batch processing.
+                    // Group transactions by effective fee token for efficient batch processing.
                     // This single pass over all transactions handles all pause events.
-                    let mut by_token: AddressMap<Vec<TxHash>> = AddressMap::default();
-                    for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
-                        if let Some(fee_token) = tx.transaction.inner().fee_token() {
-                            by_token.entry(fee_token).or_default().push(*tx.hash());
-                        }
-                    }
+                    let mut by_token = all_txs.into_iter().fold(
+                        AddressMap::<Vec<TxHash>>::default(),
+                        |mut by_token, tx| {
+                            by_token
+                                .entry(tx.transaction.effective_fee_token())
+                                .or_default()
+                                .push(*tx.hash());
+                            by_token
+                        },
+                    );
 
                     // Process each pause token
                     for token in pause_tokens {
