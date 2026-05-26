@@ -258,6 +258,7 @@ clap = { version = "4.5.57", features = ["derive", "env"] }
 coins-bip32 = "0.12"
 const-hex = { version = "1.17.0" }
 criterion = { package = "codspeed-criterion-compat", version = "4.6.0" }
+crossbeam-channel = "0.5.15"
 dashmap = "6"
 dirs-next = "2.0.0"
 derive_more = { version = "2.1.1", default-features = false }

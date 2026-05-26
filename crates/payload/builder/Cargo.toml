@@ -40,6 +40,7 @@ alloy-primitives.workspace = true
 alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
 
+crossbeam-channel.workspace = true
 metrics.workspace = true
 tracing.workspace = true
 

@@ -1,11 +1,11 @@
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
 };
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_sol_types::SolInterface;
+use crossbeam_channel::{Receiver, Sender, unbounded};
 use reth_engine_tree::tree::{CachedStateMetrics, CachedStateProvider, SavedCache};
 use reth_evm::{Database, Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
@@ -52,8 +52,8 @@ impl BestTransactionsPrewarming {
         Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
         Provider: StateProviderFactory + Clone + 'static,
     {
-        let (transactions_tx, transactions_rx) = mpsc::channel();
-        let (commands_tx, commands_rx) = mpsc::channel();
+        let (transactions_tx, transactions_rx) = unbounded();
+        let (commands_tx, commands_rx) = unbounded();
         let stop = Arc::new(AtomicBool::new(false));
         let prewarm = PrewarmingExecutionContext {
             provider,
@@ -252,7 +252,7 @@ impl Iterator for BestTransactionsPrewarming {
 
 impl BestTransactions for BestTransactionsPrewarming {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
-        let (new_tx, new_rx) = mpsc::channel();
+        let (new_tx, new_rx) = unbounded();
         let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
         let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
             invalid: InvalidTransaction {
