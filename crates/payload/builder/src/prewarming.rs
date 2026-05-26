@@ -24,7 +24,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
-use tracing::trace;
+use tracing::{Level, trace};
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
@@ -179,7 +179,8 @@ impl BestTransactionsPrewarming {
                 return;
             };
 
-            let tx_hash = *tx.hash();
+            let tx_hash =
+                tracing::enabled!(target: "payload_builder", Level::TRACE).then(|| *tx.hash());
 
             let touched = if is_tip20_transfer_transaction(&tx) {
                 let touches =
