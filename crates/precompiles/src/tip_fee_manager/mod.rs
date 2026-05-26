@@ -162,9 +162,6 @@ impl TipFeeManager {
         beneficiary: Address,
         skip_liquidity_check: bool,
     ) -> Result<Address> {
-        // Get the validator's token preference
-        let validator_token = self.get_validator_token(beneficiary)?;
-
         let mut tip20_token = TIP20Token::from_address(user_token)?;
 
         // Ensure that user and FeeManager are authorized to interact with the token
@@ -172,6 +169,10 @@ impl TipFeeManager {
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
         if !skip_liquidity_check {
+            // Get the validator's token preference only when it is needed to plan and
+            // reserve AMM liquidity. Pool validation bypasses this check and should not
+            // pay an extra storage read on every transaction.
+            let validator_token = self.get_validator_token(beneficiary)?;
             let (route, ..) = self.plan_fee_route(user_token, validator_token, max_amount)?;
             let route = route.ok_or_else(TIPFeeAMMError::insufficient_liquidity)?;
             self.reserve_fee_liquidity(user_token, validator_token, max_amount, route)?;
