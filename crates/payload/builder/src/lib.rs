@@ -245,7 +245,7 @@ where
             + 'static,
     {
         let BuildArguments {
-            cached_reads,
+            mut cached_reads,
             execution_cache,
             trie_handle,
             config,
@@ -297,7 +297,9 @@ where
 
         let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()
-            .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
+            .with_database(
+                Box::new(cached_reads.as_db_mut(state)) as Box<dyn Database<Error = ProviderError>>
+            )
             .with_bundle_update()
             .build();
         drop(_state_setup_span);
