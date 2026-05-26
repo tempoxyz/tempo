@@ -9,7 +9,9 @@ use alloy_consensus::{BlockHeader, Transaction, transaction::TxHashRef};
 use alloy_evm::block::BlockExecutionResult;
 pub use error::TempoConsensusError;
 use reth_chainspec::EthChainSpec;
-use reth_consensus::{Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom};
+use reth_consensus::{
+    Consensus, ConsensusError, FullConsensus, HeaderValidator, ReceiptRootBloom, TransactionRoot,
+};
 use reth_consensus_common::validation::{
     validate_against_parent_4844, validate_against_parent_eip1559_base_fee,
     validate_against_parent_gas_limit, validate_against_parent_hash_number,
@@ -104,6 +106,65 @@ impl TempoConsensus {
 
         Ok(())
     }
+
+    fn validate_tempo_block_pre_execution(
+        &self,
+        block: &SealedBlock<Block>,
+    ) -> Result<(), ConsensusError> {
+        let transactions = &block.body().transactions;
+
+        if let Some(tx) = transactions.iter().find(|&tx| {
+            tx.is_system_tx() && !tx.is_valid_system_tx(self.inner.chain_spec().chain().id())
+        }) {
+            return Err(TempoConsensusError::InvalidSystemTransaction {
+                tx_hash: *tx.tx_hash(),
+            }
+            .into());
+        }
+
+        let expected_system_tx_count = if self
+            .inner
+            .chain_spec()
+            .is_t4_active_at_timestamp(block.header().timestamp())
+        {
+            0
+        } else {
+            SYSTEM_TX_COUNT
+        };
+
+        // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block system txs
+        let end_of_block_system_txs = transactions
+            .get(transactions.len().saturating_sub(expected_system_tx_count)..)
+            .map(|slice| {
+                slice
+                    .iter()
+                    .filter(|tx| tx.is_system_tx())
+                    .collect::<Vec<&TempoTxEnvelope>>()
+            })
+            .unwrap_or_default();
+
+        if end_of_block_system_txs.len() != expected_system_tx_count {
+            return Err(TempoConsensusError::MissingEndOfBlockSystemTxs {
+                expected: expected_system_tx_count,
+                actual: end_of_block_system_txs.len(),
+            }
+            .into());
+        }
+
+        // Validate that the sequence of end-of-block system txs is correct
+        for (tx, expected_to) in end_of_block_system_txs.into_iter().zip(SYSTEM_TX_ADDRESSES) {
+            let actual_to = tx.to().unwrap_or_default();
+            if actual_to != expected_to {
+                return Err(TempoConsensusError::InvalidEndOfBlockSystemTxOrder {
+                    expected: expected_to,
+                    actual: actual_to,
+                }
+                .into());
+            }
+        }
+
+        Ok(())
+    }
 }
 
 impl HeaderValidator<TempoHeader> for TempoConsensus {
@@ -162,59 +223,17 @@ impl Consensus<Block> for TempoConsensus {
         &self,
         block: &SealedBlock<Block>,
     ) -> Result<(), ConsensusError> {
-        let transactions = &block.body().transactions;
+        self.validate_block_pre_execution_with_tx_root(block, None)
+    }
 
-        if let Some(tx) = transactions.iter().find(|&tx| {
-            tx.is_system_tx() && !tx.is_valid_system_tx(self.inner.chain_spec().chain().id())
-        }) {
-            return Err(TempoConsensusError::InvalidSystemTransaction {
-                tx_hash: *tx.tx_hash(),
-            }
-            .into());
-        }
-
-        let expected_system_tx_count = if self
-            .inner
-            .chain_spec()
-            .is_t4_active_at_timestamp(block.header().timestamp())
-        {
-            0
-        } else {
-            SYSTEM_TX_COUNT
-        };
-
-        // Get the last END_OF_BLOCK_SYSTEM_TX_COUNT transactions and validate they are end-of-block system txs
-        let end_of_block_system_txs = transactions
-            .get(transactions.len().saturating_sub(expected_system_tx_count)..)
-            .map(|slice| {
-                slice
-                    .iter()
-                    .filter(|tx| tx.is_system_tx())
-                    .collect::<Vec<&TempoTxEnvelope>>()
-            })
-            .unwrap_or_default();
-
-        if end_of_block_system_txs.len() != expected_system_tx_count {
-            return Err(TempoConsensusError::MissingEndOfBlockSystemTxs {
-                expected: expected_system_tx_count,
-                actual: end_of_block_system_txs.len(),
-            }
-            .into());
-        }
-
-        // Validate that the sequence of end-of-block system txs is correct
-        for (tx, expected_to) in end_of_block_system_txs.into_iter().zip(SYSTEM_TX_ADDRESSES) {
-            let actual_to = tx.to().unwrap_or_default();
-            if actual_to != expected_to {
-                return Err(TempoConsensusError::InvalidEndOfBlockSystemTxOrder {
-                    expected: expected_to,
-                    actual: actual_to,
-                }
-                .into());
-            }
-        }
-
-        self.inner.validate_block_pre_execution(block)
+    fn validate_block_pre_execution_with_tx_root(
+        &self,
+        block: &SealedBlock<Block>,
+        transaction_root: Option<TransactionRoot>,
+    ) -> Result<(), ConsensusError> {
+        self.validate_tempo_block_pre_execution(block)?;
+        self.inner
+            .validate_block_pre_execution_with_tx_root(block, transaction_root)
     }
 
     fn is_transient_error(&self, error: &ConsensusError) -> bool {
