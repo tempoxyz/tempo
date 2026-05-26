@@ -727,7 +727,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
-    let extra_args = if $side_args == "" { [] } else { $side_args | split row " " }
+    let extra_args = (parse-cli-args $side_args)
 
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir

@@ -511,6 +511,64 @@ def dedup-args [base_args: list<string>, extra_args: list<string>] {
     $result | append $extra_args
 }
 
+def parse-cli-args [args: string] {
+    mut result = []
+    mut current = ""
+    mut quote = ""
+    mut escaped = false
+    mut token_started = false
+
+    for ch in ($args | split chars) {
+        if $escaped {
+            $current = $"($current)($ch)"
+            $escaped = false
+            $token_started = true
+            continue
+        }
+        if $ch == "\\" {
+            $escaped = true
+            $token_started = true
+            continue
+        }
+        if $quote != "" {
+            if $ch == $quote {
+                $quote = ""
+            } else {
+                $current = $"($current)($ch)"
+            }
+            $token_started = true
+            continue
+        }
+        if $ch == "'" or $ch == '"' {
+            $quote = $ch
+            $token_started = true
+            continue
+        }
+        if $ch in [" " "\t" "\n" "\r"] {
+            if $token_started {
+                $result = ($result | append $current)
+                $current = ""
+                $token_started = false
+            }
+            continue
+        }
+        $current = $"($current)($ch)"
+        $token_started = true
+    }
+
+    if $escaped {
+        $current = $"($current)('\')"
+    }
+    if $quote != "" {
+        print $"Error: unterminated quote in args: ($args)"
+        exit 1
+    }
+    if $token_started {
+        $result = ($result | append $current)
+    }
+    $result
+}
+
 # Run a single benchmark run (start node, run bench, stop node, collect report)
 def run-bench-single [
     --tempo-bin: string
@@ -554,7 +612,7 @@ def run-bench-single [
     let run_type = if ($run_label | str starts-with "baseline") { "baseline" } else { "feature" }
 
     # Parse extra node args
-    let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
+    let extra_args = (parse-cli-args $node_args)
 
     # Build node arguments, then dedup so user-provided args override defaults
     let base_args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
@@ -1570,7 +1628,7 @@ def "main localnet" [
     }
 
     # Parse custom args
-    let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
+    let extra_args = (parse-cli-args $node_args)
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
 
     # Build first (unless skipped)
@@ -1873,7 +1931,7 @@ def "main follower" [
         exit 1
     }
 
-    let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
+    let extra_args = (parse-cli-args $node_args)
     if not $skip_build {
         build-tempo ["tempo"] $profile $features
     }

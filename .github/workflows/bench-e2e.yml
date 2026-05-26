@@ -762,6 +762,23 @@ jobs:
             fi
           }
 
+          quote_derek_arg() {
+            local arg="$1"
+            if [[ "$arg" == *=* ]]; then
+              local name="${arg%%=*}"
+              local value="${arg#*=}"
+              if [[ "$value" =~ ^[A-Za-z0-9._/:=@+-]+$ ]]; then
+                printf '%s=%s' "$name" "$value"
+              else
+                value="${value//\\/\\\\}"
+                value="${value//\"/\\\"}"
+                printf '%s=\"%s\"' "$name" "$value"
+              fi
+            else
+              quote_arg "$arg"
+            fi
+          }
+
           derek_cmd=(derek bench mode="$BENCH_MODE")
           derek_cmd+=(
             preset="$BENCH_PRESET"
@@ -794,7 +811,7 @@ jobs:
             if [ -n "$DEREK_BENCH_COMMAND" ]; then
               DEREK_BENCH_COMMAND+=" "
             fi
-            DEREK_BENCH_COMMAND+="$(quote_arg "$arg")"
+            DEREK_BENCH_COMMAND+="$(quote_derek_arg "$arg")"
           done
           export DEREK_BENCH_COMMAND
           echo "DEREK_BENCH_COMMAND=$DEREK_BENCH_COMMAND" >> "$GITHUB_ENV"
