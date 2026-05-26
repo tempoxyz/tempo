@@ -743,18 +743,26 @@ fn main() -> eyre::Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use std::time::Duration;
+    use std::{sync::Once, time::Duration};
 
     use clap::Parser;
 
-    use super::{Commands, TempoCli};
+    use super::{Commands, TempoCli, defaults};
+
+    fn init_defaults_once() {
+        static INIT: Once = Once::new();
+        INIT.call_once(defaults::init_defaults);
+    }
 
     #[test]
     fn transaction_execution_wait_default_depends_on_sparse_trie_sharing() {
+        init_defaults_once();
+
         let cli = TempoCli::try_parse_from(["tempo", "node", "--dev"]).unwrap();
         let Commands::Node(node_cmd) = cli.command else {
             panic!("expected node command");
         };
+        assert!(node_cmd.engine.share_execution_cache_with_payload_builder);
         assert_eq!(
             node_cmd
                 .ext
