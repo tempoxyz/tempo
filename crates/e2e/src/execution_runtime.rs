@@ -152,17 +152,6 @@ impl Builder {
         }
 
         genesis.extra_data = initial_dkg_outcome.encode().to_vec().into();
-        // The test genesis has a static network identity, but e2e tests
-        // generate a fresh DKG outcome. Let the chainspec derive the identity
-        // from the injected genesis extra data.
-        let _ = genesis
-            .config
-            .extra_fields
-            .remove_deserialized::<String>("networkIdentity");
-        let _ = genesis
-            .config
-            .extra_fields
-            .remove_deserialized::<u64>("networkIdentityFromEpoch");
 
         // Just remove whatever is already written into chainspec.
         genesis.alloc.remove(&VALIDATOR_CONFIG_V2_ADDRESS);

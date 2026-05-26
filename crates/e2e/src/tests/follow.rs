@@ -53,28 +53,24 @@ impl<T: FeedStateProvider> FeedStateProvider for &T {
 
 async fn wait_for_height(context: &Context, prefix: &str, target_height: u64) {
     loop {
-        if processed_height(context, prefix).is_some_and(|height| height >= target_height) {
-            return;
+        let metrics = context.encode();
+        for line in metrics.lines() {
+            if !line.starts_with(prefix) {
+                continue;
+            }
+            let mut parts = line.split_whitespace();
+            let metric = parts.next().unwrap();
+            let value = parts.next().unwrap();
+            if metric.ends_with("_marshal_processed_height") {
+                let height = value.parse::<u64>().unwrap();
+                if height >= target_height {
+                    return;
+                }
+            }
         }
 
         context.sleep(Duration::from_millis(100)).await;
     }
-}
-
-fn processed_height(context: &Context, prefix: &str) -> Option<u64> {
-    let metrics = context.encode();
-    metrics.lines().find_map(|line| {
-        if !line.starts_with(prefix) {
-            return None;
-        }
-
-        let mut parts = line.split_whitespace();
-        let metric = parts.next()?;
-        let value = parts.next()?;
-        metric
-            .ends_with("_marshal_processed_height")
-            .then(|| value.parse::<u64>().unwrap())
-    })
 }
 
 #[derive(Default)]
