@@ -1155,7 +1155,9 @@ where
                         .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
                 };
 
-                if cfg.spec.is_t6() && access_key_addr != key_auth.key_id {
+                let same_tx_auth_use = access_key_addr == key_auth.key_id;
+
+                if cfg.spec.is_t6() && !same_tx_auth_use {
                     let stored_key_expiry = StorageCtx::enter_precompile(
                         journal,
                         block,
@@ -1200,6 +1202,7 @@ where
                 // `collectFeePreTx` would not validate the spending limit because the key is not authorized yet and we are not setting the transient key_id.
                 if !gas_balance_spending.is_zero()
                     && fee_payer == tx.caller
+                    && same_tx_auth_use
                     && let Some(limits) = key_auth.limits.as_ref()
                 {
                     let remaining = limits
@@ -1515,30 +1518,43 @@ where
                 };
             }
 
-            // If this is a same tx auth+use, we need to set the transient key_id and decrement the fee from the spending limit.
-            if tempo_tx_env.signature.is_keychain() {
-                StorageCtx::enter_precompile(
-                    journal,
-                    block,
-                    cfg,
-                    tx,
-                    |mut keychain: AccountKeychain| {
-                        keychain
-                            .set_transaction_key(key_auth.key_id)
-                            .map_err(|e| EVMError::Custom(e.to_string()))?;
+            // If this is a same tx auth+use, set the transient key_id to the newly authorized
+            // key and decrement the fee from its spending limit. Admin delegation must keep the
+            // actual signer as the transaction key.
+            if let Some(keychain_sig) = tempo_tx_env.signature.as_keychain() {
+                let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
+                    override_key_id
+                } else {
+                    keychain_sig
+                        .key_id(&tempo_tx_env.signature_hash)
+                        .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+                };
 
-                        if evm.collected_fee.is_zero() {
-                            return Ok(());
-                        }
+                let same_tx_auth_use = access_key_addr == key_auth.key_id;
+                if same_tx_auth_use {
+                    StorageCtx::enter_precompile(
+                        journal,
+                        block,
+                        cfg,
+                        tx,
+                        |mut keychain: AccountKeychain| {
+                            keychain
+                                .set_transaction_key(key_auth.key_id)
+                                .map_err(|e| EVMError::Custom(e.to_string()))?;
 
-                        keychain
-                            .authorize_transfer(fee_payer, fee_token, evm.collected_fee)
-                            .map_err(|err| match err {
-                                TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                                err => FeePaymentError::Other(err.to_string()).into(),
-                            })
-                    },
-                )?;
+                            if evm.collected_fee.is_zero() {
+                                return Ok(());
+                            }
+
+                            keychain
+                                .authorize_transfer(fee_payer, fee_token, evm.collected_fee)
+                                .map_err(|err| match err {
+                                    TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                                    err => FeePaymentError::Other(err.to_string()).into(),
+                                })
+                        },
+                    )?;
+                }
             }
         }
 
@@ -5250,6 +5266,105 @@ mod tests {
                 ),
                 "Alice-bound authorization should not replay for Bob, got: {bob_result:?}"
             );
+        }
+
+        #[test]
+        fn test_t6_admin_delegation_does_not_apply_child_fee_limit() {
+            let (admin_signer, admin_key) = generate_keypair();
+            let user = Address::random();
+            let child_key = Address::random();
+            let gas_limit = 100_000;
+            let fee = U256::from(gas_limit);
+            let child_spending_limit = fee - U256::ONE;
+
+            let signed = sign_key_auth(
+                &admin_signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key)
+                    .with_limits(vec![PrimTokenLimit {
+                        token: DEFAULT_FEE_TOKEN,
+                        limit: child_spending_limit,
+                        period: 60,
+                    }])
+                    .with_account(user),
+            );
+            let (mut evm, h) = make_evm(
+                user,
+                admin_key,
+                Some(signed),
+                TempoHardfork::T6,
+                None,
+                false,
+            );
+            evm.inner.ctx.tx.inner.gas_limit = gas_limit;
+            evm.inner.ctx.tx.inner.gas_price = 1_000_000_000_000;
+            evm.inner.ctx.tx.inner.gas_priority_fee = Some(1_000_000_000_000);
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                TIP20Setup::path_usd(user)
+                    .with_issuer(user)
+                    .with_mint(user, fee * U256::from(2))
+                    .apply()
+                    .expect("pathUSD setup succeeds");
+
+                let mut keychain = AccountKeychain::new();
+                keychain
+                    .authorize_admin_key(user, admin_key, PrecompileSignatureType::Secp256k1, None)
+                    .expect("root authorizes admin key");
+            });
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                result.is_ok(),
+                "admin delegation should not precharge fees against child key limits, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t6_admin_delegation_preserves_admin_transaction_key() {
+            use tempo_precompiles::account_keychain::getTransactionKeyCall;
+
+            let (admin_signer, admin_key) = generate_keypair();
+            let user = Address::random();
+            let child_key = Address::random();
+            let signed = sign_key_auth(
+                &admin_signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key)
+                    .with_account(user),
+            );
+            let (mut evm, h) = make_evm(
+                user,
+                admin_key,
+                Some(signed),
+                TempoHardfork::T6,
+                None,
+                false,
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let mut keychain = AccountKeychain::new();
+                keychain
+                    .authorize_admin_key(user, admin_key, PrecompileSignatureType::Secp256k1, None)
+                    .expect("root authorizes admin key");
+            });
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                result.is_ok(),
+                "admin delegation should pass, got: {result:?}"
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let keychain = AccountKeychain::new();
+                let transaction_key = keychain
+                    .get_transaction_key(getTransactionKeyCall {}, user)
+                    .expect("transaction key read succeeds");
+                assert_eq!(
+                    transaction_key, admin_key,
+                    "admin delegation must preserve the signer key as transaction key"
+                );
+            });
         }
 
         #[test]
