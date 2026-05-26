@@ -776,6 +776,14 @@ mod tests {
             node_cmd.ext.consensus.network_budget.into_duration(),
             Duration::from_millis(75)
         );
+        assert_eq!(
+            node_cmd
+                .ext
+                .node_args
+                .builder_build_time_multiplier
+                .to_string(),
+            "1.35"
+        );
 
         let cli = TempoCli::try_parse_from([
             "tempo",

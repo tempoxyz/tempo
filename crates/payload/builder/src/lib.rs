@@ -7,10 +7,12 @@ mod budget;
 mod metrics;
 mod prewarming;
 
+pub use budget::{BuildTimeMultiplier, DEFAULT_BUILD_TIME_MULTIPLIER};
+
 use crate::{
     budget::{
-        BUILD_TIME_MULTIPLIER_SCALE, DEFAULT_BUILD_TIME_MULTIPLIER, decay_build_time_multiplier,
-        observed_build_time_multiplier, scaled_elapsed_exceeds_budget,
+        BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
+        scaled_elapsed_exceeds_budget,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
@@ -115,6 +117,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         is_dev: bool,
         state_provider_metrics: bool,
         enable_prewarming: bool,
+        build_time_multiplier: BuildTimeMultiplier,
     ) -> Self {
         Self {
             pool,
@@ -127,7 +130,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             is_dev,
             state_provider_metrics,
             enable_prewarming,
-            build_time_multiplier: Arc::new(AtomicU64::new(DEFAULT_BUILD_TIME_MULTIPLIER)),
+            build_time_multiplier: Arc::new(AtomicU64::new(build_time_multiplier.scaled())),
         }
     }
 

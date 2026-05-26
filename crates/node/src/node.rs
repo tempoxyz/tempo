@@ -39,7 +39,7 @@ use std::default::Default;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::TempoConsensus;
 use tempo_evm::TempoEvmConfig;
-use tempo_payload_builder::TempoPayloadBuilder;
+use tempo_payload_builder::{BuildTimeMultiplier, TempoPayloadBuilder};
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
@@ -69,6 +69,10 @@ pub struct TempoNodeArgs {
     /// Enable prewarming for the payload builder.
     #[arg(long = "builder.enable-prewarming", default_value_t = false)]
     pub builder_enable_prewarming: bool,
+
+    /// Initial multiplier for reserving payload finalization time.
+    #[arg(long = "builder.build-time-multiplier", default_value_t = BuildTimeMultiplier::default())]
+    pub builder_build_time_multiplier: BuildTimeMultiplier,
 }
 
 impl TempoNodeArgs {
@@ -85,6 +89,7 @@ impl TempoNodeArgs {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
             enable_prewarming: self.builder_enable_prewarming,
+            build_time_multiplier: self.builder_build_time_multiplier,
         }
     }
 }
@@ -493,6 +498,8 @@ pub struct TempoPayloadBuilderBuilder {
     pub state_provider_metrics: bool,
     /// Enable prewarming for the payload builder.
     pub enable_prewarming: bool,
+    /// Initial multiplier for reserving payload finalization time.
+    pub build_time_multiplier: BuildTimeMultiplier,
 }
 
 impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
@@ -516,6 +523,7 @@ where
             ctx.is_dev(),
             self.state_provider_metrics,
             self.enable_prewarming,
+            self.build_time_multiplier,
         ))
     }
 }
