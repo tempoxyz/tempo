@@ -366,11 +366,9 @@ struct UniqueTouches {
 
 impl UniqueTouches {
     fn new() -> Self {
-        let mut seen = HashSet::default();
-        seen.reserve(32);
         Self {
             touches: Vec::with_capacity(32),
-            seen,
+            seen: HashSet::with_capacity_and_hasher(32, Default::default()),
         }
     }
 
@@ -554,11 +552,7 @@ fn add_tip20_allowance_touch(
     );
 }
 
-fn add_tip20_reward_touches(
-    unique_touches: &mut UniqueTouches,
-    token: Address,
-    account: Address,
-) {
+fn add_tip20_reward_touches(unique_touches: &mut UniqueTouches, token: Address, account: Address) {
     let base_slot = account.mapping_slot(tip20_slots::USER_REWARD_INFO);
     add_storage_touch(unique_touches, token, base_slot);
     add_storage_touch(unique_touches, token, base_slot + U256::from(1));
