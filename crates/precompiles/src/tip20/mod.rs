@@ -1280,8 +1280,14 @@ impl TIP20Token {
 
         self.check_and_update_spending_limit(from, amount)?;
 
-        // Update rewards for the sender and get their reward recipient
-        let from_reward_recipient = self.update_rewards(from)?;
+        // Update rewards for the sender and get their reward recipient. Before any rewards
+        // have been distributed there is no accumulator delta to settle, so fee collection only
+        // needs the delegate slot to maintain opted-in supply.
+        let from_reward_recipient = if self.get_global_reward_per_token()?.is_zero() {
+            self.reward_recipient(from)?
+        } else {
+            self.update_rewards(from)?
+        };
 
         // If user is opted into rewards, decrease opted-in supply
         if from_reward_recipient != Address::ZERO {
