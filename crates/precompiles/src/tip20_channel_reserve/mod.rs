@@ -24,6 +24,7 @@ pub use tempo_contracts::precompiles::{
     TIP20ChannelReserveEvent,
 };
 use tempo_precompiles_macros::{Storable, contract};
+use tempo_primitives::TempoAddressExt;
 
 /// 15 minute grace period between `requestClose` and `withdraw`.
 pub const CLOSE_GRACE_PERIOD: u64 = 15 * 60;
@@ -104,14 +105,17 @@ impl TIP20ChannelReserve {
 
     /// Opens a channel and pulls the initial deposit from the payer into reserve.
     ///
-    /// Payees cannot be zero or TIP-20-prefix addresses. TIP-20-prefix payees would be token
-    /// contracts rather than ordinary recipients, which can make later payee payouts fail.
+    /// Payees cannot be zero or TIP-20 addresses. Virtual payees require a non-virtual operator.
+    /// This prevents channels whose payee cannot receive direct payouts or submit vouchers itself.
     pub fn open(
         &mut self,
         msg_sender: Address,
         call: ITIP20ChannelReserve::openCall,
     ) -> Result<B256> {
-        if call.payee == Address::ZERO || is_tip20_prefix(call.payee) {
+        if call.payee.is_zero()
+            || is_tip20_prefix(call.payee)
+            || (call.payee.is_virtual() && (call.operator.is_zero() || call.operator.is_virtual()))
+        {
             return Err(TIP20ChannelReserveError::invalid_payee().into());
         }
 
@@ -669,6 +673,7 @@ mod tests {
     use tempo_contracts::precompiles::{
         ITIP20ChannelReserve::ITIP20ChannelReserveCalls, TIP20Error,
     };
+    use tempo_primitives::{MasterId, UserTag};
 
     fn descriptor(
         payer: Address,
@@ -815,9 +820,10 @@ mod tests {
     }
 
     #[test]
-    fn test_open_rejects_tip20_prefix_payee() -> eyre::Result<()> {
+    fn test_open_rejects_invalid_payees() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let payer = Address::random();
+        let virtual_payee = Address::new_virtual(MasterId::random(), UserTag::random());
 
         StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::path_usd(payer)
@@ -828,21 +834,38 @@ mod tests {
             reserve.initialize()?;
             seed_expiring_nonce_hash(&mut reserve)?;
 
-            let result = reserve.open(
+            for invalid_payee in &[token.address(), virtual_payee] {
+                for invalid_operator_for_virtual_payee in &[Address::ZERO, virtual_payee] {
+                    let result = reserve.open(
+                        payer,
+                        open_call(
+                            *invalid_payee,
+                            *invalid_operator_for_virtual_payee,
+                            token.address(),
+                            1,
+                            B256::random(),
+                            Address::ZERO,
+                        ),
+                    );
+                    assert_eq!(
+                        result.unwrap_err(),
+                        TIP20ChannelReserveError::invalid_payee().into()
+                    );
+                }
+            }
+
+            // Virtual payees are valid when a non-virtual operator is set to submit vouchers on their behalf.
+            reserve.open(
                 payer,
                 open_call(
-                    token.address(),
-                    Address::ZERO,
+                    virtual_payee,
+                    Address::random(),
                     token.address(),
                     1,
                     B256::random(),
                     Address::ZERO,
                 ),
-            );
-            assert_eq!(
-                result.unwrap_err(),
-                TIP20ChannelReserveError::invalid_payee().into()
-            );
+            )?;
             Ok(())
         })
     }

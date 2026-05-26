@@ -31,6 +31,8 @@ use thiserror::Error;
 #[derive(Debug, Clone)]
 pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
+    /// Cached cost of the transaction in the fee token.
+    fee_token_cost: U256,
     /// Cached payment classification for efficient block building
     is_payment: bool,
     /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
@@ -68,17 +70,19 @@ impl TempoPooledTransaction {
                 .is_expiring_nonce_tx()
                 .then(|| tx.expiring_nonce_hash(sender))
         });
+        let value = transaction.value();
+        let cost =
+            calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
+                .saturating_add(value);
+        let fee_token_cost = cost - value;
         Self {
             inner: EthPooledTransaction {
-                cost: calc_gas_balance_spending(
-                    transaction.gas_limit(),
-                    transaction.max_fee_per_gas(),
-                )
-                .saturating_add(transaction.value()),
+                cost,
                 encoded_length: transaction.encode_2718_len(),
                 blob_sidecar: EthBlobTransactionSidecar::None,
                 transaction,
             },
+            fee_token_cost,
             is_payment,
             expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
@@ -92,8 +96,8 @@ impl TempoPooledTransaction {
 
     /// Get the cost of the transaction in the fee token.
     #[inline]
-    pub fn fee_token_cost(&self) -> U256 {
-        self.inner.cost - self.inner.value()
+    pub const fn fee_token_cost(&self) -> U256 {
+        self.fee_token_cost
     }
 
     /// Returns a reference to inner [`TempoTxEnvelope`].
@@ -251,17 +255,32 @@ impl TempoPooledTransaction {
         self.key_expiry.get().copied().flatten()
     }
 
-    /// Caches the resolved fee token determined during validation.
+    /// Caches the effective fee token determined during transaction validation.
+    ///
+    /// The validator sets this after EVM validation resolves the token from the
+    /// transaction's explicit `fee_token` field or from fee-manager state. Pool
+    /// maintenance code should not call this directly.
     pub fn set_resolved_fee_token(&self, fee_token: Address) {
         let _ = self.resolved_fee_token.set(fee_token);
     }
 
-    /// Returns the resolved fee token cached during validation, if available.
+    /// Returns the fee token cached during transaction validation, if available.
+    ///
+    /// This is `None` for transactions that have not completed validation through
+    /// the pool validator. Prefer [`Self::effective_fee_token`] in maintenance code
+    /// that needs the token a transaction will actually use to pay fees.
     pub fn resolved_fee_token(&self) -> Option<Address> {
         self.resolved_fee_token.get().copied()
     }
 
-    /// Returns the effective fee token for the transaction
+    /// Returns the effective fee token for pool maintenance and accounting.
+    ///
+    /// This prefers the token cached by validation, then falls back to the raw
+    /// transaction `fee_token` field, and finally to [`DEFAULT_FEE_TOKEN`]. This
+    /// fallback covers non-AA transactions and AA transactions without an explicit
+    /// fee token. Use this when checking liquidity, token pause state, balances, or
+    /// transfer policies. Use the raw `fee_token` field only when the code
+    /// specifically needs to know whether the transaction explicitly supplied a token.
     pub fn effective_fee_token(&self) -> Address {
         self.resolved_fee_token()
             .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN))
@@ -278,6 +297,17 @@ impl TempoPooledTransaction {
             let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
             Some((fee_token, slot))
         })
+    }
+
+    /// Returns true when the transaction fee is paid by the transaction sender.
+    ///
+    /// Invalid fee payer recovery is treated as sender-paid so maintenance never skips a
+    /// conservative sender-scoped invalidation for malformed pooled state.
+    pub(crate) fn is_sender_paid_fee(&self) -> bool {
+        let sender = self.sender();
+        self.inner()
+            .fee_payer(sender)
+            .map_or(true, |fee_payer| fee_payer == sender)
     }
 
     /// Returns the sender-scoped expiring nonce hash for AA transactions.
@@ -801,6 +831,7 @@ mod tests {
         //              = (1_000_000 * 20_000_000_000) / 1_000_000_000_000 = 20000
         let expected_fee_cost = U256::from(20000);
         assert_eq!(tx.fee_token_cost(), expected_fee_cost);
+        assert_eq!(tx.fee_token_cost, expected_fee_cost);
         assert_eq!(tx.inner.cost, expected_fee_cost + value);
     }
 
