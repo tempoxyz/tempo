@@ -73,25 +73,34 @@ impl TIP20Token {
 
     /// Updates and accumulates accrued rewards for a specific token holder.
     ///
-    /// This function calculates the rewards earned by a holder based on their
-    /// balance and the reward per token difference since their last update.
-    /// Rewards are accumulated in the delegated recipient's rewardBalance.
-    /// Returns the holder's delegated recipient address.
+    /// This function calculates the rewards earned by a holder based on their balance and the
+    /// reward per token difference since their last update. Rewards are accumulated in the
+    /// delegated recipient's rewardBalance. Returns the holder's delegated recipient address.
     pub fn update_rewards(&mut self, holder: Address) -> Result<RewardFlag> {
-        if self.storage.spec().is_t6() {
-            self.update_rewards_t6(holder, false)
+        let flag = if self.storage.spec().is_t6() {
+            self.update_rewards_t6(holder, false)?
         } else {
-            self.update_rewards_legacy(holder)
-        }
+            self.update_rewards_legacy(holder)?
+        };
+        // RewardFlag output of reward updates MUST be binary (opted-in/out).
+        // UserState has built-in logic to ensure pre-T6 we always store RewardFlag::Uninitialized.
+        debug_assert!(matches!(flag, RewardFlag::OptedIn | RewardFlag::OptedOut));
+
+        Ok(flag)
     }
 
     /// Updates rewards and ensures the holder is checkpointed before cold-path state transitions.
     fn update_rewards_with_checkpoint(&mut self, holder: Address) -> Result<RewardFlag> {
-        if self.storage.spec().is_t6() {
-            self.update_rewards_t6(holder, true)
+        let flag = if self.storage.spec().is_t6() {
+            self.update_rewards_t6(holder, true)?
         } else {
-            self.update_rewards_legacy(holder)
-        }
+            self.update_rewards_legacy(holder)?
+        };
+        // RewardFlag output of reward updates MUST be binary (opted-in/out).
+        // UserState has built-in logic to ensure pre-T6 we always store RewardFlag::Uninitialized.
+        debug_assert!(matches!(flag, RewardFlag::OptedIn | RewardFlag::OptedOut));
+
+        Ok(flag)
     }
 
     fn update_rewards_legacy(&mut self, holder: Address) -> Result<RewardFlag> {
