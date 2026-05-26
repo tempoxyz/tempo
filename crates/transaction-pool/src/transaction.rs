@@ -299,6 +299,17 @@ impl TempoPooledTransaction {
         })
     }
 
+    /// Returns true when the transaction fee is paid by the transaction sender.
+    ///
+    /// Invalid fee payer recovery is treated as sender-paid so maintenance never skips a
+    /// conservative sender-scoped invalidation for malformed pooled state.
+    pub(crate) fn is_sender_paid_fee(&self) -> bool {
+        let sender = self.sender();
+        self.inner()
+            .fee_payer(sender)
+            .map_or(true, |fee_payer| fee_payer == sender)
+    }
+
     /// Returns the sender-scoped expiring nonce hash for AA transactions.
     ///
     /// Expiring nonce transactions use the precomputed value from construction;
