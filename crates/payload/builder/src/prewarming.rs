@@ -180,33 +180,36 @@ impl BestTransactionsPrewarming {
             };
 
             let tx_hash = *tx.hash();
+            let tx_env_touches = tx.transaction.tx_env().prewarm_storage_touches();
 
             let touched = if is_tip20_transfer_transaction(&tx) {
-                let tx_env = tx.transaction.clone_tx_env();
-                let tx_env_touches = tx_env.prewarm_storage_touches();
+                let fallback_touches;
                 let touches = if tx_env_touches.is_empty() {
-                    storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary)
+                    fallback_touches =
+                        storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary);
+                    fallback_touches.as_slice()
                 } else {
-                    tx_env_touches.to_vec()
+                    tx_env_touches
                 };
 
-                for touch in &touches {
-                    if prewarm.is_stopped() {
-                        return;
-                    }
-                    if let Err(err) = warm_storage_touch(touch, evm) {
-                        trace!(
-                            target: "payload_builder",
-                            %err,
-                            ?tx_hash,
-                            "Failed to prewarm transaction storage"
-                        );
-                        return;
-                    }
-                }
+                let Some(touched) = warm_storage_touches(touches, evm, &prewarm.stop, tx_hash)
+                else {
+                    return;
+                };
 
-                Some(touches.len())
+                Some(touched)
             } else {
+                let touched = if tx_env_touches.is_empty() {
+                    None
+                } else {
+                    let Some(touched) =
+                        warm_storage_touches(tx_env_touches, evm, &prewarm.stop, tx_hash)
+                    else {
+                        return;
+                    };
+                    Some(touched)
+                };
+
                 if prewarm.is_stopped() {
                     return;
                 }
@@ -221,7 +224,7 @@ impl BestTransactionsPrewarming {
                     return;
                 }
 
-                None
+                touched
             };
 
             trace!(
@@ -341,6 +344,34 @@ where
     fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
     }
+}
+
+fn warm_storage_touches<DB>(
+    touches: &[TempoStorageTouch],
+    evm: &mut TempoEvm<DB>,
+    stop: &AtomicBool,
+    tx_hash: B256,
+) -> Option<usize>
+where
+    DB: Database,
+    DB::Error: std::fmt::Display,
+{
+    for touch in touches {
+        if stop.load(Ordering::Relaxed) {
+            return None;
+        }
+        if let Err(err) = warm_storage_touch(touch, evm) {
+            trace!(
+                target: "payload_builder",
+                %err,
+                ?tx_hash,
+                "Failed to prewarm transaction storage"
+            );
+            return None;
+        }
+    }
+
+    Some(touches.len())
 }
 
 fn warm_storage_touch<DB>(
