@@ -373,8 +373,8 @@ def derive-tracing-otlp [tracing_otlp: string] {
     $tracing_otlp
 }
 
-def parse-otlp-toggle [value: string, default: bool] {
-    let normalized = ($value | str trim | str downcase)
+def parse-otlp-toggle [value: any, default: bool] {
+    let normalized = ($value | into string | str trim | str downcase)
     if $normalized == "" { return $default }
     if $normalized in ["true" "1" "yes" "on"] { return true }
     if $normalized in ["false" "0" "no" "off"] { return false }
@@ -1070,8 +1070,8 @@ def "main e2e" [
     --tracy-seconds: int = 30                           # Tracy capture duration limit in seconds
     --tracy-offset: int = 120                           # Seconds to wait before starting tracy capture
     --tracing-otlp: string = ""                         # OTLP endpoint for tracing (auto-derived from GRAFANA_TEMPO/TEMPO_TELEMETRY_URL)
-    --baseline-otlp: string = ""                        # Enable OTLP for baseline phases (true/false, empty = auto)
-    --feature-otlp: string = ""                         # Enable OTLP for feature phases (true/false, empty = auto)
+    --baseline-otlp: any = ""                           # Enable OTLP for baseline phases (true/false, empty = auto)
+    --feature-otlp: any = ""                            # Enable OTLP for feature phases (true/false, empty = auto)
     --victoriametrics-url: string = ""                  # VictoriaMetrics base URL for txgen metric sample import
     --clickhouse-url: string = ""                       # ClickHouse HTTP endpoint for txgen result upload
     --clickhouse-run: string = "feature-1"              # Run label allowed to use the ClickHouse reporter; empty = every run
