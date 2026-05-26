@@ -58,8 +58,8 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoAddressExt,
     transaction::{
-        PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
-        calc_gas_balance_spending, validate_calls,
+        PrimitiveSignature, SignatureType, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY,
+        TempoSignature, calc_gas_balance_spending, validate_calls,
     },
 };
 
@@ -141,6 +141,25 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
             primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
         }
     }
+}
+
+fn validate_t6_key_authorization_account_binding(
+    key_auth: &SignedKeyAuthorization,
+    caller: Address,
+) -> Result<(), TempoInvalidTransaction> {
+    if key_auth.account.is_some_and(|account| account != caller) {
+        let reason = if key_auth.is_admin() {
+            "admin key authorization account mismatch"
+        } else {
+            "key authorization account mismatch"
+        };
+
+        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+            reason: reason.to_string(),
+        });
+    }
+
+    Ok(())
 }
 
 /// Counts the scope storage rows that pay the dynamic SSTORE-set path for the active spec.
@@ -1284,8 +1303,11 @@ where
             let auth_signer = key_auth
                 .recover_signer()
                 .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
+
+            validate_t6_key_authorization_account_binding(key_auth, tx.caller)?;
+
             if auth_signer != tx.caller {
-                if key_auth.account != Some(tx.caller) {
+                if key_auth.account.is_none() {
                     return Err(TempoInvalidTransaction::KeychainValidationFailed {
                         reason: "admin-signed key authorization account mismatch".to_string(),
                     }
@@ -1773,6 +1795,10 @@ where
                         }
                         .into());
                     }
+                }
+
+                if cfg.spec.is_t6() {
+                    validate_t6_key_authorization_account_binding(key_auth, tx.caller)?;
                 }
 
                 if key_auth.is_admin() {
@@ -5145,6 +5171,29 @@ mod tests {
         }
 
         #[test]
+        fn test_t6_root_key_authorization_rejects_account_mismatch() {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let wrong_account = Address::random();
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
+                    .with_account(wrong_account),
+            );
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T6, None, false);
+
+            let result = h.validate_env(&mut evm);
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("key authorization account mismatch")
+                ),
+                "root-signed key authorization should be bound to tx.caller, got: {result:?}"
+            );
+        }
+
+        #[test]
         fn test_t6_admin_key_authorization_rejects_restrictions() {
             let (signer, user) = generate_keypair();
             let key = Address::random();
@@ -5353,7 +5402,7 @@ mod tests {
                 matches!(
                     &bob_result,
                     Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
-                        if reason.contains("admin-signed key authorization account mismatch")
+                        if reason.contains("key authorization account mismatch")
                 ),
                 "Alice-bound authorization should not replay for Bob, got: {bob_result:?}"
             );
