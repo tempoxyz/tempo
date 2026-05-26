@@ -309,9 +309,9 @@ where
                 && validator.matches(metadata.validator)
             {
                 next_non_empty += 1;
-                txs.clone()
+                txs.as_slice()
             } else {
-                Vec::new()
+                &[]
             };
 
             let reserved_gas = transactions
@@ -328,7 +328,7 @@ where
                 version: metadata.version,
                 fee_recipient: metadata.fee_recipient,
                 parent_hash: self.inner.ctx.parent_hash,
-                transactions: transactions.clone(),
+                transactions: transactions.to_vec(),
             }
             .signature_hash();
 
