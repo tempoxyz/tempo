@@ -5,8 +5,6 @@
 
 use std::time::Duration;
 
-use alloy::transports::http::reqwest::Url;
-
 use super::dkg::common::assert_no_dkg_failures;
 use crate::{
     CONSENSUS_NODE_PREFIX, Setup, TestingNode, connect_execution_peers,
@@ -195,8 +193,6 @@ impl FollowerBuilder {
             epoch_strategy: FixedEpocher::new(NZU64!(EPOCH_LENGTH)),
             mailbox_size: 16_384,
             fcu_heartbeat_interval: Duration::from_secs(300),
-            upstream,
-            upstream_mailbox,
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
             finalized_blocks_retention: 1024,
@@ -335,7 +331,7 @@ fn follower_reads_boundaries_after_full_dkg() {
         let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
 
-        let http_url: Url = validators[0]
+        let http_url = validators[0]
             .execution()
             .rpc_server_handle()
             .http_url()
