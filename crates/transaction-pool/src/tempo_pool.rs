@@ -192,6 +192,7 @@ where
 
         let mut to_remove = Vec::new();
         let mut revoked_count = 0;
+        let mut key_authorization_target_count = 0;
         let mut spending_limit_count = 0;
         let mut spending_limit_spend_count = 0;
         let mut key_authorization_witness_count = 0;
@@ -201,15 +202,22 @@ where
         let mut unwhitelisted_count = 0;
         let mut insolvent_fee_payer_count = 0;
         let has_keychain_subject_updates = updates.has_keychain_subject_updates();
+        let has_key_authorization_target_updates =
+            !updates.key_authorization_target_changes.is_empty();
         let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
 
         let all_txs = self.all_transactions();
         for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
             // Avoid recovering key ids unless a keychain invalidation can use them.
-            if has_keychain_subject_updates {
-                let keychain_subject = tx.transaction.keychain_subject();
+            if has_keychain_subject_updates || has_key_authorization_target_updates {
+                let keychain_subject = has_keychain_subject_updates
+                    .then(|| tx.transaction.keychain_subject())
+                    .flatten();
                 let key_authorization_subject = (!updates.revoked_keys.is_empty())
                     .then(|| tx.transaction.key_authorization_signer_subject())
+                    .flatten();
+                let key_authorization_target = has_key_authorization_target_updates
+                    .then(|| tx.transaction.key_authorization_target_subject())
                     .flatten();
 
                 // Check 1: Revoked keychain keys
@@ -223,6 +231,17 @@ where
                 {
                     to_remove.push(*tx.hash());
                     revoked_count += 1;
+                    continue;
+                }
+
+                // Check 1b: Inline key authorization target status changes
+                if !updates.key_authorization_target_changes.is_empty()
+                    && key_authorization_target.as_ref().is_some_and(|subject| {
+                        subject.matches_key_update(&updates.key_authorization_target_changes)
+                    })
+                {
+                    to_remove.push(*tx.hash());
+                    key_authorization_target_count += 1;
                     continue;
                 }
 
@@ -440,6 +459,7 @@ where
                 target: "txpool",
                 total = to_remove.len(),
                 revoked_count,
+                key_authorization_target_count,
                 spending_limit_count,
                 spending_limit_spend_count,
                 key_authorization_witness_count,
@@ -2109,6 +2129,95 @@ mod tests {
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
         updates.revoked_keys.insert(sender, admin_key);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(evicted, vec![*matching.hash()]);
+        assert!(pool.get(matching.hash()).is_none());
+        assert!(pool.get(untouched.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn evicts_transactions_with_stale_key_authorization_target() {
+        let sender = Address::random();
+        let signer = PrivateKeySigner::random();
+        let target_key = Address::random();
+        let other_key = Address::random();
+
+        let key_authorization = |key_id| {
+            let authorization =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, key_id)
+                    .with_account(sender);
+            let signature = signer
+                .sign_hash_sync(&authorization.signature_hash())
+                .expect("key authorization signing should succeed");
+            authorization.into_signed(PrimitiveSignature::Secp256k1(signature))
+        };
+
+        let matching = crate::test_utils::TxBuilder::aa(sender)
+            .nonce(0)
+            .key_authorization(key_authorization(target_key))
+            .build();
+        let untouched = crate::test_utils::TxBuilder::aa(sender)
+            .nonce(1)
+            .key_authorization(key_authorization(other_key))
+            .build();
+
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
+        provider.add_account(sender, ExtendedAccount::new(matching.nonce(), U256::MAX));
+        provider.add_block(
+            B256::random(),
+            Block {
+                header: TempoHeader {
+                    inner: Header {
+                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let inner =
+            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
+                .disable_balance_check()
+                .build(InMemoryBlobStore::default());
+        let amm_cache =
+            AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
+        let validator = TempoTransactionValidator::new(
+            inner,
+            crate::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            crate::validator::DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            amm_cache,
+        );
+
+        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let protocol_pool = Pool::new(
+            executor,
+            CoinbaseTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default(),
+        );
+        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+
+        for pooled in [&matching, &untouched] {
+            let validated = TransactionValidationOutcome::Valid {
+                balance: *pooled.cost(),
+                state_nonce: pooled.nonce(),
+                bytecode_hash: None,
+                transaction: ValidTransaction::new(pooled.clone(), None),
+                propagate: true,
+                authorities: None,
+            };
+            pool.add_validated_transaction(TransactionOrigin::External, validated)
+                .expect("transaction should be admitted");
+        }
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates
+            .key_authorization_target_changes
+            .insert(sender, target_key);
 
         let evicted = pool.evict_invalidated_transactions(&updates);
         assert_eq!(evicted, vec![*matching.hash()]);

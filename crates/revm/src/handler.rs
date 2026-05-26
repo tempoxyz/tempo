@@ -1327,7 +1327,9 @@ where
                                 block.timestamp().to::<u64>(),
                                 Some(key_auth.signature.signature_type().into()),
                             )
-                            .map_err(|e| EVMError::Custom(e.to_string()))
+                            .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
+                                reason: format!("{e:?}"),
+                            })
                     },
                 )?;
 
