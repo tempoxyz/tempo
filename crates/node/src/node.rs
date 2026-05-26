@@ -473,7 +473,8 @@ where
 
         // Spawn unified Tempo pool maintenance task
         // This consolidates: expired AA txs, 2D nonce updates, AMM cache, and keychain revocations
-        ctx.task_executor().spawn_critical_task(
+        ctx.task_executor().spawn_critical_os_thread(
+            "tempo-txpool-maintenance",
             "txpool maintenance - tempo pool",
             tempo_transaction_pool::maintain::maintain_tempo_pool(transaction_pool.clone()),
         );

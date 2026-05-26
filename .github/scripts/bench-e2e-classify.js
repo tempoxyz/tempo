@@ -158,6 +158,7 @@ function fmtChange(change) {
 
 function buildMarkdown(summary) {
   const c = summary.classification;
+  const derekCommand = summary.config?.derek_command || '';
   const lines = [
     `# ${c.emoji} Bench Comparison: ${c.label}`,
     '',
@@ -165,6 +166,7 @@ function buildMarkdown(summary) {
     `**Criteria:** 95% run-bootstrap CI must clear floor; cells show delta (+/-CI/floor).`,
     '',
     '## Configuration',
+    ...(derekCommand ? [`- Derek command: \`${derekCommand}\``] : []),
     `- Bloat: ${summary.config.bloat} MiB`,
     `- Preset: ${summary.config.preset}`,
     `- Target TPS: ${summary.config.tps}`,

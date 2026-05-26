@@ -753,6 +753,53 @@ jobs:
           [ -n "$CLICKHOUSE_URL" ] && cmd+=(--clickhouse-url "$CLICKHOUSE_URL")
           [ -n "$BENCH_RUN_TYPE" ] && cmd+=(--run-type "$BENCH_RUN_TYPE")
           [ -n "$BENCH_CLICKHOUSE_RUN" ] && cmd+=(--clickhouse-run "$BENCH_CLICKHOUSE_RUN")
+
+          quote_arg() {
+            local value="$1"
+            if [[ "$value" =~ ^[A-Za-z0-9._/:=@+-]+$ ]]; then
+              printf '%s' "$value"
+            else
+              printf "'%s'" "${value//\'/\'\\\'\'}"
+            fi
+          }
+
+          derek_cmd=(derek bench mode="$BENCH_MODE")
+          derek_cmd+=(
+            preset="$BENCH_PRESET"
+            duration="$BENCH_DURATION"
+            bloat="$BENCH_BLOAT"
+            tps="$BENCH_TPS"
+            accounts="$BENCH_ACCOUNTS"
+            max-concurrent-requests="$BENCH_MAX_CONCURRENT_REQUESTS"
+            baseline="${{ steps.refs.outputs.baseline-name }}"
+            feature="${{ steps.refs.outputs.feature-name }}"
+            baseline-hardfork="$BENCH_BASELINE_HARDFORK"
+            feature-hardfork="$BENCH_FEATURE_HARDFORK"
+            gas-limit="$BENCH_GAS_LIMIT"
+            run-pairs="$BENCH_RUN_PAIRS"
+            otlp="$BENCH_OTLP"
+            no-cache="$BENCH_NO_CACHE"
+            force-bloat="$BENCH_FORCE_BLOAT"
+          )
+          [ -n "$BENCH_TXGEN_REF" ] && derek_cmd+=(txgen-ref="$BENCH_TXGEN_REF")
+          [ "$BENCH_SAMPLY" = "true" ] && derek_cmd+=(samply)
+          [ "$BENCH_TRACY" != "off" ] && derek_cmd+=(tracy="$BENCH_TRACY" tracy-seconds="$BENCH_TRACY_SECONDS" tracy-offset="$BENCH_TRACY_OFFSET")
+          [ -n "$BENCH_BASELINE_ARGS" ] && derek_cmd+=(baseline-args="$BENCH_BASELINE_ARGS")
+          [ -n "$BENCH_FEATURE_ARGS" ] && derek_cmd+=(feature-args="$BENCH_FEATURE_ARGS")
+          [ -n "$BENCH_BENCH_ARGS" ] && derek_cmd+=(bench-args="$BENCH_BENCH_ARGS")
+          [ -n "$BENCH_BENCH_ENV" ] && derek_cmd+=(bench-env="$BENCH_BENCH_ENV")
+          [ -n "$BENCH_BASELINE_ENV" ] && derek_cmd+=(baseline-env="$BENCH_BASELINE_ENV")
+          [ -n "$BENCH_FEATURE_ENV" ] && derek_cmd+=(feature-env="$BENCH_FEATURE_ENV")
+          DEREK_BENCH_COMMAND=""
+          for arg in "${derek_cmd[@]}"; do
+            if [ -n "$DEREK_BENCH_COMMAND" ]; then
+              DEREK_BENCH_COMMAND+=" "
+            fi
+            DEREK_BENCH_COMMAND+="$(quote_arg "$arg")"
+          done
+          export DEREK_BENCH_COMMAND
+          echo "DEREK_BENCH_COMMAND=$DEREK_BENCH_COMMAND" >> "$GITHUB_ENV"
+
           "${cmd[@]}"
 
           RESULTS_DIR=$(find bench-results -mindepth 1 -maxdepth 1 -type d | sort | tail -1)

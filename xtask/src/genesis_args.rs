@@ -52,6 +52,7 @@ use tempo_precompiles::{
     account_keychain::AccountKeychain,
     address_registry::AddressRegistry,
     nonce::NonceManager,
+    receive_policy_guard::ReceivePolicyGuard,
     signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX,
     storage::{ContractStorage, StorageCtx},
@@ -416,6 +417,11 @@ impl GenesisArgs {
         if self.t3_time == 0 {
             println!("Initializing signature verifier (T3 active at genesis)");
             initialize_signature_verifier(&mut evm)?;
+        }
+
+        if self.t6_time == 0 {
+            println!("Initializing TIP-1028 ReceivePolicyGuard (T6 active at genesis)");
+            initialize_receive_policy_guard(&mut evm)?;
         }
 
         if !self.no_pairwise_liquidity {
@@ -925,6 +931,19 @@ fn initialize_signature_verifier(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::
         &ctx.cfg,
         &ctx.tx,
         || SignatureVerifier::new().initialize(),
+    )?;
+
+    Ok(())
+}
+
+fn initialize_receive_policy_guard(evm: &mut TempoEvm<CacheDB<EmptyDB>>) -> eyre::Result<()> {
+    let ctx = evm.ctx_mut();
+    StorageCtx::enter_evm(
+        &mut ctx.journaled_state,
+        &ctx.block,
+        &ctx.cfg,
+        &ctx.tx,
+        || ReceivePolicyGuard::new().initialize(),
     )?;
 
     Ok(())
