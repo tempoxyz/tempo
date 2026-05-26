@@ -300,7 +300,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn state_gas_used(&self) -> u64 {
-        self.gas_tracker.state_gas_spent()
+        // SAFETY: we never decrement the state gas spent counter
+        self.gas_tracker.state_gas_spent() as u64
     }
 
     #[inline]

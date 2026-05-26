@@ -935,6 +935,16 @@ where
         announcement.retain_by_hash(|tx| !aa_pool.contains(tx))
     }
 
+    fn retain_contains<A>(&self, announcement: &mut A)
+    where
+        A: HandleMempoolData,
+    {
+        if announcement.is_empty() {
+            return;
+        }
+        announcement.retain_by_hash(|tx| self.contains(tx))
+    }
+
     fn contains(&self, tx_hash: &B256) -> bool {
         self.protocol_pool.contains(tx_hash) || self.aa_2d_pool.read().contains(tx_hash)
     }
@@ -1147,6 +1157,10 @@ where
     > {
         self.protocol_pool
             .get_blobs_for_versioned_hashes_v4(versioned_hashes, indices_bitarray)
+    }
+
+    fn blob_store(&self) -> Box<dyn reth_transaction_pool::BlobStore> {
+        TransactionPool::blob_store(&self.protocol_pool)
     }
 }
 

@@ -859,8 +859,7 @@ where
             .is_prague_active_at_timestamp(attributes.timestamp)
             .then(|| execution_result.requests.clone());
 
-        let sealed_block = Arc::new(block.sealed_block().clone());
-        let rlp_length = sealed_block.rlp_length();
+        let rlp_length = block.rlp_length();
 
         if is_osaka && rlp_length > MAX_RLP_BLOCK_SIZE {
             return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
@@ -898,7 +897,7 @@ where
 
         let elapsed = start.elapsed();
         self.metrics.payload_build_duration_seconds.record(elapsed);
-        let gas_per_second = sealed_block.gas_used() as f64 / elapsed.as_secs_f64();
+        let gas_per_second = block.gas_used() as f64 / elapsed.as_secs_f64();
         self.metrics.gas_per_second.record(gas_per_second);
         self.metrics.gas_per_second_last.set(gas_per_second);
         self.metrics.rlp_block_size_bytes.record(rlp_length as f64);
@@ -907,14 +906,14 @@ where
             .set(rlp_length as f64);
 
         info!(
-            parent_hash = ?sealed_block.parent_hash(),
-            number = sealed_block.number(),
-            hash = ?sealed_block.hash(),
-            timestamp = sealed_block.timestamp_millis(),
-            gas_limit = sealed_block.gas_limit(),
+            parent_hash = ?block.parent_hash(),
+            number = block.number(),
+            hash = ?block.hash(),
+            timestamp = block.timestamp_millis(),
+            gas_limit = block.gas_limit(),
             gas_used,
             cumulative_state_gas_used,
-            extra_data = %sealed_block.extra_data(),
+            extra_data = %block.extra_data(),
             subblocks_count,
             payment_transactions,
             pool_transactions_yielded,
@@ -937,7 +936,8 @@ where
             "Built payload"
         );
 
-        let eth_payload = EthBuiltPayload::new(sealed_block, total_fees, requests, None);
+        let block = Arc::new(block);
+        let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
 
         let execution_output = BlockExecutionOutput {
             result: execution_result,
@@ -945,7 +945,7 @@ where
         };
 
         let executed_block = BuiltPayloadExecutedBlock {
-            recovered_block: Arc::new(block),
+            recovered_block: block,
             execution_output: Arc::new(execution_output),
             hashed_state: Arc::new(hashed_state),
             trie_updates: Arc::new(trie_updates),
@@ -1046,7 +1046,7 @@ mod tests {
     use alloy_consensus::BlockBody;
     use alloy_primitives::{Address, B256, Bytes};
     use core::num::NonZeroU64;
-    use reth_primitives_traits::SealedBlock;
+    use reth_primitives_traits::Block as _;
     use tempo_primitives::{
         AASigned, Block, SignedSubBlock, SubBlock, SubBlockVersion, TempoSignature,
         TempoTransaction,
@@ -1125,9 +1125,10 @@ mod tests {
                 ommers: vec![],
                 withdrawals: None,
             },
-        };
-        let sealed = Arc::new(SealedBlock::seal_slow(block));
-        let eth = EthBuiltPayload::new(sealed, U256::ZERO, None, None);
+        }
+        .try_into_recovered()
+        .unwrap();
+        let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
         TempoBuiltPayload::new(eth, None)
     }
 
