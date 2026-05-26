@@ -3,7 +3,7 @@
 //! The builder can stop transaction execution, but it still has to finish
 //! non-interruptible finalization work like state hashing, state root updates,
 //! and block assembly. These helpers learn the relation between tx execution
-//! cutoff time and total builder time.
+//! cutoff time and total replayable build work.
 
 use std::time::Duration;
 
@@ -28,17 +28,30 @@ pub(crate) fn scaled_build_time_multiplier(multiplier: f64) -> u64 {
     (multiplier * BUILD_TIME_MULTIPLIER_SCALE as f64).round() as u64
 }
 
-/// Returns true when the multiplier-adjusted elapsed time has exhausted `budget`.
-pub(crate) fn scaled_elapsed_exceeds_budget(
+fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
+    Duration::from_nanos(
+        (elapsed.as_nanos().saturating_mul(multiplier as u128)
+            / BUILD_TIME_MULTIPLIER_SCALE as u128)
+            .min(u64::MAX as u128) as u64,
+    )
+}
+
+/// Returns true when leader build plus validator work has exhausted `budget`.
+pub(crate) fn payload_budget_exhausted(
     elapsed: Duration,
+    idle_elapsed: Duration,
     multiplier: u64,
     budget: Duration,
 ) -> bool {
-    elapsed.as_nanos().saturating_mul(multiplier as u128) / BUILD_TIME_MULTIPLIER_SCALE as u128
-        >= budget.as_nanos()
+    let work_elapsed = elapsed.saturating_sub(idle_elapsed);
+    let predicted_work = scaled_duration(work_elapsed, multiplier);
+    idle_elapsed
+        .saturating_add(predicted_work)
+        .saturating_add(predicted_work)
+        >= budget
 }
 
-/// Computes the observed total-build to tx-cutoff multiplier.
+/// Computes the observed total-work to tx-cutoff-work multiplier.
 pub(crate) fn observed_build_time_multiplier(
     total: Duration,
     elapsed_at_tx_cutoff: Duration,
@@ -86,16 +99,30 @@ mod tests {
     }
 
     #[test]
-    fn scaled_elapsed_compares_against_budget() {
-        assert!(scaled_elapsed_exceeds_budget(
+    fn payload_budget_accounts_for_leader_idle_once() {
+        assert!(payload_budget_exhausted(
             Duration::from_millis(100),
+            Duration::ZERO,
             1_350_000,
-            Duration::from_millis(134)
+            Duration::from_millis(270)
         ));
-        assert!(!scaled_elapsed_exceeds_budget(
+        assert!(!payload_budget_exhausted(
             Duration::from_millis(100),
+            Duration::ZERO,
             1_350_000,
-            Duration::from_millis(136)
+            Duration::from_millis(271)
+        ));
+        assert!(payload_budget_exhausted(
+            Duration::from_millis(350),
+            Duration::from_millis(250),
+            1_350_000,
+            Duration::from_millis(520)
+        ));
+        assert!(!payload_budget_exhausted(
+            Duration::from_millis(350),
+            Duration::from_millis(250),
+            1_350_000,
+            Duration::from_millis(521)
         ));
     }
 

@@ -12,7 +12,7 @@ pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crate::{
     budget::{
         BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
-        scaled_build_time_multiplier, scaled_elapsed_exceeds_budget,
+        payload_budget_exhausted, scaled_build_time_multiplier,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
@@ -507,10 +507,16 @@ where
 
             if let Some(build_budget) = payload_build_budget {
                 let elapsed = start.elapsed();
-                if scaled_elapsed_exceeds_budget(elapsed, build_time_multiplier, build_budget) {
+                if payload_budget_exhausted(
+                    elapsed,
+                    normal_transaction_fill_idle_elapsed,
+                    build_time_multiplier,
+                    build_budget,
+                ) {
                     debug!(
                         target: "payload_builder",
                         ?elapsed,
+                        ?normal_transaction_fill_idle_elapsed,
                         ?build_budget,
                         build_time_multiplier = build_time_multiplier as f64
                             / BUILD_TIME_MULTIPLIER_SCALE as f64,
@@ -671,6 +677,8 @@ where
             block_size_used += tx_rlp_length;
         };
         let elapsed_at_tx_cutoff = start.elapsed();
+        let validation_work_at_tx_cutoff =
+            elapsed_at_tx_cutoff.saturating_sub(normal_transaction_fill_idle_elapsed);
         drop(_block_fill_span);
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
@@ -939,7 +947,10 @@ where
         let elapsed = start.elapsed();
         let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
         if payload_build_budget.is_some() {
-            self.update_build_time_multiplier(elapsed, elapsed_at_tx_cutoff);
+            self.update_build_time_multiplier(
+                validation_work_duration,
+                validation_work_at_tx_cutoff,
+            );
         }
         self.metrics.payload_build_duration_seconds.record(elapsed);
         let gas_per_second = sealed_block.gas_used() as f64 / elapsed.as_secs_f64();

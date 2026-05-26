@@ -99,7 +99,6 @@ where
                 public_key: config.public_key,
                 epoch_strategy: config.epoch_strategy,
 
-                payload_build_time: config.payload_build_time,
                 payload_return_time: config.payload_return_time,
 
                 my_mailbox,
@@ -200,7 +199,6 @@ where
 struct Inner<TState> {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
-    payload_build_time: Duration,
     payload_return_time: Duration,
 
     my_mailbox: Mailbox,
@@ -659,7 +657,7 @@ impl Inner<Init> {
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let build_budget = self
-            .payload_build_time
+            .payload_return_time
             .saturating_sub(propose_start.elapsed());
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
@@ -861,7 +859,6 @@ impl Inner<Uninit> {
         let initialized = Inner {
             public_key: self.public_key,
             epoch_strategy: self.epoch_strategy,
-            payload_build_time: self.payload_build_time,
             payload_return_time: self.payload_return_time,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
