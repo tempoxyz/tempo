@@ -1,0 +1,133 @@
+name: CodSpeed microbenchmarks
+
+permissions:
+  contents: read
+  id-token: write
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # `workflow_dispatch` allows CodSpeed to trigger backtest
+  # performance analysis in order to generate initial data.
+  workflow_dispatch:
+    inputs:
+      packages:
+        description: "Cargo package(s) containing benchmark targets, separated by spaces"
+        required: true
+        default: "tempo-evm"
+        type: string
+      benchmarks:
+        description: "Cargo bench target(s), separated by spaces; leave empty for every bench in the package(s)"
+        required: false
+        default: "tip20_execution"
+        type: string
+      filters:
+        description: "Optional benchmark name filter passed to cargo codspeed run"
+        required: false
+        default: ""
+        type: string
+      measurement_modes:
+        description: "CodSpeed measurement mode(s), separated by commas"
+        required: true
+        default: "simulation"
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: full
+  RUSTC_WRAPPER: "sccache"
+
+jobs:
+  codspeed:
+    name: CodSpeed microbenchmarks
+    runs-on: depot-ubuntu-latest-4
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+      - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+      - name: Install cargo-codspeed
+        run: |
+          cargo install cargo-codspeed \
+            --git https://github.com/CodSpeedHQ/codspeed-rust \
+            --rev 0c6ccae11dc48654fd83c8dd77d231e386ebd9bd \
+            --locked
+      - name: Resolve cargo codspeed arguments
+        id: args
+        env:
+          INPUT_PACKAGES: ${{ inputs.packages || 'tempo-evm' }}
+          INPUT_BENCHMARKS: ${{ inputs.benchmarks || 'tip20_execution' }}
+          INPUT_FILTERS: ${{ inputs.filters || '' }}
+          INPUT_MEASUREMENT_MODES: ${{ inputs.measurement_modes || 'simulation' }}
+        run: |
+          set -euo pipefail
+
+          split_words() {
+            local value="$1"
+            value="${value//,/ }"
+            read -r -a words <<< "$value"
+            printf '%s\n' "${words[@]}"
+          }
+
+          cargo_args=()
+          while IFS= read -r package; do
+            [ -n "$package" ] && cargo_args+=("-p" "$package")
+          done < <(split_words "$INPUT_PACKAGES")
+
+          while IFS= read -r benchmark; do
+            [ -n "$benchmark" ] && cargo_args+=("--bench" "$benchmark")
+          done < <(split_words "$INPUT_BENCHMARKS")
+
+          # tempo-precompiles benchmarks require the test-utils feature;
+          # --features is only valid for `cargo codspeed build`, not `run`.
+          feature_args=()
+          while IFS= read -r package; do
+            if [ "$package" = "tempo-precompiles" ]; then
+              feature_args+=("--features" "tempo-precompiles/test-utils")
+              break
+            fi
+          done < <(split_words "$INPUT_PACKAGES")
+
+          build_args=("${cargo_args[@]}" "${feature_args[@]}")
+          while IFS= read -r mode; do
+            [ -n "$mode" ] && build_args+=("-m" "$mode")
+          done < <(split_words "$INPUT_MEASUREMENT_MODES")
+
+          run_args=("${cargo_args[@]}")
+          while IFS= read -r filter; do
+            [ -n "$filter" ] && run_args+=("$filter")
+          done < <(split_words "$INPUT_FILTERS")
+
+          {
+            printf 'build_args<<EOF\n'
+            printf '%q ' "${build_args[@]}"
+            printf '\nEOF\n'
+            printf 'run_args<<EOF\n'
+            printf '%q ' "${run_args[@]}"
+            printf '\nEOF\n'
+            printf 'measurement_modes<<EOF\n'
+            printf '%s' "$INPUT_MEASUREMENT_MODES"
+            printf '\nEOF\n'
+          } >> "$GITHUB_OUTPUT"
+
+          printf 'cargo codspeed build '
+          printf '%q ' "${build_args[@]}"
+          printf '\n'
+          printf 'cargo codspeed run '
+          printf '%q ' "${run_args[@]}"
+          printf '\n'
+      - name: Build benchmark target(s)
+        run: cargo codspeed build ${{ steps.args.outputs.build_args }}
+      - name: Run benchmark target(s)
+        uses: CodSpeedHQ/action@c5e3fca5233fb854c7193713adfbe99d3910f8d2 # v4.15.1
+        with:
+          mode: ${{ steps.args.outputs.measurement_modes }}
+          run: cargo codspeed run ${{ steps.args.outputs.run_args }}

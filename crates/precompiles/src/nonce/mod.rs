@@ -95,11 +95,7 @@ impl NonceManager {
 
         self.nonces[account][nonce_key].write(new_nonce)?;
 
-        self.emit_event(NonceEvent::NonceIncremented(INonce::NonceIncremented {
-            account,
-            nonceKey: nonce_key,
-            newNonce: new_nonce,
-        }))?;
+        self.emit_event(NonceEvent::nonce_incremented(account, nonce_key, new_nonce))?;
 
         Ok(new_nonce)
     }

@@ -18,43 +18,17 @@
 use reth_node_api::BuiltPayload;
 
 use alloy::{
-    consensus::{SignableTransaction, Transaction, TxEip1559, TxEnvelope},
+    consensus::Transaction,
     primitives::{Address, Bytes, U256},
     providers::{Provider, ProviderBuilder},
-    signers::local::MnemonicBuilder,
     sol_types::SolCall,
 };
-use alloy_eips::{BlockId, BlockNumberOrTag, eip2718::Encodable2718};
-use alloy_network::TxSignerSync;
+use alloy_eips::{BlockId, BlockNumberOrTag, Encodable2718};
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::{CREATEX_ADDRESS, CreateX, Multicall3, precompiles::DEFAULT_FEE_TOKEN};
 
-use crate::utils::{TEST_MNEMONIC, TestNodeBuilder};
-
-/// Builds and encodes a signed EIP-1559 CALL transaction.
-fn build_call_tx(
-    signer: &alloy::signers::local::PrivateKeySigner,
-    chain_id: u64,
-    nonce: u64,
-    gas_limit: u64,
-    to: Address,
-    input: Bytes,
-) -> Bytes {
-    let mut tx = TxEip1559 {
-        chain_id,
-        nonce,
-        gas_limit,
-        to: to.into(),
-        max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
-        input,
-        ..Default::default()
-    };
-    let signature = signer.sign_transaction_sync(&mut tx).unwrap();
-    TxEnvelope::Eip1559(tx.into_signed(signature))
-        .encoded_2718()
-        .into()
-}
+use super::helpers::{build_call_tx, test_signer};
+use crate::utils::TestNodeBuilder;
 
 /// Gets the deployed contract address from CreateX's ContractCreation event, polling until
 /// receipts are available.
@@ -105,9 +79,7 @@ async fn test_tip1016_contract_deployment_exempts_storage_gas() -> eyre::Result<
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let signer = test_signer(0)?;
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -169,9 +141,7 @@ async fn test_tip1016_sstore_zero_to_nonzero_exempts_storage_gas() -> eyre::Resu
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let signer = test_signer(0)?;
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -252,9 +222,7 @@ async fn test_tip1016_sstore_nonzero_to_nonzero_no_exemption() -> eyre::Result<(
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let signer = test_signer(0)?;
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -337,12 +305,8 @@ async fn test_tip1016_tip20_transfer_existing_no_storage_creation() -> eyre::Res
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
-    let signer2 = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(1)?
-        .build()?;
+    let signer = test_signer(0)?;
+    let signer2 = test_signer(1)?;
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -423,9 +387,7 @@ async fn test_tip1016_reverted_sstore_still_exempts_state_gas() -> eyre::Result<
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let signer = test_signer(0)?;
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -509,9 +471,7 @@ async fn test_tip1016_multiple_sstore_zero_to_nonzero_additive() -> eyre::Result
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let signer = test_signer(0)?;
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -593,9 +553,7 @@ async fn test_tip1016_two_storage_txs_same_block() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let signer = test_signer(0)?;
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -694,9 +652,7 @@ async fn test_tip1016_inner_call_revert_no_state_gas_exemption() -> eyre::Result
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let signer = test_signer(0)?;
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 
@@ -845,9 +801,7 @@ async fn test_tip1016_high_gas_limit_batch_tip20_transfers() -> eyre::Result<()>
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
-    let signer = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
-        .index(0)?
-        .build()?;
+    let signer = test_signer(0)?;
     let provider = ProviderBuilder::new().connect_http(setup.node.rpc_url());
     let chain_id = provider.get_chain_id().await?;
 

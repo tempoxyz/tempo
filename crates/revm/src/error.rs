@@ -94,9 +94,34 @@ pub enum TempoInvalidTransaction {
     #[error("subblock transaction must have zero fee")]
     SubblockTransactionMustHaveZeroFee,
 
-    /// Invalid fee token.
+    /// Invalid fee token fallback.
     #[error("invalid fee token: {0}")]
     InvalidFeeToken(Address),
+
+    /// Fee token address is not a TIP-20 token.
+    #[error("fee token {address} is not a TIP-20 token; fee tokens must be TIP-20 tokens")]
+    FeeTokenNotTip20 {
+        /// Invalid fee token address.
+        address: Address,
+    },
+
+    /// Fee token is not USD-denominated.
+    #[error(
+        "fee token {address} uses currency {currency:?}; fee tokens must be USD-denominated TIP-20 tokens"
+    )]
+    FeeTokenNotUsdCurrency {
+        /// Invalid fee token address.
+        address: Address,
+        /// Token currency read from TIP-20 metadata.
+        currency: String,
+    },
+
+    /// Fee token is paused.
+    #[error("fee token {address} is paused and cannot be used for fees")]
+    FeeTokenPaused {
+        /// Paused fee token address.
+        address: Address,
+    },
 
     /// Value transfer not allowed.
     #[error("value transfer not allowed")]
@@ -294,6 +319,9 @@ impl TempoInvalidTransaction {
             Self::ValidAfter { .. }
             | Self::ValidBefore { .. }
             | Self::InvalidFeeToken(_)
+            | Self::FeeTokenNotTip20 { .. }
+            | Self::FeeTokenNotUsdCurrency { .. }
+            | Self::FeeTokenPaused { .. }
             | Self::AccessKeyExpiryInPast { .. }
             | Self::KeychainPrecompileError { .. }
             | Self::KeychainValidationFailed { .. }
@@ -446,6 +474,24 @@ mod tests {
             tempo_err,
             TempoInvalidTransaction::EthInvalidTransaction(_)
         ));
+    }
+
+    #[test]
+    fn test_fee_token_errors_are_not_bad_transactions() {
+        let address = Address::repeat_byte(0x20);
+        let cases = [
+            TempoInvalidTransaction::InvalidFeeToken(address),
+            TempoInvalidTransaction::FeeTokenNotTip20 { address },
+            TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                address,
+                currency: "EUR".to_string(),
+            },
+            TempoInvalidTransaction::FeeTokenPaused { address },
+        ];
+
+        for err in cases {
+            assert!(!err.is_bad_transaction(), "{err} should not be bad");
+        }
     }
 
     #[test]

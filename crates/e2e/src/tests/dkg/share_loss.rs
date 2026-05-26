@@ -106,20 +106,22 @@ fn validator_loses_consensus_state_becomes_observer() {
         let (mut validators, _execution_runtime) =
             setup_validators(&mut context, setup.clone()).await;
 
-        let target_idx = validators.len() - 1;
-        let uid = validators[target_idx].uid().to_string();
-
         join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+
+        let mut specimen = validators.pop().unwrap();
 
         'setup: loop {
             context.sleep(Duration::from_secs(1)).await;
             let metrics = context.encode();
 
             // Dealings in the first epoch.
-            if let Some(epoch) = metric_value(&metrics, &uid, "_epoch_manager_latest_epoch") {
+            if let Some(epoch) =
+                metric_value(&metrics, &specimen.uid, "_epoch_manager_latest_epoch")
+            {
                 assert_eq!(epoch, 0);
 
-                if let Some(v) = metric_value(&metrics, &uid, "_dkg_manager_ceremony_acks_sent")
+                if let Some(v) =
+                    metric_value(&metrics, &specimen.uid, "_dkg_manager_ceremony_acks_sent")
                     && v > 0
                 {
                     break 'setup;
@@ -127,44 +129,49 @@ fn validator_loses_consensus_state_becomes_observer() {
             }
         }
 
-        validators[target_idx].stop().await;
+        specimen.stop().await;
 
-        let old_prefix = &validators[target_idx].consensus_config().partition_prefix;
-        let new_prefix = format!("{old_prefix}_wiped");
-        let cfg = validators[target_idx].consensus_config_mut();
+        // Rename the storage prefix to simulate loss of consensus storage.
+        specimen.consensus_config.partition_prefix =
+            format!("{}_wiped", specimen.consensus_config.partition_prefix);
+        // Rename the UID to ensure that old metrics are ignored.
+        specimen.uid = format!("{}_new", specimen.uid);
+        // Remove the share from config since post-setup we may still be in Epoch 0
+        specimen.consensus_config.share.take();
 
-        // Also remove the share from config since post-setup we may still be in Epoch 0
-        cfg.partition_prefix = new_prefix;
-        cfg.share.take();
+        specimen.start(&context).await;
 
-        validators[target_idx].start(&context).await;
+        let uid = specimen.metric_prefix();
 
-        let uid = validators[target_idx].metric_prefix();
-
-        'recover: loop {
-            context.sleep(Duration::from_secs(1)).await;
+        'recover: for iteration in 1.. {
             let metrics = context.encode();
 
             if let Some(epoch) = metric_value(&metrics, &uid, "_epoch_manager_latest_epoch") {
-                assert!(epoch < 3);
+                assert!(epoch < 3, "node should have recovered its share by epoch 3");
 
-                // Only receive shares in Epoch 1
-                if epoch == 1
+                if epoch < 2
                     && let Some(v) =
                         metric_value(&metrics, &uid, "_dkg_manager_how_often_dealer_total")
                 {
-                    assert_eq!(v, 0);
+                    assert_eq!(
+                        v, 0,
+                        "validator must not be a dealer before epoch 3; iteration {iteration}"
+                    );
                 }
 
-                // Participate as a Dealer in Epoch 2
-                if let Some(v) = metric_value(&metrics, &uid, "_dkg_manager_how_often_dealer_total")
-                    && v > 0
+                if epoch == 2
+                    && let Some(v) =
+                        metric_value(&metrics, &uid, "_dkg_manager_how_often_dealer_total")
                 {
-                    assert_eq!(v, 1);
+                    assert_eq!(
+                        v, 1,
+                        "validator must be a dealer in epoch 2; iteration {iteration}"
+                    );
                     assert_eq!(epoch, 2);
                     break 'recover;
                 }
             }
+            context.sleep(Duration::from_secs(1)).await;
         }
     });
 }

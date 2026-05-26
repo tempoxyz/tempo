@@ -222,6 +222,15 @@ where
                 .cloned()
                 .chain(onchain_outcome.next_players().iter().cloned()),
         );
+        debug!(
+            ?peers_as_per_dkg,
+            boundary.height = latest_boundary_header.number(),
+            boundary.hash = %latest_boundary_header.hash_slow(),
+            highest_finalized.height = highest_finalized_header.number(),
+            highest_finalized.hash = %highest_finalized_header.hash_slow(),
+            "read active peers from DKG outcome in latest available \
+            boundary header; will now extend with contract information"
+        );
         let peers = read_active_and_known_peers_at_block_hash(
             &self.execution_node,
             &peers_as_per_dkg,

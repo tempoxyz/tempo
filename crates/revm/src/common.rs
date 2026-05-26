@@ -1,11 +1,11 @@
-use crate::TempoTxEnv;
+use crate::{TempoInvalidTransaction, TempoTxEnv};
 use alloy_consensus::transaction::{Either, Recovered};
 use alloy_primitives::{Address, Bytes, LogData, TxKind, U256};
 use alloy_sol_types::SolCall;
 use core::marker::PhantomData;
 use revm::{
     Database,
-    context::JournalTr,
+    context::{JournalTr, result::EVMError},
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -206,6 +206,42 @@ pub trait TempoStateAccess<M = ()> {
             let token = TIP20Token::from_address_unchecked(fee_token);
             Ok(token.currency.len()? == 3 && token.currency.read()?.as_str() == "USD")
         })
+    }
+
+    /// Ensures the given TIP20 token uses USD currency.
+    ///
+    /// IMPORTANT: Caller must ensure `fee_token` has a valid TIP20 prefix.
+    fn ensure_tip20_usd(
+        &mut self,
+        spec: TempoHardfork,
+        fee_token: Address,
+    ) -> Result<(), EVMError<Self::Error, TempoInvalidTransaction>>
+    where
+        Self: Sized,
+    {
+        self.with_read_only_storage_ctx(spec, || {
+            // SAFETY: caller must ensure prefix is already checked
+            let token = TIP20Token::from_address_unchecked(fee_token);
+            let len = token.currency.len()?;
+
+            let currency = if len > 31 {
+                format!("<{len} bytes>")
+            } else {
+                token.currency.read()?
+            };
+
+            if currency.as_str() != "USD" {
+                return Ok(Err(EVMError::Transaction(
+                    TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                        address: fee_token,
+                        currency,
+                    },
+                )));
+            }
+
+            Ok(Ok(()))
+        })
+        .map_err(|err: TempoPrecompileError| EVMError::Custom(err.to_string()))?
     }
 
     /// Checks if the given token can be used as a fee token.
@@ -723,6 +759,30 @@ mod tests {
             let is_usd = db.is_tip20_usd(TempoHardfork::Genesis, fee_token)?;
             assert_eq!(is_usd, *expected, "currency '{label}' failed");
         }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_tip20_currency_for_error_does_not_read_long_currency() -> eyre::Result<()> {
+        let fee_token = PATH_USD_ADDRESS;
+        let mut db = revm::database::CacheDB::new(EmptyDB::default());
+        let len = 1024usize;
+
+        db.insert_account_storage(fee_token, tip20_slots::CURRENCY, U256::from(len * 2 + 1))?;
+
+        let err = db
+            .ensure_tip20_usd(TempoHardfork::Genesis, fee_token)
+            .expect_err("long non-USD currency returns an EVM error");
+        assert!(matches!(
+            err,
+            EVMError::Transaction(
+                TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                    currency,
+                    ..
+                }
+            ) if currency == "<1024 bytes>"
+        ));
 
         Ok(())
     }

@@ -1672,7 +1672,7 @@ mod tests {
             assert_eq!(handler.len()?, u32::MAX as usize);
 
             // Boundary: u32::MAX + 1 is rejected with under_overflow
-            len_slot.write(U256::from(u32::MAX as u64 + 1))?;
+            len_slot.write(U256::from(u64::from(u32::MAX) + 1))?;
             assert_eq!(handler.len(), Err(TempoPrecompileError::under_overflow()));
 
             // Large but valid values below u32::MAX are accepted (no arbitrary cap)
@@ -1767,8 +1767,8 @@ mod tests {
     prop_compose! {
         fn arb_test_struct() (a in any::<u64>(), b in any::<u64>()) -> TestStruct {
             TestStruct {
-                a: a as u128,
-                b: b as u128,
+                a: u128::from(a),
+                b: u128::from(b),
             }
         }
     }

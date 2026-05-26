@@ -310,13 +310,11 @@ impl AccountKeychain {
         }
 
         // Emit event
-        self.emit_event(AccountKeychainEvent::KeyAuthorized(
-            IAccountKeychain::KeyAuthorized {
-                account: msg_sender,
-                publicKey: key_id,
-                signatureType: signature_type,
-                expiry: config.expiry,
-            },
+        self.emit_event(AccountKeychainEvent::key_authorized(
+            msg_sender,
+            key_id,
+            signature_type,
+            config.expiry,
         ))?;
 
         Ok(())
@@ -328,7 +326,7 @@ impl AccountKeychain {
         msg_sender: Address,
         call: burnKeyAuthorizationWitnessCall,
     ) -> Result<()> {
-        self.ensure_account_caller(msg_sender, true)?;
+        self.ensure_admin_caller(msg_sender)?;
         self.burn_key_authorization_witness_value(msg_sender, call.witness)
     }
 
@@ -361,12 +359,7 @@ impl AccountKeychain {
         // Note: We don't clear spending limits here - they become inaccessible
 
         // Emit event
-        self.emit_event(AccountKeychainEvent::KeyRevoked(
-            IAccountKeychain::KeyRevoked {
-                account: msg_sender,
-                publicKey: call.keyId,
-            },
-        ))
+        self.emit_event(AccountKeychainEvent::key_revoked(msg_sender, call.keyId))
     }
 
     /// Updates the spending limit for a key-token pair. Can also convert an unlimited key into a
@@ -410,13 +403,11 @@ impl AccountKeychain {
         }
 
         // Emit event
-        self.emit_event(AccountKeychainEvent::SpendingLimitUpdated(
-            IAccountKeychain::SpendingLimitUpdated {
-                account: msg_sender,
-                publicKey: call.keyId,
-                token: call.token,
-                newLimit: call.newLimit,
-            },
+        self.emit_event(AccountKeychainEvent::spending_limit_updated(
+            msg_sender,
+            call.keyId,
+            call.token,
+            call.newLimit,
         ))
     }
 
@@ -1006,18 +997,9 @@ impl AccountKeychain {
     /// `tx_origin` is seeded by the handler before validation/execution.
     /// If origin is not seeded (zero), admin ops are rejected.
     fn ensure_admin_caller(&self, msg_sender: Address) -> Result<()> {
-        self.ensure_account_caller(msg_sender, false)
-    }
-
-    fn ensure_account_caller(&self, msg_sender: Address, allow_active_key: bool) -> Result<()> {
         let transaction_key = self.transaction_key.t_read()?;
         if !transaction_key.is_zero() {
-            if allow_active_key {
-                let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-                self.load_active_key(msg_sender, transaction_key, current_timestamp)?;
-            } else {
-                return Err(AccountKeychainError::unauthorized_caller().into());
-            }
+            return Err(AccountKeychainError::unauthorized_caller().into());
         }
 
         if self.storage.spec().is_t2() {
@@ -1255,14 +1237,12 @@ impl AccountKeychain {
                 .write(new_remaining)?;
         }
 
-        self.emit_event(AccountKeychainEvent::AccessKeySpend(
-            IAccountKeychain::AccessKeySpend {
-                account,
-                publicKey: key_id,
-                token,
-                amount,
-                remainingLimit: new_remaining,
-            },
+        self.emit_event(AccountKeychainEvent::access_key_spend(
+            account,
+            key_id,
+            token,
+            amount,
+            new_remaining,
         ))?;
 
         Ok(())
@@ -1575,7 +1555,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t5_access_key_can_burn_key_authorization_witness() -> eyre::Result<()> {
+    fn test_t5_access_key_cannot_burn_key_authorization_witness() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let account = Address::random();
         let access_key = Address::random();
@@ -1597,12 +1577,16 @@ mod tests {
             )?;
 
             keychain.set_transaction_key(access_key)?;
-            keychain.burn_key_authorization_witness(
+            let result = keychain.burn_key_authorization_witness(
                 account,
                 burnKeyAuthorizationWitnessCall { witness },
-            )?;
+            );
 
-            assert!(keychain.is_key_authorization_witness_burned(
+            assert_unauthorized_error(
+                result.expect_err("access key must not burn authorization witness"),
+            );
+
+            assert!(!keychain.is_key_authorization_witness_burned(
                 isKeyAuthorizationWitnessBurnedCall { account, witness }
             )?);
 

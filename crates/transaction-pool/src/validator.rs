@@ -1676,7 +1676,7 @@ mod tests {
                 assert!(matches!(
                     err.downcast_other_ref::<TempoPoolTransactionError>(),
                     Some(TempoPoolTransactionError::Evm(
-                        TempoInvalidTransaction::InvalidFeeToken(_)
+                        TempoInvalidTransaction::FeeTokenNotTip20 { .. }
                     ))
                 ));
             }
@@ -1762,7 +1762,7 @@ mod tests {
         // Create a transaction with max_fee_per_gas exactly at minimum
         let active_fork = MODERATO.tempo_hardfork_at(current_time);
         let transaction = TxBuilder::aa(Address::random())
-            .max_fee(active_fork.base_fee() as u128)
+            .max_fee(u128::from(active_fork.base_fee()))
             .max_priority_fee(1_000_000_000)
             .build();
 

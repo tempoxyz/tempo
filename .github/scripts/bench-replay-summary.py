@@ -500,14 +500,14 @@ def generate_markdown(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Parse bench-cli ABBA results")
+    parser = argparse.ArgumentParser(description="Parse bench-cli multi-run results")
     parser.add_argument(
         "--baseline-json", nargs="+", required=True,
-        help="Baseline report.json files (A1, A2)",
+        help="Baseline report.json files",
     )
     parser.add_argument(
         "--feature-json", "--branch-json", nargs="+", required=True,
-        help="Feature report.json files (B1, B2)",
+        help="Feature report.json files",
     )
     parser.add_argument(
         "--output-summary", required=True, help="Output JSON summary path"
@@ -630,6 +630,7 @@ def main():
 
     summary = {
         "blocks": paired_stats["blocks"],
+        "run_pairs": len(baseline_runs),
         "big_blocks": args.big_blocks,
         "warmup_blocks": None,
         "wait_time": args.wait_time,
