@@ -745,14 +745,14 @@ where
                     );
                 }
 
-                // 5. Evict revoked keys and spending limit updates from paused pool
-                if updates.has_keychain_subject_updates()
+                // 5. Evict hard keychain invalidations from paused pool
+                if !updates.revoked_keys.is_empty()
+                    || !updates.spending_limit_changes.is_empty()
                     || !updates.key_authorization_witness_burns.is_empty()
                 {
                     state.paused_pool.evict_invalidated(
                         &updates.revoked_keys,
                         &updates.spending_limit_changes,
-                        &updates.spending_limit_spends,
                         &updates.key_authorization_witness_burns,
                     );
                 }
