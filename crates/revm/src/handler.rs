@@ -916,8 +916,9 @@ where
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, fee_token, fee_payer)?;
 
-        // Load caller's account
-        let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
+        // Load caller's account. Validation only needs account metadata (nonce and code hash),
+        // not bytecode, so avoid forcing a code load for every payload transaction.
+        let mut caller_account = journal.load_account_mut(tx.caller())?.data;
 
         let nonce_key = tx
             .tempo_tx_env
