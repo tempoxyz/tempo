@@ -746,6 +746,7 @@ where
                 }
 
                 // 5. Evict hard keychain invalidations from paused pool
+                // Ignore spending_limit_spends here: AccessKeySpend only proves partial limit consumption, and paused txs are fully revalidated on unpause.
                 if !updates.revoked_keys.is_empty()
                     || !updates.spending_limit_changes.is_empty()
                     || !updates.key_authorization_witness_burns.is_empty()
