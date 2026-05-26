@@ -371,7 +371,7 @@ impl TempoTransaction {
     /// Calculate the signing hash for this transaction
     /// This is the hash that should be signed by the sender
     pub fn signature_hash(&self) -> B256 {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(self.payload_len_for_signature());
         self.encode_for_signing(&mut buf);
         keccak256(&buf)
     }
