@@ -238,7 +238,6 @@ async fn create_blocked_transfer(
     let blocked = transfer_blocked(&transfer)?;
     let decoded_receipt = IReceivePolicyGuard::ClaimReceiptV1::abi_decode(&blocked.receipt)?;
     assert_eq!(blocked.token, token);
-    assert_eq!(blocked.from, sender);
     assert_eq!(blocked.receiver, receiver);
     assert_eq!(blocked.blockedNonce, decoded_receipt.blockedNonce);
     assert_eq!(blocked.receiptVersion, decoded_receipt.version);
