@@ -104,7 +104,7 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     enable_prewarming: bool,
-    /// Conservative estimate of total build time divided by elapsed time at tx cutoff.
+    /// Conservative estimate of total replayable build work divided by work at tx cutoff.
     build_time_multiplier: Arc<AtomicU64>,
 }
 
@@ -140,8 +140,8 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         self.build_time_multiplier.load(Ordering::Relaxed)
     }
 
-    fn update_build_time_multiplier(&self, total: Duration, elapsed_at_tx_cutoff: Duration) {
-        let Some(observed) = observed_build_time_multiplier(total, elapsed_at_tx_cutoff) else {
+    fn update_build_time_multiplier(&self, total_work: Duration, work_at_tx_cutoff: Duration) {
+        let Some(observed) = observed_build_time_multiplier(total_work, work_at_tx_cutoff) else {
             return;
         };
         let _ = self.build_time_multiplier.fetch_update(

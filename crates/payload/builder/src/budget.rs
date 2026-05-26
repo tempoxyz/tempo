@@ -15,10 +15,10 @@ const MAX_BUILD_TIME_MULTIPLIER: u64 = 1_700_000;
 /// How quickly the multiplier decays when observed builds get cheaper.
 const BUILD_TIME_MULTIPLIER_DECAY: u64 = 8;
 
-/// Initial estimate of total build time divided by elapsed time at tx cutoff.
+/// Initial estimate of total replayable build work divided by work at tx cutoff.
 pub const DEFAULT_BUILD_TIME_MULTIPLIER: f64 = 1.35;
 
-/// Converts a human-readable multiplier into the fixed-point representation.
+/// Converts a human-readable build-work multiplier into the fixed-point representation.
 pub(crate) fn scaled_build_time_multiplier(multiplier: f64) -> u64 {
     assert!(
         multiplier.is_finite() && multiplier >= 1.0,
@@ -53,17 +53,17 @@ pub(crate) fn payload_budget_exhausted(
 
 /// Computes the observed total-work to tx-cutoff-work multiplier.
 pub(crate) fn observed_build_time_multiplier(
-    total: Duration,
-    elapsed_at_tx_cutoff: Duration,
+    total_work: Duration,
+    work_at_tx_cutoff: Duration,
 ) -> Option<u64> {
-    if elapsed_at_tx_cutoff == Duration::ZERO {
+    if work_at_tx_cutoff == Duration::ZERO {
         return None;
     }
 
-    let multiplier = total
+    let multiplier = total_work
         .as_nanos()
         .saturating_mul(BUILD_TIME_MULTIPLIER_SCALE as u128)
-        / elapsed_at_tx_cutoff.as_nanos();
+        / work_at_tx_cutoff.as_nanos();
     Some(multiplier.min(MAX_BUILD_TIME_MULTIPLIER as u128) as u64)
 }
 
