@@ -9,6 +9,8 @@ use crate::{
     },
 };
 use alloy_primitives::B256;
+use reth_basic_payload_builder::{BasicPayloadJobGenerator, BasicPayloadJobGeneratorConfig};
+use reth_chain_state::{CanonStateNotification, CanonStateSubscriptions};
 use reth_node_api::{
     AddOnsContext, FullNodeComponents, FullNodeTypes, NodeAddOns, NodeTypes,
     PayloadAttributesBuilder, PayloadTypes,
@@ -16,8 +18,8 @@ use reth_node_api::{
 use reth_node_builder::{
     BuilderContext, DebugNode, Node, NodeAdapter,
     components::{
-        BasicPayloadServiceBuilder, ComponentsBuilder, ConsensusBuilder, ExecutorBuilder,
-        PayloadBuilderBuilder, PoolBuilder, TxPoolBuilder, spawn_maintenance_tasks,
+        ComponentsBuilder, ConsensusBuilder, ExecutorBuilder, PayloadBuilderBuilder,
+        PayloadServiceBuilder, PoolBuilder, TxPoolBuilder, spawn_maintenance_tasks,
     },
     rpc::{
         BasicEngineValidatorBuilder, EngineValidatorAddOn, NoopEngineApiBuilder,
@@ -25,7 +27,11 @@ use reth_node_builder::{
     },
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
-use reth_primitives_traits::SealedHeader;
+use reth_payload_builder::{
+    BuildNewPayload, PayloadBuilderError, PayloadBuilderHandle, PayloadBuilderService, PayloadId,
+    PayloadJob, PayloadJobGenerator,
+};
+use reth_primitives_traits::{NodePrimitives, SealedHeader};
 use reth_provider::providers::ProviderFactoryBuilder;
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
@@ -50,6 +56,81 @@ use tempo_transaction_pool::{
         TempoTransactionValidator,
     },
 };
+
+#[derive(Debug)]
+struct NoPrecachePayloadJobGenerator<G>(G);
+
+impl<G> PayloadJobGenerator for NoPrecachePayloadJobGenerator<G>
+where
+    G: PayloadJobGenerator,
+{
+    type Job = G::Job;
+
+    fn new_payload_job(
+        &self,
+        input: BuildNewPayload<<Self::Job as PayloadJob>::PayloadAttributes>,
+        id: PayloadId,
+    ) -> Result<Self::Job, PayloadBuilderError> {
+        self.0.new_payload_job(input, id)
+    }
+
+    fn on_new_state<N: NodePrimitives>(&mut self, _new_state: CanonStateNotification<N>) {}
+}
+
+#[derive(Debug, Default, Clone)]
+pub struct TempoPayloadServiceBuilder<PB>(PB);
+
+impl<PB> TempoPayloadServiceBuilder<PB> {
+    pub const fn new(payload_builder_builder: PB) -> Self {
+        Self(payload_builder_builder)
+    }
+}
+
+impl<Node, Pool, PB, EvmConfig> PayloadServiceBuilder<Node, Pool, EvmConfig>
+    for TempoPayloadServiceBuilder<PB>
+where
+    Node: FullNodeTypes,
+    Pool: reth_transaction_pool::TransactionPool,
+    EvmConfig: Send,
+    PB: PayloadBuilderBuilder<Node, Pool, EvmConfig>,
+{
+    async fn spawn_payload_builder_service(
+        self,
+        ctx: &BuilderContext<Node>,
+        pool: Pool,
+        evm_config: EvmConfig,
+    ) -> eyre::Result<PayloadBuilderHandle<<Node::Types as NodeTypes>::Payload>> {
+        let payload_builder = self.0.build_payload_builder(ctx, pool, evm_config).await?;
+
+        let conf = ctx.config().builder.clone();
+        let payload_job_config = BasicPayloadJobGeneratorConfig::default()
+            .interval(conf.interval)
+            .deadline(conf.deadline)
+            .max_payload_tasks(conf.max_payload_tasks);
+
+        let payload_generator = BasicPayloadJobGenerator::with_builder(
+            ctx.provider().clone(),
+            ctx.task_executor().clone(),
+            payload_job_config,
+            payload_builder,
+        );
+        let payload_generator = NoPrecachePayloadJobGenerator(payload_generator);
+
+        let (payload_service, payload_service_handle) =
+            PayloadBuilderService::<_, _, <Node::Types as NodeTypes>::Payload>::new(
+                payload_generator,
+                ctx.provider().canonical_state_stream(),
+            );
+
+        ctx.task_executor().spawn_critical_os_thread(
+            "payload-builder",
+            "payload builder service",
+            payload_service,
+        );
+
+        Ok(payload_service_handle)
+    }
+}
 
 /// Tempo node CLI arguments.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::Args)]
@@ -118,7 +199,7 @@ impl TempoNode {
     ) -> ComponentsBuilder<
         Node,
         TempoPoolBuilder,
-        BasicPayloadServiceBuilder<TempoPayloadBuilderBuilder>,
+        TempoPayloadServiceBuilder<TempoPayloadBuilderBuilder>,
         EthereumNetworkBuilder,
         TempoExecutorBuilder,
         TempoConsensusBuilder,
@@ -130,7 +211,7 @@ impl TempoNode {
             .node_types::<Node>()
             .pool(pool_builder)
             .executor(TempoExecutorBuilder::default())
-            .payload(BasicPayloadServiceBuilder::new(payload_builder_builder))
+            .payload(TempoPayloadServiceBuilder::new(payload_builder_builder))
             .network(EthereumNetworkBuilder::default())
             .consensus(TempoConsensusBuilder::default())
     }
@@ -262,7 +343,7 @@ where
     type ComponentsBuilder = ComponentsBuilder<
         N,
         TempoPoolBuilder,
-        BasicPayloadServiceBuilder<TempoPayloadBuilderBuilder>,
+        TempoPayloadServiceBuilder<TempoPayloadBuilderBuilder>,
         EthereumNetworkBuilder,
         TempoExecutorBuilder,
         TempoConsensusBuilder,
