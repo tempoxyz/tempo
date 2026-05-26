@@ -1768,7 +1768,10 @@ pub(crate) mod tests {
                     let mut token = TIP20Setup::create("Test", "TST", admin)
                         .with_issuer(admin)
                         .apply()?;
-                    token.set_balance(RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
+                    token.set_balance(
+                        RECEIVE_POLICY_GUARD_ADDRESS,
+                        UserState::new(amount, RewardFlag::OptedOut)?,
+                    )?;
 
                     set_receive_policy(
                         receiver,
@@ -1837,7 +1840,10 @@ pub(crate) mod tests {
                         newPolicyId: transfer_policy,
                     },
                 )?;
-                token.set_balance(RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
+                token.set_balance(
+                    RECEIVE_POLICY_GUARD_ADDRESS,
+                    UserState::new(amount, RewardFlag::OptedOut)?,
+                )?;
 
                 // A third-party claim back to the receiver is a resume. It requires the receiver
                 // to be authorized as recipient, but must not require the receiver/policy subject
@@ -3333,7 +3339,10 @@ pub(crate) mod tests {
                     newPolicyId: REJECT_ALL_POLICY_ID,
                 },
             )?;
-            token.set_balance(RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
+            token.set_balance(
+                RECEIVE_POLICY_GUARD_ADDRESS,
+                UserState::new(amount, RewardFlag::OptedIn)?,
+            )?;
             token.set_total_supply(token.total_supply()? + amount)?;
 
             token.burn_blocked(burner, RECEIVE_POLICY_GUARD_ADDRESS, burn_amount, true)?;
@@ -3364,7 +3373,7 @@ pub(crate) mod tests {
             )?;
 
             // simulate a mint to TIP20 address.
-            token.set_balance(token.address, amount)?;
+            token.set_balance(token.address, UserState::new(amount, RewardFlag::OptedOut)?)?;
             token.set_total_supply(token.total_supply()? + amount)?;
 
             for unprotected in [TIP20_CHANNEL_RESERVE_ADDRESS, token.address] {

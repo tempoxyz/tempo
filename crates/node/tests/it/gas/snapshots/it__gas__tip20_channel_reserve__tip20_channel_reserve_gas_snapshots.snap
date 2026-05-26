@@ -2,12 +2,12 @@
 source: crates/node/tests/it/gas/tip20_channel_reserve.rs
 expression: gas
 ---
-close_existing_channel_after_settlement: 62973
-close_existing_channel_no_prior_settlement: 62973
-open_new_channel_existing_reserve_balance: 294425
-open_new_channel_first_reserve_balance: 791625
+close_existing_channel_after_settlement: 49773
+close_existing_channel_no_prior_settlement: 49773
+open_new_channel_existing_reserve_balance: 287825
+open_new_channel_first_reserve_balance: 791325
 request_close_existing_channel: 30123
-settle_existing_channel_existing_payee_balance: 301691
-settle_existing_channel_new_payee_balance: 559931
-top_up_existing_channel: 46805
-top_up_existing_channel_cancel_close_request: 48680
+settle_existing_channel_existing_payee_balance: 295091
+settle_existing_channel_new_payee_balance: 553631
+top_up_existing_channel: 40205
+top_up_existing_channel_cancel_close_request: 42080
