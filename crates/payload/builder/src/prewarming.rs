@@ -180,7 +180,11 @@ impl BestTransactionsPrewarming {
             };
 
             let tx_hash = *tx.hash();
-            let tx_env_touches = tx.transaction.tx_env().prewarm_storage_touches();
+            let tx_env_touches = tx
+                .transaction
+                .cached_tx_env()
+                .map(|tx_env| tx_env.prewarm_storage_touches())
+                .unwrap_or(&[]);
 
             let touched = if is_tip20_transfer_transaction(&tx) {
                 let fallback_touches;

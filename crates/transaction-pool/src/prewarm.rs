@@ -6,34 +6,33 @@ use alloy_primitives::{Address, TxKind, U256};
 use alloy_sol_types::SolInterface;
 use reth_storage_api::{StateProvider, errors::ProviderError};
 use reth_transaction_pool::PoolTransaction;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
+    NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     nonce::slots as nonce_slots,
     storage::StorageKey as _,
     tip_fee_manager::slots as fee_manager_slots,
     tip20::{ITIP20, tip20_slots},
 };
 use tempo_primitives::TempoAddressExt;
-use tempo_revm::TempoStorageTouch;
+use tempo_revm::{TempoStateAccess, TempoStorageTouch};
 
 /// Reads and discards predicted execution-time storage for a transaction.
 ///
 /// This is intentionally best-effort at the caller boundary: callers decide whether
 /// a read error should fail their current operation or only be traced.
 pub(crate) fn prewarm_transaction_storage<P>(
-    provider: &P,
+    provider: &mut P,
     transaction: &TempoPooledTransaction,
+    spec: TempoHardfork,
     fee_recipient: Address,
 ) -> Result<usize, ProviderError>
 where
-    P: StateProvider + ?Sized,
+    P: StateProvider + TempoStateAccess<((), (), ())>,
 {
-    if transaction.tx_env().prewarm_storage_touches().is_empty() {
-        let touches = storage_touches_for_transaction(transaction, fee_recipient);
-        transaction.tx_env().set_prewarm_storage_touches(touches);
-    }
-
-    let touches = transaction.tx_env().prewarm_storage_touches();
+    let touches = transaction
+        .tx_env(provider, spec, fee_recipient)
+        .prewarm_storage_touches();
     for touch in touches {
         warm_state_provider(touch, provider)?;
     }
@@ -58,16 +57,14 @@ where
 }
 
 /// Predicts the storage locations touched by Tempo fee handling and TIP-20 payments.
-fn storage_touches_for_transaction(
+pub(crate) fn storage_touches_for_transaction(
     tx: &TempoPooledTransaction,
     fee_recipient: Address,
+    fee_token: Address,
 ) -> Vec<TempoStorageTouch> {
     let mut touches = Vec::new();
     let sender = tx.sender();
     let fee_payer = tx.inner().fee_payer(sender).unwrap_or(sender);
-    let fee_token = tx
-        .resolved_fee_token()
-        .unwrap_or_else(|| tx.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
 
     add_access_list_touches(&mut touches, tx);
     add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
@@ -263,10 +260,12 @@ fn add_unique_touch(touches: &mut Vec<TempoStorageTouch>, touch: TempoStorageTou
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::TxBuilder;
+    use crate::test_utils::{TxBuilder, create_mock_provider};
     use alloy_eips::eip2930::{AccessList, AccessListItem};
     use alloy_primitives::B256;
     use alloy_sol_types::SolCall;
+    use reth_storage_api::StateProviderFactory;
+    use tempo_precompiles::DEFAULT_FEE_TOKEN;
 
     #[test]
     fn tip20_touch_collection_dedups_overlapping_fee_and_call_slots() {
@@ -316,12 +315,45 @@ mod tests {
             }]))
             .build();
 
-        let touches = storage_touches_for_transaction(&tx, Address::random());
+        let touches = storage_touches_for_transaction(&tx, Address::random(), DEFAULT_FEE_TOKEN);
 
         assert!(touches.contains(&TempoStorageTouch::Account(account)));
         assert!(touches.contains(&TempoStorageTouch::Storage {
             address: account,
             slot: U256::from_be_bytes(storage_key.0)
         }));
+    }
+
+    #[test]
+    fn tx_env_initialization_attaches_prewarm_touches() {
+        let account = Address::random();
+        let storage_key = B256::repeat_byte(0x24);
+        let tx = TxBuilder::aa(Address::random())
+            .access_list(AccessList(vec![AccessListItem {
+                address: account,
+                storage_keys: vec![storage_key],
+            }]))
+            .build();
+
+        assert!(tx.cached_tx_env().is_none());
+
+        let provider = create_mock_provider();
+        let mut state = provider.latest().expect("latest state");
+        let tx_env = tx.tx_env(&mut state, TempoHardfork::default(), Address::random());
+
+        assert!(tx.cached_tx_env().is_some());
+        assert!(
+            tx_env
+                .prewarm_storage_touches()
+                .contains(&TempoStorageTouch::Account(account))
+        );
+        assert!(
+            tx_env
+                .prewarm_storage_touches()
+                .contains(&TempoStorageTouch::Storage {
+                    address: account,
+                    slot: U256::from_be_bytes(storage_key.0),
+                })
+        );
     }
 }

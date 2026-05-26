@@ -12,7 +12,7 @@ use revm::context::{
         AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
     },
 };
-use std::sync::{Arc, OnceLock};
+use std::sync::Arc;
 use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
     AASigned, TempoAddressExt, TempoSignature, TempoTransaction, TempoTxEnvelope,
@@ -107,25 +107,19 @@ pub struct TempoTxEnv {
     pub tempo_tx_env: Option<Box<TempoBatchCallEnv>>,
 
     /// Predicted account/storage locations touched by execution.
-    ///
-    /// This is populated by pool validation after fee-token and block-context dependent
-    /// state has been resolved. The `OnceLock` is shared across clones so a transaction
-    /// environment created during validation can be enriched before payload building.
-    pub prewarm_storage_touches: Arc<OnceLock<Vec<TempoStorageTouch>>>,
+    pub prewarm_storage_touches: Arc<Vec<TempoStorageTouch>>,
 }
 
 impl TempoTxEnv {
-    /// Stores predicted storage touches if they have not already been populated.
-    pub fn set_prewarm_storage_touches(&self, touches: Vec<TempoStorageTouch>) {
-        let _ = self.prewarm_storage_touches.set(touches);
+    /// Returns this transaction environment with predicted storage touches attached.
+    pub fn with_prewarm_storage_touches(mut self, touches: Vec<TempoStorageTouch>) -> Self {
+        self.prewarm_storage_touches = Arc::new(touches);
+        self
     }
 
     /// Returns predicted storage touches for this transaction.
     pub fn prewarm_storage_touches(&self) -> &[TempoStorageTouch] {
-        self.prewarm_storage_touches
-            .get()
-            .map(Vec::as_slice)
-            .unwrap_or(&[])
+        self.prewarm_storage_touches.as_slice()
     }
 
     /// Resolves fee payer from the signature.

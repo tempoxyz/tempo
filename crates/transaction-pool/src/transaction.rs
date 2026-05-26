@@ -1,4 +1,7 @@
-use crate::tt_2d_pool::{AA2dTransactionId, AASequenceId};
+use crate::{
+    prewarm::storage_touches_for_transaction,
+    tt_2d_pool::{AA2dTransactionId, AASequenceId},
+};
 use alloy_consensus::{
     BlobTransactionValidationError, Transaction, crypto::RecoveryError, transaction::TxHashRef,
 };
@@ -13,6 +16,7 @@ use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes, map::AddressMap};
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered};
+use reth_storage_api::StateProvider;
 use reth_transaction_pool::{
     EthBlobTransactionSidecar, EthPoolTransaction, EthPooledTransaction, PoolTransaction,
     error::PoolTransactionError,
@@ -22,9 +26,10 @@ use std::{
     fmt::Debug,
     sync::{Arc, OnceLock},
 };
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{DEFAULT_FEE_TOKEN, nonce::NonceManager, tip20::TIP20Token};
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
-use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
+use tempo_revm::{TempoInvalidTransaction, TempoStateAccess, TempoTxEnv};
 use thiserror::Error;
 
 /// Tempo pooled transaction representation.
@@ -200,17 +205,66 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Computes the [`TempoTxEnv`] for this transaction.
+    /// Computes the base [`TempoTxEnv`] for this transaction.
     fn tx_env_slow(&self) -> TempoTxEnv {
         TempoTxEnv::from_recovered_tx(self.inner().inner(), self.sender())
     }
 
-    /// Pre-computes and caches the [`TempoTxEnv`].
+    /// Computes the [`TempoTxEnv`] with predicted prewarm storage touches.
+    fn tx_env_with_prewarm<P>(
+        &self,
+        state_provider: &mut P,
+        spec: TempoHardfork,
+        fee_recipient: Address,
+    ) -> TempoTxEnv
+    where
+        P: StateProvider + TempoStateAccess<((), (), ())>,
+    {
+        let tx_env = self.tx_env_slow();
+        let fee_token = self.resolve_prewarm_fee_token(&tx_env, state_provider, spec);
+        let touches = storage_touches_for_transaction(self, fee_recipient, fee_token);
+        tx_env.with_prewarm_storage_touches(touches)
+    }
+
+    fn resolve_prewarm_fee_token<P>(
+        &self,
+        tx_env: &TempoTxEnv,
+        state_provider: &mut P,
+        spec: TempoHardfork,
+    ) -> Address
+    where
+        P: StateProvider + TempoStateAccess<((), (), ())>,
+    {
+        let fee_payer = tx_env.fee_payer().unwrap_or(tx_env.inner.caller);
+        <P as TempoStateAccess<((), (), ())>>::get_fee_token(
+            state_provider,
+            tx_env,
+            fee_payer,
+            spec,
+        )
+        .unwrap_or_else(|_| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN))
+    }
+
+    /// Pre-computes and caches the [`TempoTxEnv`] with prewarm touches.
     ///
     /// This should be called during validation to prepare the transaction environment
     /// ahead of time, avoiding it during payload building.
-    pub fn tx_env(&self) -> &TempoTxEnv {
-        self.tx_env.get_or_init(|| self.tx_env_slow())
+    pub fn tx_env<'a, P>(
+        &'a self,
+        state_provider: &mut P,
+        spec: TempoHardfork,
+        fee_recipient: Address,
+    ) -> &'a TempoTxEnv
+    where
+        P: StateProvider + TempoStateAccess<((), (), ())>,
+    {
+        self.tx_env
+            .get_or_init(|| self.tx_env_with_prewarm(state_provider, spec, fee_recipient))
+    }
+
+    /// Returns the cached [`TempoTxEnv`], if it has already been prepared.
+    pub fn cached_tx_env(&self) -> Option<&TempoTxEnv> {
+        self.tx_env.get()
     }
 
     /// Returns a cloned [`TempoTxEnv`] for this transaction.
@@ -218,7 +272,9 @@ impl TempoPooledTransaction {
     /// This uses the cached value prepared by [`Self::tx_env`] when available,
     /// and computes it on-demand otherwise.
     pub fn clone_tx_env(&self) -> TempoTxEnv {
-        self.tx_env().clone()
+        self.cached_tx_env()
+            .cloned()
+            .unwrap_or_else(|| self.tx_env_slow())
     }
 
     /// Returns a [`WithTxEnv`] wrapper by cloning the cached [`TempoTxEnv`] and

@@ -308,9 +308,14 @@ where
     fn validate_with_evm(
         &self,
         transaction: &TempoPooledTransaction,
-        state_provider: impl StateProvider,
+        mut state_provider: impl StateProvider,
     ) -> Result<ValidationContext, EVMError<ProviderError, TempoInvalidTransaction>> {
         let evm_env = self.cached_evm_env.read().clone();
+        let spec = evm_env.cfg_env.spec;
+        let fee_recipient = evm_env.block_env.beneficiary;
+        let tx_env = transaction
+            .tx_env(&mut state_provider, spec, fee_recipient)
+            .clone();
 
         // Create a throwaway EVM and run validation.
         // - Skip `valid_after` check: the pool intentionally accepts transactions with a
@@ -322,7 +327,7 @@ where
         evm.inner_mut().skip_valid_after_check = true;
         evm.inner_mut().skip_liquidity_check = true;
         evm.ctx_mut().cfg.disable_nonce_check = true;
-        evm.validate_transaction(transaction.tx_env().clone())
+        evm.validate_transaction(tx_env)
     }
 
     fn validate_one(
@@ -554,8 +559,9 @@ where
 
                 let fee_recipient = self.cached_evm_env.read().block_env.beneficiary;
                 match prewarm_transaction_storage(
-                    &state_provider,
+                    &mut state_provider,
                     transaction.transaction(),
+                    spec,
                     fee_recipient,
                 ) {
                     Ok(touched) => {
