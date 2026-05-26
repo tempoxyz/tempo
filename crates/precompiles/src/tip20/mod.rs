@@ -600,14 +600,15 @@ impl TIP20Token {
         }
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
-        if check_protected &&
+        if check_protected {
             // Prevent burning from system custody addresses to protect accounting invariants.
-            (hardfork.is_t5() && owner == self.address)
-            || PROTECTED
+            if PROTECTED
                 .iter()
                 .any(|(hf, addr)| hardfork >= *hf && addr.contains(&owner))
-        {
-            return Err(TIP20Error::protected_address().into());
+                || (hardfork.is_t5() && owner == self.address)
+            {
+                return Err(TIP20Error::protected_address().into());
+            }
         }
 
         // Check if the address is blocked from transferring (sender authorization)
