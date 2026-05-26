@@ -222,7 +222,7 @@ where
         tx: &TempoTxEnvelope,
     ) -> Result<BlockSection, BlockValidationError> {
         let block = self.evm().block();
-        let block_number = block.number.to_be_bytes_vec();
+        let block_number = block.number.to_be_bytes::<32>();
         let to = tx.to().unwrap_or_default();
 
         // Handle end-of-block system transactions (subblocks signatures only)

@@ -147,10 +147,8 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
             .iter()
             .map(|s| s.metadata())
             .collect::<Vec<SubBlockMetadata>>();
-        let subblocks_input = alloy_rlp::encode(&subblocks_metadata)
-            .into_iter()
-            .chain(evm.block.number.to_be_bytes_vec())
-            .collect();
+        let mut subblocks_input = alloy_rlp::encode(&subblocks_metadata);
+        subblocks_input.extend_from_slice(&evm.block.number.to_be_bytes::<32>());
 
         let subblocks_signatures_tx = Recovered::new_unchecked(
             TempoTxEnvelope::Legacy(Signed::new_unhashed(
@@ -161,7 +159,7 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
                     gas_limit: 0,
                     to: Address::ZERO.into(),
                     value: U256::ZERO,
-                    input: subblocks_input,
+                    input: subblocks_input.into(),
                 },
                 TEMPO_SYSTEM_TX_SIGNATURE,
             )),
