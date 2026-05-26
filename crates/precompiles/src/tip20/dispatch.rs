@@ -1,13 +1,14 @@
 //! ABI dispatch for the [`TIP20Token`] precompile.
 
 use crate::{
-    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
-    storage::ContractStorage,
+    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, fill_state_gas, metadata,
+    mutate, mutate_void,
+    storage::{ContractStorage, StorageCtx},
     tip20::{ITIP20, TIP20Token},
     view,
 };
 use alloy::{
-    primitives::Address,
+    primitives::{Address, Bytes},
     sol_types::{SolCall, SolInterface},
 };
 use revm::precompile::PrecompileResult;
@@ -59,6 +60,23 @@ impl Precompile for TIP20Token {
         };
         if !initialized {
             return self.storage.error_result(TIP20Error::uninitialized());
+        }
+
+        if calldata
+            .first_chunk::<4>()
+            .is_some_and(|selector| *selector == ITIP20::transferCall::SELECTOR)
+        {
+            let storage = StorageCtx::default();
+            let call = match ITIP20::transferCall::abi_decode(calldata) {
+                Ok(call) => call,
+                Err(_) => return Ok(storage.revert_output(Bytes::new())),
+            };
+
+            return mutate(call, msg_sender, |s, c| self.transfer(s, c)).map(|mut res| {
+                res.gas_used = storage.gas_used();
+                fill_state_gas(&mut res, &storage);
+                res
+            });
         }
 
         dispatch_call(
