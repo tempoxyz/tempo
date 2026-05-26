@@ -51,12 +51,17 @@ where
 /// - TIP-20 tokens use 6 decimals (microdollars at 10^-6 USD precision)
 /// - Conversion: attodollars / 10^12 = microdollars
 pub const TEMPO_GAS_PRICE_SCALING_FACTOR: U256 = uint!(1_000_000_000_000_U256);
+const TEMPO_GAS_PRICE_SCALING_FACTOR_U128: u128 = 1_000_000_000_000;
 
 /// Calculates gas balance spending in TIP-20 token units (microdollars).
 ///
 /// Takes gas parameters in attodollars and converts to microdollars (TIP-20 token units).
 /// Formula: (gas_limit × gas_price) / 10^12 = microdollars
 pub fn calc_gas_balance_spending(gas_limit: u64, gas_price: u128) -> U256 {
+    if let Some(product) = gas_price.checked_mul(u128::from(gas_limit)) {
+        return U256::from(product.div_ceil(TEMPO_GAS_PRICE_SCALING_FACTOR_U128));
+    }
+
     U256::from(gas_limit)
         .saturating_mul(U256::from(gas_price))
         .div_ceil(TEMPO_GAS_PRICE_SCALING_FACTOR)
