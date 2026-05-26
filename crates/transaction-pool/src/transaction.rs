@@ -35,6 +35,8 @@ pub struct TempoPooledTransaction {
     fee_token_cost: U256,
     /// Cached payment classification for efficient block building
     is_payment: bool,
+    /// Cached 2D AA nonce classification used by pool and payload iterators.
+    is_aa_2d: bool,
     /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
     expiring_nonce_hash: Option<B256>,
     /// Cached slot of the 2D nonce, if any.
@@ -65,6 +67,10 @@ impl TempoPooledTransaction {
     pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
         let is_payment = transaction.is_payment_v2();
         let sender = transaction.signer();
+        let is_aa_2d = transaction
+            .as_aa()
+            .map(|tx| !tx.tx().nonce_key.is_zero())
+            .unwrap_or(false);
         let expiring_nonce_hash = transaction.as_aa().and_then(|tx| {
             tx.tx()
                 .is_expiring_nonce_tx()
@@ -84,6 +90,7 @@ impl TempoPooledTransaction {
             },
             fee_token_cost,
             is_payment,
+            is_aa_2d,
             expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
@@ -133,11 +140,7 @@ impl TempoPooledTransaction {
     /// Returns true if this transaction belongs into the 2D nonce pool:
     /// - AA transaction with a `nonce key != 0` (includes expiring nonce txs)
     pub fn is_aa_2d(&self) -> bool {
-        self.inner
-            .transaction
-            .as_aa()
-            .map(|tx| !tx.tx().nonce_key.is_zero())
-            .unwrap_or(false)
+        self.is_aa_2d
     }
 
     /// Returns true if this is an expiring nonce transaction.
