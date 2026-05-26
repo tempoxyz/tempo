@@ -511,6 +511,64 @@ def dedup-args [base_args: list<string>, extra_args: list<string>] {
     $result | append $extra_args
 }
 
+def parse-cli-args [args: string] {
+    mut result = []
+    mut current = ""
+    mut quote = ""
+    mut escaped = false
+    mut token_started = false
+
+    for ch in ($args | split chars) {
+        if $escaped {
+            $current = $"($current)($ch)"
+            $escaped = false
+            $token_started = true
+            continue
+        }
+        if $ch == "\\" {
+            $escaped = true
+            $token_started = true
+            continue
+        }
+        if $quote != "" {
+            if $ch == $quote {
+                $quote = ""
+            } else {
+                $current = $"($current)($ch)"
+            }
+            $token_started = true
+            continue
+        }
+        if $ch == "'" or $ch == '"' {
+            $quote = $ch
+            $token_started = true
+            continue
+        }
+        if $ch in [" " "\t" "\n" "\r"] {
+            if $token_started {
+                $result = ($result | append $current)
+                $current = ""
+                $token_started = false
+            }
+            continue
+        }
+        $current = $"($current)($ch)"
+        $token_started = true
+    }
+
+    if $escaped {
+        $current = $"($current)('\')"
+    }
+    if $quote != "" {
+        print $"Error: unterminated quote in args: ($args)"
+        exit 1
+    }
+    if $token_started {
+        $result = ($result | append $current)
+    }
+    $result
+}
+
 # Run a single benchmark run (start node, run bench, stop node, collect report)
 def run-bench-single [
     --tempo-bin: string
@@ -554,7 +612,7 @@ def run-bench-single [
     let run_type = if ($run_label | str starts-with "baseline") { "baseline" } else { "feature" }
 
     # Parse extra node args
-    let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
+    let extra_args = (parse-cli-args $node_args)
 
     # Build node arguments, then dedup so user-provided args override defaults
     let base_args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
@@ -785,6 +843,14 @@ def grafana-performance-url [benchmark_id: string, from_ms: int, to_ms: int] {
     $"https://tempoxyz.grafana.net/d/performance/performance?orgId=1&from=($from)&to=($to)&timezone=browser&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=($benchmark_id)&var-group_by=benchmark_run"
 }
 
+def internal-perf-url [clickhouse_run_id: string] {
+    if $clickhouse_run_id == "" {
+        return ""
+    }
+
+    $"http://go/dev/tempo-internal-perf/benchmark/($clickhouse_run_id)"
+}
+
 
 def generate-summary [
     results_dir: string,
@@ -856,6 +922,56 @@ def generate-summary [
         }
     }
 
+    let metric_sample_names = [
+        "reth_tempo_payload_builder_payload_build_duration_seconds"
+        "reth_tempo_payload_builder_payload_finalization_duration_seconds"
+        "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds"
+        "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds"
+        "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts"
+        "reth_tempo_payload_builder_pool_transactions_skipped_total"
+        "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds"
+        "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds"
+        "reth_consensus_engine_beacon_new_payload_latency"
+        "reth_tempo_payload_builder_gas_per_second_last"
+        "reth_consensus_engine_beacon_new_payload_gas_per_second_last"
+    ]
+    let metric_sample_match_args = ($metric_sample_names | each { |name| ["-e" $name] } | flatten)
+    let has_rg = ((which rg | length) > 0)
+
+    let load_metric_samples = { |samples_path: string, samples_gz_path: string|
+        let filter_result = if ($samples_path | path exists) {
+            if $has_rg {
+                rg --fixed-strings --no-heading --no-filename --color never ...$metric_sample_match_args $samples_path | complete
+            } else {
+                grep -F ...$metric_sample_match_args $samples_path | complete
+            }
+        } else if ($samples_gz_path | path exists) {
+            if $has_rg {
+                gzip -dc $samples_gz_path | rg --fixed-strings --no-heading --no-filename --color never ...$metric_sample_match_args | complete
+            } else {
+                gzip -dc $samples_gz_path | grep -F ...$metric_sample_match_args | complete
+            }
+        } else {
+            { stdout: "", stderr: "", exit_code: 0 }
+        }
+
+        if $filter_result.exit_code not-in [0 1] {
+            error make { msg: $"Failed to filter metric samples from ($samples_path): ($filter_result.stderr)" }
+        }
+
+        if $filter_result.stdout != "" {
+            $filter_result.stdout
+                | lines
+                | where { |line| ($line | str trim) != "" }
+                | each { |line| $line | from json }
+                | where { |sample| $sample.name in $metric_sample_names }
+                | where { |sample|
+                    let quantile = ($sample.labels | get -o quantile | default "")
+                    ($quantile in ["0.5" "0.9" "0.99"]) or ($quantile == "")
+                }
+        } else { [] }
+    }
+
     for label in $run_labels {
         let report_path = $"($results_dir)/report-($label).json"
         if not ($report_path | path exists) {
@@ -865,34 +981,7 @@ def generate-summary [
         let report = (open $report_path)
         let samples_path = $"($results_dir)/report-($label).samples.ndjson"
         let samples_gz_path = $"($samples_path).gz"
-        let samples_raw = if ($samples_path | path exists) {
-            open --raw $samples_path
-        } else if ($samples_gz_path | path exists) {
-            gzip -dc $samples_gz_path
-        } else { "" }
-        let metric_samples = if $samples_raw != "" {
-            $samples_raw
-                | lines
-                | where { |line| ($line | str trim) != "" }
-                | each { |line| $line | from json }
-                | where { |sample| $sample.name in [
-                    "reth_tempo_payload_builder_payload_build_duration_seconds"
-                    "reth_tempo_payload_builder_payload_finalization_duration_seconds"
-                    "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds"
-                    "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds"
-                    "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts"
-                    "reth_tempo_payload_builder_pool_transactions_skipped_total"
-                    "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds"
-                    "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds"
-                    "reth_consensus_engine_beacon_new_payload_latency"
-                    "reth_tempo_payload_builder_gas_per_second_last"
-                    "reth_consensus_engine_beacon_new_payload_gas_per_second_last"
-                ] }
-                | where { |sample|
-                    let quantile = ($sample.labels | get -o quantile | default "")
-                    ($quantile in ["0.5" "0.9" "0.99"]) or ($quantile == "")
-                }
-        } else { [] }
+        let metric_samples = (do $load_metric_samples $samples_path $samples_gz_path)
         let builder_samples = ($metric_samples | where name == "reth_tempo_payload_builder_payload_build_duration_seconds")
         let builder_finish_samples = ($metric_samples | where name == "reth_tempo_payload_builder_payload_finalization_duration_seconds")
         let builder_included_tx_samples = ($metric_samples | where name == "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds")
@@ -1212,10 +1301,23 @@ def generate-summary [
 
     # Build summary markdown
     let grafana_url = (grafana-performance-url $benchmark_id $observability_from_ms $observability_to_ms)
+    let clickhouse_run_id_path = $"($results_dir)/clickhouse-run-id.txt"
+    let clickhouse_run_id = if ($clickhouse_run_id_path | path exists) {
+        open --raw $clickhouse_run_id_path | str trim
+    } else {
+        ""
+    }
+    let internal_perf_url = (internal-perf-url $clickhouse_run_id)
     mut config_lines = [
         $"# Bench Comparison: ($baseline_ref) vs ($feature_ref)"
         ""
         "## Configuration"
+    ]
+    let derek_bench_command = ($env.DEREK_BENCH_COMMAND? | default "")
+    if $derek_bench_command != "" {
+        $config_lines = ($config_lines | append $"- Derek command: `($derek_bench_command)`")
+    }
+    $config_lines = ($config_lines | append [
         $"- Bloat: ($bloat) MiB"
         $"- Preset: ($preset)"
         $"- Target TPS: ($tps)"
@@ -1224,7 +1326,7 @@ def generate-summary [
         $"- Snapshot: (if (has-schelk) { 'schelk' } else { 'cp fallback' })"
         $"- Baseline blocks: ($b_lat.n)"
         $"- Feature blocks: ($f_lat.n)"
-    ]
+    ])
     if $baseline_hardfork != "" {
         $config_lines = ($config_lines | append $"- Baseline hardfork: ($baseline_hardfork)")
     }
@@ -1302,6 +1404,8 @@ def generate-summary [
             to: (if $actual_observability_to_ms > 0 { iso-from-epoch-ms $actual_observability_to_ms } else { "" })
         }
         grafana_url: $grafana_url
+        clickhouse_run_id: $clickhouse_run_id
+        internal_perf_url: $internal_perf_url
         baseline_ref: $baseline_ref
         feature_ref: $feature_ref
         config: {
@@ -1541,7 +1645,7 @@ def "main localnet" [
     }
 
     # Parse custom args
-    let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
+    let extra_args = (parse-cli-args $node_args)
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
 
     # Build first (unless skipped)
@@ -1844,7 +1948,7 @@ def "main follower" [
         exit 1
     }
 
-    let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
+    let extra_args = (parse-cli-args $node_args)
     if not $skip_build {
         build-tempo ["tempo"] $profile $features
     }

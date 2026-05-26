@@ -1,0 +1,5 @@
+---
+source: crates/node/tests/it/gas/tip20_transfers.rs
+expression: gas
+---
+t0_transfer_with_memo: 72295

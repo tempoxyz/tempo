@@ -727,7 +727,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
-    let extra_args = if $side_args == "" { [] } else { $side_args | split row " " }
+    let extra_args = (parse-cli-args $side_args)
 
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
@@ -889,6 +889,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
             print $"Error: local e2e txgen sender failed for ($phase): ($e.msg)"
             1
         })
+        if $sender_exit == 0 and $phase_clickhouse_url != "" {
+            let report = (open $"($ctx.results_dir)/report-($phase).json")
+            let report_benchmark_id = ($report | get --optional benchmark_id | default "")
+            if $report_benchmark_id != "" {
+                $report_benchmark_id | save -f $"($ctx.results_dir)/clickhouse-run-id-($phase).txt"
+                $report_benchmark_id | save -f $"($ctx.results_dir)/clickhouse-run-id.txt"
+            }
+        }
         let phase_finished_ms = ((date now | into int) / 1_000_000 | into int)
         {
             phase: $phase

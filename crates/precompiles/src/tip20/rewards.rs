@@ -450,7 +450,7 @@ impl TIP20Token {
     }
 }
 
-#[derive(Default, Debug, Clone, Storable, Copy)]
+#[derive(Default, Debug, Clone, Storable, Copy, PartialEq)]
 #[repr(u8)]
 pub enum RewardFlag {
     #[default]

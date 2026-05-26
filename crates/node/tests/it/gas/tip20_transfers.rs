@@ -638,3 +638,49 @@ async fn test_tip20_transfer_gas_snapshots(hardfork: TempoHardfork) -> eyre::Res
 
     Ok(())
 }
+
+/// T6 TIP20 balance storage changes must not leak into pre-activation hardfork gas accounting.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_tip20_transfer_with_memo_t0_gas_snapshot() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(TempoHardfork::T0))
+        .build_http_only()
+        .await?;
+    let mut sender = TempoTxSender::connect(setup.http_url, test_signer(0)?).await?;
+    let token = setup_test_token(sender.provider.clone(), sender.address()).await?;
+    sender.sync_nonce().await?;
+
+    TempoCalls::new()
+        .gas_limit(1_000_000)
+        .push(
+            *token.address(),
+            ITIP20::mintCall {
+                to: sender.address(),
+                amount: U256::from(1_000u64),
+            },
+        )
+        .send(&mut sender)
+        .await?;
+
+    let mut gas = GasSnapshot::new();
+    let receipt = TempoCalls::new()
+        .gas_limit(1_000_000)
+        .push(
+            *token.address(),
+            ITIP20::transferWithMemoCall {
+                to: fixed_signer(0x22).address(),
+                amount: U256::from(100u64),
+                memo: FixedBytes::repeat_byte(0x59),
+            },
+        )
+        .send(&mut sender)
+        .await?;
+    gas.record("t0_transfer_with_memo", receipt.gas_used);
+
+    print_gas_snapshot("TIP20 T0 transferWithMemo gas snapshot", &gas);
+    insta::assert_yaml_snapshot!(gas);
+
+    Ok(())
+}
