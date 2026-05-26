@@ -39,9 +39,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
         "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
     );
     address internal constant TIP20_CHANNEL_RESERVE = 0x4d50500000000000000000000000000000000000;
-    address internal constant TIP1028_ESCROW = 0xE5c0000000000000000000000000000000000000;
-    // Open PR precompiles not yet exposed by tempo-std.
-    address internal constant RECEIVE_POLICY_GUARD = 0xB10C000000000000000000000000000000000000;
     address internal constant TEMPORARY_STORAGE = 0x5800000000000000000000000000000000000000;
 
     /// @dev Register an address as a potential token holder
@@ -53,7 +50,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     }
 
     function _registerPrecompileHolders(address token) internal {
-        address[15] memory precompiles = [
+        address[14] memory precompiles = [
             KEYCHAIN,
             TIP403_REGISTRY,
             ADDRESS_REGISTRY,
@@ -65,7 +62,6 @@ contract TIP20InvariantTest is InvariantBaseTest {
             VALIDATOR_CONFIG,
             VALIDATOR_CONFIG_V2,
             SIGNATURE_VERIFIER,
-            TIP1028_ESCROW,
             TIP20_CHANNEL_RESERVE,
             RECEIVE_POLICY_GUARD,
             TEMPORARY_STORAGE
