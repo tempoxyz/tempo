@@ -146,6 +146,8 @@ where
                 if present_balance < original_balance {
                     self.decreased_balances
                         .insert((address, slot), present_balance);
+                } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
+                    *balance = present_balance;
                 }
             }
         }

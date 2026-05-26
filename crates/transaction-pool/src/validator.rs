@@ -445,7 +445,7 @@ where
         match self.amm_liquidity_cache.has_enough_liquidity(
             validation_ctx.fee_token,
             fee,
-            &mut state_provider,
+            &state_provider,
         ) {
             Ok(true) => {}
             Ok(false) => {
@@ -2439,7 +2439,7 @@ mod tests {
         // Verify has_enough_liquidity would bypass (return true) for this token
         // because it matches a validator token. This confirms the vulnerability we're testing.
         let liquidity_result =
-            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &mut state);
+            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &state);
         assert!(
             liquidity_result.is_ok() && liquidity_result.unwrap(),
             "Token in unique_tokens should bypass liquidity check and return true"

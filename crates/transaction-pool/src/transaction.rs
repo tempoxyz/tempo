@@ -255,17 +255,32 @@ impl TempoPooledTransaction {
         self.key_expiry.get().copied().flatten()
     }
 
-    /// Caches the resolved fee token determined during validation.
+    /// Caches the effective fee token determined during transaction validation.
+    ///
+    /// The validator sets this after EVM validation resolves the token from the
+    /// transaction's explicit `fee_token` field or from fee-manager state. Pool
+    /// maintenance code should not call this directly.
     pub fn set_resolved_fee_token(&self, fee_token: Address) {
         let _ = self.resolved_fee_token.set(fee_token);
     }
 
-    /// Returns the resolved fee token cached during validation, if available.
+    /// Returns the fee token cached during transaction validation, if available.
+    ///
+    /// This is `None` for transactions that have not completed validation through
+    /// the pool validator. Prefer [`Self::effective_fee_token`] in maintenance code
+    /// that needs the token a transaction will actually use to pay fees.
     pub fn resolved_fee_token(&self) -> Option<Address> {
         self.resolved_fee_token.get().copied()
     }
 
-    /// Returns the effective fee token for the transaction
+    /// Returns the effective fee token for pool maintenance and accounting.
+    ///
+    /// This prefers the token cached by validation, then falls back to the raw
+    /// transaction `fee_token` field, and finally to [`DEFAULT_FEE_TOKEN`]. This
+    /// fallback covers non-AA transactions and AA transactions without an explicit
+    /// fee token. Use this when checking liquidity, token pause state, balances, or
+    /// transfer policies. Use the raw `fee_token` field only when the code
+    /// specifically needs to know whether the transaction explicitly supplied a token.
     pub fn effective_fee_token(&self) -> Address {
         self.resolved_fee_token()
             .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN))
@@ -283,6 +298,17 @@ impl TempoPooledTransaction {
                 TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].base_slot();
             Some((fee_token, slot))
         })
+    }
+
+    /// Returns true when the transaction fee is paid by the transaction sender.
+    ///
+    /// Invalid fee payer recovery is treated as sender-paid so maintenance never skips a
+    /// conservative sender-scoped invalidation for malformed pooled state.
+    pub(crate) fn is_sender_paid_fee(&self) -> bool {
+        let sender = self.sender();
+        self.inner()
+            .fee_payer(sender)
+            .map_or(true, |fee_payer| fee_payer == sender)
     }
 
     /// Returns the sender-scoped expiring nonce hash for AA transactions.
