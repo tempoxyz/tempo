@@ -76,3 +76,8 @@ test-case.workspace = true
 name = "best_transactions"
 harness = false
 required-features = ["test-utils"]
+
+[[bench]]
+name = "txpool_maintenance"
+harness = false
+required-features = ["test-utils"]

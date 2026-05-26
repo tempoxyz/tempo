@@ -1,20 +1,35 @@
 //! Benchmark helpers for transaction-pool internals.
 
 use crate::{
-    AA2dPoolConfig, best::MergeBestTransactions, transaction::TempoPooledTransaction,
+    AA2dPoolConfig, TempoTransactionPool,
+    amm::AmmLiquidityCache,
+    best::MergeBestTransactions,
+    maintain::{TempoPoolState, process_tempo_pool_block_update},
+    metrics::TempoPoolMaintenanceMetrics,
+    transaction::TempoPooledTransaction,
     tt_2d_pool::AA2dPool,
+    validator::{
+        DEFAULT_AA_VALID_AFTER_MAX_SECS, DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+        TempoTransactionValidator,
+    },
 };
-use alloy_consensus::Transaction;
+use alloy_consensus::{Header, Transaction};
 use alloy_primitives::{Address, Signature, TxKind, U256};
 use reth_primitives_traits::Recovered;
+use reth_provider::{
+    Chain, ExecutionOutcome,
+    test_utils::{ExtendedAccount, MockEthProvider},
+};
 use reth_transaction_pool::{
-    CoinbaseTipOrdering, Pool, PoolConfig, SubPoolLimit, TransactionOrigin, ValidPoolTransaction,
-    blobstore::InMemoryBlobStore, identifier::TransactionId, test_utils::OkValidator,
+    CoinbaseTipOrdering, Pool, PoolConfig, SubPoolLimit, TransactionOrigin,
+    TransactionValidationTaskExecutor, ValidPoolTransaction, blobstore::InMemoryBlobStore,
+    identifier::TransactionId, test_utils::OkValidator, validate::EthTransactionValidatorBuilder,
 };
 use std::{num::NonZeroU64, sync::Arc, time::Instant};
-use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::MODERATO};
+use tempo_evm::TempoEvmConfig;
 use tempo_primitives::{
-    TempoTxEnvelope,
+    Block, BlockBody, TempoHeader, TempoPrimitives, TempoTxEnvelope,
     transaction::{
         TEMPO_EXPIRING_NONCE_KEY, TempoTransaction,
         tempo_transaction::Call,
@@ -29,6 +44,9 @@ const BENCH_GAS_LIMIT: u64 = 1_000_000;
 const BENCH_MAX_PRIORITY_FEE_PER_GAS: u128 = 1_000_000_000;
 const BENCH_MAX_FEE_PER_GAS: u128 = 20_000_000_000;
 const BENCH_VALID_BEFORE: u64 = 1_700_000_010;
+const BENCH_MAINTENANCE_TIP_TIMESTAMP: u64 = BENCH_VALID_BEFORE + 1;
+
+type BenchProvider = MockEthProvider<TempoPrimitives, TempoChainSpec>;
 
 /// Builds an AA 2D pool with `sequences` independent nonce chains of `chain_len` txs each.
 pub fn aa2d_pool_fixture(sequences: usize, chain_len: usize) -> AA2dPool {
@@ -66,6 +84,85 @@ pub fn aa2d_pool_fixture(sequences: usize, chain_len: usize) -> AA2dPool {
     }
 
     pool
+}
+
+/// Fixture for one expired-transaction txpool maintenance block update.
+pub struct ExpiredTxpoolMaintenanceFixture {
+    pool: TempoTransactionPool<BenchProvider>,
+    state: TempoPoolState,
+    metrics: TempoPoolMaintenanceMetrics,
+    amm_cache: AmmLiquidityCache,
+    chain: Arc<Chain<TempoPrimitives>>,
+}
+
+impl ExpiredTxpoolMaintenanceFixture {
+    /// Runs one maintenance block update and returns the number of expired transactions evicted.
+    pub fn run_one(&mut self) -> usize {
+        process_tempo_pool_block_update(
+            &self.pool,
+            &mut self.state,
+            &self.metrics,
+            &self.amm_cache,
+            &self.chain,
+        )
+        .expired_evicted
+    }
+}
+
+/// Builds a txpool maintenance fixture where all AA2D transactions are expired.
+pub fn expired_txpool_maintenance_fixture(
+    sequences: usize,
+    txs_per_sender: usize,
+) -> ExpiredTxpoolMaintenanceFixture {
+    assert!(
+        sequences > 0,
+        "benchmark fixture must have at least one sequence"
+    );
+    assert!(
+        txs_per_sender > 0,
+        "benchmark fixture must have at least one tx per sender"
+    );
+
+    let mut state = TempoPoolState::default();
+    let mut aa_pool = AA2dPool::new(AA2dPoolConfig {
+        pending_limit: SubPoolLimit::max(),
+        queued_limit: SubPoolLimit::max(),
+        max_txs_per_sender: txs_per_sender,
+        ..Default::default()
+    });
+
+    for sequence in 0..sequences {
+        let sender = bench_address(0x50, sequence);
+        let target = bench_address(0x60, sequence);
+
+        for nonce in 0..txs_per_sender {
+            let tx = bench_aa_tx(
+                sender,
+                target,
+                U256::from(BENCH_NONCE_KEY),
+                nonce as u64,
+                NonZeroU64::new(BENCH_VALID_BEFORE),
+            );
+            state.track(&tx);
+            aa_pool
+                .add_transaction(Arc::new(wrap_valid_tx(tx)), 0, TempoHardfork::T1)
+                .expect("benchmark expired AA 2D transaction must be accepted");
+        }
+    }
+
+    let provider = bench_provider();
+    let protocol_pool = bench_protocol_pool(provider);
+    let pool = TempoTransactionPool::new(protocol_pool, aa_pool);
+    let amm_cache = pool.amm_liquidity_cache();
+    let chain = maintenance_chain(BENCH_MAINTENANCE_TIP_TIMESTAMP);
+
+    ExpiredTxpoolMaintenanceFixture {
+        pool,
+        state,
+        metrics: TempoPoolMaintenanceMetrics::default(),
+        amm_cache,
+        chain,
+    }
 }
 
 /// Builds an AA pool with independent expiring-nonce transactions.
@@ -121,6 +218,61 @@ fn empty_protocol_best_transactions()
     );
 
     pool.inner().best_transactions()
+}
+
+fn bench_provider() -> BenchProvider {
+    let provider = MockEthProvider::<TempoPrimitives>::new()
+        .with_chain_spec(Arc::unwrap_or_clone(MODERATO.clone()))
+        .with_genesis_block();
+    provider.add_account(Address::ZERO, ExtendedAccount::new(0, U256::MAX));
+    provider
+}
+
+fn bench_protocol_pool(
+    provider: BenchProvider,
+) -> Pool<
+    TransactionValidationTaskExecutor<TempoTransactionValidator<BenchProvider>>,
+    CoinbaseTipOrdering<TempoPooledTransaction>,
+    InMemoryBlobStore,
+> {
+    let inner = EthTransactionValidatorBuilder::new(provider, TempoEvmConfig::mainnet())
+        .disable_balance_check()
+        .build(InMemoryBlobStore::default());
+    let validator = TempoTransactionValidator::new(
+        inner,
+        DEFAULT_AA_VALID_AFTER_MAX_SECS,
+        DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+        AmmLiquidityCache::with_unique_validators(Vec::new()),
+    );
+    let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+
+    Pool::new(
+        executor,
+        CoinbaseTipOrdering::default(),
+        InMemoryBlobStore::default(),
+        PoolConfig::default(),
+    )
+}
+
+fn maintenance_chain(tip_timestamp: u64) -> Arc<Chain<TempoPrimitives>> {
+    let block = Block::new(
+        TempoHeader {
+            inner: Header {
+                number: 1,
+                timestamp: tip_timestamp,
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+        BlockBody::default(),
+    );
+    let recovered = reth_primitives_traits::RecoveredBlock::new_unhashed(block, Vec::new());
+
+    Arc::new(Chain::new(
+        vec![recovered],
+        ExecutionOutcome::default(),
+        Default::default(),
+    ))
 }
 
 fn bench_aa_tx(
