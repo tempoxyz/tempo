@@ -139,6 +139,8 @@ where
                 continue;
             }
 
+            self.decreased_balances.reserve(account.storage.len());
+
             for (&slot, storage_slot) in &account.storage {
                 if storage_slot.present_value < storage_slot.original_value {
                     self.decreased_balances
