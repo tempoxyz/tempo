@@ -23,6 +23,8 @@ pub struct MergeBestTransactions {
     aa_2d_pool: BestAA2dTransactions,
     next_protocol_pool: Option<BestTransactionWithPriority>,
     next_aa_2d_pool: Option<BestTransactionWithPriority>,
+    protocol_pool_exhausted: bool,
+    aa_2d_pool_exhausted: bool,
 }
 
 impl MergeBestTransactions {
@@ -36,6 +38,8 @@ impl MergeBestTransactions {
             aa_2d_pool,
             next_protocol_pool: None,
             next_aa_2d_pool: None,
+            protocol_pool_exhausted: false,
+            aa_2d_pool_exhausted: false,
         }
     }
 }
@@ -43,11 +47,13 @@ impl MergeBestTransactions {
 impl MergeBestTransactions {
     /// Returns the next transaction from either pool with the higher priority.
     fn next_best(&mut self) -> Option<BestTransactionWithPriority> {
-        if self.next_protocol_pool.is_none() {
+        if self.next_protocol_pool.is_none() && !self.protocol_pool_exhausted {
             self.next_protocol_pool = self.protocol_pool.next_tx_and_priority();
+            self.protocol_pool_exhausted = self.next_protocol_pool.is_none();
         }
-        if self.next_aa_2d_pool.is_none() {
+        if self.next_aa_2d_pool.is_none() && !self.aa_2d_pool_exhausted {
             self.next_aa_2d_pool = self.aa_2d_pool.next_tx_and_priority();
+            self.aa_2d_pool_exhausted = self.next_aa_2d_pool.is_none();
         }
 
         match (&mut self.next_protocol_pool, &mut self.next_aa_2d_pool) {
