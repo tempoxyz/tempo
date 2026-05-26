@@ -425,7 +425,9 @@ jobs:
         run: echo "::add-mask::$BENCH_VICTORIAMETRICS_URL"
 
       - name: Clean up previous results
-        run: sudo rm -rf bench-results/ 2>/dev/null || true
+        run: |
+          echo "BENCH_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+          sudo rm -rf bench-results/ 2>/dev/null || true
 
       - name: Resolve checkout ref
         id: checkout-ref
@@ -853,6 +855,7 @@ jobs:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
             const fs = require('fs');
+            const { elapsedLine } = require('./.github/scripts/bench-duration.js');
             const resultsDir = process.env.BENCH_RESULTS_DIR;
 
             let summary = '';
@@ -969,7 +972,9 @@ jobs:
             }
 
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}${grafanaSection}${samplySection}${tracySection}`;
+            const elapsed = elapsedLine(process.env.BENCH_STARTED_AT);
+            const elapsedSection = elapsed ? `\n${elapsed}` : '';
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})${elapsedSection}\n\n${summary}${grafanaSection}${samplySection}${tracySection}`;
             const ackCommentId = process.env.BENCH_COMMENT_ID;
 
             if (ackCommentId) {

@@ -282,7 +282,9 @@ jobs:
             core.setOutput('ref', sha);
 
       - name: Clean up root-owned files from previous runs
-        run: sudo rm -rf "$BENCH_WORK_DIR"
+        run: |
+          echo "BENCH_STARTED_AT=$(date +%s)" >> "$GITHUB_ENV"
+          sudo rm -rf "$BENCH_WORK_DIR"
 
       - uses: actions/checkout@v6
         with:
@@ -529,6 +531,7 @@ jobs:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
             const fs = require('fs');
+            const { elapsedLine } = require('./.github/scripts/bench-duration.js');
 
             let comment = '';
             try {
@@ -561,7 +564,9 @@ jobs:
             const blocks = process.env.BENCH_BLOCKS || '5000';
             const warmup = process.env.BENCH_WARMUP_BLOCKS || String(Math.floor(Number(blocks) / 4));
             const runPairs = process.env.BENCH_RUN_PAIRS || '2';
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Replay benchmark complete! [View job](${jobUrl})\n\nChain: \`${chain}\`\nWarmup: \`${warmup}\`\nBlocks: \`${blocks}\`\nRun pairs: \`${runPairs}\`\n\n${comment}`;
+            const elapsed = elapsedLine(process.env.BENCH_STARTED_AT);
+            const elapsedSection = elapsed ? `\n${elapsed}` : '';
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Replay benchmark complete! [View job](${jobUrl})${elapsedSection}\n\nChain: \`${chain}\`\nWarmup: \`${warmup}\`\nBlocks: \`${blocks}\`\nRun pairs: \`${runPairs}\`\n\n${comment}`;
 
             await github.rest.issues.updateComment({
               owner: context.repo.owner,
