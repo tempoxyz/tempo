@@ -96,10 +96,10 @@ impl TryFrom<SignatureType> for StoredSignatureType {
 impl From<StoredSignatureType> for SignatureType {
     fn from(value: StoredSignatureType) -> Self {
         match value.0 {
-            0 => SignatureType::Secp256k1,
-            1 => SignatureType::P256,
-            2 => SignatureType::WebAuthn,
-            _ => SignatureType::Secp256k1,
+            0 => Self::Secp256k1,
+            1 => Self::P256,
+            2 => Self::WebAuthn,
+            _ => Self::Secp256k1,
         }
     }
 }
@@ -1119,10 +1119,10 @@ impl AccountKeychain {
     /// If origin is not seeded (zero), admin ops are rejected.
     fn ensure_admin_caller(&self, msg_sender: Address) -> Result<()> {
         let transaction_key = self.transaction_key.t_read()?;
-        if !transaction_key.is_zero() {
-            if !self.storage.spec().is_t6() || !self.is_admin_key(msg_sender, transaction_key)? {
-                return Err(AccountKeychainError::unauthorized_caller().into());
-            }
+        if !transaction_key.is_zero()
+            && (!self.storage.spec().is_t6() || !self.is_admin_key(msg_sender, transaction_key)?)
+        {
+            return Err(AccountKeychainError::unauthorized_caller().into());
         }
 
         if self.storage.spec().is_t2() {

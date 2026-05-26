@@ -1789,14 +1789,11 @@ where
                     }
                 }
 
-                if key_auth.is_admin || key_auth.account.is_some() {
-                    if !cfg.spec.is_t6() {
-                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                            reason: "T6 key authorization fields are not active before T6"
-                                .to_string(),
-                        }
-                        .into());
+                if (key_auth.is_admin || key_auth.account.is_some()) && !cfg.spec.is_t6() {
+                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                        reason: "T6 key authorization fields are not active before T6".to_string(),
                     }
+                    .into());
                 }
 
                 if cfg.spec.is_t6() {
