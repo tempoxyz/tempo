@@ -172,6 +172,26 @@ impl TempoPooledTransaction {
         })
     }
 
+    /// Extracts the keychain subject for the signer of an inline `KeyAuthorization`.
+    ///
+    /// Used for revocation matching: if the access key that signed an inline authorization is
+    /// revoked while the transaction is still in the pool, the transaction must be revalidated.
+    pub fn key_authorization_signer_subject(&self) -> Option<KeychainSubject> {
+        let aa_tx = self.inner().as_aa()?;
+        let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
+        let key_id = key_authorization.recover_signer().ok()?;
+        let account = key_authorization
+            .authorization
+            .account
+            .unwrap_or(*self.sender_ref());
+        let fee_token = self.effective_fee_token();
+        Some(KeychainSubject {
+            account,
+            key_id,
+            fee_token,
+        })
+    }
+
     /// Extracts the TIP-1053 key-authorization witness carried by this transaction, if any.
     pub fn key_authorization_witness_subject(&self) -> Option<KeyAuthorizationWitnessSubject> {
         let aa_tx = self.inner().as_aa()?;

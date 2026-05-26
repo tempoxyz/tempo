@@ -208,11 +208,18 @@ where
             // Avoid recovering key ids unless a keychain invalidation can use them.
             if has_keychain_subject_updates {
                 let keychain_subject = tx.transaction.keychain_subject();
+                let key_authorization_subject = (!updates.revoked_keys.is_empty())
+                    .then(|| tx.transaction.key_authorization_signer_subject())
+                    .flatten();
 
                 // Check 1: Revoked keychain keys
                 if !updates.revoked_keys.is_empty()
-                    && let Some(ref subject) = keychain_subject
-                    && subject.matches_revoked(&updates.revoked_keys)
+                    && (keychain_subject
+                        .as_ref()
+                        .is_some_and(|subject| subject.matches_revoked(&updates.revoked_keys))
+                        || key_authorization_subject
+                            .as_ref()
+                            .is_some_and(|subject| subject.matches_revoked(&updates.revoked_keys)))
                 {
                     to_remove.push(*tx.hash());
                     revoked_count += 1;
@@ -2015,6 +2022,93 @@ mod tests {
             .entry(sender)
             .or_default()
             .insert(burned_witness);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(evicted, vec![*matching.hash()]);
+        assert!(pool.get(matching.hash()).is_none());
+        assert!(pool.get(untouched.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn evicts_transactions_with_revoked_key_authorization_signer() {
+        let sender = Address::random();
+        let admin_signer = PrivateKeySigner::random();
+        let admin_key = alloy_signer::Signer::address(&admin_signer);
+        let other_signer = PrivateKeySigner::random();
+
+        let key_authorization = |signer: &PrivateKeySigner| {
+            let authorization =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, Address::random())
+                    .with_account(sender);
+            let signature = signer
+                .sign_hash_sync(&authorization.signature_hash())
+                .expect("key authorization signing should succeed");
+            authorization.into_signed(PrimitiveSignature::Secp256k1(signature))
+        };
+
+        let matching = crate::test_utils::TxBuilder::aa(sender)
+            .nonce(0)
+            .key_authorization(key_authorization(&admin_signer))
+            .build();
+        let untouched = crate::test_utils::TxBuilder::aa(sender)
+            .nonce(1)
+            .key_authorization(key_authorization(&other_signer))
+            .build();
+
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
+        provider.add_account(sender, ExtendedAccount::new(matching.nonce(), U256::MAX));
+        provider.add_block(
+            B256::random(),
+            Block {
+                header: TempoHeader {
+                    inner: Header {
+                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+
+        let inner =
+            EthTransactionValidatorBuilder::new(provider.clone(), TempoEvmConfig::mainnet())
+                .disable_balance_check()
+                .build(InMemoryBlobStore::default());
+        let amm_cache =
+            AmmLiquidityCache::new(provider).expect("failed to setup AmmLiquidityCache");
+        let validator = TempoTransactionValidator::new(
+            inner,
+            crate::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            crate::validator::DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            amm_cache,
+        );
+
+        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let protocol_pool = Pool::new(
+            executor,
+            CoinbaseTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default(),
+        );
+        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+
+        for pooled in [&matching, &untouched] {
+            let validated = TransactionValidationOutcome::Valid {
+                balance: *pooled.cost(),
+                state_nonce: pooled.nonce(),
+                bytecode_hash: None,
+                transaction: ValidTransaction::new(pooled.clone(), None),
+                propagate: true,
+                authorities: None,
+            };
+            pool.add_validated_transaction(TransactionOrigin::External, validated)
+                .expect("transaction should be admitted");
+        }
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.revoked_keys.insert(sender, admin_key);
 
         let evicted = pool.evict_invalidated_transactions(&updates);
         assert_eq!(evicted, vec![*matching.hash()]);

@@ -219,23 +219,37 @@ impl PausedFeeTokenPool {
         for meta in self.by_token.values_mut() {
             let before = meta.entries.len();
             meta.entries.retain(|entry| {
+                let key_authorization_subject = (!revoked_keys.is_empty())
+                    .then(|| entry.tx.transaction.key_authorization_signer_subject())
+                    .flatten();
+
                 let Some(subject) = entry.tx.transaction.keychain_subject() else {
                     let Some(witness_subject) =
                         entry.tx.transaction.key_authorization_witness_subject()
                     else {
-                        return true;
+                        return !key_authorization_subject
+                            .as_ref()
+                            .is_some_and(|subject| subject.matches_revoked(revoked_keys));
                     };
 
-                    return !key_authorization_witness_burns
-                        .get(&witness_subject.account)
-                        .is_some_and(|witnesses| witnesses.contains(&witness_subject.witness));
+                    return !key_authorization_subject
+                        .as_ref()
+                        .is_some_and(|subject| subject.matches_revoked(revoked_keys))
+                        && !key_authorization_witness_burns
+                            .get(&witness_subject.account)
+                            .is_some_and(|witnesses| witnesses.contains(&witness_subject.witness));
                 };
 
                 let matches_limit_update =
                     subject.matches_spending_limit_update(spending_limit_updates);
                 let sender_paid = matches_limit_update && entry.tx.transaction.is_sender_paid_fee();
 
-                if subject.matches_revoked(revoked_keys) || (sender_paid && matches_limit_update) {
+                if subject.matches_revoked(revoked_keys)
+                    || key_authorization_subject
+                        .as_ref()
+                        .is_some_and(|subject| subject.matches_revoked(revoked_keys))
+                    || (sender_paid && matches_limit_update)
+                {
                     return false;
                 }
 
@@ -562,6 +576,69 @@ mod tests {
                 .map(|subject| subject.witness),
             Some(other_witness)
         );
+    }
+
+    #[test]
+    fn test_evict_invalidated_with_revoked_key_authorization_signer() {
+        let mut pool = PausedFeeTokenPool::new();
+        let user_address = Address::random();
+        let fee_token = Address::random();
+        let admin_signer = PrivateKeySigner::random();
+        let admin_key = alloy_signer::Signer::address(&admin_signer);
+        let other_signer = PrivateKeySigner::random();
+
+        let key_authorization = |signer: &PrivateKeySigner| {
+            let authorization =
+                KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, Address::random())
+                    .with_account(user_address);
+            let signature = signer
+                .sign_hash_sync(&authorization.signature_hash())
+                .expect("key authorization signing should succeed");
+            authorization.into_signed(PrimitiveSignature::Secp256k1(signature))
+        };
+
+        let matching = Arc::new(wrap_valid_tx(
+            TxBuilder::aa(user_address)
+                .fee_token(fee_token)
+                .key_authorization(key_authorization(&admin_signer))
+                .build(),
+            TransactionOrigin::External,
+        ));
+        let untouched = Arc::new(wrap_valid_tx(
+            TxBuilder::aa(user_address)
+                .nonce(1)
+                .fee_token(fee_token)
+                .key_authorization(key_authorization(&other_signer))
+                .build(),
+            TransactionOrigin::External,
+        ));
+
+        pool.insert_batch(
+            fee_token,
+            vec![
+                PausedEntry {
+                    tx: matching,
+                    valid_before: None,
+                },
+                PausedEntry {
+                    tx: untouched,
+                    valid_before: None,
+                },
+            ],
+        );
+
+        let mut revoked_keys = RevokedKeys::new();
+        revoked_keys.insert(user_address, admin_key);
+
+        let evicted = pool.evict_invalidated(
+            &revoked_keys,
+            &SpendingLimitUpdates::new(),
+            &SpendingLimitUpdates::new(),
+            &AddressMap::default(),
+        );
+
+        assert_eq!(evicted, 1);
+        assert_eq!(pool.len(), 1);
     }
 
     #[test]
