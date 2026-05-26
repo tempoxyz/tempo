@@ -28,7 +28,7 @@ use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, vec::NonEmptyVec};
 use rand_08::{CryptoRng, Rng};
 
-use eyre::{OptionExt as _, Report, WrapErr as _, bail};
+use eyre::{Context, OptionExt as _, Report, bail, ensure};
 use reth_node_core::primitives::SealedBlock;
 use reth_provider::HeaderProvider as _;
 use tempo_chainspec::NetworkIdentity;
@@ -95,19 +95,6 @@ pub(super) fn try_init<TContext>(
     )
     .wrap_err("the genesis header did not contain a DKG outcome")?;
 
-    let network_identity = &config.network_identity;
-    if onchain_outcome.epoch.get() >= network_identity.from_epoch
-        && network_identity.identity != *onchain_outcome.network_identity()
-    {
-        warn!(
-            compiled_from_epoch = network_identity.from_epoch,
-            onchain_epoch = %onchain_outcome.epoch,
-            compiled_network_identity = %network_identity.identity,
-            onchain_network_identity = %onchain_outcome.network_identity(),
-            "Network identity differs from the on-chain DKG outcome!!! update the binary with the latest network identity"
-        );
-    }
-
     config.scheme_provider.register(
         onchain_outcome.epoch,
         Scheme::certificate_verifier(
@@ -116,12 +103,18 @@ pub(super) fn try_init<TContext>(
         ),
     );
 
+    let network_scheme = Arc::new(Scheme::certificate_verifier(
+        crate::config::NAMESPACE,
+        config.network_identity.identity,
+    ));
+
     let actor = Driver {
         context: ContextCell::new(context),
         config,
         mailbox: rx,
         current_epoch: epoch_info.epoch(),
         last_boundary,
+        network_scheme,
     };
     Ok((actor, mailbox))
 }
@@ -203,6 +196,7 @@ pub(super) struct Driver<TContext> {
 
     last_boundary: Height,
     current_epoch: Epoch,
+    network_scheme: Arc<Scheme<PublicKey, MinSig>>,
 }
 
 impl<C: Clock + Rng + CryptoRng> Driver<C>
@@ -331,9 +325,10 @@ where
 
         let height = Height::new(certified.block.number());
         let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(certified.block));
-        if finalization.proposal.payload != consensus_block.digest() {
-            bail!("mismatch in finalization and block digest")
-        }
+        ensure!(
+            finalization.proposal.payload == consensus_block.digest(),
+            "mismatch in finalization and block digest"
+        );
 
         let finalization_epoch = finalization.epoch();
         if finalization_epoch > self.current_epoch {
@@ -368,17 +363,19 @@ where
             if finalization_epoch.get() < network_identity.from_epoch {
                 return Ok(());
             }
-
-            self.config
-                .scheme_provider
-                .register_network_identity_verifier(finalization_epoch, &network_identity);
         }
 
-        let scheme = self
-            .config
-            .scheme_provider
-            .scoped(finalization_epoch)
-            .ok_or_eyre("missing scheme for finalization")?;
+        let can_use_network_identity_fallback = finalization_epoch > self.current_epoch
+            && finalization_epoch.get() >= self.config.network_identity.from_epoch;
+
+        let scheme = match self.config.scheme_provider.scoped(finalization_epoch) {
+            Some(scheme) => scheme,
+            None if can_use_network_identity_fallback => self.network_scheme.clone(),
+            None => bail!(
+                "finalization epoch `{finalization_epoch}` behind network identity epoch {}",
+                self.config.network_identity.from_epoch
+            ),
+        };
 
         // If we can accept this cert, jump to it and set the floor as the
         // upstream may have pruned any intermediatery blocks.
