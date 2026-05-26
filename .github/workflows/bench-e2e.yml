@@ -802,14 +802,7 @@ jobs:
 
           "${cmd[@]}"
 
-          RESULTS_DIR=$(find bench-results -mindepth 1 -maxdepth 1 -type d | sort | tail -1)
-          if [ -z "$RESULTS_DIR" ]; then
-            echo "::error::No results directory found"
-            exit 1
-          fi
-          nu bench-e2e.nu summarize "$RESULTS_DIR"
-
-      - name: Find results directory
+      - name: Generate e2e summary
         id: results-dir
         if: success()
         run: |
@@ -818,6 +811,7 @@ jobs:
             echo "::error::No results directory found"
             exit 1
           fi
+          nu bench-e2e.nu summarize "$RESULTS_DIR"
           echo "path=$RESULTS_DIR" >> "$GITHUB_OUTPUT"
           echo "Results directory: $RESULTS_DIR"
 
