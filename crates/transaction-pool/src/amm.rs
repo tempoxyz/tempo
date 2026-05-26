@@ -234,49 +234,24 @@ impl AmmLiquidityCache {
 
         for header in headers {
             let beneficiary = header.beneficiary();
-            let validator_token_slot = TipFeeManager::new().validator_tokens[beneficiary].slot();
 
-            let cached_preference = self
-                .inner
-                .read()
-                .validator_preferences
-                .get(&beneficiary)
-                .copied();
-
-            let preference = if let Some(cached) = cached_preference {
-                cached
+            let fee_token = if let Some(fee_token) =
+                self.cached_validator_fee_token_for_beneficiary(beneficiary)
+            {
+                fee_token
             } else {
-                // If no cached preference, load from state
-
-                // Lazily initialize the state provider for the latest block in the set
+                // Lazily initialize the state provider for the latest block in the set.
                 if state.is_none() {
                     state = Some(client.state_by_block_hash(latest_hash)?);
                 }
 
-                state
-                    .as_mut()
-                    .expect("initialized above")
-                    .storage(TIP_FEE_MANAGER_ADDRESS, validator_token_slot.into())?
-                    .unwrap_or_default()
-                    .into_address()
-            };
-
-            // Get the actual fee token, accounting for defaults.
-            let fee_token = if preference.is_zero() {
-                DEFAULT_FEE_TOKEN
-            } else {
-                preference
+                self.validator_fee_token_for_beneficiary(
+                    state.as_mut().expect("initialized above"),
+                    beneficiary,
+                )?
             };
 
             let mut inner = self.inner.write();
-
-            // Track the new fee token preference, if any
-            if cached_preference.is_none() {
-                inner.validator_preferences.insert(beneficiary, preference);
-                inner
-                    .slot_to_validator
-                    .insert(validator_token_slot, beneficiary);
-            }
 
             // Track the new observed fee token
             inner.last_seen_tokens.push_back(fee_token);
@@ -354,6 +329,21 @@ impl AmmLiquidityCache {
         self.inner.read().unique_tokens.contains(token)
     }
 
+    /// Resolves the fee token accepted by a block beneficiary.
+    ///
+    /// The payload builder may use ValidatorConfigV2 fee recipients as block beneficiaries, and
+    /// TipFeeManager stores validator fee token preferences by beneficiary address. A zero
+    /// preference falls back to the protocol default.
+    pub(crate) fn validator_fee_token_for_beneficiary(
+        &self,
+        state_provider: &mut impl StateProvider,
+        beneficiary: Address,
+    ) -> ProviderResult<Address> {
+        let preference =
+            self.validator_token_preference_for_beneficiary(state_provider, beneficiary)?;
+        Ok(Self::fee_token_from_preference(preference))
+    }
+
     /// Injects tokens into `unique_tokens` so `has_enough_liquidity` sees them.
     /// Returns `true` if any of the input tokens is added to the `unique_tokens` list.
     ///
@@ -373,6 +363,51 @@ impl AmmLiquidityCache {
             }
         }
         updated
+    }
+
+    fn cached_validator_fee_token_for_beneficiary(&self, beneficiary: Address) -> Option<Address> {
+        self.inner
+            .read()
+            .validator_preferences
+            .get(&beneficiary)
+            .copied()
+            .map(Self::fee_token_from_preference)
+    }
+
+    fn validator_token_preference_for_beneficiary(
+        &self,
+        state_provider: &mut impl StateProvider,
+        beneficiary: Address,
+    ) -> ProviderResult<Address> {
+        if let Some(preference) = self
+            .inner
+            .read()
+            .validator_preferences
+            .get(&beneficiary)
+            .copied()
+        {
+            return Ok(preference);
+        }
+
+        let slot = TipFeeManager::new().validator_tokens[beneficiary].slot();
+        let preference = state_provider
+            .storage(TIP_FEE_MANAGER_ADDRESS, slot.into())?
+            .unwrap_or_default()
+            .into_address();
+
+        let mut inner = self.inner.write();
+        inner.validator_preferences.insert(beneficiary, preference);
+        inner.slot_to_validator.insert(slot, beneficiary);
+
+        Ok(preference)
+    }
+
+    fn fee_token_from_preference(preference: Address) -> Address {
+        if preference.is_zero() {
+            DEFAULT_FEE_TOKEN
+        } else {
+            preference
+        }
     }
 }
 

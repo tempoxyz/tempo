@@ -113,8 +113,8 @@ where
     ///    from state) is now insufficient after included keychain txs decremented it
     ///    2c. **Key-authorization witness burns**: AA transactions with a witness-bearing
     ///    inline key authorization whose `(account, witness)` has been manually burned
-    /// 3. **Validator token changes**: Transactions that would fail due to insufficient
-    ///    liquidity in the new (user_token, validator_token) AMM pool
+    /// 3. **Validator fee token changes**: Transactions that would fail due to insufficient
+    ///    liquidity after validator fee token or fee recipient updates
     /// 4. **Fee payer balance changes**: Transactions whose fee payer no longer has enough
     ///    balance in the resolved fee token after a TIP20 transfer
     ///
@@ -129,11 +129,12 @@ where
         }
 
         // Fetch state provider if any check needs on-chain reads:
-        // - validator token changes (liquidity check)
+        // - validator fee token changes (liquidity check)
         // - blacklist/whitelist (policy check)
         // - fee payer balance changes (balance check)
         // - spending limit spends (remaining limit check)
         let mut state_provider = if !updates.validator_token_changes.is_empty()
+            || !updates.fee_recipient_updates.is_empty()
             || !updates.blacklist_additions.is_empty()
             || !updates.whitelist_removals.is_empty()
             || !updates.fee_balance_changes.is_empty()
@@ -175,7 +176,8 @@ where
             .map(|(policy_id, _)| *policy_id)
             .collect();
 
-        // Re-check liquidity for all pooled txs when an active validator changes token.
+        // Re-check liquidity for all pooled txs when an active validator changes token or a
+        // ValidatorConfigV2 fee-recipient update introduces a new beneficiary fee token.
         // Leverages the per-tx `has_enough_liquidity` check, which passes if ANY validator pair has
         // enough liquidity, matching admission and preventing mass-eviction of valid txs.
         let amm_cache = self.amm_liquidity_cache();
@@ -189,6 +191,27 @@ where
                 .collect();
             amm_cache.track_tokens(&active_new_tokens)
         };
+        let has_fee_recipient_validator_fee_token_changes =
+            !updates.fee_recipient_updates.is_empty() && {
+                let new_recipient_tokens = state_provider
+                    .as_mut()
+                    .map(|provider| {
+                        updates
+                            .fee_recipient_updates
+                            .iter()
+                            .filter_map(|&fee_recipient| {
+                                amm_cache
+                                    .validator_fee_token_for_beneficiary(provider, fee_recipient)
+                                    .ok()
+                            })
+                            .filter(|token| !amm_cache.is_active_validator_token(token))
+                            .collect::<Vec<_>>()
+                    })
+                    .unwrap_or_default();
+                amm_cache.track_tokens(&new_recipient_tokens)
+            };
+        let has_validator_fee_token_changes =
+            has_active_validator_token_changes || has_fee_recipient_validator_fee_token_changes;
 
         let mut to_remove = Vec::new();
         let mut revoked_count = 0;
@@ -266,11 +289,12 @@ where
                 continue;
             }
 
-            // Check 3: Validator token changes (re-check liquidity for all transactions)
+            // Check 3: Validator fee token changes (re-check liquidity for all transactions)
             // Prevents mass eviction because it only:
-            // - evicts when NO validator token has enough liquidity
-            // - considers active validators (protects from permissionless `setValidatorToken`)
-            if has_active_validator_token_changes && let Some(ref mut provider) = state_provider {
+            // - evicts when NO validator fee token has enough liquidity
+            // - limits `setValidatorToken` handling to active validators and
+            //   `FeeRecipientUpdated` handling to ValidatorConfigV2-authorized updates
+            if has_validator_fee_token_changes && let Some(ref mut provider) = state_provider {
                 let user_token = tx.transaction.effective_fee_token();
                 let cost = tx.transaction.fee_token_cost();
 
@@ -1317,6 +1341,7 @@ mod tests {
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
         account_keychain::{AccountKeychain, AuthorizedKey, SpendingLimitState},
+        tip_fee_manager::TipFeeManager,
         tip20::slots as tip20_slots,
         tip403_registry::{CompoundPolicyData, PolicyData, TIP403Registry},
     };
@@ -1561,7 +1586,7 @@ mod tests {
             authorities: None,
         };
         pool.add_validated_transaction(TransactionOrigin::External, validated)
-            .expect("transaction should be admitted before validator token change");
+            .expect("transaction should be admitted before validator fee token change");
 
         let mut updates = crate::maintain::TempoPoolUpdates::new();
         updates
@@ -1571,6 +1596,63 @@ mod tests {
         let evicted = pool.evict_invalidated_transactions(&updates);
         assert!(evicted.is_empty());
         assert!(pool.get(pooled.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn fee_recipient_update_tracks_recipient_validator_fee_token_for_liquidity_recheck() {
+        let fee_recipient = Address::random();
+        let recipient_token = address!("20C0000000000000000000000000000000000002");
+
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
+        provider.add_block(
+            B256::random(),
+            Block {
+                header: TempoHeader {
+                    inner: Header {
+                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                TipFeeManager::new().validator_tokens[fee_recipient].write(recipient_token)
+            })
+            .unwrap();
+
+        let inner = EthTransactionValidatorBuilder::new(provider, TempoEvmConfig::mainnet())
+            .disable_balance_check()
+            .build(InMemoryBlobStore::default());
+        let amm_cache = AmmLiquidityCache::with_unique_tokens(vec![]);
+        let validator = TempoTransactionValidator::new(
+            inner,
+            crate::validator::DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            crate::validator::DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            amm_cache,
+        );
+
+        let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
+        let protocol_pool = Pool::new(
+            executor,
+            CoinbaseTipOrdering::default(),
+            InMemoryBlobStore::default(),
+            PoolConfig::default(),
+        );
+        let pool = TempoTransactionPool::new(protocol_pool, AA2dPool::new(Default::default()));
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.fee_recipient_updates.insert(fee_recipient);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert!(evicted.is_empty());
+        assert!(
+            pool.amm_liquidity_cache()
+                .is_active_validator_token(&recipient_token)
+        );
     }
 
     #[tokio::test]

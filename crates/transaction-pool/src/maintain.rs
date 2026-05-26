@@ -24,9 +24,12 @@ use std::{
     time::Instant,
 };
 use tempo_chainspec::TempoChainSpec;
-use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
+use tempo_contracts::precompiles::{
+    IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry, IValidatorConfigV2,
+};
 use tempo_precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{TempoAddressExt, TempoHeader, TempoPrimitives};
 use tracing::{debug, error};
@@ -51,10 +54,15 @@ pub struct TempoPoolUpdates {
     /// may become unexecutable if the new limit is below their value.
     /// Indexed by account for efficient lookup.
     pub spending_limit_changes: SpendingLimitUpdates,
-    /// Validator token preference changes: validator to new_token (last-write-wins).
+    /// Validator fee token preference changes: validator to new_token (last-write-wins).
     /// Uses `AddressMap` to deduplicate by validator, preventing resource amplification
     /// when a validator emits multiple `ValidatorTokenSet` events in the same block.
     pub validator_token_changes: AddressMap<Address>,
+    /// ValidatorConfigV2 fee recipient changes.
+    ///
+    /// When a validator changes the fee recipient that will become the block beneficiary, the
+    /// txpool must re-check the new beneficiary's validator fee token preference.
+    pub fee_recipient_updates: AddressSet,
     /// User token preference changes.
     /// When a user changes their fee token preference via `setUserToken()`, pending
     /// transactions from that user that don't have an explicit fee_token set may now
@@ -117,11 +125,12 @@ impl TempoPoolUpdates {
             && self.fee_balance_changes.is_empty()
             && self.spending_limit_spends.is_empty()
             && self.key_authorization_witness_burns.is_empty()
+            && self.fee_recipient_updates.is_empty()
     }
 
     /// Extracts pool updates from a committed chain segment.
     ///
-    /// Parses receipts for relevant events (key revocations, validator token changes,
+    /// Parses receipts for relevant events (key revocations, validator fee token changes,
     /// blacklist additions, pause events).
     pub fn from_chain(chain: &Chain<TempoPrimitives>) -> Self {
         let mut updates = Self::new();
@@ -178,6 +187,15 @@ impl TempoPoolUpdates {
                     None => {}
                 }
             }
+            // ValidatorConfigV2 fee recipient changes
+            else if log.address == VALIDATOR_CONFIG_V2_ADDRESS {
+                match ValidatorConfigV2PoolEvent::decode(log) {
+                    Some(ValidatorConfigV2PoolEvent::FeeRecipientUpdated(event)) => {
+                        updates.fee_recipient_updates.insert(event.feeRecipient);
+                    }
+                    None => {}
+                }
+            }
             // TIP403 blacklist additions and whitelist removals
             else if log.address == TIP403_REGISTRY_ADDRESS {
                 match Tip403PoolEvent::decode(log) {
@@ -230,6 +248,7 @@ impl TempoPoolUpdates {
             || !self.whitelist_removals.is_empty()
             || !self.fee_balance_changes.is_empty()
             || !self.key_authorization_witness_burns.is_empty()
+            || !self.fee_recipient_updates.is_empty()
     }
 
     /// Returns true if updates may invalidate keychain-signature transactions.
@@ -287,6 +306,24 @@ impl FeeManagerPoolEvent {
                 decode_event(log).map(Self::ValidatorTokenSet)
             }
             IFeeManager::UserTokenSet::SIGNATURE_HASH => decode_event(log).map(Self::UserTokenSet),
+            _ => None,
+        }
+    }
+}
+
+/// Transaction-pool relevant subset of `IValidatorConfigV2::IValidatorConfigV2Events`.
+enum ValidatorConfigV2PoolEvent {
+    /// [`IValidatorConfigV2::FeeRecipientUpdated`] log.
+    FeeRecipientUpdated(IValidatorConfigV2::FeeRecipientUpdated),
+}
+
+impl ValidatorConfigV2PoolEvent {
+    /// Decodes only validator-config-v2 events used by transaction-pool maintenance.
+    fn decode(log: &Log) -> Option<Self> {
+        match first_topic(log)? {
+            IValidatorConfigV2::FeeRecipientUpdated::SIGNATURE_HASH => {
+                decode_event(log).map(Self::FeeRecipientUpdated)
+            }
             _ => None,
         }
     }
@@ -826,7 +863,7 @@ where
                 let _mined_aa_txs = pool.notify_aa_pool_on_state_updates(bundle_state);
                 metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
 
-                // 7. Update AMM liquidity cache (must happen before validator token eviction)
+                // 7. Update AMM liquidity cache (must happen before validator fee token eviction)
                 let amm_start = Instant::now();
                 amm_cache.on_new_state(tip.execution_outcome());
                 if let Err(err) = amm_cache.on_new_blocks(tip.blocks_iter().map(|block| block.sealed_header()), pool.client()) {
@@ -835,7 +872,7 @@ where
                 metrics.amm_cache_update_duration_seconds.record(amm_start.elapsed());
 
                 // 8. Evict invalidated transactions in a single pool scan
-                // This checks revoked keys, spending limit changes, validator token changes,
+                // This checks revoked keys, spending limit changes, validator fee token changes,
                 // blacklist additions, and whitelist removals together to avoid scanning
                 // all transactions multiple times per block.
                 if updates.has_invalidation_events() {
@@ -846,6 +883,7 @@ where
                         spending_limit_changes = updates.spending_limit_changes.len(),
                         spending_limit_spends = updates.spending_limit_spends.len(),
                         validator_token_changes = updates.validator_token_changes.len(),
+                        fee_recipient_updates = updates.fee_recipient_updates.len(),
                         user_token_changes = updates.user_token_changes.len(),
                         blacklist_additions = updates.blacklist_additions.len(),
                         whitelist_removals = updates.whitelist_removals.len(),
@@ -1219,6 +1257,24 @@ mod tests {
                 FeeManagerPoolEvent,
                 UserTokenSet,
                 IFeeManager::UserTokenSet,
+                log
+            );
+        }
+
+        #[test]
+        fn validator_config_v2_decode_matches_generated_event_decoders() {
+            let log = event_log(
+                VALIDATOR_CONFIG_V2_ADDRESS,
+                IValidatorConfigV2::FeeRecipientUpdated {
+                    index: 7,
+                    feeRecipient: Address::random(),
+                    caller: Address::random(),
+                },
+            );
+            assert_decodes_like_generated!(
+                ValidatorConfigV2PoolEvent,
+                FeeRecipientUpdated,
+                IValidatorConfigV2::FeeRecipientUpdated,
                 log
             );
         }
@@ -1619,7 +1675,7 @@ mod tests {
             );
         }
 
-        /// Duplicate validator token changes must be deduplicated (last-write-wins).
+        /// Duplicate validator fee token changes must be deduplicated (last-write-wins).
         #[test]
         fn validator_token_changes_deduplicates_by_validator() {
             let validator = Address::random();
@@ -1640,6 +1696,33 @@ mod tests {
                 Some(token_b),
                 "last-write-wins: second token should overwrite the first"
             );
+        }
+
+        #[test]
+        fn extracts_fee_recipient_updates_from_validator_config_v2_logs() {
+            let fee_recipient = Address::random();
+            let log = alloy_primitives::Log::new_from_event_unchecked(
+                VALIDATOR_CONFIG_V2_ADDRESS,
+                IValidatorConfigV2::FeeRecipientUpdated {
+                    index: 3,
+                    feeRecipient: fee_recipient,
+                    caller: Address::random(),
+                },
+            )
+            .reserialize();
+            let receipt = TempoReceipt {
+                tx_type: TempoTxType::Legacy,
+                success: true,
+                cumulative_gas_used: 21_000,
+                logs: vec![log],
+            };
+
+            let block = create_block_with_txs(1, vec![], vec![]);
+            let chain = create_test_chain_with_receipts(vec![block], vec![vec![receipt]]);
+            let updates = TempoPoolUpdates::from_chain(&chain);
+
+            assert!(updates.fee_recipient_updates.contains(&fee_recipient));
+            assert!(updates.has_invalidation_events());
         }
     }
 }
