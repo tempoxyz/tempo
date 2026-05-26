@@ -365,6 +365,12 @@ fn calculate_key_authorization_gas(
         let sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
         let mut regular_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
 
+        // T6 account-bound authorizations may be signed by an existing admin key instead of the
+        // root key. Charge one worst-case cold read for validating that admin signer row.
+        if spec.is_t6() && (key_auth.is_admin || key_auth.account.is_some()) {
+            total_gas += sload_cost;
+        }
+
         if has_t5_witness {
             regular_gas += sload_cost + KEY_AUTH_T5_WITNESS_EVENT_BUFFER;
         }
@@ -3315,6 +3321,48 @@ mod tests {
             witness_t5_state_gas - base_t5_state_gas,
             0,
             "T5 witness authorization does not add state gas"
+        );
+
+        let t6_gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T6);
+        let t6_sload =
+            t6_gas_params.warm_storage_read_cost() + t6_gas_params.cold_storage_additional_cost();
+        let base_t6_key_auth = create_key_auth(0);
+        let mut account_bound_t6_key_auth = create_key_auth(0);
+        account_bound_t6_key_auth.authorization = account_bound_t6_key_auth
+            .authorization
+            .with_account(Address::random());
+        let mut admin_t6_key_auth = create_key_auth(0);
+        admin_t6_key_auth.authorization = admin_t6_key_auth
+            .authorization
+            .into_admin(Address::random());
+
+        let (base_t6_gas, base_t6_state_gas) =
+            calculate_key_authorization_gas(&base_t6_key_auth, &t6_gas_params, TempoHardfork::T6);
+        let (account_bound_t6_gas, account_bound_t6_state_gas) = calculate_key_authorization_gas(
+            &account_bound_t6_key_auth,
+            &t6_gas_params,
+            TempoHardfork::T6,
+        );
+        let (admin_t6_gas, admin_t6_state_gas) =
+            calculate_key_authorization_gas(&admin_t6_key_auth, &t6_gas_params, TempoHardfork::T6);
+
+        assert_eq!(
+            account_bound_t6_gas - base_t6_gas,
+            t6_sload,
+            "T6 account-bound authorization charges one admin-signer cold read"
+        );
+        assert_eq!(
+            admin_t6_gas - base_t6_gas,
+            t6_sload,
+            "T6 admin authorization charges one admin-signer cold read"
+        );
+        assert_eq!(
+            account_bound_t6_state_gas, base_t6_state_gas,
+            "T6 admin-signer read does not add state gas"
+        );
+        assert_eq!(
+            admin_t6_state_gas, base_t6_state_gas,
+            "T6 admin-signer read does not add state gas"
         );
 
         let scoped = SignedKeyAuthorization {
