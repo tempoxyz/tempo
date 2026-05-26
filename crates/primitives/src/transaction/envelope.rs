@@ -1,4 +1,6 @@
-use super::{tt_signed::AASigned, unique_tx_identifier_from_signable};
+use super::{
+    tt_signature::TempoSignature, tt_signed::AASigned, unique_tx_identifier_from_signable,
+};
 use crate::{TempoAddressExt, TempoTransaction, subblock::PartialValidatorKey};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
@@ -10,9 +12,7 @@ use alloy_consensus::{
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rlp::Encodable;
 use core::fmt;
-use tempo_contracts::precompiles::{
-    ITIP20, ITIP20ChannelReserve::ITIP20ChannelReserveCalls, TIP20_CHANNEL_RESERVE_ADDRESS,
-};
+use tempo_contracts::precompiles::{ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS};
 
 /// Maximum RLP-encoded size of a `key_authorization` permitted in a payment transaction
 /// (TIP-1045). Comfortably fits realistic provisioning payloads with limits and scopes.
@@ -505,7 +505,10 @@ fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
         Some(to) if to.is_tip20() => ITIP20::ITIP20Calls::is_payment(input),
         // TIP20ChannelReserve call + payment calldata constraints
         Some(to) if *to == TIP20_CHANNEL_RESERVE_ADDRESS => {
-            ITIP20ChannelReserveCalls::is_payment(input)
+            ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment_with_valid_signature(
+                input,
+                |signature| TempoSignature::from_bytes(signature).is_ok(),
+            )
         }
         _ => false,
     }
@@ -590,11 +593,12 @@ mod tests {
     #[rustfmt::skip]
     fn channel_reserve_payment_calldatas() -> [Bytes; 6] {
         let descriptor = channel_descriptor();
+        let signature = TempoSignature::from(Signature::test_signature()).to_bytes();
         [
             ITIP20ChannelReserve::openCall { payee: Address::random(), operator: Address::random(), token: PAYMENT_TKN, deposit: U96::from(1), salt: B256::random(), authorizedSigner: Address::random() }.abi_encode().into(),
             ITIP20ChannelReserve::topUpCall { descriptor: descriptor.clone(), additionalDeposit: U96::from(1) }.abi_encode().into(),
-            ITIP20ChannelReserve::settleCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), signature: vec![1, 2, 3].into() }.abi_encode().into(),
-            ITIP20ChannelReserve::closeCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), captureAmount: U96::from(1), signature: vec![1, 2, 3].into() }.abi_encode().into(),
+            ITIP20ChannelReserve::settleCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), signature: signature.clone() }.abi_encode().into(),
+            ITIP20ChannelReserve::closeCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), captureAmount: U96::from(1), signature }.abi_encode().into(),
             ITIP20ChannelReserve::requestCloseCall { descriptor: descriptor.clone() }.abi_encode().into(),
             ITIP20ChannelReserve::withdrawCall { descriptor }.abi_encode().into(),
         ]
@@ -858,11 +862,41 @@ mod tests {
     }
 
     #[test]
+    fn test_payment_v2_rejects_invalid_channel_reserve_signature_encoding() {
+        let descriptor = channel_descriptor();
+        let invalid_signature = Bytes::from(vec![1, 2, 3]);
+        let calldatas = [
+            ITIP20ChannelReserve::settleCall {
+                descriptor: descriptor.clone(),
+                cumulativeAmount: U96::ONE,
+                signature: invalid_signature.clone(),
+            }
+            .abi_encode(),
+            ITIP20ChannelReserve::closeCall {
+                descriptor,
+                cumulativeAmount: U96::ONE,
+                captureAmount: U96::ONE,
+                signature: invalid_signature,
+            }
+            .abi_encode(),
+        ];
+
+        for calldata in calldatas {
+            for envelope in payment_envelopes_to(TIP20_CHANNEL_RESERVE_ADDRESS, calldata.into()) {
+                assert!(
+                    !envelope.is_payment_v2(),
+                    "V2 must reject invalid Tempo signature encoding"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_payment_v2_rejects_invalid_channel_reserve_dynamic_calldata() {
         let mut corrupted_calldata = ITIP20ChannelReserve::settleCall {
             descriptor: channel_descriptor(),
             cumulativeAmount: U96::ONE,
-            signature: vec![1, 2, 3].into(),
+            signature: TempoSignature::from(Signature::test_signature()).to_bytes(),
         }
         .abi_encode();
         // Corrupt the dynamic `signature` offset word.

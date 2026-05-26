@@ -2,6 +2,7 @@ use crate::TempoInvalidTransaction;
 use alloy_consensus::{Typed2718, crypto::secp256k1};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnvMut};
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_rlp::Encodable;
 use core::num::NonZeroU64;
 use revm::context::{
     Transaction, TxEnv,
@@ -11,10 +12,12 @@ use revm::context::{
         AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
     },
 };
+use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
-    AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
+    AASigned, TempoAddressExt, TempoSignature, TempoTransaction, TempoTxEnvelope,
     transaction::{
         Call, RecoveredTempoAuthorization, SignedKeyAuthorization, calc_gas_balance_spending,
+        envelope::KEY_AUTHORIZATION_MAX_RLP_LEN,
     },
 };
 
@@ -158,6 +161,43 @@ impl TempoTxEnv {
             )))
         }
     }
+
+    /// Returns true if this transaction satisfies the TIP-1059 discounted-payment call allow-list.
+    ///
+    /// This checks only the transaction shape: no access list, no EIP-7702 authorizations, and
+    /// either one direct TIP-20 payment call or a non-empty AA batch where every call is an eligible
+    /// TIP-20 payment call. T6 activation and the gas-used cap are enforced by the caller.
+    ///
+    /// See: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#eligibility-rules>
+    pub fn is_discounted_payment(&self) -> bool {
+        if self
+            .access_list()
+            .is_some_and(|mut list| list.next().is_some())
+        {
+            return false;
+        }
+
+        if let Some(aa) = self.tempo_tx_env.as_ref() {
+            !aa.aa_calls.is_empty()
+                && aa.tempo_authorization_list.is_empty()
+                && aa
+                    .key_authorization
+                    .as_ref()
+                    .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
+                && aa
+                    .aa_calls
+                    .iter()
+                    .all(|call| is_discounted_tip20_call(&call.to, &call.input))
+        } else {
+            self.authorization_list_len() == 0
+                && is_discounted_tip20_call(&self.inner.kind, self.input())
+        }
+    }
+}
+
+fn is_discounted_tip20_call(to: &TxKind, input: &[u8]) -> bool {
+    matches!(to, TxKind::Call(to) if to.is_tip20())
+        && ITIP20::ITIP20Calls::is_discounted_payment_call(input)
 }
 
 impl From<TxEnv> for TempoTxEnv {
@@ -421,10 +461,12 @@ impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
 mod tests {
     use alloy_consensus::{Signed, TxLegacy, transaction::TxHashRef};
     use alloy_evm::FromRecoveredTx;
-    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, keccak256};
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, U256, address, keccak256};
+    use alloy_sol_types::SolCall;
     use core::num::NonZeroU64;
     use proptest::prelude::*;
     use revm::context::{Transaction, TxEnv, result::InvalidTransaction};
+    use tempo_contracts::precompiles::ITIP20;
     use tempo_primitives::{
         TempoTxEnvelope,
         transaction::{
@@ -922,6 +964,103 @@ mod tests {
         };
         let calls: Vec<_> = empty_aa_tx.calls().collect();
         assert!(calls.is_empty());
+    }
+
+    #[test]
+    fn test_is_discounted_payment() {
+        use revm::context::transaction::{AccessList, AccessListItem};
+
+        const PAYMENT_TKN: Address = address!("20c0000000000000000000000000000000000001");
+
+        let transfer = Bytes::from(
+            ITIP20::transferCall {
+                to: Address::random(),
+                amount: U256::from(1),
+            }
+            .abi_encode(),
+        );
+        let burn = Bytes::from(
+            ITIP20::burnCall {
+                amount: U256::from(1),
+            }
+            .abi_encode(),
+        );
+        let approve = Bytes::from(
+            ITIP20::approveCall {
+                spender: Address::random(),
+                amount: U256::from(1),
+            }
+            .abi_encode(),
+        );
+        let mint = Bytes::from(
+            ITIP20::mintCall {
+                to: Address::random(),
+                amount: U256::from(1),
+            }
+            .abi_encode(),
+        );
+
+        let tx = |to, input: Bytes| super::TempoTxEnv {
+            inner: TxEnv {
+                kind: to,
+                data: input,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+
+        assert!(tx(TxKind::Call(PAYMENT_TKN), transfer.clone()).is_discounted_payment());
+        assert!(tx(TxKind::Call(PAYMENT_TKN), burn).is_discounted_payment());
+        assert!(!tx(TxKind::Call(PAYMENT_TKN), approve.clone()).is_discounted_payment());
+        assert!(!tx(TxKind::Call(PAYMENT_TKN), mint).is_discounted_payment());
+        assert!(!tx(TxKind::Call(Address::random()), transfer.clone()).is_discounted_payment());
+        assert!(!tx(TxKind::Create, transfer.clone()).is_discounted_payment());
+
+        let mut access_list_tx = tx(TxKind::Call(PAYMENT_TKN), transfer.clone());
+        access_list_tx.inner.access_list = AccessList(vec![AccessListItem {
+            address: Address::random(),
+            storage_keys: vec![],
+        }]);
+        assert!(!access_list_tx.is_discounted_payment());
+
+        let aa_tx = super::TempoTxEnv {
+            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                aa_calls: vec![Call {
+                    to: TxKind::Call(PAYMENT_TKN),
+                    value: U256::ZERO,
+                    input: transfer.clone(),
+                }],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert!(aa_tx.is_discounted_payment());
+
+        let mixed_aa_tx = super::TempoTxEnv {
+            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                aa_calls: vec![
+                    Call {
+                        to: TxKind::Call(PAYMENT_TKN),
+                        value: U256::ZERO,
+                        input: transfer,
+                    },
+                    Call {
+                        to: TxKind::Call(PAYMENT_TKN),
+                        value: U256::ZERO,
+                        input: approve,
+                    },
+                ],
+                ..Default::default()
+            })),
+            ..Default::default()
+        };
+        assert!(!mixed_aa_tx.is_discounted_payment());
+
+        let empty_aa_tx = super::TempoTxEnv {
+            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv::default())),
+            ..Default::default()
+        };
+        assert!(!empty_aa_tx.is_discounted_payment());
     }
 
     /// Strategy for random U256 values.

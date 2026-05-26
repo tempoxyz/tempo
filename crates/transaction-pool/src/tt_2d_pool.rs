@@ -1146,7 +1146,7 @@ impl AA2dPool {
         }
     }
 
-    /// Processes state updates and updates internal state accordingly.
+    /// Processes nonce-precompile storage updates and updates internal state accordingly.
     #[expect(clippy::type_complexity)]
     pub(crate) fn on_state_updates(
         &mut self,
@@ -1155,31 +1155,25 @@ impl AA2dPool {
         Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
         Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     ) {
+        let Some(nonce_state) = state.get(&NONCE_PRECOMPILE_ADDRESS) else {
+            return (Vec::new(), Vec::new());
+        };
+
         let mut changes = HashMap::default();
         let mut included_expiring_nonce_hashes = Vec::new();
 
-        for (account, state) in state {
-            if account == &NONCE_PRECOMPILE_ADDRESS {
-                // Process known 2D nonce slot changes.
-                for (slot, value) in state.storage.iter() {
-                    if let Some(seq_id) = self.slot_to_seq_id.get(slot) {
-                        changes.insert(*seq_id, value.present_value.saturating_to());
-                    }
-                    // Detect included expiring nonce transactions via their
-                    // `expiring_nonce_seen` slot being set to a non-zero value.
-                    if !value.present_value.is_zero()
-                        && let Some(expiring_nonce_hash) =
-                            self.slot_to_expiring_nonce_hash.get(slot)
-                    {
-                        included_expiring_nonce_hashes.push(*expiring_nonce_hash);
-                    }
-                }
+        // Process known 2D nonce slot changes.
+        for (slot, value) in nonce_state.storage.iter() {
+            if let Some(seq_id) = self.slot_to_seq_id.get(slot) {
+                changes.insert(*seq_id, value.present_value.saturating_to());
             }
-            let nonce = state
-                .account_info()
-                .map(|info| info.nonce)
-                .unwrap_or_default();
-            changes.insert(AASequenceId::new(*account, U256::ZERO), nonce);
+            // Detect included expiring nonce transactions via their
+            // `expiring_nonce_seen` slot being set to a non-zero value.
+            if !value.present_value.is_zero()
+                && let Some(expiring_nonce_hash) = self.slot_to_expiring_nonce_hash.get(slot)
+            {
+                included_expiring_nonce_hashes.push(*expiring_nonce_hash);
+            }
         }
 
         let (promoted, mut mined) = self.on_nonce_changes(changes);
@@ -4801,19 +4795,19 @@ mod tests {
     // ============================================
 
     #[test]
-    fn test_on_state_updates_with_bundle_account() {
-        use revm::{
-            database::{AccountStatus, BundleAccount},
-            state::AccountInfo,
-        };
+    fn test_on_state_updates_with_nonce_precompile_slot() {
+        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
 
         let mut pool = AA2dPool::default();
         let sender = Address::random();
-        let nonce_key = U256::ZERO;
+        let nonce_key = U256::from(1);
 
         let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
         let tx1 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build();
         let tx2 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(2).build();
+        let nonce_slot = tx0
+            .nonce_key_slot()
+            .expect("2D nonce tx should have nonce key slot");
 
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
@@ -4838,17 +4832,16 @@ mod tests {
         assert_eq!(pending, 3);
         assert_eq!(queued, 0);
 
-        let mut state = HashMap::default();
-        let sender_account = BundleAccount::new(
-            None,
-            Some(AccountInfo {
-                nonce: 2,
-                ..Default::default()
-            }),
-            Default::default(),
-            AccountStatus::Changed,
+        let mut storage = HashMap::default();
+        storage.insert(
+            nonce_slot,
+            StorageSlot::new_changed(U256::ZERO, U256::from(2u64)),
         );
-        state.insert(sender, sender_account);
+        let mut state = AddressMap::default();
+        state.insert(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
 
         let (promoted, mined) = pool.on_state_updates(&state);
 
@@ -4864,18 +4857,18 @@ mod tests {
 
     #[test]
     fn test_on_state_updates_creates_gap_demotion() {
-        use revm::{
-            database::{AccountStatus, BundleAccount},
-            state::AccountInfo,
-        };
+        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
 
         let mut pool = AA2dPool::default();
         let sender = Address::random();
-        let nonce_key = U256::ZERO;
+        let nonce_key = U256::from(1);
 
         let tx0 = TxBuilder::aa(sender).nonce_key(nonce_key).build();
         let tx1 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(1).build();
         let tx3 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(3).build();
+        let nonce_slot = tx0
+            .nonce_key_slot()
+            .expect("2D nonce tx should have nonce key slot");
 
         pool.add_transaction(
             Arc::new(wrap_valid_tx(tx0, TransactionOrigin::Local)),
@@ -4900,17 +4893,16 @@ mod tests {
         assert_eq!(pending, 2);
         assert_eq!(queued, 1);
 
-        let mut state = HashMap::default();
-        let sender_account = BundleAccount::new(
-            None,
-            Some(AccountInfo {
-                nonce: 2,
-                ..Default::default()
-            }),
-            Default::default(),
-            AccountStatus::Changed,
+        let mut storage = HashMap::default();
+        storage.insert(
+            nonce_slot,
+            StorageSlot::new_changed(U256::ZERO, U256::from(2u64)),
         );
-        state.insert(sender, sender_account);
+        let mut state = AddressMap::default();
+        state.insert(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
 
         let (promoted, mined) = pool.on_state_updates(&state);
 
