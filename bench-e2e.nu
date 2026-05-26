@@ -889,7 +889,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
             print $"Error: local e2e txgen sender failed for ($phase): ($e.msg)"
             1
         })
-        if $sender_exit == 0 {
+        if $sender_exit == 0 and $phase_clickhouse_url != "" {
             let report = (open $"($ctx.results_dir)/report-($phase).json")
             let report_benchmark_id = ($report | get --optional benchmark_id | default "")
             if $report_benchmark_id != "" {
