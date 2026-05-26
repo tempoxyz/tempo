@@ -460,7 +460,7 @@ impl StablecoinDEX {
     /// - `TickOutOfBounds` — tick is outside the allowed `[MIN_TICK, MAX_TICK]` range
     /// - `InvalidTick` — tick is not aligned to `TICK_SPACING`
     /// - `BelowMinimumOrderSize` — order amount is below `MIN_ORDER_AMOUNT`
-    /// - `InsufficientBalance` — sender balance lower than required escrow
+    /// - `InsufficientBalance` — sender balance lower than required
     /// - `PolicyForbids` — TIP-403 policy rejects the token transfer
     ///
     /// # Returns
