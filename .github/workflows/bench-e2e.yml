@@ -65,7 +65,7 @@ on:
         description: Benchmark duration in seconds.
         type: string
         required: true
-        default: "300"
+        default: "40"
       bloat:
         description: State bloat size in GiB.
         type: choice
@@ -164,7 +164,7 @@ on:
         description: Number of baseline/feature run pairs.
         type: string
         required: true
-        default: "2"
+        default: "9"
       clickhouse-run:
         description: Benchmark phase that may use the direct ClickHouse reporter.
         type: string
@@ -189,7 +189,7 @@ on:
       duration:
         type: string
         required: false
-        default: "300"
+        default: "40"
       bloat:
         type: string
         required: false
@@ -301,7 +301,7 @@ on:
       run-pairs:
         type: string
         required: false
-        default: "2"
+        default: "9"
       clickhouse-run:
         type: string
         required: false
@@ -384,7 +384,7 @@ jobs:
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
-      BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '2' }}
+      BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '9' }}
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
       BENCHMARK_ID: bench-e2e-${{ github.run_id }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
@@ -512,6 +512,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
         continue-on-error: true
+
+      - name: Install Node.js
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v6
+        with:
+          node-version: 24
 
       - name: Install txgen
         env:
@@ -735,6 +740,7 @@ jobs:
             --tune
             --no-default-features
             --features "$BENCH_FEATURES"
+            --skip-summary
           )
           [ "$BENCH_FORCE_BLOAT" = "true" ] && cmd+=(--force-bloat)
           [ "$BENCH_NO_CACHE" = "true" ] && cmd+=(--no-cache)
@@ -759,6 +765,23 @@ jobs:
               printf '%s' "$value"
             else
               printf "'%s'" "${value//\'/\'\\\'\'}"
+            fi
+          }
+
+          quote_derek_arg() {
+            local arg="$1"
+            if [[ "$arg" == *=* ]]; then
+              local name="${arg%%=*}"
+              local value="${arg#*=}"
+              if [[ "$value" =~ ^[A-Za-z0-9._/:=@+-]+$ ]]; then
+                printf '%s=%s' "$name" "$value"
+              else
+                value="${value//\\/\\\\}"
+                value="${value//\"/\\\"}"
+                printf '%s=\"%s\"' "$name" "$value"
+              fi
+            else
+              quote_arg "$arg"
             fi
           }
 
@@ -794,22 +817,23 @@ jobs:
             if [ -n "$DEREK_BENCH_COMMAND" ]; then
               DEREK_BENCH_COMMAND+=" "
             fi
-            DEREK_BENCH_COMMAND+="$(quote_arg "$arg")"
+            DEREK_BENCH_COMMAND+="$(quote_derek_arg "$arg")"
           done
           export DEREK_BENCH_COMMAND
           echo "DEREK_BENCH_COMMAND=$DEREK_BENCH_COMMAND" >> "$GITHUB_ENV"
 
           "${cmd[@]}"
 
-      - name: Find results directory
+      - name: Generate e2e summary
         id: results-dir
         if: success()
         run: |
-          RESULTS_DIR=$(ls -d bench-results/*/ 2>/dev/null | tail -1 | sed 's:/$::')
+          RESULTS_DIR=$(find bench-results -mindepth 1 -maxdepth 1 -type d | sort | tail -1)
           if [ -z "$RESULTS_DIR" ]; then
             echo "::error::No results directory found"
             exit 1
           fi
+          nu bench-e2e.nu summarize "$RESULTS_DIR"
           echo "path=$RESULTS_DIR" >> "$GITHUB_OUTPUT"
           echo "Results directory: $RESULTS_DIR"
 
@@ -840,8 +864,12 @@ jobs:
 
             // Compute observability URLs from summary.json.
             let grafanaSection = '';
+            let resultHeadline = '✅ Benchmark complete!';
             try {
               const meta = JSON.parse(fs.readFileSync(`${resultsDir}/summary.json`, 'utf8'));
+              if (meta.classification?.label) {
+                resultHeadline = `${meta.classification.emoji || '✅'} Benchmark complete: ${meta.classification.label}`;
+              }
               const benchId = meta.benchmark_id;
               const metricsRange = meta.observability_range || {};
               const actualRange = meta.actual_observability_range || metricsRange;
@@ -852,6 +880,7 @@ jobs:
               if (benchId && metricsFrom && metricsTo && actualFrom && actualTo) {
                 const traceqlQuery = `{resource.benchmark_id="${benchId}"}`;
                 const grafanaUrl = meta.grafana_url || `https://tempoxyz.grafana.net/d/dffj6qf1o30oowe/performance?orgId=1&from=${encodeURIComponent(metricsFrom)}&to=${encodeURIComponent(metricsTo)}&timezone=browser&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=${encodeURIComponent(benchId)}&var-group_by=benchmark_run`;
+                const internalPerfUrl = meta.internal_perf_url || '';
                 const logsPane = JSON.stringify({
                   pw4: {
                     datasource: 'cfk1hzy08xekgd',
@@ -887,7 +916,8 @@ jobs:
                   },
                 });
                 const tracesUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(tracesPane)}&orgId=1`;
-                grafanaSection = `\n\n### Observability\n\n- [Metrics dashboard](${grafanaUrl})\n- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n`;
+                const internalPerfLine = internalPerfUrl ? `- [Internal dashboard](${internalPerfUrl})\n` : '';
+                grafanaSection = `\n\n### Observability\n\n${internalPerfLine}- [Grafana](${grafanaUrl})\n- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n`;
               }
             } catch (e) {}
 
@@ -939,7 +969,7 @@ jobs:
             }
 
             const jobUrl = process.env.BENCH_JOB_URL || `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
-            const body = `cc @${process.env.BENCH_ACTOR}\n\n✅ Benchmark complete! [View job](${jobUrl})\n\n${summary}${grafanaSection}${samplySection}${tracySection}`;
+            const body = `cc @${process.env.BENCH_ACTOR}\n\n${resultHeadline} [View job](${jobUrl})\n\n${summary}${grafanaSection}${samplySection}${tracySection}`;
             const ackCommentId = process.env.BENCH_COMMENT_ID;
 
             if (ackCommentId) {

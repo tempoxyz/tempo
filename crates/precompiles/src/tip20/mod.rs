@@ -600,12 +600,15 @@ impl TIP20Token {
         }
         self.check_role(msg_sender, *BURN_BLOCKED_ROLE)?;
 
-        if check_protected
-            && PROTECTED
+        if check_protected {
+            // Prevent burning from system custody addresses to protect accounting invariants.
+            if PROTECTED
                 .iter()
-                .any(|(fork, addrs)| hardfork >= *fork && addrs.contains(&owner))
-        {
-            return Err(TIP20Error::protected_address().into());
+                .any(|(hf, addr)| hardfork >= *hf && addr.contains(&owner))
+                || (hardfork.is_t5() && owner == self.address)
+            {
+                return Err(TIP20Error::protected_address().into());
+            }
         }
 
         // Check if the address is blocked from transferring (sender authorization)
@@ -1553,11 +1556,6 @@ mod recipient_tests {
 
 #[cfg(test)]
 pub(crate) mod tests {
-    use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
-    use tempo_contracts::precompiles::{
-        IReceivePolicyGuard, ReceivePolicyGuardEvent, createTokenCall,
-    };
-
     use super::*;
     use crate::{
         PATH_USD_ADDRESS,
@@ -1569,9 +1567,14 @@ pub(crate) mod tests {
         receive_policy_guard::ReceivePolicyGuard,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master, setup_storage},
+        tip403_registry::REJECT_ALL_POLICY_ID,
     };
+    use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
     use rand_08::{Rng, distributions::Alphanumeric, thread_rng};
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::{
+        IReceivePolicyGuard, ReceivePolicyGuardEvent, createTokenCall,
+    };
 
     #[test]
     fn test_mint_increases_balance_and_supply() -> eyre::Result<()> {
@@ -1628,8 +1631,7 @@ pub(crate) mod tests {
     mod tip1028_tests {
         use super::*;
         use crate::{
-            receive_policy_guard::BLOCKED_RECEIPT_VERSION,
-            tip403_registry::{ALLOW_ALL_POLICY_ID, REJECT_ALL_POLICY_ID},
+            receive_policy_guard::BLOCKED_RECEIPT_VERSION, tip403_registry::ALLOW_ALL_POLICY_ID,
         };
 
         const BLOCKED_AT: u64 = 1_728_100;
@@ -3237,8 +3239,6 @@ pub(crate) mod tests {
 
     #[test]
     fn test_unable_to_burn_blocked_from_protected_address() -> eyre::Result<()> {
-        use crate::tip403_registry::REJECT_ALL_POLICY_ID;
-
         let admin = Address::random();
         let burner = Address::random();
         let amount = (U256::random() % U256::from(u128::MAX)) / U256::from(8);
@@ -3255,6 +3255,7 @@ pub(crate) mod tests {
                 .apply()?;
 
             for protected in [
+                token.address,
                 TIP_FEE_MANAGER_ADDRESS,
                 STABLECOIN_DEX_ADDRESS,
                 RECEIVE_POLICY_GUARD_ADDRESS,
@@ -3282,6 +3283,7 @@ pub(crate) mod tests {
                 .apply()?;
 
             for protected in [
+                token.address,
                 TIP_FEE_MANAGER_ADDRESS,
                 STABLECOIN_DEX_ADDRESS,
                 TIP20_CHANNEL_RESERVE_ADDRESS,
@@ -3309,8 +3311,8 @@ pub(crate) mod tests {
             Ok::<_, TempoPrecompileError>(())
         })?;
 
-        // Pre-T5: TIP20_CHANNEL_RESERVE_ADDRESS is not yet in PROTECTED, so burn_blocked
-        // actually burns from it (REJECT_ALL satisfies the sender-policy gate).
+        // Pre-T5: TIP20_CHANNEL_RESERVE_ADDRESS and TIP20 address are not yet in PROTECTED,
+        // so burn_blocked actually burns from it (REJECT_ALL satisfies the sender-policy gate).
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Token", "TKN", admin)
@@ -3326,12 +3328,18 @@ pub(crate) mod tests {
                 },
             )?;
 
-            token.burn_blocked(burner, TIP20_CHANNEL_RESERVE_ADDRESS, burn_amount, true)?;
+            // simulate a mint to TIP20 address.
+            token.set_balance(token.address, amount)?;
+            token.set_total_supply(token.total_supply()? + amount)?;
 
-            let balance = token.balance_of(ITIP20::balanceOfCall {
-                account: TIP20_CHANNEL_RESERVE_ADDRESS,
-            })?;
-            assert_eq!(balance, amount - burn_amount);
+            for unprotected in [TIP20_CHANNEL_RESERVE_ADDRESS, token.address] {
+                token.burn_blocked(burner, unprotected, burn_amount, true)?;
+
+                let balance = token.balance_of(ITIP20::balanceOfCall {
+                    account: unprotected,
+                })?;
+                assert_eq!(balance, amount - burn_amount);
+            }
 
             Ok::<_, TempoPrecompileError>(())
         })?;
