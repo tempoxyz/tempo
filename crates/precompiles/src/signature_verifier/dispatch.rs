@@ -1,9 +1,14 @@
 use super::SignatureVerifier;
-use crate::{Precompile, charge_input_cost, dispatch_call, view};
-use alloy::{primitives::Address, sol_types::SolInterface};
+use crate::{Precompile, SelectorSchedule, charge_input_cost, dispatch_call, view};
+use alloy::{
+    primitives::Address,
+    sol_types::{SolCall, SolInterface},
+};
 use revm::precompile::PrecompileResult;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
-    ISignatureVerifier::ISignatureVerifierCalls as ISVCalls, SignatureVerifierError,
+    ISignatureVerifier::{self, ISignatureVerifierCalls as ISVCalls},
+    SignatureVerifierError,
 };
 use tempo_primitives::MAX_WEBAUTHN_SIGNATURE_LENGTH;
 
@@ -12,6 +17,8 @@ use tempo_primitives::MAX_WEBAUTHN_SIGNATURE_LENGTH;
 /// dynamic portion: selector(4) + args(4×32) + padded_sig_bytes.
 const MAX_CALLDATA_LEN: usize =
     4 + 32 * 4 + (MAX_WEBAUTHN_SIGNATURE_LENGTH + 1).next_multiple_of(32);
+
+const T6_ADDED: &[[u8; 4]] = &[ISignatureVerifier::verifyAdminCall::SELECTOR];
 
 impl Precompile for SignatureVerifier {
     fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
@@ -25,12 +32,20 @@ impl Precompile for SignatureVerifier {
                 .abi_revert(SignatureVerifierError::invalid_format()));
         }
 
-        dispatch_call(calldata, &[], ISVCalls::abi_decode, |call| match call {
-            ISVCalls::recover(call) => view(call, |c| self.recover(c.hash, c.signature)),
-            ISVCalls::verify(call) => view(call, |c| {
-                self.recover(c.hash, c.signature).map(|sig| sig == c.signer)
-            }),
-        })
+        dispatch_call(
+            calldata,
+            &[SelectorSchedule::new(TempoHardfork::T6).with_added(T6_ADDED)],
+            ISVCalls::abi_decode,
+            |call| match call {
+                ISVCalls::recover(call) => view(call, |c| self.recover(c.hash, c.signature)),
+                ISVCalls::verify(call) => view(call, |c| {
+                    self.recover(c.hash, c.signature).map(|sig| sig == c.signer)
+                }),
+                ISVCalls::verifyAdmin(call) => {
+                    view(call, |c| self.verify_admin(c.account, c.hash, c.signature))
+                }
+            },
+        )
     }
 }
 
@@ -38,19 +53,24 @@ impl Precompile for SignatureVerifier {
 mod tests {
     use super::*;
     use crate::{
-        Precompile, expect_precompile_revert,
+        Precompile,
+        account_keychain::{AccountKeychain, KeyRestrictions, SignatureType},
+        expect_precompile_revert,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{assert_full_coverage, check_selector_coverage},
     };
-    use alloy::{primitives::B256, sol_types::SolCall};
+    use alloy::{
+        primitives::B256,
+        sol_types::{SolCall, SolError},
+    };
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
     use tempo_chainspec::hardfork::TempoHardfork;
-    use tempo_contracts::precompiles::ISignatureVerifier;
+    use tempo_contracts::precompiles::{ISignatureVerifier, UnknownFunctionSelector};
 
     #[test]
     fn test_signature_verifier_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T3);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let mut verifier = SignatureVerifier::new();
 
@@ -62,6 +82,27 @@ mod tests {
             );
 
             assert_full_coverage([unsupported]);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_admin_selector_rejected_before_t6() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let calldata = ISignatureVerifier::verifyAdminCall {
+                account: Address::random(),
+                hash: B256::ZERO,
+                signature: vec![0u8; 65].into(),
+            }
+            .abi_encode();
+
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+            assert!(result.is_revert());
+            assert!(
+                UnknownFunctionSelector::abi_decode(&result.bytes).is_ok(),
+                "verifyAdmin should be selector-gated before T6"
+            );
             Ok(())
         })
     }
@@ -106,6 +147,142 @@ mod tests {
             let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
             let ret = ISignatureVerifier::verifyCall::abi_decode_returns(&output.bytes)?;
             assert!(!ret, "verify should return false for a wrong signer");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_admin_returns_true_for_root_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let signer = PrivateKeySigner::random();
+            let hash = B256::from([0xCC; 32]);
+            let sig = signer.sign_hash_sync(&hash)?;
+
+            let calldata = ISignatureVerifier::verifyAdminCall {
+                account: signer.address(),
+                hash,
+                signature: sig.as_bytes().to_vec().into(),
+            }
+            .abi_encode();
+
+            let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+            let ret = ISignatureVerifier::verifyAdminCall::abi_decode_returns(&output.bytes)?;
+            assert!(ret, "root key should verify as admin");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_admin_returns_true_for_admin_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let account = Address::random();
+            let admin = PrivateKeySigner::random();
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            keychain.authorize_admin_key(
+                account,
+                admin.address(),
+                SignatureType::Secp256k1,
+                None,
+            )?;
+
+            let hash = B256::from([0xDD; 32]);
+            let sig = admin.sign_hash_sync(&hash)?;
+            let calldata = ISignatureVerifier::verifyAdminCall {
+                account,
+                hash,
+                signature: sig.as_bytes().to_vec().into(),
+            }
+            .abi_encode();
+
+            let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+            let ret = ISignatureVerifier::verifyAdminCall::abi_decode_returns(&output.bytes)?;
+            assert!(ret, "admin access key should verify as admin");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_admin_returns_false_for_non_admin_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let account = Address::random();
+            let access_key = PrivateKeySigner::random();
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            keychain.authorize_key(
+                account,
+                access_key.address(),
+                SignatureType::Secp256k1,
+                KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    limits: vec![],
+                    allowAnyCalls: true,
+                    allowedCalls: vec![],
+                },
+                None,
+            )?;
+
+            let hash = B256::from([0xEE; 32]);
+            let sig = access_key.sign_hash_sync(&hash)?;
+            let calldata = ISignatureVerifier::verifyAdminCall {
+                account,
+                hash,
+                signature: sig.as_bytes().to_vec().into(),
+            }
+            .abi_encode();
+
+            let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+            let ret = ISignatureVerifier::verifyAdminCall::abi_decode_returns(&output.bytes)?;
+            assert!(!ret, "non-admin access key should not verify as admin");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_admin_returns_false_for_invalid_signature() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let signer = PrivateKeySigner::random();
+            let signed_hash = B256::from([0x11; 32]);
+            let checked_hash = B256::from([0x22; 32]);
+            let sig = signer.sign_hash_sync(&signed_hash)?;
+
+            let calldata = ISignatureVerifier::verifyAdminCall {
+                account: signer.address(),
+                hash: checked_hash,
+                signature: sig.as_bytes().to_vec().into(),
+            }
+            .abi_encode();
+
+            let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+            let ret = ISignatureVerifier::verifyAdminCall::abi_decode_returns(&output.bytes)?;
+            assert!(!ret, "wrong digest should not verify as admin");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_admin_returns_false_for_malformed_signature() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let calldata = ISignatureVerifier::verifyAdminCall {
+                account: Address::random(),
+                hash: B256::ZERO,
+                signature: vec![0u8; 64].into(),
+            }
+            .abi_encode();
+
+            let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+            let ret = ISignatureVerifier::verifyAdminCall::abi_decode_returns(&output.bytes)?;
+            assert!(!ret, "malformed signature should not verify as admin");
             Ok(())
         })
     }

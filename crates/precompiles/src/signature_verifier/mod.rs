@@ -1,6 +1,6 @@
 pub mod dispatch;
 
-use crate::{SIGNATURE_VERIFIER_ADDRESS, error::Result};
+use crate::{SIGNATURE_VERIFIER_ADDRESS, account_keychain::AccountKeychain, error::Result};
 use alloy::primitives::{Address, B256, Bytes};
 use tempo_contracts::precompiles::SignatureVerifierError;
 use tempo_precompiles_macros::contract;
@@ -24,21 +24,36 @@ impl SignatureVerifier {
     }
 
     pub fn recover(&mut self, hash: B256, signature: Bytes) -> Result<Address> {
-        // Parse and validate signature (handles size checks + type disambiguation).
-        let sig = PrimitiveSignature::from_bytes(&signature)
-            .map_err(|_| SignatureVerifierError::invalid_format())?;
+        let sig = Self::parse_signature(&signature)?;
+        self.deduct_signature_gas(sig.signature_type())?;
+        sig.recover_signer(&hash)
+            .map_err(|_| SignatureVerifierError::invalid_signature().into())
+    }
 
-        // Charge verification gas before performing verification.
-        let verify_gas = match sig.signature_type() {
+    pub fn verify_admin(&mut self, account: Address, hash: B256, signature: Bytes) -> Result<bool> {
+        let Ok(sig) = Self::parse_signature(&signature) else {
+            return Ok(false);
+        };
+        self.deduct_signature_gas(sig.signature_type())?;
+
+        let Ok(signer) = sig.recover_signer(&hash) else {
+            return Ok(false);
+        };
+
+        AccountKeychain::new().is_admin_key(account, signer)
+    }
+
+    fn parse_signature(signature: &[u8]) -> Result<PrimitiveSignature> {
+        PrimitiveSignature::from_bytes(signature)
+            .map_err(|_| SignatureVerifierError::invalid_format().into())
+    }
+
+    fn deduct_signature_gas(&mut self, signature_type: SignatureType) -> Result<()> {
+        self.storage.deduct_gas(match signature_type {
             SignatureType::Secp256k1 => SECP256K1_VERIFY_GAS,
             SignatureType::P256 => P256_VERIFY_GAS,
             SignatureType::WebAuthn => WEBAUTHN_VERIFY_GAS,
-        };
-        self.storage.deduct_gas(verify_gas)?;
-
-        // Verify and recover signer.
-        sig.recover_signer(&hash)
-            .map_err(|_| SignatureVerifierError::invalid_signature().into())
+        })
     }
 }
 
