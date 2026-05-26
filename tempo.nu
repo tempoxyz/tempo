@@ -1216,6 +1216,12 @@ def generate-summary [
         $"# Bench Comparison: ($baseline_ref) vs ($feature_ref)"
         ""
         "## Configuration"
+    ]
+    let derek_bench_command = ($env.DEREK_BENCH_COMMAND? | default "")
+    if $derek_bench_command != "" {
+        $config_lines = ($config_lines | append $"- Derek command: `($derek_bench_command)`")
+    }
+    $config_lines = ($config_lines | append [
         $"- Bloat: ($bloat) MiB"
         $"- Preset: ($preset)"
         $"- Target TPS: ($tps)"
@@ -1224,7 +1230,7 @@ def generate-summary [
         $"- Snapshot: (if (has-schelk) { 'schelk' } else { 'cp fallback' })"
         $"- Baseline blocks: ($b_lat.n)"
         $"- Feature blocks: ($f_lat.n)"
-    ]
+    ])
     if $baseline_hardfork != "" {
         $config_lines = ($config_lines | append $"- Baseline hardfork: ($baseline_hardfork)")
     }
