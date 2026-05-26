@@ -630,6 +630,35 @@ mod tests {
     }
 
     #[test]
+    fn test_admin_account_roundtrip_and_signature_binding() {
+        let account = Address::repeat_byte(0x11);
+        let other_account = Address::repeat_byte(0x22);
+        let key_id = Address::repeat_byte(0x33);
+        let witness = B256::repeat_byte(0x44);
+
+        let normal = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key_id)
+            .with_witness(witness);
+        let admin = normal.clone().into_admin(account);
+        let other_admin = normal.clone().into_admin(other_account);
+
+        assert!(!normal.is_admin());
+        assert!(admin.is_admin());
+        assert_eq!(admin.admin_account, Some(account));
+        assert!(!admin.is_legacy_compatible());
+
+        let mut encoded = Vec::new();
+        admin.encode(&mut encoded);
+        let decoded =
+            <KeyAuthorization as Decodable>::decode(&mut encoded.as_slice()).expect("decode auth");
+        assert_eq!(decoded, admin);
+        assert_eq!(decoded.witness(), Some(witness));
+        assert_eq!(decoded.admin_account, Some(account));
+
+        assert_ne!(admin.signature_hash(), normal.signature_hash());
+        assert_ne!(admin.signature_hash(), other_admin.signature_hash());
+    }
+
+    #[test]
     fn test_witness_encoding_preserves_prior_absent_trailing_fields() {
         let witness = B256::repeat_byte(0x53);
         let auth = make_auth(None, None).with_witness(witness);

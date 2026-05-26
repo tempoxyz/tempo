@@ -5022,6 +5022,117 @@ mod tests {
         }
 
         #[test]
+        fn test_t6_admin_key_authorization_fields_rejected_before_t6() {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key).into_admin(user),
+            );
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T5, None, false);
+
+            let result = h.validate_env(&mut evm);
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("not active before T6")
+                ),
+                "admin key authorization fields should be rejected before T6, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t6_admin_key_authorization_rejects_account_mismatch() {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let wrong_account = Address::random();
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
+                    .into_admin(wrong_account),
+            );
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T6, None, false);
+
+            let result = h.validate_env(&mut evm);
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("account mismatch")
+                ),
+                "admin key authorization should be bound to tx.caller, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t6_admin_key_authorization_rejects_restrictions() {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
+                    .with_expiry(u64::MAX)
+                    .into_admin(user),
+            );
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T6, None, false);
+
+            let result = h.validate_env(&mut evm);
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("cannot carry expiry")
+                ),
+                "admin key authorization should reject restrictions, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t6_admin_access_key_can_authorize_different_admin_key() {
+            let (admin_signer, admin_key) = generate_keypair();
+            let user = Address::random();
+            let child_key = Address::random();
+            let signed = sign_key_auth(
+                &admin_signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key)
+                    .into_admin(user),
+            );
+            let (mut evm, h) = make_evm(
+                user,
+                admin_key,
+                Some(signed),
+                TempoHardfork::T6,
+                None,
+                false,
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let mut keychain = AccountKeychain::new();
+                keychain
+                    .authorize_admin_key(user, admin_key, PrecompileSignatureType::Secp256k1, None)
+                    .expect("root authorizes admin key");
+            });
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                result.is_ok(),
+                "admin access key should authorize a different admin key, got: {result:?}"
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let keychain = AccountKeychain::new();
+                assert!(
+                    keychain
+                        .is_admin_key_for(user, child_key)
+                        .expect("admin key status read succeeds"),
+                    "child key should be registered as admin"
+                );
+            });
+        }
+
+        #[test]
         fn test_keychain_signature_with_valid_authorized_key() {
             let (mut evm, h) = make_evm(
                 Address::repeat_byte(0x11),

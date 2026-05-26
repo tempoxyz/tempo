@@ -1628,6 +1628,48 @@ mod tests {
     }
 
     #[test]
+    fn test_t6_authorize_admin_key_with_witness_checks_burned_state() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let account = Address::random();
+        let first_admin_key = Address::random();
+        let second_admin_key = Address::random();
+        let witness = B256::repeat_byte(0x65);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+
+            keychain.authorize_admin_key(
+                account,
+                first_admin_key,
+                SignatureType::Secp256k1,
+                Some(witness),
+            )?;
+            assert!(!keychain.is_key_authorization_witness_burned(
+                isKeyAuthorizationWitnessBurnedCall { account, witness }
+            )?);
+
+            keychain.burn_key_authorization_witness(
+                account,
+                burnKeyAuthorizationWitnessCall { witness },
+            )?;
+            let result = keychain.authorize_admin_key(
+                account,
+                second_admin_key,
+                SignatureType::Secp256k1,
+                Some(witness),
+            );
+            assert_eq!(
+                result.expect_err("burned witness must not authorize admin key"),
+                AccountKeychainError::key_authorization_witness_already_burned().into()
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_t6_admin_key_can_authorize_and_revoke_keys() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         let account = Address::random();
