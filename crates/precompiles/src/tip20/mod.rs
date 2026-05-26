@@ -548,7 +548,10 @@ impl TIP20Token {
 
         self.set_total_supply(new_supply)?;
         let to_balance = self.get_balance(to.target)?;
-        self.set_balance(to.target, UserState::new(to_balance.add(amount)?, to_flag)?)?;
+        self.set_balance(
+            to.target,
+            UserState::new(to_balance.checked_add(amount)?, to_flag)?,
+        )?;
 
         self.emit_event(to.build_transfer_event(Address::ZERO, amount))
     }
@@ -1165,11 +1168,17 @@ impl TIP20Token {
         let (from_flag, to_flag) = self.handle_rewards_on_transfer(from, to.target, amount)?;
 
         // Adjust balances
-        self.set_balance(from, UserState::new(from_balance.sub(amount)?, from_flag)?)?;
+        self.set_balance(
+            from,
+            UserState::new(from_balance.checked_sub(amount)?, from_flag)?,
+        )?;
 
         if to.target != Address::ZERO {
             let to_balance = self.get_balance(to.target)?;
-            self.set_balance(to.target, UserState::new(to_balance.add(amount)?, to_flag)?)?;
+            self.set_balance(
+                to.target,
+                UserState::new(to_balance.checked_add(amount)?, to_flag)?,
+            )?;
         }
 
         self.emit_event(to.build_transfer_event(from, amount))
@@ -1290,11 +1299,11 @@ impl TIP20Token {
             self.decrease_opted_in_supply(amount)?;
         }
 
-        let new_from_balance = UserState::new(from_balance.sub(amount)?, from_flag)?;
+        let new_from_balance = UserState::new(from_balance.checked_sub(amount)?, from_flag)?;
         self.set_balance(from, new_from_balance)?;
 
         let to_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_to_balance = UserState::new(to_balance.add(amount)?, to_balance.flag)?;
+        let new_to_balance = UserState::new(to_balance.checked_add(amount)?, to_balance.flag)?;
         self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_to_balance)
     }
 
@@ -1332,7 +1341,7 @@ impl TIP20Token {
         }
 
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_from_balance = from_balance.sub(refund).map_err(|_| {
+        let new_from_balance = from_balance.checked_sub(refund).map_err(|_| {
             TIP20Error::insufficient_balance(from_balance.amount(), refund, self.address)
         })?;
         self.set_balance(
@@ -1342,7 +1351,7 @@ impl TIP20Token {
 
         let new_to_balance = self
             .get_balance(to)?
-            .add(refund)
+            .checked_add(refund)
             .map_err(|_| TIP20Error::supply_cap_exceeded())?;
         self.set_balance(to, UserState::new(new_to_balance, to_flag)?)
     }

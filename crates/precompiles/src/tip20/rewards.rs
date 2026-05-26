@@ -116,7 +116,7 @@ impl TIP20Token {
             if cached_delegate != Address::ZERO {
                 let holder_balance = self.get_balance(holder)?;
                 let reward = holder_balance
-                    .mul(reward_per_token_delta)?
+                    .checked_mul(reward_per_token_delta)?
                     .div(ACC_PRECISION);
 
                 // Add reward to delegate's balance (or holder's own balance if self-delegated)
@@ -190,7 +190,7 @@ impl TIP20Token {
         }
 
         let reward = holder_balance
-            .mul(reward_per_token_delta)?
+            .checked_mul(reward_per_token_delta)?
             .div(ACC_PRECISION);
 
         if reward != U256::ZERO {
@@ -303,12 +303,15 @@ impl TIP20Token {
         self.user_reward_info[msg_sender].write(info)?;
 
         if max_amount > U256::ZERO {
-            let new_contract_balance =
-                UserState::new(contract_balance.sub(max_amount)?, contract_balance.flag)?;
+            let new_contract_balance = UserState::new(
+                contract_balance.checked_sub(max_amount)?,
+                contract_balance.flag,
+            )?;
             self.set_balance(contract_address, new_contract_balance)?;
 
             let recipient_balance = self.get_balance(msg_sender)?;
-            let new_recipient_balance = UserState::new(recipient_balance.add(max_amount)?, flag)?;
+            let new_recipient_balance =
+                UserState::new(recipient_balance.checked_add(max_amount)?, flag)?;
             self.set_balance(msg_sender, new_recipient_balance)?;
 
             if flag.is_opted_in() {
@@ -435,7 +438,7 @@ impl TIP20Token {
 
                 if reward_per_token_delta > U256::ZERO {
                     let accrued = holder_balance
-                        .mul(reward_per_token_delta)?
+                        .checked_mul(reward_per_token_delta)?
                         .div(ACC_PRECISION);
                     pending = pending
                         .checked_add(accrued)

@@ -34,19 +34,19 @@ impl UserState {
         U256::from(self.amount)
     }
 
-    pub(super) fn add(&self, amount: U256) -> Result<U256> {
+    pub(super) fn checked_add(&self, amount: U256) -> Result<U256> {
         self.amount()
             .checked_add(amount)
             .ok_or(TempoPrecompileError::under_overflow())
     }
 
-    pub(super) fn sub(&self, amount: U256) -> Result<U256> {
+    pub(super) fn checked_sub(&self, amount: U256) -> Result<U256> {
         self.amount()
             .checked_sub(amount)
             .ok_or(TempoPrecompileError::under_overflow())
     }
 
-    pub(super) fn mul(&self, amount: U256) -> Result<U256> {
+    pub(super) fn checked_mul(&self, amount: U256) -> Result<U256> {
         self.amount()
             .checked_mul(amount)
             .ok_or(TempoPrecompileError::under_overflow())
