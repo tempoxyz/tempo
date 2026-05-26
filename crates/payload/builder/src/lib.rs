@@ -249,10 +249,10 @@ where
             cached_reads,
             execution_cache,
             trie_handle,
+            skip_state_root_validation_for_bench,
             config,
             cancel,
             best_payload,
-            ..
         } = args;
         let PayloadConfig {
             parent_header,
@@ -413,7 +413,7 @@ where
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut builder, &attributes);
 
-        if let Some(ref handle) = trie_handle {
+        if !skip_state_root_validation_for_bench && let Some(ref handle) = trie_handle {
             builder
                 .executor_mut()
                 .set_state_hook(Some(Box::new(handle.state_hook())));
@@ -760,7 +760,7 @@ where
         check_cancel!();
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
-            if let Some(mut handle) = trie_handle {
+            if !skip_state_root_validation_for_bench && let Some(mut handle) = trie_handle {
                 // Dropping the hook signals that execution is complete and the sparse trie task can
                 // finalize the state root it has been updating incrementally.
                 builder.executor_mut().set_state_hook(None);
@@ -802,7 +802,18 @@ where
             hashed_state,
             trie_updates,
             ..
-        } = if let Some(outcome) = state_root_outcome {
+        } = if skip_state_root_validation_for_bench {
+            debug!(
+                target: "payload_builder",
+                id = %payload_id,
+                parent_state_root = ?parent_header.state_root(),
+                "benchmark mode skipping payload state root computation"
+            );
+            builder.finish(
+                finish_provider(),
+                Some((parent_header.state_root(), Default::default())),
+            )
+        } else if let Some(outcome) = state_root_outcome {
             builder.finish(
                 finish_provider(),
                 Some((
