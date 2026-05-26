@@ -11,11 +11,16 @@
 pub mod dispatch;
 pub mod rewards;
 pub mod roles;
+pub mod user_state;
 
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event, USD_CURRENCY,
 };
 pub use tempo_primitives::is_tip20_prefix;
+pub use user_state::UserState;
+
+#[cfg(test)]
+use crate::tip20::rewards::RewardFlag;
 
 // Re-export the generated slots module for external access to storage slot constants
 pub use slots as tip20_slots;
@@ -26,11 +31,8 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
-    storage::{Handler, Mapping, Slot, StorageCtx},
-    tip20::{
-        rewards::{RewardFlag, UserRewardInfo},
-        roles::DEFAULT_ADMIN_ROLE,
-    },
+    storage::{Handler, Mapping},
+    tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
 };
@@ -44,7 +46,7 @@ use tempo_contracts::precompiles::{
     DECIMALS as TIP20_DECIMALS, ReceivePolicyGuardError, STABLECOIN_DEX_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS,
 };
-use tempo_precompiles_macros::{Storable, contract};
+use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
 use tracing::trace;
 
@@ -110,50 +112,6 @@ pub struct TIP20Token {
     global_reward_per_token: U256,
     opted_in_supply: u128,
     user_reward_info: Mapping<Address, UserRewardInfo>,
-}
-
-#[derive(Debug, Clone, Storable, Copy, PartialEq)]
-pub struct UserState {
-    amount: u128,
-    /// (T6+) Cached reward opt-in status. Tracks `reward_recipient`, which remains the source of truth.
-    flag: RewardFlag,
-}
-
-impl UserState {
-    fn new(amount: U256, flag: RewardFlag) -> Result<Self> {
-        let amount = u128::try_from(amount).map_err(|_| TempoPrecompileError::under_overflow())?;
-
-        // Ensure pre-T6 slots do not cache the reward flag.
-        let flag = if StorageCtx.spec().is_t6() {
-            flag
-        } else {
-            RewardFlag::Uninitialized
-        };
-
-        Ok(Self { amount, flag })
-    }
-
-    pub fn amount(&self) -> U256 {
-        U256::from(self.amount)
-    }
-
-    fn add(&self, amount: U256) -> Result<U256> {
-        self.amount()
-            .checked_add(amount)
-            .ok_or(TempoPrecompileError::under_overflow())
-    }
-
-    fn sub(&self, amount: U256) -> Result<U256> {
-        self.amount()
-            .checked_sub(amount)
-            .ok_or(TempoPrecompileError::under_overflow())
-    }
-
-    fn mul(&self, amount: U256) -> Result<U256> {
-        self.amount()
-            .checked_mul(amount)
-            .ok_or(TempoPrecompileError::under_overflow())
-    }
 }
 
 /// EIP-712 Permit typehash: keccak256("Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)")
@@ -1041,25 +999,11 @@ impl TIP20Token {
     }
 
     fn get_balance(&self, account: Address) -> Result<UserState> {
-        // Ensure pre-T6 slots do not load the reward flag.
-        if self.storage.spec().is_t6() {
-            self.balances[account].read()
-        } else {
-            let slot = self.balances[account].base_slot();
-            Slot::<U256>::new(slot, self.address)
-                .read()
-                .and_then(|res| UserState::new(res, RewardFlag::Uninitialized))
-        }
+        self.balances[account].read()
     }
 
     fn set_balance(&mut self, account: Address, amount: UserState) -> Result<()> {
-        // Ensure pre-T6 slots do not cache the reward flag.
-        if self.storage.spec().is_t6() {
-            self.balances[account].write(amount)
-        } else {
-            let slot = self.balances[account].base_slot();
-            Slot::<U256>::new(slot, self.address).write(amount.amount())
-        }
+        self.balances[account].write(amount)
     }
 
     fn get_allowance(&self, owner: Address, spender: Address) -> Result<U256> {

@@ -255,6 +255,17 @@ pub fn derive_storage_block(input: TokenStream) -> TokenStream {
     }
 }
 
+/// Generates `#[derive(Storable)]`'s packing constants for structs, without trait impls.
+#[proc_macro_derive(StorableLayout)]
+pub fn derive_storable_layout(input: TokenStream) -> TokenStream {
+    let input = parse_macro_input!(input as DeriveInput);
+
+    match storable::derive_layout_impl(input) {
+        Ok(tokens) => tokens.into(),
+        Err(err) => err.to_compile_error().into(),
+    }
+}
+
 // -- STORAGE PRIMITIVES TRAIT IMPLEMENTATIONS -------------------------------------------
 
 /// Generate `StorableType` and `Storable` implementations for all standard integer types.
