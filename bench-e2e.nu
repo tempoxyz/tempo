@@ -973,6 +973,18 @@ def e2e-generate-summary [results_dir: string] {
     let baseline_hardfork = ($config | get -o baseline_hardfork | default "")
     let feature_hardfork = ($config | get -o feature_hardfork | default "")
     generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int) --baseline-hardfork $baseline_hardfork --feature-hardfork $feature_hardfork
+
+    with-env [
+        GITHUB_TOKEN ""
+        CLICKHOUSE_URL ""
+        CLICKHOUSE_USER ""
+        CLICKHOUSE_PASSWORD ""
+        BENCH_VICTORIAMETRICS_URL ""
+        SLACK_BENCH_BOT_TOKEN ""
+        SLACK_BENCH_CHANNEL ""
+    ] {
+        ^node .github/scripts/bench-e2e-classify.js $results_dir
+    }
 }
 
 def "main summarize" [
