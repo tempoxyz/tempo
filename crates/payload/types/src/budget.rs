@@ -2,6 +2,7 @@ use std::{
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
+use tracing::info;
 
 /// How quickly the learned marshal persistence rate decays when blocks get cheaper.
 const RATE_DECAY: u64 = 8;
@@ -25,6 +26,13 @@ pub fn observe_marshal_persist(block_size_bytes: usize, elapsed: Duration) {
         MARSHAL_PERSIST_NS_PER_BYTE.fetch_update(Ordering::Relaxed, Ordering::Relaxed, |current| {
             Some(update_ns_per_byte(current, observed))
         });
+    info!(
+        block_size_bytes,
+        elapsed = ?elapsed,
+        observed_ns_per_byte = observed,
+        estimated_ns_per_byte = MARSHAL_PERSIST_NS_PER_BYTE.load(Ordering::Relaxed),
+        "updated marshal persistence estimate"
+    );
 }
 
 /// Point-in-time marshal persistence cost per encoded block byte.
