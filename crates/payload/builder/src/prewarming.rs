@@ -396,20 +396,24 @@ fn storage_touches_for_transaction(
     fee_recipient: Address,
 ) -> Vec<StorageTouch> {
     let mut touches = Vec::new();
-    let sender = tx.transaction.sender();
-    let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
-    let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
-        tx.transaction
-            .inner()
-            .fee_token()
-            .unwrap_or(DEFAULT_FEE_TOKEN)
-    });
+    let transaction = &tx.transaction;
+    let inner = transaction.inner();
+    let sender = transaction.sender();
+    let fee_payer = if inner.is_fee_token() {
+        inner.fee_payer(sender).unwrap_or(sender)
+    } else {
+        sender
+    };
+    let fee_token = transaction
+        .resolved_fee_token()
+        .or_else(|| inner.fee_token())
+        .unwrap_or(DEFAULT_FEE_TOKEN);
 
     add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
     add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
 
-    if tx.transaction.is_payment() {
-        for (kind, input) in tx.transaction.inner().calls() {
+    if transaction.is_payment() {
+        for (kind, input) in inner.calls() {
             add_tip20_call_touches(&mut touches, sender, kind, input);
         }
     }
