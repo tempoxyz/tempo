@@ -109,7 +109,7 @@ pub struct Args {
     pub inactive_views_until_leader_skip: u64,
 
     /// Time reserved for proposal propagation before the target block boundary.
-    #[arg(long = "consensus.network-budget", default_value = "75ms")]
+    #[arg(long = "consensus.network-budget", default_value = "50ms")]
     pub network_budget: PositiveDuration,
 
     /// The amount of time this node will use to construct a subblock before

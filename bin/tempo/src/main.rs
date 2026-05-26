@@ -774,7 +774,7 @@ mod tests {
         );
         assert_eq!(
             node_cmd.ext.consensus.network_budget.into_duration(),
-            Duration::from_millis(75)
+            Duration::from_millis(50)
         );
         assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.35);
 
@@ -798,7 +798,7 @@ mod tests {
         );
         assert_eq!(
             node_cmd.ext.consensus.network_budget.into_duration(),
-            Duration::from_millis(75)
+            Duration::from_millis(50)
         );
 
         assert!(
