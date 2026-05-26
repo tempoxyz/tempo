@@ -1,8 +1,8 @@
 //! [Account keychain] precompile for managing session keys and spending limits.
 //!
 //! Each account can authorize secondary keys (session keys) with per-token spending caps,
-//! signature type constraints, and expiry. The main key (address zero) retains full control
-//! and is the only key allowed to authorize, revoke, or update other keys.
+//! signature type constraints, and expiry. The main key (address zero) retains full control;
+//! T6 admin keys can also manage other access keys.
 //!
 //! [Account keychain]: <https://docs.tempo.xyz/protocol/transactions/AccountKeychain>
 
@@ -17,7 +17,7 @@ pub use tempo_contracts::precompiles::{
     IAccountKeychain::{
         CallScope, KeyInfo, KeyRestrictions, SelectorRule, SignatureType, TokenLimit,
         burnKeyAuthorizationWitnessCall, getAllowedCallsCall, getKeyCall, getRemainingLimitCall,
-        getRemainingLimitWithPeriodCall, getTransactionKeyCall, isAdminKeyCall,
+        getRemainingLimitWithPeriodCall, getTransactionKeyCall,
         isKeyAuthorizationWitnessBurnedCall, removeAllowedCallsCall, revokeKeyCall,
         setAllowedCallsCall, updateSpendingLimitCall,
     },
@@ -68,6 +68,40 @@ pub struct AuthorizedKey {
     pub is_revoked: bool,
     /// Whether this key has admin privileges for keychain management.
     pub is_admin: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct StoredSignatureType(u8);
+
+impl StoredSignatureType {
+    #[inline]
+    const fn as_u8(self) -> u8 {
+        self.0
+    }
+}
+
+impl TryFrom<SignatureType> for StoredSignatureType {
+    type Error = crate::error::TempoPrecompileError;
+
+    fn try_from(value: SignatureType) -> std::result::Result<Self, Self::Error> {
+        match value {
+            SignatureType::Secp256k1 => Ok(Self(0)),
+            SignatureType::P256 => Ok(Self(1)),
+            SignatureType::WebAuthn => Ok(Self(2)),
+            _ => Err(AccountKeychainError::invalid_signature_type().into()),
+        }
+    }
+}
+
+impl From<StoredSignatureType> for SignatureType {
+    fn from(value: StoredSignatureType) -> Self {
+        match value.0 {
+            0 => SignatureType::Secp256k1,
+            1 => SignatureType::P256,
+            2 => SignatureType::WebAuthn,
+            _ => SignatureType::Secp256k1,
+        }
+    }
 }
 
 /// Account Keychain contract for managing authorized keys (session keys, spending limits).
@@ -194,7 +228,7 @@ impl AccountKeychain {
     }
 
     /// Registers a new access key with signature type, expiry, and optional per-token spending
-    /// limits. Only callable with the account's main key (not a session key).
+    /// limits. Only callable with the account's main key or, on T6+, an admin access key.
     ///
     /// # Errors
     /// - `UnauthorizedCaller` — only the main key can authorize/revoke and, for contract
@@ -203,6 +237,7 @@ impl AccountKeychain {
     /// - `ExpiryInPast` — expiry must be in the future (enforced since T0)
     /// - `KeyAlreadyExists` — a key with this ID is already registered
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
+    /// - `InvalidKeyId` — on T6+, `keyId` cannot be the account root key
     /// - `InvalidSignatureType` — must be Secp256k1, P256, or WebAuthn
     pub fn authorize_key(
         &mut self,
@@ -243,13 +278,7 @@ impl AccountKeychain {
             return Err(AccountKeychainError::key_already_revoked().into());
         }
 
-        // Convert SignatureType enum to u8 for storage
-        let signature_type = match signature_type {
-            SignatureType::Secp256k1 => 0,
-            SignatureType::P256 => 1,
-            SignatureType::WebAuthn => 2,
-            _ => return Err(AccountKeychainError::invalid_signature_type().into()),
-        };
+        let signature_type = StoredSignatureType::try_from(signature_type)?.as_u8();
 
         // TIP-1011 fields are hardfork-gated at T3, so reject them before mutating state.
         let allowed_call_configs = if is_t3 {
@@ -362,12 +391,7 @@ impl AccountKeychain {
             self.ensure_key_authorization_witness_not_burned(msg_sender, witness)?;
         }
 
-        let signature_type = match signature_type {
-            SignatureType::Secp256k1 => 0,
-            SignatureType::P256 => 1,
-            SignatureType::WebAuthn => 2,
-            _ => return Err(AccountKeychainError::invalid_signature_type().into()),
-        };
+        let signature_type = StoredSignatureType::try_from(signature_type)?.as_u8();
 
         self.keys[msg_sender][key_id].write(AuthorizedKey {
             signature_type,
@@ -467,7 +491,7 @@ impl AccountKeychain {
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let mut key = self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
-        if self.storage.spec().is_t6() && key.is_admin {
+        if key.is_admin {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
 
@@ -516,16 +540,8 @@ impl AccountKeychain {
             });
         }
 
-        // Convert u8 signature_type to SignatureType enum
-        let signature_type = match key.signature_type {
-            0 => SignatureType::Secp256k1,
-            1 => SignatureType::P256,
-            2 => SignatureType::WebAuthn,
-            _ => SignatureType::Secp256k1, // Default fallback
-        };
-
         Ok(KeyInfo {
-            signatureType: signature_type,
+            signatureType: StoredSignatureType(key.signature_type).into(),
             keyId: call.keyId,
             expiry: key.expiry,
             enforceLimits: key.enforce_limits,
@@ -589,7 +605,7 @@ impl AccountKeychain {
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let key = self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
-        if self.storage.spec().is_t6() && key.is_admin {
+        if key.is_admin {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
 
@@ -623,7 +639,7 @@ impl AccountKeychain {
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let key = self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
-        if self.storage.spec().is_t6() && key.is_admin {
+        if key.is_admin {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
 
@@ -722,10 +738,6 @@ impl AccountKeychain {
     }
 
     /// Returns true for the root key or for an active admin access key.
-    pub fn is_admin_key(&self, call: isAdminKeyCall) -> Result<bool> {
-        self.is_admin_key_for(call.account, call.keyId)
-    }
-
     /// Returns the access key used to authorize the current transaction (`Address::ZERO` = root key).
     pub fn get_transaction_key(
         &self,
@@ -1108,9 +1120,7 @@ impl AccountKeychain {
     fn ensure_admin_caller(&self, msg_sender: Address) -> Result<()> {
         let transaction_key = self.transaction_key.t_read()?;
         if !transaction_key.is_zero() {
-            if !self.storage.spec().is_t6()
-                || !self.is_admin_key_for(msg_sender, transaction_key)?
-            {
+            if !self.storage.spec().is_t6() || !self.is_admin_key(msg_sender, transaction_key)? {
                 return Err(AccountKeychainError::unauthorized_caller().into());
             }
         }
@@ -1126,7 +1136,7 @@ impl AccountKeychain {
     }
 
     /// Internal predicate for root/admin status.
-    pub fn is_admin_key_for(&self, account: Address, key_id: Address) -> Result<bool> {
+    pub fn is_admin_key(&self, account: Address, key_id: Address) -> Result<bool> {
         if key_id == account {
             return Ok(true);
         }
@@ -1626,14 +1636,8 @@ mod tests {
             assert!(!key.enforce_limits);
             assert!(!key.is_revoked);
             assert!(key.is_admin);
-            assert!(keychain.is_admin_key(isAdminKeyCall {
-                account,
-                keyId: account
-            })?);
-            assert!(keychain.is_admin_key(isAdminKeyCall {
-                account,
-                keyId: admin_key
-            })?);
+            assert!(keychain.is_admin_key(account, account)?);
+            assert!(keychain.is_admin_key(account, admin_key)?);
 
             Ok(())
         })
@@ -1707,10 +1711,7 @@ mod tests {
             assert!(keychain.keys[account][child_key].read()?.expiry > 0);
 
             keychain.revoke_key(account, revokeKeyCall { keyId: admin_key })?;
-            assert!(!keychain.is_admin_key(isAdminKeyCall {
-                account,
-                keyId: admin_key
-            })?);
+            assert!(!keychain.is_admin_key(account, admin_key)?);
 
             Ok(())
         })

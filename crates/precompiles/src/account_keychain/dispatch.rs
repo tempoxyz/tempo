@@ -138,7 +138,9 @@ impl Precompile for AccountKeychain {
                 IAccountKeychainCalls::isKeyAuthorizationWitnessBurned(call) => {
                     view(call, |c| self.is_key_authorization_witness_burned(c))
                 }
-                IAccountKeychainCalls::isAdminKey(call) => view(call, |c| self.is_admin_key(c)),
+                IAccountKeychainCalls::isAdminKey(call) => {
+                    view(call, |c| self.is_admin_key(c.account, c.keyId))
+                }
                 IAccountKeychainCalls::getTransactionKey(call) => {
                     view(call, |c| self.get_transaction_key(c, msg_sender))
                 }

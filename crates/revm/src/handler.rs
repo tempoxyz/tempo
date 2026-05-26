@@ -5204,7 +5204,7 @@ mod tests {
                 let keychain = AccountKeychain::new();
                 assert!(
                     keychain
-                        .is_admin_key_for(user, child_key)
+                        .is_admin_key(user, child_key)
                         .expect("admin key status read succeeds"),
                     "child key should be registered as admin"
                 );
@@ -5332,7 +5332,7 @@ mod tests {
                 assert_eq!(key.keyId, child_key, "child key should be registered");
                 assert!(
                     !keychain
-                        .is_admin_key_for(alice, child_key)
+                        .is_admin_key(alice, child_key)
                         .expect("admin key status read succeeds"),
                     "child key should not be admin"
                 );
