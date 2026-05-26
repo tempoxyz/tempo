@@ -373,6 +373,40 @@ def derive-tracing-otlp [tracing_otlp: string] {
     $tracing_otlp
 }
 
+def parse-otlp-toggle [value: string, default: bool] {
+    let normalized = ($value | str trim | str downcase)
+    if $normalized == "" { return $default }
+    if $normalized in ["true" "1" "yes" "on"] { return true }
+    if $normalized in ["false" "0" "no" "off"] { return false }
+
+    print $"Error: OTLP toggle must be true or false \(got '($value)'\)"
+    exit 1
+}
+
+def cargo-feature-list [features: string] {
+    if ($features | str trim) == "" { return [] }
+
+    mut result = []
+    for feature in ($features | split row "," | each { |f| $f | str trim } | where { |f| $f != "" }) {
+        if $feature not-in $result {
+            $result = ($result | append $feature)
+        }
+    }
+    $result
+}
+
+def set-cargo-feature-enabled [features: string, feature: string, enabled: bool] {
+    mut list = (cargo-feature-list $features)
+    if $enabled {
+        if $feature not-in $list {
+            $list = ($list | append $feature)
+        }
+    } else {
+        $list = ($list | where { |f| $f != $feature })
+    }
+    $list | str join ","
+}
+
 def systemd-scope-command [unit: string, cpus: string, memory: string, script: string] {
     let can_scope = (^uname | str trim) == "Linux" and ((which systemd-run | length) > 0) and ($cpus != "" or $memory != "")
     if not $can_scope {
@@ -726,6 +760,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let run_type = if ($phase | str starts-with "baseline") { "baseline" } else { "feature" }
     let genesis = ($run | get -o genesis | default $ctx.genesis)
     let hardfork = ($run | get -o hardfork | default "")
+    let side_otlp = if $run_type == "baseline" { $ctx.baseline_otlp } else { $ctx.feature_otlp }
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
     let extra_args = (parse-cli-args $side_args)
@@ -785,14 +820,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
-        | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
+        | append (if $side_otlp and $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
         | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
         | append $E2E_LOCAL_RETH_ARGS
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
-        | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
+        | append (if $side_otlp and $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let a_args = (dedup-args $a_base_args $extra_args)
     let b_args = (dedup-args $b_base_args $extra_args)
 
@@ -801,7 +836,13 @@ def run-local-e2e-phase [run: record, ctx: record] {
     } else if $ctx.tracy == "full" {
         "TRACY_SAMPLING_HZ=1 "
     } else { "" }
-    let env_prefix = if $side_env != "" { $"($side_env) " } else { "" }
+    let otlp_env_prefix = if $side_otlp {
+        ""
+    } else {
+        "unset TEMPO_TELEMETRY_URL GRAFANA_TEMPO OTEL_EXPORTER_OTLP_TRACES_ENDPOINT OTEL_EXPORTER_OTLP_LOGS_ENDPOINT OTEL_EXPORTER_OTLP_HEADERS; "
+    }
+    let user_env_prefix = if $side_env != "" { $"($side_env) " } else { "" }
+    let env_prefix = $"($otlp_env_prefix)($user_env_prefix)"
     let a_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=a,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
     let b_otel = $"OTEL_RESOURCE_ATTRIBUTES=benchmark_id=($ctx.benchmark_id),benchmark_run=($phase),runner_role=b,run_type=($run_type),git_ref=($run.ref),reference_epoch=($ctx.reference_epoch) "
 
@@ -956,6 +997,8 @@ def e2e-write-summary-config [
     reference_epoch: int
     baseline_hardfork: string
     feature_hardfork: string
+    baseline_otlp: bool
+    feature_otlp: bool
 ] {
     {
         baseline_label: $baseline_label
@@ -968,6 +1011,8 @@ def e2e-write-summary-config [
         reference_epoch: $reference_epoch
         baseline_hardfork: $baseline_hardfork
         feature_hardfork: $feature_hardfork
+        baseline_otlp: $baseline_otlp
+        feature_otlp: $feature_otlp
     } | to json | save -f $"($results_dir)/summary-config.json"
 }
 
@@ -1025,6 +1070,8 @@ def "main e2e" [
     --tracy-seconds: int = 30                           # Tracy capture duration limit in seconds
     --tracy-offset: int = 120                           # Seconds to wait before starting tracy capture
     --tracing-otlp: string = ""                         # OTLP endpoint for tracing (auto-derived from GRAFANA_TEMPO/TEMPO_TELEMETRY_URL)
+    --baseline-otlp: string = ""                        # Enable OTLP for baseline phases (true/false, empty = auto)
+    --feature-otlp: string = ""                         # Enable OTLP for feature phases (true/false, empty = auto)
     --victoriametrics-url: string = ""                  # VictoriaMetrics base URL for txgen metric sample import
     --clickhouse-url: string = ""                       # ClickHouse HTTP endpoint for txgen result upload
     --clickhouse-run: string = "feature-1"              # Run label allowed to use the ClickHouse reporter; empty = every run
@@ -1115,7 +1162,10 @@ def "main e2e" [
     let reference_epoch = (($run_started_at | into int) / 1_000_000_000 | into int)
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
     let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
-    if $tracing_otlp != "" {
+    let default_otlp = $tracing_otlp != ""
+    let baseline_otlp_enabled = (parse-otlp-toggle $baseline_otlp $default_otlp)
+    let feature_otlp_enabled = (parse-otlp-toggle $feature_otlp $default_otlp)
+    if $tracing_otlp != "" and ($baseline_otlp_enabled or $feature_otlp_enabled) {
         $env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = $tracing_otlp
     }
 
@@ -1232,21 +1282,22 @@ def "main e2e" [
     git worktree add $baseline_wt $baseline
     git worktree add $feature_wt $feature
 
-    let tbc = (tracy-build-config $features $tracy)
-    let effective_features = $tbc.features
-    let effective_extra_rustflags = $tbc.extra_rustflags
+    let baseline_features = (set-cargo-feature-enabled $features "otlp" $baseline_otlp_enabled)
+    let feature_features = (set-cargo-feature-enabled $features "otlp" $feature_otlp_enabled)
+    let baseline_tbc = (tracy-build-config $baseline_features $tracy)
+    let feature_tbc = (tracy-build-config $feature_features $tracy)
     let effective_no_cache = $no_cache or ($tracy != "off")
     # Build baseline and feature in parallel — they use separate worktrees
     # with independent target/ directories, so cargo invocations don't collide.
     let builds = [
-        { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline" }
-        { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature" }
+        { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, bench_features: $baseline_features, extra_rustflags: $baseline_tbc.extra_rustflags }
+        { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, bench_features: $feature_features, extra_rustflags: $feature_tbc.extra_rustflags }
     ]
     $builds | par-each { |b|
         if $effective_no_cache {
-            build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $effective_extra_rustflags --bench-features $features $b.wt $b.ref_name $profile $effective_features $b.sha
+            build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
         } else {
-            build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $effective_features $b.sha
+            build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
         }
     } | ignore
     let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
@@ -1292,6 +1343,8 @@ def "main e2e" [
         tracy_filter: $tracy_filter
         tracy_seconds: $tracy_seconds
         tracy_offset: $tracy_offset
+        baseline_otlp: $baseline_otlp_enabled
+        feature_otlp: $feature_otlp_enabled
         baseline_args: $baseline_args
         feature_args: $feature_args
         bench_args: $bench_args
@@ -1345,7 +1398,7 @@ def "main e2e" [
         exit 1
     }
     $valid_run_labels | str join "\n" | save -f $"($results_dir)/run-order.txt"
-    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $baseline_hardfork_name $feature_hardfork_name
+    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $baseline_hardfork_name $feature_hardfork_name $baseline_otlp_enabled $feature_otlp_enabled
     let num_phases = ($runs | length)
     mut e2e_exit = 0
     for idx in 0..<$num_phases {
