@@ -114,7 +114,13 @@ impl TempoTxResult {
 
     /// Returns the state gas consumed by this transaction.
     pub fn state_gas_used(&self) -> u64 {
-        self.inner.result.result.gas().state_gas_spent()
+        self.inner
+            .result
+            .result
+            .gas()
+            .state_gas_spent()
+            .try_into()
+            .expect("state gas spent is non-negative")
     }
 
     /// Returns the validator-credited fee amount (post-feeAMM haircut) for this transaction.
