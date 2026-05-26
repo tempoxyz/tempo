@@ -210,6 +210,16 @@ impl TempoPooledTransaction {
         self.tx_env().clone()
     }
 
+    /// Returns the effective fee payer, reusing the cached transaction
+    /// environment prepared during validation when available.
+    pub fn effective_fee_payer(&self) -> Option<Address> {
+        if let Some(tx_env) = self.tx_env.get() {
+            return tx_env.fee_payer().ok();
+        }
+
+        self.inner().fee_payer(self.sender()).ok()
+    }
+
     /// Returns a [`WithTxEnv`] wrapper by cloning the cached [`TempoTxEnv`] and
     /// recovered transaction.
     ///
@@ -271,10 +281,8 @@ impl TempoPooledTransaction {
     /// lazily computed and cached on first access.
     pub fn fee_balance_slot(&self) -> Option<(Address, U256)> {
         *self.fee_balance_slot.get_or_init(|| {
-            let fee_token = self
-                .resolved_fee_token()
-                .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
-            let fee_payer = self.inner().fee_payer(self.sender()).ok()?;
+            let fee_token = self.effective_fee_token();
+            let fee_payer = self.effective_fee_payer()?;
             let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
             Some((fee_token, slot))
         })
