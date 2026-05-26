@@ -7,7 +7,7 @@ mod attrs;
 
 use alloy_primitives::B256;
 pub use attrs::TempoPayloadAttributes;
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 
 use alloy_eips::eip7685::Requests;
 use alloy_primitives::U256;
@@ -34,6 +34,8 @@ pub struct TempoBuiltPayload {
     inner: EthBuiltPayload<TempoPrimitives>,
     /// The executed block data, used to skip re-execution in the engine tree.
     executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
+    /// Estimated time validators spend reproducing the build work.
+    validation_work_duration: Duration,
 }
 
 impl TempoBuiltPayload {
@@ -41,11 +43,18 @@ impl TempoBuiltPayload {
     pub fn new(
         inner: EthBuiltPayload<TempoPrimitives>,
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
+        validation_work_duration: Duration,
     ) -> Self {
         Self {
             inner,
             executed_block,
+            validation_work_duration,
         }
+    }
+
+    /// Returns the estimated validation work duration for this payload.
+    pub fn validation_work_duration(&self) -> Duration {
+        self.validation_work_duration
     }
 
     /// Converts the built payload into [`TempoExecutionData`].

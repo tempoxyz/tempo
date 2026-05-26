@@ -713,12 +713,15 @@ impl Inner<Init> {
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
 
         let payload_build_elapsed = payload_build_start.elapsed();
+        let payload_validation_elapsed = payload.validation_work_duration();
         let return_delay = self
             .payload_return_time
             .saturating_sub(payload_build_start.saturating_duration_since(propose_start))
-            .saturating_sub(payload_build_elapsed.saturating_add(payload_build_elapsed));
+            .saturating_sub(payload_build_elapsed)
+            .saturating_sub(payload_validation_elapsed);
         debug!(
             build_time = %display_duration(payload_build_elapsed),
+            validation_time = %display_duration(payload_validation_elapsed),
             return_time = %display_duration(return_delay),
             "sleeping before returning proposal"
         );

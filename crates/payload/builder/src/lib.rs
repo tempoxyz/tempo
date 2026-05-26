@@ -7,12 +7,12 @@ mod budget;
 mod metrics;
 mod prewarming;
 
-pub use budget::{BuildTimeMultiplier, DEFAULT_BUILD_TIME_MULTIPLIER};
+pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 
 use crate::{
     budget::{
         BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
-        scaled_elapsed_exceeds_budget,
+        scaled_build_time_multiplier, scaled_elapsed_exceeds_budget,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
@@ -117,7 +117,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         is_dev: bool,
         state_provider_metrics: bool,
         enable_prewarming: bool,
-        build_time_multiplier: BuildTimeMultiplier,
+        build_time_multiplier: f64,
     ) -> Self {
         Self {
             pool,
@@ -130,7 +130,9 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             is_dev,
             state_provider_metrics,
             enable_prewarming,
-            build_time_multiplier: Arc::new(AtomicU64::new(build_time_multiplier.scaled())),
+            build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
+                build_time_multiplier,
+            ))),
         }
     }
 
@@ -523,8 +525,9 @@ where
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
                 {
+                    let idle_start = Instant::now();
                     std::thread::sleep(Duration::from_millis(1));
-                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                    normal_transaction_fill_idle_elapsed += idle_start.elapsed();
                     continue;
                 }
                 let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
@@ -934,6 +937,7 @@ where
             .set(pool_transactions_inclusion_ratio);
 
         let elapsed = start.elapsed();
+        let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
         if payload_build_budget.is_some() {
             self.update_build_time_multiplier(elapsed, elapsed_at_tx_cutoff);
         }
@@ -968,6 +972,7 @@ where
             tx_exec_included = ?normal_included_transaction_execution_elapsed,
             tx_exec_invalid = ?normal_invalid_transaction_execution_elapsed,
             tx_exec_included_total = ?total_included_transaction_execution_elapsed,
+            ?validation_work_duration,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
             ?normal_transaction_fill_overhead_elapsed,
@@ -991,7 +996,8 @@ where
             trie_updates: Arc::new(trie_updates),
         };
 
-        let payload = TempoBuiltPayload::new(eth_payload, Some(executed_block));
+        let payload =
+            TempoBuiltPayload::new(eth_payload, Some(executed_block), validation_work_duration);
 
         drop(db);
         if build_once_with_shared_trie {
@@ -1168,7 +1174,7 @@ mod tests {
         };
         let sealed = Arc::new(SealedBlock::seal_slow(block));
         let eth = EthBuiltPayload::new(sealed, U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None)
+        TempoBuiltPayload::new(eth, None, Duration::ZERO)
     }
 
     #[test]

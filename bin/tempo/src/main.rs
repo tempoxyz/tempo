@@ -776,14 +776,7 @@ mod tests {
             node_cmd.ext.consensus.network_budget.into_duration(),
             Duration::from_millis(75)
         );
-        assert_eq!(
-            node_cmd
-                .ext
-                .node_args
-                .builder_build_time_multiplier
-                .to_string(),
-            "1.35"
-        );
+        assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.35);
 
         let cli = TempoCli::try_parse_from([
             "tempo",
@@ -806,6 +799,17 @@ mod tests {
         assert_eq!(
             node_cmd.ext.consensus.network_budget.into_duration(),
             Duration::from_millis(75)
+        );
+
+        assert!(
+            TempoCli::try_parse_from([
+                "tempo",
+                "node",
+                "--dev",
+                "--builder.build-time-multiplier",
+                "0.99"
+            ])
+            .is_err()
         );
     }
 }

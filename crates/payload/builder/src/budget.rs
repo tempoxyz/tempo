@@ -5,74 +5,27 @@
 //! and block assembly. These helpers learn the relation between tx execution
 //! cutoff time and total builder time.
 
-use std::{fmt, str::FromStr, time::Duration};
+use std::time::Duration;
 
 /// Fixed-point scale for build time multipliers.
 pub(crate) const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
+#[cfg(test)]
 const DEFAULT_BUILD_TIME_MULTIPLIER_SCALED: u64 = 1_350_000;
 const MAX_BUILD_TIME_MULTIPLIER: u64 = 1_700_000;
 /// How quickly the multiplier decays when observed builds get cheaper.
 const BUILD_TIME_MULTIPLIER_DECAY: u64 = 8;
 
 /// Initial estimate of total build time divided by elapsed time at tx cutoff.
-pub const DEFAULT_BUILD_TIME_MULTIPLIER: BuildTimeMultiplier =
-    BuildTimeMultiplier::from_scaled(DEFAULT_BUILD_TIME_MULTIPLIER_SCALED);
+pub const DEFAULT_BUILD_TIME_MULTIPLIER: f64 = 1.35;
 
-/// Total build time divided by elapsed time at tx cutoff.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct BuildTimeMultiplier(u64);
+/// Converts a human-readable multiplier into the fixed-point representation.
+pub(crate) fn scaled_build_time_multiplier(multiplier: f64) -> u64 {
+    assert!(
+        multiplier.is_finite() && multiplier >= 1.0,
+        "build time multiplier must be finite and >= 1.0"
+    );
 
-impl BuildTimeMultiplier {
-    const fn from_scaled(multiplier: u64) -> Self {
-        Self(multiplier)
-    }
-
-    /// Returns the fixed-point representation.
-    pub const fn scaled(self) -> u64 {
-        self.0
-    }
-}
-
-impl Default for BuildTimeMultiplier {
-    fn default() -> Self {
-        DEFAULT_BUILD_TIME_MULTIPLIER
-    }
-}
-
-impl fmt::Display for BuildTimeMultiplier {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        let whole = self.0 / BUILD_TIME_MULTIPLIER_SCALE;
-        let fraction = self.0 % BUILD_TIME_MULTIPLIER_SCALE;
-        if fraction == 0 {
-            return write!(f, "{whole}");
-        }
-
-        let mut fraction = format!("{fraction:06}");
-        while fraction.ends_with('0') {
-            fraction.pop();
-        }
-        write!(f, "{whole}.{fraction}")
-    }
-}
-
-impl FromStr for BuildTimeMultiplier {
-    type Err = String;
-
-    fn from_str(value: &str) -> Result<Self, Self::Err> {
-        let multiplier = value
-            .parse::<f64>()
-            .map_err(|_| "multiplier must be a finite positive number".to_string())?;
-        if !multiplier.is_finite() || multiplier <= 0.0 {
-            return Err("multiplier must be a finite positive number".to_string());
-        }
-
-        let scaled = multiplier * BUILD_TIME_MULTIPLIER_SCALE as f64;
-        if scaled < 1.0 || scaled > u64::MAX as f64 {
-            return Err("multiplier is outside the supported range".to_string());
-        }
-
-        Ok(Self(scaled.round() as u64))
-    }
+    (multiplier * BUILD_TIME_MULTIPLIER_SCALE as f64).round() as u64
 }
 
 /// Returns true when the multiplier-adjusted elapsed time has exhausted `budget`.
@@ -122,8 +75,8 @@ mod tests {
             Some(DEFAULT_BUILD_TIME_MULTIPLIER_SCALED)
         );
         assert_eq!(
-            observed_build_time_multiplier(Duration::from_millis(10), Duration::from_millis(100)),
-            Some(100_000)
+            observed_build_time_multiplier(Duration::from_millis(100), Duration::from_millis(100)),
+            Some(1_000_000)
         );
         assert_eq!(
             observed_build_time_multiplier(Duration::from_millis(250), Duration::from_millis(100)),
@@ -147,15 +100,10 @@ mod tests {
     }
 
     #[test]
-    fn build_multiplier_parses_decimal_values() {
+    fn build_multiplier_scales_decimal_values() {
         assert_eq!(
-            "1.35".parse::<BuildTimeMultiplier>().unwrap().scaled(),
+            scaled_build_time_multiplier(DEFAULT_BUILD_TIME_MULTIPLIER),
             DEFAULT_BUILD_TIME_MULTIPLIER_SCALED
         );
-        assert_eq!(
-            "0.1".parse::<BuildTimeMultiplier>().unwrap().scaled(),
-            100_000
-        );
-        assert!("0".parse::<BuildTimeMultiplier>().is_err());
     }
 }
