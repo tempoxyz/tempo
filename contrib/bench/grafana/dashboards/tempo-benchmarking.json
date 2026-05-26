@@ -569,7 +569,7 @@
           "showLegend": true
         },
         "tooltip": {
-          "hideZeros": false,
+          "hideZeros": true,
           "mode": "multi",
           "sort": "desc"
         }
@@ -582,7 +582,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "label_replace(100 * avg(reth_tempo_payload_builder_total_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) / avg(reth_tempo_payload_builder_payload_build_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
+          "expr": "label_replace((100 * avg(reth_tempo_payload_builder_total_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) / avg(reth_tempo_payload_builder_payload_build_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile)) and on(job, quantile) (avg(reth_tempo_payload_builder_total_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) > 0), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
           "legendFormat": "{{job}} p{{quantile}} execution",
           "range": true,
           "refId": "A"
@@ -593,7 +593,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "label_replace(100 * avg(reth_tempo_payload_builder_payload_finalization_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) / avg(reth_tempo_payload_builder_payload_build_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
+          "expr": "label_replace((100 * avg(reth_tempo_payload_builder_payload_finalization_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) / avg(reth_tempo_payload_builder_payload_build_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile)) and on(job, quantile) (avg(reth_tempo_payload_builder_payload_finalization_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) > 0), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
           "legendFormat": "{{job}} p{{quantile}} finalization",
           "range": true,
           "refId": "B"
@@ -604,7 +604,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "label_replace(100 * clamp_min(avg(reth_tempo_payload_builder_payload_build_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) - avg(reth_tempo_payload_builder_total_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) - avg(reth_tempo_payload_builder_payload_finalization_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), 0) / avg(reth_tempo_payload_builder_payload_build_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
+          "expr": "label_replace((100 * clamp_min(avg(reth_tempo_payload_builder_payload_build_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) - avg(reth_tempo_payload_builder_total_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) - avg(reth_tempo_payload_builder_payload_finalization_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), 0) / avg(reth_tempo_payload_builder_payload_build_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile)) and on(job, quantile) (clamp_min(avg(reth_tempo_payload_builder_payload_build_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) - avg(reth_tempo_payload_builder_total_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) - avg(reth_tempo_payload_builder_payload_finalization_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), 0) > 0), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
           "legendFormat": "{{job}} p{{quantile}} other",
           "range": true,
           "refId": "C"
@@ -615,7 +615,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "label_replace(1000 * avg(reth_tempo_payload_builder_total_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
+          "expr": "label_replace((1000 * avg(reth_tempo_payload_builder_total_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile)) and on(job, quantile) (avg(reth_tempo_payload_builder_total_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) > 0), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
           "legendFormat": "{{job}} p{{quantile}} execution ms",
           "range": true,
           "refId": "D"
@@ -626,7 +626,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "label_replace(1000 * avg(reth_tempo_payload_builder_payload_finalization_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
+          "expr": "label_replace((1000 * avg(reth_tempo_payload_builder_payload_finalization_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile)) and on(job, quantile) (avg(reth_tempo_payload_builder_payload_finalization_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) > 0), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
           "legendFormat": "{{job}} p{{quantile}} finalization ms",
           "range": true,
           "refId": "E"
@@ -637,7 +637,7 @@
             "uid": "Prometheus"
           },
           "editorMode": "code",
-          "expr": "label_replace(1000 * clamp_min(avg(reth_tempo_payload_builder_payload_build_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) - avg(reth_tempo_payload_builder_total_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) - avg(reth_tempo_payload_builder_payload_finalization_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), 0), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
+          "expr": "label_replace((1000 * clamp_min(avg(reth_tempo_payload_builder_payload_build_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) - avg(reth_tempo_payload_builder_total_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) - avg(reth_tempo_payload_builder_payload_finalization_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), 0)) and on(job, quantile) (clamp_min(avg(reth_tempo_payload_builder_payload_build_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) - avg(reth_tempo_payload_builder_total_transaction_execution_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile) - avg(reth_tempo_payload_builder_payload_finalization_duration_seconds{namespace=\"$namespace\", quantile=~\"0.5|0.9|0.99\"}) by (job, quantile), 0) > 0), \"job\", \"$1\", \"job\", \"^$namespace/(.*)\")",
           "legendFormat": "{{job}} p{{quantile}} other ms",
           "range": true,
           "refId": "F"
