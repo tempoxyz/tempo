@@ -856,24 +856,6 @@ def generate-summary [
         }
     }
 
-    let compute_quantile_metric_stats = { |samples: list<any>|
-        let quantile_ms = { |q: string|
-            let values = (
-                $samples
-                    | where { |sample| ($sample.labels | get -o quantile | default "") == $q }
-                    | get value
-                    | each { |v| $v * 1000.0 }
-            )
-            if ($values | length) > 0 { $values | math avg | math round --precision 1 } else { 0.0 }
-        }
-        {
-            n: ($samples | length)
-            p50: (do $quantile_ms "0.5")
-            p90: (do $quantile_ms "0.9")
-            p99: (do $quantile_ms "0.99")
-        }
-    }
-
     let compute_value_stats = { |values: list<any>|
         let sorted_values = ($values | where { |value| $value != null } | sort)
         {
@@ -881,23 +863,6 @@ def generate-summary [
             p50: (percentile $sorted_values 50 | math round --precision 1)
             p90: (percentile $sorted_values 90 | math round --precision 1)
             p99: (percentile $sorted_values 99 | math round --precision 1)
-        }
-    }
-
-    let compute_quantile_value_stats = { |samples: list<any>|
-        let quantile_value = { |q: string|
-            let values = (
-                $samples
-                    | where { |sample| ($sample.labels | get -o quantile | default "") == $q }
-                    | get value
-            )
-            if ($values | length) > 0 { $values | math avg | math round --precision 1 } else { 0.0 }
-        }
-        {
-            n: ($samples | length)
-            p50: (do $quantile_value "0.5")
-            p90: (do $quantile_value "0.9")
-            p99: (do $quantile_value "0.99")
         }
     }
 
@@ -958,14 +923,47 @@ def generate-summary [
         $values
     }
 
+    let counter_delta_total = { |samples: list<any>, metric: string|
+        let counter_samples = ($samples | where name == $metric)
+        if ($counter_samples | length) == 0 {
+            0.0
+        } else {
+            let deltas = (
+                $counter_samples
+                    | group-by { |sample| $sample.labels | to json --raw }
+                    | transpose labels samples
+                    | each { |series|
+                        let points = (
+                            $series.samples
+                                | where { |sample| ($sample | get -o value | default null) != null }
+                                | sort-by unix_ms
+                        )
+                        if ($points | length) > 1 {
+                            let first = ($points | first)
+                            let last = ($points | last)
+                            let delta = ($last.value - $first.value)
+                            if $delta >= 0 { $delta } else { $last.value }
+                        } else { 0.0 }
+                    }
+            )
+            if ($deltas | length) > 0 { $deltas | math sum | math round --precision 0 } else { 0.0 }
+        }
+    }
+
     let metric_sample_names = [
-        "reth_tempo_payload_builder_payload_finalization_duration_seconds"
-        "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds"
-        "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds"
-        "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts"
+        "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum"
+        "reth_tempo_payload_builder_payload_finalization_duration_seconds_count"
+        "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds_sum"
+        "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds_count"
+        "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds_sum"
+        "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds_count"
+        "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_sum"
+        "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_count"
         "reth_tempo_payload_builder_pool_transactions_skipped_total"
-        "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds"
-        "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds"
+        "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds_sum"
+        "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds_count"
+        "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum"
+        "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_count"
         "reth_tempo_payload_builder_payload_build_duration_seconds_sum"
         "reth_tempo_payload_builder_payload_build_duration_seconds_count"
         "reth_consensus_engine_beacon_new_payload_latency_sum"
@@ -975,20 +973,7 @@ def generate-summary [
         "reth_consensus_engine_beacon_new_payload_gas_per_second_sum"
         "reth_consensus_engine_beacon_new_payload_gas_per_second_count"
     ]
-    let metric_sample_match_names = [
-        "reth_tempo_payload_builder_payload_finalization_duration_seconds"
-        "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds"
-        "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds"
-        "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts"
-        "reth_tempo_payload_builder_pool_transactions_skipped_total"
-        "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds"
-        "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds"
-        "reth_tempo_payload_builder_payload_build_duration_seconds"
-        "reth_consensus_engine_beacon_new_payload_latency"
-        "reth_tempo_payload_builder_gas_per_second"
-        "reth_consensus_engine_beacon_new_payload_gas_per_second"
-    ]
-    let metric_sample_match_args = ($metric_sample_match_names | each { |name| ["-e" $name] } | flatten)
+    let metric_sample_match_args = ($metric_sample_names | each { |name| ["-e" $name] } | flatten)
     let has_rg = ((which rg | length) > 0)
 
     let load_metric_samples = { |samples_path: string, samples_gz_path: string|
@@ -1039,24 +1024,22 @@ def generate-summary [
             do $require_counter_values (do $counter_delta_values $metric_samples $metric $scale) $label $metric
         }
         let builder_latency_values = (do $counter_metric_values "reth_tempo_payload_builder_payload_build_duration_seconds" 1000.0)
-        let builder_finish_samples = ($metric_samples | where name == "reth_tempo_payload_builder_payload_finalization_duration_seconds")
-        let builder_included_tx_samples = ($metric_samples | where name == "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds")
-        let builder_invalid_tx_samples = ($metric_samples | where name == "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds")
-        let builder_invalid_tx_execution_attempts_samples = ($metric_samples | where name == "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts")
+        let builder_finish_samples = (do $counter_metric_values "reth_tempo_payload_builder_payload_finalization_duration_seconds" 1000.0)
+        let builder_included_tx_samples = (do $counter_metric_values "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds" 1000.0)
+        let builder_invalid_tx_samples = (do $counter_metric_values "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds" 1000.0)
+        let builder_invalid_tx_execution_attempts_samples = (do $counter_metric_values "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts" 1.0)
         let builder_pool_tx_skip_samples = ($metric_samples | where name == "reth_tempo_payload_builder_pool_transactions_skipped_total")
         let builder_pool_tx_skips_for_reason = { |reason: string|
-            let values = (
+            let samples = (
                 $builder_pool_tx_skip_samples
                     | where { |sample| ($sample.labels | get -o reason | default "") == $reason }
-                    | get value
-                    | where { |value| $value != null }
             )
-            if ($values | length) > 0 { $values | math max | math round --precision 0 } else { 0.0 }
+            do $counter_delta_total $samples "reth_tempo_payload_builder_pool_transactions_skipped_total"
         }
         let builder_invalid_tx_skips = do $builder_pool_tx_skips_for_reason "invalid_tx"
         let builder_nonce_too_low_skips = do $builder_pool_tx_skips_for_reason "nonce_too_low"
-        let builder_fill_overhead_samples = ($metric_samples | where name == "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds")
-        let builder_fill_idle_samples = ($metric_samples | where name == "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds")
+        let builder_fill_overhead_samples = (do $counter_metric_values "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds" 1000.0)
+        let builder_fill_idle_samples = (do $counter_metric_values "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds" 1000.0)
         let validation_latency_values = (do $counter_metric_values "reth_consensus_engine_beacon_new_payload_latency" 1000.0)
         let builder_gas_values = (do $counter_metric_values "reth_tempo_payload_builder_gas_per_second" 1.0)
         let validation_gas_values = (do $counter_metric_values "reth_consensus_engine_beacon_new_payload_gas_per_second" 1.0)
@@ -1211,22 +1194,22 @@ def generate-summary [
 
     let b_builder = do $compute_value_stats $baseline_builder_latency_values
     let f_builder = do $compute_value_stats $feature_builder_latency_values
-    let b_builder_finish = do $compute_quantile_metric_stats $baseline_builder_finish_samples
-    let f_builder_finish = do $compute_quantile_metric_stats $feature_builder_finish_samples
-    let b_builder_included_tx = do $compute_quantile_metric_stats $baseline_builder_included_tx_samples
-    let f_builder_included_tx = do $compute_quantile_metric_stats $feature_builder_included_tx_samples
-    let b_builder_invalid_tx = do $compute_quantile_metric_stats $baseline_builder_invalid_tx_samples
-    let f_builder_invalid_tx = do $compute_quantile_metric_stats $feature_builder_invalid_tx_samples
-    let b_builder_invalid_tx_execution_attempts = do $compute_quantile_value_stats $baseline_builder_invalid_tx_execution_attempts_samples
-    let f_builder_invalid_tx_execution_attempts = do $compute_quantile_value_stats $feature_builder_invalid_tx_execution_attempts_samples
+    let b_builder_finish = do $compute_value_stats $baseline_builder_finish_samples
+    let f_builder_finish = do $compute_value_stats $feature_builder_finish_samples
+    let b_builder_included_tx = do $compute_value_stats $baseline_builder_included_tx_samples
+    let f_builder_included_tx = do $compute_value_stats $feature_builder_included_tx_samples
+    let b_builder_invalid_tx = do $compute_value_stats $baseline_builder_invalid_tx_samples
+    let f_builder_invalid_tx = do $compute_value_stats $feature_builder_invalid_tx_samples
+    let b_builder_invalid_tx_execution_attempts = do $compute_value_stats $baseline_builder_invalid_tx_execution_attempts_samples
+    let f_builder_invalid_tx_execution_attempts = do $compute_value_stats $feature_builder_invalid_tx_execution_attempts_samples
     let b_builder_invalid_tx_skips = if ($baseline_builder_invalid_tx_skips | length) > 0 { $baseline_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
     let f_builder_invalid_tx_skips = if ($feature_builder_invalid_tx_skips | length) > 0 { $feature_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
     let b_builder_nonce_too_low_skips = if ($baseline_builder_nonce_too_low_skips | length) > 0 { $baseline_builder_nonce_too_low_skips | math sum | math round --precision 0 } else { 0.0 }
     let f_builder_nonce_too_low_skips = if ($feature_builder_nonce_too_low_skips | length) > 0 { $feature_builder_nonce_too_low_skips | math sum | math round --precision 0 } else { 0.0 }
-    let b_builder_fill_overhead = do $compute_quantile_metric_stats $baseline_builder_fill_overhead_samples
-    let f_builder_fill_overhead = do $compute_quantile_metric_stats $feature_builder_fill_overhead_samples
-    let b_builder_fill_idle = do $compute_quantile_metric_stats $baseline_builder_fill_idle_samples
-    let f_builder_fill_idle = do $compute_quantile_metric_stats $feature_builder_fill_idle_samples
+    let b_builder_fill_overhead = do $compute_value_stats $baseline_builder_fill_overhead_samples
+    let f_builder_fill_overhead = do $compute_value_stats $feature_builder_fill_overhead_samples
+    let b_builder_fill_idle = do $compute_value_stats $baseline_builder_fill_idle_samples
+    let f_builder_fill_idle = do $compute_value_stats $feature_builder_fill_idle_samples
     let b_validation = do $compute_value_stats $baseline_validation_latency_values
     let f_validation = do $compute_value_stats $feature_validation_latency_values
     let b_builder_gas = do $compute_value_mean $baseline_builder_gas_values

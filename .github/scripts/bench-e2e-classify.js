@@ -61,6 +61,29 @@ const SECTIONS = [
   },
 ];
 
+const BUILDER_DETAIL_ROWS = [
+  ['Finish P50 [ms]', 'builder_finish_p50', v => fmtVal(v, 1)],
+  ['Finish P90 [ms]', 'builder_finish_p90', v => fmtVal(v, 1)],
+  ['Finish P99 [ms]', 'builder_finish_p99', v => fmtVal(v, 1)],
+  ['Included Tx Exec P50 [ms]', 'builder_included_tx_execution_p50', v => fmtVal(v, 1)],
+  ['Included Tx Exec P90 [ms]', 'builder_included_tx_execution_p90', v => fmtVal(v, 1)],
+  ['Included Tx Exec P99 [ms]', 'builder_included_tx_execution_p99', v => fmtVal(v, 1)],
+  ['Invalid Tx Exec P50 [ms]', 'builder_invalid_tx_execution_p50', v => fmtVal(v, 1)],
+  ['Invalid Tx Exec P90 [ms]', 'builder_invalid_tx_execution_p90', v => fmtVal(v, 1)],
+  ['Invalid Tx Exec P99 [ms]', 'builder_invalid_tx_execution_p99', v => fmtVal(v, 1)],
+  ['Invalid Tx Attempts P50', 'builder_invalid_tx_execution_attempts_p50', v => fmtVal(v, 1)],
+  ['Invalid Tx Attempts P90', 'builder_invalid_tx_execution_attempts_p90', v => fmtVal(v, 1)],
+  ['Invalid Tx Attempts P99', 'builder_invalid_tx_execution_attempts_p99', v => fmtVal(v, 1)],
+  ['Invalid Tx Skips', 'builder_invalid_tx_skips', v => fmtVal(v, 0)],
+  ['Nonce Too Low Skips', 'builder_nonce_too_low_skips', v => fmtVal(v, 0)],
+  ['Fill Overhead P50 [ms]', 'builder_fill_overhead_p50', v => fmtVal(v, 1)],
+  ['Fill Overhead P90 [ms]', 'builder_fill_overhead_p90', v => fmtVal(v, 1)],
+  ['Fill Overhead P99 [ms]', 'builder_fill_overhead_p99', v => fmtVal(v, 1)],
+  ['Fill Idle P50 [ms]', 'builder_fill_idle_p50', v => fmtVal(v, 1)],
+  ['Fill Idle P90 [ms]', 'builder_fill_idle_p90', v => fmtVal(v, 1)],
+  ['Fill Idle P99 [ms]', 'builder_fill_idle_p99', v => fmtVal(v, 1)],
+];
+
 function rng(seed) {
   let state = seed >>> 0;
   return () => {
@@ -156,6 +179,29 @@ function fmtChange(change) {
   return `${sign}${change.pct.toFixed(2)}% ${SIG_EMOJI[change.sig] || ''}${ci}`.trim();
 }
 
+function fmtInfoChange(base, feature) {
+  if (!Number.isFinite(base) || !Number.isFinite(feature)) return '';
+  if (base === 0) return feature === 0 ? '0.00%' : 'n/a';
+  const change = pct(base, feature);
+  const sign = change >= 0 ? '+' : '';
+  return `${sign}${change.toFixed(2)}%`;
+}
+
+function appendBuilderDetails(lines, summary) {
+  lines.push('');
+  lines.push('<details><summary>Builder details</summary>');
+  lines.push('');
+  lines.push('| Metric | Baseline | Feature | Delta |');
+  lines.push('|--------|----------|---------|-------|');
+  for (const [label, axis, formatter] of BUILDER_DETAIL_ROWS) {
+    const base = summary.results.baseline[axis];
+    const feature = summary.results.feature[axis];
+    lines.push(`| ${label} | ${formatter(base)} | ${formatter(feature)} | ${fmtInfoChange(base, feature)} |`);
+  }
+  lines.push('');
+  lines.push('</details>');
+}
+
 function buildMarkdown(summary) {
   const c = summary.classification;
   const derekCommand = summary.config?.derek_command || '';
@@ -186,6 +232,7 @@ function buildMarkdown(summary) {
       const f = formatter(summary.results.feature[axis]);
       lines.push(`| ${label} | ${b} | ${f} | ${fmtChange(summary.results.changes[axis])} |`);
     }
+    if (section.title === 'Builder') appendBuilderDetails(lines, summary);
     lines.push('');
   }
   return lines.join('\n');
