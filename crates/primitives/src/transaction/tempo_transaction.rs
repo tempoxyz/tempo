@@ -2160,6 +2160,7 @@ mod compact_tests {
                     }]),
                     allowed_calls: None,
                     witness: None,
+                    admin_account: None,
                 },
                 signature: PrimitiveSignature::P256(P256SignatureWithPreHash {
                     r: b256!("0x1111111111111111111111111111111111111111111111111111111111111111"),

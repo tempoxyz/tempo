@@ -163,9 +163,10 @@ impl From<SelectorRule> for AbiSelectorRule {
 /// Key authorization for provisioning access keys
 ///
 /// Used in TempoTransaction to add a new key to the AccountKeychain precompile.
-/// The transaction must be signed by the root key to authorize adding this access key.
+/// The transaction must be signed by the root key, or by an active admin key when authorizing for
+/// the admin key's account.
 ///
-/// RLP encoding: `[chain_id, key_type, key_id, expiry?, limits?, allowed_calls?, witness?]`
+/// RLP encoding: `[chain_id, key_type, key_id, expiry?, limits?, allowed_calls?, witness?, admin_account?]`
 /// - Non-optional fields come first, followed by optional (trailing) fields
 /// - `expiry`: `None` (omitted or 0x80) = key never expires, `Some(timestamp)` = expires at timestamp
 /// - `limits`: `None` (omitted or 0x80) = unlimited spending, `Some([])` = no spending, `Some([...])` = specific limits
@@ -216,6 +217,12 @@ pub struct KeyAuthorization {
     /// `None` means no witness. `Some(witness)` means the witness field is present, including when
     /// `witness == B256::ZERO`.
     pub witness: Option<B256>,
+
+    /// Account this admin authorization targets.
+    ///
+    /// `None` means this authorization creates a non-admin access key. `Some(account)` means this
+    /// authorization creates an admin key for `account`.
+    pub admin_account: Option<Address>,
 }
 
 impl KeyAuthorization {
@@ -230,6 +237,7 @@ impl KeyAuthorization {
             limits: None,
             allowed_calls: None,
             witness: None,
+            admin_account: None,
         }
     }
 
@@ -274,6 +282,17 @@ impl KeyAuthorization {
         self.witness
     }
 
+    /// Convert this authorization into an account-bound admin-key authorization.
+    pub fn into_admin(mut self, account: Address) -> Self {
+        self.admin_account = Some(account);
+        self
+    }
+
+    /// Returns whether this authorization creates an admin key.
+    pub fn is_admin(&self) -> bool {
+        self.admin_account.is_some()
+    }
+
     /// Computes the authorization message hash for this key authorization.
     pub fn signature_hash(&self) -> B256 {
         let mut buf = Vec::new();
@@ -310,7 +329,10 @@ impl KeyAuthorization {
 
     /// Returns whether this authorization can be encoded with the legacy pre-T3 ABI.
     pub fn is_legacy_compatible(&self) -> bool {
-        !(self.has_periodic_limits() || self.has_call_scopes() || self.has_witness())
+        !(self.has_periodic_limits()
+            || self.has_call_scopes()
+            || self.has_witness()
+            || self.admin_account.is_some())
     }
 
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
@@ -418,6 +440,7 @@ impl<'a> arbitrary::Arbitrary<'a> for KeyAuthorization {
             limits: u.arbitrary()?,
             allowed_calls: u.arbitrary()?,
             witness: u.arbitrary::<Option<[u8; 32]>>()?.map(B256::from),
+            admin_account: u.arbitrary()?,
         })
     }
 }
@@ -559,6 +582,7 @@ mod tests {
             limits,
             allowed_calls: None,
             witness: None,
+            admin_account: None,
         }
     }
 
@@ -787,6 +811,7 @@ mod tests {
             limits: None,
             allowed_calls: None,
             witness: None,
+            admin_account: None,
         }
     }
 

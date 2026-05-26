@@ -2,9 +2,10 @@
 
 pub use IAccountKeychain::{
     IAccountKeychainErrors as AccountKeychainError, IAccountKeychainEvents as AccountKeychainEvent,
-    authorizeKey_0Call as legacyAuthorizeKeyCall, authorizeKey_1Call as authorizeKeyCall,
-    authorizeKey_2Call as authorizeKeyWithWitnessCall, getAllowedCallsReturn,
-    getRemainingLimitWithPeriodCall, getRemainingLimitWithPeriodReturn as getRemainingLimitReturn,
+    authorizeAdminKeyCall, authorizeKey_0Call as legacyAuthorizeKeyCall,
+    authorizeKey_1Call as authorizeKeyCall, authorizeKey_2Call as authorizeKeyWithWitnessCall,
+    getAllowedCallsReturn, getRemainingLimitWithPeriodCall,
+    getRemainingLimitWithPeriodReturn as getRemainingLimitReturn,
 };
 
 crate::sol! {
@@ -78,6 +79,9 @@ crate::sol! {
         /// Emitted when a new key is authorized
         event KeyAuthorized(address indexed account, address indexed publicKey, uint8 signatureType, uint64 expiry);
 
+        /// Emitted when a new admin key is authorized.
+        event AdminKeyAuthorized(address indexed account, address indexed publicKey);
+
         /// Emitted when a key is revoked
         event KeyRevoked(address indexed account, address indexed publicKey);
 
@@ -123,6 +127,14 @@ crate::sol! {
             address keyId,
             SignatureType signatureType,
             KeyRestrictions calldata config,
+            bytes32 witness
+        ) external;
+
+        /// Authorize a new admin key for the caller's account.
+        /// @dev The witness must not be burned for the caller's account. bytes32(0) is valid.
+        function authorizeAdminKey(
+            address keyId,
+            SignatureType signatureType,
             bytes32 witness
         ) external;
 
@@ -198,6 +210,9 @@ crate::sol! {
         /// Returns whether a TIP-1053 key-authorization witness has been manually burned.
         function isKeyAuthorizationWitnessBurned(address account, bytes32 witness) external view returns (bool);
 
+        /// Returns true if `keyId` is the root key or an active admin key for `account`.
+        function isAdminKey(address account, address keyId) external view returns (bool);
+
         /// Get the key used in the current transaction
         /// @return The keyId used in the current transaction
         function getTransactionKey() external view returns (address);
@@ -216,6 +231,7 @@ crate::sol! {
         error SignatureTypeMismatch(uint8 expected, uint8 actual);
         error CallNotAllowed();
         error InvalidCallScope();
+        error InvalidKeyId();
         error InvalidKeyAuthorizationWitness();
         error KeyAuthorizationWitnessAlreadyBurned();
         error LegacyAuthorizeKeySelectorChanged(bytes4 newSelector);

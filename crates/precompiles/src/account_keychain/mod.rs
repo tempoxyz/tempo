@@ -17,7 +17,7 @@ pub use tempo_contracts::precompiles::{
     IAccountKeychain::{
         CallScope, KeyInfo, KeyRestrictions, SelectorRule, SignatureType, TokenLimit,
         burnKeyAuthorizationWitnessCall, getAllowedCallsCall, getKeyCall, getRemainingLimitCall,
-        getRemainingLimitWithPeriodCall, getTransactionKeyCall,
+        getRemainingLimitWithPeriodCall, getTransactionKeyCall, isAdminKeyCall,
         isKeyAuthorizationWitnessBurnedCall, removeAllowedCallsCall, revokeKeyCall,
         setAllowedCallsCall, updateSpendingLimitCall,
     },
@@ -54,6 +54,7 @@ pub fn is_constrained_tip20_selector(selector: [u8; 4]) -> bool {
 /// - bytes 1-8: expiry (u64, little-endian)
 /// - byte 9: enforce_limits (bool)
 /// - byte 10: is_revoked (bool)
+/// - byte 11: is_admin (bool)
 #[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
 pub struct AuthorizedKey {
     /// Signature type: 0 = secp256k1, 1 = P256, 2 = WebAuthn
@@ -65,6 +66,8 @@ pub struct AuthorizedKey {
     /// Whether this key has been revoked. Once revoked, a key cannot be re-authorized
     /// with the same key_id. This prevents replay attacks.
     pub is_revoked: bool,
+    /// Whether this key has admin privileges for keychain management.
+    pub is_admin: bool,
 }
 
 /// Account Keychain contract for managing authorized keys (session keys, spending limits).
@@ -217,6 +220,9 @@ impl AccountKeychain {
         if key_id == Address::ZERO {
             return Err(AccountKeychainError::zero_public_key().into());
         }
+        if self.storage.spec().is_t6() && key_id == msg_sender {
+            return Err(AccountKeychainError::invalid_key_id().into());
+        }
 
         // T0+: Expiry must be in the future (also catches expiry == 0 which means "key doesn't exist")
         if self.storage.spec().is_t0() {
@@ -288,6 +294,7 @@ impl AccountKeychain {
             expiry: config.expiry,
             enforce_limits: config.enforceLimits,
             is_revoked: false,
+            is_admin: false,
         };
 
         self.keys[msg_sender][key_id].write(new_key)?;
@@ -325,6 +332,74 @@ impl AccountKeychain {
         Ok(())
     }
 
+    /// Registers a new unrestricted admin access key. Only newly authorized key IDs can become
+    /// admin keys; existing or previously revoked keys must not be upgraded in place.
+    pub fn authorize_admin_key(
+        &mut self,
+        msg_sender: Address,
+        key_id: Address,
+        signature_type: SignatureType,
+        witness: Option<B256>,
+    ) -> Result<()> {
+        self.ensure_admin_caller(msg_sender)?;
+
+        if key_id == Address::ZERO {
+            return Err(AccountKeychainError::zero_public_key().into());
+        }
+        if key_id == msg_sender {
+            return Err(AccountKeychainError::invalid_key_id().into());
+        }
+
+        let existing_key = self.keys[msg_sender][key_id].read()?;
+        if existing_key.expiry > 0 {
+            return Err(AccountKeychainError::key_already_exists().into());
+        }
+        if existing_key.is_revoked {
+            return Err(AccountKeychainError::key_already_revoked().into());
+        }
+
+        if let Some(witness) = witness {
+            self.ensure_key_authorization_witness_not_burned(msg_sender, witness)?;
+        }
+
+        let signature_type = match signature_type {
+            SignatureType::Secp256k1 => 0,
+            SignatureType::P256 => 1,
+            SignatureType::WebAuthn => 2,
+            _ => return Err(AccountKeychainError::invalid_signature_type().into()),
+        };
+
+        self.keys[msg_sender][key_id].write(AuthorizedKey {
+            signature_type,
+            expiry: u64::MAX,
+            enforce_limits: false,
+            is_revoked: false,
+            is_admin: true,
+        })?;
+
+        if let Some(witness) = witness {
+            self.emit_event(AccountKeychainEvent::KeyAuthorizationWitness(
+                IAccountKeychain::KeyAuthorizationWitness {
+                    account: msg_sender,
+                    witness,
+                },
+            ))?;
+        }
+
+        self.emit_event(AccountKeychainEvent::key_authorized(
+            msg_sender,
+            key_id,
+            signature_type,
+            u64::MAX,
+        ))?;
+        self.emit_event(AccountKeychainEvent::AdminKeyAuthorized(
+            IAccountKeychain::AdminKeyAuthorized {
+                account: msg_sender,
+                publicKey: key_id,
+            },
+        ))
+    }
+
     /// Burns a TIP-1053 witness without authorizing a key.
     pub fn burn_key_authorization_witness(
         &mut self,
@@ -344,6 +419,9 @@ impl AccountKeychain {
     /// - `KeyNotFound` — no key registered with this ID
     pub fn revoke_key(&mut self, msg_sender: Address, call: revokeKeyCall) -> Result<()> {
         self.ensure_admin_caller(msg_sender)?;
+        if self.storage.spec().is_t6() && call.keyId == msg_sender {
+            return Err(AccountKeychainError::invalid_key_id().into());
+        }
 
         let key = self.keys[msg_sender][call.keyId].read()?;
 
@@ -385,6 +463,9 @@ impl AccountKeychain {
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let mut key = self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
+        if self.storage.spec().is_t6() && key.is_admin {
+            return Err(AccountKeychainError::invalid_key_id().into());
+        }
 
         // If this key had unlimited spending (enforce_limits=false), enable limits now
         if !key.enforce_limits {
@@ -499,7 +580,10 @@ impl AccountKeychain {
         self.ensure_admin_caller(msg_sender)?;
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
+        let key = self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
+        if self.storage.spec().is_t6() && key.is_admin {
+            return Err(AccountKeychainError::invalid_key_id().into());
+        }
 
         let key_hash = Self::spending_limit_key(msg_sender, call.keyId);
         let scopes = call.scopes;
@@ -526,7 +610,10 @@ impl AccountKeychain {
         self.ensure_admin_caller(msg_sender)?;
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
+        let key = self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
+        if self.storage.spec().is_t6() && key.is_admin {
+            return Err(AccountKeychainError::invalid_key_id().into());
+        }
 
         let key_hash = Self::spending_limit_key(msg_sender, call.keyId);
         let current_mode = self.key_scopes[key_hash].is_scoped.read()?;
@@ -620,6 +707,11 @@ impl AccountKeychain {
         call: isKeyAuthorizationWitnessBurnedCall,
     ) -> Result<bool> {
         self.key_authorization_witnesses[call.account][call.witness].read()
+    }
+
+    /// Returns true for the root key or for an active admin access key.
+    pub fn is_admin_key(&self, call: isAdminKeyCall) -> Result<bool> {
+        self.is_admin_key_for(call.account, call.keyId)
     }
 
     /// Returns the access key used to authorize the current transaction (`Address::ZERO` = root key).
@@ -1004,7 +1096,11 @@ impl AccountKeychain {
     fn ensure_admin_caller(&self, msg_sender: Address) -> Result<()> {
         let transaction_key = self.transaction_key.t_read()?;
         if !transaction_key.is_zero() {
-            return Err(AccountKeychainError::unauthorized_caller().into());
+            if !self.storage.spec().is_t6()
+                || !self.is_admin_key_for(msg_sender, transaction_key)?
+            {
+                return Err(AccountKeychainError::unauthorized_caller().into());
+            }
         }
 
         if self.storage.spec().is_t2() {
@@ -1015,6 +1111,17 @@ impl AccountKeychain {
         }
 
         Ok(())
+    }
+
+    /// Internal predicate for root/admin status.
+    pub fn is_admin_key_for(&self, account: Address, key_id: Address) -> Result<bool> {
+        if key_id == account {
+            return Ok(true);
+        }
+
+        let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
+        let key = self.keys[account][key_id].read()?;
+        Ok(key.expiry != 0 && !key.is_revoked && current_timestamp < key.expiry && key.is_admin)
     }
 
     fn ensure_key_authorization_witness_not_burned(
@@ -1472,8 +1579,197 @@ mod tests {
         }
     }
 
+    fn assert_invalid_key_id(error: TempoPrecompileError) {
+        match error {
+            TempoPrecompileError::AccountKeychainError(e) => {
+                assert!(
+                    matches!(e, AccountKeychainError::InvalidKeyId(_)),
+                    "Expected InvalidKeyId error, got: {e:?}"
+                );
+            }
+            _ => panic!("Expected AccountKeychainError, got: {error:?}"),
+        }
+    }
+
     fn unrestricted_restrictions() -> KeyRestrictions {
         tempo_alloy::provider::keychain::KeyRestrictions::default().into()
+    }
+
+    #[test]
+    fn test_t6_root_authorizes_admin_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let account = Address::random();
+        let admin_key = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+
+            keychain.authorize_admin_key(account, admin_key, SignatureType::P256, None)?;
+
+            let key = keychain.keys[account][admin_key].read()?;
+            assert_eq!(key.signature_type, SignatureType::P256 as u8);
+            assert_eq!(key.expiry, u64::MAX);
+            assert!(!key.enforce_limits);
+            assert!(!key.is_revoked);
+            assert!(key.is_admin);
+            assert!(keychain.is_admin_key(isAdminKeyCall {
+                account,
+                keyId: account
+            })?);
+            assert!(keychain.is_admin_key(isAdminKeyCall {
+                account,
+                keyId: admin_key
+            })?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t6_admin_key_can_authorize_and_revoke_keys() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let account = Address::random();
+        let admin_key = Address::random();
+        let child_key = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            keychain.authorize_admin_key(account, admin_key, SignatureType::Secp256k1, None)?;
+
+            keychain.set_transaction_key(admin_key)?;
+            authorize_key(
+                &mut keychain,
+                account,
+                authorizeKeyCall {
+                    keyId: child_key,
+                    signatureType: SignatureType::WebAuthn,
+                    config: unrestricted_restrictions(),
+                },
+            )?;
+            assert!(keychain.keys[account][child_key].read()?.expiry > 0);
+
+            keychain.revoke_key(account, revokeKeyCall { keyId: admin_key })?;
+            assert!(!keychain.is_admin_key(isAdminKeyCall {
+                account,
+                keyId: admin_key
+            })?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t6_non_admin_key_cannot_authorize_keys() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let account = Address::random();
+        let access_key = Address::random();
+        let child_key = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            authorize_key(
+                &mut keychain,
+                account,
+                authorizeKeyCall {
+                    keyId: access_key,
+                    signatureType: SignatureType::Secp256k1,
+                    config: unrestricted_restrictions(),
+                },
+            )?;
+
+            keychain.set_transaction_key(access_key)?;
+            let result = authorize_key(
+                &mut keychain,
+                account,
+                authorizeKeyCall {
+                    keyId: child_key,
+                    signatureType: SignatureType::Secp256k1,
+                    config: unrestricted_restrictions(),
+                },
+            );
+
+            assert_unauthorized_error(result.expect_err("non-admin key must not authorize keys"));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t6_admin_key_restrictions_and_root_slot_rejected() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let account = Address::random();
+        let admin_key = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            keychain.authorize_admin_key(account, admin_key, SignatureType::Secp256k1, None)?;
+
+            assert_invalid_key_id(
+                keychain
+                    .update_spending_limit(
+                        account,
+                        updateSpendingLimitCall {
+                            keyId: admin_key,
+                            token,
+                            newLimit: U256::from(1),
+                        },
+                    )
+                    .expect_err("admin keys cannot receive spending limits"),
+            );
+
+            assert_invalid_key_id(
+                keychain
+                    .revoke_key(account, revokeKeyCall { keyId: account })
+                    .expect_err("root key cannot be revoked"),
+            );
+
+            assert_invalid_key_id(
+                keychain
+                    .authorize_admin_key(account, account, SignatureType::Secp256k1, None)
+                    .expect_err("root key cannot be registered as an admin access key"),
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t6_existing_key_cannot_become_admin() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let account = Address::random();
+        let access_key = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            authorize_key(
+                &mut keychain,
+                account,
+                authorizeKeyCall {
+                    keyId: access_key,
+                    signatureType: SignatureType::Secp256k1,
+                    config: unrestricted_restrictions(),
+                },
+            )?;
+
+            let result =
+                keychain.authorize_admin_key(account, access_key, SignatureType::Secp256k1, None);
+            assert_eq!(
+                result.expect_err("existing key must not become admin"),
+                AccountKeychainError::key_already_exists().into()
+            );
+
+            Ok(())
+        })
     }
 
     #[test]
@@ -3534,6 +3830,7 @@ mod tests {
                 expiry: u64::MAX,
                 enforce_limits: true,
                 is_revoked: false,
+                is_admin: false,
             })?;
             keychain.spending_limits[limit_key][token].write(SpendingLimitState {
                 remaining: U256::from(90),

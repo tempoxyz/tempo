@@ -1379,6 +1379,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforce_limits: true,
                     is_revoked: false,
+                    is_admin: false,
                 })?;
                 let limit_key = AccountKeychain::spending_limit_key(account, key_id);
                 keychain.spending_limits[limit_key][fee_token].write(limit_state)?;
@@ -2370,6 +2371,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforce_limits: true,
                     is_revoked: false,
+                    is_admin: false,
                 })
             })
             .unwrap();
@@ -2405,6 +2407,7 @@ mod tests {
                     expiry: u64::MAX,
                     enforce_limits: false,
                     is_revoked: false,
+                    is_admin: false,
                 })
             })
             .unwrap();

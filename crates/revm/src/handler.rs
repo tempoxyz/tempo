@@ -1147,6 +1147,54 @@ where
             }
 
             if let Some(key_auth) = tempo_tx_env.key_authorization.as_ref() {
+                let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
+                    override_key_id
+                } else {
+                    keychain_sig
+                        .key_id(&tempo_tx_env.signature_hash)
+                        .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+                };
+
+                if cfg.spec.is_t6() && access_key_addr != key_auth.key_id {
+                    let stored_key_expiry = StorageCtx::enter_precompile(
+                        journal,
+                        block,
+                        cfg,
+                        tx,
+                        |mut keychain: AccountKeychain| {
+                            let sig_type = spec
+                                .is_t1()
+                                .then_some(keychain_sig.signature.signature_type().into());
+
+                            let key = keychain
+                                .validate_keychain_authorization(
+                                    *user_address,
+                                    access_key_addr,
+                                    block.timestamp().to::<u64>(),
+                                    sig_type,
+                                )
+                                .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
+                                    reason: format!("{e:?}"),
+                                })?;
+
+                            if !key.is_admin {
+                                return Err(
+                                    TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys
+                                        .into(),
+                                );
+                            }
+
+                            keychain
+                                .set_transaction_key(access_key_addr)
+                                .map_err(|e| EVMError::Custom(e.to_string()))?;
+
+                            Ok::<_, EVMError<_, TempoInvalidTransaction>>(key.expiry)
+                        },
+                    )?;
+
+                    evm.key_expiry = Some(stored_key_expiry);
+                }
+
                 // If this is a same tx auth+use, validate that spending limit is enough to cover the fee.
                 //
                 // `collectFeePreTx` would not validate the spending limit because the key is not authorized yet and we are not setting the transient key_id.
@@ -1217,6 +1265,36 @@ where
                 )?;
 
                 evm.key_expiry = Some(stored_key_expiry);
+            }
+        }
+
+        if cfg.spec.is_t6()
+            && let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
+            && let Some(key_auth) = tempo_tx_env.key_authorization.as_ref()
+        {
+            let auth_signer = key_auth
+                .recover_signer()
+                .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
+            if auth_signer != tx.caller {
+                let is_admin = StorageCtx::enter_precompile(
+                    journal,
+                    block,
+                    cfg,
+                    tx,
+                    |keychain: AccountKeychain| {
+                        keychain
+                            .is_admin_key_for(tx.caller, auth_signer)
+                            .map_err(|e| EVMError::Custom(e.to_string()))
+                    },
+                )?;
+
+                if !is_admin {
+                    return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
+                        expected: tx.caller,
+                        actual: auth_signer,
+                    }
+                    .into());
+                }
             }
         }
 
@@ -1375,14 +1453,23 @@ where
                     allowedCalls: precompile_allowed_calls,
                 };
 
-                // Call precompile to authorize the key (same phase as nonce increment)
-                let result = keychain.authorize_key(
-                    tx.caller,
-                    access_key_addr,
-                    signature_type,
-                    config,
-                    key_auth.witness(),
-                );
+                // Call precompile to authorize the key (same phase as nonce increment).
+                let result = if key_auth.is_admin() {
+                    keychain.authorize_admin_key(
+                        tx.caller,
+                        access_key_addr,
+                        signature_type,
+                        key_auth.witness(),
+                    )
+                } else {
+                    keychain.authorize_key(
+                        tx.caller,
+                        access_key_addr,
+                        signature_type,
+                        config,
+                        key_auth.witness(),
+                    )
+                };
 
                 match result {
                     // all is good, we can do execution.
@@ -1612,8 +1699,8 @@ where
             }
 
             if let Some(key_auth) = &aa_env.key_authorization {
-                // Check if this TX is using a Keychain signature (access key)
-                // Access keys cannot authorize new keys UNLESS it's the same key being authorized (same-tx auth+use)
+                // Check if this TX is using a Keychain signature (access key). Non-admin access
+                // keys cannot authorize other keys; T6 admin keys can.
                 if let Some(keychain_sig) = aa_env.signature.as_keychain() {
                     // Use override_key_id if provided (for gas estimation), otherwise recover from signature
                     let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id {
@@ -1625,8 +1712,8 @@ where
                             .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
                     };
 
-                    // Only allow if authorizing the same key that's being used (same-tx auth+use)
-                    if access_key_addr != key_auth.key_id {
+                    let same_tx_auth_use = access_key_addr == key_auth.key_id;
+                    if !same_tx_auth_use && !cfg.spec.is_t6() {
                         return Err(
                             TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into()
                         );
@@ -1643,21 +1730,53 @@ where
                     }
                 }
 
-                // Validate that the KeyAuthorization is signed by the root account
-                let root_account = &tx.caller;
+                if key_auth.admin_account.is_some() {
+                    if !cfg.spec.is_t6() {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                            reason: "admin key authorization fields are not active before T6"
+                                .to_string(),
+                        }
+                        .into());
+                    }
 
-                // Recover the signer of the KeyAuthorization
-                let auth_signer = key_auth.recover_signer().map_err(|_| {
-                    TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
-                })?;
+                    if key_auth.expiry.is_some()
+                        || key_auth.limits.is_some()
+                        || key_auth.allowed_calls.is_some()
+                    {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                                reason: "admin key authorizations cannot carry expiry, limits, or call scopes"
+                                    .to_string(),
+                        }
+                        .into());
+                    }
 
-                // Verify the KeyAuthorization is signed by the root account
-                if auth_signer != *root_account {
-                    return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
-                        expected: *root_account,
-                        actual: auth_signer,
+                    if key_auth.admin_account != Some(tx.caller) {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                            reason: "admin key authorization account mismatch".to_string(),
+                        }
+                        .into());
+                    }
+                }
+
+                if cfg.spec.is_t6() && key_auth.key_id == tx.caller {
+                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                        reason: "key authorization key_id cannot equal account".to_string(),
                     }
                     .into());
+                }
+
+                if !cfg.spec.is_t6() {
+                    let auth_signer = key_auth.recover_signer().map_err(|_| {
+                        TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
+                    })?;
+
+                    if auth_signer != tx.caller {
+                        return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
+                            expected: tx.caller,
+                            actual: auth_signer,
+                        }
+                        .into());
+                    }
                 }
 
                 // Validate KeyAuthorization chain_id.

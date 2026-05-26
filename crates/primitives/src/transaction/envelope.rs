@@ -1024,6 +1024,7 @@ mod tests {
                     limits,
                     allowed_calls: None,
                     witness: None,
+                    admin_account: None,
                 },
                 signature: PrimitiveSignature::Secp256k1(Signature::test_signature()),
             }),
