@@ -8,7 +8,7 @@ use crate::{
 };
 use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
-    Address, B256, Log, TxHash,
+    Address, B256, Log, TxHash, U256,
     map::{AddressMap, AddressSet, B256Map, B256Set},
 };
 use alloy_sol_types::SolEvent;
@@ -336,10 +336,23 @@ impl Tip20PoolEvent {
             ITIP20::QuoteTokenUpdate::SIGNATURE_HASH => {
                 decode_event::<ITIP20::QuoteTokenUpdate>(log).map(|_| Self::QuoteTokenUpdate)
             }
-            ITIP20::Transfer::SIGNATURE_HASH => decode_event(log).map(Self::Transfer),
+            ITIP20::Transfer::SIGNATURE_HASH => decode_tip20_transfer(log).map(Self::Transfer),
             _ => None,
         }
     }
+}
+
+fn decode_tip20_transfer(log: &Log) -> Option<ITIP20::Transfer> {
+    let topics = log.topics();
+    if topics.len() != 3 || log.data.data.len() != 32 {
+        return None;
+    }
+
+    Some(ITIP20::Transfer {
+        from: Address::from_word(topics[1]),
+        to: Address::from_word(topics[2]),
+        amount: U256::from_be_slice(&log.data.data),
+    })
 }
 
 fn first_topic(log: &Log) -> Option<B256> {
