@@ -69,6 +69,15 @@ pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
     inner: Inner<TState>,
 }
 
+struct BuildProposalArgs<'a> {
+    propose_start: Instant,
+    parent_view: View,
+    parent_digest: Digest,
+    round: Round,
+    payload_id_rx: &'a mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>,
+    leader: PublicKey,
+}
+
 impl<TContext, TState> Actor<TContext, TState> {
     pub(super) fn mailbox(&self) -> &Mailbox {
         &self.inner.my_mailbox
@@ -339,12 +348,14 @@ impl Inner<Init> {
 
                 let mut proposal = Box::pin(self.clone().build_proposal(
                     context.clone(),
-                    propose_start,
-                    parent_view,
-                    parent_digest,
-                    round,
-                    &mut payload_id_rx,
-                    leader,
+                    BuildProposalArgs {
+                        propose_start,
+                        parent_view,
+                        parent_digest,
+                        round,
+                        payload_id_rx: &mut payload_id_rx,
+                        leader,
+                    },
                 ));
 
                 let (block, payload_return_time) = tokio::select! {
@@ -511,13 +522,17 @@ impl Inner<Init> {
     async fn build_proposal<TContext: Pacer>(
         self,
         context: TContext,
-        propose_start: Instant,
-        parent_view: View,
-        parent_digest: Digest,
-        round: Round,
-        payload_id_rx: &mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>,
-        leader: PublicKey,
+        args: BuildProposalArgs<'_>,
     ) -> eyre::Result<(Block, Option<SystemTime>)> {
+        let BuildProposalArgs {
+            propose_start,
+            parent_view,
+            parent_digest,
+            round,
+            payload_id_rx,
+            leader,
+        } = args;
+
         let parent = get_parent(
             &self.execution_node,
             round,

@@ -30,9 +30,9 @@ pub(crate) fn scaled_build_time_multiplier(multiplier: f64) -> u64 {
 
 fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
     Duration::from_nanos(
-        (elapsed.as_nanos().saturating_mul(multiplier as u128)
-            / BUILD_TIME_MULTIPLIER_SCALE as u128)
-            .min(u64::MAX as u128) as u64,
+        (elapsed.as_nanos().saturating_mul(u128::from(multiplier))
+            / u128::from(BUILD_TIME_MULTIPLIER_SCALE))
+        .min(u128::from(u64::MAX)) as u64,
     )
 }
 
@@ -62,9 +62,9 @@ pub(crate) fn observed_build_time_multiplier(
 
     let multiplier = total_work
         .as_nanos()
-        .saturating_mul(BUILD_TIME_MULTIPLIER_SCALE as u128)
+        .saturating_mul(u128::from(BUILD_TIME_MULTIPLIER_SCALE))
         / work_at_tx_cutoff.as_nanos();
-    Some(multiplier.min(MAX_BUILD_TIME_MULTIPLIER as u128) as u64)
+    Some(multiplier.min(u128::from(MAX_BUILD_TIME_MULTIPLIER)) as u64)
 }
 
 /// Updates the multiplier, immediately rising but slowly decaying.

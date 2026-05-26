@@ -108,16 +108,37 @@ pub struct TempoPayloadBuilder<Provider> {
     build_time_multiplier: Arc<AtomicU64>,
 }
 
+/// Runtime settings for the Tempo payload builder.
+#[derive(Debug, Clone, Copy)]
+pub struct TempoPayloadBuilderConfig {
+    /// Whether the node is configured in `--dev` miner mode.
+    pub is_dev: bool,
+    /// Whether to enable state provider metrics.
+    pub state_provider_metrics: bool,
+    /// Whether to enable prewarming of best transactions.
+    pub enable_prewarming: bool,
+    /// Initial estimate of total replayable build work divided by work at tx cutoff.
+    pub build_time_multiplier: f64,
+}
+
+impl Default for TempoPayloadBuilderConfig {
+    fn default() -> Self {
+        Self {
+            is_dev: false,
+            state_provider_metrics: false,
+            enable_prewarming: false,
+            build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+        }
+    }
+}
+
 impl<Provider> TempoPayloadBuilder<Provider> {
     pub fn new(
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
         executor: TaskExecutor,
         evm_config: TempoEvmConfig,
-        is_dev: bool,
-        state_provider_metrics: bool,
-        enable_prewarming: bool,
-        build_time_multiplier: f64,
+        config: TempoPayloadBuilderConfig,
     ) -> Self {
         Self {
             pool,
@@ -127,11 +148,11 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             highest_invalid_subblock: Default::default(),
-            is_dev,
-            state_provider_metrics,
-            enable_prewarming,
+            is_dev: config.is_dev,
+            state_provider_metrics: config.state_provider_metrics,
+            enable_prewarming: config.enable_prewarming,
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
-                build_time_multiplier,
+                config.build_time_multiplier,
             ))),
         }
     }

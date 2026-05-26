@@ -38,7 +38,9 @@ use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemo
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::TempoConsensus;
 use tempo_evm::TempoEvmConfig;
-use tempo_payload_builder::{DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder};
+use tempo_payload_builder::{
+    DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
+};
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
@@ -558,10 +560,12 @@ where
             ctx.provider().clone(),
             ctx.task_executor().clone(),
             evm_config,
-            ctx.is_dev(),
-            self.state_provider_metrics,
-            self.enable_prewarming,
-            self.build_time_multiplier,
+            TempoPayloadBuilderConfig {
+                is_dev: ctx.is_dev(),
+                state_provider_metrics: self.state_provider_metrics,
+                enable_prewarming: self.enable_prewarming,
+                build_time_multiplier: self.build_time_multiplier,
+            },
         ))
     }
 }
