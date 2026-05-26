@@ -461,6 +461,10 @@ impl AccountKeychain {
     ) -> Result<()> {
         self.ensure_admin_caller(msg_sender)?;
 
+        if self.storage.spec().is_t6() && call.keyId == msg_sender {
+            return Err(AccountKeychainError::invalid_key_id().into());
+        }
+
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let mut key = self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
         if self.storage.spec().is_t6() && key.is_admin {
@@ -579,6 +583,10 @@ impl AccountKeychain {
 
         self.ensure_admin_caller(msg_sender)?;
 
+        if self.storage.spec().is_t6() && call.keyId == msg_sender {
+            return Err(AccountKeychainError::invalid_key_id().into());
+        }
+
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let key = self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
         if self.storage.spec().is_t6() && key.is_admin {
@@ -608,6 +616,10 @@ impl AccountKeychain {
         call: removeAllowedCallsCall,
     ) -> Result<()> {
         self.ensure_admin_caller(msg_sender)?;
+
+        if self.storage.spec().is_t6() && call.keyId == msg_sender {
+            return Err(AccountKeychainError::invalid_key_id().into());
+        }
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let key = self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
@@ -1777,6 +1789,82 @@ mod tests {
                 keychain
                     .authorize_admin_key(account, account, SignatureType::Secp256k1, None)
                     .expect_err("root key cannot be registered as an admin access key"),
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t6_restriction_mutators_reject_root_slot() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let account = Address::random();
+        let token = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+
+            assert_invalid_key_id(
+                keychain
+                    .update_spending_limit(
+                        account,
+                        updateSpendingLimitCall {
+                            keyId: account,
+                            token,
+                            newLimit: U256::from(1),
+                        },
+                    )
+                    .expect_err("root slot cannot receive spending limits"),
+            );
+
+            assert_invalid_key_id(
+                keychain
+                    .set_allowed_calls(
+                        account,
+                        setAllowedCallsCall {
+                            keyId: account,
+                            scopes: vec![CallScope {
+                                target: Address::random(),
+                                selectorRules: vec![],
+                            }],
+                        },
+                    )
+                    .expect_err("root slot cannot receive call scopes"),
+            );
+
+            assert_invalid_key_id(
+                keychain
+                    .remove_allowed_calls(
+                        account,
+                        removeAllowedCallsCall {
+                            keyId: account,
+                            target: Address::random(),
+                        },
+                    )
+                    .expect_err("root slot cannot remove call scopes"),
+            );
+
+            keychain.keys[account][account].write(AuthorizedKey {
+                signature_type: SignatureType::Secp256k1 as u8,
+                expiry: u64::MAX,
+                enforce_limits: false,
+                is_revoked: false,
+                is_admin: false,
+            })?;
+
+            assert_invalid_key_id(
+                keychain
+                    .update_spending_limit(
+                        account,
+                        updateSpendingLimitCall {
+                            keyId: account,
+                            token,
+                            newLimit: U256::from(1),
+                        },
+                    )
+                    .expect_err("legacy self-key row cannot receive spending limits"),
             );
 
             Ok(())
