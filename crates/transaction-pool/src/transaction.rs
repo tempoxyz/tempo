@@ -41,6 +41,8 @@ pub struct TempoPooledTransaction {
     expiring_nonce_slot: OnceLock<Option<U256>>,
     /// Cached prepared [`TempoTxEnv`] for payload building.
     tx_env: OnceLock<TempoTxEnv>,
+    /// Cached recovered transaction handle for payload execution.
+    recovered_tx: OnceLock<Arc<Recovered<TempoTxEnvelope>>>,
     /// Keychain key expiry timestamp (set during validation for keychain-signed txs).
     ///
     /// `Some(expiry)` for keychain transactions where expiry < u64::MAX (finite expiry).
@@ -84,6 +86,7 @@ impl TempoPooledTransaction {
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
+            recovered_tx: OnceLock::new(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
@@ -210,15 +213,21 @@ impl TempoPooledTransaction {
         self.tx_env().clone()
     }
 
+    fn recovered_tx(&self) -> Arc<Recovered<TempoTxEnvelope>> {
+        self.recovered_tx
+            .get_or_init(|| Arc::new(self.inner.transaction.clone()))
+            .clone()
+    }
+
     /// Returns a [`WithTxEnv`] wrapper by cloning the cached [`TempoTxEnv`] and
-    /// recovered transaction.
+    /// sharing the cached recovered transaction.
     ///
-    /// This avoids cloning the full pooled transaction when the caller only
-    /// needs an owned executable transaction.
+    /// This avoids cloning the full recovered transaction each time the payload
+    /// builder executes a pooled transaction.
     pub fn clone_into_with_tx_env(&self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
         WithTxEnv {
             tx_env: self.clone_tx_env(),
-            tx: Arc::new(self.inner.transaction.clone()),
+            tx: self.recovered_tx(),
         }
     }
 
