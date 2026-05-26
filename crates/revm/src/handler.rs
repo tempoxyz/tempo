@@ -2123,10 +2123,8 @@ pub fn get_token_balance<JOURNAL>(
 where
     JOURNAL: JournalTr,
 {
-    // Address has already been validated as having TIP20 prefix
-    journal.load_account(token)?;
-    let balance_slot = TIP20Token::from_address(token)
-        .expect("TIP20 prefix already validated")
+    // SAFETY: callers validate the TIP20 prefix before requesting a token balance.
+    let balance_slot = TIP20Token::from_address_unchecked(token)
         .balances[sender]
         .slot();
     let balance = journal.sload(token, balance_slot)?.data;

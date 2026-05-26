@@ -305,7 +305,10 @@ pub trait TempoStateAccess<M = ()> {
     {
         self.with_read_only_storage_ctx(spec, || {
             // Load the token balance for the given account.
-            TIP20Token::from_address(token)?.balances[account].read()
+            // SAFETY: callers validate the TIP20 prefix before requesting a token balance.
+            Ok(TIP20Token::from_address_unchecked(token)
+                .balances[account]
+                .read()?)
         })
     }
 }
