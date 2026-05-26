@@ -238,9 +238,8 @@ impl PausedFeeTokenPool {
                     entry
                         .tx
                         .transaction
-                        .inner()
-                        .fee_payer(sender)
-                        .map_or(true, |fee_payer| fee_payer == sender)
+                        .fee_payer()
+                        .is_none_or(|fee_payer| fee_payer == sender)
                 } else {
                     false
                 };

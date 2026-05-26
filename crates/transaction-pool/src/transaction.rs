@@ -53,6 +53,8 @@ pub struct TempoPooledTransaction {
     /// Used by `keychain_subject()` so pool maintenance matches against the same token
     /// that was validated without requiring state access.
     resolved_fee_token: OnceLock<Address>,
+    /// Cached fee payer recovered from the transaction signature, if valid.
+    fee_payer: OnceLock<Option<Address>>,
     /// Cached TIP20 balance storage slot for the fee payer.
     ///
     /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
@@ -90,6 +92,7 @@ impl TempoPooledTransaction {
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
+            fee_payer: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
         }
     }
@@ -286,6 +289,14 @@ impl TempoPooledTransaction {
             .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN))
     }
 
+    /// Returns the recovered fee payer, caching successful recovery for repeated
+    /// pool maintenance and payload-builder balance checks.
+    pub fn fee_payer(&self) -> Option<Address> {
+        *self
+            .fee_payer
+            .get_or_init(|| self.inner().fee_payer(self.sender()).ok())
+    }
+
     /// Returns the `(fee_token, balance_slot)` pair for this transaction's fee payer,
     /// lazily computed and cached on first access.
     pub fn fee_balance_slot(&self) -> Option<(Address, U256)> {
@@ -293,7 +304,7 @@ impl TempoPooledTransaction {
             let fee_token = self
                 .resolved_fee_token()
                 .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
-            let fee_payer = self.inner().fee_payer(self.sender()).ok()?;
+            let fee_payer = self.fee_payer()?;
             let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
             Some((fee_token, slot))
         })

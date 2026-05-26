@@ -292,8 +292,7 @@ where
                 && let Some(ref mut provider) = state_provider
             {
                 let fee_token = tx.transaction.effective_fee_token();
-                let Ok(fee_payer) = tx.transaction.inner().fee_payer(tx.transaction.sender())
-                else {
+                let Some(fee_payer) = tx.transaction.fee_payer() else {
                     continue;
                 };
 
@@ -328,11 +327,7 @@ where
                 && let Some(ref mut provider) = state_provider
             {
                 let fee_token = tx.transaction.effective_fee_token();
-                let fee_payer = tx
-                    .transaction
-                    .inner()
-                    .fee_payer(tx.transaction.sender())
-                    .unwrap_or(tx.transaction.sender());
+                let fee_payer = tx.transaction.fee_payer().unwrap_or(tx.transaction.sender());
 
                 // Check if any blacklist addition applies to this transaction's fee payer
                 let mut sender_evicted = false;
@@ -374,11 +369,7 @@ where
                 && let Some(ref mut provider) = state_provider
             {
                 let fee_token = tx.transaction.effective_fee_token();
-                let fee_payer = tx
-                    .transaction
-                    .inner()
-                    .fee_payer(tx.transaction.sender())
-                    .unwrap_or(tx.transaction.sender());
+                let fee_payer = tx.transaction.fee_payer().unwrap_or(tx.transaction.sender());
 
                 let mut sender_evicted = false;
                 for &(whitelist_policy_id, unwhitelisted_account) in &updates.whitelist_removals {
