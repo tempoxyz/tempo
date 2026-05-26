@@ -1031,11 +1031,6 @@ def generate-summary [
             } else {
                 $b | get timestamp_ms
             }
-            let latency_ms = if (($b | get -o latency_ms | default null) != null) {
-                $b | get latency_ms
-            } else {
-                $b | get -o block_time_ms | default null
-            }
             {
                 number: ($b | get number)
                 timestamp: $timestamp
@@ -1043,7 +1038,7 @@ def generate-summary [
                 ok_count: ($b | get -o ok_count | default $tx_count)
                 err_count: ($b | get -o err_count | default 0)
                 gas_used: ($b | get gas_used)
-                latency_ms: $latency_ms
+                block_time_ms: ($b | get -o block_time_ms | default null)
             }
         })
         if ($blocks | length) == 0 {
@@ -1053,9 +1048,7 @@ def generate-summary [
 
         let sorted_blocks = ($blocks | sort-by timestamp)
         let timestamps = ($sorted_blocks | get timestamp)
-        let block_intervals = if ($timestamps | length) > 1 {
-            $timestamps | window 2 | each { |w| ($w | last) - ($w | first) }
-        } else { [] }
+        let block_intervals = ($sorted_blocks | where block_time_ms != null | get block_time_ms)
 
         # Attribute each interval's throughput to the later block so TPS quantiles stay
         # within a single run and avoid the inter-run gaps that skew merged samples.
@@ -1109,11 +1102,7 @@ def generate-summary [
         let total_ok = ($blocks | get ok_count | math sum)
         let total_err = ($blocks | get err_count | math sum)
         let total_gas = ($blocks | get gas_used | math sum)
-        let latencies = ($blocks | where latency_ms != null | get latency_ms | sort)
-        let latency_mean = if ($latencies | length) > 0 { $latencies | math avg | math round --precision 1 } else { 0.0 }
-        let p50_latency = (percentile $latencies 50 | math round --precision 1)
-        let p90_latency = (percentile $latencies 90 | math round --precision 1)
-        let p99_latency = (percentile $latencies 99 | math round --precision 1)
+        let block_time_mean = if ($block_intervals | length) > 0 { $block_intervals | math avg | math round --precision 1 } else { 0.0 }
         let num_blocks = ($blocks | length)
         let run_builder = do $compute_value_stats $builder_latency_values
         let run_validation = do $compute_value_stats $validation_latency_values
@@ -1143,11 +1132,7 @@ def generate-summary [
             ok: $total_ok
             err: $total_err
             total_gas: $total_gas
-            latency_mean: $latency_mean
-            latency_p50: $p50_latency
-            latency_p90: $p90_latency
-            latency_p99: $p99_latency
-            p50_latency: $p50_latency
+            block_time_mean: $block_time_mean
             builder_latency_p50: $run_builder.p50
             builder_latency_p90: $run_builder.p90
             builder_latency_p99: $run_builder.p99
@@ -1173,20 +1158,20 @@ def generate-summary [
         return
     }
 
-    # Compute per-block latency percentiles for each group
-    let compute_latency_stats = { |blocks: list<any>|
-        let latencies = ($blocks | where latency_ms != null | get latency_ms | sort)
+    # Compute per-block-time statistics for each group
+    let compute_block_time_summary = { |blocks: list<any>|
+        let block_times = ($blocks | where block_time_ms != null | get block_time_ms | sort)
         {
             n: ($blocks | length)
-            mean: (if ($latencies | length) > 0 { $latencies | math avg | math round --precision 1 } else { 0.0 })
-            p50: (percentile $latencies 50 | math round --precision 1)
-            p90: (percentile $latencies 90 | math round --precision 1)
-            p99: (percentile $latencies 99 | math round --precision 1)
+            mean: (if ($block_times | length) > 0 { $block_times | math avg | math round --precision 1 } else { 0.0 })
+            p50: (percentile $block_times 50 | math round --precision 1)
+            p90: (percentile $block_times 90 | math round --precision 1)
+            p99: (percentile $block_times 99 | math round --precision 1)
         }
     }
 
-    let b_lat = do $compute_latency_stats $baseline_blocks
-    let f_lat = do $compute_latency_stats $feature_blocks
+    let b_block_time = do $compute_block_time_summary $baseline_blocks
+    let f_block_time = do $compute_block_time_summary $feature_blocks
 
     let b_builder = do $compute_value_stats $baseline_builder_latency_values
     let f_builder = do $compute_value_stats $feature_builder_latency_values
@@ -1310,8 +1295,8 @@ def generate-summary [
         $"- Duration: ($duration)s"
         $"- Run pairs: ($run_pairs)"
         $"- Snapshot: (if (has-schelk) { 'schelk' } else { 'cp fallback' })"
-        $"- Baseline blocks: ($b_lat.n)"
-        $"- Feature blocks: ($f_lat.n)"
+        $"- Baseline blocks: ($b_block_time.n)"
+        $"- Feature blocks: ($f_block_time.n)"
     ]
     if $baseline_hardfork != "" {
         $config_lines = ($config_lines | append $"- Baseline hardfork: ($baseline_hardfork)")
@@ -1326,11 +1311,12 @@ def generate-summary [
         ""
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
-        $"| Avg TPS | ($b_tps) | ($f_tps) | (do $delta $b_tps $f_tps)% |"
+        $"| TPS Mean | ($b_tps) | ($f_tps) | (do $delta $b_tps $f_tps)% |"
         $"| TPS P50 | ($b_tps_stats.p50) | ($f_tps_stats.p50) | (do $delta $b_tps_stats.p50 $f_tps_stats.p50)% |"
         $"| TPS P90 | ($b_tps_stats.p90) | ($f_tps_stats.p90) | (do $delta $b_tps_stats.p90 $f_tps_stats.p90)% |"
         $"| TPS P99 | ($b_tps_stats.p99) | ($f_tps_stats.p99) | (do $delta $b_tps_stats.p99 $f_tps_stats.p99)% |"
         $"| Gas Throughput [Mgas/s] | ($b_mgas) | ($f_mgas) | (do $delta $b_mgas $f_mgas)% |"
+        $"| Block Time Mean [ms] | ($b_block_time.mean) | ($f_block_time.mean) | (do $delta $b_block_time.mean $f_block_time.mean)% |"
         $"| Block Time P50 [ms] | ($b_bt.p50) | ($f_bt.p50) | (do $delta $b_bt.p50 $f_bt.p50)% |"
         $"| Block Time P90 [ms] | ($b_bt.p90) | ($f_bt.p90) | (do $delta $b_bt.p90 $f_bt.p90)% |"
         $"| Block Time P99 [ms] | ($b_bt.p99) | ($f_bt.p99) | (do $delta $b_bt.p99 $f_bt.p99)% |"
@@ -1403,10 +1389,7 @@ def generate-summary [
         }
         results: {
             baseline: {
-                latency_mean: $b_lat.mean
-                latency_p50: $b_lat.p50
-                latency_p90: $b_lat.p90
-                latency_p99: $b_lat.p99
+                block_time_mean: $b_block_time.mean
                 builder_latency_p50: $b_builder.p50
                 builder_latency_p90: $b_builder.p90
                 builder_latency_p99: $b_builder.p99
@@ -1443,13 +1426,10 @@ def generate-summary [
                 validation_latency_p90: $b_validation.p90
                 validation_latency_p99: $b_validation.p99
                 validation_gas_s: $b_validation_gas
-                blocks: $b_lat.n
+                blocks: $b_block_time.n
             }
             feature: {
-                latency_mean: $f_lat.mean
-                latency_p50: $f_lat.p50
-                latency_p90: $f_lat.p90
-                latency_p99: $f_lat.p99
+                block_time_mean: $f_block_time.mean
                 builder_latency_p50: $f_builder.p50
                 builder_latency_p90: $f_builder.p90
                 builder_latency_p99: $f_builder.p99
@@ -1486,13 +1466,10 @@ def generate-summary [
                 validation_latency_p90: $f_validation.p90
                 validation_latency_p99: $f_validation.p99
                 validation_gas_s: $f_validation_gas
-                blocks: $f_lat.n
+                blocks: $f_block_time.n
             }
             deltas: {
-                latency_mean: (do $delta $b_lat.mean $f_lat.mean)
-                latency_p50: (do $delta $b_lat.p50 $f_lat.p50)
-                latency_p90: (do $delta $b_lat.p90 $f_lat.p90)
-                latency_p99: (do $delta $b_lat.p99 $f_lat.p99)
+                block_time_mean: (do $delta $b_block_time.mean $f_block_time.mean)
                 builder_latency_p50: (do $delta $b_builder.p50 $f_builder.p50)
                 builder_latency_p90: (do $delta $b_builder.p90 $f_builder.p90)
                 builder_latency_p99: (do $delta $b_builder.p99 $f_builder.p99)

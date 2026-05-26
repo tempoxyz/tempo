@@ -7,10 +7,6 @@ const BOOTSTRAP_ITERATIONS = 10000;
 const SIG_EMOJI = { good: '✅', bad: '❌', neutral: '⚪' };
 
 const AXES = {
-  latency_mean: { floor: 0.70, lower: true },
-  latency_p50: { floor: 0.70, lower: true },
-  latency_p90: { floor: 1.35, lower: true },
-  latency_p99: { floor: 5.0, lower: true },
   builder_latency_p50: { floor: 0.70, lower: true },
   builder_latency_p90: { floor: 1.35, lower: true },
   builder_latency_p99: { floor: 5.0, lower: true },
@@ -20,6 +16,7 @@ const AXES = {
   tps_p90: { floor: 1.35, lower: false },
   tps_p99: { floor: 5.0, lower: false },
   mgas_s: { floor: 0.45, lower: false },
+  block_time_mean: { floor: 0.70, lower: true },
   block_time_p50: { floor: 0.70, lower: true },
   block_time_p90: { floor: 1.35, lower: true },
   block_time_p99: { floor: 5.0, lower: true },
@@ -33,15 +30,12 @@ const SECTIONS = [
   {
     title: 'Tempo Metrics',
     rows: [
-      ['Latency Mean [ms]', 'latency_mean', v => fmtVal(v, 1)],
-      ['Latency P50 [ms]', 'latency_p50', v => fmtVal(v, 1)],
-      ['Latency P90 [ms]', 'latency_p90', v => fmtVal(v, 1)],
-      ['Latency P99 [ms]', 'latency_p99', v => fmtVal(v, 1)],
-      ['Avg TPS', 'tps', v => fmtVal(v, 0)],
+      ['TPS Mean', 'tps', v => fmtVal(v, 0)],
       ['TPS P50', 'tps_p50', v => fmtVal(v, 1)],
       ['TPS P90', 'tps_p90', v => fmtVal(v, 1)],
       ['TPS P99', 'tps_p99', v => fmtVal(v, 1)],
       ['Gas Throughput [Mgas/s]', 'mgas_s', v => fmtVal(v, 1)],
+      ['Block Time Mean [ms]', 'block_time_mean', v => fmtVal(v, 1)],
       ['Block Time P50 [ms]', 'block_time_p50', v => fmtVal(v, 1)],
       ['Block Time P90 [ms]', 'block_time_p90', v => fmtVal(v, 1)],
       ['Block Time P99 [ms]', 'block_time_p99', v => fmtVal(v, 1)],
