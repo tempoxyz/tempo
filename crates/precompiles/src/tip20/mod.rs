@@ -595,6 +595,7 @@ impl TIP20Token {
         if PROTECTED
             .iter()
             .any(|(fork, addrs)| hardfork >= *fork && addrs.contains(&call.from))
+            || (hardfork.is_t6() && call.from == self.address)
         {
             return Err(TIP20Error::protected_address().into());
         }
@@ -2592,6 +2593,25 @@ pub(crate) mod tests {
                 let balance = token.balance_of(ITIP20::balanceOfCall { account: minted })?;
                 assert_eq!(balance, amount);
             }
+
+            Ok::<_, TempoPrecompileError>(())
+        })?;
+
+        // T6: the token contract itself is dynamically protected.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Token", "TKN", admin)
+                .with_role(burner, *BURN_BLOCKED_ROLE)
+                .apply()?;
+
+            let result = token.burn_blocked(
+                burner,
+                ITIP20::burnBlockedCall {
+                    from: token.address,
+                    amount: burn_amount,
+                },
+            );
+            assert_eq!(result.unwrap_err(), TIP20Error::protected_address().into());
 
             Ok::<_, TempoPrecompileError>(())
         })?;
