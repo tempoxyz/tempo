@@ -763,13 +763,15 @@ mod tests {
             panic!("expected node command");
         };
         assert!(node_cmd.engine.share_execution_cache_with_payload_builder);
+        assert!(node_cmd.engine.share_sparse_trie_with_payload_builder);
+        assert_eq!(node_cmd.builder.max_payload_tasks, 1);
         assert_eq!(
             node_cmd
                 .ext
                 .consensus
                 .time_to_prepare_proposal_transactions
                 .into_duration(),
-            Duration::from_millis(200)
+            Duration::from_millis(350)
         );
 
         let cli = TempoCli::try_parse_from([
