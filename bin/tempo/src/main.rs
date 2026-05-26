@@ -755,7 +755,7 @@ mod tests {
     }
 
     #[test]
-    fn transaction_execution_wait_default_depends_on_sparse_trie_sharing() {
+    fn consensus_block_budget_defaults_are_stable() {
         init_defaults_once();
 
         let cli = TempoCli::try_parse_from(["tempo", "node", "--dev"]).unwrap();
@@ -765,12 +765,16 @@ mod tests {
         assert!(node_cmd.engine.share_sparse_trie_with_payload_builder);
         assert_eq!(node_cmd.builder.max_payload_tasks, 1);
         assert_eq!(
-            node_cmd
-                .ext
-                .consensus
-                .time_to_prepare_proposal_transactions
-                .into_duration(),
-            Duration::from_millis(350)
+            node_cmd.ext.consensus.target_block_time.into_duration(),
+            Duration::from_millis(550)
+        );
+        assert_eq!(
+            node_cmd.ext.consensus.wait_for_proposal.into_duration(),
+            Duration::from_millis(1200)
+        );
+        assert_eq!(
+            node_cmd.ext.consensus.network_budget.into_duration(),
+            Duration::from_millis(75)
         );
 
         let cli = TempoCli::try_parse_from([
@@ -784,12 +788,16 @@ mod tests {
             panic!("expected node command");
         };
         assert_eq!(
-            node_cmd
-                .ext
-                .consensus
-                .time_to_prepare_proposal_transactions
-                .into_duration(),
-            Duration::from_millis(350)
+            node_cmd.ext.consensus.target_block_time.into_duration(),
+            Duration::from_millis(550)
+        );
+        assert_eq!(
+            node_cmd.ext.consensus.wait_for_proposal.into_duration(),
+            Duration::from_millis(1200)
+        );
+        assert_eq!(
+            node_cmd.ext.consensus.network_budget.into_duration(),
+            Duration::from_millis(75)
         );
     }
 }

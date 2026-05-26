@@ -95,6 +95,10 @@ pub async fn run_consensus_stack(
     // through this subchannel.
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
+    let target_block_time = config.target_block_time.into_duration();
+    let payload_return_time =
+        target_block_time.saturating_sub(config.network_budget.into_duration());
+
     let consensus_engine = crate::consensus::engine::Builder {
         execution_node: Some(execution_node),
         blocker: oracle.clone(),
@@ -114,8 +118,8 @@ pub async fn run_consensus_stack(
         time_for_peer_response: config.wait_for_peer_response.into_duration(),
         views_to_track: config.views_to_track,
         views_until_leader_skip: config.inactive_views_until_leader_skip,
-        payload_interrupt_time: config.time_to_prepare_proposal_transactions.into_duration(),
-        new_payload_wait_time: config.minimum_time_before_propose.into_duration(),
+        payload_build_time: payload_return_time / 2,
+        payload_return_time,
         time_to_build_subblock: config.time_to_build_subblock.into_duration(),
         subblock_broadcast_interval: config.subblock_broadcast_interval.into_duration(),
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),

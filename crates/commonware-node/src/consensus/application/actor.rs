@@ -99,7 +99,7 @@ where
                 public_key: config.public_key,
                 epoch_strategy: config.epoch_strategy,
 
-                payload_resolve_time: config.payload_resolve_time,
+                payload_build_time: config.payload_build_time,
                 payload_return_time: config.payload_return_time,
 
                 my_mailbox,
@@ -200,7 +200,7 @@ where
 struct Inner<TState> {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
-    payload_resolve_time: Duration,
+    payload_build_time: Duration,
     payload_return_time: Duration,
 
     my_mailbox: Mailbox,
@@ -309,6 +309,7 @@ impl Inner<Init> {
             mut response,
             round,
             leader,
+            started_at: propose_start,
         } = request;
 
         let proposal_digest = {
@@ -340,6 +341,7 @@ impl Inner<Init> {
 
                 let mut proposal = Box::pin(self.clone().build_proposal(
                     context.clone(),
+                    propose_start,
                     parent_view,
                     parent_digest,
                     round,
@@ -511,14 +513,13 @@ impl Inner<Init> {
     async fn build_proposal<TContext: Pacer>(
         self,
         context: TContext,
+        propose_start: Instant,
         parent_view: View,
         parent_digest: Digest,
         round: Round,
         payload_id_rx: &mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>,
         leader: PublicKey,
     ) -> eyre::Result<(Block, Option<SystemTime>)> {
-        let propose_start = Instant::now();
-
         let parent = get_parent(
             &self.execution_node,
             round,
@@ -657,6 +658,9 @@ impl Inner<Init> {
 
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
+        let build_budget = self
+            .payload_build_time
+            .saturating_sub(propose_start.elapsed());
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -669,13 +673,13 @@ impl Inner<Init> {
                     .and_then(|s| s.get_subblocks(parent_hash).ok())
                     .unwrap_or_default()
             },
-        );
-
-        let interrupt_handle = attrs.interrupt_handle().clone();
+        )
+        .with_payload_build_budget(build_budget);
 
         // Share the dispatch receiver with the cancel branch so that, if cancellation
         // hits between dispatch send and receiving `payload_id`, the cancel branch can
         // still drain the rx, learn `payload_id`, and cancel the now-registered job.
+        let payload_build_start = Instant::now();
         *payload_id_rx = Some(self.state.executor.canonicalize_and_build(
             parent.height(),
             parent.digest(),
@@ -695,32 +699,6 @@ impl Inner<Init> {
         let _ = tx.send(Ok(payload_id));
         *payload_id_rx = Some(rx);
 
-        let elapsed = propose_start.elapsed();
-        let remaining_resolve = self.payload_resolve_time.saturating_sub(elapsed);
-        let remaining_return = self.payload_return_time.saturating_sub(elapsed);
-        debug!(
-            elapsed = %display_duration(elapsed),
-            resolve_time = %display_duration(remaining_resolve),
-            return_time = %display_duration(remaining_return),
-            "sleeping before payload builder resolving"
-        );
-
-        // Start the timer for `remaining_return`
-        //
-        // This guarantees that we will not propose the block too early, and waits for at least
-        // `remaining_return` (`payload_return_time` minus time already spent in propose),
-        // plus whatever time is needed to finish building the block.
-        let payload_return_time = context.current() + remaining_return;
-
-        // Give payload builder at least `remaining_resolve` until we interrupt it.
-        //
-        // The interrupt doesn't mean we'll immediately get the payload back,
-        // but only signals the builder to stop executing transactions,
-        // and start calculating the state root and sealing the block.
-        context.sleep(remaining_resolve).await;
-
-        interrupt_handle.interrupt();
-
         let payload = self
             .execution_node
             .payload_builder_handle
@@ -733,6 +711,18 @@ impl Inner<Init> {
             .ok_or_eyre("no payload found under provided id")
             .and_then(|rsp| rsp.map_err(Into::<eyre::Report>::into))
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
+
+        let payload_build_elapsed = payload_build_start.elapsed();
+        let return_delay = self
+            .payload_return_time
+            .saturating_sub(payload_build_start.saturating_duration_since(propose_start))
+            .saturating_sub(payload_build_elapsed.saturating_add(payload_build_elapsed));
+        debug!(
+            build_time = %display_duration(payload_build_elapsed),
+            return_time = %display_duration(return_delay),
+            "sleeping before returning proposal"
+        );
+        let payload_return_time = context.current() + return_delay;
 
         let proposal = Block::from_execution_block(payload.block().clone());
 
@@ -868,7 +858,7 @@ impl Inner<Uninit> {
         let initialized = Inner {
             public_key: self.public_key,
             epoch_strategy: self.epoch_strategy,
-            payload_resolve_time: self.payload_resolve_time,
+            payload_build_time: self.payload_build_time,
             payload_return_time: self.payload_return_time,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,

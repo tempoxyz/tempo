@@ -3,10 +3,15 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod budget;
 mod metrics;
 mod prewarming;
 
 use crate::{
+    budget::{
+        BUILD_TIME_MULTIPLIER_SCALE, DEFAULT_BUILD_TIME_MULTIPLIER, decay_build_time_multiplier,
+        observed_build_time_multiplier, scaled_elapsed_exceeds_budget,
+    },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
 };
@@ -97,6 +102,8 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     enable_prewarming: bool,
+    /// Conservative estimate of total build time divided by elapsed time at tx cutoff.
+    build_time_multiplier: Arc<AtomicU64>,
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
@@ -120,7 +127,23 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             is_dev,
             state_provider_metrics,
             enable_prewarming,
+            build_time_multiplier: Arc::new(AtomicU64::new(DEFAULT_BUILD_TIME_MULTIPLIER)),
         }
+    }
+
+    fn build_time_multiplier(&self) -> u64 {
+        self.build_time_multiplier.load(Ordering::Relaxed)
+    }
+
+    fn update_build_time_multiplier(&self, total: Duration, elapsed_at_tx_cutoff: Duration) {
+        let Some(observed) = observed_build_time_multiplier(total, elapsed_at_tx_cutoff) else {
+            return;
+        };
+        let _ = self.build_time_multiplier.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(decay_build_time_multiplier(current, observed)),
+        );
     }
 }
 
@@ -258,10 +281,10 @@ where
             attributes,
             payload_id,
         } = config;
-        let build_until_interrupt =
-            // When trie handle is provided, we only build the payload once, until the interrupt is triggered
+        let build_once_with_shared_trie =
+            // When trie handle is provided, we build the payload once so the shared trie can be reused.
             trie_handle.is_some()
-            // `--dev` mode doesn't have payload building interrupts
+            // `--dev` mode does not use the shared-trie builder flow.
             && !self.is_dev;
 
         macro_rules! check_cancel {
@@ -472,15 +495,31 @@ where
         let mut normal_invalid_transaction_execution_elapsed = Duration::ZERO;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let payload_build_budget = attributes.payload_build_budget();
+        let build_time_multiplier = self.build_time_multiplier();
         let block_build_stop_reason = loop {
-            if attributes.is_interrupted() {
-                break BlockBuildStopReason::TimeLimit;
-            }
-
             check_cancel!();
 
+            if let Some(build_budget) = payload_build_budget {
+                let elapsed = start.elapsed();
+                if scaled_elapsed_exceeds_budget(elapsed, build_time_multiplier, build_budget) {
+                    debug!(
+                        target: "payload_builder",
+                        ?elapsed,
+                        ?build_budget,
+                        build_time_multiplier = build_time_multiplier as f64
+                            / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                        "stopping pool transaction execution before payload build budget is exhausted"
+                    );
+                    break BlockBuildStopReason::BuildBudget;
+                }
+            }
+
             let Some(pool_tx) = best_txs.next() else {
-                if build_until_interrupt && cumulative_gas_used < non_shared_gas_limit {
+                if build_once_with_shared_trie
+                    && payload_build_budget.is_some()
+                    && cumulative_gas_used < non_shared_gas_limit
+                {
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
@@ -537,11 +576,6 @@ where
                 self.metrics
                     .inc_pool_tx_skipped("exceeds_general_gas_limit");
                 continue;
-            }
-
-            // check if the job was interrupted, if so we can skip remaining transactions
-            if attributes.is_interrupted() {
-                break BlockBuildStopReason::TimeLimit;
             }
 
             check_cancel!();
@@ -630,6 +664,7 @@ where
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
         };
+        let elapsed_at_tx_cutoff = start.elapsed();
         drop(_block_fill_span);
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
@@ -896,6 +931,9 @@ where
             .set(pool_transactions_inclusion_ratio);
 
         let elapsed = start.elapsed();
+        if payload_build_budget.is_some() {
+            self.update_build_time_multiplier(elapsed, elapsed_at_tx_cutoff);
+        }
         self.metrics.payload_build_duration_seconds.record(elapsed);
         let gas_per_second = sealed_block.gas_used() as f64 / elapsed.as_secs_f64();
         self.metrics.gas_per_second.record(gas_per_second);
@@ -953,7 +991,7 @@ where
         let payload = TempoBuiltPayload::new(eth_payload, Some(executed_block));
 
         drop(db);
-        if build_until_interrupt {
+        if build_once_with_shared_trie {
             Ok(BuildOutcome::Freeze(payload))
         } else {
             Ok(BuildOutcome::Better {
