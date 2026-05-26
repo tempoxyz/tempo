@@ -6,8 +6,6 @@ use tracing::info;
 
 /// How quickly the learned marshal persistence rate decays when blocks get cheaper.
 const RATE_DECAY: u64 = 8;
-/// Ignore tiny blocks so fixed archive overhead does not become a large-block byte cost.
-const MIN_SAMPLE_BYTES: usize = 128 * 1024;
 
 static MARSHAL_PERSIST_NS_PER_BYTE: AtomicU64 = AtomicU64::new(0);
 
@@ -55,7 +53,7 @@ impl MarshalPersistEstimate {
 }
 
 fn observed_ns_per_byte(block_size_bytes: usize, elapsed: Duration) -> Option<u64> {
-    if block_size_bytes < MIN_SAMPLE_BYTES || elapsed == Duration::ZERO {
+    if block_size_bytes == 0 || elapsed == Duration::ZERO {
         return None;
     }
 
@@ -81,20 +79,21 @@ mod tests {
     use super::*;
 
     #[test]
-    fn observes_large_blocks_and_ignores_tiny_blocks() {
+    fn observes_blocks_and_ignores_zero_samples() {
         MARSHAL_PERSIST_NS_PER_BYTE.store(0, Ordering::Relaxed);
-        observe_marshal_persist(MIN_SAMPLE_BYTES, Duration::from_millis(13));
+        observe_marshal_persist(1, Duration::from_nanos(7));
 
         assert_eq!(
-            marshal_persist_estimate().estimate(MIN_SAMPLE_BYTES),
-            Duration::from_nanos(13_107_200)
+            marshal_persist_estimate().estimate(1_000_000),
+            Duration::from_millis(7)
         );
 
-        observe_marshal_persist(MIN_SAMPLE_BYTES - 1, Duration::from_millis(1));
+        observe_marshal_persist(0, Duration::from_millis(1));
+        observe_marshal_persist(1_000_000, Duration::ZERO);
 
         assert_eq!(
-            marshal_persist_estimate().estimate(MIN_SAMPLE_BYTES),
-            Duration::from_nanos(13_107_200)
+            marshal_persist_estimate().estimate(1_000_000),
+            Duration::from_millis(7)
         );
     }
 }
