@@ -28,7 +28,7 @@ use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, vec::NonEmptyVec};
 use rand_08::{CryptoRng, Rng};
 
-use eyre::{Context, OptionExt as _, Report, bail, ensure};
+use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure};
 use reth_node_core::primitives::SealedBlock;
 use reth_provider::HeaderProvider as _;
 use tempo_chainspec::NetworkIdentity;
@@ -277,19 +277,6 @@ where
                 contained no or a malformed DKG outcome"
                 )
             })?;
-
-            let network_identity = &self.config.network_identity;
-            if onchain_outcome.epoch.get() >= network_identity.from_epoch
-                && network_identity.identity != *onchain_outcome.network_identity()
-            {
-                warn!(
-                    compiled_from_epoch = network_identity.from_epoch,
-                    onchain_epoch = %onchain_outcome.epoch,
-                    compiled_network_identity = %network_identity.identity,
-                    onchain_network_identity = %onchain_outcome.network_identity(),
-                    "Network identity differs from the on-chain DKG outcome!!! update the binary with the latest network identity"
-                );
-            }
 
             self.config.scheme_provider.register(
                 onchain_outcome.epoch,

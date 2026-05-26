@@ -30,6 +30,7 @@ use commonware_utils::NZU64;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_commonware_node_config::SigningShare;
 use tempo_node::TempoFullNode;
+use tracing::info;
 
 pub use crate::config::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
@@ -177,11 +178,13 @@ pub async fn run_follow_stack(
     let chain_spec_network_identity = chain_spec
         .network_identity
         .clone()
-        .expect("chainspec has no genesis network identity");
+        .ok_or_eyre("chainspec has no dkg outcome in genesis header")?;
 
     let network_identity = config
         .network_identity()
         .unwrap_or(chain_spec_network_identity);
+
+    info!(%network_identity.from_epoch, %network_identity.identity, "registered network identity");
 
     let (upstream, upstream_mailbox) = crate::follow::upstream::init(
         context.with_label("upstream"),
