@@ -26,7 +26,7 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
-    storage::{Handler, Mapping, StorageCtx},
+    storage::{Handler, Mapping, Slot, StorageCtx},
     tip20::{
         rewards::{RewardFlag, UserRewardInfo},
         roles::DEFAULT_ADMIN_ROLE,
@@ -1041,11 +1041,25 @@ impl TIP20Token {
     }
 
     fn get_balance(&self, account: Address) -> Result<UserState> {
-        self.balances[account].read()
+        // Ensure pre-T6 slots do not load the reward flag.
+        if self.storage.spec().is_t6() {
+            self.balances[account].read()
+        } else {
+            let slot = self.balances[account].base_slot();
+            Slot::<U256>::new(slot, self.address)
+                .read()
+                .and_then(|res| UserState::new(res, RewardFlag::Uninitialized))
+        }
     }
 
     fn set_balance(&mut self, account: Address, amount: UserState) -> Result<()> {
-        self.balances[account].write(amount)
+        // Ensure pre-T6 slots do not cache the reward flag.
+        if self.storage.spec().is_t6() {
+            self.balances[account].write(amount)
+        } else {
+            let slot = self.balances[account].base_slot();
+            Slot::<U256>::new(slot, self.address).write(amount.amount())
+        }
     }
 
     fn get_allowance(&self, owner: Address, spender: Address) -> Result<U256> {
