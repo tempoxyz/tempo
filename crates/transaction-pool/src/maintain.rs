@@ -665,9 +665,7 @@ where
 
                         if count > 0 {
                             // Clean up expiry tracking for paused txs
-                            for tx in &removed_txs {
-                                state.untrack(tx.hash());
-                            }
+                            state.untrack_many(removed_txs.iter().map(|tx| tx.hash()));
 
                             let entries: Vec<_> = removed_txs
                                 .into_iter()
@@ -799,9 +797,7 @@ where
                         let removed_txs = pool.remove_transactions(hashes);
                         let count = removed_txs.len();
 
-                        for tx in &removed_txs {
-                            state.untrack(tx.hash());
-                        }
+                        state.untrack_many(removed_txs.iter().map(|tx| tx.hash()));
 
                         counter.increment(count as u64);
 
