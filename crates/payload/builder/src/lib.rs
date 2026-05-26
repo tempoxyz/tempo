@@ -325,6 +325,7 @@ where
             shared_gas_limit,
         );
         let hardfork = chain_spec.tempo_hardfork_at(attributes.timestamp);
+        let is_t5 = hardfork.is_t5();
 
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;
@@ -519,7 +520,7 @@ where
                 continue;
             }
 
-            let is_payment = if hardfork.is_t5() {
+            let is_payment = if is_t5 {
                 pool_tx.transaction.inner().is_payment_v2()
             } else {
                 pool_tx.transaction.inner().is_payment_v1()
