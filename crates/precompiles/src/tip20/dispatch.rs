@@ -37,10 +37,24 @@ impl TIP20Call {
         // safe to expect as `dispatch_call` pre-validates calldata len
         let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
 
-        if IRolesAuthCalls::valid_selector(selector) {
-            IRolesAuthCalls::abi_decode(calldata).map(Self::RolesAuth)
-        } else {
-            ITIP20Calls::abi_decode(calldata).map(Self::TIP20)
+        macro_rules! hot_tip20 {
+            ($call:ident, $variant:ident) => {
+                ITIP20::$call::abi_decode(calldata)
+                    .map(ITIP20Calls::$variant)
+                    .map(Self::TIP20)
+            };
+        }
+
+        match selector {
+            ITIP20::transferCall::SELECTOR => hot_tip20!(transferCall, transfer),
+            ITIP20::claimRewardsCall::SELECTOR => hot_tip20!(claimRewardsCall, claimRewards),
+            ITIP20::distributeRewardCall::SELECTOR => {
+                hot_tip20!(distributeRewardCall, distributeReward)
+            }
+            _ if IRolesAuthCalls::valid_selector(selector) => {
+                IRolesAuthCalls::abi_decode(calldata).map(Self::RolesAuth)
+            }
+            _ => ITIP20Calls::abi_decode(calldata).map(Self::TIP20),
         }
     }
 }
