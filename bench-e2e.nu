@@ -20,19 +20,58 @@ const E2E_GAS_LIMIT = "1000000000"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
-const E2E_LOCAL_RETH_REQUIRED_ARGS = [
+const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
     "--disable-discovery"
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
-]
-const E2E_LOCAL_RETH_EXTRA_ARGS = [
     "--consensus.no-legacy-archive"
     "--builder.max-tasks" "1"
     "--engine.share-sparse-trie-with-payload-builder"
     "--engine.share-execution-cache-with-payload-builder"
     "--builder.enable-prewarming"
 ]
+
+def tempo-node-help [tempo_bin: string] {
+    let result = (run-external $tempo_bin "node" "--help" | complete)
+    if $result.exit_code != 0 {
+        print $"Error: failed to inspect supported tempo node args for ($tempo_bin)"
+        if $result.stdout != "" { print $result.stdout }
+        if $result.stderr != "" { print $result.stderr }
+        exit $result.exit_code
+    }
+    [$result.stdout $result.stderr] | str join "\n"
+}
+
+def filter-supported-node-args [tempo_bin: string, args: list<string>] {
+    let help = (tempo-node-help $tempo_bin)
+    mut filtered = []
+    mut skip_next_value = false
+    for arg in $args {
+        if $skip_next_value {
+            if not ($arg starts-with "--") {
+                $skip_next_value = false
+                continue
+            }
+            $skip_next_value = false
+        }
+        if not ($arg starts-with "--") {
+            $filtered = ($filtered | append $arg)
+            continue
+        }
+
+        let key = ($arg | split row "=" | first)
+        if ($help | str contains $key) {
+            $filtered = ($filtered | append $arg)
+        } else {
+            print $"Skipping unsupported tempo node arg for ($tempo_bin): ($key)"
+            if not ($arg | str contains "=") {
+                $skip_next_value = true
+            }
+        }
+    }
+    $filtered
+}
 
 def run-bench-schelk [...args: string] {
     let result = (nu $BENCH_SCHELK_SCRIPT ...$args | complete)
@@ -730,15 +769,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
-    let no_extra_args = if $run_type == "baseline" { $ctx.baseline_no_extra_args } else { $ctx.feature_no_extra_args }
     let extra_args = (parse-cli-args $side_args)
-    let local_reth_extra_args = if $no_extra_args {
-        []
-    } else if $ctx.extra_args != "" {
-        $E2E_LOCAL_RETH_EXTRA_ARGS | append (parse-cli-args $ctx.extra_args)
-    } else {
-        $E2E_LOCAL_RETH_EXTRA_ARGS
-    }
+    let local_reth_args = (filter-supported-node-args $run.tempo $E2E_LOCAL_RETH_ARGS)
 
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
@@ -791,16 +823,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let b_rpc = "http://127.0.0.1:8645"
     let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
         | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
-        | append $E2E_LOCAL_RETH_REQUIRED_ARGS
-        | append $local_reth_extra_args
+        | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
         | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
-        | append $E2E_LOCAL_RETH_REQUIRED_ARGS
-        | append $local_reth_extra_args
+        | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
@@ -1044,9 +1074,6 @@ def "main e2e" [
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
-    --extra-args: string = ""                           # Additional extra local reth args appended for both node phases
-    --baseline-no-extra-args                            # Disable extra local reth args for baseline phases
-    --feature-no-extra-args                             # Disable extra local reth args for feature phases
     --bench-args: string = ""                           # Additional txgen generate arguments
     --baseline-env: string = ""                         # Environment vars for baseline node phases
     --feature-env: string = ""                          # Environment vars for feature node phases
@@ -1322,9 +1349,6 @@ def "main e2e" [
         tracy_offset: $tracy_offset
         baseline_args: $baseline_args
         feature_args: $feature_args
-        extra_args: $extra_args
-        baseline_no_extra_args: $baseline_no_extra_args
-        feature_no_extra_args: $feature_no_extra_args
         bench_args: $bench_args
         baseline_env: $baseline_env
         feature_env: $feature_env
