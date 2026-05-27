@@ -26,10 +26,6 @@ const E2E_LOCAL_RETH_ARGS = [
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
     "--consensus.no-legacy-archive"
-    "--builder.max-tasks" "1"
-    "--engine.share-sparse-trie-with-payload-builder"
-    "--engine.share-execution-cache-with-payload-builder"
-    "--builder.enable-prewarming"
 ]
 
 def run-bench-schelk [...args: string] {
