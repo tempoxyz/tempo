@@ -131,7 +131,7 @@ struct ExecutionStats {
 #[derive(Clone, Debug)]
 struct InMemoryStateProvider {
     accounts: Arc<AddressMap<RethAccount>>,
-    storage: Arc<HashMap<(Address, B256), U256>>,
+    storage: Arc<AddressMap<B256Map<U256>>>,
     contracts: Arc<B256Map<RethBytecode>>,
     block_hashes: Arc<HashMap<u64, B256>>,
 }
@@ -180,7 +180,11 @@ impl AccountReader for InMemoryStateProvider {
 
 impl StateProvider for InMemoryStateProvider {
     fn storage(&self, account: Address, storage_key: B256) -> ProviderResult<Option<U256>> {
-        Ok(self.storage.get(&(account, storage_key)).copied())
+        Ok(self
+            .storage
+            .get(&account)
+            .and_then(|slots| slots.get(&storage_key))
+            .copied())
     }
 }
 
@@ -414,7 +418,7 @@ fn setup_fixed_cache_state(
     let execution_cache = ExecutionCache::new(EXECUTION_CACHE_BYTES);
 
     let mut accounts = AddressMap::default();
-    let mut storage = HashMap::default();
+    let mut storage: AddressMap<B256Map<U256>> = AddressMap::default();
     let mut contracts = B256Map::default();
     let mut block_hashes = HashMap::default();
 
@@ -429,7 +433,7 @@ fn setup_fixed_cache_state(
         for (slot, value) in account.storage {
             let storage_key = B256::new(slot.to_be_bytes());
             execution_cache.insert_storage(address, storage_key, Some(value));
-            storage.insert((address, storage_key), value);
+            storage.entry(address).or_default().insert(storage_key, value);
         }
     }
 
