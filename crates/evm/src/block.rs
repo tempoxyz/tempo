@@ -518,21 +518,26 @@ where
         }
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
 
-        let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
-        if let Some(validator) = recovered.tx().subblock_proposer() {
+        let original_beneficiary = if let Some(validator) = recovered.tx().subblock_proposer() {
+            let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
             let fee_recipient = *self
                 .subblock_fee_recipients
                 .get(&validator)
                 .ok_or(BlockExecutionError::msg("invalid subblock transaction"))?;
 
             self.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
-        }
+            Some(beneficiary)
+        } else {
+            None
+        };
         let result = self
             .inner
             .execute_transaction_without_commit((tx_env, &recovered));
 
-        self.evm_mut().ctx_mut().block.beneficiary = beneficiary;
+        if let Some(beneficiary) = original_beneficiary {
+            self.evm_mut().ctx_mut().block.beneficiary = beneficiary;
+        }
 
         let inner = result?;
 
