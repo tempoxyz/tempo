@@ -335,8 +335,6 @@ on:
         required: false
       BENCH_VICTORIAMETRICS_URL:
         required: false
-      BENCH_VICTORIALOGS_URL:
-        required: false
       SLACK_BENCH_BOT_TOKEN:
         required: false
       SLACK_BENCH_CHANNEL:
@@ -396,9 +394,8 @@ jobs:
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
       BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
-      BENCH_VICTORIALOGS_URL: ${{ secrets.BENCH_VICTORIALOGS_URL }}
       VALSCOPE_VM_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
-      VALSCOPE_VLOGS_URL: ${{ secrets.BENCH_VICTORIALOGS_URL }}
+      VALSCOPE_VLOGS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
@@ -429,10 +426,6 @@ jobs:
         if: env.BENCH_VICTORIAMETRICS_URL
         run: echo "::add-mask::$BENCH_VICTORIAMETRICS_URL"
 
-      - name: Mask VictoriaLogs URL
-        if: env.BENCH_VICTORIALOGS_URL
-        run: echo "::add-mask::$BENCH_VICTORIALOGS_URL"
-
       - name: Mask ValScope datasource URLs
         if: env.VALSCOPE_VM_URL || env.VALSCOPE_VLOGS_URL
         run: |
@@ -450,7 +443,7 @@ jobs:
             exit 1
           fi
           if [ -z "$VALSCOPE_VLOGS_URL" ]; then
-            echo "::error::BENCH_VICTORIALOGS_URL is required to generate ValScope static reports"
+            echo "::error::BENCH_VICTORIAMETRICS_URL is required as the ValScope logs datasource"
             exit 1
           fi
 
