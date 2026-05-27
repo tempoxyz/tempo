@@ -1314,24 +1314,6 @@ pub struct KeychainSubject {
     pub fee_token: Address,
 }
 
-/// Key-authorization witness identity extracted from an AA transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyAuthorizationWitnessSubject {
-    /// The account whose key-authorization witness is carried or burned.
-    pub account: Address,
-    /// The TIP-1053 witness.
-    pub witness: B256,
-}
-
-/// Target key identity extracted from an inline key authorization.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyAuthorizationTargetSubject {
-    /// The account that owns the target key.
-    pub account: Address,
-    /// The key being authorized.
-    pub key_id: Address,
-}
-
 impl KeychainSubject {
     /// Returns true if this subject matches any of the revoked keys.
     ///
@@ -1351,6 +1333,24 @@ impl KeychainSubject {
     ) -> bool {
         spending_limit_updates.contains(self.account, self.key_id, self.fee_token)
     }
+}
+
+/// Key-authorization witness identity extracted from an AA transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyAuthorizationWitnessSubject {
+    /// The account whose key-authorization witness is carried or burned.
+    pub account: Address,
+    /// The TIP-1053 witness.
+    pub witness: B256,
+}
+
+/// Target key identity extracted from an inline key authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyAuthorizationTargetSubject {
+    /// The account that owns the target key.
+    pub account: Address,
+    /// The key being authorized.
+    pub key_id: Address,
 }
 
 impl KeyAuthorizationTargetSubject {

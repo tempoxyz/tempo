@@ -1357,7 +1357,9 @@ mod tests {
     use tempo_evm::TempoEvmConfig;
     use tempo_precompiles::{
         PATH_USD_ADDRESS,
-        account_keychain::{AccountKeychain, AuthorizedKey, SpendingLimitState},
+        account_keychain::{
+            AccountKeychain, AuthorizedKey, SpendingLimitState, StoredSignatureType,
+        },
         tip20::slots as tip20_slots,
         tip403_registry::{CompoundPolicyData, PolicyData, TIP403Registry},
     };
@@ -1402,7 +1404,7 @@ mod tests {
             .setup_storage(setup_spec, || {
                 let mut keychain = AccountKeychain::new();
                 keychain.keys[account][key_id].write(AuthorizedKey {
-                    signature_type: 0,
+                    signature_type: StoredSignatureType::Secp256k1,
                     expiry: u64::MAX,
                     enforce_limits: true,
                     is_revoked: false,
@@ -2571,7 +2573,7 @@ mod tests {
         provider
             .setup_storage(TempoHardfork::default(), || {
                 AccountKeychain::new().keys[account][key_id].write(AuthorizedKey {
-                    signature_type: 0,
+                    signature_type: StoredSignatureType::Secp256k1,
                     expiry: u64::MAX,
                     enforce_limits: true,
                     is_revoked: false,
@@ -2607,7 +2609,7 @@ mod tests {
         provider
             .setup_storage(TempoHardfork::default(), || {
                 AccountKeychain::new().keys[account][key_id].write(AuthorizedKey {
-                    signature_type: 0,
+                    signature_type: StoredSignatureType::Secp256k1,
                     expiry: u64::MAX,
                     enforce_limits: false,
                     is_revoked: false,

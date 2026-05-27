@@ -412,6 +412,7 @@ impl AccountKeychain {
             msg_sender,
             key_id,
             signature_type as u8,
+            // Admin keys never expire; they must be revoked explicitly.
             u64::MAX,
         ))?;
         self.emit_event(AccountKeychainEvent::AdminKeyAuthorized(
