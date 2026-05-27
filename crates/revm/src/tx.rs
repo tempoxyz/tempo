@@ -99,6 +99,7 @@ pub struct TempoTxEnv {
 
 impl TempoTxEnv {
     /// Resolves fee payer from the signature.
+    #[inline]
     pub fn fee_payer(&self) -> Result<Address, TempoInvalidTransaction> {
         if let Some(fee_payer) = self.fee_payer {
             fee_payer.ok_or(TempoInvalidTransaction::InvalidFeePayerSignature)
@@ -108,11 +109,13 @@ impl TempoTxEnv {
     }
 
     /// Returns true if transaction carries a fee payer signature.
+    #[inline]
     pub fn has_fee_payer_signature(&self) -> bool {
         self.fee_payer.is_some()
     }
 
     /// Returns true if the transaction is a subblock transaction.
+    #[inline]
     pub fn is_subblock_transaction(&self) -> bool {
         self.tempo_tx_env
             .as_ref()
@@ -123,16 +126,19 @@ impl TempoTxEnv {
     ///
     /// This is `keccak256(encode_for_signing || sender)` for every real transaction type. For
     /// Tempo AA transactions, this matches the existing expiring nonce hash helper.
+    #[inline]
     pub fn unique_tx_identifier(&self) -> Option<B256> {
         self.unique_tx_identifier
     }
 
     /// Returns the replay-protected hash used to derive channel reserve IDs for `open`.
+    #[inline]
     pub fn channel_open_context_hash(&self) -> Option<B256> {
         self.unique_tx_identifier()
     }
 
     /// Returns the first top-level call in the transaction.
+    #[inline]
     pub fn first_call(&self) -> Option<(&TxKind, &[u8])> {
         if let Some(aa) = self.tempo_tx_env.as_ref() {
             aa.aa_calls
@@ -147,6 +153,7 @@ impl TempoTxEnv {
     ///
     /// For AA transactions, iterates over `aa_calls`. For non-AA transactions,
     /// returns a single-element iterator with the inner transaction's kind and data.
+    #[inline]
     pub fn calls(&self) -> impl Iterator<Item = (&TxKind, &[u8])> {
         if let Some(aa) = self.tempo_tx_env.as_ref() {
             Either::Left(
@@ -277,12 +284,14 @@ impl Transaction for TempoTxEnv {
         self.inner.max_priority_fee_per_gas()
     }
 
+    #[inline]
     fn max_balance_spending(&self) -> Result<U256, InvalidTransaction> {
         calc_gas_balance_spending(self.gas_limit(), self.max_fee_per_gas())
             .checked_add(self.value())
             .ok_or(InvalidTransaction::OverflowPaymentInTransaction)
     }
 
+    #[inline]
     fn effective_balance_spending(
         &self,
         base_fee: u128,
