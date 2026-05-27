@@ -497,8 +497,9 @@ where
             };
             pool_transactions_yielded += 1;
 
+            let pool_tx_gas_limit = pool_tx.gas_limit();
             let max_regular_gas_used = core::cmp::min(
-                pool_tx.gas_limit(),
+                pool_tx_gas_limit,
                 builder.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
             );
 
@@ -511,7 +512,7 @@ where
                 best_txs.mark_invalid(
                     &pool_tx,
                     InvalidPoolTransactionError::ExceedsGasLimit(
-                        pool_tx.gas_limit(),
+                        pool_tx_gas_limit,
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
                 );
