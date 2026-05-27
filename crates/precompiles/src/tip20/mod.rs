@@ -1160,7 +1160,7 @@ impl TIP20Token {
         // Adjust balances
         let new_from_balance = from_balance
             .checked_sub(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
 
         self.set_balance(from, new_from_balance)?;
 
@@ -1168,7 +1168,7 @@ impl TIP20Token {
             let to_balance = self.get_balance(to.target)?;
             let new_to_balance = to_balance
                 .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+                .ok_or_else(TempoPrecompileError::under_overflow)?;
 
             self.set_balance(to.target, new_to_balance)?;
         }
@@ -1287,7 +1287,7 @@ impl TIP20Token {
         if from_reward_recipient != Address::ZERO {
             let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_sub(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+                .ok_or_else(TempoPrecompileError::under_overflow)?;
             self.set_opted_in_supply(
                 opted_in_supply
                     .try_into()
@@ -1298,18 +1298,16 @@ impl TIP20Token {
         let new_from_balance =
             from_balance
                 .checked_sub(amount)
-                .ok_or(TIP20Error::insufficient_balance(
-                    from_balance,
-                    amount,
-                    self.address,
-                ))?;
+                .ok_or_else(|| {
+                    TIP20Error::insufficient_balance(from_balance, amount, self.address)
+                })?;
 
         self.set_balance(from, new_from_balance)?;
 
         let to_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
         let new_to_balance = to_balance
             .checked_add(amount)
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
+            .ok_or_else(TIP20Error::supply_cap_exceeded)?;
         self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_to_balance)
     }
 
@@ -1345,7 +1343,7 @@ impl TIP20Token {
         if to_reward_recipient != Address::ZERO {
             let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_add(refund)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+                .ok_or_else(TempoPrecompileError::under_overflow)?;
             self.set_opted_in_supply(
                 opted_in_supply
                     .try_into()
@@ -1357,18 +1355,16 @@ impl TIP20Token {
         let new_from_balance =
             from_balance
                 .checked_sub(refund)
-                .ok_or(TIP20Error::insufficient_balance(
-                    from_balance,
-                    refund,
-                    self.address,
-                ))?;
+                .ok_or_else(|| {
+                    TIP20Error::insufficient_balance(from_balance, refund, self.address)
+                })?;
 
         self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_from_balance)?;
 
         let to_balance = self.get_balance(to)?;
         let new_to_balance = to_balance
             .checked_add(refund)
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
+            .ok_or_else(TIP20Error::supply_cap_exceeded)?;
         self.set_balance(to, new_to_balance)
     }
 }
