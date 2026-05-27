@@ -184,6 +184,39 @@ fn record_blockstm_max_in_flight(max_in_flight: &AtomicU64, active: u64) {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockStmSerialFallbackReason {
+    RetryBudget,
+    AdaptiveConflictThreshold,
+}
+
+impl BlockStmSerialFallbackReason {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::RetryBudget => "retry_budget",
+            Self::AdaptiveConflictThreshold => "adaptive_conflict_threshold",
+        }
+    }
+}
+
+fn blockstm_serial_fallback_reason(
+    config: BlockStmConfig,
+    conflicts_total: u64,
+    attempt_count: usize,
+) -> Option<BlockStmSerialFallbackReason> {
+    if attempt_count >= config.max_retries_per_tx {
+        return Some(BlockStmSerialFallbackReason::RetryBudget);
+    }
+
+    if config.adaptive_conflict_threshold > 0
+        && conflicts_total as usize >= config.adaptive_conflict_threshold
+    {
+        return Some(BlockStmSerialFallbackReason::AdaptiveConflictThreshold);
+    }
+
+    None
+}
+
 fn is_blockstm_invalidated_buffered_transaction(
     invalid: &BestTransaction,
     candidate: &BestTransaction,
@@ -934,7 +967,7 @@ where
 
                 let mut invalidated = Vec::<BestTransaction>::new();
 
-                for (batch_index, candidate) in batch.iter().enumerate() {
+                'blockstm_candidate: for (batch_index, candidate) in batch.iter().enumerate() {
                     if invalidated.iter().any(|invalid| {
                         is_blockstm_invalidated_buffered_transaction(invalid, &candidate.pool_tx)
                     }) {
@@ -1047,13 +1080,78 @@ where
                             BlockStmVersion::new(candidate.tx_index, attempt.attempt),
                             &attempt.write_set,
                         );
-                        if attempt_count >= self.blockstm_config.max_retries_per_tx {
-                            return Err(PayloadBuilderError::evm(BlockExecutionError::msg(
-                                format!(
-                                    "Block-STM retry budget exceeded for tx {} after {attempt_count} attempts",
-                                    candidate.tx_index
-                                ),
-                            )));
+                        if let Some(fallback_reason) = blockstm_serial_fallback_reason(
+                            self.blockstm_config,
+                            blockstm_stats.conflicts_total,
+                            attempt_count,
+                        ) {
+                            blockstm_stats.serial_fallback_total += 1;
+                            debug!(
+                                target: "payload_builder",
+                                tx_index = candidate.tx_index,
+                                attempts = attempt_count,
+                                reason = fallback_reason.as_str(),
+                                "Block-STM falling back to serial transaction execution"
+                            );
+
+                            let mut serial_write_set = None;
+                            let execution_result = builder.execute_transaction_with_result_closure(
+                                candidate.tx_with_env.clone(),
+                                |result| {
+                                    cumulative_gas_used += result.block_gas_used();
+                                    cumulative_state_gas_used += result.state_gas_used();
+                                    if !candidate.is_payment {
+                                        non_payment_gas_used += result.block_gas_used();
+                                    }
+                                    total_fees += result.validator_fee();
+                                    best_txs.on_new_result(result);
+                                    serial_write_set =
+                                        Some(write_set_from_evm_state(&result.result().state));
+                                },
+                            );
+
+                            if let Err(err) = execution_result {
+                                if let BlockExecutionError::Validation(
+                                    BlockValidationError::InvalidTx { error, .. },
+                                ) = &err
+                                {
+                                    invalid_pool_transaction_execution_attempts += 1;
+
+                                    if error.is_nonce_too_low() {
+                                        trace!(%error, tx = %candidate.tx_debug_repr, "skipping nonce too low transaction");
+                                        self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                                    } else {
+                                        trace!(%error, tx = %candidate.tx_debug_repr, "skipping invalid transaction and its descendants");
+                                        best_txs.mark_invalid(
+                                            &candidate.pool_tx,
+                                            InvalidPoolTransactionError::Consensus(
+                                                InvalidTransactionError::TxTypeNotSupported,
+                                            ),
+                                        );
+                                        self.metrics.inc_pool_tx_skipped("invalid_tx");
+                                        invalidated.push(candidate.pool_tx.clone());
+                                        pending_candidates.retain(|pending| {
+                                            !is_blockstm_invalidated_buffered_transaction(
+                                                &candidate.pool_tx,
+                                                &pending.pool_tx,
+                                            )
+                                        });
+                                    }
+                                    continue 'blockstm_candidate;
+                                } else {
+                                    return Err(PayloadBuilderError::evm(err));
+                                }
+                            }
+
+                            if let Some(write_set) = serial_write_set {
+                                // Later speculative candidates in this batch must validate
+                                // against the exact serial prefix we just committed.
+                                memory.commit(candidate.tx_index, &write_set);
+                            }
+                            blockstm_stats.committed_txs_total += 1;
+                            pool_transactions_included += 1;
+                            block_size_used += candidate.tx_rlp_length;
+                            continue 'blockstm_candidate;
                         }
 
                         let prefix_cache = builder.executor_mut().evm_mut().db_mut().cache.clone();
@@ -1370,6 +1468,7 @@ where
                 reused_speculative = blockstm_stats.reused_speculative_results_total,
                 conflicts = blockstm_stats.conflicts_total,
                 reexecutions = blockstm_stats.reexecutions_total,
+                serial_fallback = blockstm_stats.serial_fallback_total,
                 max_in_flight = blockstm_stats.max_in_flight_real_evm_executions,
                 semantic_actions = blockstm_stats.semantic_actions_total,
                 "Block-STM production execution stats"
@@ -1879,6 +1978,50 @@ impl BuilderTx {
             Self::Pooled(tx) => tx.transaction.inner().clone().into_parts(),
             Self::Owned(tx) => tx.into_parts(),
         }
+    }
+}
+
+#[cfg(test)]
+mod blockstm_fallback_tests {
+    use super::*;
+
+    #[test]
+    fn blockstm_retry_budget_selects_serial_fallback() {
+        let config = BlockStmConfig {
+            max_retries_per_tx: 2,
+            adaptive_conflict_threshold: 0,
+            ..BlockStmConfig::test()
+        };
+
+        assert_eq!(
+            blockstm_serial_fallback_reason(config, 1, 2),
+            Some(BlockStmSerialFallbackReason::RetryBudget)
+        );
+    }
+
+    #[test]
+    fn blockstm_adaptive_conflicts_select_serial_fallback() {
+        let config = BlockStmConfig {
+            max_retries_per_tx: 16,
+            adaptive_conflict_threshold: 4,
+            ..BlockStmConfig::test()
+        };
+
+        assert_eq!(
+            blockstm_serial_fallback_reason(config, 4, 1),
+            Some(BlockStmSerialFallbackReason::AdaptiveConflictThreshold)
+        );
+    }
+
+    #[test]
+    fn blockstm_retries_before_fallback_limits() {
+        let config = BlockStmConfig {
+            max_retries_per_tx: 16,
+            adaptive_conflict_threshold: 4,
+            ..BlockStmConfig::test()
+        };
+
+        assert_eq!(blockstm_serial_fallback_reason(config, 3, 1), None);
     }
 }
 
