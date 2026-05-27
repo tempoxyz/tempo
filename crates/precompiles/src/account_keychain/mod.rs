@@ -1130,8 +1130,17 @@ impl AccountKeychain {
         }
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
-        let key = self.keys[account][key_id].read()?;
-        Ok(key.expiry != 0 && !key.is_revoked && current_timestamp < key.expiry && key.is_admin)
+        let key = match self.load_active_key(account, key_id, current_timestamp) {
+            Ok(key) => key,
+            Err(crate::error::TempoPrecompileError::AccountKeychainError(
+                AccountKeychainError::KeyAlreadyRevoked(_)
+                | AccountKeychainError::KeyNotFound(_)
+                | AccountKeychainError::KeyExpired(_),
+            )) => return Ok(false),
+            Err(err) => return Err(err),
+        };
+
+        Ok(key.is_admin)
     }
 
     fn ensure_key_authorization_witness_not_burned(
@@ -1638,6 +1647,61 @@ mod tests {
             assert!(key.is_admin);
             assert!(keychain.is_admin_key(account, account)?);
             assert!(keychain.is_admin_key(account, admin_key)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t6_is_admin_key_uses_active_key_status() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        storage.set_timestamp(U256::from(100u64));
+        let account = Address::random();
+        let active_admin_key = Address::random();
+        let non_admin_key = Address::random();
+        let revoked_admin_key = Address::random();
+        let expired_admin_key = Address::random();
+        let missing_key = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+
+            keychain.keys[account][active_admin_key].write(AuthorizedKey {
+                signature_type: StoredSignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforce_limits: false,
+                is_revoked: false,
+                is_admin: true,
+            })?;
+            keychain.keys[account][non_admin_key].write(AuthorizedKey {
+                signature_type: StoredSignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforce_limits: false,
+                is_revoked: false,
+                is_admin: false,
+            })?;
+            keychain.keys[account][revoked_admin_key].write(AuthorizedKey {
+                signature_type: StoredSignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforce_limits: false,
+                is_revoked: true,
+                is_admin: true,
+            })?;
+            keychain.keys[account][expired_admin_key].write(AuthorizedKey {
+                signature_type: StoredSignatureType::Secp256k1,
+                expiry: 100,
+                enforce_limits: false,
+                is_revoked: false,
+                is_admin: true,
+            })?;
+
+            assert!(keychain.is_admin_key(account, account)?);
+            assert!(keychain.is_admin_key(account, active_admin_key)?);
+            assert!(!keychain.is_admin_key(account, non_admin_key)?);
+            assert!(!keychain.is_admin_key(account, revoked_admin_key)?);
+            assert!(!keychain.is_admin_key(account, expired_admin_key)?);
+            assert!(!keychain.is_admin_key(account, missing_key)?);
 
             Ok(())
         })
