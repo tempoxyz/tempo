@@ -209,7 +209,7 @@ alloy = { version = "2.0.5", default-features = false }
 alloy-consensus = { version = "2.0.5", default-features = false }
 alloy-contract = { version = "2.0.5", default-features = false }
 alloy-eips = { version = "2.0.5", default-features = false }
-alloy-evm = { version = "0.35.0", default-features = false }
+alloy-evm = { version = "0.35.1", default-features = false }
 revm-inspectors = "0.40.0"
 alloy-genesis = { version = "2.0.5", default-features = false }
 alloy-hardforks = "0.4.7"
@@ -406,5 +406,3 @@ commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev =
 commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
 commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
 commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
-
-alloy-evm = { git = "https://github.com/alloy-rs/evm", rev = "16194dd" }
