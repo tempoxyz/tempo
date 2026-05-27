@@ -303,13 +303,22 @@ fn latest_known_hardfork() -> TempoHardfork {
 fn hardfork_bench_cases() -> Vec<TempoHardfork> {
     let current = current_active_hardfork();
     let latest = latest_known_hardfork();
-    let mut cases = vec![current];
+    let variants = TempoHardfork::VARIANTS;
+    let current_idx = variants
+        .iter()
+        .position(|&hardfork| hardfork == current)
+        .expect("current hardfork must be a known Tempo hardfork");
+    let latest_idx = variants
+        .iter()
+        .position(|&hardfork| hardfork == latest)
+        .expect("latest hardfork must be a known Tempo hardfork");
 
-    if latest != current {
-        cases.push(latest);
-    }
-
-    cases
+    variants
+        .iter()
+        .skip(current_idx)
+        .take(latest_idx.saturating_sub(current_idx) + 1)
+        .copied()
+        .collect()
 }
 
 fn bench_env(
