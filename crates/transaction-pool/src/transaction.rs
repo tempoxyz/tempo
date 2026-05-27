@@ -35,6 +35,8 @@ pub struct TempoPooledTransaction {
     fee_token_cost: U256,
     /// Cached payment classification for efficient block building
     is_payment: bool,
+    /// Cached AA transaction id for 2D nonce pool and payload invalidation checks.
+    aa_transaction_id: Option<AA2dTransactionId>,
     /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
     expiring_nonce_hash: Option<B256>,
     /// Cached slot of the 2D nonce, if any.
@@ -70,6 +72,13 @@ impl TempoPooledTransaction {
                 .is_expiring_nonce_tx()
                 .then(|| tx.expiring_nonce_hash(sender))
         });
+        let aa_transaction_id = transaction.nonce_key().map(|nonce_key| AA2dTransactionId {
+            seq_id: AASequenceId {
+                address: sender,
+                nonce_key,
+            },
+            nonce: transaction.nonce(),
+        });
         let value = transaction.value();
         let cost =
             calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
@@ -84,6 +93,7 @@ impl TempoPooledTransaction {
             },
             fee_token_cost,
             is_payment,
+            aa_transaction_id,
             expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
@@ -182,15 +192,7 @@ impl TempoPooledTransaction {
 
     /// Returns the unique identifier for this AA transaction.
     pub fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
-        let nonce_key = self.nonce_key()?;
-        let sender = AASequenceId {
-            address: self.sender(),
-            nonce_key,
-        };
-        Some(AA2dTransactionId {
-            seq_id: sender,
-            nonce: self.nonce(),
-        })
+        self.aa_transaction_id
     }
 
     /// Computes the [`TempoTxEnv`] for this transaction.
