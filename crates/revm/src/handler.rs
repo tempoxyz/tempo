@@ -1807,17 +1807,17 @@ where
                     .into());
                 }
 
-                if key_auth.is_admin() {
-                    if key_auth.expiry.is_some()
+                if key_auth.is_admin()
+                    && (key_auth.expiry.is_some()
                         || key_auth.limits.is_some()
-                        || key_auth.allowed_calls.is_some()
-                    {
-                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                                reason: "admin key authorizations cannot carry expiry, limits, or call scopes"
-                                    .to_string(),
-                        }
-                        .into());
+                        || key_auth.allowed_calls.is_some())
+                {
+                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                        reason:
+                            "admin key authorizations cannot carry expiry, limits, or call scopes"
+                                .to_string(),
                     }
+                    .into());
                 }
 
                 if cfg.spec.is_t6() && key_auth.key_id == tx.caller {
