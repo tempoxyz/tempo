@@ -143,6 +143,11 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
     }
 }
 
+/// Validates the account binding carried by T6 key authorizations.
+///
+/// T6 allows existing admin keys to sign `KeyAuthorization`s for an account. Any authorization
+/// that names an account must be bound to the transaction caller so the signed payload cannot be
+/// replayed against another account where the same admin key is also authorized.
 fn validate_t6_key_authorization_account_binding(
     key_auth: &SignedKeyAuthorization,
     caller: Address,
@@ -1182,6 +1187,9 @@ where
 
                 let same_tx_auth_use = access_key_addr == key_auth.key_id;
 
+                // T6 adds admin delegation: the keychain signer may be an existing admin key that
+                // authorizes a different child key. Earlier forks only allow same-tx auth+use, and
+                // `validate_env` rejects non-matching key IDs before this state-aware phase.
                 if cfg.spec.is_t6() && !same_tx_auth_use {
                     let stored_key_expiry = StorageCtx::enter_precompile(
                         journal,
@@ -1189,9 +1197,7 @@ where
                         cfg,
                         tx,
                         |mut keychain: AccountKeychain| {
-                            let sig_type = spec
-                                .is_t1()
-                                .then_some(keychain_sig.signature.signature_type().into());
+                            let sig_type = Some(keychain_sig.signature.signature_type().into());
 
                             let key = keychain
                                 .validate_keychain_authorization(
@@ -1296,15 +1302,18 @@ where
             }
         }
 
+        // T6 defers `KeyAuthorization` signer checks from `validate_env` to this state-aware phase:
+        // root-signed authorizations remain valid, while admin-signed authorizations must name the
+        // caller account and prove that the sidecar signer is an active admin key for that account.
         if cfg.spec.is_t6()
             && let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(key_auth) = tempo_tx_env.key_authorization.as_ref()
         {
+            validate_t6_key_authorization_account_binding(key_auth, tx.caller)?;
+
             let auth_signer = key_auth
                 .recover_signer()
                 .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
-
-            validate_t6_key_authorization_account_binding(key_auth, tx.caller)?;
 
             if auth_signer != tx.caller {
                 if key_auth.account.is_none() {
