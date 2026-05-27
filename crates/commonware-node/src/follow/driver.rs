@@ -90,7 +90,9 @@ pub(super) fn try_init<TContext>(
             .extra_data()
             .as_ref(),
     )
-    .wrap_err("the genesis header did not contain a DKG outcome")?;
+    .wrap_err_with(|| {
+        format!("the last boundary (`{last_boundary}`) block header did not contain a DKG outcome")
+    })?;
 
     config.scheme_provider.register(
         onchain_outcome.epoch,

@@ -550,6 +550,9 @@ where
                     }
                 }
 
+                // Precompute the fee balance slot after validation has resolved the fee token.
+                transaction.transaction().fee_balance_slot();
+
                 TransactionValidationOutcome::Valid {
                     balance,
                     state_nonce,

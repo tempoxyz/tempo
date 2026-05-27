@@ -12,7 +12,7 @@ use alloy::{
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
     transports::http::reqwest::Url,
 };
-use alloy_evm::{EvmFactory as _, revm::inspector::JournalExt as _};
+use alloy_evm::{EvmFactory as _, revm::context::JournalTr};
 use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256, Keccak256, U256};
 use commonware_codec::Encode;
