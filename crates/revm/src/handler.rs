@@ -1225,7 +1225,7 @@ where
 
             let skip_liquidity_check = evm.skip_liquidity_check;
             let result = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
-                TipFeeManager::new().collect_fee_pre_tx(
+                TipFeeManager::new().collect_fee_pre_tx_unchecked(
                     fee_payer,
                     fee_token,
                     gas_balance_spending,
@@ -1503,7 +1503,7 @@ where
                     .expect("set in `validate_against_state_and_deduct_caller`");
                 // Call collectFeePostTx (handles both refund and fee queuing)
                 fee_manager
-                    .collect_fee_post_tx(
+                    .collect_fee_post_tx_unchecked(
                         fee_payer,
                         actual_spending,
                         refund_amount,
