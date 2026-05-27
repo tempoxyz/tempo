@@ -10,8 +10,7 @@ use revm::{
     precompile::{PrecompileHalt, PrecompileOutput, PrecompileResult},
     state::{AccountInfo, Bytecode},
 };
-use scoped_tls::scoped_thread_local;
-use std::{cell::RefCell, fmt::Debug};
+use std::{cell::RefCell, fmt::Debug, ptr::NonNull};
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{
@@ -20,7 +19,23 @@ use crate::{
     storage::{PrecompileStorageProvider, evm::EvmPrecompileStorageProvider},
 };
 
-scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
+type StoragePtr = NonNull<dyn PrecompileStorageProvider>;
+
+thread_local! {
+    static STORAGE: RefCell<Option<StoragePtr>> = RefCell::new(None);
+}
+
+struct StorageScopeGuard {
+    previous: Option<StoragePtr>,
+}
+
+impl Drop for StorageScopeGuard {
+    fn drop(&mut self) {
+        STORAGE.with(|cell| {
+            *cell.borrow_mut() = self.previous.take();
+        });
+    }
+}
 
 /// Thread-local storage accessor that implements `PrecompileStorageProvider` without the trait bound.
 ///
@@ -52,12 +67,14 @@ impl StorageCtx {
     where
         S: PrecompileStorageProvider,
     {
-        // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
         let storage: &mut dyn PrecompileStorageProvider = storage;
         let storage_static: &mut (dyn PrecompileStorageProvider + 'static) =
             unsafe { std::mem::transmute(storage) };
-        let cell = RefCell::new(storage_static);
-        STORAGE.set(&cell, f)
+        let storage = NonNull::from(storage_static);
+
+        let previous = STORAGE.with(|cell| cell.replace(Some(storage)));
+        let _guard = StorageScopeGuard { previous };
+        f()
     }
 
     /// Execute an infallible function with access to the current thread-local storage provider.
@@ -68,15 +85,15 @@ impl StorageCtx {
     where
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> R,
     {
-        assert!(
-            STORAGE.is_set(),
-            "No storage context. 'StorageCtx::enter' must be called first"
-        );
         STORAGE.with(|cell| {
-            // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
-            // Holding the guard prevents re-entrant borrows.
-            let mut guard = cell.borrow_mut();
-            f(&mut **guard)
+            let guard = cell.borrow_mut();
+            let mut storage = guard
+                .as_ref()
+                .copied()
+                .expect("No storage context. 'StorageCtx::enter' must be called first");
+            // SAFETY: `StorageCtx::enter` installs a valid provider pointer for the closure scope.
+            // Holding the `RefCell` guard prevents re-entrant mutable access.
+            unsafe { f(storage.as_mut()) }
         })
     }
 
@@ -85,16 +102,16 @@ impl StorageCtx {
     where
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> Result<R>,
     {
-        if !STORAGE.is_set() {
-            return Err(TempoPrecompileError::Fatal(
-                "No storage context. 'StorageCtx::enter' must be called first".to_string(),
-            ));
-        }
         STORAGE.with(|cell| {
-            // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
-            // Holding the guard prevents re-entrant borrows.
-            let mut guard = cell.borrow_mut();
-            f(&mut **guard)
+            let guard = cell.borrow_mut();
+            let Some(mut storage) = guard.as_ref().copied() else {
+                return Err(TempoPrecompileError::Fatal(
+                    "No storage context. 'StorageCtx::enter' must be called first".to_string(),
+                ));
+            };
+            // SAFETY: `StorageCtx::enter` installs a valid provider pointer for the closure scope.
+            // Holding the `RefCell` guard prevents re-entrant mutable access.
+            unsafe { f(storage.as_mut()) }
         })
     }
 
