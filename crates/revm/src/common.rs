@@ -306,9 +306,8 @@ pub trait TempoStateAccess<M = ()> {
         self.with_read_only_storage_ctx(spec, || {
             // Load the token balance for the given account.
             TIP20Token::from_address(token)?.balances[account]
-                .amount
                 .read()
-                .map(|amount| U256::from(amount))
+                .map(|state| state.amount())
         })
     }
 }

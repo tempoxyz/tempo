@@ -24,16 +24,6 @@ pub struct UserState {
     pub(super) flag: RewardFlag,
 }
 
-/// Decodes the token balance amount from a raw TIP-20 `balances[account]` storage word.
-///
-/// T6 packs [`UserState`] into the legacy balance slot with the amount in the low 128 bits and
-/// reward metadata in the high bits. Use this helper when reading balance slots through raw storage
-/// APIs instead of typed storage handlers.
-#[inline]
-pub fn decode_tip20_balance(slot_value: U256) -> U256 {
-    slot_value & U128_MAX
-}
-
 impl UserState {
     pub(super) fn new(amount: U256, flag: RewardFlag) -> Result<Self> {
         let amount = u128::try_from(amount).map_err(|_| TempoPrecompileError::under_overflow())?;
@@ -177,6 +167,16 @@ impl Storable for UserState {
         )?;
         storage.store(slot, packed.0)
     }
+}
+
+/// Decodes the token balance amount from a raw TIP-20 `balances[account]` storage word.
+///
+/// T6 packs [`UserState`] into the legacy balance slot with the amount in the low 128 bits and
+/// reward metadata in the high bits. Use this helper when reading balance slots through raw storage
+/// APIs instead of typed storage handlers.
+#[inline]
+pub fn decode_tip20_balance(slot_value: U256) -> U256 {
+    slot_value & U128_MAX
 }
 
 #[cfg(test)]

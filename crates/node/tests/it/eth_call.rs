@@ -24,8 +24,8 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
     error::TempoPrecompileError,
-    storage::{ContractStorage, LayoutCtx, Storable, packing::PackedSlot},
-    tip20::{TIP20Token, UserState},
+    storage::ContractStorage,
+    tip20::{TIP20Token, decode_tip20_balance},
     validator_config::ValidatorConfig,
 };
 use test_case::test_case;
@@ -43,14 +43,6 @@ fn under_overflow_revert() -> Bytes {
         .into_precompile_result(0, 0)
         .unwrap()
         .bytes
-}
-
-fn tip20_balance_from_word(word: U256) -> eyre::Result<UserState> {
-    Ok(<UserState as Storable>::load(
-        &PackedSlot(word),
-        U256::ZERO,
-        LayoutCtx::FULL,
-    )?)
 }
 
 /// Builds a `StateOverride` targeting `address` with the given slot→value diffs.
@@ -193,8 +185,8 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
     };
     let from_word = from.into_u256();
     let to_word = to.into_u256();
-    assert_eq!(tip20_balance_from_word(from_word)?.amount(), mint_amount);
-    assert_eq!(tip20_balance_from_word(to_word)?.amount(), U256::ZERO);
+    assert_eq!(decode_tip20_balance(from_word), mint_amount);
+    assert_eq!(decode_tip20_balance(to_word), U256::ZERO);
 
     // Assert recipient token balance is changed
     let slot = TIP20Token::from_address(token_address)
@@ -211,8 +203,8 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
     };
     let from_word = from.into_u256();
     let to_word = to.into_u256();
-    assert_eq!(tip20_balance_from_word(from_word)?.amount(), U256::ZERO);
-    assert_eq!(tip20_balance_from_word(to_word)?.amount(), mint_amount);
+    assert_eq!(decode_tip20_balance(from_word), U256::ZERO);
+    assert_eq!(decode_tip20_balance(to_word), mint_amount);
 
     Ok(())
 }
