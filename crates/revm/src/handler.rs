@@ -2119,8 +2119,6 @@ pub fn get_token_balance<JOURNAL>(
 where
     JOURNAL: JournalTr,
 {
-    // Address has already been validated as having TIP20 prefix
-    journal.load_account(token)?;
     let balance_slot = TIP20Token::from_address(token)
         .expect("TIP20 prefix already validated")
         .balances[sender]
