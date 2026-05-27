@@ -623,6 +623,9 @@ where
             .inc_block_build_stop_reason(block_build_stop_reason);
         let normal_transaction_fill_elapsed = execution_start.elapsed();
         self.metrics
+            .total_normal_transaction_fill_duration_seconds
+            .record(normal_transaction_fill_elapsed);
+        self.metrics
             .normal_transaction_fill_idle_duration_seconds
             .record(normal_transaction_fill_idle_elapsed);
         self.metrics
@@ -716,6 +719,13 @@ where
         self.metrics
             .system_transactions_execution_duration_seconds
             .record(system_txs_execution_elapsed);
+
+        let total_transaction_execution_elapsed = normal_transaction_fill_elapsed
+            + total_subblock_transaction_execution_elapsed
+            + system_txs_execution_elapsed;
+        self.metrics
+            .total_transaction_execution_duration_seconds
+            .record(total_transaction_execution_elapsed);
 
         let payload_finalization_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
@@ -894,6 +904,8 @@ where
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
             ?total_subblock_transaction_execution_elapsed,
+            ?system_txs_execution_elapsed,
+            ?total_transaction_execution_elapsed,
             ?sparse_trie_state_root_wait_elapsed,
             ?builder_finish_elapsed,
             "Built payload"
