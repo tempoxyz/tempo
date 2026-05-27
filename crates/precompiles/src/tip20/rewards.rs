@@ -18,6 +18,29 @@ use tempo_primitives::TempoAddressExt;
 
 /// Precision multiplier for reward-per-token accumulator (1e18).
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
+const ACC_PRECISION_U128: u128 = 1_000_000_000_000_000_000;
+
+#[inline]
+fn checked_mul_div(lhs: U256, rhs: U256, denominator: U256) -> Result<U256> {
+    let narrow = || {
+        let lhs: u128 = lhs.try_into().ok()?;
+        let rhs: u128 = rhs.try_into().ok()?;
+        let denominator: u128 = denominator.try_into().ok()?;
+        if denominator == 0 {
+            return None;
+        }
+        lhs.checked_mul(rhs)
+            .map(|product| U256::from(product / denominator))
+    };
+
+    if let Some(value) = narrow() {
+        return Ok(value);
+    }
+
+    lhs.checked_mul(rhs)
+        .and_then(|v| v.checked_div(denominator))
+        .ok_or(TempoPrecompileError::under_overflow())
+}
 
 impl TIP20Token {
     /// Distributes `amount` of reward tokens from the caller into the opted-in reward pool.
@@ -53,11 +76,7 @@ impl TIP20Token {
             return Err(TIP20Error::no_opted_in_supply().into());
         }
 
-        let delta_rpt = call
-            .amount
-            .checked_mul(ACC_PRECISION)
-            .and_then(|v| v.checked_div(opted_in_supply))
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let delta_rpt = checked_mul_div(call.amount, ACC_PRECISION, opted_in_supply)?;
         let current_rpt = self.get_global_reward_per_token()?;
         let new_rpt = current_rpt
             .checked_add(delta_rpt)
@@ -89,10 +108,11 @@ impl TIP20Token {
         if reward_per_token_delta != U256::ZERO {
             if cached_delegate != Address::ZERO {
                 let holder_balance = self.get_balance(holder)?;
-                let reward = holder_balance
-                    .checked_mul(reward_per_token_delta)
-                    .and_then(|v| v.checked_div(ACC_PRECISION))
-                    .ok_or(TempoPrecompileError::under_overflow())?;
+                let reward = checked_mul_div(
+                    holder_balance,
+                    reward_per_token_delta,
+                    U256::from(ACC_PRECISION_U128),
+                )?;
 
                 // Add reward to delegate's balance (or holder's own balance if self-delegated)
                 if cached_delegate == holder {
@@ -338,10 +358,11 @@ impl TIP20Token {
                     .ok_or(TempoPrecompileError::under_overflow())?;
 
                 if reward_per_token_delta > U256::ZERO {
-                    let accrued = holder_balance
-                        .checked_mul(reward_per_token_delta)
-                        .and_then(|v| v.checked_div(ACC_PRECISION))
-                        .ok_or(TempoPrecompileError::under_overflow())?;
+                    let accrued = checked_mul_div(
+                        holder_balance,
+                        reward_per_token_delta,
+                        U256::from(ACC_PRECISION_U128),
+                    )?;
                     pending = pending
                         .checked_add(accrued)
                         .ok_or(TempoPrecompileError::under_overflow())?;
