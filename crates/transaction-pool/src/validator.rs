@@ -415,6 +415,9 @@ where
 
         // Cache the resolved fee token from EVM validation for pool maintenance.
         transaction.set_resolved_fee_token(validation_ctx.fee_token);
+        // Populate the payload builder's state-aware balance key while the
+        // resolved fee token from validation is already available.
+        let _ = transaction.fee_balance_slot();
 
         // Pool-only key-expiry propagation buffer: reject keychain txs whose key
         // expires too soon (within AA_VALID_BEFORE_MIN_SECS of tip timestamp).
