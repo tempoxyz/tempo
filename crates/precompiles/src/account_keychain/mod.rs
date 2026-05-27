@@ -257,6 +257,7 @@ impl AccountKeychain {
             }
 
             if config.allowAnyCalls {
+                // T5+: prevent footguns where callers accidentally pass scopes with allow-all.
                 if self.storage.spec().is_t5() && !config.allowedCalls.is_empty() {
                     return Err(AccountKeychainError::invalid_call_scope().into());
                 }
