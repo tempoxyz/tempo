@@ -518,6 +518,32 @@ jobs:
         with:
           node-version: 24
 
+      - name: Install promtool
+        if: env.BENCH_VICTORIAMETRICS_URL
+        env:
+          PROMETHEUS_VERSION: 3.11.3
+        run: |
+          case "$(uname -m)" in
+            x86_64|amd64) arch=amd64 ;;
+            aarch64|arm64) arch=arm64 ;;
+            *)
+              echo "::error::Unsupported architecture: $(uname -m)"
+              exit 1
+              ;;
+          esac
+
+          asset="prometheus-${PROMETHEUS_VERSION}.linux-${arch}.tar.gz"
+          release_url="https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}"
+          curl -fsSL "$release_url/$asset" -o "/tmp/$asset"
+          curl -fsSL "$release_url/sha256sums.txt" -o /tmp/prometheus-sha256sums.txt
+          (cd /tmp && grep " $asset\$" prometheus-sha256sums.txt | sha256sum -c -)
+
+          mkdir -p "$HOME/.local/bin"
+          tar -xzf "/tmp/$asset" -C /tmp
+          install -m 0755 "/tmp/prometheus-${PROMETHEUS_VERSION}.linux-${arch}/promtool" "$HOME/.local/bin/promtool"
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+          "$HOME/.local/bin/promtool" --version
+
       - name: Install txgen
         env:
           TXGEN_GIT_TOKEN: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}

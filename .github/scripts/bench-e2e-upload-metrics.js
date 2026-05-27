@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const zlib = require('zlib');
+const { spawn } = require('child_process');
 const { performance } = require('perf_hooks');
 const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 
@@ -328,7 +329,7 @@ async function uploadClickHouseRun(resultsDir, label, loaded, config) {
   return { label, runId };
 }
 
-function victoriaConfig(victoriametricsUrl) {
+function promtoolConfig(victoriametricsUrl, report) {
   let url = trimUrl(victoriametricsUrl);
   if (url.endsWith('/api/v1/import/prometheus')) {
     url = url.slice(0, -'/api/v1/import/prometheus'.length);
@@ -339,12 +340,14 @@ function victoriaConfig(victoriametricsUrl) {
   }
 
   return {
-    writeUrl: withQueryParam(`${url}/api/v1/write`, 'accountID', process.env.PROMETHEUS_TENANT_ID || ''),
+    baseUrl: withQueryParam(url, 'accountID', process.env.PROMETHEUS_TENANT_ID || ''),
     bearerToken: process.env.PROMETHEUS_BEARER_TOKEN || '',
     user: process.env.PROMETHEUS_USER || '',
     password: process.env.PROMETHEUS_PASSWORD || '',
-    batchSize: envPositiveInt('PROMETHEUS_BATCH_SIZE', 10_000),
+    bin: process.env.PROMTOOL_BIN || 'promtool',
+    batchSize: envPositiveInt('PROMTOOL_BATCH_SIZE', envPositiveInt('PROMETHEUS_BATCH_SIZE', 50_000)),
     timeoutSecs: envPositiveInt('PROMETHEUS_TIMEOUT_SECS', 60),
+    extraLabel: promtoolExtraLabel(report),
   };
 }
 
@@ -385,27 +388,36 @@ function victoriaMetric(sample) {
   return { metric, value, timestamp };
 }
 
-function addVictoriaSample(series, sample) {
-  const item = victoriaMetric(sample);
-  if (!item) return false;
-
-  const key = stableJson(item.metric);
-  let entry = series.get(key);
-  if (!entry) {
-    entry = { metric: item.metric, values: [], timestamps: [] };
-    series.set(key, entry);
+function promtoolExtraLabel(report) {
+  const metadata = report.metadata || {};
+  const gitSha = metadata['git-sha'] || metadata.git_sha || metadata.gitsha;
+  if (gitSha) {
+    return { name: 'git_sha', value: String(gitSha) };
   }
-  entry.values.push(item.value);
-  entry.timestamps.push(item.timestamp);
-  return true;
+  return { name: 'bench_upload', value: 'promtool' };
 }
 
-function victoriaHeaders(config) {
-  const headers = {
-    'Content-Type': 'application/x-protobuf',
-    'Content-Encoding': 'snappy',
-    'X-Prometheus-Remote-Write-Version': '0.1.0',
-  };
+function escapePrometheusLabelValue(value) {
+  return String(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/\n/g, '\\n')
+    .replace(/"/g, '\\"');
+}
+
+function prometheusTextSample(sample) {
+  const item = victoriaMetric(sample);
+  if (!item) return null;
+
+  const labels = sortedVictoriaLabels(item.metric)
+    .filter(label => label.name !== '__name__')
+    .map(label => `${label.name}="${escapePrometheusLabelValue(label.value)}"`)
+    .join(',');
+  const labelText = labels ? `{${labels}}` : '';
+  return `${item.metric.__name__}${labelText} ${item.value} ${Math.trunc(item.timestamp)}`;
+}
+
+function promtoolHeaders(config) {
+  const headers = {};
   if (config.bearerToken) {
     headers.Authorization = `Bearer ${config.bearerToken}`;
   }
@@ -416,46 +428,85 @@ function victoriaHeaders(config) {
   return headers;
 }
 
-function protoVarint(value) {
-  let n = BigInt(value);
-  const bytes = [];
-  while (n >= 0x80n) {
-    bytes.push(Number((n & 0x7fn) | 0x80n));
-    n >>= 7n;
+function promtoolArgs(config) {
+  const args = [
+    'push',
+    'metrics',
+    `--timeout=${config.timeoutSecs}s`,
+    `--label=${config.extraLabel.name}=${config.extraLabel.value}`,
+  ];
+  for (const [name, value] of Object.entries(promtoolHeaders(config))) {
+    args.push(`--header=${name}=${value}`);
   }
-  bytes.push(Number(n));
-  return Buffer.from(bytes);
+  args.push(config.baseUrl);
+  return args;
 }
 
-function protoTag(field, wireType) {
-  return protoVarint((field << 3) | wireType);
+function pushPromtoolBatch(config, lines, task, batch) {
+  return new Promise((resolve, reject) => {
+    const startedAt = performance.now();
+    const body = `${lines.join('\n')}\n`;
+    const bodyBytes = Buffer.byteLength(body);
+    const args = promtoolArgs(config);
+    const child = spawn(config.bin, args, { stdio: ['pipe', 'pipe', 'pipe'] });
+    let stdout = '';
+    let stderr = '';
+    let settled = false;
+    const killAfter = setTimeout(() => {
+      child.kill('SIGKILL');
+    }, (config.timeoutSecs + 30) * 1000);
+
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(killAfter);
+      fn(value);
+    };
+
+    child.stdout.on('data', chunk => { stdout += chunk.toString(); });
+    child.stderr.on('data', chunk => { stderr += chunk.toString(); });
+    child.on('error', err => finish(reject, err));
+    child.on('close', code => {
+      const durationMs = elapsedMs(startedAt);
+      if (code === 0) {
+        log('victoriametrics batch complete', {
+          task,
+          batch,
+          protocol: 'promtool',
+          samples: lines.length,
+          body_bytes: bodyBytes,
+          duration_ms: durationMs,
+        });
+        finish(resolve);
+      } else {
+        const output = `${stderr}\n${stdout}`.trim();
+        logError('victoriametrics batch failed', {
+          task,
+          batch,
+          protocol: 'promtool',
+          duration_ms: durationMs,
+          exit_code: code,
+          error: output || '<no promtool output>',
+        });
+        finish(reject, new Error(`promtool exited with code ${code}: ${output || '<no output>'}`));
+      }
+    });
+
+    log('victoriametrics batch start', {
+      task,
+      batch,
+      protocol: 'promtool',
+      samples: lines.length,
+      body_bytes: bodyBytes,
+    });
+    child.stdin.end(body);
+  });
 }
 
-function protoBytes(field, bytes) {
-  return Buffer.concat([protoTag(field, 2), protoVarint(bytes.length), bytes]);
-}
-
-function protoString(field, value) {
-  return protoBytes(field, Buffer.from(String(value), 'utf8'));
-}
-
-function protoDouble(field, value) {
-  const bytes = Buffer.allocUnsafe(9);
-  bytes[0] = (field << 3) | 1;
-  bytes.writeDoubleLE(value, 1);
-  return bytes;
-}
-
-function protoInt64(field, value) {
-  return Buffer.concat([protoTag(field, 0), protoVarint(Math.trunc(value))]);
-}
-
-function protoLabel(name, value) {
-  return Buffer.concat([protoString(1, name), protoString(2, value)]);
-}
-
-function protoSample(value, timestamp) {
-  return Buffer.concat([protoDouble(1, value), protoInt64(2, timestamp)]);
+async function flushPromtoolLines(config, lines, task, batch) {
+  if (lines.length === 0) return;
+  await pushPromtoolBatch(config, lines, task, batch);
+  lines.length = 0;
 }
 
 function sortedVictoriaLabels(metric) {
@@ -464,186 +515,38 @@ function sortedVictoriaLabels(metric) {
     .sort((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0));
 }
 
-function victoriaRemoteWriteBody(series) {
-  const timeseries = [];
-  for (const item of series.values()) {
-    const labels = sortedVictoriaLabels(item.metric)
-      .map(label => protoBytes(1, protoLabel(label.name, label.value)));
-    const samples = item.values
-      .map((value, index) => ({ value, timestamp: item.timestamps[index] }))
-      .sort((a, b) => a.timestamp - b.timestamp)
-      .map(sample => protoBytes(2, protoSample(sample.value, sample.timestamp)));
-    timeseries.push(protoBytes(1, Buffer.concat([...labels, ...samples])));
-  }
-  return Buffer.concat(timeseries);
-}
-
-function snappyLiteral(chunk) {
-  if (chunk.length === 0) return Buffer.alloc(0);
-
-  if (chunk.length < 60) {
-    return Buffer.concat([Buffer.from([(chunk.length - 1) << 2]), chunk]);
-  }
-
-  const lengthBytes = [];
-  let lengthMinusOne = chunk.length - 1;
-  while (lengthMinusOne > 0) {
-    lengthBytes.push(lengthMinusOne & 0xff);
-    lengthMinusOne >>= 8;
-  }
-  return Buffer.concat([
-    Buffer.from([(59 + lengthBytes.length) << 2, ...lengthBytes]),
-    chunk,
-  ]);
-}
-
-function snappyCopy(offset, length) {
-  const chunks = [];
-  let remaining = length;
-  while (remaining > 0) {
-    const chunkLength = Math.min(remaining, 64);
-    chunks.push(Buffer.from([
-      ((chunkLength - 1) << 2) | 2,
-      offset & 0xff,
-      (offset >> 8) & 0xff,
-    ]));
-    remaining -= chunkLength;
-  }
-  return chunks;
-}
-
-function snappyHash(value) {
-  return (Math.imul(value, 0x1e35a7bd) >>> 17) & 0x7fff;
-}
-
-function snappyLoad32(bytes, offset) {
-  return (
-    bytes[offset] |
-    (bytes[offset + 1] << 8) |
-    (bytes[offset + 2] << 16) |
-    (bytes[offset + 3] << 24)
-  ) >>> 0;
-}
-
-function snappyCompressBlock(input) {
-  const out = [];
-  const table = new Int32Array(1 << 15);
-  table.fill(-1);
-
-  let anchor = 0;
-  let ip = 0;
-  const limit = input.length - 4;
-  while (ip <= limit) {
-    const seq = snappyLoad32(input, ip);
-    const hash = snappyHash(seq);
-    const candidate = table[hash];
-    table[hash] = ip;
-
-    if (
-      candidate >= 0 &&
-      ip - candidate <= 0xffff &&
-      snappyLoad32(input, candidate) === seq
-    ) {
-      out.push(snappyLiteral(input.subarray(anchor, ip)));
-
-      let matched = 4;
-      while (
-        ip + matched < input.length &&
-        input[candidate + matched] === input[ip + matched]
-      ) {
-        matched += 1;
-      }
-      out.push(...snappyCopy(ip - candidate, matched));
-      ip += matched;
-      anchor = ip;
-
-      if (ip <= limit) {
-        table[snappyHash(snappyLoad32(input, ip - 1))] = ip - 1;
-      }
-    } else {
-      ip += 1;
-    }
-  }
-
-  out.push(snappyLiteral(input.subarray(anchor)));
-  return Buffer.concat(out);
-}
-
-function snappyCompress(input) {
-  const chunks = [protoVarint(input.length)];
-  for (let offset = 0; offset < input.length; offset += 65536) {
-    chunks.push(snappyCompressBlock(input.subarray(offset, offset + 65536)));
-  }
-  return Buffer.concat(chunks);
-}
-
-async function flushVictoriaSeries(config, series, task, batch) {
-  if (series.size === 0) return;
-
-  const seriesCount = series.size;
-  const sampleCount = [...series.values()].reduce((sum, item) => sum + item.values.length, 0);
-  const startedAt = performance.now();
-  const body = snappyCompress(victoriaRemoteWriteBody(series));
-
-  log('victoriametrics batch start', {
-    task,
-    batch,
-    protocol: 'remote_write',
-    samples: sampleCount,
-    series: seriesCount,
-    body_bytes: body.length,
-  });
-  try {
-    await post(config.writeUrl, body, victoriaHeaders(config), config.timeoutSecs);
-    log('victoriametrics batch complete', {
-      task,
-      batch,
-      protocol: 'remote_write',
-      samples: sampleCount,
-      series: seriesCount,
-      body_bytes: body.length,
-      duration_ms: elapsedMs(startedAt),
-    });
-    series.clear();
-  } catch (err) {
-    logError('victoriametrics batch failed', {
-      task,
-      batch,
-      protocol: 'remote_write',
-      duration_ms: elapsedMs(startedAt),
-      error: err.message,
-    });
-    throw err;
-  }
-}
-
 async function uploadVictoriaRun(label, loaded, config) {
   const task = `victoriametrics:${label}`;
   const startedAt = performance.now();
   const { reportPath, report } = loaded;
-  let series = new Map();
-  let batchSamples = 0;
+  const lines = [];
   let samples = 0;
   let batches = 0;
 
-  log('task start', { task });
+  log('task start', { task, protocol: 'promtool', batch_size: config.batchSize });
   for await (const sample of iterSamples(reportPath, report)) {
-    if (!addVictoriaSample(series, sample)) continue;
-    batchSamples += 1;
-    if (batchSamples >= config.batchSize) {
+    const line = prometheusTextSample(sample);
+    if (!line) continue;
+    lines.push(line);
+    if (lines.length >= config.batchSize) {
       batches += 1;
-      await flushVictoriaSeries(config, series, task, batches);
-      samples += batchSamples;
-      batchSamples = 0;
+      samples += lines.length;
+      await flushPromtoolLines(config, lines, task, batches);
     }
   }
-  if (batchSamples > 0) {
+  if (lines.length > 0) {
     batches += 1;
-    await flushVictoriaSeries(config, series, task, batches);
-    samples += batchSamples;
+    samples += lines.length;
+    await flushPromtoolLines(config, lines, task, batches);
   }
 
-  log('task complete', { task, samples, batches, duration_ms: elapsedMs(startedAt) });
+  log('task complete', {
+    task,
+    protocol: 'promtool',
+    samples,
+    batches,
+    duration_ms: elapsedMs(startedAt),
+  });
   return { label, samples };
 }
 
@@ -778,8 +681,8 @@ async function workerMain() {
     throw new Error(`unknown worker kind: ${workerData?.kind}`);
   }
 
-  const config = victoriaConfig(workerData.victoriametricsUrl);
   const loaded = loadReport(workerData.resultsDir, workerData.label);
+  const config = promtoolConfig(workerData.victoriametricsUrl, loaded.report);
   const result = await uploadVictoriaRun(workerData.label, loaded, config);
   parentPort.postMessage({ result });
 }
