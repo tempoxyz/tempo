@@ -994,26 +994,32 @@ impl TIP20Token {
         self.grant_default_admin(msg_sender, admin)
     }
 
+    #[inline]
     fn get_balance(&self, account: Address) -> Result<U256> {
         self.balances[account].read()
     }
 
+    #[inline]
     fn set_balance(&mut self, account: Address, amount: U256) -> Result<()> {
         self.balances[account].write(amount)
     }
 
+    #[inline]
     fn get_allowance(&self, owner: Address, spender: Address) -> Result<U256> {
         self.allowances[owner][spender].read()
     }
 
+    #[inline]
     fn set_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
         self.allowances[owner][spender].write(amount)
     }
 
+    #[inline]
     fn set_total_supply(&mut self, amount: U256) -> Result<()> {
         self.total_supply.write(amount)
     }
 
+    #[inline]
     pub fn check_not_paused(&self) -> Result<()> {
         if self.paused()? {
             return Err(TIP20Error::contract_paused().into());
@@ -1139,6 +1145,7 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
+    #[inline]
     pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
