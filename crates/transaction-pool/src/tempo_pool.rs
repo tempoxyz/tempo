@@ -294,8 +294,7 @@ where
                 && let Some(ref mut provider) = state_provider
             {
                 let fee_token = tx.transaction.effective_fee_token();
-                let Ok(fee_payer) = tx.transaction.inner().fee_payer(tx.transaction.sender())
-                else {
+                let Ok(fee_payer) = tx.transaction.fee_payer() else {
                     continue;
                 };
 
@@ -332,9 +331,8 @@ where
                 let fee_token = tx.transaction.effective_fee_token();
                 let fee_payer = tx
                     .transaction
-                    .inner()
-                    .fee_payer(tx.transaction.sender())
-                    .unwrap_or(tx.transaction.sender());
+                    .fee_payer()
+                    .unwrap_or_else(|_| tx.transaction.sender());
 
                 // Check if any blacklist addition applies to this transaction's fee payer
                 let mut sender_evicted = false;
@@ -378,9 +376,8 @@ where
                 let fee_token = tx.transaction.effective_fee_token();
                 let fee_payer = tx
                     .transaction
-                    .inner()
-                    .fee_payer(tx.transaction.sender())
-                    .unwrap_or(tx.transaction.sender());
+                    .fee_payer()
+                    .unwrap_or_else(|_| tx.transaction.sender());
 
                 let mut sender_evicted = false;
                 for &(whitelist_policy_id, unwhitelisted_account) in &updates.whitelist_removals {
@@ -415,15 +412,16 @@ where
             }
 
             // Check 6: User fee token preference changes
-            // When a user changes their fee token preference via setUserToken(), transactions
-            // from that user that don't have an explicit fee_token set may now resolve to a
-            // different token at execution time, causing fee payment failures.
+            // When a fee payer changes their fee token preference via setUserToken(),
+            // transactions paid by that account that don't have an explicit fee_token set may
+            // now resolve to a different token at execution time, causing fee payment failures.
             // Only evict transactions WITHOUT an explicit fee_token (those that rely on storage).
             if !updates.user_token_changes.is_empty()
                 && tx.transaction.inner().fee_token().is_none()
-                && updates
-                    .user_token_changes
-                    .contains(&tx.transaction.sender())
+                && tx
+                    .transaction
+                    .fee_payer()
+                    .is_ok_and(|fee_payer| updates.user_token_changes.contains(&fee_payer))
             {
                 to_remove.push(*tx.hash());
                 user_token_count += 1;
@@ -1541,6 +1539,96 @@ mod tests {
             )),
             key_id,
         )
+    }
+
+    fn sponsored_implicit_fee_transaction(sender: Address) -> (TempoPooledTransaction, Address) {
+        let fee_payer_signer = loop {
+            let signer = PrivateKeySigner::random();
+            if signer.address() != sender {
+                break signer;
+            }
+        };
+        let fee_payer = fee_payer_signer.address();
+        let envelope = crate::test_utils::TxBuilder::aa(sender)
+            .build()
+            .inner()
+            .clone()
+            .into_inner();
+        let TempoTxEnvelope::AA(mut signed) = envelope else {
+            panic!("expected AA transaction");
+        };
+        let fee_payer_hash = signed.tx().fee_payer_signature_hash(sender);
+        signed.tx_mut().fee_payer_signature = Some(
+            fee_payer_signer
+                .sign_hash_sync(&fee_payer_hash)
+                .expect("fee payer signing should succeed"),
+        );
+
+        (
+            TempoPooledTransaction::new(Recovered::new_unchecked(
+                TempoTxEnvelope::AA(signed),
+                sender,
+            )),
+            fee_payer,
+        )
+    }
+
+    #[tokio::test]
+    async fn evicts_sponsored_implicit_fee_transaction_when_fee_payer_user_token_changes() {
+        let sender = Address::random();
+        let (pooled, fee_payer) = sponsored_implicit_fee_transaction(sender);
+        assert_eq!(pooled.inner().fee_token(), None);
+        assert_ne!(fee_payer, sender);
+
+        let provider = create_provider_with_tip();
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        let pool = create_test_pool(provider);
+        add_validated(&pool, pooled.clone());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.user_token_changes.insert(fee_payer);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(evicted, vec![*pooled.hash()]);
+        assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn keeps_sponsored_implicit_fee_transaction_when_sender_user_token_changes() {
+        let sender = Address::random();
+        let (pooled, fee_payer) = sponsored_implicit_fee_transaction(sender);
+        assert_eq!(pooled.inner().fee_token(), None);
+        assert_ne!(fee_payer, sender);
+
+        let provider = create_provider_with_tip();
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        let pool = create_test_pool(provider);
+        add_validated(&pool, pooled.clone());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.user_token_changes.insert(sender);
+
+        assert!(pool.evict_invalidated_transactions(&updates).is_empty());
+        assert!(pool.get(pooled.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn evicts_sender_paid_implicit_fee_transaction_when_sender_user_token_changes() {
+        let sender = Address::random();
+        let pooled = crate::test_utils::TxBuilder::aa(sender).build();
+        assert_eq!(pooled.inner().fee_token(), None);
+
+        let provider = create_provider_with_tip();
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        let pool = create_test_pool(provider);
+        add_validated(&pool, pooled.clone());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.user_token_changes.insert(sender);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(evicted, vec![*pooled.hash()]);
+        assert!(pool.get(pooled.hash()).is_none());
     }
 
     #[tokio::test]
