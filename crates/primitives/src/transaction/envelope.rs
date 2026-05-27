@@ -1,6 +1,4 @@
-use super::{
-    tt_signature::TempoSignature, tt_signed::AASigned, unique_tx_identifier_from_signable,
-};
+use super::{tt_signed::AASigned, unique_tx_identifier_from_signable};
 use crate::{TempoAddressExt, TempoTransaction, subblock::PartialValidatorKey};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
@@ -554,7 +552,7 @@ mod tests {
     use crate::transaction::{
         Call, TempoSignedAuthorization, TempoTransaction, TokenLimit,
         key_authorization::{KeyAuthorization, SignedKeyAuthorization},
-        tt_signature::{KeychainSignature, PrimitiveSignature},
+        tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
     };
     use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702};
     use alloy_eips::{
