@@ -22,8 +22,8 @@ use crate::{
     error::Result,
     storage::{StorageOps, packing},
 };
-use alloy::primitives::{Address, U256, keccak256};
-use std::{cell::RefCell, collections::HashMap, hash::Hash};
+use alloy::primitives::{Address, U256, keccak256, map::HashMap};
+use std::{cell::RefCell, hash::Hash};
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -386,7 +386,7 @@ impl<K, H> HandlerCache<K, H> {
     #[inline]
     pub(super) fn new() -> Self {
         Self {
-            inner: RefCell::new(HashMap::new()),
+            inner: RefCell::new(HashMap::default()),
         }
     }
 }
