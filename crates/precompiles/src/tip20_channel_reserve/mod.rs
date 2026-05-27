@@ -10,7 +10,7 @@ pub mod dispatch;
 use crate::{
     error::Result,
     signature_verifier::SignatureVerifier,
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, Slot},
     tip20::{ITIP20, Recipient, TIP20Token, is_tip20_prefix},
     tip403_registry::AuthRole,
 };
@@ -109,6 +109,15 @@ impl TIP20ChannelReserve {
     /// transaction. If this is not called, `open` reads zero from transient storage and reverts.
     pub fn set_channel_open_context_hash(&mut self, hash: B256) -> Result<()> {
         self.channel_open_context_hash.t_write(hash)
+    }
+
+    /// Seeds the transaction context hash without constructing the full reserve handler set.
+    pub fn set_current_channel_open_context_hash(hash: B256) -> Result<()> {
+        Slot::<B256>::new(
+            slots::CHANNEL_OPEN_CONTEXT_HASH,
+            TIP20_CHANNEL_RESERVE_ADDRESS,
+        )
+        .t_write(hash)
     }
 
     /// Opens a channel and pulls the initial deposit from the payer into reserve.

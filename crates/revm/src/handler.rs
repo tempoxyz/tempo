@@ -427,8 +427,9 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                 keychain.set_tx_origin(ctx.tx.caller())?;
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
-                    let mut channel_reserve = TIP20ChannelReserve::new();
-                    channel_reserve.set_channel_open_context_hash(channel_open_context_hash)?;
+                    TIP20ChannelReserve::set_current_channel_open_context_hash(
+                        channel_open_context_hash,
+                    )?;
                 }
 
                 Ok::<(), TempoPrecompileError>(())
