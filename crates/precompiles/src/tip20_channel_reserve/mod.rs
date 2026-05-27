@@ -105,6 +105,10 @@ impl TIP20ChannelReserve {
 
     /// Opens a channel and pulls the initial deposit from the payer into reserve.
     ///
+    /// The payer supplies the full descriptor, including any nonzero operator. Payees and
+    /// integrators must independently decide whether that operator is acceptable before relying on
+    /// the channel.
+    ///
     /// Payees cannot be zero or TIP-20 addresses. Virtual payees require a non-virtual operator.
     /// This prevents channels whose payee cannot receive direct payouts or submit vouchers itself.
     pub fn open(
@@ -325,8 +329,8 @@ impl TIP20ChannelReserve {
 
     /// Closes a channel from the payee side and refunds any uncaptured deposit to the payer.
     ///
-    /// The payee can call directly. If an operator was set when the channel was opened, that
-    /// operator can close the channel and route any capture to the descriptor payee.
+    /// The payee can call directly. If the payer selected an operator when the channel was opened,
+    /// the operator can close the channel immediately and route any capture to the descriptor payee.
     ///
     /// `captureAmount` can be below `cumulativeAmount` but cannot be below what has already
     /// settled. A new voucher is only required when the close captures more than `settled`.
@@ -538,7 +542,7 @@ impl TIP20ChannelReserve {
         )
     }
 
-    /// Ensures the caller is the payee or the descriptor's nonzero operator.
+    /// Ensures the caller is the payee or the descriptor's nonzero payer-selected operator.
     fn ensure_payee_or_operator(
         msg_sender: Address,
         descriptor: &ITIP20ChannelReserve::ChannelDescriptor,
