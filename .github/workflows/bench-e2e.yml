@@ -335,6 +335,10 @@ on:
         required: false
       BENCH_VICTORIAMETRICS_URL:
         required: false
+      VICTORIAMETRICS_URL:
+        required: false
+      VICTORIALOGS_URL:
+        required: false
       SLACK_BENCH_BOT_TOKEN:
         required: false
       SLACK_BENCH_CHANNEL:
@@ -394,8 +398,8 @@ jobs:
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
       BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
-      VALSCOPE_VM_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
-      VALSCOPE_VLOGS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+      VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
+      VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
@@ -426,24 +430,22 @@ jobs:
         if: env.BENCH_VICTORIAMETRICS_URL
         run: echo "::add-mask::$BENCH_VICTORIAMETRICS_URL"
 
-      - name: Mask ValScope datasource URLs
-        if: env.VALSCOPE_VM_URL || env.VALSCOPE_VLOGS_URL
-        run: |
-          if [ -n "$VALSCOPE_VM_URL" ]; then
-            echo "::add-mask::$VALSCOPE_VM_URL"
-          fi
-          if [ -n "$VALSCOPE_VLOGS_URL" ]; then
-            echo "::add-mask::$VALSCOPE_VLOGS_URL"
-          fi
+      - name: Mask ValScope VictoriaMetrics URL
+        if: env.VICTORIAMETRICS_URL
+        run: echo "::add-mask::$VICTORIAMETRICS_URL"
+
+      - name: Mask VictoriaLogs URL
+        if: env.VICTORIALOGS_URL
+        run: echo "::add-mask::$VICTORIALOGS_URL"
 
       - name: Validate ValScope datasource URLs
         run: |
-          if [ -z "$VALSCOPE_VM_URL" ]; then
-            echo "::error::BENCH_VICTORIAMETRICS_URL is required to generate ValScope static reports"
+          if [ -z "$VICTORIAMETRICS_URL" ]; then
+            echo "::error::VICTORIAMETRICS_URL is required to generate ValScope static reports"
             exit 1
           fi
-          if [ -z "$VALSCOPE_VLOGS_URL" ]; then
-            echo "::error::BENCH_VICTORIAMETRICS_URL is required as the ValScope logs datasource"
+          if [ -z "$VICTORIALOGS_URL" ]; then
+            echo "::error::VICTORIALOGS_URL is required to generate ValScope static reports"
             exit 1
           fi
 

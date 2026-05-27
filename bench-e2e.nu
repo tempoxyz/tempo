@@ -731,14 +731,14 @@ def build-valscope-static-reports [
         exit 1
     }
 
-    let vm_url = ($env | get -o VALSCOPE_VM_URL | default ($env | get -o BENCH_VICTORIAMETRICS_URL | default ""))
-    let vlogs_url = ($env | get -o VALSCOPE_VLOGS_URL | default ($env | get -o BENCH_VICTORIAMETRICS_URL | default ""))
+    let vm_url = ($env | get -o VICTORIAMETRICS_URL | default "")
+    let vlogs_url = ($env | get -o VICTORIALOGS_URL | default "")
     if $vm_url == "" {
-        print "Error: VALSCOPE_VM_URL or BENCH_VICTORIAMETRICS_URL is required to generate ValScope static reports"
+        print "Error: VICTORIAMETRICS_URL is required to generate ValScope static reports"
         exit 1
     }
     if $vlogs_url == "" {
-        print "Error: VALSCOPE_VLOGS_URL or BENCH_VICTORIAMETRICS_URL is required to generate ValScope static reports"
+        print "Error: VICTORIALOGS_URL is required to generate ValScope static reports"
         exit 1
     }
 
@@ -760,7 +760,7 @@ def build-valscope-static-reports [
         print $"Error: ValScope static web build failed with exit code ($web_build.exit_code)"
         exit $web_build.exit_code
     }
-    let result = (with-env { VALSCOPE_VM_URL: $vm_url, VALSCOPE_VLOGS_URL: $vlogs_url } {
+    let result = (with-env { VICTORIAMETRICS_URL: $vm_url, VICTORIALOGS_URL: $vlogs_url } {
         run-external "cargo" "run" "--manifest-path" $manifest "--bin" "valscope-bench-report" "--" "--results-dir" $results_dir "--out-dir" $out_dir "--web-dist" $web_dist "--benchmark-id" $benchmark_id | complete
     })
     if $result.stdout != "" { print $result.stdout }
