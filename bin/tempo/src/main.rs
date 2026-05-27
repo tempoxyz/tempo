@@ -800,16 +800,5 @@ mod tests {
             node_cmd.ext.consensus.network_budget.into_duration(),
             Duration::from_millis(50)
         );
-
-        assert!(
-            TempoCli::try_parse_from([
-                "tempo",
-                "node",
-                "--dev",
-                "--builder.build-time-multiplier",
-                "0.99"
-            ])
-            .is_err()
-        );
     }
 }

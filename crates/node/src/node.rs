@@ -74,23 +74,9 @@ pub struct TempoNodeArgs {
     /// Initial multiplier for predicting replayable payload build work.
     #[arg(
         long = "builder.build-time-multiplier",
-        default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER,
-        value_parser = parse_build_time_multiplier
+        default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
     )]
     pub builder_build_time_multiplier: f64,
-}
-
-const BUILD_TIME_MULTIPLIER_ERROR: &str = "must be a finite number greater than or equal to 1.0";
-
-fn parse_build_time_multiplier(value: &str) -> Result<f64, String> {
-    let multiplier = value
-        .parse::<f64>()
-        .map_err(|_| BUILD_TIME_MULTIPLIER_ERROR.to_string())?;
-    if multiplier.is_finite() && multiplier >= 1.0 {
-        Ok(multiplier)
-    } else {
-        Err(BUILD_TIME_MULTIPLIER_ERROR.to_string())
-    }
 }
 
 impl Default for TempoNodeArgs {
