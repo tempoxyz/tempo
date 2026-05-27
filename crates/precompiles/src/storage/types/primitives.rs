@@ -2,7 +2,7 @@
 //!
 //! Covers Rust integers, Alloy integers, Alloy fixed bytes, `bool`, and `Address`.
 
-use alloy::primitives::{Address, U256};
+use alloy::primitives::{Address, U256, keccak256};
 use revm::interpreter::instructions::utility::{IntoAddress, IntoU256};
 use tempo_precompiles_macros;
 
@@ -75,6 +75,14 @@ impl StorageKey for Address {
     #[inline]
     fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
         self.as_slice()
+    }
+
+    #[inline]
+    fn mapping_slot(&self, slot: U256) -> U256 {
+        let mut buf = [0u8; 64];
+        buf[12..32].copy_from_slice(self.as_slice());
+        buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
+        U256::from_be_bytes(keccak256(buf).0)
     }
 }
 
