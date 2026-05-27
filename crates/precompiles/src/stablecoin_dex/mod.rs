@@ -1502,6 +1502,10 @@ impl StablecoinDEX {
 
     /// Validates that all pairs in the path exist and returns book keys with direction info.
     ///
+    /// Multi-hop intermediate amounts are transitory: every route token is checked for pause state,
+    /// but TIP-403 transfer policy is only enforced for the taker's initial input transfer and final
+    /// output receipt, not for intermediate route tokens.
+    ///
     /// # Errors
     /// - `InvalidToken` — a token address does not have a valid TIP-20 prefix
     /// - `PairDoesNotExist` — no orderbook exists for a hop in the route
