@@ -12,7 +12,7 @@ const CLICKHOUSE_REQUIRED_METADATA = ['scenario', 'platform', 'git-sha', 'git-re
 function log(message, fields = {}) {
   const details = Object.entries(fields)
     .filter(([, value]) => value !== undefined && value !== null && value !== '')
-    .map(([key, value]) => `${key}=${value}`)
+    .map(([key, value]) => `${key}=${formatLogValue(value)}`)
     .join(' ');
   const suffix = details ? ` ${details}` : '';
   console.log(`[metrics] ${new Date().toISOString()} ${message}${suffix}`);
@@ -21,10 +21,14 @@ function log(message, fields = {}) {
 function logError(message, fields = {}) {
   const details = Object.entries(fields)
     .filter(([, value]) => value !== undefined && value !== null && value !== '')
-    .map(([key, value]) => `${key}=${value}`)
+    .map(([key, value]) => `${key}=${formatLogValue(value)}`)
     .join(' ');
   const suffix = details ? ` ${details}` : '';
   console.error(`[metrics] ${new Date().toISOString()} ${message}${suffix}`);
+}
+
+function formatLogValue(value) {
+  return String(value).replace(/\s+/g, ' ');
 }
 
 function elapsedMs(startedAt) {
@@ -334,7 +338,8 @@ function victoriaConfig(victoriametricsUrl) {
   }
 
   return {
-    importUrl: withQueryParam(`${url}/api/v1/import`, 'accountID', process.env.PROMETHEUS_TENANT_ID || ''),
+    jsonImportUrl: withQueryParam(`${url}/api/v1/import`, 'accountID', process.env.PROMETHEUS_TENANT_ID || ''),
+    prometheusImportUrl: withQueryParam(`${url}/api/v1/import/prometheus`, 'accountID', process.env.PROMETHEUS_TENANT_ID || ''),
     bearerToken: process.env.PROMETHEUS_BEARER_TOKEN || '',
     user: process.env.PROMETHEUS_USER || '',
     password: process.env.PROMETHEUS_PASSWORD || '',
@@ -395,14 +400,9 @@ function addVictoriaSample(series, sample) {
   return true;
 }
 
-async function flushVictoriaSeries(config, series, task, batch) {
-  if (series.size === 0) return;
-
-  const seriesCount = series.size;
-  const sampleCount = [...series.values()].reduce((sum, item) => sum + item.values.length, 0);
-  const body = `${[...series.values()].map(item => JSON.stringify(item)).join('\n')}\n`;
+function victoriaHeaders(config, contentType) {
   const headers = {
-    'Content-Type': 'application/json',
+    'Content-Type': contentType,
     'Content-Encoding': 'gzip',
   };
   if (config.bearerToken) {
@@ -412,18 +412,97 @@ async function flushVictoriaSeries(config, series, task, batch) {
     const token = Buffer.from(`${config.user}:${config.password}`).toString('base64');
     headers.Authorization = `Basic ${token}`;
   }
+  return headers;
+}
 
-  const startedAt = performance.now();
-  log('victoriametrics batch start', { task, batch, samples: sampleCount, series: seriesCount });
-  await post(config.importUrl, zlib.gzipSync(body), headers, config.timeoutSecs);
-  log('victoriametrics batch complete', {
-    task,
-    batch,
-    samples: sampleCount,
-    series: seriesCount,
-    duration_ms: elapsedMs(startedAt),
-  });
-  series.clear();
+function victoriaJsonBody(series) {
+  return `${[...series.values()].map(item => JSON.stringify(item)).join('\n')}\n`;
+}
+
+function escapePrometheusLabel(value) {
+  return String(value)
+    .replace(/\\/g, '\\\\')
+    .replace(/\n/g, '\\n')
+    .replace(/"/g, '\\"');
+}
+
+function victoriaPrometheusBody(series) {
+  const lines = [];
+  for (const item of series.values()) {
+    const name = item.metric.__name__;
+    const labels = Object.entries(item.metric)
+      .filter(([key]) => key !== '__name__')
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([key, value]) => `${key}="${escapePrometheusLabel(value)}"`)
+      .join(',');
+    const metric = labels ? `${name}{${labels}}` : name;
+    for (let i = 0; i < item.values.length; i += 1) {
+      lines.push(`${metric} ${item.values[i]} ${item.timestamps[i]}`);
+    }
+  }
+  return `${lines.join('\n')}\n`;
+}
+
+async function flushVictoriaSeries(config, series, task, batch) {
+  if (series.size === 0) return;
+
+  const seriesCount = series.size;
+  const sampleCount = [...series.values()].reduce((sum, item) => sum + item.values.length, 0);
+  const candidates = [
+    {
+      format: 'json',
+      url: config.jsonImportUrl,
+      contentType: 'application/json',
+      body: () => victoriaJsonBody(series),
+    },
+    {
+      format: 'prometheus',
+      url: config.prometheusImportUrl,
+      contentType: 'text/plain',
+      body: () => victoriaPrometheusBody(series),
+    },
+  ];
+
+  let lastError = null;
+  for (const candidate of candidates) {
+    const startedAt = performance.now();
+    log('victoriametrics batch start', {
+      task,
+      batch,
+      format: candidate.format,
+      samples: sampleCount,
+      series: seriesCount,
+    });
+    try {
+      await post(
+        candidate.url,
+        zlib.gzipSync(candidate.body()),
+        victoriaHeaders(config, candidate.contentType),
+        config.timeoutSecs,
+      );
+      log('victoriametrics batch complete', {
+        task,
+        batch,
+        format: candidate.format,
+        samples: sampleCount,
+        series: seriesCount,
+        duration_ms: elapsedMs(startedAt),
+      });
+      series.clear();
+      return;
+    } catch (err) {
+      lastError = err;
+      logError('victoriametrics batch failed', {
+        task,
+        batch,
+        format: candidate.format,
+        duration_ms: elapsedMs(startedAt),
+        error: err.message,
+      });
+    }
+  }
+
+  throw new Error(`VictoriaMetrics batch failed for ${task} batch=${batch}: ${lastError?.message || 'unknown error'}`);
 }
 
 async function uploadVictoriaRun(label, loaded, config) {
@@ -456,6 +535,34 @@ async function uploadVictoriaRun(label, loaded, config) {
   return { label, samples };
 }
 
+function addTask(tasks, task, promise) {
+  tasks.push({ task, promise });
+  return promise;
+}
+
+async function settleUploadTasks(tasks) {
+  const settled = await Promise.allSettled(tasks.map(task => task.promise));
+  const results = [];
+  const failures = [];
+  for (let i = 0; i < settled.length; i += 1) {
+    const task = tasks[i];
+    const result = settled[i];
+    if (result.status === 'fulfilled') {
+      results.push(result.value);
+    } else {
+      failures.push({ task: task.task, reason: result.reason });
+      logError('task failed', {
+        task: task.task,
+        error: result.reason?.message || result.reason,
+      });
+    }
+  }
+  if (failures.length > 0) {
+    throw new Error(`${failures.length} upload task${failures.length === 1 ? '' : 's'} failed`);
+  }
+  return results;
+}
+
 async function main() {
   const startedAt = performance.now();
   const args = parseArgs(process.argv.slice(2));
@@ -481,7 +588,8 @@ async function main() {
   if (args.victoriametricsUrl) {
     const config = victoriaConfig(args.victoriametricsUrl);
     for (const label of runLabels) {
-      tasks.push(uploadVictoriaRun(label, loadedReports.get(label), config));
+      const task = `victoriametrics:${label}`;
+      addTask(tasks, task, uploadVictoriaRun(label, loadedReports.get(label), config));
     }
   }
 
@@ -495,9 +603,10 @@ async function main() {
 
     const config = clickHouseConfig(args.clickhouseUrl);
     for (const label of clickHouseLabels) {
+      const task = `clickhouse:${label}`;
       const promise = uploadClickHouseRun(args.resultsDir, label, loadedReports.get(label), config);
       clickHouseUploads.push(promise);
-      tasks.push(promise);
+      addTask(tasks, task, promise);
     }
   }
 
@@ -506,7 +615,7 @@ async function main() {
     return;
   }
 
-  const results = await Promise.all(tasks);
+  const results = await settleUploadTasks(tasks);
   const clickHouseResults = await Promise.all(clickHouseUploads);
   if (clickHouseResults.length > 0) {
     const preferred = clickHouseResults.find(result => result.label === args.clickhouseRun) || clickHouseResults[0];
