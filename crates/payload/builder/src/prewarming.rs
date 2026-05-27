@@ -17,7 +17,7 @@ use reth_transaction_pool::{
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    nonce::slots as nonce_slots,
+    nonce::{EXPIRING_NONCE_SET_CAPACITY, slots as nonce_slots},
     storage::StorageKey as _,
     tip_fee_manager::slots as fee_manager_slots,
     tip20::{ITIP20, tip20_slots},
@@ -79,6 +79,7 @@ impl BestTransactionsPrewarming {
                     commands_rx,
                     commands_tx,
                     prewarm,
+                    next_expiring_nonce_idx: 0,
                 },
             );
         });
@@ -109,12 +110,19 @@ impl BestTransactionsPrewarming {
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
+                let expiring_nonce_idx = if tx.transaction.is_expiring_nonce() {
+                    let idx = ctx.next_expiring_nonce_idx;
+                    ctx.next_expiring_nonce_idx = ctx.next_expiring_nonce_idx.wrapping_add(1);
+                    Some(idx)
+                } else {
+                    None
+                };
                 let _ = ctx.transactions_tx.send(Some(tx.clone()));
 
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
                 scope.spawn(move |_| {
-                    Self::prewarm_transaction(prewarm, tx.clone());
+                    Self::prewarm_transaction(prewarm, tx.clone(), expiring_nonce_idx);
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
             };
@@ -167,6 +175,7 @@ impl BestTransactionsPrewarming {
     fn prewarm_transaction<Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
+        expiring_nonce_idx: Option<u32>,
     ) where
         Provider: StateProviderFactory + Clone + 'static,
     {
@@ -182,8 +191,11 @@ impl BestTransactionsPrewarming {
             let tx_hash = *tx.hash();
 
             let touched = if is_tip20_transfer_transaction(&tx) {
-                let touches =
-                    storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary);
+                let touches = storage_touches_for_transaction(
+                    &tx,
+                    prewarm.evm_env.block_env.beneficiary,
+                    expiring_nonce_idx,
+                );
 
                 for touch in &touches {
                     if prewarm.is_stopped() {
@@ -282,6 +294,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
+    next_expiring_nonce_idx: u32,
 }
 
 /// Context needed to prewarm transaction storage independently of the real builder.
@@ -342,6 +355,7 @@ where
 enum StorageTouch {
     Account(Address),
     Storage { address: Address, slot: U256 },
+    ExpiringNonceRing { offset: u32 },
 }
 
 impl StorageTouch {
@@ -352,6 +366,16 @@ impl StorageTouch {
             }
             Self::Storage { address, slot } => {
                 let _ = evm.db_mut().storage(address, slot)?;
+            }
+            Self::ExpiringNonceRing { offset } => {
+                let ptr = evm
+                    .db_mut()
+                    .storage(NONCE_PRECOMPILE_ADDRESS, nonce_slots::EXPIRING_NONCE_RING_PTR)?
+                    .saturating_to::<u32>();
+                let idx =
+                    (u64::from(ptr) + u64::from(offset)) % u64::from(EXPIRING_NONCE_SET_CAPACITY);
+                let slot = (idx as u32).mapping_slot(nonce_slots::EXPIRING_NONCE_RING);
+                let _ = evm.db_mut().storage(NONCE_PRECOMPILE_ADDRESS, slot)?;
             }
         }
 
@@ -394,6 +418,7 @@ fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
 fn storage_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
+    expiring_nonce_idx: Option<u32>,
 ) -> Vec<StorageTouch> {
     let mut touches = Vec::new();
     let sender = tx.transaction.sender();
@@ -414,7 +439,7 @@ fn storage_touches_for_transaction(
         }
     }
 
-    add_expiring_nonce_touches(&mut touches, tx);
+    add_expiring_nonce_touches(&mut touches, tx, expiring_nonce_idx);
 
     touches
 }
@@ -545,7 +570,11 @@ fn add_fee_manager_touches(
     );
 }
 
-fn add_expiring_nonce_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransaction) {
+fn add_expiring_nonce_touches(
+    touches: &mut Vec<StorageTouch>,
+    tx: &BestTransaction,
+    expiring_nonce_idx: Option<u32>,
+) {
     let Some(expiring_nonce_slot) = tx.transaction.expiring_nonce_slot() else {
         return;
     };
@@ -557,6 +586,9 @@ fn add_expiring_nonce_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransact
         NONCE_PRECOMPILE_ADDRESS,
         nonce_slots::EXPIRING_NONCE_RING_PTR,
     );
+    if let Some(offset) = expiring_nonce_idx {
+        add_unique_touch(touches, StorageTouch::ExpiringNonceRing { offset });
+    }
 }
 
 fn add_account_touch(touches: &mut Vec<StorageTouch>, address: Address) {
