@@ -8,7 +8,7 @@
 
 use std::time::Duration;
 
-use tempo_payload_types::MarshalPersistEstimate;
+use tempo_payload_types::MarshalPersistEstimator;
 
 /// Fixed-point scale for build time multipliers.
 pub(crate) const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
@@ -45,7 +45,7 @@ pub(crate) fn payload_budget_exhausted(
     idle_elapsed: Duration,
     multiplier: u64,
     budget: Duration,
-    marshal_persist: MarshalPersistEstimate,
+    marshal_persist: MarshalPersistEstimator,
     block_size_bytes: usize,
 ) -> bool {
     let work_elapsed = elapsed.saturating_sub(idle_elapsed);
@@ -113,7 +113,7 @@ mod tests {
             Duration::ZERO,
             1_350_000,
             Duration::from_millis(270),
-            MarshalPersistEstimate::default(),
+            MarshalPersistEstimator::default(),
             0
         ));
         assert!(!payload_budget_exhausted(
@@ -121,7 +121,7 @@ mod tests {
             Duration::ZERO,
             1_350_000,
             Duration::from_millis(271),
-            MarshalPersistEstimate::default(),
+            MarshalPersistEstimator::default(),
             0
         ));
         assert!(payload_budget_exhausted(
@@ -129,7 +129,7 @@ mod tests {
             Duration::from_millis(250),
             1_350_000,
             Duration::from_millis(520),
-            MarshalPersistEstimate::default(),
+            MarshalPersistEstimator::default(),
             0
         ));
         assert!(!payload_budget_exhausted(
@@ -137,14 +137,14 @@ mod tests {
             Duration::from_millis(250),
             1_350_000,
             Duration::from_millis(521),
-            MarshalPersistEstimate::default(),
+            MarshalPersistEstimator::default(),
             0
         ));
     }
 
     #[test]
     fn payload_budget_accounts_for_marshal_persist_twice() {
-        let marshal_persist = MarshalPersistEstimate::from_ns_per_byte(1_000);
+        let marshal_persist = MarshalPersistEstimator::from_ns_per_byte(1_000);
 
         assert!(payload_budget_exhausted(
             Duration::from_millis(100),

@@ -58,7 +58,7 @@ pub(super) struct Config<TContext> {
     pub(crate) subblocks: Option<subblocks::Mailbox>,
 
     /// Local proposal return budget, excluding the network propagation allowance.
-    pub(super) payload_return_time: Duration,
+    pub(super) proposal_return_budget: Duration,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(super) epoch_strategy: FixedEpocher,

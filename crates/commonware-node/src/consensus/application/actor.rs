@@ -114,7 +114,7 @@ where
                 public_key: config.public_key,
                 epoch_strategy: config.epoch_strategy,
 
-                payload_return_time: config.payload_return_time,
+                proposal_return_budget: config.proposal_return_budget,
 
                 my_mailbox,
                 marshal: config.marshal,
@@ -214,7 +214,7 @@ where
 struct Inner<TState> {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
-    payload_return_time: Duration,
+    proposal_return_budget: Duration,
 
     my_mailbox: Mailbox,
 
@@ -676,7 +676,7 @@ impl Inner<Init> {
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let marshal_persist = marshal_persist_estimate();
         let build_budget = self
-            .payload_return_time
+            .proposal_return_budget
             .saturating_sub(propose_start.elapsed());
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
@@ -733,13 +733,16 @@ impl Inner<Init> {
         let payload_validation_elapsed = payload.validation_work_duration();
         let block_size_bytes = payload.rlp_block_size_bytes();
         let validator_marshal_persist = marshal_persist.estimate(block_size_bytes);
+        let proposal_elapsed = propose_start.elapsed();
+        // Pace proposal return from the original propose start, leaving enough
+        // budget for validators to replay the payload and persist the block.
         let return_delay = self
-            .payload_return_time
-            .saturating_sub(payload_build_start.saturating_duration_since(propose_start))
-            .saturating_sub(payload_build_elapsed)
+            .proposal_return_budget
+            .saturating_sub(proposal_elapsed)
             .saturating_sub(payload_validation_elapsed)
             .saturating_sub(validator_marshal_persist);
         debug!(
+            proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
             validation_time = %display_duration(payload_validation_elapsed),
             validator_marshal_persist = %display_duration(validator_marshal_persist),
@@ -747,14 +750,14 @@ impl Inner<Init> {
             block_size_bytes,
             "sleeping before returning proposal"
         );
-        let payload_return_time = context.current() + return_delay;
+        let proposal_return_time = context.current() + return_delay;
 
         let proposal = Block::from_execution_block(payload.block().clone());
 
         Ok((
             proposal,
             Some(ProposalReturn {
-                time: payload_return_time,
+                time: proposal_return_time,
                 block_size_bytes,
             }),
         ))
@@ -888,7 +891,7 @@ impl Inner<Uninit> {
         let initialized = Inner {
             public_key: self.public_key,
             epoch_strategy: self.epoch_strategy,
-            payload_return_time: self.payload_return_time,
+            proposal_return_budget: self.proposal_return_budget,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
             execution_node: self.execution_node,
