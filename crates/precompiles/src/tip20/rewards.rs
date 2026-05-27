@@ -209,11 +209,12 @@ impl TIP20Token {
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_balance(contract_address, new_contract_balance)?;
 
-            let recipient_balance = self
-                .get_balance(msg_sender)?
+            let recipient_balance = self.balances.at_mut(&msg_sender);
+            let new_recipient_balance = recipient_balance
+                .read()?
                 .checked_add(max_amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_balance(msg_sender, recipient_balance)?;
+            recipient_balance.write(new_recipient_balance)?;
 
             if reward_recipient != Address::ZERO {
                 let opted_in_supply = U256::from(self.get_opted_in_supply()?)

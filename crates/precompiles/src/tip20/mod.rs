@@ -540,11 +540,12 @@ impl TIP20Token {
         self.handle_rewards_on_mint(to.target, amount)?;
 
         self.set_total_supply(new_supply)?;
-        let to_balance = self.get_balance(to.target)?;
+        let to_balance = self.balances.at_mut(&to.target);
         let new_to_balance = to_balance
+            .read()?
             .checked_add(amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
-        self.set_balance(to.target, new_to_balance)?;
+        to_balance.write(new_to_balance)?;
 
         self.emit_event(to.build_transfer_event(Address::ZERO, amount))
     }
@@ -1165,12 +1166,13 @@ impl TIP20Token {
         self.set_balance(from, new_from_balance)?;
 
         if to.target != Address::ZERO {
-            let to_balance = self.get_balance(to.target)?;
+            let to_balance = self.balances.at_mut(&to.target);
             let new_to_balance = to_balance
+                .read()?
                 .checked_add(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
 
-            self.set_balance(to.target, new_to_balance)?;
+            to_balance.write(new_to_balance)?;
         }
 
         self.emit_event(to.build_transfer_event(from, amount))
@@ -1306,11 +1308,12 @@ impl TIP20Token {
 
         self.set_balance(from, new_from_balance)?;
 
-        let to_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
+        let to_balance = self.balances.at_mut(&TIP_FEE_MANAGER_ADDRESS);
         let new_to_balance = to_balance
+            .read()?
             .checked_add(amount)
             .ok_or(TIP20Error::supply_cap_exceeded())?;
-        self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_to_balance)
+        to_balance.write(new_to_balance)
     }
 
     /// Refunds unused fee tokens from the fee manager back to `to` and emits a transfer event for
@@ -1353,23 +1356,22 @@ impl TIP20Token {
             )?;
         }
 
-        let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_from_balance =
-            from_balance
+        {
+            let from_balance = self.balances.at_mut(&TIP_FEE_MANAGER_ADDRESS);
+            let current = from_balance.read()?;
+            let new_from_balance = current
                 .checked_sub(refund)
-                .ok_or(TIP20Error::insufficient_balance(
-                    from_balance,
-                    refund,
-                    self.address,
-                ))?;
+                .ok_or(TIP20Error::insufficient_balance(current, refund, self.address))?;
 
-        self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_from_balance)?;
+            from_balance.write(new_from_balance)?;
+        }
 
-        let to_balance = self.get_balance(to)?;
+        let to_balance = self.balances.at_mut(&to);
         let new_to_balance = to_balance
+            .read()?
             .checked_add(refund)
             .ok_or(TIP20Error::supply_cap_exceeded())?;
-        self.set_balance(to, new_to_balance)
+        to_balance.write(new_to_balance)
     }
 }
 
