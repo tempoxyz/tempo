@@ -9,7 +9,7 @@
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::Handler,
-    tip20::{Recipient, TIP20Token},
+    tip20::TIP20Token,
 };
 use alloy::primitives::{Address, U256, uint};
 use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
@@ -46,9 +46,7 @@ impl TIP20Token {
         self.ensure_transfer_authorized(msg_sender, token_address)?;
         self.check_and_update_spending_limit(msg_sender, call.amount)?;
 
-        self._transfer(msg_sender, &Recipient::direct(token_address), call.amount)?;
-
-        let opted_in_supply = U256::from(self.get_opted_in_supply()?);
+        let opted_in_supply = self.transfer_reward_to_pool(msg_sender, call.amount)?;
         if opted_in_supply.is_zero() {
             return Err(TIP20Error::no_opted_in_supply().into());
         }
@@ -68,6 +66,47 @@ impl TIP20Token {
         self.emit_event(TIP20Event::reward_distributed(msg_sender, call.amount))?;
 
         Ok(())
+    }
+
+    /// Transfers reward tokens into this token's reward pool.
+    ///
+    /// The pool recipient is the token contract itself. Normal TIP-20 transfers reject TIP-20
+    /// recipients, so the token contract cannot opt into rewards via the public recipient path.
+    /// This keeps distribution on the sender-side reward accounting path only.
+    fn transfer_reward_to_pool(&mut self, from: Address, amount: U256) -> Result<U256> {
+        let from_balance = self.get_balance(from)?;
+        if amount > from_balance {
+            return Err(
+                TIP20Error::insufficient_balance(from_balance, amount, self.address).into(),
+            );
+        }
+
+        let from_reward_recipient = self.update_rewards(from)?;
+        let mut opted_in_supply = U256::from(self.get_opted_in_supply()?);
+        if from_reward_recipient != Address::ZERO {
+            opted_in_supply = opted_in_supply
+                .checked_sub(amount)
+                .ok_or(TempoPrecompileError::under_overflow())?;
+            self.set_opted_in_supply(
+                opted_in_supply
+                    .try_into()
+                    .map_err(|_| TempoPrecompileError::under_overflow())?,
+            )?;
+        }
+
+        let new_from_balance = from_balance
+            .checked_sub(amount)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        self.set_balance(from, new_from_balance)?;
+
+        let pool_balance = self.get_balance(self.address)?;
+        let new_pool_balance = pool_balance
+            .checked_add(amount)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        self.set_balance(self.address, new_pool_balance)?;
+
+        self.emit_event(TIP20Event::transfer(from, self.address, amount))?;
+        Ok(opted_in_supply)
     }
 
     /// Updates and accumulates accrued rewards for a specific token holder.
