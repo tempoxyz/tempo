@@ -133,7 +133,16 @@ impl NonceManager {
         valid_before: u64,
     ) -> Result<()> {
         let now: u64 = self.storage.timestamp().saturating_to();
+        self.check_and_mark_expiring_nonce_at(expiring_nonce_hash, valid_before, now)
+    }
 
+    /// Validates and records an expiring nonce transaction using the supplied block timestamp.
+    pub fn check_and_mark_expiring_nonce_at(
+        &mut self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+        now: u64,
+    ) -> Result<()> {
         // 1. Validate expiry window: must be in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
         if valid_before <= now || valid_before > now.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
         {
