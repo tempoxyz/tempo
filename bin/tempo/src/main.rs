@@ -764,6 +764,7 @@ mod tests {
         };
         assert!(node_cmd.engine.share_sparse_trie_with_payload_builder);
         assert_eq!(node_cmd.builder.max_payload_tasks, 1);
+        assert!(node_cmd.ext.node_args.builder_enable_prewarming);
         assert_eq!(
             node_cmd
                 .ext
