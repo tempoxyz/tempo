@@ -64,6 +64,7 @@ impl TipFeeManager {
     }
 
     /// Returns the validator's preferred fee token, falling back to [`DEFAULT_FEE_TOKEN`].
+    #[inline]
     pub fn get_validator_token(&self, beneficiary: Address) -> Result<Address> {
         let token = self.validator_tokens[beneficiary].read()?;
 
@@ -154,6 +155,7 @@ impl TipFeeManager {
     /// - `InvalidToken` — `user_token` does not have a valid TIP-20 prefix
     /// - `PolicyForbids` — TIP-403 policy rejects the fee token transfer
     /// - `InsufficientLiquidity` — AMM pool lacks liquidity for the fee swap (T5+: with two-hop fallback)
+    #[inline]
     pub fn collect_fee_pre_tx(
         &mut self,
         fee_payer: Address,
@@ -226,6 +228,7 @@ impl TipFeeManager {
     /// - `InvalidToken` — `fee_token` does not have a valid TIP-20 prefix
     /// - `InsufficientLiquidity` — AMM pool lacks liquidity for the fee swap
     /// - `UnderOverflow` — collected-fee accumulator overflows
+    #[inline]
     pub fn collect_fee_post_tx(
         &mut self,
         fee_payer: Address,
@@ -265,6 +268,7 @@ impl TipFeeManager {
     }
 
     /// Increment collected fees for a specific validator and token combination.
+    #[inline]
     fn increment_collected_fees(
         &mut self,
         validator: Address,
