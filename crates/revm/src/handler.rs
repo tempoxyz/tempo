@@ -1177,56 +1177,65 @@ where
             }
 
             if let Some(key_auth) = tempo_tx_env.key_authorization.as_ref() {
-                let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
-                    override_key_id
-                } else {
-                    keychain_sig
-                        .key_id(&tempo_tx_env.signature_hash)
-                        .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
-                };
-
-                let same_tx_auth_use = access_key_addr == key_auth.key_id;
-
                 // T6 adds admin delegation: the keychain signer may be an existing admin key that
                 // authorizes a different child key. Earlier forks only allow same-tx auth+use, and
                 // `validate_env` rejects non-matching key IDs before this state-aware phase.
-                if cfg.spec.is_t6() && !same_tx_auth_use {
-                    let stored_key_expiry = StorageCtx::enter_precompile(
-                        journal,
-                        block,
-                        cfg,
-                        tx,
-                        |mut keychain: AccountKeychain| {
-                            let sig_type = Some(keychain_sig.signature.signature_type().into());
+                let same_tx_auth_use = if cfg.spec.is_t6() {
+                    let access_key_addr =
+                        if let Some(override_key_id) = tempo_tx_env.override_key_id {
+                            override_key_id
+                        } else {
+                            keychain_sig
+                                .key_id(&tempo_tx_env.signature_hash)
+                                .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+                        };
 
-                            let key = keychain
-                                .validate_keychain_authorization(
-                                    *user_address,
-                                    access_key_addr,
-                                    block.timestamp().to::<u64>(),
-                                    sig_type,
-                                )
-                                .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
-                                    reason: format!("{e:?}"),
-                                })?;
+                    let same_tx_auth_use = access_key_addr == key_auth.key_id;
 
-                            if !key.is_admin {
-                                return Err(
-                                    TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys
-                                        .into(),
-                                );
-                            }
+                    if !same_tx_auth_use {
+                        let stored_key_expiry = StorageCtx::enter_precompile(
+                            journal,
+                            block,
+                            cfg,
+                            tx,
+                            |mut keychain: AccountKeychain| {
+                                let sig_type = Some(keychain_sig.signature.signature_type().into());
 
-                            keychain
-                                .set_transaction_key(access_key_addr)
-                                .map_err(|e| EVMError::Custom(e.to_string()))?;
+                                let key = keychain
+                                    .validate_keychain_authorization(
+                                        *user_address,
+                                        access_key_addr,
+                                        block.timestamp().to::<u64>(),
+                                        sig_type,
+                                    )
+                                    .map_err(|e| {
+                                        TempoInvalidTransaction::KeychainValidationFailed {
+                                            reason: format!("{e:?}"),
+                                        }
+                                    })?;
 
-                            Ok::<_, EVMError<_, TempoInvalidTransaction>>(key.expiry)
-                        },
-                    )?;
+                                if !key.is_admin {
+                                    return Err(
+                                        TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys
+                                            .into(),
+                                    );
+                                }
 
-                    evm.key_expiry = Some(stored_key_expiry);
-                }
+                                keychain
+                                    .set_transaction_key(access_key_addr)
+                                    .map_err(|e| EVMError::Custom(e.to_string()))?;
+
+                                Ok::<_, EVMError<_, TempoInvalidTransaction>>(key.expiry)
+                            },
+                        )?;
+
+                        evm.key_expiry = Some(stored_key_expiry);
+                    }
+
+                    same_tx_auth_use
+                } else {
+                    true
+                };
 
                 // If this is a same tx auth+use, validate that spending limit is enough to cover the fee.
                 //
@@ -1566,15 +1575,20 @@ where
             // key and decrement the fee from its spending limit. Admin delegation must keep the
             // actual signer as the transaction key.
             if let Some(keychain_sig) = tempo_tx_env.signature.as_keychain() {
-                let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
-                    override_key_id
-                } else {
-                    keychain_sig
-                        .key_id(&tempo_tx_env.signature_hash)
-                        .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
-                };
+                let same_tx_auth_use = if cfg.spec.is_t6() {
+                    let access_key_addr =
+                        if let Some(override_key_id) = tempo_tx_env.override_key_id {
+                            override_key_id
+                        } else {
+                            keychain_sig
+                                .key_id(&tempo_tx_env.signature_hash)
+                                .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+                        };
 
-                let same_tx_auth_use = access_key_addr == key_auth.key_id;
+                    access_key_addr == key_auth.key_id
+                } else {
+                    true
+                };
                 if same_tx_auth_use {
                     StorageCtx::enter_precompile(
                         journal,
