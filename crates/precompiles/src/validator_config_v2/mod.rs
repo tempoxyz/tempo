@@ -207,6 +207,12 @@ impl ValidatorConfigV2 {
         self.config.init_at_height.read()
     }
 
+    /// Returns the block height at which the contract was initialized, or `None` when inactive.
+    pub fn initialized_at_height(&self) -> Result<Option<u64>> {
+        let config = self.config.read()?;
+        Ok(config.is_init.then_some(config.init_at_height))
+    }
+
     /// Returns whether V2 has been initialized (either directly or via migration).
     ///
     /// When `false`, the CL reads from V1 and mutating operations (except
@@ -1132,11 +1138,13 @@ mod tests {
         let owner = Address::random();
         StorageCtx::enter(&mut storage, || {
             let mut vc = ValidatorConfigV2::new();
+            assert_eq!(vc.initialized_at_height()?, None);
             vc.initialize(owner)?;
 
             assert_eq!(vc.owner()?, owner);
             assert!(vc.is_initialized()?);
             assert_eq!(vc.get_initialized_at_height()?, 0);
+            assert_eq!(vc.initialized_at_height()?, Some(0));
             assert_eq!(vc.validator_count()?, 0);
 
             Ok(())

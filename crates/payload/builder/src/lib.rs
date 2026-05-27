@@ -1010,15 +1010,12 @@ fn maybe_override_fee_recipient<DB: Database>(
             let parent_number = ctx.block.number.saturating_to::<u64>() - 1;
 
             let config = ValidatorConfigV2::default();
-            if !config
-                .is_initialized()
+            let Some(init_height) = config
+                .initialized_at_height()
                 .map_err(PayloadBuilderError::other)?
-            {
+            else {
                 return Ok(None);
-            }
-            let init_height = config
-                .get_initialized_at_height()
-                .map_err(PayloadBuilderError::other)?;
+            };
             if init_height > parent_number {
                 return Ok(None);
             }
