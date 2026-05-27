@@ -198,15 +198,11 @@ impl TIP20Token {
         let max_amount = amount.min(contract_balance);
 
         let reward_recipient = info.reward_recipient;
-        info.reward_balance = amount
-            .checked_sub(max_amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        info.reward_balance = amount - max_amount;
         self.user_reward_info[msg_sender].write(info)?;
 
         if max_amount > U256::ZERO {
-            let new_contract_balance = contract_balance
-                .checked_sub(max_amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+            let new_contract_balance = contract_balance - max_amount;
             self.set_balance(contract_address, new_contract_balance)?;
 
             let recipient_balance = self

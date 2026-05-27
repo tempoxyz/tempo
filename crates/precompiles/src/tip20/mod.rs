@@ -905,9 +905,7 @@ impl TIP20Token {
         }
 
         if allowed != U256::MAX {
-            let new_allowance = allowed
-                .checked_sub(amount)
-                .ok_or(TIP20Error::insufficient_allowance())?;
+            let new_allowance = allowed - amount;
             self.set_allowance(owner, spender, new_allowance)?;
         }
         Ok(())
@@ -1158,9 +1156,7 @@ impl TIP20Token {
         self.handle_rewards_on_transfer(from, to.target, amount)?;
 
         // Adjust balances
-        let new_from_balance = from_balance
-            .checked_sub(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let new_from_balance = from_balance - amount;
 
         self.set_balance(from, new_from_balance)?;
 
@@ -1295,14 +1291,7 @@ impl TIP20Token {
             )?;
         }
 
-        let new_from_balance =
-            from_balance
-                .checked_sub(amount)
-                .ok_or(TIP20Error::insufficient_balance(
-                    from_balance,
-                    amount,
-                    self.address,
-                ))?;
+        let new_from_balance = from_balance - amount;
 
         self.set_balance(from, new_from_balance)?;
 
@@ -1354,14 +1343,12 @@ impl TIP20Token {
         }
 
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_from_balance =
-            from_balance
-                .checked_sub(refund)
-                .ok_or(TIP20Error::insufficient_balance(
-                    from_balance,
-                    refund,
-                    self.address,
-                ))?;
+        if refund > from_balance {
+            return Err(
+                TIP20Error::insufficient_balance(from_balance, refund, self.address).into(),
+            );
+        }
+        let new_from_balance = from_balance - refund;
 
         self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_from_balance)?;
 
