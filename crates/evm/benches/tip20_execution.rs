@@ -124,7 +124,6 @@ struct RewardBenchWorkload {
 
 #[derive(Default)]
 struct ExecutionStats {
-    txs: u64,
     gas_used: u64,
 }
 
@@ -894,7 +893,6 @@ where
         stats.gas_used = stats
             .gas_used
             .saturating_add(executor.commit_transaction(output).tx_gas_used());
-        stats.txs += 1;
     }
     stats
 }
