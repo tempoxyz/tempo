@@ -3,6 +3,7 @@
 mod backfill;
 mod base_fee;
 mod block_building;
+mod blockstm;
 mod createx;
 mod eth_call;
 mod eth_transactions;

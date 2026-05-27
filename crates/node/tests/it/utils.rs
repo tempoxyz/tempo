@@ -156,7 +156,7 @@ use tempo_contracts::precompiles::{
     ITIP20::{self, ITIP20Instance},
     ITIP20Factory,
 };
-use tempo_node::node::TempoNode;
+use tempo_node::node::{TempoNode, TempoNodeArgs};
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_precompiles::{PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, tip20::ISSUER_ROLE};
 
@@ -294,6 +294,8 @@ pub(crate) struct TestNodeBuilder {
     custom_validator: Option<Address>,
     dynamic_validator: Option<Arc<std::sync::Mutex<Address>>>,
     schedule: ForkSchedule,
+    blockstm: bool,
+    blockstm_workers: Option<usize>,
 }
 
 impl TestNodeBuilder {
@@ -308,6 +310,8 @@ impl TestNodeBuilder {
             custom_validator: None,
             dynamic_validator: None,
             schedule: ForkSchedule::Devnet,
+            blockstm: false,
+            blockstm_workers: None,
         }
     }
 
@@ -347,6 +351,13 @@ impl TestNodeBuilder {
         validator: Arc<std::sync::Mutex<Address>>,
     ) -> Self {
         self.dynamic_validator = Some(validator);
+        self
+    }
+
+    /// Enable the production Block-STM payload-builder path for this test node.
+    pub(crate) fn with_blockstm(mut self, workers: usize) -> Self {
+        self.blockstm = true;
+        self.blockstm_workers = Some(workers);
         self
     }
 
@@ -445,7 +456,19 @@ impl TestNodeBuilder {
 
         let node_handle = NodeBuilder::new(node_config.clone())
             .testing_node(runtime.clone())
-            .node(TempoNode::default())
+            .node(if self.blockstm {
+                TempoNode::new(
+                    &TempoNodeArgs {
+                        builder_blockstm: true,
+                        builder_blockstm_workers: self.blockstm_workers,
+                        builder_blockstm_tip20_actions: true,
+                        ..TempoNodeArgs::default()
+                    },
+                    None,
+                )
+            } else {
+                TempoNode::default()
+            })
             .launch_with_debug_capabilities()
             .map_debug_payload_attributes(move |mut attributes| {
                 let validator = dynamic_validator

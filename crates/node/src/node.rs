@@ -41,7 +41,7 @@ use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::TempoConsensus;
 use tempo_evm::TempoEvmConfig;
 use tempo_payload_builder::{
-    DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
+    BlockStmConfig, DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
 };
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
@@ -84,6 +84,22 @@ pub struct TempoNodeArgs {
         default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
     )]
     pub builder_build_time_multiplier: f64,
+
+    /// Enable Block-STM execution for normal payload-builder pool transactions.
+    #[arg(long = "builder.blockstm", default_value_t = false)]
+    pub builder_blockstm: bool,
+
+    /// Number of Block-STM speculative workers.
+    #[arg(long = "builder.blockstm-workers")]
+    pub builder_blockstm_workers: Option<usize>,
+
+    /// Enable semantic TIP20 action replay for Block-STM.
+    #[arg(long = "builder.blockstm-tip20-actions", default_value_t = true)]
+    pub builder_blockstm_tip20_actions: bool,
+
+    /// Maximum Block-STM re-execution attempts per transaction.
+    #[arg(long = "builder.blockstm-max-retries", default_value_t = 16)]
+    pub builder_blockstm_max_retries: usize,
 }
 
 impl Default for TempoNodeArgs {
@@ -94,6 +110,10 @@ impl Default for TempoNodeArgs {
             builder_state_provider_metrics: false,
             builder_enable_prewarming: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            builder_blockstm: false,
+            builder_blockstm_workers: None,
+            builder_blockstm_tip20_actions: true,
+            builder_blockstm_max_retries: 16,
         }
     }
 }
@@ -113,6 +133,15 @@ impl TempoNodeArgs {
             state_provider_metrics: self.builder_state_provider_metrics,
             enable_prewarming: self.builder_enable_prewarming,
             build_time_multiplier: self.builder_build_time_multiplier,
+            blockstm_config: BlockStmConfig {
+                enabled: self.builder_blockstm,
+                workers: self
+                    .builder_blockstm_workers
+                    .unwrap_or_else(|| std::thread::available_parallelism().map_or(1, usize::from)),
+                tip20_actions: self.builder_blockstm_tip20_actions,
+                max_retries_per_tx: self.builder_blockstm_max_retries,
+                ..BlockStmConfig::default()
+            },
         }
     }
 }
@@ -541,6 +570,8 @@ pub struct TempoPayloadBuilderBuilder {
     /// Initial estimate of total replayable payload build work divided by work
     /// at transaction cutoff.
     pub build_time_multiplier: f64,
+    /// Block-STM payload-builder configuration.
+    pub blockstm_config: BlockStmConfig,
 }
 
 impl Default for TempoPayloadBuilderBuilder {
@@ -549,6 +580,7 @@ impl Default for TempoPayloadBuilderBuilder {
             state_provider_metrics: false,
             enable_prewarming: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            blockstm_config: BlockStmConfig::default(),
         }
     }
 }
@@ -576,6 +608,7 @@ where
                 state_provider_metrics: self.state_provider_metrics,
                 enable_prewarming: self.enable_prewarming,
                 build_time_multiplier: self.build_time_multiplier,
+                blockstm_config: self.blockstm_config,
             },
         ))
     }
