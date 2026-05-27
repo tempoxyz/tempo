@@ -1472,11 +1472,17 @@ where
         }
 
         let actual_spending = calc_gas_balance_spending(gas_used, effective_gas_price);
-        let refund_amount = tx.effective_balance_spending(
-            context.block.basefee.into(),
-            context.block.blob_gasprice().unwrap_or_default(),
-        )? - tx.value
-            - actual_spending;
+        let refund_amount = if evm.collected_fee.is_zero() {
+            tx.effective_balance_spending(
+                context.block.basefee.into(),
+                context.block.blob_gasprice().unwrap_or_default(),
+            )? - tx.value
+                - actual_spending
+        } else {
+            evm.collected_fee
+                .checked_sub(actual_spending)
+                .ok_or(InvalidTransaction::OverflowPaymentInTransaction)?
+        };
 
         // Skip `collectFeePostTx` call if the initial fee collected in
         // `collectFeePreTx` was zero, but spending is non-zero.
