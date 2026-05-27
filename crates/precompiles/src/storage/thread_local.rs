@@ -39,6 +39,17 @@ scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>
 #[derive(Debug, Default, Clone, Copy)]
 pub struct StorageCtx;
 
+/// Precompile output accounting values captured from the active storage context.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct PrecompileOutputSnapshot {
+    pub(crate) gas_used: u64,
+    pub(crate) state_gas_used: u64,
+    pub(crate) gas_refunded: i64,
+    pub(crate) reservoir: u64,
+    pub(crate) spec: TempoHardfork,
+    pub(crate) amsterdam_eip8037_enabled: bool,
+}
+
 impl StorageCtx {
     /// Enter storage context. All storage operations must happen within the closure.
     ///
@@ -211,6 +222,18 @@ impl StorageCtx {
     /// Returns whether the current call context is static.
     pub fn is_static(&self) -> bool {
         Self::with_storage(|s| s.is_static())
+    }
+
+    /// Captures output accounting values with a single storage-context access.
+    pub(crate) fn output_snapshot(&self) -> PrecompileOutputSnapshot {
+        Self::with_storage(|s| PrecompileOutputSnapshot {
+            gas_used: s.gas_used(),
+            state_gas_used: s.state_gas_used(),
+            gas_refunded: s.gas_refunded(),
+            reservoir: s.reservoir(),
+            spec: s.spec(),
+            amsterdam_eip8037_enabled: s.amsterdam_eip8037_enabled(),
+        })
     }
 
     /// Creates a journal checkpoint and returns a RAII guard.

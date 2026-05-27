@@ -8,6 +8,7 @@ pub mod hashmap;
 
 pub mod thread_local;
 use alloy::primitives::keccak256;
+pub(crate) use thread_local::PrecompileOutputSnapshot;
 pub use thread_local::{CheckpointGuard, StorageCtx};
 
 mod types;
