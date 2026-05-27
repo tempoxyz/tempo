@@ -516,11 +516,12 @@ where
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = None;
         }
-        let next_section = self.validate_tx_pre_execution(recovered.tx())?;
+        let recovered_tx = recovered.tx();
+        let next_section = self.validate_tx_pre_execution(recovered_tx)?;
 
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
-        if let Some(validator) = recovered.tx().subblock_proposer() {
+        if let Some(validator) = recovered_tx.subblock_proposer() {
             let fee_recipient = *self
                 .subblock_fee_recipients
                 .get(&validator)
@@ -548,16 +549,16 @@ where
             // If pre-execution validation returned a section to use, just use it.
             next_section
         } else {
-            self.validate_tx(recovered.tx(), block_gas_used)?
+            self.validate_tx(recovered_tx, block_gas_used)?
         };
         // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
         let validator_fee = self.evm().validator_fee();
         Ok(TempoTxResult {
             inner,
             next_section,
-            is_payment: self.is_payment(recovered.tx()),
+            is_payment: self.is_payment(recovered_tx),
             tx: matches!(next_section, BlockSection::SubBlock { .. })
-                .then(|| recovered.tx().clone()),
+                .then(|| recovered_tx.clone()),
             block_gas_used,
             validator_fee,
         })
