@@ -5,6 +5,7 @@ const path = require('path');
 const readline = require('readline');
 const zlib = require('zlib');
 const { performance } = require('perf_hooks');
+const { Worker, isMainThread, parentPort, workerData } = require('worker_threads');
 
 const CLICKHOUSE_CONFIG_KEYS = new Set(['tps', 'max_concurrent', 'chain_id', 'scrape_interval_ms']);
 const CLICKHOUSE_REQUIRED_METADATA = ['scenario', 'platform', 'git-sha', 'git-ref'];
@@ -646,6 +647,40 @@ async function uploadVictoriaRun(label, loaded, config) {
   return { label, samples };
 }
 
+function uploadVictoriaRunInWorker(resultsDir, label, victoriametricsUrl) {
+  return new Promise((resolve, reject) => {
+    let settled = false;
+    const worker = new Worker(__filename, {
+      workerData: {
+        kind: 'victoriametrics',
+        resultsDir,
+        label,
+        victoriametricsUrl,
+      },
+    });
+
+    const finish = (fn, value) => {
+      if (settled) return;
+      settled = true;
+      fn(value);
+    };
+
+    worker.on('message', message => {
+      if (message?.error) {
+        finish(reject, new Error(message.error));
+      } else {
+        finish(resolve, message.result);
+      }
+    });
+    worker.on('error', err => finish(reject, err));
+    worker.on('exit', code => {
+      if (code !== 0) {
+        finish(reject, new Error(`worker exited with code ${code}`));
+      }
+    });
+  });
+}
+
 function addTask(tasks, task, promise) {
   tasks.push({ task, promise });
   return promise;
@@ -697,10 +732,9 @@ async function main() {
   });
 
   if (args.victoriametricsUrl) {
-    const config = victoriaConfig(args.victoriametricsUrl);
     for (const label of runLabels) {
       const task = `victoriametrics:${label}`;
-      addTask(tasks, task, uploadVictoriaRun(label, loadedReports.get(label), config));
+      addTask(tasks, task, uploadVictoriaRunInWorker(args.resultsDir, label, args.victoriametricsUrl));
     }
   }
 
@@ -739,7 +773,28 @@ async function main() {
   log('uploads complete', { jobs: results.length, duration_ms: elapsedMs(startedAt) });
 }
 
-main().catch(err => {
-  logError('upload failed', { error: err.stack || err.message });
-  process.exit(1);
-});
+async function workerMain() {
+  if (workerData?.kind !== 'victoriametrics') {
+    throw new Error(`unknown worker kind: ${workerData?.kind}`);
+  }
+
+  const config = victoriaConfig(workerData.victoriametricsUrl);
+  const loaded = loadReport(workerData.resultsDir, workerData.label);
+  const result = await uploadVictoriaRun(workerData.label, loaded, config);
+  parentPort.postMessage({ result });
+}
+
+if (isMainThread) {
+  main().catch(err => {
+    logError('upload failed', { error: err.stack || err.message });
+    process.exit(1);
+  });
+} else {
+  workerMain().catch(err => {
+    logError('worker failed', {
+      task: workerData?.kind && workerData?.label ? `${workerData.kind}:${workerData.label}` : '',
+      error: err.stack || err.message,
+    });
+    parentPort.postMessage({ error: err.stack || err.message });
+  });
+}
