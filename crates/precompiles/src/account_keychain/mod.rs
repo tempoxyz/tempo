@@ -28,7 +28,7 @@ use tempo_primitives::TempoAddressExt;
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
-    storage::{Handler, Mapping, Set},
+    storage::{Handler, LayoutCtx, Mapping, Set, Slot},
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
@@ -165,6 +165,20 @@ impl SpendingLimitState {
 }
 
 impl AccountKeychain {
+    #[inline]
+    fn transaction_key_slot() -> Slot<Address> {
+        Slot::new_with_ctx(
+            slots::TRANSACTION_KEY,
+            LayoutCtx::FULL,
+            ACCOUNT_KEYCHAIN_ADDRESS,
+        )
+    }
+
+    #[inline]
+    pub fn current_transaction_key() -> Result<Address> {
+        Self::transaction_key_slot().t_read()
+    }
+
     /// Create a hash key for account+key scoped storage rows.
     ///
     /// This is used to access account-key rows like `spending_limits[key][token]` and
@@ -1261,7 +1275,31 @@ impl AccountKeychain {
         amount: U256,
     ) -> Result<()> {
         let transaction_key = self.transaction_key.t_read()?;
+        self.refund_spending_limit_with_key(account, token, amount, transaction_key)
+    }
 
+    /// Refund spending limit after a fee refund without constructing the full keychain when the
+    /// transaction uses the root key.
+    pub fn refund_spending_limit_if_access_key(
+        account: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
+        let transaction_key = Self::current_transaction_key()?;
+        if transaction_key == Address::ZERO {
+            return Ok(());
+        }
+
+        Self::new().refund_spending_limit_with_key(account, token, amount, transaction_key)
+    }
+
+    fn refund_spending_limit_with_key(
+        &mut self,
+        account: Address,
+        token: Address,
+        amount: U256,
+        transaction_key: Address,
+    ) -> Result<()> {
         if transaction_key == Address::ZERO {
             return Ok(());
         }
@@ -1325,7 +1363,31 @@ impl AccountKeychain {
     ) -> Result<()> {
         // Get the transaction key for this account
         let transaction_key = self.transaction_key.t_read()?;
+        self.authorize_transfer_with_key(account, token, amount, transaction_key)
+    }
 
+    /// Authorize a token transfer without constructing the full keychain when the transaction
+    /// uses the root key.
+    pub fn authorize_transfer_if_access_key(
+        account: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
+        let transaction_key = Self::current_transaction_key()?;
+        if transaction_key == Address::ZERO {
+            return Ok(());
+        }
+
+        Self::new().authorize_transfer_with_key(account, token, amount, transaction_key)
+    }
+
+    fn authorize_transfer_with_key(
+        &mut self,
+        account: Address,
+        token: Address,
+        amount: U256,
+        transaction_key: Address,
+    ) -> Result<()> {
         // If using main key (Address::ZERO), no spending limits apply
         if transaction_key == Address::ZERO {
             return Ok(());
@@ -1608,6 +1670,11 @@ mod tests {
                 Address::ZERO,
                 "Initial transaction key should be zero"
             );
+            assert_eq!(
+                AccountKeychain::current_transaction_key()?,
+                Address::ZERO,
+                "Direct transaction key read should start at zero"
+            );
 
             // Test 2: Set transaction key to an access key address
             keychain.set_transaction_key(access_key_addr)?;
@@ -1615,6 +1682,11 @@ mod tests {
             // Test 3: Verify it was stored
             let loaded_key = keychain.transaction_key.t_read()?;
             assert_eq!(loaded_key, access_key_addr, "Transaction key should be set");
+            assert_eq!(
+                AccountKeychain::current_transaction_key()?,
+                access_key_addr,
+                "Direct transaction key read should match the set key"
+            );
 
             // Test 4: Verify getTransactionKey works
             let get_tx_key_call = getTransactionKeyCall {};
@@ -1631,6 +1703,11 @@ mod tests {
                 cleared_key,
                 Address::ZERO,
                 "Transaction key should be cleared"
+            );
+            assert_eq!(
+                AccountKeychain::current_transaction_key()?,
+                Address::ZERO,
+                "Direct transaction key read should observe the cleared key"
             );
 
             Ok(())
