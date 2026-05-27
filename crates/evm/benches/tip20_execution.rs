@@ -886,11 +886,14 @@ where
         let output = executor
             .execute_transaction_without_commit(tx)
             .expect("TIP20 transaction execution failed");
-        assert!(
-            output.result().result.is_success(),
-            "TIP20 transaction reverted: {:?}",
-            output.result().result
-        );
+        {
+            let execution_result = &output.result().result;
+            assert!(
+                execution_result.is_success(),
+                "TIP20 transaction reverted: {:?}",
+                execution_result
+            );
+        }
         stats.gas_used = stats
             .gas_used
             .saturating_add(executor.commit_transaction(output).tx_gas_used());
