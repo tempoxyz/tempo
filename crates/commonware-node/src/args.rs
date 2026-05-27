@@ -138,6 +138,23 @@ pub struct Args {
     #[arg(long = "consensus.network-budget", default_value = "50ms")]
     pub network_budget: PositiveDuration,
 
+    /// Deprecated compatibility flag. Ignored by the elastic proposal budget.
+    #[arg(
+        long = "consensus.time-to-prepare-proposal-transactions",
+        value_name = "DURATION",
+        help = "Deprecated: no longer has any effect and will be removed in the next release."
+    )]
+    pub time_to_prepare_proposal_transactions: Option<PositiveDuration>,
+
+    /// Deprecated compatibility flag. Ignored by the elastic proposal budget.
+    #[arg(
+        long = "consensus.minimum-time-before-propose",
+        visible_alias = "consensus.time-to-build-proposal",
+        value_name = "DURATION",
+        help = "Deprecated: no longer has any effect and will be removed in the next release."
+    )]
+    pub minimum_time_before_propose: Option<PositiveDuration>,
+
     /// The amount of time this node will use to construct a subblock before
     /// sending it to the next proposer.
     #[arg(long = "consensus.time-to-build-subblock", default_value = "100ms")]
@@ -475,6 +492,17 @@ mod tests {
 
     fn parse(args: &[&str]) -> TestCli {
         TestCli::try_parse_from(std::iter::once("test").chain(args.iter().copied())).unwrap()
+    }
+
+    #[test]
+    fn deprecated_proposal_timing_flags_parse() {
+        for flag in [
+            "--consensus.time-to-prepare-proposal-transactions",
+            "--consensus.minimum-time-before-propose",
+            "--consensus.time-to-build-proposal",
+        ] {
+            parse(&["--dev", flag, "1ms"]);
+        }
     }
 
     fn encrypt(plaintext: &[u8], passphrase: &str) -> Vec<u8> {
