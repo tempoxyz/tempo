@@ -49,9 +49,13 @@ pub const EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
 /// storage handlers which provide an ergonomic way to interact with the EVM state.
 #[contract(addr = NONCE_PRECOMPILE_ADDRESS)]
 pub struct NonceManager {
+    #[slot(0)]
     nonces: Mapping<Address, Mapping<U256, u64>>,
+    #[slot(1)]
     expiring_nonce_seen: Mapping<B256, u64>,
-    expiring_nonce_ring: Mapping<u32, B256>,
+    #[slot(2)]
+    expiring_nonce_ring: Mapping<u32, B256, 0, 300_000>,
+    #[slot(3)]
     expiring_nonce_ring_ptr: u32,
 }
 
@@ -184,7 +188,7 @@ impl NonceManager {
 mod tests {
     use crate::{
         error::TempoPrecompileError,
-        storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
+        storage::{ContractStorage, StorageCtx, StorageKey, hashmap::HashMapStorageProvider},
     };
 
     use super::*;
@@ -254,6 +258,35 @@ mod tests {
                     newNonce: 2,
                 },
             ]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_expiring_nonce_ring_precomputed_slots_match_mapping_layout() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mgr = NonceManager::new();
+
+            assert_eq!(
+                slots::__EXPIRING_NONCE_RING_PRECOMPUTED_SLOTS.len(),
+                EXPIRING_NONCE_SET_CAPACITY as usize * 32
+            );
+
+            for idx in [0, 1, 42, EXPIRING_NONCE_SET_CAPACITY - 1] {
+                assert_eq!(
+                    mgr.expiring_nonce_ring[idx].slot(),
+                    idx.mapping_slot(slots::EXPIRING_NONCE_RING)
+                );
+            }
+
+            // Out-of-range keys preserve normal Mapping behavior and fall back to hashing.
+            let out_of_range = EXPIRING_NONCE_SET_CAPACITY;
+            assert_eq!(
+                mgr.expiring_nonce_ring[out_of_range].slot(),
+                out_of_range.mapping_slot(slots::EXPIRING_NONCE_RING)
+            );
 
             Ok(())
         })

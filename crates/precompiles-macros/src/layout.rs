@@ -2,18 +2,22 @@ use crate::{
     FieldKind,
     packing::{self, LayoutField, PackingConstants, SlotAssignment},
 };
+use alloy::primitives::{U256, keccak256};
+use proc_macro2::Span;
 use quote::{format_ident, quote};
-use syn::{Expr, Ident, Visibility};
+use std::{fs, path::PathBuf};
+use syn::{Expr, Ident, LitStr, Visibility};
 
 /// Generates a public handler field declaration for a storage field
 pub(crate) fn gen_handler_field_decl(field: &LayoutField<'_>) -> proc_macro2::TokenStream {
     let field_name = field.name;
+    let ty = field.ty;
     let handler_type = match &field.kind {
         FieldKind::Direct(ty) => {
             quote! { <#ty as crate::storage::StorableType>::Handler }
         }
-        FieldKind::Mapping { key, value } => {
-            quote! { <crate::storage::Mapping<#key, #value> as crate::storage::StorableType>::Handler }
+        FieldKind::Mapping { .. } => {
+            quote! { <#ty as crate::storage::StorableType>::Handler }
         }
     };
 
@@ -38,6 +42,7 @@ pub(crate) fn gen_handler_field_init(
     packing_mod: Option<&Ident>,
 ) -> proc_macro2::TokenStream {
     let field_name = field.name;
+    let ty = field.ty;
     let consts = PackingConstants::new(field_name);
     let (loc_const, (slot_const, offset_const)) = (consts.location(), consts.into_tuple());
 
@@ -92,11 +97,35 @@ pub(crate) fn gen_handler_field_init(
                 )
             }
         }
-        FieldKind::Mapping { key, value } => {
-            quote! {
-                #field_name: <crate::storage::Mapping<#key, #value> as crate::storage::StorableType>::handle(
-                    #slot_expr, crate::storage::LayoutCtx::FULL, address
-                )
+        FieldKind::Mapping {
+            key,
+            precomputed_range,
+            ..
+        } => {
+            if let Some(precomputed_range) = precomputed_range
+                && is_contract
+            {
+                let precomputed_slots = precomputed_slots_ident(field_name);
+                let key_to_index = precomputed_key_index_ident(field_name);
+                let min = precomputed_range.min as usize;
+
+                quote! {
+                    #field_name: <#ty>::new_with_precomputed_slots(
+                        #slot_expr,
+                        address,
+                        crate::storage::PrecomputedMappingSlots::<#key>::new(
+                            #min,
+                            &slots::#precomputed_slots,
+                            slots::#key_to_index,
+                        ),
+                    )
+                }
+            } else {
+                quote! {
+                    #field_name: <#ty as crate::storage::StorableType>::handle(
+                        #slot_expr, crate::storage::LayoutCtx::FULL, address
+                    )
+                }
             }
         }
     }
@@ -227,6 +256,7 @@ pub(crate) fn gen_contract_storage_impl(name: &Ident) -> proc_macro2::TokenStrea
 pub(crate) fn gen_slots_module(allocated_fields: &[LayoutField<'_>]) -> proc_macro2::TokenStream {
     // Generate constants and collision check functions
     let constants = packing::gen_constants_from_ir(allocated_fields, false);
+    let precomputed_mapping_slots = gen_precomputed_mapping_slots(allocated_fields);
     let collision_checks = gen_collision_checks(allocated_fields);
 
     quote! {
@@ -234,9 +264,142 @@ pub(crate) fn gen_slots_module(allocated_fields: &[LayoutField<'_>]) -> proc_mac
             use super::*;
 
             #constants
+            #precomputed_mapping_slots
             #collision_checks
         }
     }
+}
+
+fn precomputed_slots_ident(field_name: &Ident) -> Ident {
+    format_ident!("__{}_PRECOMPUTED_SLOTS", packing::const_name(field_name))
+}
+
+fn precomputed_key_index_ident(field_name: &Ident) -> Ident {
+    format_ident!("__{}_precomputed_key_index", field_name)
+}
+
+fn gen_precomputed_mapping_slots(allocated_fields: &[LayoutField<'_>]) -> proc_macro2::TokenStream {
+    let mut generated = proc_macro2::TokenStream::new();
+
+    for field in allocated_fields {
+        let FieldKind::Mapping {
+            key,
+            precomputed_range: Some(precomputed_range),
+            ..
+        } = &field.kind
+        else {
+            continue;
+        };
+
+        let slots_ident = precomputed_slots_ident(field.name);
+        let key_to_index_ident = precomputed_key_index_ident(field.name);
+        let path_lit = match write_precomputed_mapping_slots(field, *precomputed_range) {
+            Ok(path_lit) => path_lit,
+            Err(err) => {
+                generated.extend(err.to_compile_error());
+                continue;
+            }
+        };
+
+        generated.extend(quote! {
+            pub(super) static #slots_ident: &[u8] = include_bytes!(#path_lit);
+
+            #[inline(always)]
+            pub(super) fn #key_to_index_ident(key: &#key) -> Option<usize> {
+                usize::try_from(*key).ok()
+            }
+        });
+    }
+
+    generated
+}
+
+fn write_precomputed_mapping_slots(
+    field: &LayoutField<'_>,
+    range: crate::utils::PrecomputedKeyRange,
+) -> syn::Result<LitStr> {
+    let SlotAssignment::Manual(base_slot) = &field.assigned_slot else {
+        return Err(syn::Error::new_spanned(
+            field.name,
+            "precomputed Mapping ranges require an explicit `#[slot(N)]` so the macro can embed the final mapping slots",
+        ));
+    };
+
+    let out_dir = precomputed_output_dir()?;
+    fs::create_dir_all(&out_dir).map_err(|err| {
+        syn::Error::new(
+            Span::call_site(),
+            format!("failed to create precomputed Mapping output directory: {err}"),
+        )
+    })?;
+
+    let file_name = precomputed_slots_file_name(field.name, range, *base_slot);
+    let path = out_dir.join(file_name);
+    let bytes = precompute_u32_mapping_slot_bytes(*base_slot, range);
+    fs::write(&path, bytes).map_err(|err| {
+        syn::Error::new(
+            Span::call_site(),
+            format!("failed to write precomputed Mapping slots: {err}"),
+        )
+    })?;
+
+    let path = path.to_str().ok_or_else(|| {
+        syn::Error::new(
+            Span::call_site(),
+            "precomputed Mapping slots path is not valid UTF-8",
+        )
+    })?;
+
+    Ok(LitStr::new(path, Span::call_site()))
+}
+
+fn precomputed_output_dir() -> syn::Result<PathBuf> {
+    if let Some(target_dir) = std::env::var_os("CARGO_TARGET_DIR") {
+        return Ok(PathBuf::from(target_dir).join("tempo-precomputed-mapping-slots"));
+    }
+
+    if let Ok(current_dir) = std::env::current_dir() {
+        return Ok(current_dir
+            .join("target")
+            .join("tempo-precomputed-mapping-slots"));
+    }
+
+    if let Some(manifest_dir) = std::env::var_os("CARGO_MANIFEST_DIR") {
+        return Ok(PathBuf::from(manifest_dir)
+            .join("target")
+            .join("tempo-precomputed-mapping-slots"));
+    }
+
+    Ok(std::env::temp_dir().join("tempo-precomputed-mapping-slots"))
+}
+
+fn precomputed_slots_file_name(
+    field_name: &Ident,
+    range: crate::utils::PrecomputedKeyRange,
+    base_slot: U256,
+) -> String {
+    let limbs = base_slot.as_limbs();
+    format!(
+        "tempo_precomputed_mapping_slots_{}_{}_{}_{}_{}_{}_{}.bin",
+        field_name, range.min, range.max, limbs[0], limbs[1], limbs[2], limbs[3],
+    )
+}
+
+fn precompute_u32_mapping_slot_bytes(
+    base_slot: U256,
+    range: crate::utils::PrecomputedKeyRange,
+) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(range.len() * 32);
+    let base_slot = base_slot.to_be_bytes::<32>();
+
+    for key in range.min..range.max {
+        let mut input = [0u8; 64];
+        input[28..32].copy_from_slice(&key.to_be_bytes());
+        input[32..].copy_from_slice(&base_slot);
+        bytes.extend_from_slice(keccak256(input).as_slice());
+    }
+
+    bytes
 }
 
 /// Generate collision check functions for all fields

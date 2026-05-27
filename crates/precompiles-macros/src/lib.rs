@@ -24,7 +24,7 @@ use syn::{
     punctuated::Punctuated,
 };
 
-use crate::utils::extract_attributes;
+use crate::utils::{PrecomputedKeyRange, extract_attributes};
 
 /// Configuration parsed from `#[contract(...)]` attribute arguments.
 struct ContractConfig {
@@ -126,7 +126,10 @@ enum FieldKind<'a> {
     /// Fields with a direct slot allocation, either single or multi (`Slot<V>`).
     Direct(&'a Type),
     /// Mapping fields. Handles all nesting levels via recursive types.
-    Mapping { key: &'a Type, value: &'a Type },
+    Mapping {
+        key: &'a Type,
+        precomputed_range: Option<PrecomputedKeyRange>,
+    },
 }
 
 fn parse_fields(input: DeriveInput) -> syn::Result<Vec<FieldInfo>> {

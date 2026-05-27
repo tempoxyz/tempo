@@ -225,13 +225,20 @@ pub(crate) fn gen_constants_from_ir(fields: &[LayoutField<'_>], gen_location: bo
 /// Nested mappings like `Mapping<K, Mapping<K2, V>>` are handled automatically
 /// since the value type includes the full nested type.
 pub(crate) fn classify_field_type(ty: &Type) -> syn::Result<FieldKind<'_>> {
-    use crate::utils::extract_mapping_types;
+    use crate::utils::{extract_mapping_types, supports_precomputed_mapping_key};
 
     // Check if it's a mapping (mappings have fundamentally different API)
-    if let Some((key_ty, value_ty)) = extract_mapping_types(ty) {
+    if let Some(mapping) = extract_mapping_types(ty)? {
+        if mapping.precomputed_range.is_some() && !supports_precomputed_mapping_key(mapping.key) {
+            return Err(syn::Error::new_spanned(
+                mapping.key,
+                "precomputed Mapping ranges currently support unsigned Rust integer keys",
+            ));
+        }
+
         return Ok(FieldKind::Mapping {
-            key: key_ty,
-            value: value_ty,
+            key: mapping.key,
+            precomputed_range: mapping.precomputed_range,
         });
     }
 
@@ -612,13 +619,9 @@ mod tests {
         assert_mapping(parse_quote!(Mapping<Address, U256>));
 
         // nested mapping → Mapping with Mapping value
-        if let FieldKind::Mapping { value, .. } =
-            classify_field_type(&parse_quote!(Mapping<Address, Mapping<Address, U256>>)).unwrap()
-        {
-            assert!(extract_mapping_types(value).is_some());
-        } else {
-            panic!("expected nested Mapping");
-        }
+        let nested: Type = parse_quote!(Mapping<Address, Mapping<Address, U256>>);
+        assert!(extract_mapping_types(&nested).unwrap().is_some());
+        assert_mapping(nested);
     }
 
     #[test]

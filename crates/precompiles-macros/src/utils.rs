@@ -1,7 +1,7 @@
 //! Utility functions for the contract macro implementation.
 
 use alloy::primitives::{U256, keccak256};
-use syn::{Attribute, Lit, Type};
+use syn::{Attribute, Expr, GenericArgument, Lit, Type};
 
 /// Return type for [`extract_attributes`]: (slot, base_slot)
 type ExtractedAttributes = (Option<U256>, Option<U256>);
@@ -220,16 +220,86 @@ pub(crate) fn extract_storable_array_sizes(attrs: &[Attribute]) -> syn::Result<O
     Ok(None)
 }
 
-/// Extracts the type parameters from Mapping<K, V>.
+/// Optional precomputed key range for `Mapping<K, V, MIN, MAX>`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct PrecomputedKeyRange {
+    /// Inclusive lower bound.
+    pub min: u32,
+    /// Exclusive upper bound.
+    pub max: u32,
+}
+
+impl PrecomputedKeyRange {
+    pub(crate) const fn len(&self) -> usize {
+        (self.max - self.min) as usize
+    }
+}
+
+/// Parsed information from `Mapping<K, V>` or `Mapping<K, V, MIN, MAX>`.
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct MappingTypeInfo<'a> {
+    pub key: &'a Type,
+    pub precomputed_range: Option<PrecomputedKeyRange>,
+}
+
+/// Returns true if `ty` can use the generated precomputed mapping key lookup.
+pub(crate) fn supports_precomputed_mapping_key(ty: &Type) -> bool {
+    let Type::Path(type_path) = ty else {
+        return false;
+    };
+    let Some(segment) = type_path.path.segments.last() else {
+        return false;
+    };
+
+    matches!(
+        segment.ident.to_string().as_str(),
+        "u8" | "u16" | "u32" | "u64" | "u128" | "usize"
+    )
+}
+
+fn parse_mapping_range_const(arg: &GenericArgument, name: &str) -> syn::Result<u32> {
+    let GenericArgument::Const(expr) = arg else {
+        return Err(syn::Error::new_spanned(
+            arg,
+            format!("Mapping precomputed {name} must be an integer const generic"),
+        ));
+    };
+
+    parse_u32_literal_expr(expr, name)
+}
+
+fn parse_u32_literal_expr(expr: &Expr, name: &str) -> syn::Result<u32> {
+    match expr {
+        Expr::Lit(expr_lit) => match &expr_lit.lit {
+            Lit::Int(int) => int.base10_parse::<u32>().map_err(|_| {
+                syn::Error::new_spanned(int, format!("Mapping precomputed {name} must fit in u32"))
+            }),
+            _ => Err(syn::Error::new_spanned(
+                expr,
+                format!("Mapping precomputed {name} must be an integer literal"),
+            )),
+        },
+        Expr::Group(group) => parse_u32_literal_expr(&group.expr, name),
+        Expr::Paren(paren) => parse_u32_literal_expr(&paren.expr, name),
+        _ => Err(syn::Error::new_spanned(
+            expr,
+            format!("Mapping precomputed {name} must be an integer literal"),
+        )),
+    }
+}
+
+/// Extracts type information from `Mapping<K, V>` or `Mapping<K, V, MIN, MAX>`.
 ///
-/// Returns Some((key_type, value_type)) if the type is a Mapping, None otherwise.
-pub(crate) fn extract_mapping_types(ty: &Type) -> Option<(&Type, &Type)> {
+/// Returns `Some` if the type is a `Mapping`, `None` otherwise.
+pub(crate) fn extract_mapping_types(ty: &Type) -> syn::Result<Option<MappingTypeInfo<'_>>> {
     if let Type::Path(type_path) = ty {
-        let last_segment = type_path.path.segments.last()?;
+        let Some(last_segment) = type_path.path.segments.last() else {
+            return Ok(None);
+        };
 
         // Check if the type is named "Mapping"
         if last_segment.ident != "Mapping" {
-            return None;
+            return Ok(None);
         }
 
         // Extract generic arguments
@@ -240,20 +310,50 @@ pub(crate) fn extract_mapping_types(ty: &Type) -> Option<(&Type, &Type)> {
             let key_type = if let Some(syn::GenericArgument::Type(ty)) = iter.next() {
                 ty
             } else {
-                return None;
+                return Err(syn::Error::new_spanned(
+                    &last_segment.arguments,
+                    "Mapping key must be a type",
+                ));
             };
 
             // Second argument: value type
-            let value_type = if let Some(syn::GenericArgument::Type(ty)) = iter.next() {
-                ty
+            if let Some(syn::GenericArgument::Type(_)) = iter.next() {
+                // value type parsed successfully
             } else {
-                return None;
+                return Err(syn::Error::new_spanned(
+                    &last_segment.arguments,
+                    "Mapping value must be a type",
+                ));
             };
 
-            return Some((key_type, value_type));
+            let precomputed_range = match (iter.next(), iter.next(), iter.next()) {
+                (None, None, None) => None,
+                (Some(min), Some(max), None) => {
+                    let min = parse_mapping_range_const(min, "min")?;
+                    let max = parse_mapping_range_const(max, "max")?;
+                    if min >= max {
+                        return Err(syn::Error::new_spanned(
+                            &last_segment.arguments,
+                            "Mapping precomputed range must be non-empty: min < max",
+                        ));
+                    }
+                    Some(PrecomputedKeyRange { min, max })
+                }
+                _ => {
+                    return Err(syn::Error::new_spanned(
+                        &last_segment.arguments,
+                        "Mapping expects `Mapping<K, V>` or `Mapping<K, V, MIN, MAX>`",
+                    ));
+                }
+            };
+
+            return Ok(Some(MappingTypeInfo {
+                key: key_type,
+                precomputed_range,
+            }));
         }
     }
-    None
+    Ok(None)
 }
 
 #[cfg(test)]
@@ -287,22 +387,34 @@ mod tests {
     fn test_extract_mapping_types() {
         // Test simple mapping
         let ty: Type = parse_quote!(Mapping<Address, U256>);
-        let result = extract_mapping_types(&ty);
+        let result = extract_mapping_types(&ty).unwrap();
         assert!(result.is_some());
+        assert_eq!(result.unwrap().precomputed_range, None);
 
         // Test nested mapping
         let ty: Type = parse_quote!(Mapping<Address, Mapping<Address, U256>>);
-        let result = extract_mapping_types(&ty);
+        let result = extract_mapping_types(&ty).unwrap();
         assert!(result.is_some());
+
+        // Test mapping with precomputed range
+        let ty: Type = parse_quote!(Mapping<u32, U256, 0, 300_000>);
+        let result = extract_mapping_types(&ty).unwrap().unwrap();
+        assert_eq!(
+            result.precomputed_range,
+            Some(PrecomputedKeyRange {
+                min: 0,
+                max: 300_000
+            })
+        );
 
         // Test non-mapping type
         let ty: Type = parse_quote!(String);
-        let result = extract_mapping_types(&ty);
+        let result = extract_mapping_types(&ty).unwrap();
         assert!(result.is_none());
 
         // Test non-mapping generic type
         let ty: Type = parse_quote!(Vec<u8>);
-        let result = extract_mapping_types(&ty);
+        let result = extract_mapping_types(&ty).unwrap();
         assert!(result.is_none());
     }
 }

@@ -71,20 +71,19 @@ fn derive_struct_impl(input: &DeriveInput, data_struct: &DataStruct) -> syn::Res
 
     // Classify fields: direct (storable) vs indirect (mappings)
     let len = fields.len();
-    let (direct_fields, direct_names, mapping_names) = field_infos.iter().fold(
-        (Vec::with_capacity(len), Vec::with_capacity(len), Vec::new()),
-        |mut out, field_info| {
-            if extract_mapping_types(&field_info.ty).is_none() {
-                // fields with direct slot allocation
-                out.0.push((&field_info.name, &field_info.ty));
-                out.1.push(&field_info.name);
-            } else {
-                // fields with indirect slot allocation (mappings)
-                out.2.push(&field_info.name);
-            }
-            out
-        },
-    );
+    let mut direct_fields = Vec::with_capacity(len);
+    let mut direct_names = Vec::with_capacity(len);
+    let mut mapping_names = Vec::new();
+    for field_info in &field_infos {
+        if extract_mapping_types(&field_info.ty)?.is_none() {
+            // fields with direct slot allocation
+            direct_fields.push((&field_info.name, &field_info.ty));
+            direct_names.push(&field_info.name);
+        } else {
+            // fields with indirect slot allocation (mappings)
+            mapping_names.push(&field_info.name);
+        }
+    }
 
     // Extract just the types for IS_DYNAMIC calculation
     let direct_tys: Vec<_> = direct_fields.iter().map(|(_, ty)| *ty).collect();

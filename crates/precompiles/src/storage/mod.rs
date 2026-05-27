@@ -6,6 +6,9 @@
 pub mod evm;
 pub mod hashmap;
 
+mod precomputed;
+pub use precomputed::*;
+
 pub mod thread_local;
 use alloy::primitives::keccak256;
 pub use thread_local::{CheckpointGuard, StorageCtx};
