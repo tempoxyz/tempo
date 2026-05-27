@@ -345,7 +345,7 @@ function promtoolConfig(victoriametricsUrl, report) {
     user: process.env.PROMETHEUS_USER || '',
     password: process.env.PROMETHEUS_PASSWORD || '',
     bin: process.env.PROMTOOL_BIN || 'promtool',
-    batchSize: envPositiveInt('PROMTOOL_BATCH_SIZE', envPositiveInt('PROMETHEUS_BATCH_SIZE', 50_000)),
+    batchSize: envPositiveInt('PROMTOOL_BATCH_SIZE', envPositiveInt('PROMETHEUS_BATCH_SIZE', 10_000)),
     timeoutSecs: envPositiveInt('PROMETHEUS_TIMEOUT_SECS', 60),
     extraLabel: promtoolExtraLabel(report),
   };
