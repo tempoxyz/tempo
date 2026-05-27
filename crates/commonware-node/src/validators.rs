@@ -12,23 +12,100 @@ use commonware_utils::{TryFromIterator, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
 use reth_ethereum::evm::revm::{State, database::StateProviderDatabase};
 use reth_node_builder::ConfigureEvm as _;
-use reth_provider::{HeaderProvider as _, StateProviderFactory as _};
-use tempo_node::TempoFullNode;
+use reth_provider::{HeaderProvider as _, StateProviderBox, StateProviderFactory as _};
+use tempo_node::{TempoFullNode, evm::evm::TempoEvm};
 use tempo_precompiles::{
     storage::StorageCtx,
     validator_config_v2::{IValidatorConfigV2, ValidatorConfigV2},
 };
+use tempo_primitives::TempoHeader;
 
 use tracing::{Level, debug, instrument, warn};
 
 use crate::utils::public_key_to_b256;
+
+/// Minimal execution-node interface needed to read validator config state.
+///
+/// This keeps validator config consumers from depending on a full launched
+/// [`TempoFullNode`] when they only need a historical state provider and an
+/// EVM configured for the corresponding block. Tests can supply lightweight
+/// in-memory state providers while still exercising the same validator config
+/// reader used in production.
+pub(crate) trait ValidatorConfigExecution {
+    fn validator_config_header(&self, block_hash: B256) -> eyre::Result<TempoHeader>;
+
+    fn validator_config_state_by_block_hash(
+        &self,
+        block_hash: B256,
+    ) -> eyre::Result<StateProviderBox>;
+
+    fn validator_config_evm_for_block(
+        &self,
+        db: State<StateProviderDatabase<StateProviderBox>>,
+        header: &TempoHeader,
+    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>>;
+}
+
+impl ValidatorConfigExecution for TempoFullNode {
+    fn validator_config_header(&self, block_hash: B256) -> eyre::Result<TempoHeader> {
+        self.provider
+            .header(block_hash)
+            .map_err(eyre::Report::new)
+            .and_then(|maybe| maybe.ok_or_eyre("execution layer returned empty header"))
+    }
+
+    fn validator_config_state_by_block_hash(
+        &self,
+        block_hash: B256,
+    ) -> eyre::Result<StateProviderBox> {
+        self.provider
+            .state_by_block_hash(block_hash)
+            .wrap_err_with(|| {
+                format!("failed to get state from node provider for hash `{block_hash}`")
+            })
+    }
+
+    fn validator_config_evm_for_block(
+        &self,
+        db: State<StateProviderDatabase<StateProviderBox>>,
+        header: &TempoHeader,
+    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>> {
+        self.evm_config
+            .evm_for_block(db, header)
+            .wrap_err("failed instantiating evm for block")
+    }
+}
+
+impl<N> ValidatorConfigExecution for &N
+where
+    N: ValidatorConfigExecution,
+{
+    fn validator_config_header(&self, block_hash: B256) -> eyre::Result<TempoHeader> {
+        (*self).validator_config_header(block_hash)
+    }
+
+    fn validator_config_state_by_block_hash(
+        &self,
+        block_hash: B256,
+    ) -> eyre::Result<StateProviderBox> {
+        (*self).validator_config_state_by_block_hash(block_hash)
+    }
+
+    fn validator_config_evm_for_block(
+        &self,
+        db: State<StateProviderDatabase<StateProviderBox>>,
+        header: &TempoHeader,
+    ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>> {
+        (*self).validator_config_evm_for_block(db, header)
+    }
+}
 
 /// Returns active validator config v2 entries at block `hash`.
 ///
 /// This returns both the validators that are `active` as per the contract, and
 /// those that are `known`.
 pub(crate) fn read_active_and_known_peers_at_block_hash(
-    node: &TempoFullNode,
+    node: impl ValidatorConfigExecution,
     known: &ordered::Set<PublicKey>,
     hash: B256,
 ) -> eyre::Result<ordered::Map<PublicKey, commonware_p2p::Address>> {
@@ -76,7 +153,7 @@ pub(crate) fn read_active_and_known_peers_at_block_hash(
 /// Reads the validator state at the given block hash.
 #[instrument(skip_all, fields(%block_hash), err(Display))]
 pub(crate) fn read_validator_config_at_block_hash<C, T>(
-    node: &TempoFullNode,
+    node: impl ValidatorConfigExecution,
     block_hash: B256,
     read_fn: impl FnOnce(&C) -> eyre::Result<T>,
 ) -> eyre::Result<(u64, B256, T)>
@@ -84,28 +161,18 @@ where
     C: Default,
 {
     let header = node
-        .provider
-        .header(block_hash)
-        .map_err(eyre::Report::new)
-        .and_then(|maybe| maybe.ok_or_eyre("execution layer returned empty header"))
+        .validator_config_header(block_hash)
         .wrap_err_with(|| format!("failed reading block with hash `{block_hash}`"))?;
 
     debug!(height = header.number(), "header found");
 
     let db = State::builder()
         .with_database(StateProviderDatabase::new(
-            node.provider
-                .state_by_block_hash(block_hash)
-                .wrap_err_with(|| {
-                    format!("failed to get state from node provider for hash `{block_hash}`")
-                })?,
+            node.validator_config_state_by_block_hash(block_hash)?,
         ))
         .build();
 
-    let mut evm = node
-        .evm_config
-        .evm_for_block(db, &header)
-        .wrap_err("failed instantiating evm for block")?;
+    let mut evm = node.validator_config_evm_for_block(db, &header)?;
 
     let ctx = evm.ctx_mut();
     let res = StorageCtx::enter_evm(

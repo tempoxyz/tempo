@@ -72,7 +72,10 @@ tokio-stream = { workspace = true, features = ["sync"] }
 tracing.workspace = true
 
 [dev-dependencies]
+tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary"] }
+
+reth-provider = { workspace = true, features = ["test-utils"] }
 
 # `commonware_macros::test_traced` requires `tracing_subscriber` to be in scope.
 tracing-subscriber.workspace = true
