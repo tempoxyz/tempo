@@ -891,9 +891,7 @@ where
             "TIP20 transaction reverted: {:?}",
             output.result().result
         );
-        stats.gas_used = stats
-            .gas_used
-            .saturating_add(executor.commit_transaction(output).tx_gas_used());
+        stats.gas_used += executor.commit_transaction(output).tx_gas_used();
         stats.txs += 1;
     }
     stats
