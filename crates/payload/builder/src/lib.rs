@@ -734,8 +734,9 @@ where
             let mut pending_candidates = VecDeque::<BlockStmPoolCandidate>::new();
             let mut next_blockstm_tx_index = 0usize;
             let mut semantic_state = BlockStmSemanticState::default();
+            let mut blockstm_serial_fallback_active = false;
 
-            loop {
+            'blockstm_pool_fill: loop {
                 check_cancel!();
 
                 if let Some(build_budget) = payload_build_budget {
@@ -762,6 +763,178 @@ where
                         );
                         break BlockBuildStopReason::BuildBudget;
                     }
+                }
+
+                if blockstm_serial_fallback_active {
+                    let candidate = if let Some(candidate) = pending_candidates.pop_front() {
+                        candidate
+                    } else {
+                        let Some(pool_tx) = best_txs.next() else {
+                            if build_once_with_shared_trie
+                                && payload_build_budget.is_some()
+                                && cumulative_gas_used < non_shared_gas_limit
+                            {
+                                std::thread::sleep(Duration::from_millis(1));
+                                normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                                continue;
+                            }
+
+                            let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
+                                BlockBuildStopReason::GasLimit
+                            } else if skipped_oversized_block {
+                                BlockBuildStopReason::RlpBlockSizeLimit
+                            } else {
+                                BlockBuildStopReason::TxPoolEmpty
+                            };
+                            break stop_reason;
+                        };
+                        pool_transactions_yielded += 1;
+
+                        let max_regular_gas_used = core::cmp::min(
+                            pool_tx.gas_limit(),
+                            builder.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+                        );
+                        let is_payment = if hardfork.is_t5() {
+                            pool_tx.transaction.is_payment()
+                        } else {
+                            pool_tx.transaction.inner().is_payment_v1()
+                        };
+                        let tx_rlp_length = pool_tx.transaction.encoded_length();
+                        let tx_debug_repr = tracing::enabled!(Level::TRACE)
+                            .then(|| format!("{:?}", pool_tx.transaction))
+                            .unwrap_or_default();
+                        let tx_with_env = pool_tx.transaction.clone_into_with_tx_env();
+                        let tx_index = next_blockstm_tx_index;
+                        next_blockstm_tx_index += 1;
+
+                        BlockStmPoolCandidate {
+                            tx_index,
+                            pool_tx,
+                            tx_with_env,
+                            max_regular_gas_used,
+                            is_payment,
+                            tx_rlp_length,
+                            tx_debug_repr,
+                        }
+                    };
+
+                    if cumulative_gas_used + candidate.max_regular_gas_used > non_shared_gas_limit {
+                        best_txs.mark_invalid(
+                            &candidate.pool_tx,
+                            InvalidPoolTransactionError::ExceedsGasLimit(
+                                candidate.pool_tx.gas_limit(),
+                                non_shared_gas_limit - cumulative_gas_used,
+                            ),
+                        );
+                        self.metrics
+                            .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
+                        pending_candidates.retain(|pending| {
+                            !is_blockstm_invalidated_buffered_transaction(
+                                &candidate.pool_tx,
+                                &pending.pool_tx,
+                            )
+                        });
+                        continue;
+                    }
+
+                    if !candidate.is_payment
+                        && non_payment_gas_used + candidate.max_regular_gas_used > general_gas_limit
+                    {
+                        best_txs.mark_invalid(
+                            &candidate.pool_tx,
+                            InvalidPoolTransactionError::Other(Box::new(
+                                TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                            )),
+                        );
+                        self.metrics
+                            .inc_pool_tx_skipped("exceeds_general_gas_limit");
+                        pending_candidates.retain(|pending| {
+                            !is_blockstm_invalidated_buffered_transaction(
+                                &candidate.pool_tx,
+                                &pending.pool_tx,
+                            )
+                        });
+                        continue;
+                    }
+
+                    check_cancel!();
+
+                    if candidate.is_payment {
+                        payment_transactions += 1;
+                    }
+
+                    let estimated_block_size_with_tx = block_size_used + candidate.tx_rlp_length;
+                    if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                        best_txs.mark_invalid(
+                            &candidate.pool_tx,
+                            InvalidPoolTransactionError::OversizedData {
+                                size: estimated_block_size_with_tx,
+                                limit: MAX_RLP_BLOCK_SIZE,
+                            },
+                        );
+                        self.metrics.inc_pool_tx_skipped("oversized_block");
+                        skipped_oversized_block = true;
+                        pending_candidates.retain(|pending| {
+                            !is_blockstm_invalidated_buffered_transaction(
+                                &candidate.pool_tx,
+                                &pending.pool_tx,
+                            )
+                        });
+                        continue;
+                    }
+
+                    let execution_result = builder.execute_transaction_with_result_closure(
+                        candidate.tx_with_env.clone(),
+                        |result| {
+                            cumulative_gas_used += result.block_gas_used();
+                            cumulative_state_gas_used += result.state_gas_used();
+                            if !candidate.is_payment {
+                                non_payment_gas_used += result.block_gas_used();
+                            }
+                            total_fees += result.validator_fee();
+                            best_txs.on_new_result(result);
+                        },
+                    );
+
+                    if let Err(err) = execution_result {
+                        if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                            error,
+                            ..
+                        }) = &err
+                        {
+                            invalid_pool_transaction_execution_attempts += 1;
+
+                            if error.is_nonce_too_low() {
+                                trace!(%error, tx = %candidate.tx_debug_repr, "skipping nonce too low transaction");
+                                self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                            } else {
+                                trace!(%error, tx = %candidate.tx_debug_repr, "skipping invalid transaction and its descendants");
+                                best_txs.mark_invalid(
+                                    &candidate.pool_tx,
+                                    InvalidPoolTransactionError::Consensus(
+                                        InvalidTransactionError::TxTypeNotSupported,
+                                    ),
+                                );
+                                self.metrics.inc_pool_tx_skipped("invalid_tx");
+                                pending_candidates.retain(|pending| {
+                                    !is_blockstm_invalidated_buffered_transaction(
+                                        &candidate.pool_tx,
+                                        &pending.pool_tx,
+                                    )
+                                });
+                            }
+                            continue;
+                        } else {
+                            return Err(PayloadBuilderError::evm(err));
+                        }
+                    }
+
+                    trace!("Transaction executed through Block-STM serial fallback");
+                    blockstm_stats.serial_fallback_total += 1;
+                    blockstm_stats.committed_txs_total += 1;
+                    pool_transactions_included += 1;
+                    block_size_used += candidate.tx_rlp_length;
+                    continue;
                 }
 
                 let mut batch = Vec::with_capacity(max_batch_len);
@@ -967,7 +1140,7 @@ where
 
                 let mut invalidated = Vec::<BestTransaction>::new();
 
-                'blockstm_candidate: for (batch_index, candidate) in batch.iter().enumerate() {
+                for (batch_index, candidate) in batch.iter().enumerate() {
                     if invalidated.iter().any(|invalid| {
                         is_blockstm_invalidated_buffered_transaction(invalid, &candidate.pool_tx)
                     }) {
@@ -1085,6 +1258,17 @@ where
                             blockstm_stats.conflicts_total,
                             attempt_count,
                         ) {
+                            blockstm_serial_fallback_active = true;
+                            for pending in batch.iter().skip(batch_index + 1).rev() {
+                                if invalidated.iter().all(|invalid| {
+                                    !is_blockstm_invalidated_buffered_transaction(
+                                        invalid,
+                                        &pending.pool_tx,
+                                    )
+                                }) {
+                                    pending_candidates.push_front(pending.clone());
+                                }
+                            }
                             blockstm_stats.serial_fallback_total += 1;
                             debug!(
                                 target: "payload_builder",
@@ -1137,7 +1321,7 @@ where
                                             )
                                         });
                                     }
-                                    continue 'blockstm_candidate;
+                                    continue 'blockstm_pool_fill;
                                 } else {
                                     return Err(PayloadBuilderError::evm(err));
                                 }
@@ -1151,7 +1335,7 @@ where
                             blockstm_stats.committed_txs_total += 1;
                             pool_transactions_included += 1;
                             block_size_used += candidate.tx_rlp_length;
-                            continue 'blockstm_candidate;
+                            continue 'blockstm_pool_fill;
                         }
 
                         let prefix_cache = builder.executor_mut().evm_mut().db_mut().cache.clone();
