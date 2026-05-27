@@ -1448,9 +1448,8 @@ mod tests {
                 },
             )?;
 
-            let channel = reserve.get_channel(ITIP20ChannelReserve::getChannelCall {
-                descriptor: descriptor.clone(),
-            })?;
+            let channel =
+                reserve.get_channel(ITIP20ChannelReserve::getChannelCall { descriptor })?;
             assert_eq!(channel.state.closeRequestedAt, 0);
             assert_eq!(channel.state.deposit, 100);
             assert!(
