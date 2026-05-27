@@ -640,14 +640,18 @@ where
                 if !pause_tokens.is_empty() {
                     let all_txs = pool.all_transactions();
 
-                    // Group transactions by fee token for efficient batch processing.
+                    // Group transactions by effective fee token for efficient batch processing.
                     // This single pass over all transactions handles all pause events.
-                    let mut by_token: AddressMap<Vec<TxHash>> = AddressMap::default();
-                    for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
-                        if let Some(fee_token) = tx.transaction.inner().fee_token() {
-                            by_token.entry(fee_token).or_default().push(*tx.hash());
-                        }
-                    }
+                    let mut by_token = all_txs.into_iter().fold(
+                        AddressMap::<Vec<TxHash>>::default(),
+                        |mut by_token, tx| {
+                            by_token
+                                .entry(tx.transaction.effective_fee_token())
+                                .or_default()
+                                .push(*tx.hash());
+                            by_token
+                        },
+                    );
 
                     // Process each pause token
                     for token in pause_tokens {
@@ -745,14 +749,15 @@ where
                     );
                 }
 
-                // 5. Evict revoked keys and spending limit updates from paused pool
-                if updates.has_keychain_subject_updates()
+                // 5. Evict hard keychain invalidations from paused pool
+                // Ignore spending_limit_spends here: AccessKeySpend only proves partial limit consumption, and paused txs are fully revalidated on unpause.
+                if !updates.revoked_keys.is_empty()
+                    || !updates.spending_limit_changes.is_empty()
                     || !updates.key_authorization_witness_burns.is_empty()
                 {
                     state.paused_pool.evict_invalidated(
                         &updates.revoked_keys,
                         &updates.spending_limit_changes,
-                        &updates.spending_limit_spends,
                         &updates.key_authorization_witness_burns,
                     );
                 }

@@ -583,6 +583,10 @@ where
     /// - Each individual call creates its own internal checkpoint
     /// - The outer checkpoint (created here) captures state before any calls execute
     /// - Reverting the outer checkpoint undoes all nested changes
+    ///
+    /// This checkpoint only covers user-call execution. Inline key authorization attached to the
+    /// transaction is applied earlier during validation/pre-execution and intentionally remains
+    /// persisted if scope prevalidation fails here or if a later user call reverts the batch.
     fn execute_multi_call_with<F>(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -1268,7 +1272,9 @@ where
         }
 
         // If the transaction includes a KeyAuthorization, validate and authorize the key
-        // only after fee collection has succeeded.
+        // only after fee collection has succeeded. This pre-execution write is deliberately
+        // outside the later user-call batch checkpoint, so same-transaction authorize-and-use
+        // keeps the newly registered key even if scoped-call prevalidation or execution fails.
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(key_auth) = &tempo_tx_env.key_authorization
         {

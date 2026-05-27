@@ -335,7 +335,8 @@ where
             .as_ref()
             .map(|w| w.length())
             .unwrap_or(0)
-            + 1024;
+            + 1024
+            + attributes.extra_data().length();
         let mut payment_transactions = 0u64;
         let mut pool_transactions_yielded = 0u64;
         let mut pool_transactions_included = 0u64;

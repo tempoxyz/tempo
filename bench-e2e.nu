@@ -25,6 +25,7 @@ const E2E_LOCAL_RETH_ARGS = [
     "--disable-discovery"
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
+    "--consensus.no-legacy-archive"
     "--builder.max-tasks" "1"
     "--engine.share-sparse-trie-with-payload-builder"
     "--engine.share-execution-cache-with-payload-builder"
@@ -727,7 +728,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
-    let extra_args = if $side_args == "" { [] } else { $side_args | split row " " }
+    let extra_args = (parse-cli-args $side_args)
 
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
@@ -889,6 +890,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
             print $"Error: local e2e txgen sender failed for ($phase): ($e.msg)"
             1
         })
+        if $sender_exit == 0 and $phase_clickhouse_url != "" {
+            let report = (open $"($ctx.results_dir)/report-($phase).json")
+            let report_benchmark_id = ($report | get --optional benchmark_id | default "")
+            if $report_benchmark_id != "" {
+                $report_benchmark_id | save -f $"($ctx.results_dir)/clickhouse-run-id-($phase).txt"
+                $report_benchmark_id | save -f $"($ctx.results_dir)/clickhouse-run-id.txt"
+            }
+        }
         let phase_finished_ms = ((date now | into int) / 1_000_000 | into int)
         {
             phase: $phase
@@ -935,6 +944,64 @@ def e2e-run-sides [run_pairs: int] {
     $sides
 }
 
+def e2e-write-summary-config [
+    results_dir: string
+    baseline_label: string
+    feature_label: string
+    bloat_mib: int
+    preset: string
+    tps: int
+    duration: int
+    benchmark_id: string
+    reference_epoch: int
+    baseline_hardfork: string
+    feature_hardfork: string
+] {
+    {
+        baseline_label: $baseline_label
+        feature_label: $feature_label
+        bloat_mib: $bloat_mib
+        preset: $preset
+        tps: $tps
+        duration: $duration
+        benchmark_id: $benchmark_id
+        reference_epoch: $reference_epoch
+        baseline_hardfork: $baseline_hardfork
+        feature_hardfork: $feature_hardfork
+    } | to json | save -f $"($results_dir)/summary-config.json"
+}
+
+def e2e-generate-summary [results_dir: string] {
+    let config_path = $"($results_dir)/summary-config.json"
+    if not ($config_path | path exists) {
+        print $"Error: summary config not found: ($config_path)"
+        exit 1
+    }
+
+    let config = (open $config_path)
+    let baseline_hardfork = ($config | get -o baseline_hardfork | default "")
+    let feature_hardfork = ($config | get -o feature_hardfork | default "")
+    generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int) --baseline-hardfork $baseline_hardfork --feature-hardfork $feature_hardfork
+
+    with-env {
+        GITHUB_TOKEN: ""
+        CLICKHOUSE_URL: ""
+        CLICKHOUSE_USER: ""
+        CLICKHOUSE_PASSWORD: ""
+        BENCH_VICTORIAMETRICS_URL: ""
+        SLACK_BENCH_BOT_TOKEN: ""
+        SLACK_BENCH_CHANNEL: ""
+    } {
+        ^node .github/scripts/bench-e2e-classify.js $results_dir
+    }
+}
+
+def "main summarize" [
+    results_dir: string                                # Results directory from an e2e run
+] {
+    e2e-generate-summary $results_dir
+}
+
 # Run the e2e sequence on one runner.
 def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
@@ -976,6 +1043,7 @@ def "main e2e" [
     --tune                                              # Apply system tuning
     --loud                                              # Show node debug logs
     --no-cache                                           # Skip binary cache
+    --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
     let preset_path = (txgen-preset-path $preset)
     if $tracy not-in ["off" "on" "full"] {
@@ -1277,6 +1345,7 @@ def "main e2e" [
         exit 1
     }
     $valid_run_labels | str join "\n" | save -f $"($results_dir)/run-order.txt"
+    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $baseline_hardfork_name $feature_hardfork_name
     let num_phases = ($runs | length)
     mut e2e_exit = 0
     for idx in 0..<$num_phases {
@@ -1313,8 +1382,8 @@ def "main e2e" [
         }
     }
 
-    if $e2e_exit == 0 {
-        generate-summary $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch --baseline-hardfork $baseline_hardfork_name --feature-hardfork $feature_hardfork_name
+    if $e2e_exit == 0 and not $skip_summary {
+        e2e-generate-summary $results_dir
     }
 
     try { git worktree remove --force $baseline_wt } catch { }
