@@ -29,7 +29,7 @@ use crate::{
     storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
-    tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
+    tip403_registry::{ALLOW_ALL_POLICY_ID, AuthRole, ITIP403Registry, TIP403Registry},
 };
 use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
@@ -1100,6 +1100,10 @@ impl TIP20Token {
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     pub fn is_transfer_authorized(&self, from: Address, to: Address) -> Result<bool> {
         let policy_id = self.transfer_policy_id()?;
+        if policy_id == ALLOW_ALL_POLICY_ID {
+            return Ok(true);
+        }
+
         let registry = TIP403Registry::new();
 
         // (spec: +T2) short-circuit and skip recipient check if sender fails
