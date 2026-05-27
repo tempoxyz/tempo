@@ -303,7 +303,7 @@ jobs:
         uses: re-actors/alls-green@05ac9388f0aebcb5727afa17fcccfecd6f8ec5fe # v1.2.2
         with:
           allowed-failures: foundry-test
-          allowed-skips: check-precompiles,build,abi-alignment-check,lint,foundry-test
+          allowed-skips: check-precompiles,build,abi-alignment-check,lint
           jobs: ${{ toJSON(needs) }}
 
   precompiles-coverage:
