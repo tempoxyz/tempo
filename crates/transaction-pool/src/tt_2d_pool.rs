@@ -1090,8 +1090,7 @@ impl AA2dPool {
             pending_tx.submission_id,
         );
         self.expiring_nonce_eviction_order.remove(&eviction_key);
-        let tx_hash = *pending_tx.transaction.hash();
-        self.by_hash.remove(&tx_hash);
+        self.by_hash.remove(pending_tx.transaction.hash());
         if let Some(slot) = pending_tx.transaction.transaction.expiring_nonce_slot() {
             self.slot_to_expiring_nonce_hash.remove(&slot);
         }
