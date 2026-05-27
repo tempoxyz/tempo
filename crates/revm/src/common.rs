@@ -359,6 +359,7 @@ impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
 struct ReadOnlyStorageProvider<'a, S, M = ()> {
     state: &'a mut S,
     spec: TempoHardfork,
+    cached_account: Option<(Address, AccountInfo)>,
     _marker: PhantomData<M>,
 }
 
@@ -371,8 +372,37 @@ where
         Self {
             state,
             spec,
+            cached_account: None,
             _marker: PhantomData,
         }
+    }
+
+    #[inline]
+    fn ensure_account_loaded(&mut self, address: Address) -> TempoResult<()> {
+        if self
+            .cached_account
+            .as_ref()
+            .is_some_and(|(cached, _)| *cached == address)
+        {
+            return Ok(());
+        }
+
+        let info = self
+            .state
+            .basic(address)
+            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
+        self.cached_account = Some((address, info));
+        Ok(())
+    }
+
+    #[inline]
+    fn account_info(&mut self, address: Address) -> TempoResult<&AccountInfo> {
+        self.ensure_account_loaded(address)?;
+        Ok(&self
+            .cached_account
+            .as_ref()
+            .expect("account cache populated after successful load")
+            .1)
     }
 }
 
@@ -400,10 +430,7 @@ where
     }
 
     fn sload(&mut self, address: Address, key: U256) -> TempoResult<U256> {
-        let _ = self
-            .state
-            .basic(address)
-            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
+        self.ensure_account_loaded(address)?;
         self.state
             .sload(address, key)
             .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))
@@ -414,11 +441,8 @@ where
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> TempoResult<()> {
-        let info = self
-            .state
-            .basic(address)
-            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
-        f(&info);
+        let info = self.account_info(address)?;
+        f(info);
         Ok(())
     }
 
