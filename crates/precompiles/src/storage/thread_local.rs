@@ -68,7 +68,7 @@ impl StorageCtx {
     where
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> R,
     {
-        assert!(
+        debug_assert!(
             STORAGE.is_set(),
             "No storage context. 'StorageCtx::enter' must be called first"
         );
