@@ -77,6 +77,27 @@ impl<T: Storable> BytesLikeHandler<T> {
     pub fn is_empty(&self) -> Result<bool> {
         Ok(self.len()? == 0)
     }
+
+    /// Compares a short stored value against `expected` using only the base slot.
+    #[inline]
+    pub fn eq_short_bytes(&self, expected: &[u8]) -> Result<bool> {
+        if expected.len() > 31 {
+            return Ok(false);
+        }
+
+        let base_value = Slot::<U256>::new(self.base_slot, self.address).read()?;
+        if is_long_string(base_value) {
+            return Ok(false);
+        }
+
+        let length = calc_string_length(base_value, false)?;
+        if length != expected.len() {
+            return Ok(false);
+        }
+
+        let bytes = base_value.to_be_bytes::<32>();
+        Ok(&bytes[..length] == expected)
+    }
 }
 
 impl<T: Storable> Handler<T> for BytesLikeHandler<T> {
