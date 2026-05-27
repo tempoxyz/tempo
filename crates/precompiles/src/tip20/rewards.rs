@@ -511,11 +511,6 @@ mod tests {
         Ok(())
     }
 
-    fn assert_checkpointed(token: &TIP20Token, account: Address, rpt: U256) -> Result<()> {
-        assert_eq!(user_rpt(token, account)?, rpt);
-        Ok(())
-    }
-
     #[test]
     fn test_set_reward_recipient() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
@@ -964,7 +959,6 @@ mod tests {
 
             set_recipient(&mut token, alice, alice)?;
             distribute(&mut token, admin, rewards)?;
-            let rpt_after_first = token.get_global_reward_per_token()?;
 
             // Charlie has no rewards; claiming while opted out does not checkpoint him.
             assert_claims(&mut token, charlie, U256::ZERO)?;
@@ -989,7 +983,6 @@ mod tests {
 
             set_recipient(&mut token, alice, alice)?;
             distribute(&mut token, admin, rewards)?;
-            let rpt_after_first = token.get_global_reward_per_token()?;
 
             // Alice claims her accrued rewards and her checkpoint advances to the current RPT.
             assert_claims(&mut token, alice, rewards)?;
@@ -1016,7 +1009,6 @@ mod tests {
             set_recipient(&mut token, alice, bob)?;
             distribute(&mut token, admin, rewards)?;
             token.update_rewards(alice)?;
-            let rpt_after_first = token.get_global_reward_per_token()?;
             let delegated_reward = token.user_reward_info[bob].reward_balance.read()?;
 
             // Bob is opted out, so claiming delegated rewards does not checkpoint him.
