@@ -1,7 +1,10 @@
 //! An iterator over the best transactions in the tempo pool.
 
 use crate::{transaction::TempoPooledTransaction, tt_2d_pool::BestAA2dTransactions};
-use alloy_primitives::{Address, U256, map::HashMap};
+use alloy_primitives::{
+    U256,
+    map::{AddressMap, U256Map},
+};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
@@ -113,10 +116,10 @@ impl BestTransactions for MergeBestTransactions {
 /// included transactions.
 pub struct StateAwareBestTransactions<I> {
     inner: I,
-    /// Tracks decreased TIP20 balance slots: `(token_address, slot) -> new_balance`.
+    /// Tracks decreased TIP20 balance slots: `token_address -> slot -> new_balance`.
     /// Updated after each executed transaction. Used to check if a candidate
     /// transaction's fee payer can still cover its fee cost.
-    decreased_balances: HashMap<(Address, U256), U256>,
+    decreased_balances: AddressMap<U256Map<U256>>,
 }
 
 impl<I> StateAwareBestTransactions<I>
@@ -127,7 +130,7 @@ where
     pub fn new(inner: I) -> Self {
         Self {
             inner,
-            decreased_balances: HashMap::default(),
+            decreased_balances: AddressMap::default(),
         }
     }
 
@@ -142,8 +145,14 @@ where
             for (&slot, storage_slot) in &account.storage {
                 if storage_slot.present_value < storage_slot.original_value {
                     self.decreased_balances
-                        .insert((address, slot), storage_slot.present_value);
-                } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
+                        .entry(address)
+                        .or_default()
+                        .insert(slot, storage_slot.present_value);
+                } else if let Some(balance) = self
+                    .decreased_balances
+                    .get_mut(&address)
+                    .and_then(|balances| balances.get_mut(&slot))
+                {
                     *balance = storage_slot.present_value;
                 }
             }
@@ -161,12 +170,15 @@ where
         loop {
             let tx = self.inner.next()?;
 
-            let Some(key) = tx.transaction.fee_balance_slot() else {
+            let Some((fee_token, slot)) = tx.transaction.fee_balance_slot() else {
                 debug_assert!(false, "pool transaction must have cached fee_balance_slot");
                 continue;
             };
 
-            if let Some(&balance) = self.decreased_balances.get(&key)
+            if let Some(&balance) = self
+                .decreased_balances
+                .get(&fee_token)
+                .and_then(|balances| balances.get(&slot))
                 && balance < tx.transaction.fee_token_cost()
             {
                 self.inner.mark_invalid(
@@ -209,7 +221,7 @@ mod tests {
         test_utils::{TxBuilder, wrap_valid_tx},
         tt_2d_pool::AA2dPool,
     };
-    use alloy_primitives::Address;
+    use alloy_primitives::{Address, map::HashMap};
     use futures::executor::block_on;
     use reth_primitives_traits::transaction::error::InvalidTransactionError;
     use reth_transaction_pool::{
@@ -427,6 +439,30 @@ mod tests {
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*l3.hash())); // 5
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*r3.hash())); // 4
         assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn state_aware_skips_transactions_when_fee_balance_drops() {
+        let blocked = protocol_tx_for_sender(Address::random(), 0, 10);
+        let next = protocol_tx_for_sender(Address::random(), 0, 5);
+
+        let (fee_token, balance_slot) = blocked
+            .transaction
+            .fee_balance_slot()
+            .expect("test transaction has fee balance slot");
+        let mut by_slot = U256Map::default();
+        by_slot.insert(balance_slot, blocked.transaction.fee_token_cost() - U256::from(1));
+
+        let mut decreased_balances = AddressMap::default();
+        decreased_balances.insert(fee_token, by_slot);
+
+        let mut best = StateAwareBestTransactions {
+            inner: protocol_best_transactions(vec![blocked, next.clone()]),
+            decreased_balances,
+        };
+
+        assert_eq!(best.next().map(|tx| *tx.hash()), Some(*next.hash()));
+        assert!(best.next().is_none());
     }
 
     #[test]
