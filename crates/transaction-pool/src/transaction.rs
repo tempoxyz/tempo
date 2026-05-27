@@ -31,6 +31,8 @@ use thiserror::Error;
 #[derive(Debug, Clone)]
 pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
+    /// Cached transaction sender.
+    sender: Address,
     /// Cached cost of the transaction in the fee token.
     fee_token_cost: U256,
     /// Cached payment classification for efficient block building
@@ -82,6 +84,7 @@ impl TempoPooledTransaction {
                 blob_sidecar: EthBlobTransactionSidecar::None,
                 transaction,
             },
+            sender,
             fee_token_cost,
             is_payment,
             expiring_nonce_hash,
@@ -608,11 +611,11 @@ impl PoolTransaction for TempoPooledTransaction {
     }
 
     fn sender(&self) -> Address {
-        self.inner.transaction.signer()
+        self.sender
     }
 
     fn sender_ref(&self) -> &Address {
-        self.inner.transaction.signer_ref()
+        &self.sender
     }
 
     fn cost(&self) -> &U256 {
