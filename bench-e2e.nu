@@ -741,8 +741,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
         }
     }
     if $hardfork != "" or $ctx.gas_limit != "" {
-        e2e-regenesis $run.tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit
-        e2e-regenesis $run.tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit
+        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit
+        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit
     }
     for role_info in [
         { role: "a", node_dir: $ctx.a.node_dir }
@@ -1223,7 +1223,9 @@ def "main e2e" [
     mkdir $BENCH_WORKTREES_DIR
     let baseline_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-baseline"
     let feature_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-feature"
-    for wt in [$baseline_wt $feature_wt] {
+    let regenesis_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-regenesis-main"
+    let regenesis_needed = $hardfork_mode or $gas_limit != ""
+    for wt in [$baseline_wt $feature_wt $regenesis_wt] {
         if ($wt | path exists) {
             print $"Removing stale local e2e worktree: ($wt)"
             try { git worktree remove --force $wt } catch { rm -rf $wt }
@@ -1231,17 +1233,27 @@ def "main e2e" [
     }
     git worktree add $baseline_wt $baseline
     git worktree add $feature_wt $feature
+    if $regenesis_needed {
+        print "Fetching latest origin/main for tempo regenesis..."
+        git fetch origin main
+        git worktree add $regenesis_wt origin/main
+    }
 
     let tbc = (tracy-build-config $features $tracy)
     let effective_features = $tbc.features
     let effective_extra_rustflags = $tbc.extra_rustflags
     let effective_no_cache = $no_cache or ($tracy != "off")
-    # Build baseline and feature in parallel — they use separate worktrees
+    # Build benchmark binaries in parallel. Regenesis uses latest origin/main so
+    # snapshot rewriting is independent of either side being benchmarked.
     # with independent target/ directories, so cargo invocations don't collide.
-    let builds = [
+    mut builds = [
         { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline" }
         { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature" }
     ]
+    let regenesis_sha = if $regenesis_needed { git rev-parse origin/main | str trim } else { "" }
+    if $regenesis_needed {
+        $builds = ($builds | append { wt: $regenesis_wt, ref_name: "origin/main", sha: $regenesis_sha, label: "regenesis-main" })
+    }
     $builds | par-each { |b|
         if $effective_no_cache {
             build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $effective_extra_rustflags --bench-features $features $b.wt $b.ref_name $profile $effective_features $b.sha
@@ -1251,6 +1263,7 @@ def "main e2e" [
     } | ignore
     let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
     let feature_tempo = (worktree-bin $feature_wt $profile "tempo")
+    let regenesis_tempo = if $regenesis_needed { worktree-bin $regenesis_wt $profile "tempo" } else { "" }
     let txgen = txgen-resolve-binaries
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
     let ctx = {
@@ -1307,6 +1320,7 @@ def "main e2e" [
         tune: $tune
         loud: $loud
         gas_limit: $gas_limit
+        regenesis_tempo: $regenesis_tempo
         tracing_otlp: $tracing_otlp
     }
 
@@ -1388,6 +1402,7 @@ def "main e2e" [
 
     try { git worktree remove --force $baseline_wt } catch { }
     try { git worktree remove --force $feature_wt } catch { }
+    try { git worktree remove --force $regenesis_wt } catch { }
     cleanup-local-e2e-processes
     bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db
