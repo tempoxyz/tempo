@@ -784,6 +784,14 @@ impl<DB, I> Default for TempoEvmHandler<DB, I> {
     }
 }
 
+#[inline]
+fn can_execute_aa_as_single_call(
+    aa_env: &TempoBatchCallEnv,
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+) -> bool {
+    aa_env.aa_calls.len() == 1 && (!spec.is_t3() || !aa_env.signature.is_keychain())
+}
+
 impl<DB, I> Handler for TempoEvmHandler<DB, I>
 where
     DB: alloy_evm::Database,
@@ -803,16 +811,20 @@ where
         evm: &mut Self::Evm,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
-        let spec = evm.ctx_ref().cfg().spec();
+        let spec = *evm.ctx_ref().cfg().spec();
         let tx = evm.tx();
 
-        if let Some(oog) = check_gas_limit(*spec, tx, init_and_floor_gas) {
+        if let Some(oog) = check_gas_limit(spec, tx, init_and_floor_gas) {
             return Ok(oog);
         }
 
         let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
+            if can_execute_aa_as_single_call(tempo_tx_env, spec) {
+                return self.execute_single_call(evm, gas_limit, reservoir);
+            }
+
             let calls = tempo_tx_env.aa_calls.clone();
             self.execute_multi_call(evm, gas_limit, reservoir, calls)
         } else {
@@ -2144,16 +2156,20 @@ where
         evm: &mut Self::Evm,
         init_and_floor_gas: &InitialAndFloorGas,
     ) -> Result<FrameResult, Self::Error> {
-        let spec = evm.ctx_ref().cfg().spec();
+        let spec = *evm.ctx_ref().cfg().spec();
         let tx = evm.tx();
 
-        if let Some(oog) = check_gas_limit(*spec, tx, init_and_floor_gas) {
+        if let Some(oog) = check_gas_limit(spec, tx, init_and_floor_gas) {
             return Ok(oog);
         }
 
         let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
+            if can_execute_aa_as_single_call(tempo_tx_env, spec) {
+                return self.inspect_execute_single_call(evm, gas_limit, reservoir);
+            }
+
             let calls = tempo_tx_env.aa_calls.clone();
             self.inspect_execute_multi_call(evm, gas_limit, reservoir, calls)
         } else {
