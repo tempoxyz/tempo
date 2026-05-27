@@ -423,8 +423,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             &ctx.cfg,
             &ctx.tx,
             || {
-                let mut keychain = AccountKeychain::new();
-                keychain.set_tx_origin(ctx.tx.caller())?;
+                AccountKeychain::set_current_tx_origin(ctx.tx.caller())?;
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
                     let mut channel_reserve = TIP20ChannelReserve::new();

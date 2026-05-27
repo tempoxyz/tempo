@@ -28,7 +28,7 @@ use tempo_primitives::TempoAddressExt;
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
-    storage::{Handler, Mapping, Set},
+    storage::{Handler, Mapping, Set, Slot},
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
@@ -651,6 +651,11 @@ impl AccountKeychain {
     /// Uses transient storage, so it's automatically cleared after the transaction.
     pub fn set_tx_origin(&mut self, origin: Address) -> Result<()> {
         self.tx_origin.t_write(origin)
+    }
+
+    /// Sets the transaction origin without constructing the full keychain handler set.
+    pub fn set_current_tx_origin(origin: Address) -> Result<()> {
+        Slot::<Address>::new(slots::TX_ORIGIN, ACCOUNT_KEYCHAIN_ADDRESS).t_write(origin)
     }
 
     /// Persists the authorization-time restrictions for a freshly created key.
