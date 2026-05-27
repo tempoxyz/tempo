@@ -1049,7 +1049,9 @@ impl TIP20Token {
             self.check_and_update_spending_limit(from, amount)?;
         }
 
-        if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
+        if self.storage.spec().is_t6()
+            && self.validate_inbound_or_block(from, &to, amount, None, memo)?
+        {
             return Ok(None);
         }
 
@@ -1087,7 +1089,9 @@ impl TIP20Token {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        if self.validate_inbound_or_block(msg_sender, &to, amount, Some(total_supply), memo)? {
+        if self.storage.spec().is_t6()
+            && self.validate_inbound_or_block(msg_sender, &to, amount, Some(total_supply), memo)?
+        {
             return Ok(None);
         }
 
