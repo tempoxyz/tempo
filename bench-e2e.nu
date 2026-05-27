@@ -84,6 +84,14 @@ def format-removed-node-arg-config [label: string, removed: list<string>] {
     }
 }
 
+def removed-node-args-label [removed: list<string>] {
+    if ($removed | is-empty) {
+        ""
+    } else {
+        $removed | str join " "
+    }
+}
+
 def run-bench-schelk [...args: string] {
     let result = (nu $BENCH_SCHELK_SCRIPT ...$args | complete)
     if $result.stdout != "" { print $result.stdout }
@@ -1009,6 +1017,8 @@ def e2e-write-summary-config [
     reference_epoch: int
     baseline_hardfork: string
     feature_hardfork: string
+    baseline_removed_args: string
+    feature_removed_args: string
 ] {
     {
         baseline_label: $baseline_label
@@ -1021,6 +1031,8 @@ def e2e-write-summary-config [
         reference_epoch: $reference_epoch
         baseline_hardfork: $baseline_hardfork
         feature_hardfork: $feature_hardfork
+        baseline_removed_args: $baseline_removed_args
+        feature_removed_args: $feature_removed_args
     } | to json | save -f $"($results_dir)/summary-config.json"
 }
 
@@ -1035,6 +1047,14 @@ def e2e-generate-summary [results_dir: string] {
     let baseline_hardfork = ($config | get -o baseline_hardfork | default "")
     let feature_hardfork = ($config | get -o feature_hardfork | default "")
     generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int) --baseline-hardfork $baseline_hardfork --feature-hardfork $feature_hardfork
+    let summary_path = $"($results_dir)/summary.json"
+    if ($summary_path | path exists) {
+        let baseline_removed_args = ($config | get -o baseline_removed_args | default "")
+        let feature_removed_args = ($config | get -o feature_removed_args | default "")
+        let summary = (open $summary_path)
+        let summary = ($summary | upsert config ($summary.config | upsert baseline_removed_args $baseline_removed_args | upsert feature_removed_args $feature_removed_args))
+        $summary | to json | save -f $summary_path
+    }
 
     with-env {
         GITHUB_TOKEN: ""
@@ -1426,7 +1446,7 @@ def "main e2e" [
         exit 1
     }
     $valid_run_labels | str join "\n" | save -f $"($results_dir)/run-order.txt"
-    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $baseline_hardfork_name $feature_hardfork_name
+    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
     let num_phases = ($runs | length)
     mut e2e_exit = 0
     for idx in 0..<$num_phases {
