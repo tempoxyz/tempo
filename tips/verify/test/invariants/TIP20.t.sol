@@ -38,12 +38,40 @@ contract TIP20InvariantTest is InvariantBaseTest {
     bytes32 internal constant PERMIT_TYPEHASH = keccak256(
         "Permit(address owner,address spender,uint256 value,uint256 nonce,uint256 deadline)"
     );
+    address internal constant TIP20_CHANNEL_RESERVE = 0x4d50500000000000000000000000000000000000;
+    address internal constant TEMPORARY_STORAGE = 0x5800000000000000000000000000000000000000;
 
     /// @dev Register an address as a potential token holder
     function _registerHolder(address token, address holder) internal {
         if (!_tokenHolderSeen[token][holder]) {
             _tokenHolderSeen[token][holder] = true;
             _tokenHolders[token].push(holder);
+        }
+    }
+
+    function _registerPrecompileHolders(address token) internal {
+        address[14] memory precompiles = [
+            KEYCHAIN,
+            TIP403_REGISTRY,
+            ADDRESS_REGISTRY,
+            TIP20_FACTORY,
+            PATH_USD,
+            STABLE_DEX,
+            FEE_AMM,
+            NONCE,
+            VALIDATOR_CONFIG,
+            VALIDATOR_CONFIG_V2,
+            SIGNATURE_VERIFIER,
+            TIP20_CHANNEL_RESERVE,
+            RECEIVE_POLICY_GUARD,
+            TEMPORARY_STORAGE
+        ];
+
+        for (uint256 i = 0; i < precompiles.length; i++) {
+            for (uint256 j = i + 1; j < precompiles.length; j++) {
+                assertTrue(precompiles[i] != precompiles[j], "Duplicate precompile address");
+            }
+            _registerHolder(token, precompiles[i]);
         }
     }
 
@@ -73,13 +101,11 @@ contract TIP20InvariantTest is InvariantBaseTest {
             // Register system addresses
             _registerHolder(tokenAddr, admin);
             _registerHolder(tokenAddr, tokenAddr); // token contract itself
-            _registerHolder(tokenAddr, address(amm));
-            _registerHolder(tokenAddr, address(exchange));
-            _registerHolder(tokenAddr, address(pathUSD));
             _registerHolder(tokenAddr, alice);
             _registerHolder(tokenAddr, bob);
             _registerHolder(tokenAddr, charlie);
             _registerHolder(tokenAddr, pathUSDAdmin);
+            _registerPrecompileHolders(tokenAddr);
         }
 
         // One-time constant checks (immutable after deployment)

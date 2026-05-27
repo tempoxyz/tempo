@@ -1,5 +1,3 @@
-//! Tests for consensus context in block headers when T4 is active at genesis.
-
 use std::time::Duration;
 
 use commonware_macros::test_traced;
@@ -16,11 +14,7 @@ use crate::{CONSENSUS_NODE_PREFIX, Setup, setup_validators};
 fn blocks_have_consensus_context() {
     let _ = tempo_eyre::install();
 
-    let setup = Setup::new()
-        .how_many_signers(4)
-        .epoch_length(100)
-        .t4_time(0)
-        .seed(0);
+    let setup = Setup::new().how_many_signers(4).epoch_length(100).seed(0);
 
     let cfg = deterministic::Config::default().with_seed(setup.seed);
     let executor = Runner::from(cfg);

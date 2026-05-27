@@ -460,7 +460,7 @@ impl StablecoinDEX {
     /// - `TickOutOfBounds` — tick is outside the allowed `[MIN_TICK, MAX_TICK]` range
     /// - `InvalidTick` — tick is not aligned to `TICK_SPACING`
     /// - `BelowMinimumOrderSize` — order amount is below `MIN_ORDER_AMOUNT`
-    /// - `InsufficientBalance` — sender balance lower than required escrow
+    /// - `InsufficientBalance` — sender balance lower than required
     /// - `PolicyForbids` — TIP-403 policy rejects the token transfer
     ///
     /// # Returns
@@ -924,9 +924,18 @@ impl StablecoinDEX {
 
             // Business logic errors are ignored so that flip failure does not block the swap.
             // System errors (OOG, DB errors, panics) propagate because state may be inconsistent.
-            if res.as_ref().is_err_and(|err| err.is_system_error()) && self.storage.spec().is_t1a()
-            {
-                return Err(res.unwrap_err());
+            if let Err(err) = &res {
+                if err.is_system_error() && self.storage.spec().is_t1a() {
+                    return Err(res.unwrap_err());
+                }
+
+                if self.storage.spec().is_t5() {
+                    self.emit_event(StablecoinDEXEvents::flip_failed(
+                        order.order_id(),
+                        order.maker(),
+                        err.selector(),
+                    ))?;
+                }
             }
 
             // T5+: a successful `flip_in_place` already rewrote the order
@@ -1654,7 +1663,10 @@ fn is_authorized_for_token(token: Address, address: Address, role: AuthRole) -> 
 
 #[cfg(test)]
 mod tests {
-    use alloy::{primitives::IntoLogData, sol_types::SolEvent};
+    use alloy::{
+        primitives::{FixedBytes, IntoLogData},
+        sol_types::{SolEvent, SolInterface},
+    };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
@@ -3102,8 +3114,22 @@ mod tests {
             )?;
 
             exchange.set_balance(bob, base_token, amount)?;
-            // Swap succeeds — flip failure is silently swallowed.
+            let events_before = exchange.emitted_events().len();
+            // Swap succeeds — flip failure is swallowed after emitting FlipFailed.
             exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+
+            let new_events = &exchange.emitted_events()[events_before..];
+            let flip_failed = new_events
+                .iter()
+                .find(|event| event.topics()[0] == IStablecoinDEX::FlipFailed::SIGNATURE_HASH)
+                .expect("expected FlipFailed event");
+            let decoded = IStablecoinDEX::FlipFailed::decode_log_data(flip_failed)?;
+            assert_eq!(decoded.orderId, flip_order_id);
+            assert_eq!(decoded.maker, alice);
+            assert_eq!(
+                decoded.reason,
+                FixedBytes::from(TIP20Error::policy_forbids().selector())
+            );
 
             // No orphan: the original order record was deleted by fill_order
             // so getOrder/cancel observe "does not exist".

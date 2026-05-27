@@ -13,12 +13,12 @@ pub(crate) mod executor;
 pub mod feed;
 pub mod follow;
 pub mod metrics;
+pub(crate) mod network_identity;
 pub(crate) mod peer_manager;
 pub(crate) mod storage;
+pub(crate) mod subblocks;
 pub(crate) mod utils;
 pub(crate) mod validators;
-
-pub(crate) mod subblocks;
 
 use std::sync::Arc;
 
@@ -65,7 +65,8 @@ pub async fn run_consensus_stack(
         .map(|signing_share| signing_share.into_inner());
 
     let signing_key = config
-        .signing_key()?
+        .signing_key()
+        .await?
         .ok_or_eyre("required option `consensus.signing-key` not set")?;
 
     let backfill_quota = commonware_runtime::Quota::per_second(config.backfill_frequency);
