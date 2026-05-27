@@ -398,6 +398,7 @@ where
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn validate_tx(
         &self,
         tx: &TempoTxEnvelope,
@@ -406,23 +407,41 @@ where
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
             self.validate_system_tx(tx)
-        } else if let Some(tx_proposer) = tx.subblock_proposer() {
+        } else {
+            self.validate_tx_with_payment(tx, gas_used)
+                .map(|(section, _)| section)
+        }
+    }
+
+    fn validate_tx_with_payment(
+        &self,
+        tx: &TempoTxEnvelope,
+        gas_used: u64,
+    ) -> Result<(BlockSection, bool), BlockValidationError> {
+        debug_assert!(!tx.is_system_tx());
+
+        if let Some(tx_proposer) = tx.subblock_proposer() {
+            let is_payment = self.is_payment(tx);
             match self.section {
                 BlockSection::GasIncentive | BlockSection::System { .. } => {
                     Err(BlockValidationError::msg("subblock section already passed"))
                 }
-                BlockSection::StartOfBlock | BlockSection::NonShared => {
-                    Ok(BlockSection::SubBlock {
+                BlockSection::StartOfBlock | BlockSection::NonShared => Ok((
+                    BlockSection::SubBlock {
                         proposer: tx_proposer,
-                    })
-                }
+                    },
+                    is_payment,
+                )),
                 BlockSection::SubBlock { proposer } => {
                     if proposer == tx_proposer
                         || !self.seen_subblocks.iter().any(|(p, _)| *p == tx_proposer)
                     {
-                        Ok(BlockSection::SubBlock {
-                            proposer: tx_proposer,
-                        })
+                        Ok((
+                            BlockSection::SubBlock {
+                                proposer: tx_proposer,
+                            },
+                            is_payment,
+                        ))
                     } else {
                         Err(BlockValidationError::msg(
                             "proposer's subblock already processed",
@@ -431,25 +450,26 @@ where
                 }
             }
         } else {
+            let is_payment = self.is_payment(tx);
             match self.section {
                 BlockSection::StartOfBlock | BlockSection::NonShared => {
                     if gas_used > self.non_shared_gas_left
-                        || (!self.is_payment(tx) && gas_used > self.non_payment_gas_left)
+                        || (!is_payment && gas_used > self.non_payment_gas_left)
                     {
                         // Assume that this transaction wants to make use of gas incentive section
                         //
                         // This would only be possible if no non-empty subblocks were included.
-                        Ok(BlockSection::GasIncentive)
+                        Ok((BlockSection::GasIncentive, is_payment))
                     } else {
-                        Ok(BlockSection::NonShared)
+                        Ok((BlockSection::NonShared, is_payment))
                     }
                 }
                 BlockSection::SubBlock { .. } => {
                     // If we were just processing a subblock, assume that this transaction wants to make
                     // use of gas incentive section, thus concluding subblocks execution.
-                    Ok(BlockSection::GasIncentive)
+                    Ok((BlockSection::GasIncentive, is_payment))
                 }
-                BlockSection::GasIncentive => Ok(BlockSection::GasIncentive),
+                BlockSection::GasIncentive => Ok((BlockSection::GasIncentive, is_payment)),
                 BlockSection::System { .. } => {
                     trace!(target: "tempo::block", tx_hash = ?*tx.tx_hash(), "Rejecting: regular transaction after system transaction");
                     Err(BlockValidationError::msg(
@@ -544,18 +564,18 @@ where
             inner.result.result.tx_gas_used()
         };
 
-        let next_section = if let Some(next_section) = next_section {
+        let (next_section, is_payment) = if let Some(next_section) = next_section {
             // If pre-execution validation returned a section to use, just use it.
-            next_section
+            (next_section, self.is_payment(recovered.tx()))
         } else {
-            self.validate_tx(recovered.tx(), block_gas_used)?
+            self.validate_tx_with_payment(recovered.tx(), block_gas_used)?
         };
         // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
         let validator_fee = self.evm().validator_fee();
         Ok(TempoTxResult {
             inner,
             next_section,
-            is_payment: self.is_payment(recovered.tx()),
+            is_payment,
             tx: matches!(next_section, BlockSection::SubBlock { .. })
                 .then(|| recovered.tx().clone()),
             block_gas_used,
