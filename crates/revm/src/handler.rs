@@ -35,7 +35,7 @@ use revm::{
 };
 use tempo_chainspec::constants::gas::tempo_t6_discounted_payment_effective_gas_price;
 use tempo_contracts::precompiles::{
-    IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
+    DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
 use tempo_precompiles::{
     ECRECOVER_GAS,
@@ -916,7 +916,9 @@ where
 
         // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
         // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
-        if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
+        let requires_usd_currency =
+            !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction();
+        if requires_usd_currency && fee_token != DEFAULT_FEE_TOKEN {
             journal.ensure_tip20_usd(cfg.spec, fee_token)?;
         }
 
