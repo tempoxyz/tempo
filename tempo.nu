@@ -511,6 +511,64 @@ def dedup-args [base_args: list<string>, extra_args: list<string>] {
     $result | append $extra_args
 }
 
+def parse-cli-args [args: string] {
+    mut result = []
+    mut current = ""
+    mut quote = ""
+    mut escaped = false
+    mut token_started = false
+
+    for ch in ($args | split chars) {
+        if $escaped {
+            $current = $"($current)($ch)"
+            $escaped = false
+            $token_started = true
+            continue
+        }
+        if $ch == "\\" {
+            $escaped = true
+            $token_started = true
+            continue
+        }
+        if $quote != "" {
+            if $ch == $quote {
+                $quote = ""
+            } else {
+                $current = $"($current)($ch)"
+            }
+            $token_started = true
+            continue
+        }
+        if $ch == "'" or $ch == '"' {
+            $quote = $ch
+            $token_started = true
+            continue
+        }
+        if $ch in [" " "\t" "\n" "\r"] {
+            if $token_started {
+                $result = ($result | append $current)
+                $current = ""
+                $token_started = false
+            }
+            continue
+        }
+        $current = $"($current)($ch)"
+        $token_started = true
+    }
+
+    if $escaped {
+        $current = $"($current)('\')"
+    }
+    if $quote != "" {
+        print $"Error: unterminated quote in args: ($args)"
+        exit 1
+    }
+    if $token_started {
+        $result = ($result | append $current)
+    }
+    $result
+}
+
 # Run a single benchmark run (start node, run bench, stop node, collect report)
 def run-bench-single [
     --tempo-bin: string
@@ -554,7 +612,7 @@ def run-bench-single [
     let run_type = if ($run_label | str starts-with "baseline") { "baseline" } else { "feature" }
 
     # Parse extra node args
-    let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
+    let extra_args = (parse-cli-args $node_args)
 
     # Build node arguments, then dedup so user-provided args override defaults
     let base_args = (build-base-args $genesis_path $datadir $log_dir "0.0.0.0" 8545 9001)
@@ -622,6 +680,7 @@ def run-bench-single [
             --duration $duration
             --accounts $accounts
             --max-concurrent-requests $max_concurrent_requests
+            --bench-args $bench_args
             --bench-env $bench_env
             --git-ref $git_ref
             --build-profile $build_profile
@@ -774,24 +833,44 @@ def iso-from-epoch-ms [epoch_ms: int] {
     $"($base).($millis | into string | fill --alignment right --character '0' --width 3)Z"
 }
 
-def grafana-performance-url [benchmark_id: string, reference_epoch: int, duration: int] {
-    if $benchmark_id == "" or $reference_epoch <= 0 {
+def grafana-performance-url [benchmark_id: string, from_ms: int, to_ms: int] {
+    if $benchmark_id == "" or $from_ms <= 0 or $to_ms <= 0 {
         return ""
     }
 
-    let range = {
-        from: ($reference_epoch * 1000)
-        to: (($reference_epoch + $duration) * 1000)
+    let from = (iso-from-epoch-ms $from_ms)
+    let to = (iso-from-epoch-ms $to_ms)
+    $"https://tempoxyz.grafana.net/d/performance/performance?orgId=1&from=($from)&to=($to)&timezone=browser&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=($benchmark_id)&var-group_by=benchmark_run"
+}
+
+def internal-perf-url [clickhouse_run_id: string] {
+    if $clickhouse_run_id == "" {
+        return ""
     }
 
-    let from = (iso-from-epoch-ms $range.from)
-    let to = (iso-from-epoch-ms $range.to)
-    $"https://tempoxyz.grafana.net/d/dffj6qf1o30oowe/performance?orgId=1&from=($from)&to=($to)&timezone=browser&var-datasource=efk1hcn87dnnkd&var-filter_label=benchmark_id&var-filter_value=($benchmark_id)&var-group_by=benchmark_run"
+    $"http://go/dev/tempo-internal-perf/benchmark/($clickhouse_run_id)"
 }
 
 
-def generate-summary [results_dir: string, baseline_ref: string, feature_ref: string, bloat: int, preset: string, tps: int, duration: int, --benchmark-id: string = "", --reference-epoch: int = 0] {
-    let candidate_run_labels = ["baseline-1" "feature-1" "feature-2" "baseline-2"]
+def generate-summary [
+    results_dir: string,
+    baseline_ref: string,
+    feature_ref: string,
+    bloat: int,
+    preset: string,
+    tps: int,
+    duration: int,
+    --benchmark-id: string = "",
+    --reference-epoch: int = 0,
+    --baseline-hardfork: string = "",
+    --feature-hardfork: string = "",
+] {
+    let run_order_path = $"($results_dir)/run-order.txt"
+    let candidate_run_labels = if ($run_order_path | path exists) {
+        open $run_order_path | lines | where { |label| $label != "" }
+    } else {
+        ["baseline-1" "feature-1" "feature-2" "baseline-2"]
+    }
     let run_labels = ($candidate_run_labels | where { |label| ($"($results_dir)/report-($label).json" | path exists) })
     mut run_data = []
     mut baseline_blocks = []
@@ -800,10 +879,30 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     mut feature_intervals = []
     mut baseline_tps_samples = []
     mut feature_tps_samples = []
-    mut baseline_builder_samples = []
-    mut feature_builder_samples = []
-    mut baseline_validation_samples = []
-    mut feature_validation_samples = []
+    mut baseline_builder_latency_values = []
+    mut feature_builder_latency_values = []
+    mut baseline_builder_finish_samples = []
+    mut feature_builder_finish_samples = []
+    mut baseline_builder_included_tx_samples = []
+    mut feature_builder_included_tx_samples = []
+    mut baseline_builder_invalid_tx_samples = []
+    mut feature_builder_invalid_tx_samples = []
+    mut baseline_builder_invalid_tx_execution_attempts_samples = []
+    mut feature_builder_invalid_tx_execution_attempts_samples = []
+    mut baseline_builder_invalid_tx_skips = []
+    mut feature_builder_invalid_tx_skips = []
+    mut baseline_builder_nonce_too_low_skips = []
+    mut feature_builder_nonce_too_low_skips = []
+    mut baseline_builder_fill_overhead_samples = []
+    mut feature_builder_fill_overhead_samples = []
+    mut baseline_builder_fill_idle_samples = []
+    mut feature_builder_fill_idle_samples = []
+    mut baseline_validation_latency_values = []
+    mut feature_validation_latency_values = []
+    mut baseline_builder_gas_values = []
+    mut feature_builder_gas_values = []
+    mut baseline_validation_gas_values = []
+    mut feature_validation_gas_values = []
 
     let compute_tps_stats = { |samples: list<any>|
         let sorted_samples = ($samples | sort)
@@ -823,6 +922,160 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         }
     }
 
+    let compute_value_stats = { |values: list<any>|
+        let sorted_values = ($values | where { |value| $value != null } | sort)
+        {
+            n: ($sorted_values | length)
+            p50: (percentile $sorted_values 50 | math round --precision 1)
+            p90: (percentile $sorted_values 90 | math round --precision 1)
+            p99: (percentile $sorted_values 99 | math round --precision 1)
+        }
+    }
+
+    let compute_value_mean = { |values: list<any>|
+        let clean_values = ($values | where { |value| $value != null })
+        if ($clean_values | length) > 0 { $clean_values | math avg | math round --precision 0 } else { 0.0 }
+    }
+
+    let counter_delta_values = { |samples: list<any>, metric: string, scale: float|
+        let sum_name = $"($metric)_sum"
+        let count_name = $"($metric)_count"
+        let counter_samples = ($samples | where { |sample| $sample.name in [$sum_name $count_name] })
+        $counter_samples
+            | group-by { |sample| $sample.labels | to json --raw }
+            | transpose labels samples
+            | each { |series|
+                let points = (
+                    $series.samples
+                        | group-by unix_ms
+                        | transpose unix_ms samples
+                        | each { |point|
+                            let sum_values = ($point.samples | where name == $sum_name | get value)
+                            let count_values = ($point.samples | where name == $count_name | get value)
+                            if (($sum_values | length) > 0) and (($count_values | length) > 0) {
+                                {
+                                    unix_ms: ($point.unix_ms | into int)
+                                    sum: ($sum_values | first)
+                                    count: ($count_values | first)
+                                }
+                            } else { null }
+                        }
+                        | where { |point| $point != null }
+                        | sort-by unix_ms
+                )
+                if ($points | length) > 1 {
+                    $points
+                        | window 2
+                        | each { |pair|
+                            let prev = ($pair | first)
+                            let curr = ($pair | last)
+                            let delta_count = (($curr.count - $prev.count) | into int)
+                            let delta_sum = ($curr.sum - $prev.sum)
+                            if $delta_count > 0 and $delta_sum >= 0 {
+                                let value = (($delta_sum / $delta_count) * $scale)
+                                0..<$delta_count | each { $value }
+                            } else { [] }
+                        }
+                        | flatten
+                } else { [] }
+            }
+            | flatten
+    }
+
+    let require_counter_values = { |values: list<any>, label: string, metric: string|
+        if ($values | length) == 0 {
+            error make { msg: $"No counter delta samples for ($metric) in ($label)" }
+        }
+        $values
+    }
+
+    let counter_delta_total = { |samples: list<any>, metric: string|
+        let counter_samples = ($samples | where name == $metric)
+        if ($counter_samples | length) == 0 {
+            0.0
+        } else {
+            let deltas = (
+                $counter_samples
+                    | group-by { |sample| $sample.labels | to json --raw }
+                    | transpose labels samples
+                    | each { |series|
+                        let points = (
+                            $series.samples
+                                | where { |sample| ($sample | get -o value | default null) != null }
+                                | sort-by unix_ms
+                        )
+                        if ($points | length) > 1 {
+                            let first = ($points | first)
+                            let last = ($points | last)
+                            let delta = ($last.value - $first.value)
+                            if $delta >= 0 { $delta } else { $last.value }
+                        } else { 0.0 }
+                    }
+            )
+            if ($deltas | length) > 0 { $deltas | math sum | math round --precision 0 } else { 0.0 }
+        }
+    }
+
+    let metric_sample_names = [
+        "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum"
+        "reth_tempo_payload_builder_payload_finalization_duration_seconds_count"
+        "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds_sum"
+        "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds_count"
+        "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds_sum"
+        "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds_count"
+        "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_sum"
+        "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_count"
+        "reth_tempo_payload_builder_pool_transactions_skipped_total"
+        "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds_sum"
+        "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds_count"
+        "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum"
+        "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_count"
+        "reth_tempo_payload_builder_payload_build_duration_seconds_sum"
+        "reth_tempo_payload_builder_payload_build_duration_seconds_count"
+        "reth_consensus_engine_beacon_new_payload_latency_sum"
+        "reth_consensus_engine_beacon_new_payload_latency_count"
+        "reth_tempo_payload_builder_gas_per_second_sum"
+        "reth_tempo_payload_builder_gas_per_second_count"
+        "reth_consensus_engine_beacon_new_payload_gas_per_second_sum"
+        "reth_consensus_engine_beacon_new_payload_gas_per_second_count"
+    ]
+    let metric_sample_match_args = ($metric_sample_names | each { |name| ["-e" $name] } | flatten)
+    let has_rg = ((which rg | length) > 0)
+
+    let load_metric_samples = { |samples_path: string, samples_gz_path: string|
+        let filter_result = if ($samples_path | path exists) {
+            if $has_rg {
+                rg --fixed-strings --no-heading --no-filename --color never ...$metric_sample_match_args $samples_path | complete
+            } else {
+                grep -F ...$metric_sample_match_args $samples_path | complete
+            }
+        } else if ($samples_gz_path | path exists) {
+            if $has_rg {
+                gzip -dc $samples_gz_path | rg --fixed-strings --no-heading --no-filename --color never ...$metric_sample_match_args | complete
+            } else {
+                gzip -dc $samples_gz_path | grep -F ...$metric_sample_match_args | complete
+            }
+        } else {
+            { stdout: "", stderr: "", exit_code: 0 }
+        }
+
+        if $filter_result.exit_code not-in [0 1] {
+            error make { msg: $"Failed to filter metric samples from ($samples_path): ($filter_result.stderr)" }
+        }
+
+        if $filter_result.stdout != "" {
+            $filter_result.stdout
+                | lines
+                | where { |line| ($line | str trim) != "" }
+                | each { |line| $line | from json }
+                | where { |sample| $sample.name in $metric_sample_names }
+                | where { |sample|
+                    let quantile = ($sample.labels | get -o quantile | default "")
+                    ($quantile in ["0.5" "0.9" "0.99"]) or ($quantile == "")
+                }
+        } else { [] }
+    }
+
     for label in $run_labels {
         let report_path = $"($results_dir)/report-($label).json"
         if not ($report_path | path exists) {
@@ -831,27 +1084,37 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         }
         let report = (open $report_path)
         let samples_path = $"($results_dir)/report-($label).samples.ndjson"
-        let validation_samples = if ($samples_path | path exists) {
-            open --raw $samples_path
-                | lines
-                | where { |line| ($line | str trim) != "" }
-                | each { |line| $line | from json }
-                | where { |sample| $sample.name in ["reth_tempo_payload_builder_payload_build_duration_seconds" "reth_consensus_engine_beacon_new_payload_latency"] }
-                | where { |sample| ($sample.labels | get -o quantile | default "") in ["0.5" "0.9" "0.99"] }
-        } else { [] }
-        let builder_samples = ($validation_samples | where name == "reth_tempo_payload_builder_payload_build_duration_seconds")
-        let validation_samples = ($validation_samples | where name == "reth_consensus_engine_beacon_new_payload_latency")
+        let samples_gz_path = $"($samples_path).gz"
+        let metric_samples = (do $load_metric_samples $samples_path $samples_gz_path)
+        let counter_metric_values = { |metric: string, scale: float|
+            do $require_counter_values (do $counter_delta_values $metric_samples $metric $scale) $label $metric
+        }
+        let builder_latency_values = (do $counter_metric_values "reth_tempo_payload_builder_payload_build_duration_seconds" 1000.0)
+        let builder_finish_samples = (do $counter_metric_values "reth_tempo_payload_builder_payload_finalization_duration_seconds" 1000.0)
+        let builder_included_tx_samples = (do $counter_metric_values "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds" 1000.0)
+        let builder_invalid_tx_samples = (do $counter_metric_values "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds" 1000.0)
+        let builder_invalid_tx_execution_attempts_samples = (do $counter_metric_values "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts" 1.0)
+        let builder_pool_tx_skip_samples = ($metric_samples | where name == "reth_tempo_payload_builder_pool_transactions_skipped_total")
+        let builder_pool_tx_skips_for_reason = { |reason: string|
+            let samples = (
+                $builder_pool_tx_skip_samples
+                    | where { |sample| ($sample.labels | get -o reason | default "") == $reason }
+            )
+            do $counter_delta_total $samples "reth_tempo_payload_builder_pool_transactions_skipped_total"
+        }
+        let builder_invalid_tx_skips = do $builder_pool_tx_skips_for_reason "invalid_tx"
+        let builder_nonce_too_low_skips = do $builder_pool_tx_skips_for_reason "nonce_too_low"
+        let builder_fill_overhead_samples = (do $counter_metric_values "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds" 1000.0)
+        let builder_fill_idle_samples = (do $counter_metric_values "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds" 1000.0)
+        let validation_latency_values = (do $counter_metric_values "reth_consensus_engine_beacon_new_payload_latency" 1000.0)
+        let builder_gas_values = (do $counter_metric_values "reth_tempo_payload_builder_gas_per_second" 1.0)
+        let validation_gas_values = (do $counter_metric_values "reth_consensus_engine_beacon_new_payload_gas_per_second" 1.0)
         let blocks = ($report | get blocks | each { |b|
             let tx_count = ($b | get tx_count)
             let timestamp = if (($b | get -o timestamp | default null) != null) {
                 $b | get timestamp
             } else {
                 $b | get timestamp_ms
-            }
-            let latency_ms = if (($b | get -o latency_ms | default null) != null) {
-                $b | get latency_ms
-            } else {
-                $b | get -o block_time_ms | default null
             }
             {
                 number: ($b | get number)
@@ -860,7 +1123,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 ok_count: ($b | get -o ok_count | default $tx_count)
                 err_count: ($b | get -o err_count | default 0)
                 gas_used: ($b | get gas_used)
-                latency_ms: $latency_ms
+                block_time_ms: ($b | get -o block_time_ms | default null)
             }
         })
         if ($blocks | length) == 0 {
@@ -870,9 +1133,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
 
         let sorted_blocks = ($blocks | sort-by timestamp)
         let timestamps = ($sorted_blocks | get timestamp)
-        let block_intervals = if ($timestamps | length) > 1 {
-            $timestamps | window 2 | each { |w| ($w | last) - ($w | first) }
-        } else { [] }
+        let block_intervals = ($sorted_blocks | where block_time_ms != null | get block_time_ms)
 
         # Attribute each interval's throughput to the later block so TPS quantiles stay
         # within a single run and avoid the inter-run gaps that skew merged samples.
@@ -892,23 +1153,46 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             $baseline_blocks = ($baseline_blocks | append $blocks)
             $baseline_intervals = ($baseline_intervals | append $block_intervals)
             $baseline_tps_samples = ($baseline_tps_samples | append $block_tps_samples)
-            $baseline_builder_samples = ($baseline_builder_samples | append $builder_samples)
-            $baseline_validation_samples = ($baseline_validation_samples | append $validation_samples)
+            $baseline_builder_latency_values = ($baseline_builder_latency_values | append $builder_latency_values)
+            $baseline_builder_finish_samples = ($baseline_builder_finish_samples | append $builder_finish_samples)
+            $baseline_builder_included_tx_samples = ($baseline_builder_included_tx_samples | append $builder_included_tx_samples)
+            $baseline_builder_invalid_tx_samples = ($baseline_builder_invalid_tx_samples | append $builder_invalid_tx_samples)
+            $baseline_builder_invalid_tx_execution_attempts_samples = ($baseline_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
+            $baseline_builder_invalid_tx_skips = ($baseline_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
+            $baseline_builder_nonce_too_low_skips = ($baseline_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
+            $baseline_builder_fill_overhead_samples = ($baseline_builder_fill_overhead_samples | append $builder_fill_overhead_samples)
+            $baseline_builder_fill_idle_samples = ($baseline_builder_fill_idle_samples | append $builder_fill_idle_samples)
+            $baseline_validation_latency_values = ($baseline_validation_latency_values | append $validation_latency_values)
+            $baseline_builder_gas_values = ($baseline_builder_gas_values | append $builder_gas_values)
+            $baseline_validation_gas_values = ($baseline_validation_gas_values | append $validation_gas_values)
         } else {
             $feature_blocks = ($feature_blocks | append $blocks)
             $feature_intervals = ($feature_intervals | append $block_intervals)
             $feature_tps_samples = ($feature_tps_samples | append $block_tps_samples)
-            $feature_builder_samples = ($feature_builder_samples | append $builder_samples)
-            $feature_validation_samples = ($feature_validation_samples | append $validation_samples)
+            $feature_builder_latency_values = ($feature_builder_latency_values | append $builder_latency_values)
+            $feature_builder_finish_samples = ($feature_builder_finish_samples | append $builder_finish_samples)
+            $feature_builder_included_tx_samples = ($feature_builder_included_tx_samples | append $builder_included_tx_samples)
+            $feature_builder_invalid_tx_samples = ($feature_builder_invalid_tx_samples | append $builder_invalid_tx_samples)
+            $feature_builder_invalid_tx_execution_attempts_samples = ($feature_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
+            $feature_builder_invalid_tx_skips = ($feature_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
+            $feature_builder_nonce_too_low_skips = ($feature_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
+            $feature_builder_fill_overhead_samples = ($feature_builder_fill_overhead_samples | append $builder_fill_overhead_samples)
+            $feature_builder_fill_idle_samples = ($feature_builder_fill_idle_samples | append $builder_fill_idle_samples)
+            $feature_validation_latency_values = ($feature_validation_latency_values | append $validation_latency_values)
+            $feature_builder_gas_values = ($feature_builder_gas_values | append $builder_gas_values)
+            $feature_validation_gas_values = ($feature_validation_gas_values | append $validation_gas_values)
         }
 
         let total_tx = ($blocks | get tx_count | math sum)
         let total_ok = ($blocks | get ok_count | math sum)
         let total_err = ($blocks | get err_count | math sum)
         let total_gas = ($blocks | get gas_used | math sum)
-        let latencies = ($blocks | where latency_ms != null | get latency_ms | sort)
-        let p50_latency = (percentile $latencies 50 | math round --precision 1)
+        let block_time_mean = if ($block_intervals | length) > 0 { $block_intervals | math avg | math round --precision 1 } else { 0.0 }
         let num_blocks = ($blocks | length)
+        let run_builder = do $compute_value_stats $builder_latency_values
+        let run_validation = do $compute_value_stats $validation_latency_values
+        let run_builder_gas = do $compute_value_mean $builder_gas_values
+        let run_validation_gas = do $compute_value_mean $validation_gas_values
 
         # Compute TPS from block timestamps (timestamps are in milliseconds)
         let time_span_ms = if ($timestamps | length) > 1 {
@@ -933,7 +1217,11 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             ok: $total_ok
             err: $total_err
             total_gas: $total_gas
-            p50_latency: $p50_latency
+            block_time_mean: $block_time_mean
+            builder_latency_p50: $run_builder.p50
+            builder_latency_p90: $run_builder.p90
+            builder_latency_p99: $run_builder.p99
+            builder_gas_s: $run_builder_gas
             tps: $actual_tps
             tps_p50: $run_tps.p50
             tps_p90: $run_tps.p90
@@ -942,6 +1230,10 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             block_time_p50: $run_bt.p50
             block_time_p90: $run_bt.p90
             block_time_p99: $run_bt.p99
+            validation_latency_p50: $run_validation.p50
+            validation_latency_p90: $run_validation.p90
+            validation_latency_p99: $run_validation.p99
+            validation_gas_s: $run_validation_gas
             success_rate: $success_rate
         }])
     }
@@ -951,46 +1243,45 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
         return
     }
 
-    # Compute per-block latency percentiles for each group
-    let compute_latency_stats = { |blocks: list<any>|
-        let latencies = ($blocks | where latency_ms != null | get latency_ms | sort)
+    # Compute per-block-time statistics for each group
+    let compute_block_time_summary = { |blocks: list<any>|
+        let block_times = ($blocks | where block_time_ms != null | get block_time_ms | sort)
         {
             n: ($blocks | length)
-            mean: (if ($latencies | length) > 0 { $latencies | math avg | math round --precision 1 } else { 0.0 })
-            stddev: (if ($latencies | length) > 1 { $latencies | math stddev | math round --precision 1 } else { 0.0 })
-            p50: (percentile $latencies 50 | math round --precision 1)
-            p90: (percentile $latencies 90 | math round --precision 1)
-            p99: (percentile $latencies 99 | math round --precision 1)
+            mean: (if ($block_times | length) > 0 { $block_times | math avg | math round --precision 1 } else { 0.0 })
+            p50: (percentile $block_times 50 | math round --precision 1)
+            p90: (percentile $block_times 90 | math round --precision 1)
+            p99: (percentile $block_times 99 | math round --precision 1)
         }
     }
 
-    let b_lat = do $compute_latency_stats $baseline_blocks
-    let f_lat = do $compute_latency_stats $feature_blocks
+    let b_block_time = do $compute_block_time_summary $baseline_blocks
+    let f_block_time = do $compute_block_time_summary $feature_blocks
 
-    let compute_quantile_metric_stats = { |samples: list<any>|
-        let quantile_ms = { |q: string|
-            let values = (
-                $samples
-                    | where { |sample| ($sample.labels | get -o quantile | default "") == $q }
-                    | get value
-                    | each { |v| $v * 1000.0 }
-            )
-            if ($values | length) > 0 { $values | math avg | math round --precision 1 } else { 0.0 }
-        }
-        {
-            n: ($samples | length)
-            p50: (do $quantile_ms "0.5")
-            p90: (do $quantile_ms "0.9")
-            p99: (do $quantile_ms "0.99")
-        }
-    }
-
-    let b_builder_metric = do $compute_quantile_metric_stats $baseline_builder_samples
-    let f_builder_metric = do $compute_quantile_metric_stats $feature_builder_samples
-    let b_builder = if $b_builder_metric.n > 0 { $b_builder_metric } else { { n: $b_lat.n, p50: $b_lat.p50, p90: $b_lat.p90, p99: $b_lat.p99 } }
-    let f_builder = if $f_builder_metric.n > 0 { $f_builder_metric } else { { n: $f_lat.n, p50: $f_lat.p50, p90: $f_lat.p90, p99: $f_lat.p99 } }
-    let b_validation = do $compute_quantile_metric_stats $baseline_validation_samples
-    let f_validation = do $compute_quantile_metric_stats $feature_validation_samples
+    let b_builder = do $compute_value_stats $baseline_builder_latency_values
+    let f_builder = do $compute_value_stats $feature_builder_latency_values
+    let b_builder_finish = do $compute_value_stats $baseline_builder_finish_samples
+    let f_builder_finish = do $compute_value_stats $feature_builder_finish_samples
+    let b_builder_included_tx = do $compute_value_stats $baseline_builder_included_tx_samples
+    let f_builder_included_tx = do $compute_value_stats $feature_builder_included_tx_samples
+    let b_builder_invalid_tx = do $compute_value_stats $baseline_builder_invalid_tx_samples
+    let f_builder_invalid_tx = do $compute_value_stats $feature_builder_invalid_tx_samples
+    let b_builder_invalid_tx_execution_attempts = do $compute_value_stats $baseline_builder_invalid_tx_execution_attempts_samples
+    let f_builder_invalid_tx_execution_attempts = do $compute_value_stats $feature_builder_invalid_tx_execution_attempts_samples
+    let b_builder_invalid_tx_skips = if ($baseline_builder_invalid_tx_skips | length) > 0 { $baseline_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_invalid_tx_skips = if ($feature_builder_invalid_tx_skips | length) > 0 { $feature_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
+    let b_builder_nonce_too_low_skips = if ($baseline_builder_nonce_too_low_skips | length) > 0 { $baseline_builder_nonce_too_low_skips | math sum | math round --precision 0 } else { 0.0 }
+    let f_builder_nonce_too_low_skips = if ($feature_builder_nonce_too_low_skips | length) > 0 { $feature_builder_nonce_too_low_skips | math sum | math round --precision 0 } else { 0.0 }
+    let b_builder_fill_overhead = do $compute_value_stats $baseline_builder_fill_overhead_samples
+    let f_builder_fill_overhead = do $compute_value_stats $feature_builder_fill_overhead_samples
+    let b_builder_fill_idle = do $compute_value_stats $baseline_builder_fill_idle_samples
+    let f_builder_fill_idle = do $compute_value_stats $feature_builder_fill_idle_samples
+    let b_validation = do $compute_value_stats $baseline_validation_latency_values
+    let f_validation = do $compute_value_stats $feature_validation_latency_values
+    let b_builder_gas = do $compute_value_mean $baseline_builder_gas_values
+    let f_builder_gas = do $compute_value_mean $feature_builder_gas_values
+    let b_validation_gas = do $compute_value_mean $baseline_validation_gas_values
+    let f_validation_gas = do $compute_value_mean $feature_validation_gas_values
 
     let b_bt = do $compute_block_time_stats $baseline_intervals
     let f_bt = do $compute_block_time_stats $feature_intervals
@@ -1000,6 +1291,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     # Aggregate TPS and Mgas/s from per-run totals (total_tx / total_time)
     let baseline_runs = ($run_data | where { |r| $r.label | str starts-with "baseline" })
     let feature_runs = ($run_data | where { |r| $r.label | str starts-with "feature" })
+    let run_pairs = ([($baseline_runs | length) ($feature_runs | length)] | math max)
 
     let b_tps = if ($baseline_runs | length) > 0 { $baseline_runs | get tps | math avg | math round --precision 0 } else { 0.0 }
     let f_tps = if ($feature_runs | length) > 0 { $feature_runs | get tps | math avg | math round --precision 0 } else { 0.0 }
@@ -1008,60 +1300,158 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
 
     # Compute deltas (feature vs baseline)
     let delta = { |base: float, feat: float| if $base != 0.0 { ((($feat - $base) / $base) * 100) | math round --precision 1 } else { 0.0 } }
+    let has_samples = { |stats: record| ($stats.n | default 0) > 0 }
+    let fmt_stat = { |stats: record, field: string|
+        if (do $has_samples $stats) {
+            let value = ($stats | get $field)
+            $"($value)"
+        } else { "n/a" }
+    }
+    let fmt_stat_delta = { |base_stats: record, feature_stats: record, field: string|
+        let base_has_samples = (do $has_samples $base_stats)
+        let feature_has_samples = (do $has_samples $feature_stats)
+        if $base_has_samples and $feature_has_samples {
+            let base = ($base_stats | get $field)
+            let feature = ($feature_stats | get $field)
+            $"(do $delta $base $feature)%"
+        } else { "n/a" }
+    }
+    let stat_row = { |label: string, base_stats: record, feature_stats: record, field: string|
+        let base_has_samples = (do $has_samples $base_stats)
+        let feature_has_samples = (do $has_samples $feature_stats)
+        let base_value = if $base_has_samples { $base_stats | get $field } else { 0.0 }
+        let feature_value = if $feature_has_samples { $feature_stats | get $field } else { 0.0 }
+
+        if (not $base_has_samples) or (not $feature_has_samples) or $base_value > 0.0 or $feature_value > 0.0 {
+            $"| ($label) | (do $fmt_stat $base_stats $field) | (do $fmt_stat $feature_stats $field) | (do $fmt_stat_delta $base_stats $feature_stats $field) |"
+        } else { null }
+    }
+    let nonzero_stat_row = { |label: string, base_stats: record, feature_stats: record, field: string|
+        let base_has_samples = (do $has_samples $base_stats)
+        let feature_has_samples = (do $has_samples $feature_stats)
+        let base_value = if $base_has_samples { $base_stats | get $field } else { 0.0 }
+        let feature_value = if $feature_has_samples { $feature_stats | get $field } else { 0.0 }
+
+        if $base_value > 0.0 or $feature_value > 0.0 {
+            $"| ($label) | (do $fmt_stat $base_stats $field) | (do $fmt_stat $feature_stats $field) | (do $fmt_stat_delta $base_stats $feature_stats $field) |"
+        } else { null }
+    }
+    let nonzero_count_row = { |label: string, base: float, feature: float|
+        if $base > 0.0 or $feature > 0.0 {
+            $"| ($label) | ($base) | ($feature) | (do $delta $base $feature)% |"
+        } else { null }
+    }
+    let to_mgas_s = { |value: float| ($value / 1_000_000.0) | math round --precision 1 }
+    let b_builder_mgas = do $to_mgas_s $b_builder_gas
+    let f_builder_mgas = do $to_mgas_s $f_builder_gas
+    let b_validation_mgas = do $to_mgas_s $b_validation_gas
+    let f_validation_mgas = do $to_mgas_s $f_validation_gas
+
+    let observability_padding_ms = 5000
+    let observability_duration_ms = $duration * ($run_labels | length) * 1000
+    let observability_from_ms = if $reference_epoch > 0 {
+        (($reference_epoch * 1000) - $observability_padding_ms)
+    } else { 0 }
+    let observability_to_ms = if $reference_epoch > 0 {
+        (($reference_epoch * 1000) + $observability_duration_ms - $observability_padding_ms)
+    } else { 0 }
+    let phase_ranges = ($run_labels | each { |label|
+        let range_path = $"($results_dir)/phase-range-($label).json"
+        if ($range_path | path exists) { open $range_path } else { null }
+    } | where { |range| $range != null })
+    let phase_start_ms = ($phase_ranges | where started_ms != null | get started_ms | sort)
+    let phase_finish_ms = ($phase_ranges | where finished_ms != null | get finished_ms | sort)
+    let actual_observability_from_ms = if ($phase_start_ms | length) > 0 {
+        $phase_start_ms | first
+    } else { $observability_from_ms }
+    let actual_observability_to_ms = if ($phase_finish_ms | length) > 0 {
+        $phase_finish_ms | last
+    } else { $observability_to_ms }
 
     # Build summary markdown
-    let grafana_url = (grafana-performance-url $benchmark_id $reference_epoch $duration)
-    let observability_lines = if $grafana_url != "" {
-        [
-            "## Observability"
-            ""
-            $"- Grafana: [Performance dashboard]\(($grafana_url)\)"
-            ""
-        ]
-    } else { [] }
-    let summary_lines = ([
+    let grafana_url = (grafana-performance-url $benchmark_id $observability_from_ms $observability_to_ms)
+    let clickhouse_run_id_path = $"($results_dir)/clickhouse-run-id.txt"
+    let clickhouse_run_id = if ($clickhouse_run_id_path | path exists) {
+        open --raw $clickhouse_run_id_path | str trim
+    } else {
+        ""
+    }
+    let internal_perf_url = (internal-perf-url $clickhouse_run_id)
+    mut config_lines = [
         $"# Bench Comparison: ($baseline_ref) vs ($feature_ref)"
         ""
         "## Configuration"
+    ]
+    let derek_bench_command = ($env.DEREK_BENCH_COMMAND? | default "")
+    if $derek_bench_command != "" {
+        $config_lines = ($config_lines | append $"- Derek command: `($derek_bench_command)`")
+    }
+    $config_lines = ($config_lines | append [
         $"- Bloat: ($bloat) MiB"
         $"- Preset: ($preset)"
         $"- Target TPS: ($tps)"
         $"- Duration: ($duration)s"
+        $"- Run pairs: ($run_pairs)"
         $"- Snapshot: (if (has-schelk) { 'schelk' } else { 'cp fallback' })"
-        $"- Baseline blocks: ($b_lat.n)"
-        $"- Feature blocks: ($f_lat.n)"
+        $"- Baseline blocks: ($b_block_time.n)"
+        $"- Feature blocks: ($f_block_time.n)"
+    ])
+    if $baseline_hardfork != "" {
+        $config_lines = ($config_lines | append $"- Baseline hardfork: ($baseline_hardfork)")
+    }
+    if $feature_hardfork != "" {
+        $config_lines = ($config_lines | append $"- Feature hardfork: ($feature_hardfork)")
+    }
+
+    let summary_lines = ($config_lines | append [
         ""
-    ] | append $observability_lines | append [
         "## Tempo Metrics"
         ""
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
-        $"| Avg TPS | ($b_tps) | ($f_tps) | (do $delta $b_tps $f_tps)% |"
+        $"| TPS Mean | ($b_tps) | ($f_tps) | (do $delta $b_tps $f_tps)% |"
         $"| TPS P50 | ($b_tps_stats.p50) | ($f_tps_stats.p50) | (do $delta $b_tps_stats.p50 $f_tps_stats.p50)% |"
         $"| TPS P90 | ($b_tps_stats.p90) | ($f_tps_stats.p90) | (do $delta $b_tps_stats.p90 $f_tps_stats.p90)% |"
         $"| TPS P99 | ($b_tps_stats.p99) | ($f_tps_stats.p99) | (do $delta $b_tps_stats.p99 $f_tps_stats.p99)% |"
         $"| Gas Throughput [Mgas/s] | ($b_mgas) | ($f_mgas) | (do $delta $b_mgas $f_mgas)% |"
+        $"| Block Time Mean [ms] | ($b_block_time.mean) | ($f_block_time.mean) | (do $delta $b_block_time.mean $f_block_time.mean)% |"
         $"| Block Time P50 [ms] | ($b_bt.p50) | ($f_bt.p50) | (do $delta $b_bt.p50 $f_bt.p50)% |"
         $"| Block Time P90 [ms] | ($b_bt.p90) | ($f_bt.p90) | (do $delta $b_bt.p90 $f_bt.p90)% |"
         $"| Block Time P99 [ms] | ($b_bt.p99) | ($f_bt.p99) | (do $delta $b_bt.p99 $f_bt.p99)% |"
         ""
-        "## Builder Latency"
+        "## Builder"
         ""
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
-        $"| P50 [ms] | ($b_builder.p50) | ($f_builder.p50) | (do $delta $b_builder.p50 $f_builder.p50)% |"
-        $"| P90 [ms] | ($b_builder.p90) | ($f_builder.p90) | (do $delta $b_builder.p90 $f_builder.p90)% |"
-        $"| P99 [ms] | ($b_builder.p99) | ($f_builder.p99) | (do $delta $b_builder.p99 $f_builder.p99)% |"
+        $"| Gas Throughput [Mgas/s] | ($b_builder_mgas) | ($f_builder_mgas) | (do $delta $b_builder_gas $f_builder_gas)% |"
+        $"| Latency P50 [ms] | ($b_builder.p50) | ($f_builder.p50) | (do $delta $b_builder.p50 $f_builder.p50)% |"
+        $"| Latency P90 [ms] | ($b_builder.p90) | ($f_builder.p90) | (do $delta $b_builder.p90 $f_builder.p90)% |"
+        $"| Latency P99 [ms] | ($b_builder.p99) | ($f_builder.p99) | (do $delta $b_builder.p99 $f_builder.p99)% |"
+        (do $stat_row "Finish P50 [ms]" $b_builder_finish $f_builder_finish p50)
+        (do $stat_row "Finish P99 [ms]" $b_builder_finish $f_builder_finish p99)
+        (do $nonzero_stat_row "Included Tx Exec P50 [ms]" $b_builder_included_tx $f_builder_included_tx p50)
+        (do $nonzero_stat_row "Included Tx Exec P99 [ms]" $b_builder_included_tx $f_builder_included_tx p99)
+        (do $nonzero_stat_row "Invalid Tx Exec P50 [ms]" $b_builder_invalid_tx $f_builder_invalid_tx p50)
+        (do $nonzero_stat_row "Invalid Tx Exec P99 [ms]" $b_builder_invalid_tx $f_builder_invalid_tx p99)
+        (do $nonzero_stat_row "Invalid Tx Attempts P50" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p50)
+        (do $nonzero_stat_row "Invalid Tx Attempts P99" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p99)
+        (do $nonzero_count_row "Invalid Tx Skips" $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
+        (do $nonzero_count_row "Nonce Too Low Skips" $b_builder_nonce_too_low_skips $f_builder_nonce_too_low_skips)
+        (do $nonzero_stat_row "Fill Overhead P50 [ms]" $b_builder_fill_overhead $f_builder_fill_overhead p50)
+        (do $nonzero_stat_row "Fill Overhead P99 [ms]" $b_builder_fill_overhead $f_builder_fill_overhead p99)
+        (do $nonzero_stat_row "Fill Idle P50 [ms]" $b_builder_fill_idle $f_builder_fill_idle p50)
+        (do $nonzero_stat_row "Fill Idle P99 [ms]" $b_builder_fill_idle $f_builder_fill_idle p99)
         ""
-        "## Validation Latency"
+        "## Validator"
         ""
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
+        $"| Gas Throughput [Mgas/s] | ($b_validation_mgas) | ($f_validation_mgas) | (do $delta $b_validation_gas $f_validation_gas)% |"
         $"| P50 [ms] | ($b_validation.p50) | ($f_validation.p50) | (do $delta $b_validation.p50 $f_validation.p50)% |"
         $"| P90 [ms] | ($b_validation.p90) | ($f_validation.p90) | (do $delta $b_validation.p90 $f_validation.p90)% |"
         $"| P99 [ms] | ($b_validation.p99) | ($f_validation.p99) | (do $delta $b_validation.p99 $f_validation.p99)% |"
         ""
-    ])
+    ] | where { |line| $line != null })
     let full_summary = ($summary_lines | str join "\n")
     $full_summary | save -f $"($results_dir)/summary.md"
     print $"Summary saved: ($results_dir)/summary.md"
@@ -1071,7 +1461,21 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
     let summary_json = {
         benchmark_id: $benchmark_id
         reference_epoch: $reference_epoch
+        observability_range: {
+            from_ms: $observability_from_ms
+            to_ms: $observability_to_ms
+            from: (if $observability_from_ms > 0 { iso-from-epoch-ms $observability_from_ms } else { "" })
+            to: (if $observability_to_ms > 0 { iso-from-epoch-ms $observability_to_ms } else { "" })
+        }
+        actual_observability_range: {
+            from_ms: $actual_observability_from_ms
+            to_ms: $actual_observability_to_ms
+            from: (if $actual_observability_from_ms > 0 { iso-from-epoch-ms $actual_observability_from_ms } else { "" })
+            to: (if $actual_observability_to_ms > 0 { iso-from-epoch-ms $actual_observability_to_ms } else { "" })
+        }
         grafana_url: $grafana_url
+        clickhouse_run_id: $clickhouse_run_id
+        internal_perf_url: $internal_perf_url
         baseline_ref: $baseline_ref
         feature_ref: $feature_ref
         config: {
@@ -1079,17 +1483,38 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
             preset: $preset
             tps: $tps
             duration: $duration
+            run_pairs: $run_pairs
+            derek_command: $derek_bench_command
+            baseline_hardfork: $baseline_hardfork
+            feature_hardfork: $feature_hardfork
         }
         results: {
             baseline: {
-                latency_mean: $b_lat.mean
-                latency_stddev: $b_lat.stddev
-                latency_p50: $b_lat.p50
-                latency_p90: $b_lat.p90
-                latency_p99: $b_lat.p99
+                block_time_mean: $b_block_time.mean
                 builder_latency_p50: $b_builder.p50
                 builder_latency_p90: $b_builder.p90
                 builder_latency_p99: $b_builder.p99
+                builder_finish_p50: $b_builder_finish.p50
+                builder_finish_p90: $b_builder_finish.p90
+                builder_finish_p99: $b_builder_finish.p99
+                builder_included_tx_execution_p50: $b_builder_included_tx.p50
+                builder_included_tx_execution_p90: $b_builder_included_tx.p90
+                builder_included_tx_execution_p99: $b_builder_included_tx.p99
+                builder_invalid_tx_execution_p50: $b_builder_invalid_tx.p50
+                builder_invalid_tx_execution_p90: $b_builder_invalid_tx.p90
+                builder_invalid_tx_execution_p99: $b_builder_invalid_tx.p99
+                builder_invalid_tx_execution_attempts_p50: $b_builder_invalid_tx_execution_attempts.p50
+                builder_invalid_tx_execution_attempts_p90: $b_builder_invalid_tx_execution_attempts.p90
+                builder_invalid_tx_execution_attempts_p99: $b_builder_invalid_tx_execution_attempts.p99
+                builder_invalid_tx_skips: $b_builder_invalid_tx_skips
+                builder_nonce_too_low_skips: $b_builder_nonce_too_low_skips
+                builder_fill_overhead_p50: $b_builder_fill_overhead.p50
+                builder_fill_overhead_p90: $b_builder_fill_overhead.p90
+                builder_fill_overhead_p99: $b_builder_fill_overhead.p99
+                builder_fill_idle_p50: $b_builder_fill_idle.p50
+                builder_fill_idle_p90: $b_builder_fill_idle.p90
+                builder_fill_idle_p99: $b_builder_fill_idle.p99
+                builder_gas_s: $b_builder_gas
                 tps: $b_tps
                 tps_p50: $b_tps_stats.p50
                 tps_p90: $b_tps_stats.p90
@@ -1101,17 +1526,35 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 validation_latency_p50: $b_validation.p50
                 validation_latency_p90: $b_validation.p90
                 validation_latency_p99: $b_validation.p99
-                blocks: $b_lat.n
+                validation_gas_s: $b_validation_gas
+                blocks: $b_block_time.n
             }
             feature: {
-                latency_mean: $f_lat.mean
-                latency_stddev: $f_lat.stddev
-                latency_p50: $f_lat.p50
-                latency_p90: $f_lat.p90
-                latency_p99: $f_lat.p99
+                block_time_mean: $f_block_time.mean
                 builder_latency_p50: $f_builder.p50
                 builder_latency_p90: $f_builder.p90
                 builder_latency_p99: $f_builder.p99
+                builder_finish_p50: $f_builder_finish.p50
+                builder_finish_p90: $f_builder_finish.p90
+                builder_finish_p99: $f_builder_finish.p99
+                builder_included_tx_execution_p50: $f_builder_included_tx.p50
+                builder_included_tx_execution_p90: $f_builder_included_tx.p90
+                builder_included_tx_execution_p99: $f_builder_included_tx.p99
+                builder_invalid_tx_execution_p50: $f_builder_invalid_tx.p50
+                builder_invalid_tx_execution_p90: $f_builder_invalid_tx.p90
+                builder_invalid_tx_execution_p99: $f_builder_invalid_tx.p99
+                builder_invalid_tx_execution_attempts_p50: $f_builder_invalid_tx_execution_attempts.p50
+                builder_invalid_tx_execution_attempts_p90: $f_builder_invalid_tx_execution_attempts.p90
+                builder_invalid_tx_execution_attempts_p99: $f_builder_invalid_tx_execution_attempts.p99
+                builder_invalid_tx_skips: $f_builder_invalid_tx_skips
+                builder_nonce_too_low_skips: $f_builder_nonce_too_low_skips
+                builder_fill_overhead_p50: $f_builder_fill_overhead.p50
+                builder_fill_overhead_p90: $f_builder_fill_overhead.p90
+                builder_fill_overhead_p99: $f_builder_fill_overhead.p99
+                builder_fill_idle_p50: $f_builder_fill_idle.p50
+                builder_fill_idle_p90: $f_builder_fill_idle.p90
+                builder_fill_idle_p99: $f_builder_fill_idle.p99
+                builder_gas_s: $f_builder_gas
                 tps: $f_tps
                 tps_p50: $f_tps_stats.p50
                 tps_p90: $f_tps_stats.p90
@@ -1123,17 +1566,35 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 validation_latency_p50: $f_validation.p50
                 validation_latency_p90: $f_validation.p90
                 validation_latency_p99: $f_validation.p99
-                blocks: $f_lat.n
+                validation_gas_s: $f_validation_gas
+                blocks: $f_block_time.n
             }
             deltas: {
-                latency_mean: (do $delta $b_lat.mean $f_lat.mean)
-                latency_stddev: (do $delta $b_lat.stddev $f_lat.stddev)
-                latency_p50: (do $delta $b_lat.p50 $f_lat.p50)
-                latency_p90: (do $delta $b_lat.p90 $f_lat.p90)
-                latency_p99: (do $delta $b_lat.p99 $f_lat.p99)
+                block_time_mean: (do $delta $b_block_time.mean $f_block_time.mean)
                 builder_latency_p50: (do $delta $b_builder.p50 $f_builder.p50)
                 builder_latency_p90: (do $delta $b_builder.p90 $f_builder.p90)
                 builder_latency_p99: (do $delta $b_builder.p99 $f_builder.p99)
+                builder_finish_p50: (do $delta $b_builder_finish.p50 $f_builder_finish.p50)
+                builder_finish_p90: (do $delta $b_builder_finish.p90 $f_builder_finish.p90)
+                builder_finish_p99: (do $delta $b_builder_finish.p99 $f_builder_finish.p99)
+                builder_included_tx_execution_p50: (do $delta $b_builder_included_tx.p50 $f_builder_included_tx.p50)
+                builder_included_tx_execution_p90: (do $delta $b_builder_included_tx.p90 $f_builder_included_tx.p90)
+                builder_included_tx_execution_p99: (do $delta $b_builder_included_tx.p99 $f_builder_included_tx.p99)
+                builder_invalid_tx_execution_p50: (do $delta $b_builder_invalid_tx.p50 $f_builder_invalid_tx.p50)
+                builder_invalid_tx_execution_p90: (do $delta $b_builder_invalid_tx.p90 $f_builder_invalid_tx.p90)
+                builder_invalid_tx_execution_p99: (do $delta $b_builder_invalid_tx.p99 $f_builder_invalid_tx.p99)
+                builder_invalid_tx_execution_attempts_p50: (do $delta $b_builder_invalid_tx_execution_attempts.p50 $f_builder_invalid_tx_execution_attempts.p50)
+                builder_invalid_tx_execution_attempts_p90: (do $delta $b_builder_invalid_tx_execution_attempts.p90 $f_builder_invalid_tx_execution_attempts.p90)
+                builder_invalid_tx_execution_attempts_p99: (do $delta $b_builder_invalid_tx_execution_attempts.p99 $f_builder_invalid_tx_execution_attempts.p99)
+                builder_invalid_tx_skips: (do $delta $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
+                builder_nonce_too_low_skips: (do $delta $b_builder_nonce_too_low_skips $f_builder_nonce_too_low_skips)
+                builder_fill_overhead_p50: (do $delta $b_builder_fill_overhead.p50 $f_builder_fill_overhead.p50)
+                builder_fill_overhead_p90: (do $delta $b_builder_fill_overhead.p90 $f_builder_fill_overhead.p90)
+                builder_fill_overhead_p99: (do $delta $b_builder_fill_overhead.p99 $f_builder_fill_overhead.p99)
+                builder_fill_idle_p50: (do $delta $b_builder_fill_idle.p50 $f_builder_fill_idle.p50)
+                builder_fill_idle_p90: (do $delta $b_builder_fill_idle.p90 $f_builder_fill_idle.p90)
+                builder_fill_idle_p99: (do $delta $b_builder_fill_idle.p99 $f_builder_fill_idle.p99)
+                builder_gas_s: (do $delta $b_builder_gas $f_builder_gas)
                 tps: (do $delta $b_tps $f_tps)
                 tps_p50: (do $delta $b_tps_stats.p50 $f_tps_stats.p50)
                 tps_p90: (do $delta $b_tps_stats.p90 $f_tps_stats.p90)
@@ -1145,6 +1606,7 @@ def generate-summary [results_dir: string, baseline_ref: string, feature_ref: st
                 validation_latency_p50: (do $delta $b_validation.p50 $f_validation.p50)
                 validation_latency_p90: (do $delta $b_validation.p90 $f_validation.p90)
                 validation_latency_p99: (do $delta $b_validation.p99 $f_validation.p99)
+                validation_gas_s: (do $delta $b_validation_gas $f_validation_gas)
             }
         }
         per_run: $run_data
@@ -1245,7 +1707,7 @@ def "main localnet" [
     }
 
     # Parse custom args
-    let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
+    let extra_args = (parse-cli-args $node_args)
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
 
     # Build first (unless skipped)
@@ -1548,7 +2010,7 @@ def "main follower" [
         exit 1
     }
 
-    let extra_args = if $node_args == "" { [] } else { $node_args | split row " " }
+    let extra_args = (parse-cli-args $node_args)
     if not $skip_build {
         build-tempo ["tempo"] $profile $features
     }
@@ -1799,7 +2261,7 @@ def "main bench" [
     --node-args: string = ""                        # Additional node arguments (space-separated, applied to all runs)
     --baseline-args: string = ""                    # Additional node arguments for baseline runs only (space-separated)
     --feature-args: string = ""                     # Additional node arguments for feature runs only (space-separated)
-    --bench-args: string = ""                       # Legacy benchmark arguments; only --existing-recipients is ignored for txgen
+    --bench-args: string = ""                       # Additional txgen generate arguments
     --baseline-env: string = ""                     # Environment variables for baseline node runs (KEY=VAL KEY2=VAL2)
     --feature-env: string = ""                      # Environment variables for feature node runs (KEY=VAL KEY2=VAL2)
     --bench-env: string = ""                        # Environment variables for txgen/bench (KEY=VAL KEY2=VAL2)
@@ -1829,7 +2291,6 @@ def "main bench" [
     }
 
     let preset_path = (txgen-preset-path $preset)
-    txgen-validate-bench-args $bench_args
     let txgen = (txgen-resolve-binaries)
 
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
@@ -2262,9 +2723,9 @@ def "main bench" [
         }
 
         # Generate summary report
-        let baseline_label = if $dual_hardfork { $"($baseline) \(($baseline_hardfork | str upcase)\)" } else { $baseline }
-        let feature_label = if $dual_hardfork { $"($feature) \(($feature_hardfork | str upcase)\)" } else { $feature }
-        generate-summary $results_dir $baseline_label $feature_label $bloat $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch
+        let baseline_hardfork_label = if $dual_hardfork { $baseline_hardfork | str upcase } else { "" }
+        let feature_hardfork_label = if $dual_hardfork { $feature_hardfork | str upcase } else { "" }
+        generate-summary $results_dir $baseline $feature $bloat $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch --baseline-hardfork $baseline_hardfork_label --feature-hardfork $feature_hardfork_label
 
         # Cleanup worktrees (only those we created)
         if $baseline != "local" or $feature != "local" {
@@ -2376,6 +2837,7 @@ def "main bench" [
             --duration $duration
             --accounts $accounts
             --max-concurrent-requests $max_concurrent_requests
+            --bench-args $bench_args
             --bench-env $bench_env
             --git-ref $current_sha
             --build-profile $profile
@@ -2607,7 +3069,7 @@ tempo-precompiles = { path = '($tempo_root)/crates/precompiles' }
                 # Update Cargo.lock to resolve patched crate versions
                 cargo update
                 with-env { RUSTFLAGS: "-C instrument-coverage", RUSTC_WRAPPER: "" } {
-                    cargo build -p forge --profile release
+                    cargo build --bin forge --profile release
                 }
             }
         } catch { |e|
@@ -2882,7 +3344,7 @@ def main [] {
     print "  --node-args <ARGS>       Additional node arguments (space-separated, all runs)"
     print "  --baseline-args <ARGS>       Additional node arguments for baseline runs only"
     print "  --feature-args <ARGS>        Additional node arguments for feature runs only"
-    print "  --bench-args <ARGS>      Legacy benchmark arguments (only --existing-recipients is ignored)"
+    print "  --bench-args <ARGS>      Additional txgen generate arguments"
     print "  --bloat <N>              Generate TIP20 state bloat (size in MiB)"
     print "  --gas-limit <N>          Block gas limit for genesis (raw number, default: 1000000000000)"
     print ""
