@@ -55,6 +55,7 @@ trie-debug = ["reth-engine-tree/trie-debug"]
 [dev-dependencies]
 alloy-evm.workspace = true
 alloy-eips.workspace = true
+alloy-primitives = { workspace = true, features = ["asm-keccak"] }
 alloy-signer.workspace = true
 alloy-signer-local = { workspace = true, features = ["mnemonic"] }
 criterion.workspace = true
@@ -62,4 +63,8 @@ reth-trie.workspace = true
 
 [[bench]]
 name = "blockstm_tip20_builder"
+harness = false
+
+[[bench]]
+name = "blockstm_tip20_builder_repeated"
 harness = false

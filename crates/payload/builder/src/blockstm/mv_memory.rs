@@ -253,11 +253,14 @@ mod tests {
         thread::scope(|scope| {
             for tx_index in 0..64usize {
                 let memory = &memory;
-                scope.spawn(move || {
-                    let mut writes = BlockStmWriteSet::default();
-                    writes.record(key, tx_index as u64);
-                    memory.commit_version(BlockStmVersion::new(tx_index, 0), &writes);
-                });
+                thread::Builder::new()
+                    .name(format!("blockstm-test-{}", tx_index + 1))
+                    .spawn_scoped(scope, move || {
+                        let mut writes = BlockStmWriteSet::default();
+                        writes.record(key, tx_index as u64);
+                        memory.commit_version(BlockStmVersion::new(tx_index, 0), &writes);
+                    })
+                    .expect("spawn Block-STM MV memory test worker");
             }
         });
 

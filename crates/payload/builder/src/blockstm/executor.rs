@@ -196,7 +196,7 @@ impl BlockStmExecutor {
         let max_in_flight = AtomicU64::new(0);
 
         std::thread::scope(|scope| {
-            for _ in 0..worker_count {
+            for worker in 0..worker_count {
                 let scheduler = &scheduler;
                 let attempts = &attempts;
                 let worker_error = &worker_error;
@@ -204,62 +204,65 @@ impl BlockStmExecutor {
                 let max_in_flight = &max_in_flight;
                 let run_attempt = &run_attempt;
 
-                scope.spawn(move || {
-                    while let Some(task) = scheduler.next_task() {
-                        if worker_error
-                            .lock()
-                            .expect("Block-STM worker error poisoned")
-                            .is_some()
-                        {
-                            break;
-                        }
+                std::thread::Builder::new()
+                    .name(format!("blockstm-{}", worker + 1))
+                    .spawn_scoped(scope, move || {
+                        while let Some(task) = scheduler.next_task() {
+                            if worker_error
+                                .lock()
+                                .expect("Block-STM worker error poisoned")
+                                .is_some()
+                            {
+                                break;
+                            }
 
-                        if task.kind != BlockStmTaskKind::Execution {
-                            continue;
-                        }
+                            if task.kind != BlockStmTaskKind::Execution {
+                                continue;
+                            }
 
-                        let active = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
-                        max_in_flight.fetch_max(active, Ordering::AcqRel);
-                        let result = run_attempt(task.tx_index, task.incarnation, memory);
-                        in_flight.fetch_sub(1, Ordering::AcqRel);
+                            let active = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
+                            max_in_flight.fetch_max(active, Ordering::AcqRel);
+                            let result = run_attempt(task.tx_index, task.incarnation, memory);
+                            in_flight.fetch_sub(1, Ordering::AcqRel);
 
-                        let attempt = match result {
-                            Ok(attempt) => attempt,
-                            Err(err) => {
+                            let attempt = match result {
+                                Ok(attempt) => attempt,
+                                Err(err) => {
+                                    let mut worker_error = worker_error
+                                        .lock()
+                                        .expect("Block-STM worker error poisoned");
+                                    if worker_error.is_none() {
+                                        *worker_error =
+                                            Some(BlockStmExecutorError::Runner(err.to_string()));
+                                    }
+                                    break;
+                                }
+                            };
+
+                            if let Err(err) = Self::validate_attempt_identity(
+                                task.tx_index,
+                                task.incarnation,
+                                &attempt,
+                            ) {
                                 let mut worker_error = worker_error
                                     .lock()
                                     .expect("Block-STM worker error poisoned");
                                 if worker_error.is_none() {
-                                    *worker_error =
-                                        Some(BlockStmExecutorError::Runner(err.to_string()));
+                                    *worker_error = Some(err);
                                 }
                                 break;
                             }
-                        };
 
-                        if let Err(err) = Self::validate_attempt_identity(
-                            task.tx_index,
-                            task.incarnation,
-                            &attempt,
-                        ) {
-                            let mut worker_error = worker_error
+                            memory.publish_value(
+                                BlockStmVersion::new(task.tx_index, task.incarnation),
+                                &attempt.write_set,
+                            );
+                            *attempts[task.tx_index]
                                 .lock()
-                                .expect("Block-STM worker error poisoned");
-                            if worker_error.is_none() {
-                                *worker_error = Some(err);
-                            }
-                            break;
+                                .expect("Block-STM attempt slot poisoned") = Some(attempt);
                         }
-
-                        memory.publish_value(
-                            BlockStmVersion::new(task.tx_index, task.incarnation),
-                            &attempt.write_set,
-                        );
-                        *attempts[task.tx_index]
-                            .lock()
-                            .expect("Block-STM attempt slot poisoned") = Some(attempt);
-                    }
-                });
+                    })
+                    .expect("spawn Block-STM execution worker");
             }
         });
 
@@ -297,7 +300,7 @@ impl BlockStmExecutor {
             let validation_error = Mutex::new(None);
 
             std::thread::scope(|scope| {
-                for _ in 0..worker_count {
+                for worker in 0..worker_count {
                     let validation_scheduler = &validation_scheduler;
                     let attempts = &attempts;
                     let attempt_counts = &attempt_counts;
@@ -309,113 +312,119 @@ impl BlockStmExecutor {
                     let round_speculative = &round_speculative;
                     let run_attempt = &run_attempt;
 
-                    scope.spawn(move || {
-                        while let Some(task) = validation_scheduler.next_task() {
-                            if validation_error
-                                .lock()
-                                .expect("Block-STM validation error poisoned")
-                                .is_some()
-                            {
-                                break;
-                            }
-
-                            if task.kind != BlockStmTaskKind::Validation {
-                                continue;
-                            }
-
-                            let mut slot = attempts[task.tx_index]
-                                .lock()
-                                .expect("Block-STM attempt slot poisoned");
-                            let attempt =
-                                match slot.take().ok_or(BlockStmExecutorError::MissingAttempt {
-                                    tx_index: task.tx_index,
-                                }) {
-                                    Ok(attempt) => attempt,
-                                    Err(err) => {
-                                        let mut validation_error = validation_error
-                                            .lock()
-                                            .expect("Block-STM validation error poisoned");
-                                        if validation_error.is_none() {
-                                            *validation_error = Some(err);
-                                        }
-                                        break;
-                                    }
-                                };
-
-                            if memory
-                                .validate_reads(task.tx_index, &attempt.read_set)
-                                .is_ok()
-                            {
-                                *slot = Some(attempt);
-                                continue;
-                            }
-
-                            round_conflicts.fetch_add(1, Ordering::AcqRel);
-                            round_reexecutions.fetch_add(1, Ordering::AcqRel);
-                            memory.mark_estimate(
-                                BlockStmVersion::new(task.tx_index, attempt.attempt),
-                                &attempt.write_set,
-                            );
-
-                            let next_attempt =
-                                attempt_counts[task.tx_index].fetch_add(1, Ordering::AcqRel);
-                            if next_attempt >= self.config.max_retries_per_tx {
-                                *slot = Some(attempt);
-                                let mut validation_error = validation_error
+                    std::thread::Builder::new()
+                        .name(format!("blockstm-{}", worker + 1))
+                        .spawn_scoped(scope, move || {
+                            while let Some(task) = validation_scheduler.next_task() {
+                                if validation_error
                                     .lock()
-                                    .expect("Block-STM validation error poisoned");
-                                if validation_error.is_none() {
-                                    *validation_error =
-                                        Some(BlockStmExecutorError::RetryBudgetExceeded {
-                                            tx_index: task.tx_index,
-                                            attempts: next_attempt,
-                                        });
+                                    .expect("Block-STM validation error poisoned")
+                                    .is_some()
+                                {
+                                    break;
                                 }
-                                break;
-                            }
-                            drop(slot);
 
-                            let active = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
-                            max_in_flight.fetch_max(active, Ordering::AcqRel);
-                            let retry = run_attempt(task.tx_index, next_attempt, memory);
-                            in_flight.fetch_sub(1, Ordering::AcqRel);
+                                if task.kind != BlockStmTaskKind::Validation {
+                                    continue;
+                                }
 
-                            let retry = match retry {
-                                Ok(retry) => retry,
-                                Err(err) => {
+                                let mut slot = attempts[task.tx_index]
+                                    .lock()
+                                    .expect("Block-STM attempt slot poisoned");
+                                let attempt =
+                                    match slot.take().ok_or(BlockStmExecutorError::MissingAttempt {
+                                        tx_index: task.tx_index,
+                                    }) {
+                                        Ok(attempt) => attempt,
+                                        Err(err) => {
+                                            let mut validation_error = validation_error
+                                                .lock()
+                                                .expect("Block-STM validation error poisoned");
+                                            if validation_error.is_none() {
+                                                *validation_error = Some(err);
+                                            }
+                                            break;
+                                        }
+                                    };
+
+                                if memory
+                                    .validate_reads(task.tx_index, &attempt.read_set)
+                                    .is_ok()
+                                {
+                                    *slot = Some(attempt);
+                                    continue;
+                                }
+
+                                round_conflicts.fetch_add(1, Ordering::AcqRel);
+                                round_reexecutions.fetch_add(1, Ordering::AcqRel);
+                                memory.mark_estimate(
+                                    BlockStmVersion::new(task.tx_index, attempt.attempt),
+                                    &attempt.write_set,
+                                );
+
+                                let next_attempt =
+                                    attempt_counts[task.tx_index].fetch_add(1, Ordering::AcqRel);
+                                if next_attempt >= self.config.max_retries_per_tx {
+                                    *slot = Some(attempt);
                                     let mut validation_error = validation_error
                                         .lock()
                                         .expect("Block-STM validation error poisoned");
                                     if validation_error.is_none() {
                                         *validation_error =
-                                            Some(BlockStmExecutorError::Runner(err.to_string()));
+                                            Some(BlockStmExecutorError::RetryBudgetExceeded {
+                                                tx_index: task.tx_index,
+                                                attempts: next_attempt,
+                                            });
                                     }
                                     break;
                                 }
-                            };
+                                drop(slot);
 
-                            if let Err(err) =
-                                Self::validate_attempt_identity(task.tx_index, next_attempt, &retry)
-                            {
-                                let mut validation_error = validation_error
-                                    .lock()
-                                    .expect("Block-STM validation error poisoned");
-                                if validation_error.is_none() {
-                                    *validation_error = Some(err);
+                                let active = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
+                                max_in_flight.fetch_max(active, Ordering::AcqRel);
+                                let retry = run_attempt(task.tx_index, next_attempt, memory);
+                                in_flight.fetch_sub(1, Ordering::AcqRel);
+
+                                let retry = match retry {
+                                    Ok(retry) => retry,
+                                    Err(err) => {
+                                        let mut validation_error = validation_error
+                                            .lock()
+                                            .expect("Block-STM validation error poisoned");
+                                        if validation_error.is_none() {
+                                            *validation_error = Some(
+                                                BlockStmExecutorError::Runner(err.to_string()),
+                                            );
+                                        }
+                                        break;
+                                    }
+                                };
+
+                                if let Err(err) = Self::validate_attempt_identity(
+                                    task.tx_index,
+                                    next_attempt,
+                                    &retry,
+                                ) {
+                                    let mut validation_error = validation_error
+                                        .lock()
+                                        .expect("Block-STM validation error poisoned");
+                                    if validation_error.is_none() {
+                                        *validation_error = Some(err);
+                                    }
+                                    break;
                                 }
-                                break;
-                            }
 
-                            round_speculative.fetch_add(1, Ordering::AcqRel);
-                            memory.publish_value(
-                                BlockStmVersion::new(task.tx_index, next_attempt),
-                                &retry.write_set,
-                            );
-                            *attempts[task.tx_index]
-                                .lock()
-                                .expect("Block-STM attempt slot poisoned") = Some(retry);
-                        }
-                    });
+                                round_speculative.fetch_add(1, Ordering::AcqRel);
+                                memory.publish_value(
+                                    BlockStmVersion::new(task.tx_index, next_attempt),
+                                    &retry.write_set,
+                                );
+                                *attempts[task.tx_index]
+                                    .lock()
+                                    .expect("Block-STM attempt slot poisoned") = Some(retry);
+                            }
+                        })
+                        .expect("spawn Block-STM validation worker");
                 }
             });
 

@@ -49,3 +49,33 @@ PY
 echo "existing TIP20 median baseline: ${baseline_tps} tx/s"
 TEMPO_EXISTING_TIP20_BASELINE_TPS="$baseline_tps" \
   run cargo bench --profile profiling -p tempo-payload-builder --bench blockstm_tip20_builder -- --noplot
+
+blockstm_log="$(mktemp /tmp/tempo-blockstm-repeated.XXXXXX.log)"
+run cargo bench --profile profiling -p tempo-payload-builder --bench blockstm_tip20_builder_repeated -- --noplot 2>&1 | tee "$blockstm_log"
+blockstm_tps="$(python3 - "$blockstm_log" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+matches = re.findall(r"thrpt:\s+\[\s*([0-9.]+)\s+([KMG]?elem/s)\s+([0-9.]+)\s+([KMG]?elem/s)\s+([0-9.]+)\s+([KMG]?elem/s)\s*\]", text)
+if not matches:
+    raise SystemExit("failed to parse repeated Block-STM Criterion throughput")
+
+value, unit = matches[-1][2], matches[-1][3]
+scale = {"elem/s": 1.0, "Kelem/s": 1_000.0, "Melem/s": 1_000_000.0, "Gelem/s": 1_000_000_000.0}[unit]
+print(float(value) * scale)
+PY
+)"
+echo "repeated Block-STM median: ${blockstm_tps} tx/s"
+python3 - "$blockstm_tps" "$baseline_tps" <<'PY'
+import sys
+
+blockstm_tps = float(sys.argv[1])
+baseline_tps = float(sys.argv[2])
+if blockstm_tps < 500_000.0:
+    raise SystemExit(f"repeated Block-STM TPS {blockstm_tps:.2f} is below 500k")
+if blockstm_tps < baseline_tps * 2.0:
+    raise SystemExit(
+        f"repeated Block-STM TPS {blockstm_tps:.2f} is below 2x existing pure TIP20 baseline {baseline_tps:.2f}"
+    )
+PY

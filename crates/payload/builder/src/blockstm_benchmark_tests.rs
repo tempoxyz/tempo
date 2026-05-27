@@ -1032,85 +1032,94 @@ fn execute_parallel_blockstm(
                 let ctx = ctx.clone();
                 let prefix_cache = prefix_cache.clone();
                 let participant_index = &participant_index;
-                handles.push(scope.spawn(move || {
-                    let mut output = BenchFullWorkerOutput {
-                        commits: Vec::with_capacity(batch.len().div_ceil(worker_count)),
-                        semantic_effects: BenchSemanticChunkEffects::new(participant_index.len()),
-                        stats: BenchmarkStats::default(),
-                    };
-                    for offset in (worker..batch.len()).step_by(worker_count) {
-                        let attempt = execute_bench_attempt(
-                            provider.clone(),
-                            config,
-                            evm_env.clone(),
-                            ctx.clone(),
-                            prefix_cache.clone(),
-                            first_index + offset,
-                            &batch[offset],
-                            beneficiary,
-                        );
+                handles.push(
+                    std::thread::Builder::new()
+                        .name(format!("blockstm-{}", worker + 1))
+                        .spawn_scoped(scope, move || {
+                            let mut output = BenchFullWorkerOutput {
+                                commits: Vec::with_capacity(batch.len().div_ceil(worker_count)),
+                                semantic_effects: BenchSemanticChunkEffects::new(
+                                    participant_index.len(),
+                                ),
+                                stats: BenchmarkStats::default(),
+                            };
+                            for offset in (worker..batch.len()).step_by(worker_count) {
+                                let attempt = execute_bench_attempt(
+                                    provider.clone(),
+                                    config,
+                                    evm_env.clone(),
+                                    ctx.clone(),
+                                    prefix_cache.clone(),
+                                    first_index + offset,
+                                    &batch[offset],
+                                    beneficiary,
+                                );
 
-                        let result_ref = attempt
-                            .output
-                            .execution_result
-                            .as_ref()
-                            .expect("Block-STM attempt must execute successfully");
-                        if attempt.output.semantic_plan.is_none() {
-                            let hot_writes = attempt
-                                .write_set
-                                .iter()
-                                .filter_map(|(key, value)| match key {
-                                    crate::blockstm::BlockStmAccessKey::Storage { address, slot }
-                                        if *address == PATH_USD_ADDRESS
-                                            || *address
-                                                == tempo_precompiles::TIP_FEE_MANAGER_ADDRESS
-                                            || *address == NONCE_PRECOMPILE_ADDRESS =>
-                                    {
-                                        Some((*address, *slot, *value))
-                                    }
-                                    _ => None,
-                                })
-                                .collect::<Vec<_>>();
-                            panic!(
-                                "pure TIP20 transaction must capture semantic actions; success={:?} fee={} hot_writes={hot_writes:?}",
-                                result_ref.result().result,
-                                result_ref.validator_fee()
-                            )
-                        }
+                                let result_ref = attempt
+                                    .output
+                                    .execution_result
+                                    .as_ref()
+                                    .expect("Block-STM attempt must execute successfully");
+                                if attempt.output.semantic_plan.is_none() {
+                                    let hot_writes = attempt
+                                        .write_set
+                                        .iter()
+                                        .filter_map(|(key, value)| match key {
+                                            crate::blockstm::BlockStmAccessKey::Storage {
+                                                address,
+                                                slot,
+                                            } if *address == PATH_USD_ADDRESS
+                                                || *address
+                                                    == tempo_precompiles::TIP_FEE_MANAGER_ADDRESS
+                                                || *address == NONCE_PRECOMPILE_ADDRESS =>
+                                            {
+                                                Some((*address, *slot, *value))
+                                            }
+                                            _ => None,
+                                        })
+                                        .collect::<Vec<_>>();
+                                    panic!(
+                                        "pure TIP20 transaction must capture semantic actions; success={:?} fee={} hot_writes={hot_writes:?}",
+                                        result_ref.result().result,
+                                        result_ref.validator_fee()
+                                    )
+                                }
 
-                        let BenchAttemptOutput {
-                            execution_result,
-                            semantic_plan,
-                            fast_plan,
-                        } = attempt.output;
-                        let semantic_plan =
-                            semantic_plan.expect("Block-STM pure TIP20 semantic plan missing");
-                        let fast_plan =
-                            fast_plan.expect("Block-STM pure TIP20 fast semantic plan missing");
-                        record_bench_semantic_plan(
-                            initial_ring_ptr,
-                            first_index + offset,
-                            participant_index,
-                            &mut output.semantic_effects,
-                            fast_plan,
-                        );
-                        let result =
-                            execution_result.expect("Block-STM pure TIP20 execution failed");
-                        let validator_fee = result.validator_fee();
-                        output.commits.push(BenchCommitOutput {
-                            commit: result
-                                .into_stripped_commit()
-                                .expect("Block-STM pure TIP20 result must be stripped"),
-                            validator_fee,
-                            semantic_actions: semantic_plan.action_count(),
-                        });
-                        output.stats.speculative_executions += 1;
-                    }
-                    if output.stats.speculative_executions > 0 {
-                        output.stats.worker_lanes_with_attempts = 1;
-                    }
-                    output
-                }));
+                                let BenchAttemptOutput {
+                                    execution_result,
+                                    semantic_plan,
+                                    fast_plan,
+                                } = attempt.output;
+                                let semantic_plan = semantic_plan
+                                    .expect("Block-STM pure TIP20 semantic plan missing");
+                                let fast_plan =
+                                    fast_plan.expect("Block-STM pure TIP20 fast semantic plan missing");
+                                record_bench_semantic_plan(
+                                    initial_ring_ptr,
+                                    first_index + offset,
+                                    participant_index,
+                                    &mut output.semantic_effects,
+                                    fast_plan,
+                                );
+                                let result =
+                                    execution_result.expect("Block-STM pure TIP20 execution failed");
+                                let validator_fee = result.validator_fee();
+                                output.commits.push(BenchCommitOutput {
+                                    commit: result
+                                        .into_stripped_commit()
+                                        .expect("Block-STM pure TIP20 result must be stripped"),
+                                    validator_fee,
+                                    semantic_actions: semantic_plan.action_count(),
+                                });
+                                output.stats.speculative_executions += 1;
+                            }
+                            if output.stats.speculative_executions > 0 {
+                                output.stats.worker_lanes_with_attempts = 1;
+                            }
+                            output
+                        })
+                        .expect("spawn Block-STM benchmark worker"),
+                );
             }
 
             handles
@@ -1138,17 +1147,20 @@ fn execute_parallel_blockstm(
         );
         let (semantic_changes, semantic_reduce_elapsed) = std::thread::scope(|scope| {
             let provider = &fixture.provider;
-            let semantic_handle = scope.spawn(move || {
-                let started = profile_phases.then(Instant::now);
-                let changes = materialize_bench_semantic_changes(
-                    provider,
-                    participants,
-                    beneficiary,
-                    semantic_effects_for_materialization,
-                );
-                let elapsed = started.map_or(Duration::ZERO, |started| started.elapsed());
-                (changes, elapsed)
-            });
+            let semantic_handle = std::thread::Builder::new()
+                .name("blockstm-mat-1".to_string())
+                .spawn_scoped(scope, move || {
+                    let started = profile_phases.then(Instant::now);
+                    let changes = materialize_bench_semantic_changes(
+                        provider,
+                        participants,
+                        beneficiary,
+                        semantic_effects_for_materialization,
+                    );
+                    let elapsed = started.map_or(Duration::ZERO, |started| started.elapsed());
+                    (changes, elapsed)
+                })
+                .expect("spawn Block-STM semantic materialization worker");
 
             executor.reserve_receipts(batch.len());
             let commit_started = Instant::now();
@@ -1261,64 +1273,71 @@ fn execute_parallel_blockstm_semantic_only(
             let ctx = ctx.clone();
             let prefix_cache = prefix_cache.clone();
             let participant_index = &participant_index;
-            handles.push(scope.spawn(move || {
-                let mut output = BenchSemanticWorkerOutput {
-                    semantic_effects: BenchSemanticChunkEffects::new(participant_index.len()),
-                    stats: BenchmarkStats::default(),
-                    gas_used: 0,
-                    validator_fees: U256::ZERO,
-                };
-                for tx_index in (worker..pooled.len()).step_by(worker_count) {
-                    let attempt = execute_bench_attempt(
-                        provider.clone(),
-                        config,
-                        evm_env.clone(),
-                        ctx.clone(),
-                        prefix_cache.clone(),
-                        tx_index,
-                        &pooled[tx_index],
-                        beneficiary,
-                    );
+            handles.push(
+                std::thread::Builder::new()
+                    .name(format!("blockstm-{}", worker + 1))
+                    .spawn_scoped(scope, move || {
+                        let mut output = BenchSemanticWorkerOutput {
+                            semantic_effects: BenchSemanticChunkEffects::new(
+                                participant_index.len(),
+                            ),
+                            stats: BenchmarkStats::default(),
+                            gas_used: 0,
+                            validator_fees: U256::ZERO,
+                        };
+                        for tx_index in (worker..pooled.len()).step_by(worker_count) {
+                            let attempt = execute_bench_attempt(
+                                provider.clone(),
+                                config,
+                                evm_env.clone(),
+                                ctx.clone(),
+                                prefix_cache.clone(),
+                                tx_index,
+                                &pooled[tx_index],
+                                beneficiary,
+                            );
 
-                    let BenchAttemptOutput {
-                        execution_result,
-                        semantic_plan,
-                        fast_plan,
-                    } = attempt.output;
-                    let result =
-                        execution_result.expect("Block-STM semantic benchmark execution failed");
-                    assert!(
-                        result.result().result.is_success(),
-                        "Block-STM semantic benchmark transaction reverted: {:?}",
-                        result.result().result
-                    );
-                    let semantic_plan =
-                        semantic_plan.expect("Block-STM semantic benchmark plan missing");
-                    let fast_plan =
-                        fast_plan.expect("Block-STM semantic benchmark fast plan missing");
-                    record_bench_semantic_plan(
-                        initial_ring_ptr,
-                        tx_index,
-                        participant_index,
-                        &mut output.semantic_effects,
-                        fast_plan,
-                    );
-                    output.gas_used = output
-                        .gas_used
-                        .saturating_add(result.result().result.tx_gas_used());
-                    output.validator_fees += result.validator_fee();
-                    output.stats.speculative_executions += 1;
-                    output.stats.accepted += 1;
-                    output.stats.committed += 1;
-                    output.stats.reused_worker_results += 1;
-                    output.stats.semantic_actions += semantic_plan.action_count() as u64;
-                    output.stats.add_pure_tip20_actions();
-                }
-                if output.stats.speculative_executions > 0 {
-                    output.stats.worker_lanes_with_attempts = 1;
-                }
-                output
-            }));
+                            let BenchAttemptOutput {
+                                execution_result,
+                                semantic_plan,
+                                fast_plan,
+                            } = attempt.output;
+                            let result = execution_result
+                                .expect("Block-STM semantic benchmark execution failed");
+                            assert!(
+                                result.result().result.is_success(),
+                                "Block-STM semantic benchmark transaction reverted: {:?}",
+                                result.result().result
+                            );
+                            let semantic_plan =
+                                semantic_plan.expect("Block-STM semantic benchmark plan missing");
+                            let fast_plan =
+                                fast_plan.expect("Block-STM semantic benchmark fast plan missing");
+                            record_bench_semantic_plan(
+                                initial_ring_ptr,
+                                tx_index,
+                                participant_index,
+                                &mut output.semantic_effects,
+                                fast_plan,
+                            );
+                            output.gas_used = output
+                                .gas_used
+                                .saturating_add(result.result().result.tx_gas_used());
+                            output.validator_fees += result.validator_fee();
+                            output.stats.speculative_executions += 1;
+                            output.stats.accepted += 1;
+                            output.stats.committed += 1;
+                            output.stats.reused_worker_results += 1;
+                            output.stats.semantic_actions += semantic_plan.action_count() as u64;
+                            output.stats.add_pure_tip20_actions();
+                        }
+                        if output.stats.speculative_executions > 0 {
+                            output.stats.worker_lanes_with_attempts = 1;
+                        }
+                        output
+                    })
+                    .expect("spawn Block-STM semantic benchmark worker"),
+            );
         }
 
         handles

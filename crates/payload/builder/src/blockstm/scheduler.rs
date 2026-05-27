@@ -255,11 +255,14 @@ mod tests {
         );
 
         std::thread::scope(|scope| {
-            for _ in 0..16 {
+            for worker in 0..16 {
                 let scheduler = &scheduler;
-                scope.spawn(move || {
-                    scheduler.retry(0);
-                });
+                std::thread::Builder::new()
+                    .name(format!("blockstm-test-{}", worker + 1))
+                    .spawn_scoped(scope, move || {
+                        scheduler.retry(0);
+                    })
+                    .expect("spawn Block-STM scheduler test worker");
             }
         });
 
