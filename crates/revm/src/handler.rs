@@ -38,10 +38,11 @@ use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
 use tempo_precompiles::{
+    ACCOUNT_KEYCHAIN_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
     ECRECOVER_GAS,
     account_keychain::{
         AccountKeychain, CallScope as PrecompileCallScope, KeyRestrictions,
-        SelectorRule as PrecompileSelectorRule, TokenLimit,
+        SelectorRule as PrecompileSelectorRule, TokenLimit, slots as account_keychain_slots,
     },
     error::TempoPrecompileError,
     nonce::{
@@ -49,11 +50,12 @@ use tempo_precompiles::{
         NonceManager,
     },
     storage::{
-        Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
+        FromWord, Handler as _, PrecompileStorageProvider, StorageCtx,
+        evm::EvmPrecompileStorageProvider,
     },
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
-    tip20_channel_reserve::TIP20ChannelReserve,
+    tip20_channel_reserve::slots as channel_reserve_slots,
 };
 use tempo_primitives::{
     TempoAddressExt,
@@ -417,24 +419,28 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
 
         // Seed transient precompile transaction context for both regular execution and RPC
         // simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
-        StorageCtx::enter_evm(
-            &mut ctx.journaled_state,
-            &ctx.block,
-            &ctx.cfg,
-            &ctx.tx,
-            || {
-                let mut keychain = AccountKeychain::new();
-                keychain.set_tx_origin(ctx.tx.caller())?;
+        let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
 
-                if let Some(channel_open_context_hash) = channel_open_context_hash {
-                    let mut channel_reserve = TIP20ChannelReserve::new();
-                    channel_reserve.set_channel_open_context_hash(channel_open_context_hash)?;
-                }
+        storage
+            .tstore(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                account_keychain_slots::TX_ORIGIN,
+                ctx.tx.caller().to_word(),
+            )
+            .map_err(|e| EVMError::Custom(e.to_string()))?;
 
-                Ok::<(), TempoPrecompileError>(())
-            },
-        )
-        .map_err(|e| EVMError::Custom(e.to_string()))
+        if let Some(channel_open_context_hash) = channel_open_context_hash {
+            storage
+                .tstore(
+                    TIP20_CHANNEL_RESERVE_ADDRESS,
+                    channel_reserve_slots::CHANNEL_OPEN_CONTEXT_HASH,
+                    channel_open_context_hash.to_word(),
+                )
+                .map_err(|e| EVMError::Custom(e.to_string()))?;
+        }
+
+        Ok(())
     }
 }
 
