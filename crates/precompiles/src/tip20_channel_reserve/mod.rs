@@ -113,6 +113,9 @@ impl TIP20ChannelReserve {
 
     /// Opens a channel and pulls the initial deposit from the payer into reserve.
     ///
+    /// Payees and integrators must independently decide whether any nonzero operator is acceptable
+    /// before relying on the channel.
+    ///
     /// Payees cannot be zero or TIP-20 addresses. Virtual payees require a non-virtual operator.
     /// This prevents channels whose payee cannot receive direct payouts or submit vouchers itself.
     pub fn open(
