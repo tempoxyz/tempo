@@ -138,6 +138,21 @@ pub struct Args {
     #[arg(long = "consensus.network-budget", default_value = "50ms")]
     pub network_budget: PositiveDuration,
 
+    /// DEPRECATED: This flag is accepted for compatibility but is no longer used.
+    #[arg(
+        long = "consensus.time-to-prepare-proposal-transactions",
+        help = "DEPRECATED: accepted for compatibility but no longer used"
+    )]
+    pub deprecated_time_to_prepare_proposal_transactions: Option<PositiveDuration>,
+
+    /// DEPRECATED: This flag is accepted for compatibility but is no longer used.
+    #[arg(
+        long = "consensus.minimum-time-before-propose",
+        alias = "consensus.time-to-build-proposal",
+        help = "DEPRECATED: accepted for compatibility but no longer used"
+    )]
+    pub deprecated_minimum_time_before_propose: Option<PositiveDuration>,
+
     /// The amount of time this node will use to construct a subblock before
     /// sending it to the next proposer.
     #[arg(long = "consensus.time-to-build-subblock", default_value = "100ms")]
@@ -318,6 +333,23 @@ impl FromStr for PositiveDuration {
 }
 
 impl Args {
+    pub fn warn_deprecated_flags(&self) {
+        if self
+            .deprecated_time_to_prepare_proposal_transactions
+            .is_some()
+        {
+            eprintln!(
+                "warning: --consensus.time-to-prepare-proposal-transactions is deprecated and no longer used"
+            );
+        }
+
+        if self.deprecated_minimum_time_before_propose.is_some() {
+            eprintln!(
+                "warning: --consensus.minimum-time-before-propose/--consensus.time-to-build-proposal is deprecated and no longer used"
+            );
+        }
+    }
+
     /// Returns the signing key loaded from the configured file.
     ///
     /// When `--consensus.secret` is set, tries to decrypt the signing key.

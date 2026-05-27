@@ -367,6 +367,10 @@ fn main() -> eyre::Result<()> {
         );
     }
 
+    if let Commands::Node(node_cmd) = &cli.command {
+        node_cmd.ext.consensus.warn_deprecated_flags();
+    }
+
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
     let mut telemetry_config = None;
     if let Commands::Node(node_cmd) = &cli.command
@@ -810,6 +814,58 @@ mod tests {
         assert_eq!(
             node_cmd.ext.consensus.network_budget.into_duration(),
             Duration::from_millis(50)
+        );
+    }
+
+    #[test]
+    fn deprecated_consensus_budget_flags_are_still_accepted() {
+        init_defaults_once();
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--consensus.time-to-prepare-proposal-transactions",
+            "350ms",
+            "--consensus.minimum-time-before-propose",
+            "450ms",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(
+            node_cmd
+                .ext
+                .consensus
+                .deprecated_time_to_prepare_proposal_transactions
+                .is_some()
+        );
+        assert!(
+            node_cmd
+                .ext
+                .consensus
+                .deprecated_minimum_time_before_propose
+                .is_some()
+        );
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--consensus.time-to-build-proposal",
+            "450ms",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(
+            node_cmd
+                .ext
+                .consensus
+                .deprecated_minimum_time_before_propose
+                .is_some()
         );
     }
 }
