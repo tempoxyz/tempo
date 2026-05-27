@@ -50,7 +50,7 @@ static VERSION_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"1"));
 struct PackedChannelState {
     settled: U96,
     deposit: U96,
-    close_requested_at: u32,
+    close_requested_at: u64,
 }
 
 impl PackedChannelState {
@@ -60,7 +60,7 @@ impl PackedChannelState {
     }
 
     /// Returns the payer's close request timestamp, if the close timer is active.
-    fn close_requested_at(self) -> Option<u32> {
+    fn close_requested_at(self) -> Option<u64> {
         (self.close_requested_at != 0).then_some(self.close_requested_at)
     }
 
@@ -308,7 +308,7 @@ impl TIP20ChannelReserve {
             return Ok(());
         }
 
-        let close_requested_at = self.now_u32();
+        let close_requested_at = self.now();
         state.close_requested_at = close_requested_at;
         self.channel_states[channel_id].write(state)?;
         self.emit_event(TIP20ChannelReserveEvent::CloseRequested(
@@ -418,7 +418,7 @@ impl TIP20ChannelReserve {
 
         let close_ready = state
             .close_requested_at()
-            .is_some_and(|requested_at| self.now() >= u64::from(requested_at) + CLOSE_GRACE_PERIOD);
+            .is_some_and(|requested_at| self.now() >= requested_at + CLOSE_GRACE_PERIOD);
         if !close_ready {
             return Err(TIP20ChannelReserveError::close_not_ready().into());
         }
@@ -518,11 +518,6 @@ impl TIP20ChannelReserve {
     /// Returns the current block timestamp as `u64`.
     fn now(&self) -> u64 {
         self.storage.timestamp().saturating_to::<u64>()
-    }
-
-    /// Returns the current block timestamp as the packed close-request representation.
-    fn now_u32(&self) -> u32 {
-        self.storage.timestamp().saturating_to::<u32>()
     }
 
     /// Computes the channel id from a descriptor.

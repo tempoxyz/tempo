@@ -43,7 +43,7 @@ crate::sol! {
             /// Total deposit currently locked by the channel.
             uint96 deposit;
             /// Payer close-request timestamp, or zero when no close is pending.
-            uint32 closeRequestedAt;
+            uint64 closeRequestedAt;
         }
 
         /// Full descriptor plus current state.

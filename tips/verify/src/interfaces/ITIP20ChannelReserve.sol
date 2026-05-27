@@ -18,7 +18,7 @@ interface ITIP20ChannelReserve {
     struct ChannelState {
         uint96 settled;
         uint96 deposit;
-        uint32 closeRequestedAt;
+        uint64 closeRequestedAt;
     }
 
     struct Channel {
