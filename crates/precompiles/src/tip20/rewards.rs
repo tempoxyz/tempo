@@ -263,12 +263,32 @@ impl TIP20Token {
         to: Address,
         amount: U256,
     ) -> Result<()> {
+        let opted_in_supply = self.get_opted_in_supply()?;
+        if opted_in_supply == 0 {
+            let mut to_info = self.user_reward_info[to].read()?;
+            if to_info.reward_recipient != Address::ZERO {
+                let global_reward_per_token = self.get_global_reward_per_token()?;
+                if to_info.reward_per_token != global_reward_per_token {
+                    to_info.reward_per_token = global_reward_per_token;
+                    self.user_reward_info[to].write(to_info)?;
+                }
+                if amount != U256::ZERO {
+                    self.set_opted_in_supply(
+                        amount
+                            .try_into()
+                            .map_err(|_| TempoPrecompileError::under_overflow())?,
+                    )?;
+                }
+            }
+            return Ok(());
+        }
+
         let from_delegate = self.update_rewards(from)?;
         let to_delegate = self.update_rewards(to)?;
 
         if !from_delegate.is_zero() {
             if to_delegate.is_zero() {
-                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+                let opted_in_supply = U256::from(opted_in_supply)
                     .checked_sub(amount)
                     .ok_or(TempoPrecompileError::under_overflow())?;
                 self.set_opted_in_supply(
@@ -278,7 +298,7 @@ impl TIP20Token {
                 )?;
             }
         } else if !to_delegate.is_zero() {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
+            let opted_in_supply = U256::from(opted_in_supply)
                 .checked_add(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
             self.set_opted_in_supply(

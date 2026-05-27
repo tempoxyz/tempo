@@ -1280,19 +1280,22 @@ impl TIP20Token {
 
         self.check_and_update_spending_limit(from, amount)?;
 
-        // Update rewards for the sender and get their reward recipient
-        let from_reward_recipient = self.update_rewards(from)?;
+        let opted_in_supply = self.get_opted_in_supply()?;
+        if opted_in_supply != 0 {
+            // Update rewards for the sender and get their reward recipient
+            let from_reward_recipient = self.update_rewards(from)?;
 
-        // If user is opted into rewards, decrease opted-in supply
-        if from_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_sub(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
+            // If user is opted into rewards, decrease opted-in supply
+            if from_reward_recipient != Address::ZERO {
+                let opted_in_supply = U256::from(opted_in_supply)
+                    .checked_sub(amount)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                self.set_opted_in_supply(
+                    opted_in_supply
+                        .try_into()
+                        .map_err(|_| TempoPrecompileError::under_overflow())?,
+                )?;
+            }
         }
 
         let new_from_balance =
@@ -1338,19 +1341,22 @@ impl TIP20Token {
             AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
         }
 
-        // Update rewards for the recipient and get their reward recipient
-        let to_reward_recipient = self.update_rewards(to)?;
+        let opted_in_supply = self.get_opted_in_supply()?;
+        if opted_in_supply != 0 {
+            // Update rewards for the recipient and get their reward recipient
+            let to_reward_recipient = self.update_rewards(to)?;
 
-        // If user is opted into rewards, increase opted-in supply by refund amount
-        if to_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(refund)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
+            // If user is opted into rewards, increase opted-in supply by refund amount
+            if to_reward_recipient != Address::ZERO {
+                let opted_in_supply = U256::from(opted_in_supply)
+                    .checked_add(refund)
+                    .ok_or(TempoPrecompileError::under_overflow())?;
+                self.set_opted_in_supply(
+                    opted_in_supply
+                        .try_into()
+                        .map_err(|_| TempoPrecompileError::under_overflow())?,
+                )?;
+            }
         }
 
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
