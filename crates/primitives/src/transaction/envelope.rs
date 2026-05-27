@@ -244,6 +244,15 @@ impl TempoTxEnvelope {
         }
     }
 
+    /// Returns true if this is a TIP-1059 discounted payment.
+    pub fn is_discounted_payment(&self) -> bool {
+        self.is_payment_v2()
+            && self.calls().all(|(to, input)| {
+                matches!(to.to(), Some(to) if to.is_tip20())
+                    && ITIP20::ITIP20Calls::is_discounted_payment_call(input)
+            })
+    }
+
     /// Returns the proposer of the subblock if this is a subblock transaction.
     pub fn subblock_proposer(&self) -> Option<PartialValidatorKey> {
         let Self::AA(tx) = &self else { return None };
