@@ -879,6 +879,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --bloat-token-count ($TIP20_TOKEN_IDS | length)
                 --victoriametrics-url $ctx.victoriametrics_url
                 --clickhouse-url $phase_clickhouse_url
+                --defer-report-uploads
                 --skip-funding=($ctx.bloat > 0))
             if not $bench_result.ok {
                 $bench_result.exit_code
@@ -999,6 +1000,20 @@ def "main summarize" [
     results_dir: string                                # Results directory from an e2e run
 ] {
     e2e-generate-summary $results_dir
+}
+
+def "main upload-metrics" [
+    results_dir: string                                # Results directory from an e2e run
+    --victoriametrics-url: string = ""                 # VictoriaMetrics base URL for metric sample import
+    --clickhouse-url: string = ""                      # ClickHouse HTTP endpoint for txgen result upload
+    --clickhouse-run: string = "feature-1"             # Run label uploaded to ClickHouse; empty = every run
+] {
+    let script = ".github/scripts/bench-e2e-upload-metrics.js"
+    let args = [$script $results_dir]
+        | append (if $victoriametrics_url != "" { ["--victoriametrics-url" $victoriametrics_url] } else { [] })
+        | append (if $clickhouse_url != "" { ["--clickhouse-url" $clickhouse_url] } else { [] })
+        | append (if $clickhouse_run != "" or $clickhouse_url != "" { ["--clickhouse-run" $clickhouse_run] } else { [] })
+    run-external "node" ...$args
 }
 
 # Run the e2e sequence on one runner.

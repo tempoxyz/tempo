@@ -228,6 +228,7 @@ def txgen-run-preset-pipeline [
     --scenario: string = ""
     --victoriametrics-url: string = ""
     --clickhouse-url: string = ""
+    --defer-report-uploads                         # Write local reports now; upload network reports later
     --bloat-mib: int = 0
     --bloat-token-count: int = 4
     --skip-funding                                   # Skip faucet funding (accounts already funded at genesis via state bloat)
@@ -268,8 +269,8 @@ def txgen-run-preset-pipeline [
     ]
         | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
     let report_args = ["--report" $"json:($report_path)"]
-        | append (if $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
-        | append (if $clickhouse_url != "" { ["--report" $"clickhouse:($clickhouse_url)"] } else { [] })
+        | append (if (not $defer_report_uploads) and $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
+        | append (if (not $defer_report_uploads) and $clickhouse_url != "" { ["--report" $"clickhouse:($clickhouse_url)"] } else { [] })
     let metadata_args = [
         "-m" "job=github-tempo-bench-e2e"
         "-m" $"chain_id=($chain_id)"

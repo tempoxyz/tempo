@@ -824,7 +824,7 @@ jobs:
 
           "${cmd[@]}"
 
-      - name: Generate e2e summary
+      - name: Resolve results directory
         id: results-dir
         if: success()
         run: |
@@ -833,9 +833,31 @@ jobs:
             echo "::error::No results directory found"
             exit 1
           fi
-          nu bench-e2e.nu summarize "$RESULTS_DIR"
           echo "path=$RESULTS_DIR" >> "$GITHUB_OUTPUT"
           echo "Results directory: $RESULTS_DIR"
+
+      - name: Update status (uploading metrics)
+        if: success() && env.BENCH_COMMENT_ID
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
+        with:
+          github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+          script: |
+            const s = require('./.github/scripts/bench-update-status.js');
+            await s({github, context, status: 'Uploading benchmark metrics...'});
+
+      - name: Upload e2e metrics
+        if: success()
+        run: |
+          cmd=(nu bench-e2e.nu upload-metrics "${{ steps.results-dir.outputs.path }}")
+          [ -n "$BENCH_VICTORIAMETRICS_URL" ] && cmd+=(--victoriametrics-url "$BENCH_VICTORIAMETRICS_URL")
+          if [ -n "$CLICKHOUSE_URL" ]; then
+            cmd+=(--clickhouse-url "$CLICKHOUSE_URL" --clickhouse-run "$BENCH_CLICKHOUSE_RUN")
+          fi
+          "${cmd[@]}"
+
+      - name: Generate e2e summary
+        if: success()
+        run: nu bench-e2e.nu summarize "${{ steps.results-dir.outputs.path }}"
 
       - name: Upload results
         if: ${{ !cancelled() }}
