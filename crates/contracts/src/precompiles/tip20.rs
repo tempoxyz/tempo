@@ -179,6 +179,19 @@ crate::sol! {
 }
 
 impl ITIP20::ITIP20Calls {
+    /// Returns the recipient address for the TIP-20 call, if one exists.
+    pub fn to(&self) -> Option<Address> {
+        Some(match self {
+            Self::transfer(c) => c.to,
+            Self::transferWithMemo(c) => c.to,
+            Self::transferFrom(c) => c.to,
+            Self::transferFromWithMemo(c) => c.to,
+            Self::mint(c) => c.to,
+            Self::mintWithMemo(c) => c.to,
+            _ => return None,
+        })
+    }
+
     /// Returns `true` if `input` matches one of the recognized [TIP-20 payment] selectors:
     /// - `transfer` / `transferWithMemo`
     /// - `transferFrom` / `transferFromWithMemo`
@@ -244,6 +257,20 @@ impl ITIP20::ITIP20Calls {
             Self::transferFromWithMemo(c) => [Some(c.from), Some(c.to)],
             Self::mint(c) => [Some(c.to), None],
             Self::mintWithMemo(c) => [Some(c.to), None],
+            _ => [None, None],
+        }
+    }
+
+    /// Returns addresses whose rewards slots are accessed by this call.
+    pub fn reward_addresses(&self, sender: Address) -> [Option<Address>; 2] {
+        match self {
+            Self::transfer(c) => [Some(sender), Some(c.to)],
+            Self::transferWithMemo(c) => [Some(sender), Some(c.to)],
+            Self::transferFrom(c) => [Some(c.from), Some(c.to)],
+            Self::transferFromWithMemo(c) => [Some(c.from), Some(c.to)],
+            Self::mint(c) => [Some(c.to), None],
+            Self::mintWithMemo(c) => [Some(c.to), None],
+            Self::burn(_) | Self::burnWithMemo(_) => [Some(sender), Some(Address::ZERO)],
             _ => [None, None],
         }
     }
