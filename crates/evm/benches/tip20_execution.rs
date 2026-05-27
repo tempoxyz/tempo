@@ -879,10 +879,6 @@ where
 
     let mut stats = ExecutionStats::default();
     for tx in txs {
-        assert!(
-            tx.inner().is_aa(),
-            "tip20 execution bench expects Tempo AA transactions"
-        );
         let output = executor
             .execute_transaction_without_commit(tx)
             .expect("TIP20 transaction execution failed");
@@ -899,8 +895,16 @@ where
     stats
 }
 
+fn assert_aa_transactions(txs: &[Recovered<TempoTxEnvelope>]) {
+    assert!(
+        txs.iter().all(|tx| tx.inner().is_aa()),
+        "tip20 execution bench expects Tempo AA transactions"
+    );
+}
+
 fn tip20_execution(c: &mut Criterion) {
     let workload = workload();
+    assert_aa_transactions(&workload.transactions);
     let hardfork_cases = hardfork_bench_cases();
     let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
 
@@ -941,6 +945,9 @@ fn tip20_execution(c: &mut Criterion) {
     }
 
     let reward_workloads = reward_bench_workloads();
+    for reward_workload in &reward_workloads {
+        assert_aa_transactions(&reward_workload.transactions);
+    }
     for &(label, hardfork) in &hardfork_cases {
         for reward_workload in &reward_workloads {
             let fixture = setup_fixed_cache_state(
