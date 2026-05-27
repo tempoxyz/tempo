@@ -995,11 +995,11 @@ impl TIP20Token {
     }
 
     fn get_balance(&self, account: Address) -> Result<U256> {
-        self.balances[account].read()
+        self.balances.at_uncached(&account).read()
     }
 
     fn set_balance(&mut self, account: Address, amount: U256) -> Result<()> {
-        self.balances[account].write(amount)
+        self.balances.at_uncached(&account).write(amount)
     }
 
     fn get_allowance(&self, owner: Address, spender: Address) -> Result<U256> {
