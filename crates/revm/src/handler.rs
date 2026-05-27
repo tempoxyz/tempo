@@ -277,8 +277,8 @@ fn normalize_failed_batch_result_gas(
         frame_result
             .gas()
             .reservoir()
-            .saturating_add_signed(frame_result.gas().state_gas_spent())
-            .saturating_add_signed(accumulated_state_gas_spent),
+            .saturating_add_signed(accumulated_state_gas_spent)
+            .saturating_add_signed(frame_result.gas().state_gas_spent()),
     );
     *frame_result.gas_mut() = corrected_gas;
 }
