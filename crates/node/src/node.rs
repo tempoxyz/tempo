@@ -67,7 +67,7 @@ pub struct TempoNodeArgs {
     pub builder_state_provider_metrics: bool,
 
     /// Enable prewarming for the payload builder.
-    #[arg(long = "builder.enable-prewarming", default_value_t = false)]
+    #[arg(long = "builder.enable-prewarming", default_value_t = true)]
     pub builder_enable_prewarming: bool,
 }
 
