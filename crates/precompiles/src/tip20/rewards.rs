@@ -290,7 +290,7 @@ impl TIP20Token {
         self.check_not_paused()?;
         self.ensure_transfer_authorized(self.address, msg_sender)?;
 
-        let flag = self.update_rewards_with_checkpoint(msg_sender)?;
+        let flag = self.update_rewards(msg_sender)?;
         let mut info = self.user_reward_info[msg_sender].read()?;
         let amount = info.reward_balance;
         let contract_address = self.address;
@@ -760,16 +760,9 @@ mod tests {
                     "hardfork: {hardfork:?}"
                 );
 
-                // Bob is still opted out, but can claim delegated rewards. The claim should
-                // snapshot the current reward-per-token so Bob doesn't later accrue rewards
-                // retroactively for claimed tokens if he opts in.
+                // Bob is still opted out, but can claim delegated rewards.
                 let claimed = token.claim_rewards(bob)?;
                 assert_eq!(claimed, reward_amount, "hardfork: {hardfork:?}");
-                assert_eq!(
-                    user_rpt(&token, bob)?,
-                    token.get_global_reward_per_token()?,
-                    "hardfork: {hardfork:?}"
-                );
 
                 token
                     .set_reward_recipient(bob, ITIP20::setRewardRecipientCall { recipient: bob })?;
@@ -973,11 +966,11 @@ mod tests {
             distribute(&mut token, admin, rewards)?;
             let rpt_after_first = token.get_global_reward_per_token()?;
 
-            // Charlie has no rewards, but claim still moves his checkpoint to the current RPT.
+            // Charlie has no rewards; claiming while opted out does not checkpoint him.
             assert_claims(&mut token, charlie, U256::ZERO)?;
-            assert_checkpointed(&token, charlie, rpt_after_first)?;
 
-            // After receiving tokens and opting in, Charlie cannot claim retroactive rewards.
+            // Opting in later checkpoints Charlie before adding him to opted-in supply,
+            // so he cannot claim retroactive rewards.
             transfer(&mut token, alice, charlie, U256::ONE)?;
             set_recipient(&mut token, charlie, charlie)?;
             assert_claims(&mut token, charlie, U256::ZERO)?;
@@ -1000,7 +993,6 @@ mod tests {
 
             // Alice claims her accrued rewards and her checkpoint advances to the current RPT.
             assert_claims(&mut token, alice, rewards)?;
-            assert_checkpointed(&token, alice, rpt_after_first)?;
 
             // Claimed tokens are added to Alice's balance and remain opted into rewards.
             assert_eq!(token.get_balance(alice)?.amount(), balance + rewards);
@@ -1027,11 +1019,11 @@ mod tests {
             let rpt_after_first = token.get_global_reward_per_token()?;
             let delegated_reward = token.user_reward_info[bob].reward_balance.read()?;
 
-            // Bob is opted out, but claiming delegated rewards still checkpoints him first.
+            // Bob is opted out, so claiming delegated rewards does not checkpoint him.
             assert_claims(&mut token, bob, delegated_reward)?;
-            assert_checkpointed(&token, bob, rpt_after_first)?;
 
-            // Bob can opt in and receive tokens without retroactively earning Alice's distribution.
+            // Opting in later checkpoints Bob before adding him to opted-in supply,
+            // so he can receive tokens without retroactively earning Alice's distribution.
             set_recipient(&mut token, bob, bob)?;
             assert_claims(&mut token, bob, U256::ZERO)?;
             transfer(&mut token, alice, bob, U256::ONE)?;
