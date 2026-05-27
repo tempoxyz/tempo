@@ -702,11 +702,15 @@ impl TIP403Registry {
         let hardfork = self.storage.spec();
 
         // (spec: +T6) some protocol addresses can't be policed and are always authorized.
-        if ALWAYS_AUTHORIZED
-            .iter()
-            .any(|(fork, addrs)| hardfork >= *fork && addrs.contains(&user))
-        {
-            return Ok(true);
+        if hardfork.is_t6() {
+            if ALWAYS_AUTHORIZED
+                .iter()
+                .any(|(fork, addrs)| hardfork >= *fork && addrs.contains(&user))
+            {
+                return Ok(true);
+            }
+        } else if let Some(auth) = self.builtin_authorization(policy_id) {
+            return Ok(auth);
         }
 
         if let Some(auth) = self.builtin_authorization(policy_id) {
