@@ -19,6 +19,7 @@ use alloy::{
     sol_types::SolValue,
 };
 use std::sync::LazyLock;
+use tempo_chainspec::constants::{mainnet::MAINNET_CHAIN_ID, moderato::TESTNET_CHAIN_ID};
 pub use tempo_contracts::precompiles::{
     ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20ChannelReserveError,
     TIP20ChannelReserveEvent,
@@ -32,7 +33,7 @@ pub const CLOSE_GRACE_PERIOD: u64 = 15 * 60;
 /// EIP-712 type hash for signed cumulative payment vouchers.
 static VOUCHER_TYPEHASH: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"Voucher(bytes32 channelId,uint96 cumulativeAmount)"));
-/// EIP-712 domain type hash used by [`TIP20ChannelReserve::domain_separator_inner`].
+/// EIP-712 domain type hash used by [`TIP20ChannelReserve::domain_separator`].
 static EIP712_DOMAIN_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
 });
@@ -40,6 +41,13 @@ static EIP712_DOMAIN_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
 static NAME_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"TIP20 Channel Reserve"));
 /// EIP-712 domain version hash for the reserve voucher domain.
 static VERSION_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"1"));
+
+/// EIP-712 domain separator for the reserve voucher domain on mainnet.
+static DOMAIN_SEPARATOR_MAINNET: LazyLock<B256> =
+    LazyLock::new(|| domain_separator_inner(MAINNET_CHAIN_ID));
+/// EIP-712 domain separator for the reserve voucher domain on testnet.
+static DOMAIN_SEPARATOR_TESTNET: LazyLock<B256> =
+    LazyLock::new(|| domain_separator_inner(TESTNET_CHAIN_ID));
 
 /// Packed persistent state for one channel.
 ///
@@ -512,7 +520,13 @@ impl TIP20ChannelReserve {
 
     /// Returns the EIP-712 domain separator for this chain and precompile address.
     pub fn domain_separator(&self) -> Result<B256> {
-        self.domain_separator_inner()
+        let hash = match self.storage.chain_id() {
+            MAINNET_CHAIN_ID => *DOMAIN_SEPARATOR_MAINNET,
+            TESTNET_CHAIN_ID => *DOMAIN_SEPARATOR_TESTNET,
+            chain_id => domain_separator_inner(chain_id),
+        };
+
+        Ok(hash)
     }
 
     /// Returns the current block timestamp as `u64`.
@@ -629,7 +643,7 @@ impl TIP20ChannelReserve {
         let struct_hash = self
             .storage
             .keccak256(&(*VOUCHER_TYPEHASH, channel_id, cumulative_amount).abi_encode())?;
-        let domain_separator = self.domain_separator_inner()?;
+        let domain_separator = self.domain_separator()?;
 
         let mut digest_input = [0u8; 66];
         digest_input[0] = 0x19;
@@ -638,20 +652,22 @@ impl TIP20ChannelReserve {
         digest_input[34..66].copy_from_slice(struct_hash.as_slice());
         self.storage.keccak256(&digest_input)
     }
+}
 
-    /// Computes the EIP-712 domain separator.
-    fn domain_separator_inner(&self) -> Result<B256> {
-        self.storage.keccak256(
-            &(
-                *EIP712_DOMAIN_TYPEHASH,
-                *NAME_HASH,
-                *VERSION_HASH,
-                U256::from(self.storage.chain_id()),
-                self.address,
-            )
-                .abi_encode(),
+/// Computes the EIP-712 domain separator.
+///
+/// NOTE: This keccak is unmetered because it is not computed at tx runtime.
+fn domain_separator_inner(chain_id: u64) -> B256 {
+    keccak256(
+        &(
+            *EIP712_DOMAIN_TYPEHASH,
+            *NAME_HASH,
+            *VERSION_HASH,
+            U256::from(chain_id),
+            TIP20_CHANNEL_RESERVE_ADDRESS,
         )
-    }
+            .abi_encode(),
+    )
 }
 
 #[cfg(test)]
