@@ -1460,7 +1460,8 @@ where
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
         let basefee = u128::from(context.block().basefee());
-        let mut effective_gas_price = tx.effective_gas_price(basefee);
+        let prepaid_effective_gas_price = tx.effective_gas_price(basefee);
+        let mut effective_gas_price = prepaid_effective_gas_price;
         let gas = exec_result.gas();
         let gas_used = gas.used().saturating_sub(gas.reservoir());
         if context.cfg.spec.is_t6() && tx.is_discounted_payment() && gas_used <= SSTORE_SET_COST {
@@ -1472,11 +1473,9 @@ where
         }
 
         let actual_spending = calc_gas_balance_spending(gas_used, effective_gas_price);
-        let refund_amount = tx.effective_balance_spending(
-            context.block.basefee.into(),
-            context.block.blob_gasprice().unwrap_or_default(),
-        )? - tx.value
-            - actual_spending;
+        let prepaid_spending =
+            calc_gas_balance_spending(tx.gas_limit(), prepaid_effective_gas_price);
+        let refund_amount = prepaid_spending - actual_spending;
 
         // Skip `collectFeePostTx` call if the initial fee collected in
         // `collectFeePreTx` was zero, but spending is non-zero.
