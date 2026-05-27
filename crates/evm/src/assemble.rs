@@ -2,6 +2,7 @@ use crate::{
     TempoEvmConfig, TempoEvmFactory, block::TempoReceiptBuilder, context::TempoBlockExecutionCtx,
 };
 use alloy_evm::{block::BlockExecutionError, eth::EthBlockExecutorFactory};
+use alloy_primitives::{B256, Bloom};
 use reth_evm::execute::{BlockAssembler, BlockAssemblerInput};
 use reth_evm_ethereum::EthBlockAssembler;
 use reth_primitives_traits::SealedHeader;
@@ -21,15 +22,14 @@ impl TempoBlockAssembler {
             inner: EthBlockAssembler::new(chain_spec),
         }
     }
-}
 
-impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
-    type Block = tempo_primitives::Block;
-
-    fn assemble_block(
+    pub fn assemble_block(
         &self,
         input: BlockAssemblerInput<'_, '_, TempoEvmConfig, TempoHeader>,
-    ) -> Result<Self::Block, BlockExecutionError> {
+        transactions_root: Option<B256>,
+        receipts_root: Option<B256>,
+        receipts_bloom: Option<Bloom>,
+    ) -> Result<tempo_primitives::Block, BlockExecutionError> {
         let BlockAssemblerInput {
             evm_env,
             execution_ctx:
@@ -56,19 +56,24 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
         let timestamp_millis_part = evm_env.block_env.timestamp_millis_part;
 
         // Delegate block building to the inner assembler
-        let block = self.inner.assemble_block(BlockAssemblerInput::<
-            EthBlockExecutorFactory<TempoReceiptBuilder, TempoChainSpec, TempoEvmFactory>,
-        >::new(
-            evm_env,
-            inner,
-            &parent,
-            transactions,
-            output,
-            bundle_state,
-            state_provider,
-            state_root,
-            block_access_list_hash,
-        ))?;
+        let block = self.inner.assemble_block(
+            BlockAssemblerInput::<
+                EthBlockExecutorFactory<TempoReceiptBuilder, TempoChainSpec, TempoEvmFactory>,
+            >::new(
+                evm_env,
+                inner,
+                &parent,
+                transactions,
+                output,
+                bundle_state,
+                state_provider,
+                state_root,
+                block_access_list_hash,
+            ),
+            transactions_root,
+            receipts_root,
+            receipts_bloom,
+        )?;
 
         Ok(block.map_header(|inner| TempoHeader {
             inner,
@@ -77,6 +82,17 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
             shared_gas_limit,
             consensus_context,
         }))
+    }
+}
+
+impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
+    type Block = tempo_primitives::Block;
+
+    fn assemble_block(
+        &self,
+        input: BlockAssemblerInput<'_, '_, TempoEvmConfig, TempoHeader>,
+    ) -> Result<Self::Block, BlockExecutionError> {
+        self.assemble_block(input, None, None, None)
     }
 }
 
@@ -205,9 +221,8 @@ mod tests {
             None,
         );
 
-        let block = assembler
-            .assemble_block(input)
-            .expect("should assemble block");
+        let block =
+            BlockAssembler::assemble_block(&assembler, input).expect("should assemble block");
 
         // Verify block header fields
         assert_eq!(block.header.inner.number, block_number);
@@ -312,9 +327,8 @@ mod tests {
             None,
         );
 
-        let block = assembler
-            .assemble_block(input)
-            .expect("should assemble block");
+        let block =
+            BlockAssembler::assemble_block(&assembler, input).expect("should assemble block");
 
         assert_eq!(block.header.consensus_context, Some(ctx));
     }

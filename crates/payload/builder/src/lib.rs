@@ -8,6 +8,8 @@ mod metrics;
 mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
+use crossbeam_channel::Sender;
+use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
     budget::{
@@ -17,9 +19,10 @@ use crate::{
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
 };
-use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
+use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
 use alloy_eip7928::compute_block_access_list_hash;
-use alloy_primitives::{Address, U256};
+use alloy_eips::eip2718::Encodable2718;
+use alloy_primitives::{Address, B256, Bloom, U256};
 use alloy_rlp::{Decodable, Encodable};
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -35,7 +38,7 @@ use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
     block::{BlockExecutionError, BlockExecutor, BlockValidationError},
-    execute::{BlockAssembler, BlockAssemblerInput},
+    execute::BlockAssemblerInput,
 };
 use reth_execution_types::BlockExecutionOutput;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
@@ -65,7 +68,7 @@ use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, e
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
-    RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
+    RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
@@ -73,6 +76,7 @@ use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
+use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
@@ -302,7 +306,7 @@ where
         let BuildArguments {
             cached_reads,
             execution_cache,
-            trie_handle,
+            mut trie_handle,
             config,
             cancel,
             best_payload,
@@ -343,7 +347,7 @@ where
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
                 execution_cache.cache().clone(),
-                self.cache_metrics.clone(),
+                Some(self.cache_metrics.clone()),
             ));
         }
         if self.state_provider_metrics {
@@ -465,8 +469,6 @@ where
         let evm = self.evm_config.evm_with_env(&mut db, evm_env);
         let mut executor = self.evm_config.create_executor(evm, ctx.clone());
 
-        let mut transactions = vec![];
-
         check_cancel!();
 
         // Override the fee recipient with the on-chain value from the V2
@@ -485,6 +487,8 @@ where
         check_cancel!();
 
         debug!("building new payload");
+
+        let (roots_tx, roots_rx) = self.spawn_roots_task();
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
@@ -665,8 +669,6 @@ where
 
                     // Notify transactions iterator about the new state.
                     best_txs.on_new_result(result);
-
-                    transactions.push(pool_tx.transaction.inner().clone());
                 },
             );
             if let Err(err) = execution_result {
@@ -702,6 +704,10 @@ where
 
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
+            let _ = roots_tx.send((
+                BuilderTx::Pooled(pool_tx),
+                executor.receipts().last().unwrap().clone(),
+            ));
         };
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =
@@ -742,11 +748,11 @@ where
         let subblocks_count = subblocks.len() as f64;
         let mut subblock_transactions = 0f64;
         // Apply subblock transactions
-        for subblock in &subblocks {
+        for subblock in subblocks {
             let subblock_start = Instant::now();
             let mut subblock_tx_count = 0f64;
 
-            for tx in subblock.transactions_recovered() {
+            for tx in subblock.into_recovered_iter() {
                 if let Err(err) = executor.execute_transaction(&tx) {
                     if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                         ..
@@ -766,7 +772,10 @@ where
                 }
 
                 subblock_tx_count += 1.0;
-                transactions.push(tx.cloned());
+                let _ = roots_tx.send((
+                    BuilderTx::Owned(Box::new(tx)),
+                    executor.receipts().last().unwrap().clone(),
+                ));
             }
 
             self.metrics
@@ -799,7 +808,11 @@ where
             executor
                 .execute_transaction(&system_tx)
                 .map_err(PayloadBuilderError::evm)?;
-            transactions.push(system_tx);
+
+            let _ = roots_tx.send((
+                BuilderTx::Owned(Box::new(system_tx)),
+                executor.receipts().last().unwrap().clone(),
+            ));
         }
         drop(_system_txs_span);
         let system_txs_execution_elapsed = system_txs_execution_start.elapsed();
@@ -816,12 +829,25 @@ where
 
         check_cancel!();
 
+        let builder_finish_start = Instant::now();
+
+        // Drop the roots task handle to trigger finalization
+        drop(roots_tx);
+
+        let (evm, execution_result) = executor.finish()?;
+        let evm_env = evm.into_env();
+
+        let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
+            .as_mut()
+            .map(|handle| handle.take_hashed_state_rx().recv())
+        {
+            hashed_state
+        } else {
+            finish_provider.hashed_post_state(&db.bundle_state)
+        };
+
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
             if let Some(mut handle) = trie_handle {
-                // Dropping the hook signals that execution is complete and the sparse trie task can
-                // finalize the state root it has been updating incrementally.
-                executor.set_state_hook(None);
-
                 let state_root_wait_start = Instant::now();
                 match handle.state_root() {
                     Ok(outcome) => {
@@ -852,10 +878,6 @@ where
             }
             .unzip();
 
-        let builder_finish_start = Instant::now();
-        let (evm, execution_result) = executor.finish()?;
-        let evm_env = evm.into_env();
-
         // merge all transitions into bundle state
         db.merge_transitions(BundleRetention::Reverts);
 
@@ -863,8 +885,6 @@ where
         let block_access_list_hash = block_access_list
             .as_ref()
             .map(|bal| compute_block_access_list_hash(bal.as_slice()));
-
-        let hashed_state = finish_provider.hashed_post_state(&db.bundle_state);
 
         let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
@@ -876,12 +896,12 @@ where
             (state_root, Arc::new(trie_updates))
         };
 
-        let (transactions, senders) = transactions.into_iter().map(|tx| tx.into_parts()).unzip();
+        let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
+            .blocking_recv()
+            .map_err(PayloadBuilderError::other)?;
 
-        let block = self
-            .evm_config
-            .block_assembler
-            .assemble_block(BlockAssemblerInput::new(
+        let block = self.evm_config.block_assembler.assemble_block(
+            BlockAssemblerInput::new(
                 evm_env,
                 ctx,
                 &parent_header,
@@ -891,7 +911,11 @@ where
                 &finish_provider,
                 state_root,
                 block_access_list_hash,
-            ))?;
+            ),
+            Some(transactions_root),
+            Some(receipts_root),
+            Some(receipts_bloom),
+        )?;
 
         let block = RecoveredBlock::new_unhashed(block, senders);
 
@@ -1054,6 +1078,56 @@ where
             })
         }
     }
+
+    #[expect(clippy::type_complexity)]
+    fn spawn_roots_task(
+        &self,
+    ) -> (
+        Sender<(BuilderTx, TempoReceipt)>,
+        oneshot::Receiver<(B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>)>,
+    ) {
+        let (transactions_tx, transactions_rx) =
+            crossbeam_channel::unbounded::<(BuilderTx, TempoReceipt)>();
+        let (result_tx, result_rx) = oneshot::channel();
+
+        self.executor.spawn_blocking_named("transactions-root", || {
+            let mut transactions = Vec::new();
+            let mut senders = Vec::new();
+
+            let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
+            let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
+            let mut receipts_bloom = Bloom::ZERO;
+
+            let mut buf = Vec::new();
+
+            for (tx, receipt) in transactions_rx.into_iter() {
+                let (tx, sender) = tx.into_parts();
+                buf.clear();
+                tx.encode_2718(&mut buf);
+                transactions_root.push_next(&buf);
+                transactions.push(tx);
+                senders.push(sender);
+
+                let receipt = receipt.with_bloom_ref();
+
+                buf.clear();
+                receipt.encode_2718(&mut buf);
+                receipts_root.push_next(&buf);
+                receipts_bloom |= receipt.bloom();
+            }
+            let transactions_root = transactions_root.finalize();
+            let receipts_root = receipts_root.finalize();
+            let _ = result_tx.send((
+                transactions_root,
+                receipts_root,
+                receipts_bloom,
+                transactions,
+                senders,
+            ));
+        });
+
+        (transactions_tx, result_rx)
+    }
 }
 
 pub fn is_more_subblocks(
@@ -1127,6 +1201,21 @@ fn maybe_override_fee_recipient<DB: Database>(
         Ok(None) => {}
         Err(err) => {
             warn!(%err, "failed resolving fee recipient from contract; using fallback");
+        }
+    }
+}
+
+#[derive(Debug)]
+enum BuilderTx {
+    Pooled(Arc<ValidPoolTransaction<TempoPooledTransaction>>),
+    Owned(Box<Recovered<TempoTxEnvelope>>),
+}
+
+impl BuilderTx {
+    fn into_parts(self) -> (TempoTxEnvelope, Address) {
+        match self {
+            Self::Pooled(tx) => tx.transaction.inner().clone().into_parts(),
+            Self::Owned(tx) => tx.into_parts(),
         }
     }
 }
