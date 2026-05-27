@@ -32,7 +32,7 @@ use crate::{
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
 };
 use alloy::{
-    primitives::{Address, B256, U256, keccak256, uint},
+    primitives::{Address, B256, IntoLogData, U256, keccak256, uint},
     sol_types::SolValue,
 };
 use std::sync::LazyLock;
@@ -1173,7 +1173,7 @@ impl TIP20Token {
             self.set_balance(to.target, new_to_balance)?;
         }
 
-        self.emit_event(to.build_transfer_event(from, amount))
+        self.emit_transfer_event(from, to.event_address(), amount)
     }
 
     /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
@@ -1323,11 +1323,7 @@ impl TIP20Token {
         refund: U256,
         actual_spending: U256,
     ) -> Result<()> {
-        self.emit_event(TIP20Event::transfer(
-            to,
-            TIP_FEE_MANAGER_ADDRESS,
-            actual_spending,
-        ))?;
+        self.emit_transfer_event(to, TIP_FEE_MANAGER_ADDRESS, actual_spending)?;
 
         // Exit early if there is no refund
         if refund.is_zero() {
@@ -1370,6 +1366,14 @@ impl TIP20Token {
             .checked_add(refund)
             .ok_or(TIP20Error::supply_cap_exceeded())?;
         self.set_balance(to, new_to_balance)
+    }
+
+    #[inline]
+    fn emit_transfer_event(&mut self, from: Address, to: Address, amount: U256) -> Result<()> {
+        self.storage.emit_event(
+            self.address,
+            ITIP20::Transfer { from, to, amount }.into_log_data(),
+        )
     }
 }
 
@@ -1428,7 +1432,12 @@ impl Recipient {
     /// For virtual recipients `to` is the virtual address (first hop); for regular
     /// recipients this is the only `Transfer` event needed.
     pub(crate) fn build_transfer_event(&self, from: Address, amount: U256) -> TIP20Event {
-        TIP20Event::transfer(from, self.virtual_addr.unwrap_or(self.target), amount)
+        TIP20Event::transfer(from, self.event_address(), amount)
+    }
+
+    #[inline]
+    pub(crate) fn event_address(&self) -> Address {
+        self.virtual_addr.unwrap_or(self.target)
     }
 
     /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
