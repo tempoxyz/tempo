@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use alloy_primitives::{Address, TxKind, U256};
+use alloy_primitives::{Address, B256, TxKind, U256};
 use reth_evm::{EvmError, EvmInternals};
 use revm::{
     Database,
@@ -38,7 +38,7 @@ use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
 use tempo_precompiles::{
-    ECRECOVER_GAS,
+    ECRECOVER_GAS, NONCE_PRECOMPILE_ADDRESS,
     account_keychain::{
         AccountKeychain, CallScope as PrecompileCallScope, KeyRestrictions,
         SelectorRule as PrecompileSelectorRule, TokenLimit,
@@ -46,10 +46,11 @@ use tempo_precompiles::{
     error::TempoPrecompileError,
     nonce::{
         EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, INonce::getNonceCall,
-        NonceManager,
+        NonceManager, slots as nonce_slots,
     },
     storage::{
-        Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
+        FromWord, PrecompileStorageProvider, StorageCtx, StorageKey,
+        evm::EvmPrecompileStorageProvider,
     },
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
@@ -1007,59 +1008,118 @@ where
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
-            StorageCtx::enter_evm(journal, block, cfg, tx, || {
-                let mut nonce_manager = NonceManager::new();
-
+            let mark_result = (|| -> Result<(), TempoPrecompileError> {
+                let internals = EvmInternals::new(journal, block, cfg, tx);
+                let mut storage = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
                 let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
-                    let ptr = nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .read()
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
+                    let ptr = <u32 as FromWord>::from_word(storage.sload(
+                        NONCE_PRECOMPILE_ADDRESS,
+                        nonce_slots::EXPIRING_NONCE_RING_PTR,
+                    )?)?;
 
                     let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
 
-                    nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(next)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
+                    storage.sstore(
+                        NONCE_PRECOMPILE_ADDRESS,
+                        nonce_slots::EXPIRING_NONCE_RING_PTR,
+                        U256::from(next),
+                    )?;
 
                     Some(ptr)
                 } else {
                     None
                 };
 
-                nonce_manager
-                    .check_and_mark_expiring_nonce(replay_hash, valid_before)
-                    .map_err(|err| match err {
-                        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                        TempoPrecompileError::NonceError(
-                            tempo_contracts::precompiles::NonceError::InvalidExpiringNonceExpiry(_),
-                        ) => {
-                            let max_allowed =
-                                block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
-                            if valid_before <= block_timestamp {
-                                TempoInvalidTransaction::NonceManagerError(format!(
-                                    "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({block_timestamp})"
-                                ))
-                                .into()
-                            } else {
-                                TempoInvalidTransaction::NonceManagerError(format!(
-                                    "expiring nonce valid_before ({valid_before}) too far in the future: must be within {EXPIRING_NONCE_MAX_EXPIRY_SECS}s of block timestamp ({block_timestamp}), max allowed is {max_allowed}"
-                                ))
-                                .into()
-                            }
-                        }
-                        err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
-                    })?;
-
-                if let Some(prev_ptr) = prev_ptr {
-                    nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(prev_ptr)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
+                if valid_before <= block_timestamp
+                    || valid_before
+                        > block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
+                {
+                    return Err(tempo_contracts::precompiles::NonceError::invalid_expiring_nonce_expiry().into());
                 }
 
-                Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
+                let seen_slot = replay_hash.mapping_slot(nonce_slots::EXPIRING_NONCE_SEEN);
+                let seen_expiry = <u64 as FromWord>::from_word(
+                    storage.sload(NONCE_PRECOMPILE_ADDRESS, seen_slot)?,
+                )?;
+                if seen_expiry != 0 && seen_expiry > block_timestamp {
+                    return Err(tempo_contracts::precompiles::NonceError::expiring_nonce_replay().into());
+                }
+
+                let ptr = <u32 as FromWord>::from_word(storage.sload(
+                    NONCE_PRECOMPILE_ADDRESS,
+                    nonce_slots::EXPIRING_NONCE_RING_PTR,
+                )?)?;
+                let idx = ptr;
+                let ring_slot = idx.mapping_slot(nonce_slots::EXPIRING_NONCE_RING);
+                let old_hash = <B256 as FromWord>::from_word(
+                    storage.sload(NONCE_PRECOMPILE_ADDRESS, ring_slot)?,
+                )?;
+
+                if old_hash != B256::ZERO {
+                    let old_seen_slot =
+                        old_hash.mapping_slot(nonce_slots::EXPIRING_NONCE_SEEN);
+                    let old_expiry = <u64 as FromWord>::from_word(
+                        storage.sload(NONCE_PRECOMPILE_ADDRESS, old_seen_slot)?,
+                    )?;
+                    if old_expiry != 0 && old_expiry > block_timestamp {
+                        return Err(tempo_contracts::precompiles::NonceError::expiring_nonce_set_full().into());
+                    }
+                    storage.sstore(NONCE_PRECOMPILE_ADDRESS, old_seen_slot, U256::ZERO)?;
+                }
+
+                storage.sstore(
+                    NONCE_PRECOMPILE_ADDRESS,
+                    ring_slot,
+                    replay_hash.to_word(),
+                )?;
+                storage.sstore(
+                    NONCE_PRECOMPILE_ADDRESS,
+                    seen_slot,
+                    U256::from(valid_before),
+                )?;
+
+                let next = if ptr + 1 >= EXPIRING_NONCE_SET_CAPACITY {
+                    0
+                } else {
+                    ptr + 1
+                };
+                storage.sstore(
+                    NONCE_PRECOMPILE_ADDRESS,
+                    nonce_slots::EXPIRING_NONCE_RING_PTR,
+                    U256::from(next),
+                )?;
+
+                if let Some(prev_ptr) = prev_ptr {
+                    storage.sstore(
+                        NONCE_PRECOMPILE_ADDRESS,
+                        nonce_slots::EXPIRING_NONCE_RING_PTR,
+                        U256::from(prev_ptr),
+                    )?;
+                }
+
+                Ok(())
+            })();
+
+            mark_result.map_err(|err| match err {
+                TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                TempoPrecompileError::NonceError(
+                    tempo_contracts::precompiles::NonceError::InvalidExpiringNonceExpiry(_),
+                ) => {
+                    let max_allowed =
+                        block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
+                    if valid_before <= block_timestamp {
+                        TempoInvalidTransaction::NonceManagerError(format!(
+                            "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({block_timestamp})"
+                        ))
+                        .into()
+                    } else {
+                        TempoInvalidTransaction::NonceManagerError(format!(
+                            "expiring nonce valid_before ({valid_before}) too far in the future: must be within {EXPIRING_NONCE_MAX_EXPIRY_SECS}s of block timestamp ({block_timestamp}), max allowed is {max_allowed}"
+                        ))
+                        .into()
+                    }
+                }
+                err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
             })?;
         } else if !nonce_key.is_zero() {
             // 2D nonce transaction
