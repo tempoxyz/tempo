@@ -12,6 +12,7 @@ use tempo_precompiles::{
     test_util::{VIRTUAL_MASTER, VIRTUAL_SALT},
 };
 use tempo_primitives::TempoAddressExt;
+use test_case::test_case;
 
 use super::helpers::{
     GAS_LIMIT, GasSnapshot, TempoCalls, TempoTxSender, fixed_signer, print_gas_snapshot,
@@ -566,11 +567,16 @@ async fn run_tip20_transfer_gas_cases<P: Provider + Clone>(
     Ok(gas)
 }
 
+#[test_case(TempoHardfork::T5 ; "t5")]
+#[test_case(TempoHardfork::T6 ; "t6")]
 #[tokio::test(flavor = "multi_thread")]
-async fn test_tip20_transfer_gas_snapshots() -> eyre::Result<()> {
+async fn test_tip20_transfer_gas_snapshots(hardfork: TempoHardfork) -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
-    let setup = TestNodeBuilder::new().build_http_only().await?;
+    let setup = TestNodeBuilder::new()
+        .with_genesis(make_genesis_at(hardfork))
+        .build_http_only()
+        .await?;
     let mut admin = TempoTxSender::connect(setup.http_url.clone(), test_signer(0)?).await?;
     let token = setup_test_token(admin.provider.clone(), admin.address()).await?;
     admin.sync_nonce().await?;
@@ -620,8 +626,15 @@ async fn test_tip20_transfer_gas_snapshots() -> eyre::Result<()> {
 
     let gas = run_tip20_transfer_gas_cases(&mut env, tip20_transfer_gas_cases()).await?;
 
-    print_gas_snapshot("TIP20 transfer gas snapshot", &gas);
-    insta::assert_yaml_snapshot!(gas);
+    let snapshot_name = format!(
+        "tip20_transfer_gas_snapshot_{}",
+        hardfork.name().to_lowercase()
+    );
+    print_gas_snapshot(
+        &format!("TIP20 transfer gas snapshot ({})", hardfork.name()),
+        &gas,
+    );
+    insta::assert_yaml_snapshot!(snapshot_name, gas);
 
     Ok(())
 }
