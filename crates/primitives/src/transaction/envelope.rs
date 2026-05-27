@@ -505,17 +505,11 @@ fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
         Some(to) if *to == TIP20_CHANNEL_RESERVE_ADDRESS => {
             ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment_with_valid_signature(
                 input,
-                is_tip20_channel_reserve_voucher_signature,
+                |signature| super::tt_signature::PrimitiveSignature::from_bytes(signature).is_ok(),
             )
         }
         _ => false,
     }
-}
-
-/// Returns `true` if the voucher signature can be decoded by TIP20ChannelReserve execution.
-#[inline]
-fn is_tip20_channel_reserve_voucher_signature(signature: &[u8]) -> bool {
-    super::tt_signature::PrimitiveSignature::from_bytes(signature).is_ok()
 }
 
 #[cfg(feature = "rpc")]
