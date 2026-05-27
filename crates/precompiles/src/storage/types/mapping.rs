@@ -118,7 +118,7 @@ where
     /// The handler is computed on first access and cached for subsequent accesses.
     fn index(&self, key: K) -> &Self::Output {
         let (base_slot, address) = (self.base_slot, self.address);
-        self.cache.get_or_insert(&key, || {
+        self.cache.get_or_insert_owned(key, |key| {
             V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
         })
     }
@@ -131,7 +131,7 @@ where
     /// Returns a mutable reference to the cached handler for the given key.
     fn index_mut(&mut self, key: K) -> &mut Self::Output {
         let (base_slot, address) = (self.base_slot, self.address);
-        self.cache.get_or_insert_mut(&key, || {
+        self.cache.get_or_insert_owned_mut(key, |key| {
             V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
         })
     }

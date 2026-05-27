@@ -23,7 +23,11 @@ use crate::{
     storage::{StorageOps, packing},
 };
 use alloy::primitives::{Address, U256, keccak256};
-use std::{cell::RefCell, collections::HashMap, hash::Hash};
+use std::{
+    cell::RefCell,
+    collections::{HashMap, hash_map::Entry},
+    hash::Hash,
+};
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -413,6 +417,21 @@ impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
         unsafe { &*(boxed.as_ref() as *const H) }
     }
 
+    /// Returns a reference to a lazily initialized handler, consuming an owned key.
+    #[inline]
+    pub(super) fn get_or_insert_owned(&self, key: K, f: impl FnOnce(&K) -> H) -> &H {
+        let mut cache = self.inner.borrow_mut();
+        let boxed = match cache.entry(key) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let value = Box::new(f(entry.key()));
+                entry.insert(value)
+            }
+        };
+        // SAFETY: Box provides stable heap address. Cache is append-only.
+        unsafe { &*(boxed.as_ref() as *const H) }
+    }
+
     /// Returns a mutable reference to a lazily initialized handler for the given key.
     #[inline]
     pub(super) fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> &mut H {
@@ -423,6 +442,21 @@ impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
             return unsafe { &mut *(boxed.as_mut() as *mut H) };
         }
         let boxed = cache.entry(key.clone()).or_insert_with(|| Box::new(f()));
+        // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
+        unsafe { &mut *(boxed.as_mut() as *mut H) }
+    }
+
+    /// Returns a mutable reference to a lazily initialized handler, consuming an owned key.
+    #[inline]
+    pub(super) fn get_or_insert_owned_mut(&mut self, key: K, f: impl FnOnce(&K) -> H) -> &mut H {
+        let mut cache = self.inner.borrow_mut();
+        let boxed = match cache.entry(key) {
+            Entry::Occupied(entry) => entry.into_mut(),
+            Entry::Vacant(entry) => {
+                let value = Box::new(f(entry.key()));
+                entry.insert(value)
+            }
+        };
         // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
         unsafe { &mut *(boxed.as_mut() as *mut H) }
     }
