@@ -205,6 +205,8 @@ function appendBuilderDetails(lines, summary) {
 function buildMarkdown(summary) {
   const c = summary.classification;
   const derekCommand = summary.config?.derek_command || '';
+  const baselineRemovedArgs = summary.config?.baseline_removed_args || '';
+  const featureRemovedArgs = summary.config?.feature_removed_args || '';
   const lines = [
     `# ${c.emoji} Bench Comparison: ${c.label}`,
     '',
@@ -218,6 +220,8 @@ function buildMarkdown(summary) {
     `- Target TPS: ${summary.config.tps}`,
     `- Duration: ${summary.config.duration}s`,
     `- Run pairs: ${summary.config.run_pairs}`,
+    ...(baselineRemovedArgs ? [`- Baseline removed args: \`${baselineRemovedArgs}\``] : []),
+    ...(featureRemovedArgs ? [`- Feature removed args: \`${featureRemovedArgs}\``] : []),
     `- Baseline blocks: ${summary.results.baseline.blocks}`,
     `- Feature blocks: ${summary.results.feature.blocks}`,
     '',

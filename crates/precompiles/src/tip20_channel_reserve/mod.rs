@@ -11,7 +11,7 @@ use crate::{
     error::Result,
     signature_verifier::SignatureVerifier,
     storage::{Handler, Mapping},
-    tip20::{ITIP20, TIP20Token, is_tip20_prefix},
+    tip20::{ITIP20, Recipient, TIP20Token, is_tip20_prefix},
     tip403_registry::AuthRole,
 };
 use alloy::{
@@ -19,6 +19,7 @@ use alloy::{
     sol_types::SolValue,
 };
 use std::sync::LazyLock;
+use tempo_chainspec::constants::{mainnet::MAINNET_CHAIN_ID, moderato::MODERATO_CHAIN_ID};
 pub use tempo_contracts::precompiles::{
     ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20ChannelReserveError,
     TIP20ChannelReserveEvent,
@@ -32,7 +33,7 @@ pub const CLOSE_GRACE_PERIOD: u64 = 15 * 60;
 /// EIP-712 type hash for signed cumulative payment vouchers.
 static VOUCHER_TYPEHASH: LazyLock<B256> =
     LazyLock::new(|| keccak256(b"Voucher(bytes32 channelId,uint96 cumulativeAmount)"));
-/// EIP-712 domain type hash used by [`TIP20ChannelReserve::domain_separator_inner`].
+/// EIP-712 domain type hash used by [`TIP20ChannelReserve::domain_separator`].
 static EIP712_DOMAIN_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
     keccak256(b"EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)")
 });
@@ -40,6 +41,13 @@ static EIP712_DOMAIN_TYPEHASH: LazyLock<B256> = LazyLock::new(|| {
 static NAME_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"TIP20 Channel Reserve"));
 /// EIP-712 domain version hash for the reserve voucher domain.
 static VERSION_HASH: LazyLock<B256> = LazyLock::new(|| keccak256(b"1"));
+
+/// EIP-712 domain separator for the reserve voucher domain on mainnet.
+static DOMAIN_SEPARATOR_MAINNET: LazyLock<B256> =
+    LazyLock::new(|| domain_separator_inner(MAINNET_CHAIN_ID));
+/// EIP-712 domain separator for the reserve voucher domain on testnet.
+static DOMAIN_SEPARATOR_TESTNET: LazyLock<B256> =
+    LazyLock::new(|| domain_separator_inner(MODERATO_CHAIN_ID));
 
 /// Packed persistent state for one channel.
 ///
@@ -145,7 +153,7 @@ impl TIP20ChannelReserve {
             return Err(TIP20ChannelReserveError::channel_already_exists().into());
         }
 
-        token.ensure_authorized_as(call.payee, AuthRole::Recipient)?;
+        token.ensure_authorized_as(Recipient::resolve(call.payee)?.target, AuthRole::Recipient)?;
         token.system_transfer_from(self.address, msg_sender, U256::from(call.deposit))?;
 
         self.channel_states[channel_id].write(PackedChannelState {
@@ -249,17 +257,24 @@ impl TIP20ChannelReserve {
         }
 
         let additional = call.additionalDeposit;
-        let next_deposit = state
-            .deposit
-            .checked_add(additional)
-            .ok_or_else(TIP20ChannelReserveError::deposit_overflow)?;
-
         let had_close_request = state.close_requested_at().is_some();
 
+        if additional.is_zero() && !had_close_request {
+            return Ok(());
+        }
+
         if !additional.is_zero() {
+            let next_deposit = state
+                .deposit
+                .checked_add(additional)
+                .ok_or_else(TIP20ChannelReserveError::deposit_overflow)?;
+
             state.deposit = next_deposit;
             let mut token = TIP20Token::from_address(call.descriptor.token)?;
-            token.ensure_authorized_as(call.descriptor.payee, AuthRole::Recipient)?;
+            token.ensure_authorized_as(
+                Recipient::resolve(call.descriptor.payee)?.target,
+                AuthRole::Recipient,
+            )?;
             token.system_transfer_from(
                 self.address,
                 msg_sender,
@@ -515,7 +530,13 @@ impl TIP20ChannelReserve {
 
     /// Returns the EIP-712 domain separator for this chain and precompile address.
     pub fn domain_separator(&self) -> Result<B256> {
-        self.domain_separator_inner()
+        let hash = match self.storage.chain_id() {
+            MAINNET_CHAIN_ID => *DOMAIN_SEPARATOR_MAINNET,
+            MODERATO_CHAIN_ID => *DOMAIN_SEPARATOR_TESTNET,
+            chain_id => domain_separator_inner(chain_id),
+        };
+
+        Ok(hash)
     }
 
     /// Returns the current block timestamp as `u64`.
@@ -632,7 +653,7 @@ impl TIP20ChannelReserve {
         let struct_hash = self
             .storage
             .keccak256(&(*VOUCHER_TYPEHASH, channel_id, cumulative_amount).abi_encode())?;
-        let domain_separator = self.domain_separator_inner()?;
+        let domain_separator = self.domain_separator()?;
 
         let mut digest_input = [0u8; 66];
         digest_input[0] = 0x19;
@@ -641,20 +662,22 @@ impl TIP20ChannelReserve {
         digest_input[34..66].copy_from_slice(struct_hash.as_slice());
         self.storage.keccak256(&digest_input)
     }
+}
 
-    /// Computes the EIP-712 domain separator.
-    fn domain_separator_inner(&self) -> Result<B256> {
-        self.storage.keccak256(
-            &(
-                *EIP712_DOMAIN_TYPEHASH,
-                *NAME_HASH,
-                *VERSION_HASH,
-                U256::from(self.storage.chain_id()),
-                self.address,
-            )
-                .abi_encode(),
+/// Computes the EIP-712 domain separator.
+///
+/// NOTE: This keccak is unmetered because it is not computed at tx runtime.
+fn domain_separator_inner(chain_id: u64) -> B256 {
+    keccak256(
+        (
+            *EIP712_DOMAIN_TYPEHASH,
+            *NAME_HASH,
+            *VERSION_HASH,
+            U256::from(chain_id),
+            TIP20_CHANNEL_RESERVE_ADDRESS,
         )
-    }
+            .abi_encode(),
+    )
 }
 
 #[cfg(test)]
@@ -662,8 +685,12 @@ mod tests {
     use super::*;
     use crate::{
         Precompile,
+        address_registry::AddressRegistry,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
+        test_util::{
+            TIP20Setup, VIRTUAL_MASTER, assert_full_coverage, check_selector_coverage,
+            register_virtual_master,
+        },
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
     use alloy::{
@@ -676,7 +703,6 @@ mod tests {
     use tempo_contracts::precompiles::{
         ITIP20ChannelReserve::ITIP20ChannelReserveCalls, TIP20Error,
     };
-    use tempo_primitives::{MasterId, UserTag};
 
     fn descriptor(
         payer: Address,
@@ -826,13 +852,13 @@ mod tests {
     fn test_open_rejects_invalid_payees() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let payer = Address::random();
-        let virtual_payee = Address::new_virtual(MasterId::random(), UserTag::random());
 
         StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::path_usd(payer)
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
+            let (_, virtual_payee) = register_virtual_master(&mut AddressRegistry::new())?;
             let mut reserve = TIP20ChannelReserve::new();
             reserve.initialize()?;
             seed_expiring_nonce_hash(&mut reserve)?;
@@ -869,6 +895,84 @@ mod tests {
                     Address::ZERO,
                 ),
             )?;
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_virtual_payee_admission_checks_resolved_master() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let payer = Address::random();
+        let admin = payer;
+        let operator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(payer, U256::from(1_000u128))
+                .apply()?;
+            let (mut registry, _sender_policy, recipient_policy) =
+                install_blacklist_policy(&mut token, admin)?;
+            let (_, virtual_payee) = register_virtual_master(&mut AddressRegistry::new())?;
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+
+            // Admission must check the effective recipient, not just the virtual alias.
+            set_blacklisted(&mut registry, admin, recipient_policy, VIRTUAL_MASTER, true)?;
+            seed_expiring_nonce_hash(&mut reserve)?;
+            let res = reserve.open(
+                payer,
+                open_call(
+                    virtual_payee,
+                    operator,
+                    token.address(),
+                    100,
+                    B256::random(),
+                    Address::ZERO,
+                ),
+            );
+            assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
+
+            // Top-ups must enforce the same resolved-recipient admission check.
+            set_blacklisted(
+                &mut registry,
+                admin,
+                recipient_policy,
+                VIRTUAL_MASTER,
+                false,
+            )?;
+            let salt = B256::random();
+            let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
+            reserve.open(
+                payer,
+                open_call(
+                    virtual_payee,
+                    operator,
+                    token.address(),
+                    100,
+                    salt,
+                    Address::ZERO,
+                ),
+            )?;
+            let descriptor = descriptor(
+                payer,
+                virtual_payee,
+                operator,
+                token.address(),
+                salt,
+                Address::ZERO,
+                expiring_nonce_hash,
+            );
+
+            set_blacklisted(&mut registry, admin, recipient_policy, VIRTUAL_MASTER, true)?;
+            let res = reserve.top_up(
+                payer,
+                ITIP20ChannelReserve::topUpCall {
+                    descriptor,
+                    additionalDeposit: U96::from(1),
+                },
+            );
+            assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
             Ok(())
         })
     }
@@ -1395,6 +1499,66 @@ mod tests {
             assert_eq!(
                 result.unwrap_err(),
                 TIP20ChannelReserveError::not_payee_or_operator().into()
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_zero_top_up_without_close_request_is_noop() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let payer = Address::random();
+        let payee = Address::random();
+        let salt = B256::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::path_usd(payer)
+                .with_issuer(payer)
+                .with_mint(payer, U256::from(1_000u128))
+                .apply()?;
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+
+            let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
+            let descriptor = descriptor(
+                payer,
+                payee,
+                Address::ZERO,
+                token.address(),
+                salt,
+                Address::ZERO,
+                expiring_nonce_hash,
+            );
+            reserve.open(
+                payer,
+                open_call(
+                    payee,
+                    Address::ZERO,
+                    token.address(),
+                    100,
+                    salt,
+                    Address::ZERO,
+                ),
+            )?;
+            reserve.clear_emitted_events();
+
+            reserve.top_up(
+                payer,
+                ITIP20ChannelReserve::topUpCall {
+                    descriptor: descriptor.clone(),
+                    additionalDeposit: U96::ZERO,
+                },
+            )?;
+
+            let channel =
+                reserve.get_channel(ITIP20ChannelReserve::getChannelCall { descriptor })?;
+            assert_eq!(channel.state.closeRequestedAt, 0);
+            assert_eq!(channel.state.deposit, 100);
+            assert!(
+                StorageCtx
+                    .get_events(TIP20_CHANNEL_RESERVE_ADDRESS)
+                    .is_empty()
             );
 
             Ok(())

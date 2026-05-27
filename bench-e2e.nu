@@ -26,11 +26,67 @@ const E2E_LOCAL_RETH_ARGS = [
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
     "--consensus.no-legacy-archive"
-    "--builder.max-tasks" "1"
-    "--engine.share-sparse-trie-with-payload-builder"
-    "--engine.share-execution-cache-with-payload-builder"
-    "--builder.enable-prewarming"
 ]
+
+def tempo-node-help [tempo_bin: string] {
+    let result = (run-external $tempo_bin "node" "--help" | complete)
+    if $result.exit_code != 0 {
+        print $"Error: failed to inspect supported tempo node args for ($tempo_bin)"
+        if $result.stdout != "" { print $result.stdout }
+        if $result.stderr != "" { print $result.stderr }
+        exit $result.exit_code
+    }
+    [$result.stdout $result.stderr] | str join "\n"
+}
+
+def supported-node-arg-filter [tempo_bin: string, args: list<string>] {
+    let help = (tempo-node-help $tempo_bin)
+    mut supported = []
+    mut removed = []
+    mut skip_next_value = false
+    for arg in $args {
+        if $skip_next_value {
+            if not ($arg starts-with "--") {
+                $removed = ($removed | append $arg)
+                $skip_next_value = false
+                continue
+            }
+            $skip_next_value = false
+        }
+        if not ($arg starts-with "--") {
+            $supported = ($supported | append $arg)
+            continue
+        }
+
+        let key = ($arg | split row "=" | first)
+        if ($help | str contains $key) {
+            $supported = ($supported | append $arg)
+        } else {
+            print $"Skipping unsupported tempo node arg for ($tempo_bin): ($key)"
+            $removed = ($removed | append $arg)
+            if not ($arg | str contains "=") {
+                $skip_next_value = true
+            }
+        }
+    }
+    { supported: $supported, removed: $removed }
+}
+
+def format-removed-node-arg-config [label: string, removed: list<string>] {
+    if ($removed | is-empty) {
+        ""
+    } else {
+        $", ($label)-removed-args: `($removed | str join ' ')`"
+    }
+}
+
+def removed-node-args-label [removed: list<string>] {
+    if ($removed | is-empty) {
+        ""
+    } else {
+        $removed | str join " "
+    }
+}
 
 def run-bench-schelk [...args: string] {
     let result = (nu $BENCH_SCHELK_SCRIPT ...$args | complete)
@@ -729,6 +785,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
     let extra_args = (parse-cli-args $side_args)
+    let local_reth_args = if $run_type == "baseline" { $ctx.baseline_local_reth_args } else { $ctx.feature_local_reth_args }
 
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
@@ -741,8 +798,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
         }
     }
     if $hardfork != "" or $ctx.gas_limit != "" {
-        e2e-regenesis $run.tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit
-        e2e-regenesis $run.tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit
+        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit
+        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit
     }
     for role_info in [
         { role: "a", node_dir: $ctx.a.node_dir }
@@ -781,14 +838,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let b_rpc = "http://127.0.0.1:8645"
     let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
         | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
-        | append $E2E_LOCAL_RETH_ARGS
+        | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
         | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
-        | append $E2E_LOCAL_RETH_ARGS
+        | append $local_reth_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
@@ -956,6 +1013,8 @@ def e2e-write-summary-config [
     reference_epoch: int
     baseline_hardfork: string
     feature_hardfork: string
+    baseline_removed_args: string
+    feature_removed_args: string
 ] {
     {
         baseline_label: $baseline_label
@@ -968,6 +1027,8 @@ def e2e-write-summary-config [
         reference_epoch: $reference_epoch
         baseline_hardfork: $baseline_hardfork
         feature_hardfork: $feature_hardfork
+        baseline_removed_args: $baseline_removed_args
+        feature_removed_args: $feature_removed_args
     } | to json | save -f $"($results_dir)/summary-config.json"
 }
 
@@ -982,6 +1043,14 @@ def e2e-generate-summary [results_dir: string] {
     let baseline_hardfork = ($config | get -o baseline_hardfork | default "")
     let feature_hardfork = ($config | get -o feature_hardfork | default "")
     generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int) --baseline-hardfork $baseline_hardfork --feature-hardfork $feature_hardfork
+    let summary_path = $"($results_dir)/summary.json"
+    if ($summary_path | path exists) {
+        let baseline_removed_args = ($config | get -o baseline_removed_args | default "")
+        let feature_removed_args = ($config | get -o feature_removed_args | default "")
+        let summary = (open $summary_path)
+        let summary = ($summary | upsert config ($summary.config | upsert baseline_removed_args $baseline_removed_args | upsert feature_removed_args $feature_removed_args))
+        $summary | to json | save -f $summary_path
+    }
 
     with-env {
         GITHUB_TOKEN: ""
@@ -1223,7 +1292,9 @@ def "main e2e" [
     mkdir $BENCH_WORKTREES_DIR
     let baseline_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-baseline"
     let feature_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-feature"
-    for wt in [$baseline_wt $feature_wt] {
+    let regenesis_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-regenesis-main"
+    let regenesis_needed = $hardfork_mode or $gas_limit != ""
+    for wt in [$baseline_wt $feature_wt $regenesis_wt] {
         if ($wt | path exists) {
             print $"Removing stale local e2e worktree: ($wt)"
             try { git worktree remove --force $wt } catch { rm -rf $wt }
@@ -1231,17 +1302,27 @@ def "main e2e" [
     }
     git worktree add $baseline_wt $baseline
     git worktree add $feature_wt $feature
+    if $regenesis_needed {
+        print "Fetching latest origin/main for tempo regenesis..."
+        git fetch origin main
+        git worktree add $regenesis_wt origin/main
+    }
 
     let tbc = (tracy-build-config $features $tracy)
     let effective_features = $tbc.features
     let effective_extra_rustflags = $tbc.extra_rustflags
     let effective_no_cache = $no_cache or ($tracy != "off")
-    # Build baseline and feature in parallel — they use separate worktrees
+    # Build benchmark binaries in parallel. Regenesis uses latest origin/main so
+    # snapshot rewriting is independent of either side being benchmarked.
     # with independent target/ directories, so cargo invocations don't collide.
-    let builds = [
+    mut builds = [
         { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline" }
         { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature" }
     ]
+    let regenesis_sha = if $regenesis_needed { git rev-parse origin/main | str trim } else { "" }
+    if $regenesis_needed {
+        $builds = ($builds | append { wt: $regenesis_wt, ref_name: "origin/main", sha: $regenesis_sha, label: "regenesis-main" })
+    }
     $builds | par-each { |b|
         if $effective_no_cache {
             build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $effective_extra_rustflags --bench-features $features $b.wt $b.ref_name $profile $effective_features $b.sha
@@ -1251,6 +1332,19 @@ def "main e2e" [
     } | ignore
     let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
     let feature_tempo = (worktree-bin $feature_wt $profile "tempo")
+    let regenesis_tempo = if $regenesis_needed { worktree-bin $regenesis_wt $profile "tempo" } else { "" }
+    let baseline_arg_filter = (supported-node-arg-filter $baseline_tempo $E2E_LOCAL_RETH_ARGS)
+    let feature_arg_filter = (supported-node-arg-filter $feature_tempo $E2E_LOCAL_RETH_ARGS)
+    let removed_arg_config = $"(format-removed-node-arg-config 'baseline' $baseline_arg_filter.removed)(format-removed-node-arg-config 'feature' $feature_arg_filter.removed)"
+    if $removed_arg_config != "" {
+        let current_config = ($env | get -o BENCH_CONFIG | default "")
+        let updated_config = $"($current_config)($removed_arg_config)"
+        $env.BENCH_CONFIG = $updated_config
+        let github_env = ($env | get -o GITHUB_ENV | default "")
+        if $github_env != "" {
+            $"BENCH_CONFIG=($updated_config)\n" | save --append $github_env
+        }
+    }
     let txgen = txgen-resolve-binaries
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
     let ctx = {
@@ -1307,6 +1401,9 @@ def "main e2e" [
         tune: $tune
         loud: $loud
         gas_limit: $gas_limit
+        baseline_local_reth_args: $baseline_arg_filter.supported
+        feature_local_reth_args: $feature_arg_filter.supported
+        regenesis_tempo: $regenesis_tempo
         tracing_otlp: $tracing_otlp
     }
 
@@ -1345,7 +1442,7 @@ def "main e2e" [
         exit 1
     }
     $valid_run_labels | str join "\n" | save -f $"($results_dir)/run-order.txt"
-    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $baseline_hardfork_name $feature_hardfork_name
+    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $baseline_hardfork_name $feature_hardfork_name (removed-node-args-label $baseline_arg_filter.removed) (removed-node-args-label $feature_arg_filter.removed)
     let num_phases = ($runs | length)
     mut e2e_exit = 0
     for idx in 0..<$num_phases {
@@ -1388,6 +1485,7 @@ def "main e2e" [
 
     try { git worktree remove --force $baseline_wt } catch { }
     try { git worktree remove --force $feature_wt } catch { }
+    try { git worktree remove --force $regenesis_wt } catch { }
     cleanup-local-e2e-processes
     bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db

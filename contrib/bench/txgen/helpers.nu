@@ -120,7 +120,7 @@ def txgen-bloat-accounts-per-token [bloat_mib: int, token_count: int] {
     (($available_for_balances / 64) / $token_count) | into int
 }
 
-def txgen-configure-existing-recipients-env [preset_path: string, bloat_mib: int, token_count: int] {
+def --env txgen-configure-existing-recipients-env [preset_path: string, bloat_mib: int, token_count: int] {
     let preset_name = ($preset_path | path basename | str replace --regex '\.yml$' '')
     if $preset_name != $TXGEN_HELPER_EXISTING_RECIPIENTS_PRESET {
         return

@@ -125,7 +125,8 @@ pub mod gas {
 }
 
 pub mod mainnet {
-    //! Tempo mainnet (Presto) hardfork activation constants.
+    //! Tempo mainnet (Presto) chain id and hardfork activation constants.
+    pub const MAINNET_CHAIN_ID: u64 = 4217;
 
     /// Genesis activation block.
     pub const MAINNET_GENESIS_BLOCK: u64 = 0;
@@ -170,7 +171,8 @@ pub mod mainnet {
 }
 
 pub mod moderato {
-    //! Moderato testnet hardfork activation constants.
+    //! Moderato testnet chain id and hardfork activation constants.
+    pub const MODERATO_CHAIN_ID: u64 = 42431;
 
     /// Genesis activation block.
     pub const MODERATO_GENESIS_BLOCK: u64 = 0;
