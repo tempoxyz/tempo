@@ -10,7 +10,9 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_evm::FromRecoveredTx;
-use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes, map::AddressMap};
+use alloy_primitives::{
+    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
+};
 use alloy_sol_types::SolInterface;
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered};
@@ -29,6 +31,7 @@ use tempo_precompiles::{
     nonce::NonceManager,
     storage::StorageKey,
     tip20::{TIP20Token, tip20_slots},
+    tip403_registry::tip403_registry_slots,
 };
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
@@ -351,46 +354,71 @@ impl TempoPooledTransaction {
     }
 
     /// Warms the global keccak cache with storage slot hashes that will be accessed
-    /// during block building (TIP-20 balance/reward slots, fee manager mappings).
+    /// during payment execution after pool validation.
     ///
-    /// Fee manager slots like `user_tokens[fee_payer]` and `validator_tokens[beneficiary]`
-    /// are not warmed here: the former is already cached from `validate_with_evm`, and the
-    /// latter depends on the block producer which is unknown at validation time.
+    /// Fee-path slots like `balances[fee_payer]`, `user_reward_info[fee_payer]`,
+    /// `user_tokens[fee_payer]`, and `expiring_nonce_seen[hash]` are already cached from
+    /// `validate_with_evm`. `validator_tokens[beneficiary]` depends on the block producer,
+    /// which is unknown at validation time.
     pub fn precalculate_keccak_slots(&self) {
+        if !self.is_payment {
+            return;
+        }
+
         let sender = self.sender();
         let fee_payer = self.inner().fee_payer(sender).unwrap_or(sender);
-        fee_payer.mapping_slot(tip20_slots::BALANCES);
-        fee_payer.mapping_slot(tip20_slots::USER_REWARD_INFO);
+        let fee_collection_warms_fee_payer_rewards = !self.fee_token_cost.is_zero();
 
         // For payment transactions, warm sender + recipient balance and allowance slots.
-        if self.is_payment {
-            if fee_payer != sender {
-                sender.mapping_slot(tip20_slots::BALANCES);
-            }
-            for (_kind, input) in self.inner().calls() {
-                if let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) {
-                    for addr in call.balance_addresses().into_iter().flatten() {
+        if fee_payer != sender {
+            sender.mapping_slot(tip20_slots::BALANCES);
+        }
+        for (_kind, input) in self.inner().calls() {
+            if let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) {
+                for addr in call.balance_addresses().into_iter().flatten() {
+                    if addr != fee_payer {
                         addr.mapping_slot(tip20_slots::BALANCES);
                     }
-                    for addr in reward_account_addresses(sender, &call)
-                        .into_iter()
-                        .flatten()
-                    {
-                        addr.mapping_slot(tip20_slots::USER_REWARD_INFO);
+                }
+                for addr in reward_account_addresses(sender, &call)
+                    .into_iter()
+                    .flatten()
+                {
+                    if fee_collection_warms_fee_payer_rewards && addr == fee_payer {
+                        continue;
                     }
-                    // Allowance slots for transferFrom variants: allowances[from][sender]
-                    let from = match &call {
-                        ITIP20::ITIP20Calls::transferFrom(c) => Some(c.from),
-                        ITIP20::ITIP20Calls::transferFromWithMemo(c) => Some(c.from),
-                        _ => None,
-                    };
-                    if let Some(from) = from {
-                        sender.mapping_slot(from.mapping_slot(tip20_slots::ALLOWANCES));
-                    }
+                    addr.mapping_slot(tip20_slots::USER_REWARD_INFO);
+                }
+                if let Some(slot) = receive_policy_slot_for_tip20_call(&call) {
+                    let _ = keccak256(slot.to_be_bytes::<32>());
+                }
+
+                // Allowance slots for transferFrom variants: allowances[from][sender]
+                let from = match &call {
+                    ITIP20::ITIP20Calls::transferFrom(c) => Some(c.from),
+                    ITIP20::ITIP20Calls::transferFromWithMemo(c) => Some(c.from),
+                    _ => None,
+                };
+                if let Some(from) = from {
+                    sender.mapping_slot(from.mapping_slot(tip20_slots::ALLOWANCES));
                 }
             }
         }
     }
+}
+
+fn receive_policy_slot_for_tip20_call(call: &ITIP20::ITIP20Calls) -> Option<U256> {
+    let receiver = match call {
+        ITIP20::ITIP20Calls::transfer(c) => c.to,
+        ITIP20::ITIP20Calls::transferWithMemo(c) => c.to,
+        ITIP20::ITIP20Calls::transferFrom(c) => c.to,
+        ITIP20::ITIP20Calls::transferFromWithMemo(c) => c.to,
+        ITIP20::ITIP20Calls::mint(c) => c.to,
+        ITIP20::ITIP20Calls::mintWithMemo(c) => c.to,
+        _ => return None,
+    };
+
+    Some(receiver.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES))
 }
 
 /// Returns accounts whose `user_reward_info` mapping slots are touched by TIP-20 reward accounting.
@@ -996,6 +1024,65 @@ mod tests {
         let slot2 = tx.nonce_key_slot();
         assert_eq!(slot2, Some(expected_slot));
         assert_eq!(slot1, slot2);
+    }
+
+    #[test]
+    fn test_precalculate_keccak_slots_skips_expiring_nonce_slot() {
+        let sender = Address::random();
+        let tx = TxBuilder::aa(sender)
+            .nonce_key(U256::MAX)
+            .valid_before(123)
+            .build();
+
+        assert!(tx.expiring_nonce_slot.get().is_none());
+
+        tx.precalculate_keccak_slots();
+
+        assert!(tx.expiring_nonce_slot.get().is_none());
+    }
+
+    #[test]
+    fn test_receive_policy_slot_for_tip20_call() {
+        let to = Address::random();
+        let from = Address::random();
+        let amount = U256::from(1);
+        let memo = B256::random();
+        let expected = to.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES);
+
+        let guarded_calls = [
+            ITIP20::ITIP20Calls::transfer(ITIP20::transferCall { to, amount }),
+            ITIP20::ITIP20Calls::transferWithMemo(ITIP20::transferWithMemoCall {
+                to,
+                amount,
+                memo,
+            }),
+            ITIP20::ITIP20Calls::transferFrom(ITIP20::transferFromCall { from, to, amount }),
+            ITIP20::ITIP20Calls::transferFromWithMemo(ITIP20::transferFromWithMemoCall {
+                from,
+                to,
+                amount,
+                memo,
+            }),
+            ITIP20::ITIP20Calls::mint(ITIP20::mintCall { to, amount }),
+            ITIP20::ITIP20Calls::mintWithMemo(ITIP20::mintWithMemoCall { to, amount, memo }),
+        ];
+
+        for call in guarded_calls {
+            assert_eq!(receive_policy_slot_for_tip20_call(&call), Some(expected));
+        }
+
+        let unguarded_calls = [
+            ITIP20::ITIP20Calls::approve(ITIP20::approveCall {
+                spender: to,
+                amount,
+            }),
+            ITIP20::ITIP20Calls::burn(ITIP20::burnCall { amount }),
+            ITIP20::ITIP20Calls::burnWithMemo(ITIP20::burnWithMemoCall { amount, memo }),
+        ];
+
+        for call in unguarded_calls {
+            assert_eq!(receive_policy_slot_for_tip20_call(&call), None);
+        }
     }
 
     #[test]
