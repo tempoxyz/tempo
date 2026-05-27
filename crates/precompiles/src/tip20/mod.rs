@@ -1285,14 +1285,7 @@ impl TIP20Token {
 
         // If user is opted into rewards, decrease opted-in supply
         if from_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_sub(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
+            self.decrease_opted_in_supply(amount)?;
         }
 
         let new_from_balance =
@@ -1343,14 +1336,7 @@ impl TIP20Token {
 
         // If user is opted into rewards, increase opted-in supply by refund amount
         if to_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(refund)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
+            self.increase_opted_in_supply(refund)?;
         }
 
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
