@@ -1473,10 +1473,11 @@ mod tests {
             .setup_storage(TempoHardfork::default(), || {
                 let mut keychain = AccountKeychain::new();
                 keychain.keys[account][key_id].write(AuthorizedKey {
-                    signature_type: 0,
+                    signature_type: StoredSignatureType::Secp256k1,
                     expiry: u64::MAX,
                     enforce_limits: true,
                     is_revoked: false,
+                    is_admin: false,
                 })?;
                 let limit_key = AccountKeychain::spending_limit_key(account, key_id);
                 keychain.spending_limits[limit_key][fee_token].write(SpendingLimitState {

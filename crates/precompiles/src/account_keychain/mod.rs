@@ -57,8 +57,8 @@ pub fn is_constrained_tip20_selector(selector: [u8; 4]) -> bool {
 /// - byte 11: is_admin (bool)
 #[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
 pub struct AuthorizedKey {
-    /// Signature type: 0 = secp256k1, 1 = P256, 2 = WebAuthn
-    pub signature_type: u8,
+    /// Signature type used by this key.
+    pub signature_type: StoredSignatureType,
     /// Block timestamp when key expires
     pub expiry: u64,
     /// Whether to enforce spending limits for this key
@@ -70,14 +70,13 @@ pub struct AuthorizedKey {
     pub is_admin: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
-struct StoredSignatureType(u8);
-
-impl StoredSignatureType {
-    #[inline]
-    const fn as_u8(self) -> u8 {
-        self.0
-    }
+#[repr(u8)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
+pub enum StoredSignatureType {
+    #[default]
+    Secp256k1,
+    P256,
+    WebAuthn,
 }
 
 impl TryFrom<SignatureType> for StoredSignatureType {
@@ -85,9 +84,9 @@ impl TryFrom<SignatureType> for StoredSignatureType {
 
     fn try_from(value: SignatureType) -> std::result::Result<Self, Self::Error> {
         match value {
-            SignatureType::Secp256k1 => Ok(Self(0)),
-            SignatureType::P256 => Ok(Self(1)),
-            SignatureType::WebAuthn => Ok(Self(2)),
+            SignatureType::Secp256k1 => Ok(Self::Secp256k1),
+            SignatureType::P256 => Ok(Self::P256),
+            SignatureType::WebAuthn => Ok(Self::WebAuthn),
             _ => Err(AccountKeychainError::invalid_signature_type().into()),
         }
     }
@@ -95,11 +94,10 @@ impl TryFrom<SignatureType> for StoredSignatureType {
 
 impl From<StoredSignatureType> for SignatureType {
     fn from(value: StoredSignatureType) -> Self {
-        match value.0 {
-            0 => Self::Secp256k1,
-            1 => Self::P256,
-            2 => Self::WebAuthn,
-            _ => Self::Secp256k1,
+        match value {
+            StoredSignatureType::Secp256k1 => Self::Secp256k1,
+            StoredSignatureType::P256 => Self::P256,
+            StoredSignatureType::WebAuthn => Self::WebAuthn,
         }
     }
 }
@@ -278,7 +276,7 @@ impl AccountKeychain {
             return Err(AccountKeychainError::key_already_revoked().into());
         }
 
-        let signature_type = StoredSignatureType::try_from(signature_type)?.as_u8();
+        let signature_type = StoredSignatureType::try_from(signature_type)?;
 
         // TIP-1011 fields are hardfork-gated at T3, so reject them before mutating state.
         let allowed_call_configs = if is_t3 {
@@ -354,7 +352,7 @@ impl AccountKeychain {
         self.emit_event(AccountKeychainEvent::key_authorized(
             msg_sender,
             key_id,
-            signature_type,
+            signature_type as u8,
             config.expiry,
         ))?;
 
@@ -391,7 +389,7 @@ impl AccountKeychain {
             self.ensure_key_authorization_witness_not_burned(msg_sender, witness)?;
         }
 
-        let signature_type = StoredSignatureType::try_from(signature_type)?.as_u8();
+        let signature_type = StoredSignatureType::try_from(signature_type)?;
 
         self.keys[msg_sender][key_id].write(AuthorizedKey {
             signature_type,
@@ -413,7 +411,7 @@ impl AccountKeychain {
         self.emit_event(AccountKeychainEvent::key_authorized(
             msg_sender,
             key_id,
-            signature_type,
+            signature_type as u8,
             u64::MAX,
         ))?;
         self.emit_event(AccountKeychainEvent::AdminKeyAuthorized(
@@ -541,7 +539,7 @@ impl AccountKeychain {
         }
 
         Ok(KeyInfo {
-            signatureType: StoredSignatureType(key.signature_type).into(),
+            signatureType: key.signature_type.into(),
             keyId: call.keyId,
             expiry: key.expiry,
             enforceLimits: key.enforce_limits,
@@ -1226,10 +1224,10 @@ impl AccountKeychain {
         // Validate that the signature type matches the key type stored in the keychain
         // Only check if expected_sig_type is provided (T1+ hardfork)
         if let Some(sig_type) = expected_sig_type
-            && key.signature_type != sig_type
+            && key.signature_type as u8 != sig_type
         {
             return Err(AccountKeychainError::signature_type_mismatch(
-                key.signature_type,
+                key.signature_type as u8,
                 sig_type,
             )
             .into());
@@ -1631,7 +1629,7 @@ mod tests {
             keychain.authorize_admin_key(account, admin_key, SignatureType::P256, None)?;
 
             let key = keychain.keys[account][admin_key].read()?;
-            assert_eq!(key.signature_type, SignatureType::P256 as u8);
+            assert_eq!(key.signature_type, StoredSignatureType::P256);
             assert_eq!(key.expiry, u64::MAX);
             assert!(!key.enforce_limits);
             assert!(!key.is_revoked);
@@ -1848,7 +1846,7 @@ mod tests {
             );
 
             keychain.keys[account][account].write(AuthorizedKey {
-                signature_type: SignatureType::Secp256k1 as u8,
+                signature_type: StoredSignatureType::Secp256k1,
                 expiry: u64::MAX,
                 enforce_limits: false,
                 is_revoked: false,
@@ -3957,7 +3955,7 @@ mod tests {
 
             let limit_key = AccountKeychain::spending_limit_key(eoa, access_key);
             keychain.keys[eoa][access_key].write(AuthorizedKey {
-                signature_type: SignatureType::Secp256k1 as u8,
+                signature_type: StoredSignatureType::Secp256k1,
                 expiry: u64::MAX,
                 enforce_limits: true,
                 is_revoked: false,
