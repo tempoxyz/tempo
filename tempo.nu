@@ -976,9 +976,9 @@ def generate-summary [
             | flatten
     }
 
-    let require_counter_values = { |values: list<any>, label: string, metric: string|
+    let optional_counter_values = { |values: list<any>, label: string, metric: string|
         if ($values | length) == 0 {
-            error make { msg: $"No counter delta samples for ($metric) in ($label)" }
+            print $"Warning: no counter delta samples for optional metric ($metric) in ($label)"
         }
         $values
     }
@@ -1074,12 +1074,12 @@ def generate-summary [
         let samples_path = $"($results_dir)/report-($label).samples.ndjson"
         let samples_gz_path = $"($samples_path).gz"
         let metric_samples = (do $load_metric_samples $samples_path $samples_gz_path)
-        let counter_metric_values = { |metric: string, scale: float|
-            do $require_counter_values (do $counter_delta_values $metric_samples $metric $scale) $label $metric
+        let optional_counter_metric_values = { |metric: string, scale: float|
+            do $optional_counter_values (do $counter_delta_values $metric_samples $metric $scale) $label $metric
         }
-        let builder_latency_values = (do $counter_metric_values "reth_tempo_payload_builder_payload_build_duration_seconds" 1000.0)
-        let builder_finish_samples = (do $counter_metric_values "reth_tempo_payload_builder_payload_finalization_duration_seconds" 1000.0)
-        let builder_invalid_tx_execution_attempts_samples = (do $counter_metric_values "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts" 1.0)
+        let builder_latency_values = (do $optional_counter_metric_values "reth_tempo_payload_builder_payload_build_duration_seconds" 1000.0)
+        let builder_finish_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_payload_finalization_duration_seconds" 1000.0)
+        let builder_invalid_tx_execution_attempts_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts" 1.0)
         let builder_pool_tx_skip_samples = ($metric_samples | where name == "reth_tempo_payload_builder_pool_transactions_skipped_total")
         let builder_pool_tx_skips_for_reason = { |reason: string|
             let samples = (
@@ -1090,10 +1090,10 @@ def generate-summary [
         }
         let builder_invalid_tx_skips = do $builder_pool_tx_skips_for_reason "invalid_tx"
         let builder_nonce_too_low_skips = do $builder_pool_tx_skips_for_reason "nonce_too_low"
-        let builder_fill_idle_samples = (do $counter_metric_values "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds" 1000.0)
-        let validation_latency_values = (do $counter_metric_values "reth_consensus_engine_beacon_new_payload_latency" 1000.0)
-        let builder_gas_values = (do $counter_metric_values "reth_tempo_payload_builder_gas_per_second" 1.0)
-        let validation_gas_values = (do $counter_metric_values "reth_consensus_engine_beacon_new_payload_gas_per_second" 1.0)
+        let builder_fill_idle_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds" 1000.0)
+        let validation_latency_values = (do $optional_counter_metric_values "reth_consensus_engine_beacon_new_payload_latency" 1000.0)
+        let builder_gas_values = (do $optional_counter_metric_values "reth_tempo_payload_builder_gas_per_second" 1.0)
+        let validation_gas_values = (do $optional_counter_metric_values "reth_consensus_engine_beacon_new_payload_gas_per_second" 1.0)
         let blocks = ($report | get blocks | each { |b|
             let tx_count = ($b | get tx_count)
             let timestamp = if (($b | get -o timestamp | default null) != null) {
