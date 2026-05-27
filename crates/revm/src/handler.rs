@@ -1924,6 +1924,34 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     let key_authorization = aa_env.key_authorization.as_ref();
     let mut gas = InitialAndFloorGas::default();
 
+    if calls.len() == 1
+        && authorization_list.is_empty()
+        && key_authorization.is_none()
+        && access_list.is_none()
+    {
+        let call = &calls[0];
+
+        gas.initial_total_gas += gas_params.tx_base_stipend();
+        gas.initial_total_gas += tempo_signature_verification_gas(signature);
+
+        let tokens = get_tokens_in_calldata_istanbul(&call.input);
+        if call.to.is_create() {
+            let create_state_gas = gas_params.create_state_gas();
+            gas.initial_total_gas += gas_params.create_cost() + create_state_gas;
+            gas.initial_total_gas += gas_params.tx_initcode_cost(call.input.len());
+            gas.initial_state_gas += create_state_gas;
+        }
+
+        if !call.value.is_zero() {
+            return Err(TempoInvalidTransaction::ValueTransferNotAllowedInAATx);
+        }
+
+        gas.initial_total_gas += tokens * gas_params.tx_token_cost();
+        gas.floor_gas = gas_params.tx_floor_cost(tokens);
+
+        return Ok(gas);
+    }
+
     // 1. Base stipend (21k, once per transaction)
     gas.initial_total_gas += gas_params.tx_base_stipend();
 
