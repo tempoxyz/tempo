@@ -1,4 +1,6 @@
-use super::{tt_signed::AASigned, unique_tx_identifier_from_signable};
+use super::{
+    tt_signature::TempoSignature, tt_signed::AASigned, unique_tx_identifier_from_signable,
+};
 use crate::{TempoAddressExt, TempoTransaction, subblock::PartialValidatorKey};
 use alloy_consensus::{
     EthereumTxEnvelope, SignableTransaction, Signed, Transaction, TxEip1559, TxEip2930, TxEip7702,
@@ -10,9 +12,7 @@ use alloy_consensus::{
 use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rlp::Encodable;
 use core::fmt;
-use tempo_contracts::precompiles::{
-    ITIP20, ITIP20ChannelEscrow::ITIP20ChannelEscrowCalls, TIP20_CHANNEL_ESCROW_ADDRESS,
-};
+use tempo_contracts::precompiles::{ITIP20, ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS};
 
 /// Maximum RLP-encoded size of a `key_authorization` permitted in a payment transaction
 /// (TIP-1045). Comfortably fits realistic provisioning payloads with limits and scopes.
@@ -503,9 +503,12 @@ fn is_tip1045_call(to: Option<&Address>, input: &[u8]) -> bool {
     match to {
         // TIP20 call + payment calldata constraints
         Some(to) if to.is_tip20() => ITIP20::ITIP20Calls::is_payment(input),
-        // TIP20ChannelEscrow call + payment calldata constraints
-        Some(to) if *to == TIP20_CHANNEL_ESCROW_ADDRESS => {
-            ITIP20ChannelEscrowCalls::is_payment(input)
+        // TIP20ChannelReserve call + payment calldata constraints
+        Some(to) if *to == TIP20_CHANNEL_RESERVE_ADDRESS => {
+            ITIP20ChannelReserve::ITIP20ChannelReserveCalls::is_payment_with_valid_signature(
+                input,
+                |signature| TempoSignature::from_bytes(signature).is_ok(),
+            )
         }
         _ => false,
     }
@@ -554,7 +557,7 @@ mod tests {
     };
     use alloy_primitives::{Bytes, Signature, TxKind, U256, address, aliases::U96};
     use alloy_sol_types::SolCall;
-    use tempo_contracts::precompiles::ITIP20ChannelEscrow;
+    use tempo_contracts::precompiles::ITIP20ChannelReserve;
 
     const PAYMENT_TKN: Address = address!("20c0000000000000000000000000000000000001");
 
@@ -575,8 +578,8 @@ mod tests {
         ]
     }
 
-    fn channel_descriptor() -> ITIP20ChannelEscrow::ChannelDescriptor {
-        ITIP20ChannelEscrow::ChannelDescriptor {
+    fn channel_descriptor() -> ITIP20ChannelReserve::ChannelDescriptor {
+        ITIP20ChannelReserve::ChannelDescriptor {
             payer: Address::random(),
             payee: Address::random(),
             operator: Address::random(),
@@ -588,15 +591,16 @@ mod tests {
     }
 
     #[rustfmt::skip]
-    fn channel_escrow_payment_calldatas() -> [Bytes; 6] {
+    fn channel_reserve_payment_calldatas() -> [Bytes; 6] {
         let descriptor = channel_descriptor();
+        let signature = TempoSignature::from(Signature::test_signature()).to_bytes();
         [
-            ITIP20ChannelEscrow::openCall { payee: Address::random(), operator: Address::random(), token: PAYMENT_TKN, deposit: U96::from(1), salt: B256::random(), authorizedSigner: Address::random() }.abi_encode().into(),
-            ITIP20ChannelEscrow::topUpCall { descriptor: descriptor.clone(), additionalDeposit: U96::from(1) }.abi_encode().into(),
-            ITIP20ChannelEscrow::settleCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), signature: vec![1, 2, 3].into() }.abi_encode().into(),
-            ITIP20ChannelEscrow::closeCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), captureAmount: U96::from(1), signature: vec![1, 2, 3].into() }.abi_encode().into(),
-            ITIP20ChannelEscrow::requestCloseCall { descriptor: descriptor.clone() }.abi_encode().into(),
-            ITIP20ChannelEscrow::withdrawCall { descriptor }.abi_encode().into(),
+            ITIP20ChannelReserve::openCall { payee: Address::random(), operator: Address::random(), token: PAYMENT_TKN, deposit: U96::from(1), salt: B256::random(), authorizedSigner: Address::random() }.abi_encode().into(),
+            ITIP20ChannelReserve::topUpCall { descriptor: descriptor.clone(), additionalDeposit: U96::from(1) }.abi_encode().into(),
+            ITIP20ChannelReserve::settleCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), signature: signature.clone() }.abi_encode().into(),
+            ITIP20ChannelReserve::closeCall { descriptor: descriptor.clone(), cumulativeAmount: U96::from(1), captureAmount: U96::from(1), signature }.abi_encode().into(),
+            ITIP20ChannelReserve::requestCloseCall { descriptor: descriptor.clone() }.abi_encode().into(),
+            ITIP20ChannelReserve::withdrawCall { descriptor }.abi_encode().into(),
         ]
     }
 
@@ -835,21 +839,21 @@ mod tests {
     }
 
     #[test]
-    fn test_payment_v2_accepts_valid_channel_escrow_calldata() {
-        for calldata in channel_escrow_payment_calldatas() {
-            for envelope in payment_envelopes_to(TIP20_CHANNEL_ESCROW_ADDRESS, calldata) {
+    fn test_payment_v2_accepts_valid_channel_reserve_calldata() {
+        for calldata in channel_reserve_payment_calldatas() {
+            for envelope in payment_envelopes_to(TIP20_CHANNEL_RESERVE_ADDRESS, calldata) {
                 assert!(!envelope.is_payment_v1(), "V1 only accepts TIP-20 prefix");
                 assert!(
                     envelope.is_payment_v2(),
-                    "V2 must accept valid TIP20ChannelEscrow calldata"
+                    "V2 must accept valid TIP20ChannelReserve calldata"
                 );
             }
         }
     }
 
     #[test]
-    fn test_payment_v2_rejects_channel_escrow_calldata_to_tip20() {
-        for calldata in channel_escrow_payment_calldatas() {
+    fn test_payment_v2_rejects_channel_reserve_calldata_to_tip20() {
+        for calldata in channel_reserve_payment_calldatas() {
             for envelope in payment_envelopes_to(PAYMENT_TKN, calldata) {
                 assert!(envelope.is_payment_v1(), "V1 accepts TIP-20 prefix");
                 assert!(!envelope.is_payment_v2(), "V2 only accepts allowed combos");
@@ -858,24 +862,54 @@ mod tests {
     }
 
     #[test]
-    fn test_payment_v2_rejects_invalid_channel_escrow_dynamic_calldata() {
-        let mut corrupted_calldata = ITIP20ChannelEscrow::settleCall {
+    fn test_payment_v2_rejects_invalid_channel_reserve_signature_encoding() {
+        let descriptor = channel_descriptor();
+        let invalid_signature = Bytes::from(vec![1, 2, 3]);
+        let calldatas = [
+            ITIP20ChannelReserve::settleCall {
+                descriptor: descriptor.clone(),
+                cumulativeAmount: U96::ONE,
+                signature: invalid_signature.clone(),
+            }
+            .abi_encode(),
+            ITIP20ChannelReserve::closeCall {
+                descriptor,
+                cumulativeAmount: U96::ONE,
+                captureAmount: U96::ONE,
+                signature: invalid_signature,
+            }
+            .abi_encode(),
+        ];
+
+        for calldata in calldatas {
+            for envelope in payment_envelopes_to(TIP20_CHANNEL_RESERVE_ADDRESS, calldata.into()) {
+                assert!(
+                    !envelope.is_payment_v2(),
+                    "V2 must reject invalid Tempo signature encoding"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_payment_v2_rejects_invalid_channel_reserve_dynamic_calldata() {
+        let mut corrupted_calldata = ITIP20ChannelReserve::settleCall {
             descriptor: channel_descriptor(),
             cumulativeAmount: U96::ONE,
-            signature: vec![1, 2, 3].into(),
+            signature: TempoSignature::from(Signature::test_signature()).to_bytes(),
         }
         .abi_encode();
         // Corrupt the dynamic `signature` offset word.
         corrupted_calldata[4 + 8 * 32 + 31] = 0;
 
         for envelope in
-            payment_envelopes_to(TIP20_CHANNEL_ESCROW_ADDRESS, corrupted_calldata.into())
+            payment_envelopes_to(TIP20_CHANNEL_RESERVE_ADDRESS, corrupted_calldata.into())
         {
             assert!(!envelope.is_payment_v2(), "V2 must reject malformed ABI");
         }
 
         // Calldata > 2KB
-        let long_calldata = ITIP20ChannelEscrow::settleCall {
+        let long_calldata = ITIP20ChannelReserve::settleCall {
             descriptor: channel_descriptor(),
             cumulativeAmount: U96::ONE,
             signature: vec![0; 2048].into(),
@@ -883,7 +917,7 @@ mod tests {
         .abi_encode();
         assert!(long_calldata.len() > 2048);
 
-        for envelope in payment_envelopes_to(TIP20_CHANNEL_ESCROW_ADDRESS, long_calldata.into()) {
+        for envelope in payment_envelopes_to(TIP20_CHANNEL_RESERVE_ADDRESS, long_calldata.into()) {
             assert!(!envelope.is_payment_v2(), "V2 must reject large calldata");
         }
     }

@@ -23,7 +23,6 @@ use futures::{
 };
 use prometheus_client::metrics::counter::Counter;
 use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
-use reth_provider::BlockNumReader as _;
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::TempoPayloadAttributes;
 use tokio::select;
@@ -184,11 +183,6 @@ where
             public_key,
         } = config;
         let metrics = Metrics::init(&context);
-        let last_execution_finalized_height = execution_node
-            .provider
-            .last_block_number()
-            .wrap_err("unable to read latest block number from execution layer")?;
-
         let canonical_state = execution_node.provider.canonical_in_memory_state();
         let finalized_num_hash = canonical_state
             .get_finalized_num_hash()
@@ -196,9 +190,9 @@ where
         let head_num_hash: BlockNumHash = canonical_state.chain_info().into();
 
         let fcu_heartbeat_timer = Box::pin(context.sleep(fcu_heartbeat_interval));
+        let last_execution_finalized_height = Height::new(finalized_num_hash.number);
         let finalized_heights_to_backfill =
-            (last_execution_finalized_height + 1)..=last_finalized_height.get();
-        let last_execution_finalized_height = Height::new(last_execution_finalized_height);
+            (last_execution_finalized_height.get() + 1)..=last_finalized_height.get();
         Ok(Self {
             context: ContextCell::new(context),
             execution_node,

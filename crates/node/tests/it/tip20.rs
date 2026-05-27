@@ -84,12 +84,10 @@ async fn test_tip20_transfer() -> eyre::Result<()> {
         };
         assert_eq!(
             result.as_decoded_interface_error::<TIP20Error>(),
-            Some(TIP20Error::InsufficientBalance(
-                ITIP20::InsufficientBalance {
-                    available: *balance,
-                    required: balance + U256::ONE,
-                    token: *token.address()
-                }
+            Some(TIP20Error::insufficient_balance(
+                *balance,
+                balance + U256::ONE,
+                *token.address()
             ))
         );
     }
@@ -222,7 +220,7 @@ async fn test_tip20_mint() -> eyre::Result<()> {
     let err = max_mint_result.unwrap_err();
     assert_eq!(
         err.as_decoded_interface_error::<TIP20Error>(),
-        Some(TIP20Error::SupplyCapExceeded(ITIP20::SupplyCapExceeded {}))
+        Some(TIP20Error::supply_cap_exceeded())
     );
 
     Ok(())

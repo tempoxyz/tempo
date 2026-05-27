@@ -16,7 +16,7 @@ const E2E_A_CPUS = "0-7,16-23"
 const E2E_B_CPUS = "8-15,24-31"
 const E2E_A_MEMORY = "60G"
 const E2E_B_MEMORY = "60G"
-const E2E_GAS_LIMIT = "500000000"
+const E2E_GAS_LIMIT = "1000000000"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
@@ -25,6 +25,11 @@ const E2E_LOCAL_RETH_ARGS = [
     "--disable-discovery"
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
+    "--consensus.no-legacy-archive"
+    "--builder.max-tasks" "1"
+    "--engine.share-sparse-trie-with-payload-builder"
+    "--engine.share-execution-cache-with-payload-builder"
+    "--builder.enable-prewarming"
 ]
 
 def run-bench-schelk [...args: string] {
@@ -723,7 +728,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
-    let extra_args = if $side_args == "" { [] } else { $side_args | split row " " }
+    let extra_args = (parse-cli-args $side_args)
 
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
@@ -780,12 +785,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
+        | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
         | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
         | append $E2E_LOCAL_RETH_ARGS
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
+        | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let a_args = (dedup-args $a_base_args $extra_args)
     let b_args = (dedup-args $b_base_args $extra_args)
 
@@ -843,6 +850,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
 
     if $phase_exit == 0 {
+        let phase_started_ms = ((date now | into int) / 1_000_000 | into int)
         let sender_exit = (try {
             let bench_result = (txgen-run-preset-pipeline
                 --txgen-tempo-bin $ctx.txgen.txgen_tempo_bin
@@ -850,12 +858,13 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --preset-path $ctx.preset_path
                 --generate-rpc-url $a_rpc
                 --submit-rpc-url $a_rpc
-                --metrics-url "http://127.0.0.1:9001/metrics"
+                --metrics-url ["a:http://127.0.0.1:9001/metrics" "b:http://127.0.0.1:9101/metrics"]
                 --report-path $"($ctx.results_dir)/report-($phase).json"
                 --tps $ctx.tps
                 --duration $ctx.duration
                 --accounts $ctx.accounts
                 --max-concurrent-requests $ctx.max_concurrent_requests
+                --bench-args $ctx.bench_args
                 --bench-env $ctx.bench_env
                 --git-ref $run.ref
                 --git-ref-label ($run | get -o ref_label | default $run.ref)
@@ -867,6 +876,8 @@ def run-local-e2e-phase [run: record, ctx: record] {
                 --benchmark-start $ctx.reference_epoch
                 --platform "tempo"
                 --scenario $scenario
+                --bloat-mib $ctx.bloat
+                --bloat-token-count ($TIP20_TOKEN_IDS | length)
                 --victoriametrics-url $ctx.victoriametrics_url
                 --clickhouse-url $phase_clickhouse_url
                 --skip-funding=($ctx.bloat > 0))
@@ -879,6 +890,20 @@ def run-local-e2e-phase [run: record, ctx: record] {
             print $"Error: local e2e txgen sender failed for ($phase): ($e.msg)"
             1
         })
+        if $sender_exit == 0 and $phase_clickhouse_url != "" {
+            let report = (open $"($ctx.results_dir)/report-($phase).json")
+            let report_benchmark_id = ($report | get --optional benchmark_id | default "")
+            if $report_benchmark_id != "" {
+                $report_benchmark_id | save -f $"($ctx.results_dir)/clickhouse-run-id-($phase).txt"
+                $report_benchmark_id | save -f $"($ctx.results_dir)/clickhouse-run-id.txt"
+            }
+        }
+        let phase_finished_ms = ((date now | into int) / 1_000_000 | into int)
+        {
+            phase: $phase
+            started_ms: $phase_started_ms
+            finished_ms: $phase_finished_ms
+        } | to json | save -f $"($ctx.results_dir)/phase-range-($phase).json"
         $phase_exit = $sender_exit
     } else {
         print $"Skipping local e2e sender for ($phase) because readiness checks failed"
@@ -898,6 +923,83 @@ def run-local-e2e-phase [run: record, ctx: record] {
     }
     print $"=== Local e2e phase complete: ($phase) ==="
     return 0
+}
+
+def e2e-run-sides [run_pairs: int] {
+    if $run_pairs <= 0 {
+        print "Error: --run-pairs must be a positive integer"
+        exit 1
+    }
+
+    mut sides = []
+    if ($run_pairs mod 2) == 0 {
+        for _ in 0..<($run_pairs // 2) {
+            $sides = ($sides | append ["baseline" "feature" "feature" "baseline"])
+        }
+    } else {
+        for _ in 0..<$run_pairs {
+            $sides = ($sides | append ["baseline" "feature"])
+        }
+    }
+    $sides
+}
+
+def e2e-write-summary-config [
+    results_dir: string
+    baseline_label: string
+    feature_label: string
+    bloat_mib: int
+    preset: string
+    tps: int
+    duration: int
+    benchmark_id: string
+    reference_epoch: int
+    baseline_hardfork: string
+    feature_hardfork: string
+] {
+    {
+        baseline_label: $baseline_label
+        feature_label: $feature_label
+        bloat_mib: $bloat_mib
+        preset: $preset
+        tps: $tps
+        duration: $duration
+        benchmark_id: $benchmark_id
+        reference_epoch: $reference_epoch
+        baseline_hardfork: $baseline_hardfork
+        feature_hardfork: $feature_hardfork
+    } | to json | save -f $"($results_dir)/summary-config.json"
+}
+
+def e2e-generate-summary [results_dir: string] {
+    let config_path = $"($results_dir)/summary-config.json"
+    if not ($config_path | path exists) {
+        print $"Error: summary config not found: ($config_path)"
+        exit 1
+    }
+
+    let config = (open $config_path)
+    let baseline_hardfork = ($config | get -o baseline_hardfork | default "")
+    let feature_hardfork = ($config | get -o feature_hardfork | default "")
+    generate-summary $results_dir $config.baseline_label $config.feature_label ($config.bloat_mib | into int) $config.preset ($config.tps | into int) ($config.duration | into int) --benchmark-id ($config.benchmark_id | default "") --reference-epoch ($config.reference_epoch | default 0 | into int) --baseline-hardfork $baseline_hardfork --feature-hardfork $feature_hardfork
+
+    with-env {
+        GITHUB_TOKEN: ""
+        CLICKHOUSE_URL: ""
+        CLICKHOUSE_USER: ""
+        CLICKHOUSE_PASSWORD: ""
+        BENCH_VICTORIAMETRICS_URL: ""
+        SLACK_BENCH_BOT_TOKEN: ""
+        SLACK_BENCH_CHANNEL: ""
+    } {
+        ^node .github/scripts/bench-e2e-classify.js $results_dir
+    }
+}
+
+def "main summarize" [
+    results_dir: string                                # Results directory from an e2e run
+] {
+    e2e-generate-summary $results_dir
 }
 
 # Run the e2e sequence on one runner.
@@ -926,11 +1028,11 @@ def "main e2e" [
     --victoriametrics-url: string = ""                  # VictoriaMetrics base URL for txgen metric sample import
     --clickhouse-url: string = ""                       # ClickHouse HTTP endpoint for txgen result upload
     --clickhouse-run: string = "feature-1"              # Run label allowed to use the ClickHouse reporter; empty = every run
-    --disable-abba                                      # Run only baseline-1 and feature-1
+    --run-pairs: int = 2                                # Number of baseline/feature run pairs
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
-    --bench-args: string = ""                           # Additional txgen bench args
+    --bench-args: string = ""                           # Additional txgen generate arguments
     --baseline-env: string = ""                         # Environment vars for baseline node phases
     --feature-env: string = ""                          # Environment vars for feature node phases
     --bench-env: string = ""                            # Environment vars for the sender process
@@ -941,16 +1043,15 @@ def "main e2e" [
     --tune                                              # Apply system tuning
     --loud                                              # Show node debug logs
     --no-cache                                           # Skip binary cache
+    --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
     let preset_path = (txgen-preset-path $preset)
-    txgen-validate-bench-args $bench_args
     if $tracy not-in ["off" "on" "full"] {
         print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
         exit 1
     }
-    let valid_run_labels = ["baseline-1" "feature-1" "feature-2" "baseline-2"]
-    if $clickhouse_run != "" and $clickhouse_run not-in $valid_run_labels {
-        print $"Error: --clickhouse-run must be one of: ($valid_run_labels | str join ', ') \(got '($clickhouse_run)'\)"
+    if $run_pairs <= 0 {
+        print "Error: --run-pairs must be a positive integer"
         exit 1
     }
     let bloat_mib = (e2e-bloat-gib-to-mib $bloat)
@@ -1000,7 +1101,17 @@ def "main e2e" [
     let a_trusted_peers_path = $"($a_db)/($BENCH_META_SUBDIR)/trusted-peers.txt"
     let run_started_at = (date now)
     let timestamp = ($run_started_at | format date "%Y%m%d-%H%M%S-%3f")
-    let benchmark_id = $"bench-e2e-local-($timestamp)"
+    let benchmark_id = ($env | get --optional BENCHMARK_ID)
+    let benchmark_id = if $benchmark_id == null or ($benchmark_id | str trim) == "" {
+        let run_id = ($env | get --optional GITHUB_RUN_ID)
+        if $run_id == null or ($run_id | str trim) == "" {
+            print "Error: BENCHMARK_ID or GITHUB_RUN_ID must be set for e2e benchmarks"
+            exit 1
+        }
+        $"bench-e2e-($run_id)"
+    } else {
+        $benchmark_id
+    }
     let reference_epoch = (($run_started_at | into int) / 1_000_000_000 | into int)
     let gas_limit_args = if $gas_limit != "" { ["--gas-limit" $gas_limit] } else { [] }
     let tracing_otlp = (derive-tracing-otlp $tracing_otlp)
@@ -1196,22 +1307,45 @@ def "main e2e" [
         tune: $tune
         loud: $loud
         gas_limit: $gas_limit
+        tracing_otlp: $tracing_otlp
     }
 
     let baseline_base_label = if $baseline_name != "" { $baseline_name } else { $baseline }
     let feature_base_label = if $feature_name != "" { $feature_name } else { $feature }
 
-    let abba_runs = [
-        { phase: "baseline-1", ref: $baseline, ref_label: $baseline_base_label, tempo: $baseline_tempo, genesis: $baseline_genesis_path, hardfork: $baseline_hardfork_name }
-        { phase: "feature-1", ref: $feature, ref_label: $feature_base_label, tempo: $feature_tempo, genesis: $feature_genesis_path, hardfork: $feature_hardfork_name }
-        { phase: "feature-2", ref: $feature, ref_label: $feature_base_label, tempo: $feature_tempo, genesis: $feature_genesis_path, hardfork: $feature_hardfork_name }
-        { phase: "baseline-2", ref: $baseline, ref_label: $baseline_base_label, tempo: $baseline_tempo, genesis: $baseline_genesis_path, hardfork: $baseline_hardfork_name }
-    ]
-    let runs = if $disable_abba {
-        $abba_runs | where { |run| $run.phase in ["baseline-1" "feature-1"] }
-    } else {
-        $abba_runs
+    mut baseline_run_index = 0
+    mut feature_run_index = 0
+    mut runs = []
+    for side in (e2e-run-sides $run_pairs) {
+        if $side == "baseline" {
+            $baseline_run_index = $baseline_run_index + 1
+            $runs = ($runs | append {
+                phase: $"baseline-($baseline_run_index)"
+                ref: $baseline
+                ref_label: $baseline_base_label
+                tempo: $baseline_tempo
+                genesis: $baseline_genesis_path
+                hardfork: $baseline_hardfork_name
+            })
+        } else {
+            $feature_run_index = $feature_run_index + 1
+            $runs = ($runs | append {
+                phase: $"feature-($feature_run_index)"
+                ref: $feature
+                ref_label: $feature_base_label
+                tempo: $feature_tempo
+                genesis: $feature_genesis_path
+                hardfork: $feature_hardfork_name
+            })
+        }
     }
+    let valid_run_labels = ($runs | get phase)
+    if $clickhouse_run != "" and $clickhouse_run not-in $valid_run_labels {
+        print $"Error: --clickhouse-run must be one of: ($valid_run_labels | str join ', ') \(got '($clickhouse_run)'\)"
+        exit 1
+    }
+    $valid_run_labels | str join "\n" | save -f $"($results_dir)/run-order.txt"
+    e2e-write-summary-config $results_dir $baseline_base_label $feature_base_label $bloat_mib $preset $tps $duration $benchmark_id $reference_epoch $baseline_hardfork_name $feature_hardfork_name
     let num_phases = ($runs | length)
     mut e2e_exit = 0
     for idx in 0..<$num_phases {
@@ -1248,10 +1382,8 @@ def "main e2e" [
         }
     }
 
-    let baseline_label = if $hardfork_mode { $"($baseline_base_label) \(($baseline_hardfork_name)\)" } else { $baseline_base_label }
-    let feature_label = if $hardfork_mode { $"($feature_base_label) \(($feature_hardfork_name)\)" } else { $feature_base_label }
-    if $e2e_exit == 0 {
-        generate-summary $results_dir $baseline_label $feature_label $bloat_mib $preset $tps $duration --benchmark-id $benchmark_id --reference-epoch $reference_epoch
+    if $e2e_exit == 0 and not $skip_summary {
+        e2e-generate-summary $results_dir
     }
 
     try { git worktree remove --force $baseline_wt } catch { }

@@ -13,7 +13,7 @@ use tempo_evm::TempoTxResult;
 use tempo_precompiles::tip20::is_tip20_prefix;
 
 type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
-type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u128>);
 
 /// A best-transaction iterator that merges the protocol pool and the 2D nonces pool,
@@ -143,6 +143,8 @@ where
                 if storage_slot.present_value < storage_slot.original_value {
                     self.decreased_balances
                         .insert((address, slot), storage_slot.present_value);
+                } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
+                    *balance = storage_slot.present_value;
                 }
             }
         }
@@ -225,7 +227,7 @@ mod tests {
                 .nonce_key(nonce_key)
                 .nonce(nonce)
                 .max_priority_fee(priority)
-                .max_fee(TempoHardfork::T1.base_fee() as u128 + priority)
+                .max_fee(u128::from(TempoHardfork::T1.base_fee()) + priority)
                 .build(),
             TransactionOrigin::External,
         ))

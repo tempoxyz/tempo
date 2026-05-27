@@ -1,5 +1,7 @@
 use crate::tt_2d_pool::{AA2dTransactionId, AASequenceId};
-use alloy_consensus::{BlobTransactionValidationError, Transaction, transaction::TxHashRef};
+use alloy_consensus::{
+    BlobTransactionValidationError, Transaction, crypto::RecoveryError, transaction::TxHashRef,
+};
 use alloy_eips::{
     eip2718::{Encodable2718, Typed2718},
     eip2930::AccessList,
@@ -31,10 +33,12 @@ use thiserror::Error;
 #[derive(Debug, Clone)]
 pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
+    /// Cached cost of the transaction in the fee token.
+    fee_token_cost: U256,
     /// Cached payment classification for efficient block building
     is_payment: bool,
-    /// Cached expiring nonce classification
-    is_expiring_nonce: bool,
+    /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
+    expiring_nonce_hash: Option<B256>,
     /// Cached slot of the 2D nonce, if any.
     nonce_key_slot: OnceLock<Option<U256>>,
     /// Cached `expiring_nonce_seen` storage slot for expiring nonce transactions.
@@ -62,23 +66,27 @@ impl TempoPooledTransaction {
     /// Create new instance of [Self] from the given consensus transactions and the encoded size.
     pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
         let is_payment = transaction.is_payment_v2();
-        let is_expiring_nonce = transaction
-            .as_aa()
-            .map(|tx| tx.tx().is_expiring_nonce_tx())
-            .unwrap_or(false);
+        let sender = transaction.signer();
+        let expiring_nonce_hash = transaction.as_aa().and_then(|tx| {
+            tx.tx()
+                .is_expiring_nonce_tx()
+                .then(|| tx.expiring_nonce_hash(sender))
+        });
+        let value = transaction.value();
+        let cost =
+            calc_gas_balance_spending(transaction.gas_limit(), transaction.max_fee_per_gas())
+                .saturating_add(value);
+        let fee_token_cost = cost - value;
         Self {
             inner: EthPooledTransaction {
-                cost: calc_gas_balance_spending(
-                    transaction.gas_limit(),
-                    transaction.max_fee_per_gas(),
-                )
-                .saturating_add(transaction.value()),
+                cost,
                 encoded_length: transaction.encode_2718_len(),
                 blob_sidecar: EthBlobTransactionSidecar::None,
                 transaction,
             },
+            fee_token_cost,
             is_payment,
-            is_expiring_nonce,
+            expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
             tx_env: OnceLock::new(),
@@ -89,13 +97,19 @@ impl TempoPooledTransaction {
     }
 
     /// Get the cost of the transaction in the fee token.
-    pub fn fee_token_cost(&self) -> U256 {
-        self.inner.cost - self.inner.value()
+    #[inline]
+    pub const fn fee_token_cost(&self) -> U256 {
+        self.fee_token_cost
     }
 
     /// Returns a reference to inner [`TempoTxEnvelope`].
     pub fn inner(&self) -> &Recovered<TempoTxEnvelope> {
         &self.inner.transaction
+    }
+
+    /// Resolves the transaction fee payer.
+    pub fn fee_payer(&self) -> Result<Address, RecoveryError> {
+        self.inner().fee_payer(self.inner().signer())
     }
 
     /// Returns true if this is an AA transaction
@@ -125,7 +139,7 @@ impl TempoPooledTransaction {
 
     /// Returns true if this transaction belongs into the 2D nonce pool:
     /// - AA transaction with a `nonce key != 0` (includes expiring nonce txs)
-    pub(crate) fn is_aa_2d(&self) -> bool {
+    pub fn is_aa_2d(&self) -> bool {
         self.inner
             .transaction
             .as_aa()
@@ -134,8 +148,8 @@ impl TempoPooledTransaction {
     }
 
     /// Returns true if this is an expiring nonce transaction.
-    pub(crate) fn is_expiring_nonce(&self) -> bool {
-        self.is_expiring_nonce
+    pub fn is_expiring_nonce(&self) -> bool {
+        self.expiring_nonce_hash.is_some()
     }
 
     /// Extracts the keychain subject (account, key_id, fee_token) from this transaction.
@@ -150,11 +164,7 @@ impl TempoPooledTransaction {
         let aa_tx = self.inner().as_aa()?;
         let keychain_sig = aa_tx.signature().as_keychain()?;
         let key_id = keychain_sig.key_id(&aa_tx.signature_hash()).ok()?;
-        let fee_token = self
-            .resolved_fee_token
-            .get()
-            .copied()
-            .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
+        let fee_token = self.effective_fee_token();
         Some(KeychainSubject {
             account: keychain_sig.user_address,
             key_id,
@@ -178,7 +188,7 @@ impl TempoPooledTransaction {
     }
 
     /// Returns the unique identifier for this AA transaction.
-    pub(crate) fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
+    pub fn aa_transaction_id(&self) -> Option<AA2dTransactionId> {
         let nonce_key = self.nonce_key()?;
         let sender = AASequenceId {
             address: self.sender(),
@@ -201,6 +211,26 @@ impl TempoPooledTransaction {
     /// ahead of time, avoiding it during payload building.
     pub fn tx_env(&self) -> &TempoTxEnv {
         self.tx_env.get_or_init(|| self.tx_env_slow())
+    }
+
+    /// Returns a cloned [`TempoTxEnv`] for this transaction.
+    ///
+    /// This uses the cached value prepared by [`Self::tx_env`] when available,
+    /// and computes it on-demand otherwise.
+    pub fn clone_tx_env(&self) -> TempoTxEnv {
+        self.tx_env().clone()
+    }
+
+    /// Returns a [`WithTxEnv`] wrapper by cloning the cached [`TempoTxEnv`] and
+    /// recovered transaction.
+    ///
+    /// This avoids cloning the full pooled transaction when the caller only
+    /// needs an owned executable transaction.
+    pub fn clone_into_with_tx_env(&self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
+        WithTxEnv {
+            tx_env: self.clone_tx_env(),
+            tx: Arc::new(self.inner.transaction.clone()),
+        }
     }
 
     /// Returns a [`WithTxEnv`] wrapper containing the cached [`TempoTxEnv`].
@@ -232,14 +262,35 @@ impl TempoPooledTransaction {
         self.key_expiry.get().copied().flatten()
     }
 
-    /// Caches the resolved fee token determined during validation.
+    /// Caches the effective fee token determined during transaction validation.
+    ///
+    /// The validator sets this after EVM validation resolves the token from the
+    /// transaction's explicit `fee_token` field or from fee-manager state. Pool
+    /// maintenance code should not call this directly.
     pub fn set_resolved_fee_token(&self, fee_token: Address) {
         let _ = self.resolved_fee_token.set(fee_token);
     }
 
-    /// Returns the resolved fee token cached during validation, if available.
+    /// Returns the fee token cached during transaction validation, if available.
+    ///
+    /// This is `None` for transactions that have not completed validation through
+    /// the pool validator. Prefer [`Self::effective_fee_token`] in maintenance code
+    /// that needs the token a transaction will actually use to pay fees.
     pub fn resolved_fee_token(&self) -> Option<Address> {
         self.resolved_fee_token.get().copied()
+    }
+
+    /// Returns the effective fee token for pool maintenance and accounting.
+    ///
+    /// This prefers the token cached by validation, then falls back to the raw
+    /// transaction `fee_token` field, and finally to [`DEFAULT_FEE_TOKEN`]. This
+    /// fallback covers non-AA transactions and AA transactions without an explicit
+    /// fee token. Use this when checking liquidity, token pause state, balances, or
+    /// transfer policies. Use the raw `fee_token` field only when the code
+    /// specifically needs to know whether the transaction explicitly supplied a token.
+    pub fn effective_fee_token(&self) -> Address {
+        self.resolved_fee_token()
+            .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN))
     }
 
     /// Returns the `(fee_token, balance_slot)` pair for this transaction's fee payer,
@@ -249,16 +300,39 @@ impl TempoPooledTransaction {
             let fee_token = self
                 .resolved_fee_token()
                 .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
-            let fee_payer = self.inner().fee_payer(self.sender()).ok()?;
+            let fee_payer = self.fee_payer().ok()?;
             let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
             Some((fee_token, slot))
         })
     }
 
-    /// Returns the expiring nonce hash for AA expiring nonce transactions.
+    /// Returns true when the transaction fee is paid by the transaction sender.
+    ///
+    /// Invalid fee payer recovery is treated as sender-paid so maintenance never skips a
+    /// conservative sender-scoped invalidation for malformed pooled state.
+    pub(crate) fn is_sender_paid_fee(&self) -> bool {
+        let sender = self.sender();
+        self.fee_payer()
+            .map_or(true, |fee_payer| fee_payer == sender)
+    }
+
+    /// Returns the sender-scoped expiring nonce hash for AA transactions.
+    ///
+    /// Expiring nonce transactions use the precomputed value from construction;
+    /// other AA transactions compute on demand to preserve the helper's existing behavior.
     pub fn expiring_nonce_hash(&self) -> Option<B256> {
+        if let Some(hash) = self.expiring_nonce_hash {
+            return Some(hash);
+        }
+
         let aa_tx = self.inner().as_aa()?;
         Some(aa_tx.expiring_nonce_hash(self.sender()))
+    }
+
+    /// Returns the precomputed hash for transactions already classified as expiring nonce.
+    pub(crate) fn precomputed_expiring_nonce_hash(&self) -> B256 {
+        self.expiring_nonce_hash
+            .expect("expiring nonce hash must be precomputed")
     }
 
     /// Returns the cached `expiring_nonce_seen` storage slot for this transaction.
@@ -763,6 +837,7 @@ mod tests {
         //              = (1_000_000 * 20_000_000_000) / 1_000_000_000_000 = 20000
         let expected_fee_cost = U256::from(20000);
         assert_eq!(tx.fee_token_cost(), expected_fee_cost);
+        assert_eq!(tx.fee_token_cost, expected_fee_cost);
         assert_eq!(tx.inner.cost, expected_fee_cost + value);
     }
 
@@ -881,6 +956,25 @@ mod tests {
                 TempoPoolTransactionError::Evm(TempoInvalidTransaction::NonceManagerError(
                     "nonce error".to_string(),
                 )),
+                false,
+            ),
+            (
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenNotTip20 {
+                    address: Address::repeat_byte(0x20),
+                }),
+                false,
+            ),
+            (
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                    address: Address::repeat_byte(0x20),
+                    currency: "EUR".to_string(),
+                }),
+                false,
+            ),
+            (
+                TempoPoolTransactionError::Evm(TempoInvalidTransaction::FeeTokenPaused {
+                    address: Address::repeat_byte(0x20),
+                }),
                 false,
             ),
             (

@@ -14,12 +14,12 @@ use alloy_rpc_types_eth::TransactionRequest;
 use reth_node_api::BuiltPayload;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{
-    IFeeManager, IRolesAuth, ITIP20, ITIP20ChannelEscrow, ITIP20Factory, ITIPFeeAMM,
+    IFeeManager, IRolesAuth, ITIP20, ITIP20ChannelReserve, ITIP20Factory, ITIPFeeAMM,
 };
 use tempo_node::node::TempoNode;
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_ESCROW_ADDRESS, TIP20_FACTORY_ADDRESS,
-    tip_fee_manager::amm::compute_amount_out, tip20::ISSUER_ROLE,
+    PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    TIP20_FACTORY_ADDRESS, tip_fee_manager::amm::compute_amount_out, tip20::ISSUER_ROLE,
 };
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 
@@ -29,6 +29,21 @@ async fn setup_token_manual<P>(
     provider: &P,
     sender: &alloy::signers::local::PrivateKeySigner,
     chain_id: u64,
+) -> eyre::Result<ITIP20::ITIP20Instance<P>>
+where
+    P: Provider + Clone,
+{
+    setup_token_manual_with_quote_and_nonce(node, provider, sender, chain_id, PATH_USD_ADDRESS, 0)
+        .await
+}
+
+async fn setup_token_manual_with_quote_and_nonce<P>(
+    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    provider: &P,
+    sender: &alloy::signers::local::PrivateKeySigner,
+    chain_id: u64,
+    quote_token: Address,
+    nonce_start: u64,
 ) -> eyre::Result<ITIP20::ITIP20Instance<P>>
 where
     P: Provider + Clone,
@@ -64,11 +79,11 @@ where
         "Test".to_string(),
         "TEST".to_string(),
         "USD".to_string(),
-        PATH_USD_ADDRESS,
+        quote_token,
         sender_address,
         salt,
     );
-    let create_bytes = sign_and_encode(create_tx.into_transaction_request(), 0).await?;
+    let create_bytes = sign_and_encode(create_tx.into_transaction_request(), nonce_start).await?;
     node.rpc.inject_tx(create_bytes).await?;
     node.advance_block().await?;
 
@@ -89,14 +104,14 @@ where
     // Grant issuer role
     let roles = IRolesAuth::new(token_addr, provider.clone());
     let grant_tx = roles.grantRole(*ISSUER_ROLE, sender_address);
-    let grant_bytes = sign_and_encode(grant_tx.into_transaction_request(), 1).await?;
+    let grant_bytes = sign_and_encode(grant_tx.into_transaction_request(), nonce_start + 1).await?;
     node.rpc.inject_tx(grant_bytes).await?;
     node.advance_block().await?;
 
     // Mint tokens
     let token = ITIP20::ITIP20Instance::new(token_addr, provider.clone());
     let mint_tx = token.mint(sender_address, U256::from(1_000_000));
-    let mint_bytes = sign_and_encode(mint_tx.into_transaction_request(), 2).await?;
+    let mint_bytes = sign_and_encode(mint_tx.into_transaction_request(), nonce_start + 2).await?;
     node.rpc.inject_tx(mint_bytes).await?;
     node.advance_block().await?;
 
@@ -600,14 +615,33 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
 
     let fee_beneficiary = Address::ZERO;
 
-    // Create a custom fee token for the user
-    let user_fee_token =
-        setup_token_manual(&mut setup.node, &user_provider, &user_signer, chain_id).await?;
+    // Create a two-hop fee route: user_fee_token -> hop_fee_token -> PATH_USD.
+    let mut nonce = 0u64;
+    let hop_fee_token = setup_token_manual_with_quote_and_nonce(
+        &mut setup.node,
+        &user_provider,
+        &user_signer,
+        chain_id,
+        PATH_USD_ADDRESS,
+        nonce,
+    )
+    .await?;
+    nonce += 3; // setup_token_manual uses 3 txs (create, grantRole, mint)
+    let user_fee_token = setup_token_manual_with_quote_and_nonce(
+        &mut setup.node,
+        &user_provider,
+        &user_signer,
+        chain_id,
+        *hop_fee_token.address(),
+        nonce,
+    )
+    .await?;
+    nonce += 3;
 
     let fee_amm = ITIPFeeAMM::new(TIP_FEE_MANAGER_ADDRESS, user_provider.clone());
     let fee_manager = IFeeManager::new(TIP_FEE_MANAGER_ADDRESS, user_provider.clone());
 
-    // Seed AMM liquidity for user_token <-> PATH_USD
+    // Seed AMM liquidity for user_token <-> hop_token <-> PATH_USD.
     let liquidity = U256::from(500_000u64);
     sign_and_inject(
         &mut setup.node,
@@ -616,14 +650,32 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         fee_amm
             .mint(
                 *user_fee_token.address(),
+                *hop_fee_token.address(),
+                liquidity,
+                user_address,
+            )
+            .into_transaction_request(),
+        nonce,
+    )
+    .await?;
+    nonce += 1;
+    setup.node.advance_block().await?;
+    sign_and_inject(
+        &mut setup.node,
+        &user_signer,
+        chain_id,
+        fee_amm
+            .mint(
+                *hop_fee_token.address(),
                 PATH_USD_ADDRESS,
                 liquidity,
                 user_address,
             )
             .into_transaction_request(),
-        3,
+        nonce,
     )
     .await?;
+    nonce += 1;
     setup.node.advance_block().await?;
 
     // Set the user's fee token preference to the custom token
@@ -634,9 +686,10 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         fee_manager
             .setUserToken(*user_fee_token.address())
             .into_transaction_request(),
-        4,
+        nonce,
     )
     .await?;
+    nonce += 1;
     setup.node.advance_block().await?;
 
     // Record collected fees before the attack block
@@ -645,7 +698,7 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         .call()
         .await?;
 
-    // Submit a transaction that pays fees in user_fee_token (not validator's PATH_USD)
+    // Submit a transaction that pays fees in user_fee_token and settles through the two-hop route.
     let attack_tx_hash = sign_and_inject(
         &mut setup.node,
         &user_signer,
@@ -653,7 +706,7 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         ITIP20::new(PATH_USD_ADDRESS, user_provider.clone())
             .transfer(Address::random(), U256::from(1))
             .into_transaction_request(),
-        5,
+        nonce,
     )
     .await?;
 
@@ -669,7 +722,8 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         attack_receipt.gas_used,
         attack_receipt.effective_gas_price(),
     );
-    let expected_post_swap = compute_amount_out(nominal_spending)?;
+    let one_hop_post_swap = compute_amount_out(nominal_spending)?;
+    let expected_post_swap = compute_amount_out(one_hop_post_swap)?;
 
     // Verify collected fees reflect the haircut
     let collected_after = fee_manager
@@ -678,6 +732,10 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         .await?;
     let collected_delta = collected_after - collected_before;
 
+    assert!(
+        collected_delta < one_hop_post_swap,
+        "two-hop validator accrual ({collected_delta}) should be less than one-hop accrual ({one_hop_post_swap})"
+    );
     // The payload fee score must not exceed the actual validator revenue
     assert!(
         payload_fees <= nominal_spending,
@@ -687,9 +745,9 @@ async fn test_payload_fees_account_for_amm_haircut() -> eyre::Result<()> {
         collected_delta, expected_post_swap,
         "validator accrual should reflect AMM haircut"
     );
-    assert!(
-        payload_fees <= collected_delta,
-        "payload fee score ({payload_fees}) should not overstate actual validator revenue ({collected_delta})"
+    assert_eq!(
+        payload_fees, collected_delta,
+        "payload fee score should match actual validator revenue"
     );
 
     Ok(())
@@ -726,22 +784,22 @@ async fn fund_path_usd(
 /// Decode the first `ChannelOpened` event from the latest block.
 async fn decode_channel_opened(
     node: &reth_e2e_test_utils::NodeHelperType<TempoNode>,
-) -> eyre::Result<ITIP20ChannelEscrow::ChannelOpened> {
+) -> eyre::Result<ITIP20ChannelReserve::ChannelOpened> {
     let provider = ProviderBuilder::new().connect_http(node.rpc_url());
     let latest = provider.get_block_number().await?;
     let receipts = provider.get_block_receipts(latest.into()).await?.unwrap();
     receipts
         .iter()
         .flat_map(|r| r.inner.logs())
-        .find_map(|log| ITIP20ChannelEscrow::ChannelOpened::decode_log(&log.inner).ok())
+        .find_map(|log| ITIP20ChannelReserve::ChannelOpened::decode_log(&log.inner).ok())
         .map(|log| log.data)
         .ok_or_else(|| eyre::eyre!("ChannelOpened event not found"))
 }
 
 fn descriptor_from(
-    e: &ITIP20ChannelEscrow::ChannelOpened,
-) -> ITIP20ChannelEscrow::ChannelDescriptor {
-    ITIP20ChannelEscrow::ChannelDescriptor {
+    e: &ITIP20ChannelReserve::ChannelOpened,
+) -> ITIP20ChannelReserve::ChannelDescriptor {
+    ITIP20ChannelReserve::ChannelDescriptor {
         payer: e.payer,
         payee: e.payee,
         operator: e.operator,
@@ -752,10 +810,10 @@ fn descriptor_from(
     }
 }
 
-/// Inject escrow txs: `open` (payment), `topUp` (payment), `requestClose` (payment).
+/// Inject reserve txs: `open` (payment), `topUp` (payment), `requestClose` (payment).
 /// `open` is committed in its own block so subsequent calls find the channel; only `topUp` and
 /// `requestClose` remain in the pool for the caller to drain/count.
-async fn inject_escrow_payment_txs(
+async fn inject_reserve_payment_txs(
     node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
     sender: &PrivateKeySigner,
     chain_id: u64,
@@ -764,14 +822,14 @@ async fn inject_escrow_payment_txs(
     let provider = ProviderBuilder::new()
         .wallet(EthereumWallet::from(sender.clone()))
         .connect_http(node.rpc_url());
-    let escrow = ITIP20ChannelEscrow::new(TIP20_CHANNEL_ESCROW_ADDRESS, provider);
+    let reserve = ITIP20ChannelReserve::new(TIP20_CHANNEL_RESERVE_ADDRESS, provider);
 
     // open (payment)
     sign_and_inject(
         node,
         sender,
         chain_id,
-        escrow
+        reserve
             .open(
                 Address::random(),
                 Address::ZERO,
@@ -794,7 +852,7 @@ async fn inject_escrow_payment_txs(
         node,
         sender,
         chain_id,
-        escrow
+        reserve
             .topUp(desc.clone(), U96::from(500u64))
             .into_transaction_request(),
         start_nonce + 1,
@@ -806,7 +864,7 @@ async fn inject_escrow_payment_txs(
         node,
         sender,
         chain_id,
-        escrow.requestClose(desc).into_transaction_request(),
+        reserve.requestClose(desc).into_transaction_request(),
         start_nonce + 2,
     )
     .await?;
@@ -814,10 +872,10 @@ async fn inject_escrow_payment_txs(
     Ok(())
 }
 
-/// Queued escrow payment calls (`topUp`, `requestClose`) are classified as payment_v2 after an
+/// Queued reserve payment calls (`topUp`, `requestClose`) are classified as payment_v2 after an
 /// already-committed `open` creates the channel.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_block_building_channel_escrow_payment_v2() -> eyre::Result<()> {
+async fn test_block_building_channel_reserve_payment_v2() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
@@ -836,7 +894,7 @@ async fn test_block_building_channel_escrow_payment_v2() -> eyre::Result<()> {
     fund_path_usd(&mut setup.node, &funder, &payer, chain_id, 0).await?;
 
     let payer_nonce = provider.get_transaction_count(payer.address()).await?;
-    inject_escrow_payment_txs(&mut setup.node, &payer, chain_id, payer_nonce).await?;
+    inject_reserve_payment_txs(&mut setup.node, &payer, chain_id, payer_nonce).await?;
 
     // Drain pool — topUp + requestClose may already have been consumed by the dev-mode block timer.
     let mut all_user_txs = Vec::new();
@@ -855,9 +913,9 @@ async fn test_block_building_channel_escrow_payment_v2() -> eyre::Result<()> {
     Ok(())
 }
 
-/// Mixed TIP-20 transfers + channel escrow payments + plain txs are classified by `is_payment_v2`.
+/// Mixed TIP-20 transfers + channel reserve payments + plain txs are classified by `is_payment_v2`.
 #[tokio::test(flavor = "multi_thread")]
-async fn test_block_building_mixed_tip20_and_escrow_payments() -> eyre::Result<()> {
+async fn test_block_building_mixed_tip20_and_reserve_payments() -> eyre::Result<()> {
     reth_tracing::init_test_tracing();
 
     let mut setup = TestNodeBuilder::new().build_with_node_access().await?;
@@ -867,7 +925,7 @@ async fn test_block_building_mixed_tip20_and_escrow_payments() -> eyre::Result<(
     let tip20_sender = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
         .index(1)?
         .build()?;
-    let escrow_sender = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
+    let reserve_sender = MnemonicBuilder::from_phrase(TEST_MNEMONIC)
         .index(2)?
         .build()?;
 
@@ -887,21 +945,21 @@ async fn test_block_building_mixed_tip20_and_escrow_payments() -> eyre::Result<(
     fund_path_usd(
         &mut setup.node,
         &funder,
-        &escrow_sender,
+        &reserve_sender,
         chain_id,
         funder_nonce,
     )
     .await?;
 
     // open is committed in its own setup block; topUp + requestClose are queued as payment txs.
-    let escrow_nonce = ProviderBuilder::new()
-        .wallet(EthereumWallet::from(escrow_sender.clone()))
+    let reserve_nonce = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(reserve_sender.clone()))
         .connect_http(setup.node.rpc_url())
-        .get_transaction_count(escrow_sender.address())
+        .get_transaction_count(reserve_sender.address())
         .await?;
-    inject_escrow_payment_txs(&mut setup.node, &escrow_sender, chain_id, escrow_nonce).await?;
+    inject_reserve_payment_txs(&mut setup.node, &reserve_sender, chain_id, reserve_nonce).await?;
 
-    // Inject after escrow setup so they're still in the pool for the drain loop 3 TIP-20 transfers
+    // Inject after reserve setup so they're still in the pool for the drain loop 3 TIP-20 transfers
     inject_payment_txs_from_sender(
         &mut setup.node,
         &tip20_provider,

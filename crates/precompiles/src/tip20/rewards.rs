@@ -65,10 +65,7 @@ impl TIP20Token {
         self.set_global_reward_per_token(new_rpt)?;
 
         // Emit distributed reward event (recipients claim accrued rewards separately)
-        self.emit_event(TIP20Event::RewardDistributed(ITIP20::RewardDistributed {
-            funder: msg_sender,
-            amount: call.amount,
-        }))?;
+        self.emit_event(TIP20Event::reward_distributed(msg_sender, call.amount))?;
 
         Ok(())
     }
@@ -175,10 +172,7 @@ impl TIP20Token {
         self.user_reward_info[msg_sender].write(info)?;
 
         // Emit reward recipient set event
-        self.emit_event(TIP20Event::RewardRecipientSet(ITIP20::RewardRecipientSet {
-            holder: msg_sender,
-            recipient: call.recipient,
-        }))?;
+        self.emit_event(TIP20Event::reward_recipient_set(msg_sender, call.recipient))?;
 
         Ok(())
     }
@@ -232,11 +226,11 @@ impl TIP20Token {
                 )?;
             }
 
-            self.emit_event(TIP20Event::Transfer(ITIP20::Transfer {
-                from: contract_address,
-                to: msg_sender,
-                amount: max_amount,
-            }))?;
+            self.emit_event(TIP20Event::transfer(
+                contract_address,
+                msg_sender,
+                max_amount,
+            ))?;
         }
 
         Ok(max_amount)

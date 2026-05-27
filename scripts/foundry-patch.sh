@@ -140,6 +140,7 @@ stale_tempo_pkgs="$(
   awk '
     /^\[\[package\]\]/ {
       name = ""
+      version = ""
       next
     }
     /^name = / {
@@ -147,9 +148,14 @@ stale_tempo_pkgs="$(
       gsub(/"/, "", name)
       next
     }
+    /^version = / {
+      version = $3
+      gsub(/"/, "", version)
+      next
+    }
     /^source = "git\+https:\/\/github.com\/tempoxyz\/tempo\?rev=/ {
-      if (name != "") {
-        print name
+      if (name != "" && version != "") {
+        print name "@" version
       }
     }
   ' Cargo.lock | sort -u
