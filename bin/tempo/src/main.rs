@@ -68,6 +68,8 @@ use tempo_faucet::{
     args::FaucetArgs,
     faucet::{TempoFaucetExt, TempoFaucetExtApiServer},
 };
+#[cfg(feature = "qmdb")]
+use tempo_node::node::StateRootBackend;
 use tempo_node::{
     TempoFullNode, TempoNodeArgs,
     node::TempoNode,
@@ -616,6 +618,19 @@ fn main() -> eyre::Result<()> {
                     .network
                     .discovery
                     .enable_discv5_discovery = true;
+
+                #[cfg(feature = "qmdb")]
+                if matches!(
+                    args.node_args
+                        .resolved_state_root_backend(builder.config().chain.as_ref()),
+                    StateRootBackend::Qmdb
+                ) {
+                    tempo_node::qmdb::configure_qmdb_engine_args(&mut builder.config_mut().engine);
+                    info!(
+                        target: "tempo::qmdb",
+                        "configured QMDB engine tree persistence and disabled MPT-only builder shortcuts"
+                    );
+                }
 
                 // Uncertified follower mode: set debug RPC when certification is off
                 if args.is_following_uncertified() {

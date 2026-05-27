@@ -321,7 +321,7 @@ where
         let BuildArguments {
             cached_reads,
             execution_cache,
-            trie_handle,
+            trie_handle: shared_state_root_handle,
             config,
             cancel,
             best_payload,
@@ -333,8 +333,9 @@ where
             payload_id,
         } = config;
         let build_once_with_shared_trie =
-            // When trie handle is provided, we build the payload once so the shared trie can be reused.
-            trie_handle.is_some()
+            // When a shared state-root handle is provided, build the payload once so the task can
+            // be reused.
+            shared_state_root_handle.is_some()
             // `--dev` mode does not use the shared-trie builder flow.
             && !self.is_dev;
 
@@ -486,7 +487,7 @@ where
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut builder, &attributes);
 
-        if let Some(ref handle) = trie_handle {
+        if let Some(ref handle) = shared_state_root_handle {
             builder
                 .executor_mut()
                 .set_state_hook(Some(Box::new(handle.state_hook())));
@@ -837,9 +838,9 @@ where
         check_cancel!();
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
-            if let Some(mut handle) = trie_handle {
-                // Dropping the hook signals that execution is complete and the sparse trie task can
-                // finalize the state root it has been updating incrementally.
+            if let Some(mut handle) = shared_state_root_handle {
+                // Dropping the hook signals that execution is complete and the shared state-root
+                // task can finalize the state root it has been updating incrementally.
                 builder.executor_mut().set_state_hook(None);
 
                 let state_root_wait_start = Instant::now();
@@ -853,7 +854,7 @@ where
                             target: "payload_builder",
                             id = %payload_id,
                             state_root = ?outcome.state_root,
-                            "received state root from sparse trie"
+                            "received state root from shared state-root task"
                         );
                         Some((outcome, elapsed))
                     }
@@ -862,7 +863,7 @@ where
                             target: "payload_builder",
                             id = %payload_id,
                             %err,
-                            "sparse trie failed, falling back to sync state root"
+                            "shared state-root task failed, falling back to sync state root"
                         );
                         None
                     }

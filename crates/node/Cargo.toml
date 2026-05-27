@@ -23,6 +23,7 @@ tempo-primitives = { workspace = true, features = ["default"] }
 
 thiserror.workspace = true
 
+reth-chain-state = { workspace = true, optional = true }
 reth-chainspec.workspace = true
 reth-errors.workspace = true
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
@@ -31,6 +32,7 @@ reth-node-builder.workspace = true
 reth-node-core.workspace = true
 reth-node-metrics.workspace = true
 reth-tracing.workspace = true
+reth-payload-primitives = { workspace = true, optional = true }
 reth-provider.workspace = true
 reth-qmdb = { workspace = true, optional = true }
 reth-transaction-pool.workspace = true
@@ -43,14 +45,18 @@ reth-rpc-builder.workspace = true
 reth-node-api.workspace = true
 reth-rpc-eth-types.workspace = true
 reth-node-ethereum.workspace = true
+reth-revm = { workspace = true, optional = true }
 reth-storage-api.workspace = true
+reth-engine-primitives = { workspace = true, optional = true }
 reth-engine-tree = { workspace = true, optional = true }
 reth-stages = { workspace = true, optional = true }
 reth-trie-common = { workspace = true, optional = true }
 reth-trie-db = { workspace = true, optional = true }
+reth-trie-parallel = { workspace = true, optional = true }
 
 alloy-serde.workspace = true
 alloy-eips.workspace = true
+alloy-evm = { workspace = true, optional = true }
 alloy-rpc-types-admin.workspace = true
 alloy-rpc-types-eth.workspace = true
 alloy.workspace = true
@@ -59,11 +65,14 @@ alloy-primitives.workspace = true
 async-trait.workspace = true
 clap.workspace = true
 commonware-runtime = { workspace = true, features = ["external"] }
+crossbeam-channel = { workspace = true, optional = true }
 eyre.workspace = true
 futures.workspace = true
 jiff = { workspace = true, features = ["std"] }
 jsonrpsee.workspace = true
+metrics = { workspace = true, optional = true }
 reqwest.workspace = true
+revm-state = { workspace = true, optional = true }
 url.workspace = true
 serde.workspace = true
 serde_json.workspace = true
@@ -94,9 +103,17 @@ futures.workspace = true
 test-case.workspace = true
 indexmap.workspace = true
 insta.workspace = true
+criterion.workspace = true
 p256 = { workspace = true, features = ["ecdsa"] }
+rand_distr.workspace = true
 sha2 = { workspace = true }
 base64.workspace = true
+tempfile.workspace = true
+
+[[bench]]
+name = "qmdb_root"
+harness = false
+required-features = ["qmdb"]
 
 [build-dependencies]
 vergen.workspace = true
@@ -105,11 +122,20 @@ vergen-git2.workspace = true
 [features]
 default = []
 qmdb = [
+	"dep:alloy-evm",
+	"dep:crossbeam-channel",
+	"dep:metrics",
+	"dep:reth-chain-state",
+	"dep:reth-engine-primitives",
 	"dep:reth-engine-tree",
+	"dep:reth-payload-primitives",
 	"dep:reth-qmdb",
+	"dep:reth-revm",
 	"dep:reth-stages",
 	"dep:reth-trie-common",
 	"dep:reth-trie-db",
+	"dep:reth-trie-parallel",
+	"dep:revm-state",
 ]
 asm-keccak = [
 	"alloy/asm-keccak",

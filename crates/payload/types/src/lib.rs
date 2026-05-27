@@ -6,7 +6,7 @@
 mod attrs;
 mod budget;
 
-use alloy_primitives::B256;
+use alloy_primitives::{B256, Bytes};
 pub use attrs::TempoPayloadAttributes;
 pub use budget::{MarshalPersistEstimator, marshal_persist_estimate, observe_marshal_persist};
 use std::{sync::Arc, time::Duration};
@@ -167,7 +167,7 @@ impl PayloadTypes for TempoPayloadTypes {
     type BuiltPayload = TempoBuiltPayload;
     type PayloadAttributes = TempoPayloadAttributes;
 
-    fn block_to_payload(block: SealedBlock<Block>) -> Self::ExecutionData {
+    fn block_to_payload(block: SealedBlock<Block>, _sidecar: Option<Bytes>) -> Self::ExecutionData {
         TempoExecutionData {
             block: Arc::new(block),
             validator_set: None,

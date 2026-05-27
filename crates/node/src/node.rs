@@ -29,7 +29,7 @@ use reth_node_builder::{
     },
 };
 use reth_node_ethereum::EthereumNetworkBuilder;
-use reth_primitives_traits::{SealedBlock, SealedHeader};
+use reth_primitives_traits::SealedHeader;
 use reth_provider::providers::ProviderFactoryBuilder;
 use reth_rpc_builder::{Identity, RethRpcModule};
 use reth_rpc_eth_api::{
@@ -39,15 +39,14 @@ use reth_rpc_eth_api::{
 use reth_storage_api::EmptyBodyStorage;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
-use std::sync::Arc;
 use tempo_chainspec::spec::{TempoChainSpec, TempoStateRootScheme};
 use tempo_consensus::TempoConsensus;
 use tempo_evm::TempoEvmConfig;
 use tempo_payload_builder::{
     DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
 };
-use tempo_payload_types::{TempoExecutionData, TempoPayloadAttributes};
-use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
+use tempo_payload_types::TempoPayloadAttributes;
+use tempo_primitives::{Block, TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
     AA2dPool, AA2dPoolConfig, TempoTransactionPool,
     amm::AmmLiquidityCache,
@@ -91,7 +90,7 @@ pub struct QmdbArgs {
 
     /// Number of QMDB worker threads.
     #[arg(long = "qmdb.worker-threads", default_value_t = 2)]
-    pub worker_threads: usize,
+    pub qmdb_worker_threads: usize,
 
     /// QMDB partition prefix.
     #[arg(long = "qmdb.partition-prefix", default_value = "state")]
@@ -102,7 +101,7 @@ impl Default for QmdbArgs {
     fn default() -> Self {
         Self {
             batch_blocks: 1_000,
-            worker_threads: 2,
+            qmdb_worker_threads: 2,
             partition_prefix: "state".to_string(),
         }
     }
@@ -204,13 +203,21 @@ pub struct TempoNode {
 impl TempoNode {
     /// Create new instance of a Tempo node
     pub fn new(args: &TempoNodeArgs, validator_key: Option<B256>) -> Self {
+        #[cfg(feature = "qmdb")]
+        let qmdb = QmdbStateLoader::new(args.qmdb.clone());
+        let mut payload_builder_builder = args.payload_builder_builder();
+        #[cfg(feature = "qmdb")]
+        {
+            payload_builder_builder.qmdb = qmdb.clone();
+        }
+
         Self {
             pool_builder: args.pool_builder(),
-            payload_builder_builder: args.payload_builder_builder(),
+            payload_builder_builder,
             validator_key,
             state_root_backend: args.state_root_backend,
             #[cfg(feature = "qmdb")]
-            qmdb: QmdbStateLoader::new(args.qmdb.clone()),
+            qmdb,
         }
     }
 
@@ -442,15 +449,10 @@ impl<N: FullNodeComponents<Types = Self>> DebugNode<N> for TempoNode {
     type RpcBlock =
         alloy_rpc_types_eth::Block<alloy_rpc_types_eth::Transaction<TempoTxEnvelope>, TempoHeader>;
 
-    fn rpc_to_execution_data(rpc_block: Self::RpcBlock) -> TempoExecutionData {
-        let block = rpc_block
+    fn rpc_to_primitive_block(rpc_block: Self::RpcBlock) -> Block {
+        rpc_block
             .into_consensus_block()
-            .map_transactions(|tx| tx.into_inner());
-
-        TempoExecutionData {
-            block: Arc::new(SealedBlock::seal_slow(block)),
-            validator_set: None,
-        }
+            .map_transactions(|tx| tx.into_inner())
     }
 
     fn local_payload_attributes_builder(
@@ -737,7 +739,11 @@ where
             }
             StateRootBackend::Qmdb => {
                 let qmdb = self.qmdb.open_for_provider(ctx.config(), ctx.provider())?;
-                crate::qmdb::TempoStateRootProviderFactory::qmdb(ctx.provider().clone(), qmdb)
+                crate::qmdb::TempoStateRootProviderFactory::qmdb(
+                    ctx.provider().clone(),
+                    qmdb,
+                    self.qmdb.pending_blocks(),
+                )
             }
         };
 

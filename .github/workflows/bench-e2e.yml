@@ -173,11 +173,6 @@ on:
         type: string
         required: true
         default: "9"
-      clickhouse-run:
-        description: Benchmark phase that may use the direct ClickHouse reporter.
-        type: string
-        required: false
-        default: "feature-1"
   workflow_call:
     inputs:
       pr:
@@ -581,6 +576,7 @@ jobs:
          INPUT_SHA: ${{ github.sha }}
          INPUT_PR_HEAD_SHA: ${{ steps.pr-info.outputs.head-sha }}
          INPUT_PR_HEAD_REF: ${{ steps.pr-info.outputs.head-ref }}
+         INPUT_STATE_ROOT_BACKEND: ${{ inputs.state-root-backend || 'mpt' }}
         with:
          script: |
            const { execSync } = require('child_process');
@@ -621,6 +617,11 @@ jobs:
            } else {
              featureRef = process.env.INPUT_PR_HEAD_SHA;
              featureName = featureNameArg || process.env.INPUT_PR_HEAD_REF;
+           }
+
+           if (!baselineArg && process.env.INPUT_STATE_ROOT_BACKEND === 'qmdb') {
+             baselineRef = featureRef;
+             baselineName = baselineNameArg || `${featureName} (qmdb self-baseline)`;
            }
 
             core.setOutput('baseline-ref', baselineRef);

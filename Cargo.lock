@@ -1557,6 +1557,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "4858a9d740c5007a9069007c3b4e91152d0506f13c1b31dd49051fd537656156"
 
 [[package]]
+name = "assert_matches"
+version = "1.5.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "9b34d609dfbaf33d6889b2b7106d3ca345eacad44200913df5ba02bfd31d2ba9"
+
+[[package]]
 name = "async-compression"
 version = "0.4.42"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6771,7 +6777,9 @@ dependencies = [
  "crossbeam-epoch",
  "crossbeam-utils",
  "hashbrown 0.16.1",
+ "indexmap 2.14.0",
  "metrics",
+ "ordered-float",
  "quanta",
  "rand 0.9.4",
  "rand_xoshiro",
@@ -7349,6 +7357,15 @@ dependencies = [
  "thiserror 2.0.18",
  "tokio",
  "tokio-stream",
+]
+
+[[package]]
+name = "ordered-float"
+version = "5.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b7d950ca161dc355eaf28f82b11345ed76c6e1f6eb1f4f4479e0323b9e2fbd0e"
+dependencies = [
+ "num-traits",
 ]
 
 [[package]]
@@ -9245,7 +9262,6 @@ dependencies = [
 [[package]]
 name = "reth-engine-tree"
 version = "2.2.0"
-source = "git+https://github.com/paradigmxyz/reth?rev=aec6ba0#aec6ba00c87ccfb240132bef13130e79fce6f4dc"
 dependencies = [
  "alloy-consensus",
  "alloy-eip7928 0.4.1",
@@ -9254,26 +9270,39 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-rpc-types-engine",
+ "assert_matches",
  "crossbeam-channel",
  "derive_more",
+ "eyre",
  "futures",
  "indexmap 2.14.0",
  "metrics",
+ "metrics-util",
  "moka",
  "parking_lot",
+ "proptest",
+ "rand 0.8.6",
+ "rand 0.9.4",
  "rayon",
  "reth-chain-state",
  "reth-chainspec",
  "reth-consensus",
  "reth-db",
+ "reth-db-common",
+ "reth-e2e-test-utils",
  "reth-engine-primitives",
  "reth-errors",
+ "reth-ethereum-consensus",
+ "reth-ethereum-engine-primitives",
  "reth-ethereum-primitives",
  "reth-evm",
+ "reth-evm-ethereum",
  "reth-execution-cache",
  "reth-execution-types",
+ "reth-exex-types",
  "reth-metrics",
  "reth-network-p2p",
+ "reth-node-ethereum",
  "reth-payload-builder",
  "reth-payload-primitives",
  "reth-primitives-traits",
@@ -9285,6 +9314,7 @@ dependencies = [
  "reth-stages-api",
  "reth-static-file",
  "reth-tasks",
+ "reth-testing-utils",
  "reth-tracing",
  "reth-trie",
  "reth-trie-common",
@@ -9292,6 +9322,7 @@ dependencies = [
  "reth-trie-parallel",
  "reth-trie-sparse",
  "revm",
+ "revm-database-interface",
  "revm-primitives",
  "revm-state",
  "schnellru",
@@ -10055,7 +10086,6 @@ dependencies = [
 [[package]]
 name = "reth-node-builder"
 version = "2.2.0"
-source = "git+https://github.com/paradigmxyz/reth?rev=aec6ba0#aec6ba00c87ccfb240132bef13130e79fce6f4dc"
 dependencies = [
  "alloy-consensus",
  "alloy-eips",
@@ -10084,7 +10114,9 @@ dependencies = [
  "reth-engine-primitives",
  "reth-engine-tree",
  "reth-engine-util",
+ "reth-ethereum-engine-primitives",
  "reth-evm",
+ "reth-evm-ethereum",
  "reth-exex",
  "reth-fs-util",
  "reth-invalid-block-hooks",
@@ -10093,6 +10125,7 @@ dependencies = [
  "reth-network-p2p",
  "reth-node-api",
  "reth-node-core",
+ "reth-node-ethereum",
  "reth-node-ethstats",
  "reth-node-events",
  "reth-node-metrics",
@@ -10115,6 +10148,7 @@ dependencies = [
  "reth-trie-db",
  "secp256k1 0.30.0",
  "serde_json",
+ "tempfile",
  "tokio",
  "tokio-stream",
  "tracing",
@@ -10310,7 +10344,6 @@ dependencies = [
 [[package]]
 name = "reth-payload-builder"
 version = "2.2.0"
-source = "git+https://github.com/paradigmxyz/reth?rev=aec6ba0#aec6ba00c87ccfb240132bef13130e79fce6f4dc"
 dependencies = [
  "alloy-consensus",
  "alloy-primitives",
@@ -10498,6 +10531,32 @@ dependencies = [
  "reth-codecs",
  "serde",
  "strum",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
+name = "reth-qmdb"
+version = "1.7.1"
+dependencies = [
+ "alloy-eips",
+ "alloy-genesis",
+ "alloy-primitives",
+ "alloy-rlp",
+ "commonware-cryptography",
+ "commonware-runtime",
+ "commonware-storage",
+ "commonware-utils",
+ "futures-util",
+ "reth-chainspec",
+ "reth-ethereum-primitives",
+ "reth-primitives-traits",
+ "reth-stages-api",
+ "reth-storage-api",
+ "reth-storage-errors",
+ "reth-trie-common",
+ "revm-database",
+ "tempfile",
  "thiserror 2.0.18",
  "tracing",
 ]
@@ -11237,7 +11296,6 @@ dependencies = [
 [[package]]
 name = "reth-trie-parallel"
 version = "2.2.0"
-source = "git+https://github.com/paradigmxyz/reth?rev=aec6ba0#aec6ba00c87ccfb240132bef13130e79fce6f4dc"
 dependencies = [
  "alloy-eip7928 0.4.1",
  "alloy-evm",
@@ -11248,8 +11306,12 @@ dependencies = [
  "derive_more",
  "itertools 0.14.0",
  "metrics",
+ "proptest",
+ "proptest-arbitrary-interop",
  "rand 0.9.4",
  "rayon",
+ "reth-chainspec",
+ "reth-ethereum-primitives",
  "reth-execution-errors",
  "reth-metrics",
  "reth-primitives-traits",
@@ -11257,9 +11319,11 @@ dependencies = [
  "reth-storage-errors",
  "reth-tasks",
  "reth-trie",
+ "reth-trie-db",
  "reth-trie-sparse",
  "revm-state",
  "thiserror 2.0.18",
+ "tokio",
  "tracing",
 ]
 
@@ -13215,6 +13279,7 @@ version = "1.7.1"
 dependencies = [
  "alloy",
  "alloy-eips",
+ "alloy-evm",
  "alloy-network",
  "alloy-primitives",
  "alloy-rlp",
@@ -13225,18 +13290,25 @@ dependencies = [
  "async-trait",
  "base64 0.22.1",
  "clap",
+ "codspeed-criterion-compat",
  "commonware-runtime",
+ "crossbeam-channel",
  "eyre",
  "futures",
  "indexmap 2.14.0",
  "insta",
  "jiff",
  "jsonrpsee",
+ "metrics",
  "p256",
  "rand 0.9.4",
+ "rand_distr 0.5.1",
  "reqwest 0.13.3",
+ "reth-chain-state",
  "reth-chainspec",
  "reth-e2e-test-utils",
+ "reth-engine-primitives",
+ "reth-engine-tree",
  "reth-errors",
  "reth-ethereum",
  "reth-evm",
@@ -13246,19 +13318,28 @@ dependencies = [
  "reth-node-core",
  "reth-node-ethereum",
  "reth-node-metrics",
+ "reth-payload-primitives",
  "reth-primitives-traits",
  "reth-provider",
+ "reth-qmdb",
+ "reth-revm",
  "reth-rpc",
  "reth-rpc-api",
  "reth-rpc-builder",
  "reth-rpc-eth-api",
  "reth-rpc-eth-types",
+ "reth-stages",
  "reth-storage-api",
  "reth-tracing",
  "reth-transaction-pool",
+ "reth-trie-common",
+ "reth-trie-db",
+ "reth-trie-parallel",
+ "revm-state",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "tempo-alloy",
  "tempo-chainspec",
  "tempo-consensus",

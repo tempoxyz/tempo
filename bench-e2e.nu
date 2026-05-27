@@ -20,6 +20,7 @@ const E2E_GAS_LIMIT = "1000000000"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
+const E2E_LOCALNET_SIGNING_KEY_SECRET = "tempo-localnet-signing-key-secret"
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
     "--disable-discovery"
@@ -86,6 +87,18 @@ def removed-node-args-label [removed: list<string>] {
     } else {
         $removed | str join " "
     }
+}
+
+def e2e-state-root-args [state_root_backend: string] {
+    if $state_root_backend == "qmdb" {
+        ["--state-root.backend" "qmdb"]
+    } else {
+        []
+    }
+}
+
+def e2e-supported-node-args [tempo_bin: string, state_root_backend: string] {
+    supported-node-arg-filter $tempo_bin ($E2E_LOCAL_RETH_ARGS | append (e2e-state-root-args $state_root_backend))
 }
 
 def run-bench-schelk [...args: string] {
@@ -247,7 +260,7 @@ def bench-save-e2e-meta [datadir: string, meta_dir: string, marker: record, gene
 
 def e2e-snapshot-required-files [datadir: string] {
     let meta_dir = $"($datadir)/($BENCH_META_SUBDIR)"
-    [
+    mut files = [
         $"($meta_dir)/genesis.json"
         $"($meta_dir)/trusted-peers.txt"
         $"($meta_dir)/marker.json"
@@ -258,6 +271,10 @@ def e2e-snapshot-required-files [datadir: string] {
         $"($datadir)/db"
         $"($datadir)/static_files"
     ]
+    if ($datadir | str ends-with "_qmdb") {
+        $files = ($files | append $"($datadir)/signing.secret")
+    }
+    $files
 }
 
 def e2e-snapshot-missing-files [datadir: string] {
@@ -517,6 +534,7 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
     }
     let ip = if $consensus_ip != "" { $consensus_ip } else { $inferred_ip }
     let signing_key = $"($node_dir)/signing.key"
+    let signing_secret = $"($node_dir)/signing.secret"
     let signing_share = $"($node_dir)/signing.share"
     let enode_key = $"($node_dir)/enode.key"
 
@@ -527,6 +545,7 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
 
     [
         "--consensus.signing-key" $signing_key
+        ...(if ($signing_secret | path exists) { ["--consensus.secret" $signing_secret] } else { [] })
         "--consensus.signing-share" $signing_share
         "--consensus.listen-address" $"($ip):($port)"
         "--consensus.metrics-address" $"($ip):($metrics_port)"
@@ -751,6 +770,7 @@ def init-local-e2e-side [
     for file in ["signing.key" "signing.share" "enode.key" "enode.identity"] {
         cp $"($generated_node_dir)/($file)" $"($node_dir)/($file)"
     }
+    $"($E2E_LOCALNET_SIGNING_KEY_SECRET)\n" | save -f $"($node_dir)/signing.secret"
     $trusted_peers | save -f $generated_trusted_peers
 
     bench-save-e2e-meta $datadir $meta_dir ($marker | insert validator_role $role) [[$generated_genesis "genesis.json"] [$generated_trusted_peers "trusted-peers.txt"]]
@@ -839,7 +859,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
         | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
         | append $local_reth_args
-        | append (if $ctx.state_root_backend == "qmdb" { ["--state-root.backend" "qmdb"] } else { [] })
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
@@ -847,7 +866,6 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
         | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
         | append $local_reth_args
-        | append (if $ctx.state_root_backend == "qmdb" { ["--state-root.backend" "qmdb"] } else { [] })
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
@@ -1343,8 +1361,12 @@ def "main e2e" [
     let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
     let feature_tempo = (worktree-bin $feature_wt $profile "tempo")
     let regenesis_tempo = if $regenesis_needed { worktree-bin $regenesis_wt $profile "tempo" } else { "" }
-    let baseline_arg_filter = (supported-node-arg-filter $baseline_tempo $E2E_LOCAL_RETH_ARGS)
-    let feature_arg_filter = (supported-node-arg-filter $feature_tempo $E2E_LOCAL_RETH_ARGS)
+    let baseline_arg_filter = (e2e-supported-node-args $baseline_tempo $state_root_backend)
+    let feature_arg_filter = (e2e-supported-node-args $feature_tempo $state_root_backend)
+    if $state_root_backend == "qmdb" and "--state-root.backend" in $feature_arg_filter.removed {
+        print $"Error: feature tempo binary does not support --state-root.backend for requested backend '($state_root_backend)'"
+        exit 1
+    }
     let removed_arg_config = $"(format-removed-node-arg-config 'baseline' $baseline_arg_filter.removed)(format-removed-node-arg-config 'feature' $feature_arg_filter.removed)"
     if $removed_arg_config != "" {
         let current_config = ($env | get -o BENCH_CONFIG | default "")
