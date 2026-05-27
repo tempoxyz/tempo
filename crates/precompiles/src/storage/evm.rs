@@ -13,28 +13,28 @@ use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
 /// Wraps `EvmInternals` and tracks gas consumption for storage operations.
-pub struct EvmPrecompileStorageProvider<'a> {
-    internals: EvmInternals<'a>,
+pub struct EvmPrecompileStorageProvider<'evm, 'gas> {
+    internals: EvmInternals<'evm>,
     gas_tracker: GasTracker,
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
-    gas_params: GasParams,
+    gas_params: &'gas GasParams,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
 }
 
-impl<'a> EvmPrecompileStorageProvider<'a> {
+impl<'evm, 'gas> EvmPrecompileStorageProvider<'evm, 'gas> {
     /// Creates a new storage provider with the given gas limit, hardfork, and static flag.
     pub fn new(
-        internals: EvmInternals<'a>,
+        internals: EvmInternals<'evm>,
         gas_limit: u64,
         reservoir: u64,
         spec: TempoHardfork,
         amsterdam_eip8037_enabled: bool,
         is_static: bool,
-        gas_params: GasParams,
+        gas_params: &'gas GasParams,
     ) -> Self {
         Self {
             internals,
@@ -49,7 +49,10 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 
     /// Creates a new storage provider with maximum gas limit and non-static context.
-    pub fn new_max_gas(internals: EvmInternals<'a>, cfg: &CfgEnv<TempoHardfork>) -> Self {
+    pub fn new_max_gas(
+        internals: EvmInternals<'evm>,
+        cfg: &'gas CfgEnv<TempoHardfork>,
+    ) -> Self {
         Self::new(
             internals,
             u64::MAX,
@@ -57,14 +60,14 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             cfg.spec,
             cfg.enable_amsterdam_eip8037,
             false,
-            cfg.gas_params.clone(),
+            &cfg.gas_params,
         )
     }
 
     /// Creates a new storage provider with the given gas limit, deriving spec from `cfg`.
     pub fn new_with_gas_limit(
-        internals: EvmInternals<'a>,
-        cfg: &CfgEnv<TempoHardfork>,
+        internals: EvmInternals<'evm>,
+        cfg: &'gas CfgEnv<TempoHardfork>,
         gas_limit: u64,
         reservoir: u64,
     ) -> Self {
@@ -75,7 +78,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             cfg.spec,
             cfg.enable_amsterdam_eip8037,
             false,
-            cfg.gas_params.clone(),
+            &cfg.gas_params,
         )
     }
 
@@ -88,7 +91,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 }
 
-impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
+impl<'evm, 'gas> PrecompileStorageProvider for EvmPrecompileStorageProvider<'evm, 'gas> {
     fn chain_id(&self) -> u64 {
         self.internals.chain_id()
     }
@@ -358,7 +361,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 /// recording each checkpoint's (`journal_i`, `log_i`) on creation and asserting
 /// that commits/reverts always resolve the most recent checkpoint first.
 #[cfg(debug_assertions)]
-impl EvmPrecompileStorageProvider<'_> {
+impl EvmPrecompileStorageProvider<'_, '_> {
     /// Records a newly created checkpoint for later LIFO validation.
     fn track_checkpoint(&mut self, cp: &JournalCheckpoint) {
         self.checkpoint_stack.push((cp.journal_i, cp.log_i));
@@ -442,11 +445,11 @@ mod tests {
             &mut self,
             gas_limit: u64,
             reservoir: u64,
-        ) -> EvmPrecompileStorageProvider<'_> {
+        ) -> EvmPrecompileStorageProvider<'_, '_> {
             let ctx = self.0.ctx_mut();
             let spec = ctx.cfg.spec;
             let amsterdam_eip8037_enabled = ctx.cfg.enable_amsterdam_eip8037;
-            let gas_params = ctx.cfg.gas_params.clone();
+            let gas_params = &ctx.cfg.gas_params;
             let evm_internals =
                 EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
 
@@ -461,11 +464,14 @@ mod tests {
             )
         }
 
-        fn provider_with_reservoir(&mut self, reservoir: u64) -> EvmPrecompileStorageProvider<'_> {
+        fn provider_with_reservoir(
+            &mut self,
+            reservoir: u64,
+        ) -> EvmPrecompileStorageProvider<'_, '_> {
             self.provider_with_gas_limit(u64::MAX, reservoir)
         }
 
-        fn provider_max_gas(&mut self) -> EvmPrecompileStorageProvider<'_> {
+        fn provider_max_gas(&mut self) -> EvmPrecompileStorageProvider<'_, '_> {
             let ctx = self.0.ctx_mut();
             let evm_internals =
                 EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);

@@ -1313,9 +1313,8 @@ where
                             cfg.gas_params.get(GasId::warm_storage_read_cost());
                         GasParams::new(Arc::new(table))
                     })
-                    .clone()
             } else {
-                cfg.gas_params.clone()
+                &cfg.gas_params
             };
 
             // It's ok to set reservoir to 0 because pre-T1B it doesn't matter and post-T1B we have unlimited gas anyway.
