@@ -1,6 +1,6 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::U256;
 use revm::{
     Context, Inspector,
     context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
@@ -11,6 +11,7 @@ use revm::{
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::tip20::TIP20Token;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
@@ -37,7 +38,7 @@ pub struct TempoEvm<DB: Database, I> {
     /// Reset to zero before each transaction so it reflects only the current tx.
     pub validator_fee: U256,
     /// The fee token used to pay fees for the current transaction.
-    pub(crate) fee_token: Option<Address>,
+    pub(crate) fee_token: Option<TIP20Token>,
     /// The expiry timestamp of the access key used by the current transaction.
     /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub(crate) key_expiry: Option<u64>,

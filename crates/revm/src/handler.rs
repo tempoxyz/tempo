@@ -49,7 +49,8 @@ use tempo_precompiles::{
         NonceManager,
     },
     storage::{
-        Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
+        ContractStorage, Handler as _, PrecompileStorageProvider, StorageCtx,
+        evm::EvmPrecompileStorageProvider,
     },
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
@@ -906,7 +907,8 @@ where
             .get_fee_token(tx, fee_payer, cfg.spec)
             .map_err(|err| EVMError::Custom(err.to_string()))?;
 
-        evm.fee_token = Some(fee_token);
+        // `journal.get_fee_token` validates the TIP-20 prefix, so we can use unchecked method here
+        evm.fee_token = Some(TIP20Token::from_address_unchecked(fee_token));
 
         // Always validate TIP20 prefix to prevent panics in get_token_balance.
         // This is a protocol-level check since validators could bypass initial validation.
@@ -1501,6 +1503,7 @@ where
                 let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
                 let fee_token = evm
                     .fee_token
+                    .as_mut()
                     .expect("set in `validate_against_state_and_deduct_caller`");
                 // Call collectFeePostTx (handles both refund and fee queuing)
                 fee_manager
@@ -1878,7 +1881,9 @@ where
         let result = ValidationContext {
             fee_token: evm
                 .fee_token
-                .expect("set in `validate_against_state_and_deduct_caller`"),
+                .as_ref()
+                .expect("set in `validate_against_state_and_deduct_caller`")
+                .address(),
             key_expiry: evm.key_expiry,
         };
         evm.clear();

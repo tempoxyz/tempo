@@ -7,7 +7,7 @@ pub mod dispatch;
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping},
+    storage::{ContractStorage, Handler, Mapping},
     tip_fee_manager::amm::{FeeRoute, Pool, compute_amount_out},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
@@ -231,29 +231,29 @@ impl TipFeeManager {
         fee_payer: Address,
         actual_spending: U256,
         refund_amount: U256,
-        fee_token: Address,
+        fee_token: &mut TIP20Token,
         beneficiary: Address,
     ) -> Result<U256> {
         // Refund unused tokens to user
-        let mut tip20_token = TIP20Token::from_address(fee_token)?;
-        tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
+        fee_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
         // Execute fee swap and track collected fees
         let hop_token = self.two_hop_intermediate.t_read()?;
         let validator_token = self.get_validator_token(beneficiary)?;
 
-        let amount = if fee_token == validator_token {
+        let amount = if fee_token.address() == validator_token {
             actual_spending
         } else if hop_token.is_zero() {
             // Single-hop (direct) swap
             if !actual_spending.is_zero() {
-                self.execute_fee_swap(fee_token, validator_token, actual_spending)?;
+                self.execute_fee_swap(fee_token.address(), validator_token, actual_spending)?;
             }
             compute_amount_out(actual_spending)?
         } else {
             // Two-hop swap (only in T5+): each hop applies M = 9970/10000 sequentially
             if !actual_spending.is_zero() {
-                let out1 = self.execute_fee_swap(fee_token, hop_token, actual_spending)?;
+                let out1 =
+                    self.execute_fee_swap(fee_token.address(), hop_token, actual_spending)?;
                 self.execute_fee_swap(hop_token, validator_token, out1)?;
             }
             compute_amount_out(compute_amount_out(actual_spending)?)?
@@ -529,7 +529,7 @@ mod tests {
             let refund_amount = U256::from(4000);
 
             // Mint to FeeManager (simulating collect_fee_pre_tx already happened)
-            let token = TIP20Setup::create("Test", "TST", admin)
+            let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(100000000000000_u64))
                 .apply()?;
@@ -558,7 +558,7 @@ mod tests {
                 user,
                 actual_used,
                 refund_amount,
-                token.address(),
+                &mut token,
                 validator,
             )?;
             assert_eq!(credited, actual_used);
@@ -700,7 +700,7 @@ mod tests {
         let validator = Address::random();
 
         StorageCtx::enter(&mut storage, || {
-            let user_token = TIP20Setup::create("UserToken", "UTK", admin)
+            let mut user_token = TIP20Setup::create("UserToken", "UTK", admin)
                 .with_issuer(admin)
                 .with_mint(user, U256::from(10000))
                 .with_mint(TIP_FEE_MANAGER_ADDRESS, U256::from(10000))
@@ -746,7 +746,7 @@ mod tests {
                 user,
                 actual_spending,
                 refund_amount,
-                user_token.address(),
+                &mut user_token,
                 validator,
             )?;
 
@@ -1209,8 +1209,13 @@ mod tests {
 
                     let amount_u = U256::from(amount);
                     fm.collect_fee_pre_tx(user, t.user, amount_u, validator, false)?;
-                    let credited =
-                        fm.collect_fee_post_tx(user, amount_u, U256::ZERO, t.user, validator)?;
+                    let credited = fm.collect_fee_post_tx(
+                        user,
+                        amount_u,
+                        U256::ZERO,
+                        &mut TIP20Token::from_address_unchecked(t.user),
+                        validator,
+                    )?;
                     let one_hop_amount = compute_amount_out(amount_u)?;
                     assert!(
                         credited < one_hop_amount,
@@ -1280,7 +1285,13 @@ mod tests {
             );
 
             // Post-tx MUST use the cached two_hop_intermediate (hop), not the new quote token.
-            fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+            fm.collect_fee_post_tx(
+                user,
+                amount,
+                U256::ZERO,
+                &mut TIP20Token::from_address_unchecked(t.user),
+                validator,
+            )?;
 
             let out1: u128 = compute_amount_out(amount)?.try_into().unwrap();
             let out2: u128 = compute_amount_out(U256::from(out1))?.try_into().unwrap();
@@ -1334,7 +1345,13 @@ mod tests {
                 let amount = U256::from(1_000);
                 fm.collect_fee_pre_tx(user, t.user, amount, validator, false)?;
                 assert_eq!(fm.two_hop_intermediate.t_read()?, t.hop, "tx1: cached");
-                fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+                fm.collect_fee_post_tx(
+                    user,
+                    amount,
+                    U256::ZERO,
+                    &mut TIP20Token::from_address_unchecked(t.user),
+                    validator,
+                )?;
                 // Note: post_tx leaves the slot non-zero in-tx; EVM clears it at tx boundary.
                 assert_eq!(
                     fm.two_hop_intermediate.t_read()?,
@@ -1361,7 +1378,13 @@ mod tests {
                     fm.two_hop_intermediate.t_read()?.is_zero(),
                     "tx2: pre_tx took direct route, must not set intermediate",
                 );
-                fm.collect_fee_post_tx(user, amount, U256::ZERO, t.user, validator)?;
+                fm.collect_fee_post_tx(
+                    user,
+                    amount,
+                    U256::ZERO,
+                    &mut TIP20Token::from_address_unchecked(t.user),
+                    validator,
+                )?;
 
                 // tx2 settled via direct pool: validator received single-hop fee.
                 let out_single: U256 = compute_amount_out(amount)?;

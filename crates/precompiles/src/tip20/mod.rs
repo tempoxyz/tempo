@@ -73,6 +73,7 @@ pub fn validate_usd_currency(token: Address) -> Result<()> {
 ///
 /// The struct fields define the on-chain storage layout; the `#[contract]` macro generates the
 /// storage handlers which provide an ergonomic way to interact with the EVM state.
+#[derive(Debug)]
 #[contract]
 pub struct TIP20Token {
     // RolesAuth
