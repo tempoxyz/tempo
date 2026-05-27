@@ -17,6 +17,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     internals: EvmInternals<'a>,
     gas_tracker: GasTracker,
     spec: TempoHardfork,
+    spec_is_t4: bool,
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
     gas_params: GasParams,
@@ -40,6 +41,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             internals,
             gas_tracker: GasTracker::new(gas_limit, gas_limit, reservoir),
             spec,
+            spec_is_t4: spec.is_t4(),
             amsterdam_eip8037_enabled,
             is_static,
             gas_params,
@@ -139,7 +141,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         let additional_cost = self.gas_params.cold_account_additional_cost();
 
         // T4+: pre-charge static gas to avoid cheap useless work.
-        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+        let insufficient_gas_for_cold_load = if self.spec_is_t4 {
             self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
             self.gas_tracker.remaining() < additional_cost
         } else {
@@ -150,7 +152,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             .internals
             .load_account_mut_skip_cold_load(address, insufficient_gas_for_cold_load)?;
 
-        if !self.spec.is_t4() {
+        if !self.spec_is_t4 {
             deduct_gas(
                 &mut self.gas_tracker,
                 self.gas_params.warm_storage_read_cost(),
@@ -176,7 +178,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
         // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
-        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+        let insufficient_gas_for_cold_load = if self.spec_is_t4 {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
             self.gas_tracker.remaining() < self.gas_params.cold_storage_additional_cost()
         } else {
@@ -189,7 +191,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             insufficient_gas_for_cold_load,
         )?;
 
-        if !self.spec.is_t4() {
+        if !self.spec_is_t4 {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
         }
 
@@ -242,7 +244,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         let additional_cost = self.gas_params.cold_storage_additional_cost();
 
         // T4+: pre-charge static gas to avoid cheap useless work.
-        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+        let insufficient_gas_for_cold_load = if self.spec_is_t4 {
             self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
             self.gas_tracker.remaining() < additional_cost
         } else {
@@ -259,7 +261,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             is_cold = val.is_cold;
         };
 
-        if !self.spec.is_t4() {
+        if !self.spec_is_t4 {
             self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
         }
 
