@@ -5,6 +5,7 @@ pub mod commit;
 pub mod config;
 pub mod executor;
 pub mod metrics;
+pub mod mv_memory;
 pub mod overlay;
 pub mod policy;
 pub mod rw_set;
@@ -16,10 +17,13 @@ pub use action::{BlockStmAction, BlockStmActionKind, BlockStmActionLog, BlockStm
 pub use config::BlockStmConfig;
 pub use executor::{BlockStmExecutor, ParallelTempoBlockExecutor};
 pub use metrics::BlockStmMetrics;
+pub use mv_memory::BlockStmMvMemory;
 pub use overlay::{BlockStmOverlay, BlockStmOverlayStatus, BlockStmOverlayValue, BlockStmVersion};
 pub use policy::{BlockStmConflictPolicy, BlockStmDependencyDomain, BlockStmStrategy};
 pub use rw_set::{BlockStmAccessKey, BlockStmReadSet, BlockStmValue, BlockStmWriteSet};
-pub use scheduler::{BlockStmScheduledTask, BlockStmScheduler, BlockStmTaskKind};
+pub use scheduler::{
+    BlockStmConcurrentScheduler, BlockStmScheduledTask, BlockStmScheduler, BlockStmTaskKind,
+};
 pub use state_view::BlockStmStateView;
 pub use stats::BlockStmExecutionStats;
 

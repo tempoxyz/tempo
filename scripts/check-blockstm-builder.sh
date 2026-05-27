@@ -13,7 +13,9 @@ run test -s docs/blockstm-builder-implementation-plan.md
 run rg -n "sender nonce|expiring nonce|fee payer|validator fee|keychain|TIP-20|AMM|order book|state-aware" docs/blockstm-builder-implementation-plan.md
 run rg -n "ExpiringNonceUse|Tip20FeeEscrowDelta|Tip20TransferDelta|CollectedFeesDelta|SemanticPrefixRead|pure TIP20 benchmark|25000|1.5x" docs/blockstm-builder-implementation-plan.md
 run cargo test --workspace blockstm_core_ -- --nocapture
+run cargo test --workspace blockstm_concurrent_ -- --nocapture
 run cargo test --workspace blockstm_overlay_ -- --nocapture
+run cargo test --workspace blockstm_mv_memory_ -- --nocapture
 run cargo test --workspace blockstm_rw_ -- --nocapture
 run cargo test --workspace blockstm_dependency_ -- --nocapture
 run cargo test --workspace blockstm_conflict_policy_ -- --nocapture

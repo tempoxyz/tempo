@@ -32,10 +32,11 @@ The implementation will live in `crates/payload/builder/src/blockstm/`:
 - `mod.rs`: production entry point and public type exports.
 - `config.rs`: `BlockStmConfig`, defaults, CLI adapter fields.
 - `executor.rs`: `BlockStmExecutor` and `ParallelTempoBlockExecutor` orchestration.
-- `scheduler.rs`: `BlockStmScheduler` deterministic indexed scheduling and retry control.
+- `scheduler.rs`: `BlockStmScheduler` deterministic indexed scheduling plus `BlockStmConcurrentScheduler` for worker-shared task queues and atomic incarnation allocation.
 - `state_view.rs`: `BlockStmStateView` and tracking DB/state helpers.
 - `rw_set.rs`: `BlockStmReadSet`, `BlockStmWriteSet`, account/storage/code keys, validation.
 - `overlay.rs`: committed-prefix overlay and attempt-local writes.
+- `mv_memory.rs`: sharded concurrent multi-version memory keyed by `BlockStmAccessKey`.
 - `commit.rs`: ordered commit and builder accounting handoff.
 - `policy.rs`: `BlockStmConflictPolicy`, dependency domains, strategies, adaptive fallback.
 - `stats.rs`: `BlockStmExecutionStats`.
@@ -55,6 +56,15 @@ Lower-level hooks used by the implementation:
 - Production ordered semantic resolver: `BlockStmSemanticState::apply_plan` in `crates/payload/builder/src/blockstm/action/production.rs` validates actions in builder transaction order and rewrites covered nonce, fee-manager, TIP-20 balance, and collected-fee writes.
 - Commit cache hydration: `hydrate_blockstm_commit_cache` in `crates/payload/builder/src/lib.rs` loads accounts touched by worker-produced `TempoTxResult`s into the canonical `State` cache before serial commit, matching the account-cache precondition naturally satisfied by serial execution.
 
+Full MV memory design:
+
+- `BlockStmMvMemory` keeps base state immutable and stores speculative/final versions in 64 sharded `RwLock<HashMap<BlockStmAccessKey, Vec<BlockStmOverlayValue>>>` buckets. The version tuple is `(tx_index, incarnation)` and each entry carries either `Value` or `Estimate` status.
+- Worker execution publishes concrete speculative versions with `publish_value`. Validation reads the latest prior visible version for every captured key; concrete value mismatches and estimates both invalidate the attempt.
+- A failed incarnation is retained with `mark_estimate` so later transactions that depended on it must retry. The replacement incarnation removes older entries for the same transaction index and publishes a higher incarnation.
+- `BlockStmConcurrentScheduler` owns the shared work queue and uses atomic per-transaction incarnation counters so concurrent retries cannot reuse an incarnation. The core concurrent executor runs initial incarnations on workers, validates/retries against shared MV memory, and records final commit order only after validation.
+- The production builder path now uses `BlockStmMvMemory` for Block-STM read validation, estimate publication, and commit publication while preserving the TIP20 semantic fast path. Known semantic domains avoid unnecessary EVM re-execution; unknown or conflicting domains still validate through captured EVM read/write sets and retry under the configured budget.
+- Pathological hot conflicts are counted through `serial_fallback_total` in the reusable core once the adaptive threshold is crossed. The production builder keeps the retry budget as the hard correctness guard for non-benchmark workloads.
+
 ## Pure TIP20 Benchmark Confirmation
 
 The pure TIP20 benchmark is code-derived from `contrib/bench/txgen/presets/tip20.yml` and `.github/workflows/bench.yml`:
@@ -68,10 +78,10 @@ The pure TIP20 benchmark is code-derived from `contrib/bench/txgen/presets/tip20
 - The release performance gate is the Criterion target `crates/payload/builder/benches/blockstm_tip20_builder.rs`, defaulting to a deterministic 25000 tx batch, 1000 accounts, and the machine worker count capped at 32. It performs an exact serial-vs-Block-STM digest check before timing, then measures the build/execution path without the verification digest so it is comparable to the existing pure TIP20 Criterion benchmark. The gate now requires the full Block-STM builder path to reach at least 500000 TPS in addition to the existing 2x serial/baseline checks and the semantic 500000 TPS check. The older ignored `blockstm_pure_tip20_parallel_builder_benchmark` remains as a test harness reference for the original 1.5x debug-style gate, but it is not the completion benchmark.
 - Initial re-execution threshold for the pure TIP20 fast path: `reexecutions_total <= accepted_tx_count / 20`; fallback count for the modeled TIP20 domains must be zero.
 - Existing release baseline command: `cargo bench --profile profiling -p tempo-evm --bench tip20_execution txgen_tip20_pure_execution -- --noplot`.
-- Current existing profiling baseline result from the final script: `tip20_execution/txgen_tip20_pure_execution` median throughput `93.183 Kelem/s` (`time: [43.775 ms 43.957 ms 44.151 ms]`, `thrpt: [92.774 Kelem/s 93.183 Kelem/s 93.569 Kelem/s]`). The final script reparses this in-run value and passes it to the Block-STM gate.
+- Current existing profiling baseline result from the final script over 25000 transactions: `tip20_execution/txgen_tip20_pure_execution` median throughput `82.289 Kelem/s` (`time: [303.06 ms 303.81 ms 304.57 ms]`, `thrpt: [82.083 Kelem/s 82.289 Kelem/s 82.492 Kelem/s]`). The final script reparses this in-run value and passes it to the Block-STM gate.
 - New Block-STM release command: `cargo bench --profile profiling -p tempo-payload-builder --bench blockstm_tip20_builder -- --noplot`.
-- Current Block-STM profiling release gate result from the final script: `txs=25000`, `accounts=1000`, `workers=32`, `serial_median=279.436442ms`, `parallel_median=38.6037ms`, `semantic_median=33.48604ms`, `serial_tps=89465.78`, `parallel_tps=647606.32`, `semantic_tps=746579.77`, `speedup=7.24x`, `semantic_speedup=8.34x`, parsed existing baseline `93183.00`, `accepted=25000`, `rejected=0`, `speculative=25000`, `committed=25000`, `reused_worker_results=25000`, `conflicts=0`, `reexecutions=0`, `serial_commit_reexecutions=0`, `fallback=0`, `max_in_flight=32`, `worker_lanes=32`, and `semantic_actions=125000`.
-- Current Block-STM Criterion result from the final script: `blockstm_tip20_builder/blockstm` median throughput `573.57 Kelem/s` (`time: [42.912 ms 43.587 ms 44.266 ms]`, `thrpt: [564.77 Kelem/s 573.57 Kelem/s 582.59 Kelem/s]`). The semantic end-to-end Criterion target reports median throughput `652.76 Kelem/s` (`time: [37.729 ms 38.299 ms 38.880 ms]`, `thrpt: [643.00 Kelem/s 652.76 Kelem/s 662.63 Kelem/s]`).
+- Current Block-STM profiling release gate result from the final bench target: `txs=25000`, `accounts=1000`, `workers=32`, `serial_median=276.423979ms`, `parallel_median=43.15558ms`, `semantic_median=34.732965ms`, `serial_tps=90440.78`, `parallel_tps=579299.36`, `semantic_tps=719777.31`, `speedup=6.41x`, `semantic_speedup=7.96x`, parsed existing baseline `82289.00`, `accepted=25000`, `rejected=0`, `speculative=25000`, `committed=25000`, `reused_worker_results=25000`, `conflicts=0`, `reexecutions=0`, `serial_commit_reexecutions=0`, `fallback=0`, `max_in_flight=32`, `worker_lanes=32`, and `semantic_actions=125000`.
+- The bench target runs the release gate directly and does not emit a second diagnostic Criterion sampling group. The release gate is the completion benchmark because it checks exact serial equivalence, measures the end-to-end state-change path, prints counters, and enforces the 500000 TPS assertions.
 - The pure TIP20 benchmark path now reduces captured semantic actions inside the speculative worker pass. Workers prepare stripped receipt/gas commit records after real EVM execution, so the ordered phase only fixes cumulative gas, pushes receipts, updates gas/section accounting, and bumps the BAL index. Final semantic state materialization is pipelined on a scoped worker while ordered receipt/accounting commit runs, then the final covered semantic storage values are committed once. It does not serially replay semantic plans after the final worker finishes, and it does not skip materializing the state changes.
 
 ## Sequential Dependencies and Initial Strategies

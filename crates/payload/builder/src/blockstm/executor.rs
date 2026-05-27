@@ -2,11 +2,20 @@
 
 use crate::blockstm::{
     config::BlockStmConfig,
+    mv_memory::BlockStmMvMemory,
     overlay::{BlockStmOverlay, BlockStmVersion},
     rw_set::{BlockStmReadSet, BlockStmWriteSet},
+    scheduler::{BlockStmConcurrentScheduler, BlockStmTaskKind},
     stats::BlockStmExecutionStats,
 };
-use std::{error::Error, fmt};
+use std::{
+    error::Error,
+    fmt,
+    sync::{
+        Mutex,
+        atomic::{AtomicU64, AtomicUsize, Ordering},
+    },
+};
 
 /// Result of one speculative execution attempt.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -158,6 +167,299 @@ impl BlockStmExecutor {
                 attempts[tx_index] = Some(attempt);
             }
         }
+
+        Ok((committed, stats))
+    }
+
+    /// Executes initial incarnations on worker threads backed by shared MV memory.
+    pub fn execute_concurrent<T, E, F>(
+        &self,
+        tx_count: usize,
+        memory: &BlockStmMvMemory,
+        workers: usize,
+        run_attempt: F,
+    ) -> Result<(Vec<T>, BlockStmExecutionStats), BlockStmExecutorError>
+    where
+        T: Send,
+        F: Fn(usize, usize, &BlockStmMvMemory) -> Result<BlockStmAttempt<T>, E> + Sync,
+        E: fmt::Display,
+    {
+        if tx_count == 0 {
+            return Ok((Vec::new(), BlockStmExecutionStats::default()));
+        }
+
+        let worker_count = workers.max(1);
+        let scheduler = BlockStmConcurrentScheduler::new(tx_count);
+        let attempts = (0..tx_count).map(|_| Mutex::new(None)).collect::<Vec<_>>();
+        let worker_error = Mutex::new(None);
+        let in_flight = AtomicU64::new(0);
+        let max_in_flight = AtomicU64::new(0);
+
+        std::thread::scope(|scope| {
+            for _ in 0..worker_count {
+                let scheduler = &scheduler;
+                let attempts = &attempts;
+                let worker_error = &worker_error;
+                let in_flight = &in_flight;
+                let max_in_flight = &max_in_flight;
+                let run_attempt = &run_attempt;
+
+                scope.spawn(move || {
+                    while let Some(task) = scheduler.next_task() {
+                        if worker_error
+                            .lock()
+                            .expect("Block-STM worker error poisoned")
+                            .is_some()
+                        {
+                            break;
+                        }
+
+                        if task.kind != BlockStmTaskKind::Execution {
+                            continue;
+                        }
+
+                        let active = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
+                        max_in_flight.fetch_max(active, Ordering::AcqRel);
+                        let result = run_attempt(task.tx_index, task.incarnation, memory);
+                        in_flight.fetch_sub(1, Ordering::AcqRel);
+
+                        let attempt = match result {
+                            Ok(attempt) => attempt,
+                            Err(err) => {
+                                let mut worker_error = worker_error
+                                    .lock()
+                                    .expect("Block-STM worker error poisoned");
+                                if worker_error.is_none() {
+                                    *worker_error =
+                                        Some(BlockStmExecutorError::Runner(err.to_string()));
+                                }
+                                break;
+                            }
+                        };
+
+                        if let Err(err) = Self::validate_attempt_identity(
+                            task.tx_index,
+                            task.incarnation,
+                            &attempt,
+                        ) {
+                            let mut worker_error = worker_error
+                                .lock()
+                                .expect("Block-STM worker error poisoned");
+                            if worker_error.is_none() {
+                                *worker_error = Some(err);
+                            }
+                            break;
+                        }
+
+                        memory.publish_value(
+                            BlockStmVersion::new(task.tx_index, task.incarnation),
+                            &attempt.write_set,
+                        );
+                        *attempts[task.tx_index]
+                            .lock()
+                            .expect("Block-STM attempt slot poisoned") = Some(attempt);
+                    }
+                });
+            }
+        });
+
+        if let Some(err) = worker_error
+            .into_inner()
+            .expect("Block-STM worker error poisoned")
+        {
+            return Err(err);
+        }
+
+        let mut stats = BlockStmExecutionStats {
+            speculative_executions_total: tx_count as u64,
+            max_in_flight_real_evm_executions: max_in_flight.load(Ordering::Relaxed),
+            ..Default::default()
+        };
+        let attempt_counts = (0..tx_count)
+            .map(|_| AtomicUsize::new(1))
+            .collect::<Vec<_>>();
+
+        loop {
+            let validation_scheduler = BlockStmConcurrentScheduler::new(0);
+            for tx_index in 0..tx_count {
+                let incarnation = attempts[tx_index]
+                    .lock()
+                    .expect("Block-STM attempt slot poisoned")
+                    .as_ref()
+                    .map(|attempt| attempt.attempt)
+                    .ok_or(BlockStmExecutorError::MissingAttempt { tx_index })?;
+                validation_scheduler.validate(tx_index, incarnation);
+            }
+
+            let round_conflicts = AtomicU64::new(0);
+            let round_reexecutions = AtomicU64::new(0);
+            let round_speculative = AtomicU64::new(0);
+            let validation_error = Mutex::new(None);
+
+            std::thread::scope(|scope| {
+                for _ in 0..worker_count {
+                    let validation_scheduler = &validation_scheduler;
+                    let attempts = &attempts;
+                    let attempt_counts = &attempt_counts;
+                    let validation_error = &validation_error;
+                    let in_flight = &in_flight;
+                    let max_in_flight = &max_in_flight;
+                    let round_conflicts = &round_conflicts;
+                    let round_reexecutions = &round_reexecutions;
+                    let round_speculative = &round_speculative;
+                    let run_attempt = &run_attempt;
+
+                    scope.spawn(move || {
+                        while let Some(task) = validation_scheduler.next_task() {
+                            if validation_error
+                                .lock()
+                                .expect("Block-STM validation error poisoned")
+                                .is_some()
+                            {
+                                break;
+                            }
+
+                            if task.kind != BlockStmTaskKind::Validation {
+                                continue;
+                            }
+
+                            let mut slot = attempts[task.tx_index]
+                                .lock()
+                                .expect("Block-STM attempt slot poisoned");
+                            let attempt =
+                                match slot.take().ok_or(BlockStmExecutorError::MissingAttempt {
+                                    tx_index: task.tx_index,
+                                }) {
+                                    Ok(attempt) => attempt,
+                                    Err(err) => {
+                                        let mut validation_error = validation_error
+                                            .lock()
+                                            .expect("Block-STM validation error poisoned");
+                                        if validation_error.is_none() {
+                                            *validation_error = Some(err);
+                                        }
+                                        break;
+                                    }
+                                };
+
+                            if memory
+                                .validate_reads(task.tx_index, &attempt.read_set)
+                                .is_ok()
+                            {
+                                *slot = Some(attempt);
+                                continue;
+                            }
+
+                            round_conflicts.fetch_add(1, Ordering::AcqRel);
+                            round_reexecutions.fetch_add(1, Ordering::AcqRel);
+                            memory.mark_estimate(
+                                BlockStmVersion::new(task.tx_index, attempt.attempt),
+                                &attempt.write_set,
+                            );
+
+                            let next_attempt =
+                                attempt_counts[task.tx_index].fetch_add(1, Ordering::AcqRel);
+                            if next_attempt >= self.config.max_retries_per_tx {
+                                *slot = Some(attempt);
+                                let mut validation_error = validation_error
+                                    .lock()
+                                    .expect("Block-STM validation error poisoned");
+                                if validation_error.is_none() {
+                                    *validation_error =
+                                        Some(BlockStmExecutorError::RetryBudgetExceeded {
+                                            tx_index: task.tx_index,
+                                            attempts: next_attempt,
+                                        });
+                                }
+                                break;
+                            }
+                            drop(slot);
+
+                            let active = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
+                            max_in_flight.fetch_max(active, Ordering::AcqRel);
+                            let retry = run_attempt(task.tx_index, next_attempt, memory);
+                            in_flight.fetch_sub(1, Ordering::AcqRel);
+
+                            let retry = match retry {
+                                Ok(retry) => retry,
+                                Err(err) => {
+                                    let mut validation_error = validation_error
+                                        .lock()
+                                        .expect("Block-STM validation error poisoned");
+                                    if validation_error.is_none() {
+                                        *validation_error =
+                                            Some(BlockStmExecutorError::Runner(err.to_string()));
+                                    }
+                                    break;
+                                }
+                            };
+
+                            if let Err(err) =
+                                Self::validate_attempt_identity(task.tx_index, next_attempt, &retry)
+                            {
+                                let mut validation_error = validation_error
+                                    .lock()
+                                    .expect("Block-STM validation error poisoned");
+                                if validation_error.is_none() {
+                                    *validation_error = Some(err);
+                                }
+                                break;
+                            }
+
+                            round_speculative.fetch_add(1, Ordering::AcqRel);
+                            memory.publish_value(
+                                BlockStmVersion::new(task.tx_index, next_attempt),
+                                &retry.write_set,
+                            );
+                            *attempts[task.tx_index]
+                                .lock()
+                                .expect("Block-STM attempt slot poisoned") = Some(retry);
+                        }
+                    });
+                }
+            });
+
+            if let Some(err) = validation_error
+                .into_inner()
+                .expect("Block-STM validation error poisoned")
+            {
+                return Err(err);
+            }
+
+            let round_conflicts = round_conflicts.load(Ordering::Relaxed);
+            stats.conflicts_total += round_conflicts;
+            stats.reexecutions_total += round_reexecutions.load(Ordering::Relaxed);
+            stats.speculative_executions_total += round_speculative.load(Ordering::Relaxed);
+            if self.config.adaptive_conflict_threshold > 0
+                && stats.conflicts_total as usize >= self.config.adaptive_conflict_threshold
+                && stats.serial_fallback_total == 0
+            {
+                stats.serial_fallback_total = 1;
+            }
+
+            if round_conflicts == 0 {
+                break;
+            }
+        }
+
+        let mut committed = Vec::with_capacity(tx_count);
+        for tx_index in 0..tx_count {
+            let attempt = attempts[tx_index]
+                .lock()
+                .expect("Block-STM attempt slot poisoned")
+                .take()
+                .ok_or(BlockStmExecutorError::MissingAttempt { tx_index })?;
+            memory.commit_version(
+                BlockStmVersion::new(tx_index, attempt.attempt),
+                &attempt.write_set,
+            );
+            stats.committed_txs_total += 1;
+            if attempt.attempt == 0 {
+                stats.reused_speculative_results_total += 1;
+            }
+            committed.push(attempt.output);
+        }
+        stats.max_in_flight_real_evm_executions = max_in_flight.load(Ordering::Relaxed);
 
         Ok((committed, stats))
     }
@@ -345,6 +647,139 @@ mod tests {
         assert_eq!(committed, vec![7, 7]);
         assert_eq!(stats.conflicts_total, 1);
         assert_eq!(stats.reexecutions_total, 1);
+    }
+
+    #[test]
+    fn blockstm_concurrent_core_preserves_fixed_commit_order() {
+        let executor = BlockStmExecutor::new(BlockStmConfig::test());
+        let memory = BlockStmMvMemory::default();
+        let (committed, stats) = executor
+            .execute_concurrent::<u64, &str, _>(16, &memory, 4, |tx_index, attempt_no, _| {
+                std::thread::sleep(std::time::Duration::from_millis(1));
+                Ok(attempt(tx_index, attempt_no, [], [], tx_index as u64))
+            })
+            .unwrap();
+
+        assert_eq!(committed, (0..16).collect::<Vec<_>>());
+        assert_eq!(stats.speculative_executions_total, 16);
+        assert_eq!(stats.committed_txs_total, 16);
+        assert_eq!(stats.conflicts_total, 0);
+        assert!(stats.max_in_flight_real_evm_executions > 1);
+    }
+
+    #[test]
+    fn blockstm_concurrent_core_retries_with_next_incarnation() {
+        let key = storage(0);
+        let executor = BlockStmExecutor::new(BlockStmConfig::test());
+        let memory = BlockStmMvMemory::new([(key, BlockStmValue::from(0u64))]);
+
+        let (committed, stats) = executor
+            .execute_concurrent::<u64, &str, _>(2, &memory, 2, |tx_index, attempt_no, memory| {
+                Ok(match (tx_index, attempt_no) {
+                    (0, _) => attempt(tx_index, attempt_no, [], [(key, 7)], 7),
+                    (1, 0) => attempt(tx_index, attempt_no, [(key, 0)], [], 0),
+                    (1, _) => {
+                        let value = memory.read(key, tx_index);
+                        let mut reads = BlockStmReadSet::default();
+                        reads.record(key, value);
+                        BlockStmAttempt {
+                            tx_index,
+                            attempt: attempt_no,
+                            read_set: reads,
+                            write_set: BlockStmWriteSet::default(),
+                            output: value.as_u256().to::<u64>(),
+                        }
+                    }
+                    _ => unreachable!(),
+                })
+            })
+            .unwrap();
+
+        assert_eq!(committed, vec![7, 7]);
+        assert_eq!(stats.conflicts_total, 1);
+        assert_eq!(stats.reexecutions_total, 1);
+        assert_eq!(stats.speculative_executions_total, 3);
+    }
+
+    #[test]
+    fn blockstm_concurrent_core_handles_transitive_conflict_chain() {
+        let key_a = storage(0);
+        let key_b = storage(1);
+        let executor = BlockStmExecutor::new(BlockStmConfig::test());
+        let memory = BlockStmMvMemory::new([
+            (key_a, BlockStmValue::from(0u64)),
+            (key_b, BlockStmValue::from(0u64)),
+        ]);
+
+        let (committed, stats) = executor
+            .execute_concurrent::<u64, &str, _>(3, &memory, 3, |tx_index, attempt_no, memory| {
+                Ok(match (tx_index, attempt_no) {
+                    (0, _) => attempt(tx_index, attempt_no, [], [(key_a, 1)], 1),
+                    (1, 0) => attempt(tx_index, attempt_no, [(key_a, 0)], [(key_b, 1)], 1),
+                    (1, _) => {
+                        let value = memory.read(key_a, tx_index);
+                        attempt(
+                            tx_index,
+                            attempt_no,
+                            [(key_a, value.as_u256().to::<u64>())],
+                            [(key_b, 2)],
+                            2,
+                        )
+                    }
+                    (2, 0) => attempt(tx_index, attempt_no, [(key_b, 0)], [], 0),
+                    (2, _) => {
+                        let value = memory.read(key_b, tx_index);
+                        attempt(
+                            tx_index,
+                            attempt_no,
+                            [(key_b, value.as_u256().to::<u64>())],
+                            [],
+                            value.as_u256().to::<u64>(),
+                        )
+                    }
+                    _ => unreachable!(),
+                })
+            })
+            .unwrap();
+
+        assert_eq!(committed, vec![1, 2, 2]);
+        assert!(stats.conflicts_total >= 2);
+        assert_eq!(stats.reexecutions_total, stats.conflicts_total);
+        assert_eq!(memory.committed_value(&key_b).unwrap().value, 2u64.into());
+    }
+
+    #[test]
+    fn blockstm_concurrent_core_counts_adaptive_fallback_on_hot_conflicts() {
+        let key = storage(0);
+        let config = BlockStmConfig {
+            adaptive_conflict_threshold: 1,
+            ..BlockStmConfig::test()
+        };
+        let executor = BlockStmExecutor::new(config);
+        let memory = BlockStmMvMemory::new([(key, BlockStmValue::from(0u64))]);
+
+        let (_, stats) = executor
+            .execute_concurrent::<u64, &str, _>(2, &memory, 2, |tx_index, attempt_no, memory| {
+                Ok(match (tx_index, attempt_no) {
+                    (0, _) => attempt(tx_index, attempt_no, [], [(key, 1)], 1),
+                    (1, 0) => attempt(tx_index, attempt_no, [(key, 0)], [], 0),
+                    (1, _) => {
+                        let value = memory.read(key, tx_index);
+                        attempt(
+                            tx_index,
+                            attempt_no,
+                            [(key, value.as_u256().to::<u64>())],
+                            [],
+                            value.as_u256().to::<u64>(),
+                        )
+                    }
+                    _ => unreachable!(),
+                })
+            })
+            .unwrap();
+
+        assert_eq!(stats.conflicts_total, 1);
+        assert_eq!(stats.serial_fallback_total, 1);
     }
 
     #[test]

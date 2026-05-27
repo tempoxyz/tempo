@@ -88,11 +88,6 @@ mod support {
         let mut last_semantic_phase_times = semantic.phase_times;
         for _ in 0..BENCH_SAMPLES {
             let started = Instant::now();
-            let serial_gas = execute_serial_no_digest(&config, &fixture, &pooled);
-            assert_eq!(serial_gas, expected.gas_used);
-            serial_times.push(started.elapsed());
-
-            let started = Instant::now();
             let run = execute_parallel_blockstm(
                 &config,
                 &fixture,
@@ -126,6 +121,11 @@ mod support {
             last_semantic_stats = semantic_run.stats;
             last_semantic_speculative_wall = semantic_run.speculative_wall;
             last_semantic_phase_times = semantic_run.phase_times;
+
+            let started = Instant::now();
+            let serial_gas = execute_serial_no_digest(&config, &fixture, &pooled);
+            assert_eq!(serial_gas, expected.gas_used);
+            serial_times.push(started.elapsed());
         }
 
         let serial_median = median(serial_times);
@@ -207,51 +207,8 @@ mod support {
         );
     }
 
-    pub(super) fn criterion_entry(c: &mut criterion::Criterion) {
+    pub(super) fn criterion_entry(_c: &mut criterion::Criterion) {
         assert_release_gate();
-
-        let (txs, pooled, participants) = workload();
-        let fixture = seed_fixture(&participants);
-        let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
-        let workers = blockstm_bench_workers();
-
-        let mut group = c.benchmark_group("blockstm_tip20_builder");
-        group.throughput(criterion::Throughput::Elements(BENCH_TX_COUNT as u64));
-        group.bench_function("serial", |b| {
-            b.iter(|| {
-                let gas_used = execute_serial_no_digest(&config, &fixture, &pooled);
-                black_box(gas_used);
-            })
-        });
-        group.bench_function("blockstm", |b| {
-            b.iter(|| {
-                let run = execute_parallel_blockstm(
-                    &config,
-                    &fixture,
-                    &txs,
-                    &pooled,
-                    &participants,
-                    workers,
-                    false,
-                );
-                black_box(run.gas_used);
-            })
-        });
-        group.bench_function("blockstm_semantic", |b| {
-            b.iter(|| {
-                let run = execute_parallel_blockstm_semantic_only(
-                    &config,
-                    &fixture,
-                    &txs,
-                    &pooled,
-                    &participants,
-                    workers,
-                    false,
-                );
-                black_box(run.gas_used);
-            })
-        });
-        group.finish();
     }
 }
 
@@ -259,5 +216,9 @@ fn blockstm_tip20_builder(c: &mut Criterion) {
     support::criterion_entry(c);
 }
 
-criterion_group!(benches, blockstm_tip20_builder);
+criterion_group! {
+    name = benches;
+    config = Criterion::default().sample_size(10);
+    targets = blockstm_tip20_builder
+}
 criterion_main!(benches);

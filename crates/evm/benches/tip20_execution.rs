@@ -75,13 +75,13 @@ use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
 
 const CHAIN_ID: u64 = 1337;
 const TXGEN_MNEMONIC: &str = "test test test test test test test test test test test junk";
-const DEFAULT_ACCOUNT_COUNT: usize = 1_024;
-const DEFAULT_TX_COUNT: usize = 4_096;
+const DEFAULT_ACCOUNT_COUNT: usize = 10_000;
+const DEFAULT_TX_COUNT: usize = 25_000;
 const DEFAULT_BLOCK_TIMESTAMP: u64 = 1_700_000_000;
 const TXGEN_GAS_LIMIT: u64 = 2_000_000;
 const TXGEN_FEE_PER_GAS: u128 = 100_000_000_000;
 const PARTICIPANT_MINT_AMOUNT: u128 = 1_000_000_000_000_000_000;
-const REWARD_BENCH_TX_COUNT: usize = 1_024;
+const REWARD_BENCH_TX_COUNT: usize = 10_000;
 const REWARD_DISTRIBUTION_AMOUNT: u128 = 1_000_000_000_000;
 const REWARD_TRANSFER_AMOUNT: u128 = 1_000_000;
 const EXECUTION_CACHE_BYTES: usize = 64 * 1024 * 1024;

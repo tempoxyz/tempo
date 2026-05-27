@@ -15,7 +15,7 @@ use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
     blockstm::{
-        BlockStmExecutionStats, BlockStmMetrics, BlockStmOverlay,
+        BlockStmExecutionStats, BlockStmMetrics, BlockStmMvMemory, BlockStmVersion,
         action::production::{BlockStmSemanticState, capture_tip20_semantic_plan},
         executor::BlockStmAttempt,
         state_view::{BlockStmTrackingDb, write_set_from_evm_state},
@@ -874,6 +874,7 @@ where
                 let attempt_slots = (0..batch.len())
                     .map(|_| Mutex::new(None))
                     .collect::<Vec<_>>();
+                let memory = BlockStmMvMemory::default();
                 let in_flight = Arc::new(AtomicU64::new(0));
                 let max_in_flight = Arc::new(AtomicU64::new(0));
 
@@ -889,6 +890,7 @@ where
                         let tx_index = candidate.tx_index;
                         let in_flight = Arc::clone(&in_flight);
                         let max_in_flight = Arc::clone(&max_in_flight);
+                        let memory = &memory;
 
                         scope.spawn(move |_| {
                             let active = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
@@ -905,6 +907,12 @@ where
                                 tx,
                             );
                             in_flight.fetch_sub(1, Ordering::AcqRel);
+                            if let Ok(attempt) = &attempt {
+                                memory.publish_value(
+                                    BlockStmVersion::new(tx_index, 0),
+                                    &attempt.write_set,
+                                );
+                            }
                             *slot.lock().expect("Block-STM attempt slot poisoned") = Some(attempt);
                         });
                     }
@@ -924,7 +932,6 @@ where
                     attempts.push(Some(attempt));
                 }
 
-                let mut overlay = BlockStmOverlay::default();
                 let mut invalidated = Vec::<BestTransaction>::new();
 
                 for (batch_index, candidate) in batch.iter().enumerate() {
@@ -1027,7 +1034,7 @@ where
                             attempt.read_set.clone()
                         };
 
-                        if overlay
+                        if memory
                             .validate_reads(candidate.tx_index, &validation_reads)
                             .is_ok()
                         {
@@ -1036,6 +1043,10 @@ where
 
                         blockstm_stats.conflicts_total += 1;
                         blockstm_stats.reexecutions_total += 1;
+                        memory.mark_estimate(
+                            BlockStmVersion::new(candidate.tx_index, attempt.attempt),
+                            &attempt.write_set,
+                        );
                         if attempt_count >= self.blockstm_config.max_retries_per_tx {
                             return Err(PayloadBuilderError::evm(BlockExecutionError::msg(
                                 format!(
@@ -1144,7 +1155,7 @@ where
                         }
                     }
 
-                    overlay.commit(candidate.tx_index, &write_set);
+                    memory.commit(candidate.tx_index, &write_set);
                     blockstm_stats.committed_txs_total += 1;
                     if attempt_count == 1 {
                         blockstm_stats.reused_speculative_results_total += 1;
