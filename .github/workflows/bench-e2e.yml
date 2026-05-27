@@ -335,9 +335,7 @@ on:
         required: false
       BENCH_VICTORIAMETRICS_URL:
         required: false
-      BENCH_VALSCOPE_VM_URL:
-        required: false
-      BENCH_VALSCOPE_VLOGS_URL:
+      BENCH_VICTORIALOGS_URL:
         required: false
       SLACK_BENCH_BOT_TOKEN:
         required: false
@@ -398,8 +396,9 @@ jobs:
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
       BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
-      VALSCOPE_VM_URL: ${{ secrets.BENCH_VALSCOPE_VM_URL || secrets.BENCH_VICTORIAMETRICS_URL }}
-      VALSCOPE_VLOGS_URL: ${{ secrets.BENCH_VALSCOPE_VLOGS_URL }}
+      BENCH_VICTORIALOGS_URL: ${{ secrets.BENCH_VICTORIALOGS_URL }}
+      VALSCOPE_VM_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+      VALSCOPE_VLOGS_URL: ${{ secrets.BENCH_VICTORIALOGS_URL }}
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
@@ -430,11 +429,30 @@ jobs:
         if: env.BENCH_VICTORIAMETRICS_URL
         run: echo "::add-mask::$BENCH_VICTORIAMETRICS_URL"
 
+      - name: Mask VictoriaLogs URL
+        if: env.BENCH_VICTORIALOGS_URL
+        run: echo "::add-mask::$BENCH_VICTORIALOGS_URL"
+
       - name: Mask ValScope datasource URLs
         if: env.VALSCOPE_VM_URL || env.VALSCOPE_VLOGS_URL
         run: |
-          [ -n "$VALSCOPE_VM_URL" ] && echo "::add-mask::$VALSCOPE_VM_URL"
-          [ -n "$VALSCOPE_VLOGS_URL" ] && echo "::add-mask::$VALSCOPE_VLOGS_URL"
+          if [ -n "$VALSCOPE_VM_URL" ]; then
+            echo "::add-mask::$VALSCOPE_VM_URL"
+          fi
+          if [ -n "$VALSCOPE_VLOGS_URL" ]; then
+            echo "::add-mask::$VALSCOPE_VLOGS_URL"
+          fi
+
+      - name: Validate ValScope datasource URLs
+        run: |
+          if [ -z "$VALSCOPE_VM_URL" ]; then
+            echo "::error::BENCH_VICTORIAMETRICS_URL is required to generate ValScope static reports"
+            exit 1
+          fi
+          if [ -z "$VALSCOPE_VLOGS_URL" ]; then
+            echo "::error::BENCH_VICTORIALOGS_URL is required to generate ValScope static reports"
+            exit 1
+          fi
 
       - name: Clean up previous results
         run: sudo rm -rf bench-results/ 2>/dev/null || true

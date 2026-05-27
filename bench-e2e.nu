@@ -731,14 +731,14 @@ def build-valscope-static-reports [
         exit 1
     }
 
-    let vm_url = ($env | get -o VALSCOPE_VM_URL | default "")
-    let vlogs_url = ($env | get -o VALSCOPE_VLOGS_URL | default "")
+    let vm_url = ($env | get -o VALSCOPE_VM_URL | default ($env | get -o BENCH_VICTORIAMETRICS_URL | default ""))
+    let vlogs_url = ($env | get -o VALSCOPE_VLOGS_URL | default ($env | get -o BENCH_VICTORIALOGS_URL | default ""))
     if $vm_url == "" {
-        print "Error: VALSCOPE_VM_URL is required to generate ValScope static reports"
+        print "Error: VALSCOPE_VM_URL or BENCH_VICTORIAMETRICS_URL is required to generate ValScope static reports"
         exit 1
     }
     if $vlogs_url == "" {
-        print "Error: VALSCOPE_VLOGS_URL is required to generate ValScope static reports"
+        print "Error: VALSCOPE_VLOGS_URL or BENCH_VICTORIALOGS_URL is required to generate ValScope static reports"
         exit 1
     }
 
