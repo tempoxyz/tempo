@@ -13328,6 +13328,7 @@ dependencies = [
  "serde",
  "serde_json",
  "tempo-primitives",
+ "tracing",
 ]
 
 [[package]]

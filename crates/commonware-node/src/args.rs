@@ -106,8 +106,12 @@ pub struct Args {
     #[arg(long = "consensus.wait-for-notarizations", default_value = "2s")]
     pub wait_for_notarizations: PositiveDuration,
 
-    /// Amount of time to wait to receive a proposal from the leader of the
-    /// current view.
+    /// Target wall-clock time between blocks.
+    #[arg(long = "consensus.target-block-time", default_value = "550ms")]
+    pub target_block_time: PositiveDuration,
+
+    /// Maximum amount of time to wait for the leader's proposal before timing
+    /// out the current view.
     #[arg(long = "consensus.wait-for-proposal", default_value = "1200ms")]
     pub wait_for_proposal: PositiveDuration,
 
@@ -130,34 +134,12 @@ pub struct Args {
     )]
     pub inactive_views_until_leader_skip: u64,
 
-    /// The maximum amount of time to spend on executing transactions when preparing a proposal as a leader.
-    ///
-    /// NOTE: This only limits the time the builder spends on transaction execution, and does not
-    /// include the state root calculation time. For this reason, we keep it well below `consensus.time-to-build-proposal`.
-    #[arg(
-        long = "consensus.time-to-prepare-proposal-transactions",
-        default_value = "350ms",
-        default_value_if("share_sparse_trie_with_payload_builder", "false", "200ms")
-    )]
-    pub time_to_prepare_proposal_transactions: PositiveDuration,
-
-    /// The minimum amount of time this node waits before sending a proposal
-    ///
-    /// The intention is to keep block times stable even if there is low load on the network.
-    /// This value should be well below `consensus.wait-for-proposal` to account
-    /// for the leader to enter the view, build and broadcast the proposal, and
-    /// have the other peers receive the proposal.
-    #[arg(
-        long = "consensus.minimum-time-before-propose",
-        alias = "consensus.time-to-build-proposal",
-        default_value = "450ms"
-    )]
-    pub minimum_time_before_propose: PositiveDuration,
+    /// Time reserved for proposal propagation before the target block boundary.
+    #[arg(long = "consensus.network-budget", default_value = "50ms")]
+    pub network_budget: PositiveDuration,
 
     /// The amount of time this node will use to construct a subblock before
-    /// sending it to the next proposer. This value should be well below
-    /// `consensus.time-to-build-proposal` to ensure the subblock is received
-    /// before the build is complete.
+    /// sending it to the next proposer.
     #[arg(long = "consensus.time-to-build-subblock", default_value = "100ms")]
     pub time_to_build_subblock: PositiveDuration,
 
