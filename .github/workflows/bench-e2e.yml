@@ -120,21 +120,6 @@ on:
         type: string
         required: false
         default: ""
-      extra-args:
-        description: Extra local reth args appended to both nodes.
-        type: string
-        required: false
-        default: ""
-      baseline-no-extra-args:
-        description: Disable extra local reth args for baseline phases.
-        type: boolean
-        required: true
-        default: false
-      feature-no-extra-args:
-        description: Disable extra local reth args for feature phases.
-        type: boolean
-        required: true
-        default: false
       gas-limit:
         description: Builder gas limit.
         type: string
