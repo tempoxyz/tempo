@@ -77,7 +77,7 @@ impl TIP20Token {
     /// Rewards are accumulated in the delegated recipient's rewardBalance.
     /// Returns the holder's delegated recipient address.
     pub fn update_rewards(&mut self, holder: Address) -> Result<Address> {
-        let mut info = self.user_reward_info[holder].read()?;
+        let mut info = self.reward_info(holder)?;
 
         let cached_delegate = info.reward_recipient;
 
@@ -101,16 +101,16 @@ impl TIP20Token {
                         .checked_add(reward)
                         .ok_or(TempoPrecompileError::under_overflow())?;
                 } else {
-                    let mut delegate_info = self.user_reward_info[cached_delegate].read()?;
+                    let mut delegate_info = self.reward_info(cached_delegate)?;
                     delegate_info.reward_balance = delegate_info
                         .reward_balance
                         .checked_add(reward)
                         .ok_or(TempoPrecompileError::under_overflow())?;
-                    self.user_reward_info[cached_delegate].write(delegate_info)?;
+                    self.set_reward_info(cached_delegate, delegate_info)?;
                 }
             }
             info.reward_per_token = global_reward_per_token;
-            self.user_reward_info[holder].write(info)?;
+            self.set_reward_info(holder, info)?;
         }
 
         Ok(cached_delegate)
@@ -167,9 +167,9 @@ impl TIP20Token {
             )?;
         }
 
-        let mut info = self.user_reward_info[msg_sender].read()?;
+        let mut info = self.reward_info(msg_sender)?;
         info.reward_recipient = call.recipient;
-        self.user_reward_info[msg_sender].write(info)?;
+        self.set_reward_info(msg_sender, info)?;
 
         // Emit reward recipient set event
         self.emit_event(TIP20Event::reward_recipient_set(msg_sender, call.recipient))?;
@@ -191,7 +191,7 @@ impl TIP20Token {
 
         self.update_rewards(msg_sender)?;
 
-        let mut info = self.user_reward_info[msg_sender].read()?;
+        let mut info = self.reward_info(msg_sender)?;
         let amount = info.reward_balance;
         let contract_address = self.address;
         let contract_balance = self.get_balance(contract_address)?;
@@ -201,7 +201,7 @@ impl TIP20Token {
         info.reward_balance = amount
             .checked_sub(max_amount)
             .ok_or(TempoPrecompileError::under_overflow())?;
-        self.user_reward_info[msg_sender].write(info)?;
+        self.set_reward_info(msg_sender, info)?;
 
         if max_amount > U256::ZERO {
             let new_contract_balance = contract_balance
@@ -311,7 +311,15 @@ impl TIP20Token {
 
     /// Retrieves user reward information for a given account.
     pub fn get_user_reward_info(&self, account: Address) -> Result<UserRewardInfo> {
-        self.user_reward_info[account].read()
+        self.reward_info(account)
+    }
+
+    fn reward_info(&self, account: Address) -> Result<UserRewardInfo> {
+        self.user_reward_info.at_uncached(&account).read()
+    }
+
+    fn set_reward_info(&mut self, account: Address, info: UserRewardInfo) -> Result<()> {
+        self.user_reward_info.at_uncached(&account).write(info)
     }
 
     /// Calculates the pending claimable rewards for an account without modifying state.
@@ -323,7 +331,7 @@ impl TIP20Token {
     /// For accounts that have delegated their rewards to another recipient, only the stored
     /// reward balance is returned (new accrual is skipped since it goes to the delegate).
     pub fn get_pending_rewards(&self, account: Address) -> Result<u128> {
-        let info = self.user_reward_info[account].read()?;
+        let info = self.reward_info(account)?;
 
         // Start with the stored reward balance
         let mut pending = info.reward_balance;
