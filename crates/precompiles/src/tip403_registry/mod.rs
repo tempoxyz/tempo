@@ -316,11 +316,12 @@ impl TIP403Registry {
         sender: Address,
         receiver: Address,
     ) -> Result<Option<(ITIP403Registry::BlockedReason, Address)>> {
-        let config = self.receive_policies[receiver].config.read()?;
-        if !config.has_receive_policy {
+        let receive_policy = &self.receive_policies[receiver];
+        if !receive_policy.config.has_receive_policy.read()? {
             return Ok(None);
         }
 
+        let config = receive_policy.config.read()?;
         let token_filter_data = config.token_filter_data();
         if !self.is_authorized_simple(config.token_filter_id, token, Some(token_filter_data))? {
             let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
