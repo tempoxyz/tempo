@@ -49,9 +49,6 @@ jobs:
       otlp: ${{ steps.args.outputs.otlp }}
       baseline-args: ${{ steps.args.outputs.baseline-args }}
       feature-args: ${{ steps.args.outputs.feature-args }}
-      extra-args: ${{ steps.args.outputs.extra-args }}
-      baseline-no-extra-args: ${{ steps.args.outputs.baseline-no-extra-args }}
-      feature-no-extra-args: ${{ steps.args.outputs.feature-no-extra-args }}
       gas-limit: ${{ steps.args.outputs.gas-limit }}
       run-type: ${{ steps.args.outputs.run-type }}
       force-bloat: ${{ steps.args.outputs.force-bloat }}
@@ -109,7 +106,7 @@ jobs:
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN }}
           script: |
-            let pr, actor, mode, preset, duration, bloat, tps, accounts, maxConcurrentRequests, baseline, feature, baselineHardfork, featureHardfork, txgenRef, samply, tracy, tracySeconds, tracyOffset, otlp, baselineArgs, featureArgs, extraArgs, baselineNoExtraArgs, featureNoExtraArgs, gasLimit, runType, forceBloat, noCache, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv, blocks, warmup, runPairs;
+            let pr, actor, mode, preset, duration, bloat, tps, accounts, maxConcurrentRequests, baseline, feature, baselineHardfork, featureHardfork, txgenRef, samply, tracy, tracySeconds, tracyOffset, otlp, baselineArgs, featureArgs, gasLimit, runType, forceBloat, noCache, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv, blocks, warmup, runPairs;
             let explicitWarmup = false;
             let explicitDuration = false;
             let explicitRunPairs = false;
@@ -120,11 +117,11 @@ jobs:
             const body = context.payload.comment.body.trim();
             const intArgs = new Set(['duration', 'bloat', 'tps', 'accounts', 'max-concurrent-requests', 'gas-limit', 'tracy-seconds', 'tracy-offset', 'blocks', 'warmup', 'run-pairs']);
             const refArgs = new Set(['baseline', 'feature', 'txgen-ref']);
-            const stringArgs = new Set(['mode', 'preset', 'tracy', 'baseline-args', 'feature-args', 'extra-args', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain', 'baseline-hardfork', 'feature-hardfork']);
-            const boolArgs = new Set(['samply', 'force-bloat', 'no-cache', 'no-slack', 'otlp', 'baseline-no-extra-args', 'feature-no-extra-args']);
+            const stringArgs = new Set(['mode', 'preset', 'tracy', 'baseline-args', 'feature-args', 'bench-args', 'bench-env', 'baseline-env', 'feature-env', 'chain', 'baseline-hardfork', 'feature-hardfork']);
+            const boolArgs = new Set(['samply', 'force-bloat', 'no-cache', 'no-slack', 'otlp']);
             const bloatValues = new Set(['1', '10', '100']);
             const hardforkValues = new Set(['T0', 'T1', 'T1A', 'T1B', 'T1C', 'T2', 'T3', 'T4', 'T5', 'T6']);
-            const defaults = { mode: 'e2e', preset: 'tip20', duration: '300', bloat: '100', tps: '20000', accounts: '1000', 'max-concurrent-requests': '100', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', otlp: 'true', 'baseline-args': '', 'feature-args': '', 'extra-args': '', 'baseline-no-extra-args': 'false', 'feature-no-extra-args': 'false', 'gas-limit': '1000000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet', 'run-pairs': '2' };
+            const defaults = { mode: 'e2e', preset: 'tip20', duration: '300', bloat: '100', tps: '20000', accounts: '1000', 'max-concurrent-requests': '100', baseline: '', feature: '', 'baseline-hardfork': '', 'feature-hardfork': '', 'txgen-ref': '', samply: 'false', tracy: 'off', 'tracy-seconds': '30', 'tracy-offset': '120', otlp: 'true', 'baseline-args': '', 'feature-args': '', 'gas-limit': '1000000000', 'force-bloat': 'false', 'no-cache': 'false', 'no-slack': 'false', 'bench-args': '', 'bench-env': '', 'baseline-env': '', 'feature-env': '', blocks: '5000', warmup: '', chain: 'mainnet', 'run-pairs': '2' };
             const unknown = [];
             const invalid = [];
             const defaultWarmup = (blockCount) => String(Math.floor(Number(blockCount) / 4));
@@ -206,7 +203,7 @@ jobs:
             if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
             if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
             if (errors.length) {
-              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [txgen-ref=REF] [samply] [otlp] [force-bloat] [no-cache] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [extra-args="ARGS"] [baseline-no-extra-args] [feature-no-extra-args] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
+              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [txgen-ref=REF] [samply] [otlp] [force-bloat] [no-cache] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -235,9 +232,6 @@ jobs:
             otlp = defaults.otlp;
             baselineArgs = defaults['baseline-args'];
             featureArgs = defaults['feature-args'];
-            extraArgs = defaults['extra-args'];
-            baselineNoExtraArgs = defaults['baseline-no-extra-args'];
-            featureNoExtraArgs = defaults['feature-no-extra-args'];
             gasLimit = defaults['gas-limit'];
             runType = 'manual';
             forceBloat = defaults['force-bloat'];
@@ -259,7 +253,7 @@ jobs:
               warmup = defaultWarmup(blocks);
             }
 
-            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [txgen-ref=REF] [samply] [otlp] [force-bloat] [no-cache] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [extra-args="ARGS"] [baseline-no-extra-args] [feature-no-extra-args] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
+            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [txgen-ref=REF] [samply] [otlp] [force-bloat] [no-cache] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
 
             // Validate chain value
             if (!['mainnet', 'testnet'].includes(chain)) {
@@ -395,9 +389,6 @@ jobs:
             core.setOutput('otlp', otlp);
             core.setOutput('baseline-args', baselineArgs || '');
             core.setOutput('feature-args', featureArgs || '');
-            core.setOutput('extra-args', extraArgs || '');
-            core.setOutput('baseline-no-extra-args', baselineNoExtraArgs || 'false');
-            core.setOutput('feature-no-extra-args', featureNoExtraArgs || 'false');
             core.setOutput('gas-limit', gasLimit);
             core.setOutput('run-type', runType);
             core.setOutput('force-bloat', forceBloat);
@@ -435,9 +426,6 @@ jobs:
           ACK_OTLP: ${{ steps.args.outputs.otlp }}
           ACK_BASELINE_ARGS: ${{ steps.args.outputs.baseline-args }}
           ACK_FEATURE_ARGS: ${{ steps.args.outputs.feature-args }}
-          ACK_EXTRA_ARGS: ${{ steps.args.outputs.extra-args }}
-          ACK_BASELINE_NO_EXTRA_ARGS: ${{ steps.args.outputs.baseline-no-extra-args }}
-          ACK_FEATURE_NO_EXTRA_ARGS: ${{ steps.args.outputs.feature-no-extra-args }}
           ACK_GAS_LIMIT: ${{ steps.args.outputs.gas-limit }}
           ACK_RUN_PAIRS: ${{ steps.args.outputs.run-pairs }}
           ACK_NO_CACHE: ${{ steps.args.outputs.no-cache }}
@@ -479,10 +467,7 @@ jobs:
             const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
             const bNa = process.env.ACK_BASELINE_ARGS || '';
             const fNa = process.env.ACK_FEATURE_ARGS || '';
-            const extraArgs = process.env.ACK_EXTRA_ARGS || '';
-            const baselineNoExtraArgs = process.env.ACK_BASELINE_NO_EXTRA_ARGS === 'true';
-            const featureNoExtraArgs = process.env.ACK_FEATURE_NO_EXTRA_ARGS === 'true';
-            const naNote = (bNa || fNa || extraArgs || baselineNoExtraArgs || featureNoExtraArgs) ? `${bNa ? `, baseline-args: \`${bNa}\`` : ''}${fNa ? `, feature-args: \`${fNa}\`` : ''}${extraArgs ? `, extra-args: \`${extraArgs}\`` : ''}${baselineNoExtraArgs ? ', baseline-no-extra-args: `true`' : ''}${featureNoExtraArgs ? ', feature-no-extra-args: `true`' : ''}` : '';
+            const naNote = (bNa || fNa) ? `${bNa ? `, baseline-args: \`${bNa}\`` : ''}${fNa ? `, feature-args: \`${fNa}\`` : ''}` : '';
             const gasLimit = process.env.ACK_GAS_LIMIT;
             const runPairs = process.env.ACK_RUN_PAIRS || '2';
             const noCache = process.env.ACK_NO_CACHE === 'true';
@@ -526,9 +511,6 @@ jobs:
       otlp: ${{ needs.tempo-bench-ack.outputs.otlp }}
       baseline-args: ${{ needs.tempo-bench-ack.outputs.baseline-args }}
       feature-args: ${{ needs.tempo-bench-ack.outputs.feature-args }}
-      extra-args: ${{ needs.tempo-bench-ack.outputs.extra-args }}
-      baseline-no-extra-args: ${{ needs.tempo-bench-ack.outputs.baseline-no-extra-args }}
-      feature-no-extra-args: ${{ needs.tempo-bench-ack.outputs.feature-no-extra-args }}
       gas-limit: ${{ needs.tempo-bench-ack.outputs.gas-limit }}
       run-pairs: ${{ needs.tempo-bench-ack.outputs.run-pairs }}
       run-type: ${{ needs.tempo-bench-ack.outputs.run-type }}
