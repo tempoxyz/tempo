@@ -102,6 +102,26 @@ def txgen-account-mnemonic [] {
     $TXGEN_HELPER_ACCOUNT_MNEMONIC
 }
 
+def txgen-parse-bench-args [bench_args: string] {
+    let trimmed = ($bench_args | str trim)
+    if $trimmed == "" {
+        return []
+    }
+
+    let args = ($trimmed | split row " " | where { |arg| $arg != "" })
+    for arg in $args {
+        if not ($arg =~ '^[A-Za-z0-9._/:=@,+-]+$') {
+            error make { msg: $"invalid --bench-args token: ($arg)" }
+        }
+    }
+
+    $args
+}
+
+def txgen-validate-bench-args [bench_args: string] {
+    txgen-parse-bench-args $bench_args | ignore
+}
+
 def txgen-bloat-accounts-per-token [bloat_mib: int, token_count: int] {
     if $bloat_mib <= 0 {
         error make { msg: "bloat size must be greater than zero" }
@@ -295,12 +315,8 @@ def txgen-run-preset-pipeline [
     let bench_cmd = $bench_base_cmd | append $report_args | append $metadata_args
 
     let bench_env_export = if $bench_env != "" { $"export ($bench_env) && " } else { "" }
-    let txgen_base_cmd_str = (txgen-shell-join $txgen_cmd)
-    let txgen_cmd_str = if $bench_args == "" {
-        $txgen_base_cmd_str
-    } else {
-        $"($txgen_base_cmd_str) ($bench_args)"
-    }
+    let txgen_extra_args = (txgen-parse-bench-args $bench_args)
+    let txgen_cmd_str = (txgen-shell-join ($txgen_cmd | append $txgen_extra_args))
     let bench_cmd_str = (txgen-shell-join $bench_cmd)
     let pipeline = $"set -euo pipefail; ($bench_env_export)ulimit -Sn unlimited && ($txgen_cmd_str) | ($bench_cmd_str)"
 
