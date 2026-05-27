@@ -506,11 +506,11 @@ impl TipFeeManager {
         validator_token: Address,
         max_amount: U256,
     ) -> Result<(Option<FeeRoute>, Option<Address>, Vec<PoolData>)> {
-        let mut data = Vec::new();
-
         if user_token == validator_token {
-            return Ok((Some(FeeRoute::SameToken), None, data));
+            return Ok((Some(FeeRoute::SameToken), None, Vec::new()));
         }
+
+        let mut data = Vec::new();
 
         // Direct (single-hop) path — always checked.
         let direct = self.pools[self.pool_id(user_token, validator_token)].read()?;
