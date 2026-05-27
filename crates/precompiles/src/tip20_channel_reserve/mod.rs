@@ -11,7 +11,7 @@ use crate::{
     error::Result,
     signature_verifier::SignatureVerifier,
     storage::{Handler, Mapping},
-    tip20::{ITIP20, TIP20Token, is_tip20_prefix},
+    tip20::{ITIP20, Recipient, TIP20Token, is_tip20_prefix},
     tip403_registry::AuthRole,
 };
 use alloy::{
@@ -145,7 +145,7 @@ impl TIP20ChannelReserve {
             return Err(TIP20ChannelReserveError::channel_already_exists().into());
         }
 
-        token.ensure_authorized_as(call.payee, AuthRole::Recipient)?;
+        token.ensure_authorized_as(Recipient::resolve(call.payee)?.target, AuthRole::Recipient)?;
         token.system_transfer_from(self.address, msg_sender, U256::from(call.deposit))?;
 
         self.channel_states[channel_id].write(PackedChannelState {
@@ -259,7 +259,10 @@ impl TIP20ChannelReserve {
         if !additional.is_zero() {
             state.deposit = next_deposit;
             let mut token = TIP20Token::from_address(call.descriptor.token)?;
-            token.ensure_authorized_as(call.descriptor.payee, AuthRole::Recipient)?;
+            token.ensure_authorized_as(
+                Recipient::resolve(call.descriptor.payee)?.target,
+                AuthRole::Recipient,
+            )?;
             token.system_transfer_from(
                 self.address,
                 msg_sender,
@@ -662,8 +665,12 @@ mod tests {
     use super::*;
     use crate::{
         Precompile,
+        address_registry::AddressRegistry,
         storage::{ContractStorage, StorageCtx, hashmap::HashMapStorageProvider},
-        test_util::{TIP20Setup, assert_full_coverage, check_selector_coverage},
+        test_util::{
+            TIP20Setup, VIRTUAL_MASTER, assert_full_coverage, check_selector_coverage,
+            register_virtual_master,
+        },
         tip403_registry::{ITIP403Registry, TIP403Registry},
     };
     use alloy::{
@@ -869,6 +876,84 @@ mod tests {
                     Address::ZERO,
                 ),
             )?;
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_virtual_payee_admission_checks_resolved_master() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let payer = Address::random();
+        let admin = payer;
+        let operator = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::path_usd(admin)
+                .with_issuer(admin)
+                .with_mint(payer, U256::from(1_000u128))
+                .apply()?;
+            let (mut registry, _sender_policy, recipient_policy) =
+                install_blacklist_policy(&mut token, admin)?;
+            let (_, virtual_payee) = register_virtual_master(&mut AddressRegistry::new())?;
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+
+            // Admission must check the effective recipient, not just the virtual alias.
+            set_blacklisted(&mut registry, admin, recipient_policy, VIRTUAL_MASTER, true)?;
+            seed_expiring_nonce_hash(&mut reserve)?;
+            let res = reserve.open(
+                payer,
+                open_call(
+                    virtual_payee,
+                    operator,
+                    token.address(),
+                    100,
+                    B256::random(),
+                    Address::ZERO,
+                ),
+            );
+            assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
+
+            // Top-ups must enforce the same resolved-recipient admission check.
+            set_blacklisted(
+                &mut registry,
+                admin,
+                recipient_policy,
+                VIRTUAL_MASTER,
+                false,
+            )?;
+            let salt = B256::random();
+            let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
+            reserve.open(
+                payer,
+                open_call(
+                    virtual_payee,
+                    operator,
+                    token.address(),
+                    100,
+                    salt,
+                    Address::ZERO,
+                ),
+            )?;
+            let descriptor = descriptor(
+                payer,
+                virtual_payee,
+                operator,
+                token.address(),
+                salt,
+                Address::ZERO,
+                expiring_nonce_hash,
+            );
+
+            set_blacklisted(&mut registry, admin, recipient_policy, VIRTUAL_MASTER, true)?;
+            let res = reserve.top_up(
+                payer,
+                ITIP20ChannelReserve::topUpCall {
+                    descriptor,
+                    additionalDeposit: U96::from(1),
+                },
+            );
+            assert_eq!(res.unwrap_err(), TIP20Error::policy_forbids().into());
             Ok(())
         })
     }
