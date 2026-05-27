@@ -1322,7 +1322,12 @@ def "main e2e" [
     let removed_arg_config = $"(format-removed-node-arg-config 'baseline' $baseline_arg_filter.removed)(format-removed-node-arg-config 'feature' $feature_arg_filter.removed)"
     if $removed_arg_config != "" {
         let current_config = ($env | get -o BENCH_CONFIG | default "")
-        $env.BENCH_CONFIG = $"($current_config)($removed_arg_config)"
+        let updated_config = $"($current_config)($removed_arg_config)"
+        $env.BENCH_CONFIG = $updated_config
+        let github_env = ($env | get -o GITHUB_ENV | default "")
+        if $github_env != "" {
+            $"BENCH_CONFIG=($updated_config)\n" | save --append $github_env
+        }
     }
     let txgen = txgen-resolve-binaries
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
