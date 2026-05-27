@@ -53,12 +53,31 @@ fn gen_storable_layout_impl(type_path: &TokenStream, byte_count: usize) -> Token
 }
 
 /// Generate a `StorageKey` implementation based on the conversion strategy
-fn gen_storage_key_impl(type_path: &TokenStream, strategy: &StorageKeyStrategy) -> TokenStream {
+fn gen_storage_key_impl(
+    type_path: &TokenStream,
+    byte_count: usize,
+    strategy: &StorageKeyStrategy,
+) -> TokenStream {
     let conversion = match strategy {
         StorageKeyStrategy::Simple => quote! { self.to_be_bytes() },
         StorageKeyStrategy::WithSize(size) => quote! { self.to_be_bytes::<#size>() },
         StorageKeyStrategy::SignedRaw(size) => quote! { self.into_raw().to_be_bytes::<#size>() },
         StorageKeyStrategy::AsSlice => quote! { self.as_slice() },
+    };
+    let mapping_key_bytes = match strategy {
+        StorageKeyStrategy::Simple => quote! { self.to_be_bytes() },
+        StorageKeyStrategy::WithSize(size) => quote! { self.to_be_bytes::<#size>() },
+        StorageKeyStrategy::SignedRaw(size) => quote! { self.into_raw().to_be_bytes::<#size>() },
+        StorageKeyStrategy::AsSlice => quote! { self.as_slice() },
+    };
+    let copy_key = if matches!(strategy, StorageKeyStrategy::AsSlice) {
+        quote! {
+            buf[32 - #byte_count..32].copy_from_slice(key_bytes);
+        }
+    } else {
+        quote! {
+            buf[32 - #byte_count..32].copy_from_slice(&key_bytes);
+        }
     };
 
     quote! {
@@ -66,6 +85,16 @@ fn gen_storage_key_impl(type_path: &TokenStream, strategy: &StorageKeyStrategy) 
             #[inline]
             fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
                 #conversion
+            }
+
+            #[inline]
+            fn mapping_slot(&self, slot: U256) -> U256 {
+                let key_bytes = #mapping_key_bytes;
+                let mut buf = [0u8; 64];
+                #copy_key
+                buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
+
+                U256::from_be_bytes(::alloy::primitives::keccak256(buf).0)
             }
         }
     }
@@ -176,7 +205,8 @@ fn gen_to_word_impl(type_path: &TokenStream, strategy: &StorableConversionStrate
 fn gen_complete_impl_set(config: &TypeConfig) -> TokenStream {
     let type_path = &config.type_path;
     let storable_type_impl = gen_storable_layout_impl(type_path, config.byte_count);
-    let storage_key_impl = gen_storage_key_impl(type_path, &config.storage_key_strategy);
+    let storage_key_impl =
+        gen_storage_key_impl(type_path, config.byte_count, &config.storage_key_strategy);
     let to_word_impl = gen_to_word_impl(type_path, &config.storable_strategy);
 
     let full_word_storable_impl = if config.byte_count < 32 {
