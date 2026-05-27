@@ -735,7 +735,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let local_reth_extra_args = if $no_extra_args {
         []
     } else if $ctx.extra_args != "" {
-        parse-cli-args $ctx.extra_args
+        $E2E_LOCAL_RETH_EXTRA_ARGS | append (parse-cli-args $ctx.extra_args)
     } else {
         $E2E_LOCAL_RETH_EXTRA_ARGS
     }
