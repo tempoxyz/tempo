@@ -171,11 +171,12 @@ macro_rules! tempo_precompile {
             }
             let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new(
                 $input.internals,
-                &cfg,
-                gas_params.clone(),
                 $input.gas,
                 $input.reservoir,
+                cfg.spec,
+                cfg.enable_amsterdam_eip8037,
                 $input.is_static,
+                gas_params.clone(),
             );
             crate::storage::StorageCtx::enter(&mut storage, || {
                 $impl.call($input.data, $input.caller)

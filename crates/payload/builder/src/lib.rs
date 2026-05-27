@@ -288,7 +288,7 @@ where
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
                 execution_cache.cache().clone(),
-                self.cache_metrics.clone(),
+                Some(self.cache_metrics.clone()),
             ));
         }
         if self.state_provider_metrics {

@@ -13,7 +13,7 @@ use alloy_evm::{
 use alloy_primitives::{Address, Bytes, TxKind};
 use reth_revm::{
     InspectSystemCallEvm, MainContext,
-    context::{CfgEnv, DBErrorMarker, result::ExecutionResult},
+    context::{CfgEnv, result::ExecutionResult},
 };
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
