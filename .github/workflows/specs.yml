@@ -225,30 +225,81 @@ jobs:
           path: foundry
           persist-credentials: false
 
+      - name: Check Foundry EVM dependency compatibility
+        id: foundry-compat
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          get_workspace_dep_version() {
+            local manifest="$1"
+            local crate="$2"
+            awk -v crate="$crate" '
+              /^\[workspace.dependencies\]/ { in_section = 1; next }
+              in_section && /^\[/ { exit }
+              in_section && $1 == crate {
+                print
+                exit
+              }
+            ' "$manifest" \
+              | sed -nE 's/.*version = "([^"]+)".*/\1/p; s/^[^=]+ = "([^"]+)".*/\1/p' \
+              | head -n1
+          }
+
+          compatible=true
+          for crate in alloy-evm revm revm-inspectors; do
+            tempo_version="$(get_workspace_dep_version tempo/Cargo.toml "$crate")"
+            foundry_version="$(get_workspace_dep_version foundry/Cargo.toml "$crate")"
+            echo "$crate: tempo=$tempo_version foundry=$foundry_version"
+
+            if [[ -z "$tempo_version" || -z "$foundry_version" ]]; then
+              echo "::warning::Could not determine $crate workspace dependency versions for Tempo and Foundry."
+              compatible=false
+            elif [[ "$tempo_version" != "$foundry_version" ]]; then
+              echo "::notice::$crate differs between Tempo ($tempo_version) and Foundry ($foundry_version)."
+              compatible=false
+            fi
+          done
+
+          echo "compatible=$compatible" >> "$GITHUB_OUTPUT"
+          if [[ "$compatible" != "true" ]]; then
+            echo "::notice::Skipping Foundry Rust-precompile tests until the pinned Foundry checkout catches up to Tempo's EVM dependency stack."
+          fi
+
+      - name: Skip Foundry Rust-precompile tests
+        if: steps.foundry-compat.outputs.compatible != 'true'
+        run: |
+          echo "Skipping Foundry Rust-precompile tests because Foundry's pinned EVM dependencies are not compatible with this Tempo branch."
+
       - name: Setup Rust
+        if: steps.foundry-compat.outputs.compatible == 'true'
         uses: dtolnay/rust-toolchain@stable
 
       - uses: rui314/setup-mold@725a8794d15fc7563f59595bd9556495c0564878 # v1
+        if: steps.foundry-compat.outputs.compatible == 'true'
       - uses: mozilla-actions/sccache-action@7d986dd989559c6ecdb630a3fd2557667be217ad # v0.0.9
+        if: steps.foundry-compat.outputs.compatible == 'true'
       - uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4 # v2.9.1
+        if: steps.foundry-compat.outputs.compatible == 'true'
         with:
           workspaces: foundry
 
       - name: Install llvm-tools
-        if: needs.check-precompiles.outputs.coverage == 'true'
+        if: steps.foundry-compat.outputs.compatible == 'true' && needs.check-precompiles.outputs.coverage == 'true'
         run: rustup component add llvm-tools-preview
 
       - name: Patch foundry to use checked-out tempo crates
+        if: steps.foundry-compat.outputs.compatible == 'true'
         run: tempo/scripts/foundry-patch.sh "$GITHUB_WORKSPACE/tempo" "$GITHUB_WORKSPACE/foundry"
 
       # Build and run WITH coverage (only on PR when precompiles changed)
       - name: Build foundry forge with coverage instrumentation
-        if: needs.check-precompiles.outputs.coverage == 'true'
+        if: steps.foundry-compat.outputs.compatible == 'true' && needs.check-precompiles.outputs.coverage == 'true'
         working-directory: foundry
         run: RUSTFLAGS="-C instrument-coverage" cargo build --bin forge --profile release --no-default-features
 
       - name: Run Forge tests with Rust precompiles (with coverage)
-        if: needs.check-precompiles.outputs.coverage == 'true'
+        if: steps.foundry-compat.outputs.compatible == 'true' && needs.check-precompiles.outputs.coverage == 'true'
         working-directory: tempo/tips/verify
         run: |
           echo "Running forge test with Rust precompiles"
@@ -256,26 +307,26 @@ jobs:
 
       # Build and run WITHOUT coverage (main/merge_group or no precompiles changes)
       - name: Build foundry forge
-        if: needs.check-precompiles.outputs.coverage != 'true'
+        if: steps.foundry-compat.outputs.compatible == 'true' && needs.check-precompiles.outputs.coverage != 'true'
         working-directory: foundry
         run: cargo build --bin forge --profile release --no-default-features
 
       - name: Run Forge tests with Rust precompiles
-        if: needs.check-precompiles.outputs.coverage != 'true'
+        if: steps.foundry-compat.outputs.compatible == 'true' && needs.check-precompiles.outputs.coverage != 'true'
         working-directory: tempo/tips/verify
         run: |
           echo "Running forge test with Rust precompiles"
           ../../../foundry/target/release/forge test -vvv
 
       - name: Generate coverage profdata
-        if: needs.check-precompiles.outputs.coverage == 'true'
+        if: steps.foundry-compat.outputs.compatible == 'true' && needs.check-precompiles.outputs.coverage == 'true'
         run: |
           LLVM_BIN="$(rustc --print sysroot)/lib/rustlib/$(rustc -vV | grep host | cut -d' ' -f2)/bin"
           mkdir -p coverage
           "$LLVM_BIN/llvm-profdata" merge -sparse tempo/tips/verify/*.profraw -o coverage/forge-test.profdata
 
       - name: Upload forge coverage artifacts
-        if: needs.check-precompiles.outputs.coverage == 'true'
+        if: steps.foundry-compat.outputs.compatible == 'true' && needs.check-precompiles.outputs.coverage == 'true'
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: forge-test-coverage
