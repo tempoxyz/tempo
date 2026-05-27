@@ -12,8 +12,8 @@ use alloy_evm::{
     eth::EthBlockExecutionCtx,
 };
 use alloy_primitives::{
-    Address, B256, Bytes, TxKind, U256,
-    map::{AddressMap, B256Map, HashMap},
+    Address, B256, Bytes, FixedBytes, TxKind, U256,
+    map::{AddressMap, B256Map, FbMap, HashMap},
 };
 use alloy_signer::SignerSync;
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
@@ -131,7 +131,7 @@ struct ExecutionStats {
 #[derive(Clone, Debug)]
 struct InMemoryStateProvider {
     accounts: Arc<AddressMap<RethAccount>>,
-    storage: Arc<HashMap<(Address, B256), U256>>,
+    storage: Arc<StorageMap>,
     contracts: Arc<B256Map<RethBytecode>>,
     block_hashes: Arc<HashMap<u64, B256>>,
 }
@@ -145,6 +145,8 @@ struct ExecutionFixture {
 
 type FixedCacheDb<const PREWARM: bool = false> =
     State<StateProviderDatabase<CachedStateProvider<InMemoryStateProvider, PREWARM>>>;
+type StorageLookupKey = FixedBytes<52>;
+type StorageMap = FbMap<52, U256>;
 
 impl ExecutionFixture {
     fn state_db(&self) -> FixedCacheDb {
@@ -180,7 +182,10 @@ impl AccountReader for InMemoryStateProvider {
 
 impl StateProvider for InMemoryStateProvider {
     fn storage(&self, account: Address, storage_key: B256) -> ProviderResult<Option<U256>> {
-        Ok(self.storage.get(&(account, storage_key)).copied())
+        Ok(self
+            .storage
+            .get(&storage_lookup_key(account, storage_key))
+            .copied())
     }
 }
 
@@ -414,7 +419,7 @@ fn setup_fixed_cache_state(
     let execution_cache = ExecutionCache::new(EXECUTION_CACHE_BYTES);
 
     let mut accounts = AddressMap::default();
-    let mut storage = HashMap::default();
+    let mut storage = StorageMap::default();
     let mut contracts = B256Map::default();
     let mut block_hashes = HashMap::default();
 
@@ -429,7 +434,7 @@ fn setup_fixed_cache_state(
         for (slot, value) in account.storage {
             let storage_key = B256::new(slot.to_be_bytes());
             execution_cache.insert_storage(address, storage_key, Some(value));
-            storage.insert((address, storage_key), value);
+            storage.insert(storage_lookup_key(address, storage_key), value);
         }
     }
 
@@ -459,6 +464,13 @@ fn setup_fixed_cache_state(
         cache: execution_cache,
         metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
     }
+}
+
+fn storage_lookup_key(address: Address, storage_key: B256) -> StorageLookupKey {
+    let mut key = [0u8; 52];
+    key[..20].copy_from_slice(address.as_slice());
+    key[20..].copy_from_slice(storage_key.as_slice());
+    StorageLookupKey::from(key)
 }
 
 fn insert_account(
