@@ -1,7 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_primitives::{B256, Bytes, TxKind};
@@ -21,6 +24,27 @@ use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+
+thread_local! {
+    static PREWARM_EVM_STATE: RefCell<PrewarmEvmSlot> =
+        const { RefCell::new(PrewarmEvmSlot::new()) };
+}
+
+struct PrewarmEvmSlot {
+    key: usize,
+    evm: PrewarmEvmState,
+}
+
+impl PrewarmEvmSlot {
+    const fn new() -> Self {
+        Self { key: 0, evm: None }
+    }
+
+    fn clear(&mut self) {
+        self.key = 0;
+        self.evm = None;
+    }
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -93,11 +117,6 @@ impl BestTransactionsPrewarming {
         let pool = executor.prewarming_pool();
 
         pool.in_place_scope(|scope| {
-            let prewarm = ctx.prewarm.clone();
-            scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-            });
-
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
@@ -155,6 +174,7 @@ impl BestTransactionsPrewarming {
             }
         });
 
+        clear_prewarm_evm_state(pool);
         pool.clear();
     }
 
@@ -168,10 +188,10 @@ impl BestTransactionsPrewarming {
             return;
         }
 
-        WorkerPool::with_worker_mut(|worker| {
-            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
+        with_prewarm_evm(&prewarm, |evm| {
+            if prewarm.is_stopped() {
                 return;
-            };
+            }
 
             let tx_hash = *tx.hash();
             let tx_env_touches = tx
@@ -223,6 +243,32 @@ impl BestTransactionsPrewarming {
             );
         });
     }
+}
+
+fn with_prewarm_evm<Provider>(
+    prewarm: &PrewarmingExecutionContext<Provider>,
+    f: impl FnOnce(&mut TempoEvm<StateProviderDatabase<StateProviderBox>>),
+) where
+    Provider: StateProviderFactory + Clone + 'static,
+{
+    let key = Arc::as_ptr(&prewarm.stop) as usize;
+    PREWARM_EVM_STATE.with_borrow_mut(|slot| {
+        if slot.key != key {
+            slot.evm = prewarm.evm_for_ctx();
+            slot.key = key;
+        }
+
+        let Some(evm) = slot.evm.as_mut() else {
+            return;
+        };
+        f(evm);
+    });
+}
+
+fn clear_prewarm_evm_state(pool: &WorkerPool) {
+    pool.broadcast(pool.current_num_threads(), |_| {
+        PREWARM_EVM_STATE.with_borrow_mut(PrewarmEvmSlot::clear);
+    });
 }
 
 impl Drop for BestTransactionsPrewarming {

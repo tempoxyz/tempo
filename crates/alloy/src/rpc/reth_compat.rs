@@ -194,6 +194,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
             } else {
                 None
             },
+            prewarm_storage_touches: Default::default(),
             inner: inner.try_into_tx_env(evm_env)?,
         })
     }
