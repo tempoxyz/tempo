@@ -1,10 +1,11 @@
 //! TIP-20 per-account balance state.
 //!
-//! Before T6, balance slots store the legacy `U256` amount directly.
+//! Before T6, balance slots store the legacy `U256` amount directly, without packing.
 //! At T6, the same storage slot is interpreted as a packed [`UserState`] containing a `u128` amount
 //! and a cached reward opt-in flag.
 //!
-//! The manual [`Storable`] impl is necessary to optimally handle [`StorageOps`] during all hardforks.
+//! The manual [`Storable`] impl is necessary to preserve backwards compatibility, and optimally
+//! handle [`StorageOps`] across all hardforks.
 
 use crate::{
     error::{Result, TempoPrecompileError},
