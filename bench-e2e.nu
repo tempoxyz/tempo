@@ -43,34 +43,45 @@ def tempo-node-help [tempo_bin: string] {
     [$result.stdout $result.stderr] | str join "\n"
 }
 
-def filter-supported-node-args [tempo_bin: string, args: list<string>] {
+def supported-node-arg-filter [tempo_bin: string, args: list<string>] {
     let help = (tempo-node-help $tempo_bin)
-    mut filtered = []
+    mut supported = []
+    mut removed = []
     mut skip_next_value = false
     for arg in $args {
         if $skip_next_value {
             if not ($arg starts-with "--") {
+                $removed = ($removed | append $arg)
                 $skip_next_value = false
                 continue
             }
             $skip_next_value = false
         }
         if not ($arg starts-with "--") {
-            $filtered = ($filtered | append $arg)
+            $supported = ($supported | append $arg)
             continue
         }
 
         let key = ($arg | split row "=" | first)
         if ($help | str contains $key) {
-            $filtered = ($filtered | append $arg)
+            $supported = ($supported | append $arg)
         } else {
             print $"Skipping unsupported tempo node arg for ($tempo_bin): ($key)"
+            $removed = ($removed | append $arg)
             if not ($arg | str contains "=") {
                 $skip_next_value = true
             }
         }
     }
-    $filtered
+    { supported: $supported, removed: $removed }
+}
+
+def format-removed-node-arg-config [label: string, removed: list<string>] {
+    if ($removed | is-empty) {
+        ""
+    } else {
+        $", ($label)-removed-args: `($removed | str join ' ')`"
+    }
 }
 
 def run-bench-schelk [...args: string] {
@@ -770,7 +781,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
     let extra_args = (parse-cli-args $side_args)
-    let local_reth_args = (filter-supported-node-args $run.tempo $E2E_LOCAL_RETH_ARGS)
+    let local_reth_args = if $run_type == "baseline" { $ctx.baseline_local_reth_args } else { $ctx.feature_local_reth_args }
 
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
@@ -1306,6 +1317,13 @@ def "main e2e" [
     let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
     let feature_tempo = (worktree-bin $feature_wt $profile "tempo")
     let regenesis_tempo = if $regenesis_needed { worktree-bin $regenesis_wt $profile "tempo" } else { "" }
+    let baseline_arg_filter = (supported-node-arg-filter $baseline_tempo $E2E_LOCAL_RETH_ARGS)
+    let feature_arg_filter = (supported-node-arg-filter $feature_tempo $E2E_LOCAL_RETH_ARGS)
+    let removed_arg_config = $"(format-removed-node-arg-config 'baseline' $baseline_arg_filter.removed)(format-removed-node-arg-config 'feature' $feature_arg_filter.removed)"
+    if $removed_arg_config != "" {
+        let current_config = ($env | get -o BENCH_CONFIG | default "")
+        $env.BENCH_CONFIG = $"($current_config)($removed_arg_config)"
+    }
     let txgen = txgen-resolve-binaries
     let samply_args_list = if $samply_args == "" { [] } else { $samply_args | split row " " }
     let ctx = {
@@ -1362,6 +1380,8 @@ def "main e2e" [
         tune: $tune
         loud: $loud
         gas_limit: $gas_limit
+        baseline_local_reth_args: $baseline_arg_filter.supported
+        feature_local_reth_args: $feature_arg_filter.supported
         regenesis_tempo: $regenesis_tempo
         tracing_otlp: $tracing_otlp
     }
