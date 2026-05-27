@@ -2286,7 +2286,7 @@ mod tests {
             configure_tx_env: impl FnOnce(&mut TempoTxEnv),
         ) -> Self {
             let mut tx_env = TempoTxEnv {
-                tempo_tx_env: Some(Box::new(aa_env)),
+                tempo_tx_env: Some(aa_env),
                 ..Default::default()
             };
             configure_tx_env(&mut tx_env);
@@ -3465,7 +3465,7 @@ mod tests {
                             nonce,
                             ..Default::default()
                         },
-                        tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                        tempo_tx_env: Some(TempoBatchCallEnv {
                             aa_calls: vec![Call {
                                 to: TxKind::Call(Address::random()),
                                 value: U256::ZERO,
@@ -3473,7 +3473,7 @@ mod tests {
                             }],
                             nonce_key,
                             ..Default::default()
-                        })),
+                        }),
                         ..Default::default()
                     })
                     .with_new_journal(journal);
@@ -3581,7 +3581,7 @@ mod tests {
                             nonce,
                             ..Default::default()
                         },
-                        tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                        tempo_tx_env: Some(TempoBatchCallEnv {
                             aa_calls: vec![Call {
                                 to: TxKind::Call(Address::random()),
                                 value: U256::ZERO,
@@ -3589,7 +3589,7 @@ mod tests {
                             }],
                             nonce_key: U256::ONE,
                             ..Default::default()
-                        })),
+                        }),
                         ..Default::default()
                     })
                     .with_new_journal(journal);
@@ -3648,7 +3648,7 @@ mod tests {
                 ..Default::default()
             },
             fee_token: Some(DEFAULT_FEE_TOKEN),
-            tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+            tempo_tx_env: Some(TempoBatchCallEnv {
                 signature,
                 aa_calls: vec![Call {
                     to: TxKind::Call(target),
@@ -3658,7 +3658,7 @@ mod tests {
                 signature_hash: B256::ZERO,
                 override_key_id: Some(access_key),
                 ..Default::default()
-            })),
+            }),
             ..Default::default()
         };
 
@@ -3764,7 +3764,7 @@ mod tests {
                 ..Default::default()
             },
             fee_token: Some(DEFAULT_FEE_TOKEN),
-            tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+            tempo_tx_env: Some(TempoBatchCallEnv {
                 signature,
                 aa_calls: vec![Call {
                     to: TxKind::Call(target),
@@ -3774,7 +3774,7 @@ mod tests {
                 signature_hash: B256::ZERO,
                 override_key_id: Some(access_key),
                 ..Default::default()
-            })),
+            }),
             ..Default::default()
         };
 
@@ -3865,13 +3865,13 @@ mod tests {
                 gas_limit: 1_000_000,
                 ..Default::default()
             },
-            tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+            tempo_tx_env: Some(TempoBatchCallEnv {
                 signature,
                 aa_calls: vec![],
                 signature_hash: B256::ZERO,
                 override_key_id: Some(access_key),
                 ..Default::default()
-            })),
+            }),
             ..Default::default()
         };
 
@@ -4262,12 +4262,12 @@ mod tests {
 
             let tx_env = TempoTxEnv {
                 inner: revm::context::TxEnv::default(),
-                tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                tempo_tx_env: Some(TempoBatchCallEnv {
                     aa_calls: calls,
                     signature: secp256k1_sig(),
                     signature_hash: B256::ZERO,
                     ..Default::default()
-                })),
+                }),
                 ..Default::default()
             };
 
@@ -4284,12 +4284,12 @@ mod tests {
         fn proptest_first_call_empty_aa(_dummy in 0u8..1) {
             let tx_env = TempoTxEnv {
                 inner: revm::context::TxEnv::default(),
-                tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                tempo_tx_env: Some(TempoBatchCallEnv {
                     aa_calls: vec![],
                     signature: secp256k1_sig(),
                     signature_hash: B256::ZERO,
                     ..Default::default()
-                })),
+                }),
                 ..Default::default()
             };
 
@@ -4468,7 +4468,7 @@ mod tests {
                         nonce,
                         ..Default::default()
                     },
-                    tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                    tempo_tx_env: Some(TempoBatchCallEnv {
                         aa_calls: vec![Call {
                             to: TxKind::Call(TEST_TARGET),
                             value: U256::ZERO,
@@ -4476,7 +4476,7 @@ mod tests {
                         }],
                         nonce_key,
                         ..Default::default()
-                    })),
+                    }),
                     ..Default::default()
                 })
                 .with_new_journal(journal);
@@ -4562,7 +4562,7 @@ mod tests {
                         nonce,
                         ..Default::default()
                     },
-                    tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                    tempo_tx_env: Some(TempoBatchCallEnv {
                         aa_calls: vec![Call {
                             to: TxKind::Call(TEST_TARGET),
                             value: U256::ZERO,
@@ -4570,7 +4570,7 @@ mod tests {
                         }],
                         nonce_key,
                         ..Default::default()
-                    })),
+                    }),
                     ..Default::default()
                 })
                 .with_new_journal(journal);
@@ -4670,7 +4670,7 @@ mod tests {
                     ..Default::default()
                 },
                 fee_token: Some(DEFAULT_FEE_TOKEN),
-                tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+                tempo_tx_env: Some(TempoBatchCallEnv {
                     signature: sig,
                     aa_calls: vec![Call {
                         to: TxKind::Call(Address::ZERO),
@@ -4681,7 +4681,7 @@ mod tests {
                     signature_hash: B256::ZERO,
                     override_key_id: Some(access_key),
                     ..Default::default()
-                })),
+                }),
                 ..Default::default()
             };
 
@@ -5268,7 +5268,7 @@ mod tests {
                 kind: TxKind::Call(Address::random()),
                 ..Default::default()
             },
-            tempo_tx_env: Some(Box::new(aa_env)),
+            tempo_tx_env: Some(aa_env),
             ..Default::default()
         };
 
@@ -5334,7 +5334,7 @@ mod tests {
                 kind: TxKind::Call(Address::random()),
                 ..Default::default()
             },
-            tempo_tx_env: Some(Box::new(aa_env)),
+            tempo_tx_env: Some(aa_env),
             ..Default::default()
         };
 

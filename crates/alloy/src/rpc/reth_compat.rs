@@ -174,7 +174,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                     return Err(EthApiError::InvalidParams("empty calls list".to_string()));
                 }
 
-                Some(Box::new(TempoBatchCallEnv {
+                Some(TempoBatchCallEnv {
                     aa_calls: calls,
                     signature: mock_signature,
                     tempo_authorization_list: tempo_authorization_list
@@ -190,7 +190,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                     subblock_transaction: false,
                     override_key_id: key_id,
                     expiring_nonce_idx: None,
-                }))
+                })
             } else {
                 None
             },

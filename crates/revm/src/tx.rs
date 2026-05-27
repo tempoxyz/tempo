@@ -93,8 +93,8 @@ pub struct TempoTxEnv {
     /// - None corresponds to a transaction without a fee payer
     pub fee_payer: Option<Option<Address>>,
 
-    /// AA-specific transaction environment (boxed to keep TempoTxEnv lean for non-AA tx)
-    pub tempo_tx_env: Option<Box<TempoBatchCallEnv>>,
+    /// AA-specific transaction environment.
+    pub tempo_tx_env: Option<TempoBatchCallEnv>,
 }
 
 impl TempoTxEnv {
@@ -388,7 +388,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
             }),
             // Bundle AA-specific fields into TempoBatchCallEnv
-            tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
+            tempo_tx_env: Some(TempoBatchCallEnv {
                 signature: signature.clone(),
                 valid_before: valid_before.map(NonZeroU64::get),
                 valid_after: valid_after.map(NonZeroU64::get),
@@ -407,7 +407,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 override_key_id: None,
                 // can only be derived when given an entire block
                 expiring_nonce_idx: None,
-            })),
+            }),
         }
     }
 }
@@ -854,7 +854,7 @@ mod tests {
         let input2 = Bytes::from(vec![0xCC, 0xDD]);
 
         let tx_env = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+            tempo_tx_env: Some(super::TempoBatchCallEnv {
                 aa_calls: vec![
                     Call {
                         to: TxKind::Call(addr1),
@@ -868,7 +868,7 @@ mod tests {
                     },
                 ],
                 ..Default::default()
-            })),
+            }),
             ..Default::default()
         };
 
@@ -883,10 +883,10 @@ mod tests {
     fn test_first_call_with_empty_aa_calls() {
         // Test with tempo_tx_env but empty calls list
         let tx_env = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+            tempo_tx_env: Some(super::TempoBatchCallEnv {
                 aa_calls: vec![],
                 ..Default::default()
-            })),
+            }),
             ..Default::default()
         };
 
@@ -921,7 +921,7 @@ mod tests {
 
         // AA transaction with multiple calls
         let aa_tx = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+            tempo_tx_env: Some(super::TempoBatchCallEnv {
                 aa_calls: vec![
                     Call {
                         to: TxKind::Call(addr1),
@@ -940,7 +940,7 @@ mod tests {
                     },
                 ],
                 ..Default::default()
-            })),
+            }),
             ..Default::default()
         };
         let calls: Vec<_> = aa_tx.calls().collect();
@@ -954,10 +954,10 @@ mod tests {
 
         // AA transaction with empty calls list
         let empty_aa_tx = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+            tempo_tx_env: Some(super::TempoBatchCallEnv {
                 aa_calls: vec![],
                 ..Default::default()
-            })),
+            }),
             ..Default::default()
         };
         let calls: Vec<_> = empty_aa_tx.calls().collect();
@@ -1022,20 +1022,20 @@ mod tests {
         assert!(!access_list_tx.is_discounted_payment());
 
         let aa_tx = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+            tempo_tx_env: Some(super::TempoBatchCallEnv {
                 aa_calls: vec![Call {
                     to: TxKind::Call(PAYMENT_TKN),
                     value: U256::ZERO,
                     input: transfer.clone(),
                 }],
                 ..Default::default()
-            })),
+            }),
             ..Default::default()
         };
         assert!(aa_tx.is_discounted_payment());
 
         let mixed_aa_tx = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+            tempo_tx_env: Some(super::TempoBatchCallEnv {
                 aa_calls: vec![
                     Call {
                         to: TxKind::Call(PAYMENT_TKN),
@@ -1049,13 +1049,13 @@ mod tests {
                     },
                 ],
                 ..Default::default()
-            })),
+            }),
             ..Default::default()
         };
         assert!(!mixed_aa_tx.is_discounted_payment());
 
         let empty_aa_tx = super::TempoTxEnv {
-            tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv::default())),
+            tempo_tx_env: Some(super::TempoBatchCallEnv::default()),
             ..Default::default()
         };
         assert!(!empty_aa_tx.is_discounted_payment());
@@ -1182,7 +1182,7 @@ mod tests {
         #[test]
         fn proptest_calls_count_aa_tx(num_calls in 0usize..20) {
             let aa_tx = super::TempoTxEnv {
-                tempo_tx_env: Some(Box::new(super::TempoBatchCallEnv {
+                tempo_tx_env: Some(super::TempoBatchCallEnv {
                     aa_calls: (0..num_calls)
                         .map(|_| Call {
                             to: TxKind::Call(alloy_primitives::Address::ZERO),
@@ -1191,7 +1191,7 @@ mod tests {
                         })
                         .collect(),
                     ..Default::default()
-                })),
+                }),
                 ..Default::default()
             };
             prop_assert_eq!(aa_tx.calls().count(), num_calls);
