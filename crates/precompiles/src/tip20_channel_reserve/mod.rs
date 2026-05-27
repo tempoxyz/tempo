@@ -19,7 +19,7 @@ use alloy::{
     sol_types::SolValue,
 };
 use std::sync::LazyLock;
-use tempo_chainspec::constants::{mainnet::MAINNET_CHAIN_ID, moderato::TESTNET_CHAIN_ID};
+use tempo_chainspec::constants::{mainnet::MAINNET_CHAIN_ID, moderato::MODERATO_CHAIN_ID};
 pub use tempo_contracts::precompiles::{
     ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20ChannelReserveError,
     TIP20ChannelReserveEvent,
@@ -47,7 +47,7 @@ static DOMAIN_SEPARATOR_MAINNET: LazyLock<B256> =
     LazyLock::new(|| domain_separator_inner(MAINNET_CHAIN_ID));
 /// EIP-712 domain separator for the reserve voucher domain on testnet.
 static DOMAIN_SEPARATOR_TESTNET: LazyLock<B256> =
-    LazyLock::new(|| domain_separator_inner(TESTNET_CHAIN_ID));
+    LazyLock::new(|| domain_separator_inner(MODERATO_CHAIN_ID));
 
 /// Packed persistent state for one channel.
 ///
@@ -525,7 +525,7 @@ impl TIP20ChannelReserve {
     pub fn domain_separator(&self) -> Result<B256> {
         let hash = match self.storage.chain_id() {
             MAINNET_CHAIN_ID => *DOMAIN_SEPARATOR_MAINNET,
-            TESTNET_CHAIN_ID => *DOMAIN_SEPARATOR_TESTNET,
+            MODERATO_CHAIN_ID => *DOMAIN_SEPARATOR_TESTNET,
             chain_id => domain_separator_inner(chain_id),
         };
 
