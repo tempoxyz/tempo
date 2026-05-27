@@ -942,7 +942,8 @@ where
         if announcement.is_empty() {
             return;
         }
-        announcement.retain_by_hash(|tx| self.contains(tx))
+        let aa_pool = self.aa_2d_pool.read();
+        announcement.retain_by_hash(|tx| self.protocol_pool.contains(tx) || aa_pool.contains(tx))
     }
 
     fn contains(&self, tx_hash: &B256) -> bool {
