@@ -51,6 +51,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
+        mpsc,
     },
     time::{Duration, Instant},
 };
@@ -68,6 +69,9 @@ use tempo_transaction_pool::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
+
+type BoxedBestTransactions =
+    Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>>;
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
@@ -233,9 +237,22 @@ where
         &self,
         args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
+        let best_txs = self.spawn_best_transactions();
+        let pool = self.pool.clone();
+
         self.build_payload(
             args,
-            |attributes| self.pool.best_transactions_with_attributes(attributes),
+            move |_| match best_txs.recv() {
+                Ok(best_txs) => best_txs,
+                Err(err) => {
+                    warn!(
+                        target: "payload_builder",
+                        %err,
+                        "prefetched best transactions unavailable; fetching on builder thread"
+                    );
+                    pool.best_transactions()
+                }
+            },
             false,
         )
     }
@@ -273,6 +290,18 @@ where
     Provider:
         StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
 {
+    fn spawn_best_transactions(&self) -> mpsc::Receiver<BoxedBestTransactions> {
+        let pool = self.pool.clone();
+        let (best_txs_tx, best_txs_rx) = mpsc::sync_channel(1);
+
+        self.executor.prewarming_pool().spawn(move || {
+            let best_txs = pool.best_transactions();
+            let _ = best_txs_tx.send(best_txs);
+        });
+
+        best_txs_rx
+    }
+
     #[instrument(
         target = "payload_builder",
         skip_all,
