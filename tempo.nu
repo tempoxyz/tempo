@@ -1089,10 +1089,13 @@ def generate-summary [
         let counter_metric_values = { |metric: string, scale: float|
             do $require_counter_values (do $counter_delta_values $metric_samples $metric $scale) $label $metric
         }
+        let optional_counter_metric_values = { |metric: string, scale: float|
+            do $counter_delta_values $metric_samples $metric $scale
+        }
         let builder_latency_values = (do $counter_metric_values "reth_tempo_payload_builder_payload_build_duration_seconds" 1000.0)
         let builder_finish_samples = (do $counter_metric_values "reth_tempo_payload_builder_payload_finalization_duration_seconds" 1000.0)
-        let builder_included_tx_samples = (do $counter_metric_values "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds" 1000.0)
-        let builder_invalid_tx_samples = (do $counter_metric_values "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds" 1000.0)
+        let builder_included_tx_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_total_normal_included_transaction_execution_duration_seconds" 1000.0)
+        let builder_invalid_tx_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_total_normal_invalid_transaction_execution_duration_seconds" 1000.0)
         let builder_invalid_tx_execution_attempts_samples = (do $counter_metric_values "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts" 1.0)
         let builder_pool_tx_skip_samples = ($metric_samples | where name == "reth_tempo_payload_builder_pool_transactions_skipped_total")
         let builder_pool_tx_skips_for_reason = { |reason: string|
@@ -1104,7 +1107,7 @@ def generate-summary [
         }
         let builder_invalid_tx_skips = do $builder_pool_tx_skips_for_reason "invalid_tx"
         let builder_nonce_too_low_skips = do $builder_pool_tx_skips_for_reason "nonce_too_low"
-        let builder_fill_overhead_samples = (do $counter_metric_values "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds" 1000.0)
+        let builder_fill_overhead_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_normal_transaction_fill_overhead_duration_seconds" 1000.0)
         let builder_fill_idle_samples = (do $counter_metric_values "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds" 1000.0)
         let validation_latency_values = (do $counter_metric_values "reth_consensus_engine_beacon_new_payload_latency" 1000.0)
         let builder_gas_values = (do $counter_metric_values "reth_tempo_payload_builder_gas_per_second" 1.0)
