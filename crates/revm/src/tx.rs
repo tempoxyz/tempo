@@ -318,11 +318,14 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
     fn from_recovered_tx(aa_signed: &AASigned, caller: Address) -> Self {
         let tx = aa_signed.tx();
         let signature = aa_signed.signature();
+        let signature_hash = aa_signed.signature_hash();
+        let tx_hash = *aa_signed.hash();
+        let subblock_transaction = tx.subblock_proposer().is_some();
 
         // Populate the key_id cache for Keychain signatures before cloning
         // This parallelizes recovery during Tx->TxEnv conversion, and the cache is preserved when cloned
         if let Some(keychain_sig) = signature.as_keychain() {
-            let _ = keychain_sig.key_id(&aa_signed.signature_hash());
+            let _ = keychain_sig.key_id(&signature_hash);
         }
 
         let TempoTransaction {
@@ -399,10 +402,10 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                     .map(|auth| RecoveredTempoAuthorization::recover(auth.clone()))
                     .collect(),
                 nonce_key: *nonce_key,
-                subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
+                subblock_transaction,
                 key_authorization: key_authorization.clone(),
-                signature_hash: aa_signed.signature_hash(),
-                tx_hash: *aa_signed.hash(),
+                signature_hash,
+                tx_hash,
                 // override_key_id is only used for gas estimation, not actual execution
                 override_key_id: None,
                 // can only be derived when given an entire block
