@@ -780,6 +780,7 @@ impl TIP20Token {
     /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     /// - `InsufficientBalance` — sender balance lower than transfer amount
+    #[inline]
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         let Some(to) =
@@ -1030,6 +1031,7 @@ impl TIP20Token {
     ///
     /// Returns `Some(to)` when the caller should perform the normal transfer.
     /// Returns `None` when funds were blocked, and the caller should return immediately.
+    #[inline]
     fn validate_transfer(
         &mut self,
         spender: Option<Address>,
@@ -1098,6 +1100,7 @@ impl TIP20Token {
     /// [TIP-1015]: For T2+, uses directional sender/recipient checks.
     ///
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
+    #[inline]
     pub fn is_transfer_authorized(&self, from: Address, to: Address) -> Result<bool> {
         let policy_id = self.transfer_policy_id()?;
         let registry = TIP403Registry::new();
@@ -1115,6 +1118,7 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `PolicyForbids` — sender or recipient is not authorized by the active transfer policy
+    #[inline]
     pub fn ensure_transfer_authorized(&self, from: Address, to: Address) -> Result<()> {
         if !self.is_transfer_authorized(from, to)? {
             return Err(TIP20Error::policy_forbids().into());
@@ -1147,6 +1151,7 @@ impl TIP20Token {
     ///
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
+    #[inline]
     pub(crate) fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
         let from_balance = self.get_balance(from)?;
         if amount > from_balance {
@@ -1401,6 +1406,7 @@ impl Recipient {
     ///
     /// If `addr` is a virtual address its registered master is looked up and stored in `target`,
     /// with the original virtual address preserved in `virtual_addr`.
+    #[inline]
     pub(crate) fn resolve(addr: Address) -> Result<Self> {
         let effective = AddressRegistry::new().resolve_recipient(addr)?;
         Ok(if effective == addr {
@@ -1416,6 +1422,7 @@ impl Recipient {
     /// Validates that the recipient is not:
     /// - the zero address (preventing accidental burns)
     /// - an address with the TIP-20 prefix (preventing transfers to token contracts)
+    #[inline]
     pub(crate) fn validate(&self) -> Result<()> {
         if self.target.is_zero() || self.target.is_tip20() {
             return Err(TIP20Error::invalid_recipient().into());
@@ -1427,12 +1434,14 @@ impl Recipient {
     ///
     /// For virtual recipients `to` is the virtual address (first hop); for regular
     /// recipients this is the only `Transfer` event needed.
+    #[inline]
     pub(crate) fn build_transfer_event(&self, from: Address, amount: U256) -> TIP20Event {
         TIP20Event::transfer(from, self.virtual_addr.unwrap_or(self.target), amount)
     }
 
     /// Builds the forwarding `Transfer(virtual, master, amount)` event for virtual recipients.
     /// Returns `None` for non-virtual recipients.
+    #[inline]
     pub(crate) fn build_virtual_transfer_event(&self, amount: U256) -> Option<TIP20Event> {
         self.virtual_addr
             .map(|virtual_addr| TIP20Event::transfer(virtual_addr, self.target, amount))
