@@ -688,7 +688,8 @@ impl AA2dPool {
     /// Removes the transaction by its hash from all internal sets.
     ///
     /// This batches demotion by seq_id to avoid O(N*N) complexity when removing many
-    /// transactions from the same sequence.
+    /// transactions from the same sequence. Transactions below the current independent
+    /// nonce do not create a new gap, so they are skipped when selecting demotion points.
     pub(crate) fn remove_transactions<'a, I>(
         &mut self,
         tx_hashes: I,
@@ -701,7 +702,7 @@ impl AA2dPool {
 
         for tx_hash in tx_hashes {
             if let Some((tx, seq_id)) = self.remove_transaction_by_hash_no_demote(tx_hash) {
-                if let Some(id) = seq_id {
+                if let Some(id) = seq_id.filter(|id| self.removal_creates_nonce_gap(id)) {
                     seq_ids_to_demote
                         .entry(id.seq_id)
                         .and_modify(|min_nonce| {
@@ -725,8 +726,9 @@ impl AA2dPool {
 
     /// Removes the transaction by its hash from all internal sets.
     ///
-    /// This does __not__ shift the independent transaction forward but it does demote descendants
-    /// to queued status since removing a transaction creates a nonce gap.
+    /// This does __not__ shift the independent transaction forward. It demotes
+    /// descendants only when removing this transaction creates a gap in the
+    /// current pending chain.
     fn remove_transaction_by_hash(
         &mut self,
         tx_hash: &B256,
@@ -775,21 +777,49 @@ impl AA2dPool {
     /// This should be called after removing a transaction to ensure descendants don't remain
     /// marked as pending when they're no longer executable due to the nonce gap.
     fn demote_descendants(&mut self, id: &AA2dTransactionId) {
-        self.demote_from_nonce(&id.seq_id, id.nonce);
+        if self.removal_creates_nonce_gap(id) {
+            self.demote_from_nonce(&id.seq_id, id.nonce);
+        }
+    }
+
+    /// Returns true if a removed transaction can create a nonce gap in the pending chain.
+    ///
+    /// This is evaluated after removal. If the sequence still has an independent transaction
+    /// with a higher nonce, the removed transaction was already below the executable head.
+    fn removal_creates_nonce_gap(&self, id: &AA2dTransactionId) -> bool {
+        match self.independent_transactions.get(&id.seq_id) {
+            Some(tx) => tx.transaction.nonce() <= id.nonce,
+            None => true,
+        }
     }
 
     /// Demotes all transactions for a seq_id with nonce > min_nonce to queued status.
     ///
     /// This is used both for single-tx removal (demote_descendants) and batch removal
     /// where we want to demote once per seq_id starting from the minimum removed nonce.
-    fn demote_from_nonce(&self, seq_id: &AASequenceId, min_nonce: u64) {
+    ///
+    /// If an already-independent later nonce is demoted, the independent entry must be
+    /// cleared as well so queued transactions cannot be yielded by best-transaction snapshots.
+    fn demote_from_nonce(&mut self, seq_id: &AASequenceId, min_nonce: u64) {
         let start_id = AA2dTransactionId::new(*seq_id, min_nonce);
+        let mut demoted_pending = false;
         for (_, tx) in self
             .by_id
             .range((Excluded(&start_id), Unbounded))
             .take_while(|(other, _)| *seq_id == other.seq_id)
         {
-            tx.set_pending(false);
+            demoted_pending |= tx.set_pending(false);
+        }
+
+        // Demotion may turn the current independent transaction into a queued
+        // transaction, so keep the independent set aligned with the pending flag.
+        if demoted_pending
+            && self
+                .independent_transactions
+                .get(seq_id)
+                .is_some_and(|tx| tx.transaction.nonce() > min_nonce)
+        {
+            self.independent_transactions.remove(seq_id);
         }
     }
 
@@ -4618,6 +4648,69 @@ mod tests {
             TempoHardfork::T1,
         );
         assert!(result.is_ok(), "3rd should succeed after removal");
+
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn removing_expired_stale_ancestor_preserves_higher_nonce_independent_transaction() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let nonce_key = U256::from(1);
+        let seq_id = AASequenceId::new(sender, nonce_key);
+
+        let tx2 = TxBuilder::aa(sender)
+            .nonce_key(nonce_key)
+            .nonce(2)
+            .valid_before(100)
+            .build();
+        let tx2_hash = *tx2.hash();
+
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx2, TransactionOrigin::Local)),
+            2,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let tx3 = TxBuilder::aa(sender).nonce_key(nonce_key).nonce(3).build();
+        let tx3_hash = *tx3.hash();
+
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx3, TransactionOrigin::Local)),
+            3,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        assert_eq!(
+            pool.independent_transactions
+                .get(&seq_id)
+                .unwrap()
+                .transaction
+                .hash(),
+            &tx3_hash,
+            "later insertion should overwrite the independent slot"
+        );
+
+        // Expiry maintenance removes expired transactions by hash.
+        let removed = pool.remove_transactions(std::iter::once(&tx2_hash));
+        assert_eq!(removed.len(), 1);
+
+        assert_eq!(
+            pool.independent_transactions
+                .get(&seq_id)
+                .unwrap()
+                .transaction
+                .hash(),
+            &tx3_hash,
+            "removing a stale lower nonce must not demote the current independent transaction"
+        );
+
+        let (pending, queued) = pool.pending_and_queued_txn_count();
+        assert_eq!(pending, 1);
+        assert_eq!(queued, 0);
+        assert_eq!(pool.best_transactions().next().unwrap().hash(), &tx3_hash);
 
         pool.assert_invariants();
     }
