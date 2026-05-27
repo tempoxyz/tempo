@@ -40,7 +40,7 @@ pub(crate) fn read_active_and_known_peers_at_block_hash(
         {
             if let Ok(decoded) = DecodedValidatorV2::decode_from_contract(raw)
                 && all
-                    .insert(decoded.public_key.clone(), decoded.to_address())
+                    .insert(decoded.public_key.clone(), decoded.to_p2p_address())
                     .is_some()
             {
                 warn!(
@@ -65,7 +65,7 @@ pub(crate) fn read_active_and_known_peers_at_block_hash(
                         "invariant: known peers must have an entry in the \
                         smart contract and be well formed",
                     );
-                all.insert(decoded.public_key.clone(), decoded.to_address());
+                all.insert(decoded.public_key.clone(), decoded.to_p2p_address());
             }
         }
         Ok(ordered::Map::try_from_iter(all).expect("hashmaps don't contain duplicates"))
@@ -159,7 +159,11 @@ impl DecodedValidatorV2 {
         })
     }
 
-    fn to_address(&self) -> commonware_p2p::Address {
+    pub(crate) fn public_key(&self) -> &PublicKey {
+        &self.public_key
+    }
+
+    pub(crate) fn to_p2p_address(&self) -> commonware_p2p::Address {
         // NOTE: commonware takes egress as socket address but only uses the IP part.
         // So setting port to 0 is ok.
         commonware_p2p::Address::Asymmetric {

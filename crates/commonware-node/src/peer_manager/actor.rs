@@ -1,13 +1,19 @@
-use std::{pin::Pin, sync::Arc, time::Duration};
+use std::{
+    collections::{HashMap, hash_map::Entry},
+    pin::Pin,
+    sync::Arc,
+    time::Duration,
+};
 
 use alloy_consensus::{BlockHeader as _, Sealable as _};
+use alloy_primitives::B256;
 use commonware_codec::ReadExt as _;
 use commonware_consensus::{
     marshal::Update,
     types::{Epocher, FixedEpocher, Height},
 };
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_p2p::{AddressableManager, Provider};
+use commonware_p2p::{Address, AddressableManager, AddressableTrackedPeers, Provider};
 use commonware_runtime::{Clock, ContextCell, Metrics, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, ordered};
 use eyre::{OptionExt as _, WrapErr as _};
@@ -16,10 +22,14 @@ use prometheus_client::metrics::gauge::Gauge;
 use reth_provider::{BlockIdReader as _, HeaderProvider as _};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::TempoFullNode;
+use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::TempoHeader;
-use tracing::{Span, debug, error, info_span, instrument};
+use tracing::{Span, debug, error, info_span, instrument, warn};
 
-use crate::validators::read_active_and_known_peers_at_block_hash;
+use crate::{
+    utils::public_key_to_b256,
+    validators::{DecodedValidatorV2, read_validator_config_at_block_hash},
+};
 
 /// The interval on which the peer set is update during bootstrapping.
 /// Aggressive timing to get started.
@@ -215,28 +225,21 @@ where
                     )
                 })?;
 
-        let peers_as_per_dkg = ordered::Set::from_iter_dedup(
-            onchain_outcome
-                .players()
-                .iter()
-                .cloned()
-                .chain(onchain_outcome.next_players().iter().cloned()),
-        );
+        let peers = PeersBuilder::with_dkg_outcome(&onchain_outcome)
+            .resolve_at_hash(&self.execution_node, highest_finalized_header.hash_slow())
+            .wrap_err("failed reading peer set from execution layer")?;
+
         debug!(
-            ?peers_as_per_dkg,
             boundary.height = latest_boundary_header.number(),
             boundary.hash = %latest_boundary_header.hash_slow(),
             highest_finalized.height = highest_finalized_header.number(),
             highest_finalized.hash = %highest_finalized_header.hash_slow(),
+            ?peers.primary,
+            ?peers.secondary,
             "read active peers from DKG outcome in latest available \
-            boundary header; will now extend with contract information"
+            boundary header and resolved p2p addresses against validator \
+            config contract"
         );
-        let peers = read_active_and_known_peers_at_block_hash(
-            &self.execution_node,
-            &peers_as_per_dkg,
-            highest_finalized_header.hash_slow(),
-        )
-        .wrap_err("unable to read initial peer set from execution layer")?;
 
         self.track_or_overwrite(highest_finalized_header.number(), peers)
             .await;
@@ -244,20 +247,12 @@ where
         Ok(())
     }
 
-    async fn track_or_overwrite(
-        &mut self,
-        height: u64,
-        peers: ordered::Map<PublicKey, commonware_p2p::Address>,
-    ) {
+    async fn track_or_overwrite(&mut self, height: u64, peers: Peers) {
         if let Some(tracked) = &self.last_tracked_peer_set {
-            // Overwrite the addresses if only the addresses are changed.
-            if peers.keys() == tracked.peers.keys() {
-                if peers.values() != tracked.peers.values() {
-                    self.oracle.overwrite(peers.clone()).await;
-                }
-            // Otherwise track the new peers.
-            } else {
-                self.oracle.track(height, peers.clone()).await;
+            match peers.what_has_changed_compared_to(&tracked.peers) {
+                WhatHasChanged::Nothing => {}
+                WhatHasChanged::Addresses => self.oracle.overwrite(peers.to_flat_map()).await,
+                WhatHasChanged::Peers => self.oracle.track(height, peers.clone()).await,
             }
         } else {
             self.oracle.track(height, peers.clone()).await;
@@ -292,10 +287,170 @@ where
     }
 }
 
+enum WhatHasChanged {
+    Nothing,
+    Addresses,
+    Peers,
+}
+
+#[derive(Clone, Debug)]
+struct Peers {
+    primary: ordered::Map<PublicKey, Address>,
+    secondary: ordered::Map<PublicKey, Address>,
+}
+
+impl Peers {
+    fn what_has_changed_compared_to(&self, old: &Peers) -> WhatHasChanged {
+        if old.primary.keys() == self.primary.keys()
+            && old.secondary.keys() == self.secondary.keys()
+        {
+            if old.primary.values() == self.primary.values()
+                && old.secondary.values() == self.secondary.values()
+            {
+                WhatHasChanged::Nothing
+            } else {
+                WhatHasChanged::Addresses
+            }
+        } else {
+            WhatHasChanged::Peers
+        }
+    }
+
+    fn len(&self) -> usize {
+        self.primary.len().saturating_add(self.secondary.len())
+    }
+
+    fn to_flat_map(&self) -> ordered::Map<PublicKey, Address> {
+        ordered::Map::from_iter_dedup(
+            self.primary
+                .iter_pairs()
+                .chain(self.secondary.iter_pairs())
+                .map(|(key, val)| (key.clone(), val.clone())),
+        )
+    }
+}
+
+impl From<Peers> for AddressableTrackedPeers<PublicKey> {
+    fn from(value: Peers) -> Self {
+        Self {
+            primary: value.primary,
+            secondary: value.secondary,
+        }
+    }
+}
+
+struct PeersBuilder {
+    primary: ordered::Set<PublicKey>,
+    secondary: ordered::Set<PublicKey>,
+}
+
+impl PeersBuilder {
+    fn with_dkg_outcome(outcome: &OnchainDkgOutcome) -> Self {
+        let primary = outcome.players().clone();
+        let secondary = ordered::Set::from_iter_dedup(
+            outcome
+                .next_players()
+                .iter()
+                // Performs a binary search since `primary` is a sorted vec
+                // under the hood - so performance of this is fine.
+                .filter(|key| primary.position(key).is_none())
+                .cloned(),
+        );
+        Self { primary, secondary }
+    }
+
+    #[instrument(skip_all, fields(%hash))]
+    fn resolve_at_hash(self, node: &TempoFullNode, hash: B256) -> eyre::Result<Peers> {
+        let Self { primary, secondary } = self;
+        let (_, _, (primary, secondary)) =
+            read_validator_config_at_block_hash(node, hash, |config: &ValidatorConfigV2| {
+                let mut active_validators = HashMap::new();
+                for (i, raw) in config
+                    .get_active_validators()
+                    .wrap_err("failed reading active validator set from contract")?
+                    .into_iter()
+                    .enumerate()
+                {
+                    if let Ok(decoded) =
+                        DecodedValidatorV2::decode_from_contract(raw).inspect_err(|error| {
+                            warn!(
+                                    %error,
+                                    position = i,
+                                    "failed decoding active validator in contract",
+                            )
+                        })
+                        && active_validators
+                            .insert(decoded.public_key().clone(), decoded.to_p2p_address())
+                            .is_some()
+                    {
+                        warn!(
+                            duplicate = %decoded.public_key(),
+                            "found duplicate public keys",
+                        );
+                    }
+                }
+                debug!(
+                    ?active_validators,
+                    "read active validators from contract, now extending with \
+                    historic peers that are still in the peer set but no \
+                    longer marked active",
+                );
+                let primary =
+                    ordered::Map::from_iter_dedup(primary.into_iter().filter_map(|peer| {
+                        active_validators.remove_entry(&peer).or_else(|| {
+                            config
+                                .validator_by_public_key(public_key_to_b256(&peer))
+                                .map_err(eyre::Report::new)
+                                .and_then(DecodedValidatorV2::decode_from_contract)
+                                .inspect_err(|error| {
+                                    warn!(
+                                        %peer,
+                                        %error,
+                                        "this is a problem: a known peer could not \
+                                        be found in the smart contract or was \
+                                        malformed"
+                                    )
+                                })
+                                .map(|decoded| {
+                                    (decoded.public_key().clone(), decoded.to_p2p_address())
+                                })
+                                .ok()
+                        })
+                    }));
+
+                for peer in secondary {
+                    if let Entry::Vacant(slot) = active_validators.entry(peer.clone())
+                        && let Ok(address) = config
+                            .validator_by_public_key(public_key_to_b256(&peer))
+                            .map_err(eyre::Report::new)
+                            .and_then(DecodedValidatorV2::decode_from_contract)
+                            .inspect_err(|error| {
+                                warn!(
+                                    %peer,
+                                    %error,
+                                    "this is a problem: a known peer could not \
+                                    be found in the smart contract or was \
+                                    malformed"
+                                )
+                            })
+                            .map(|decoded| decoded.to_p2p_address())
+                    {
+                        slot.insert_entry(address);
+                    }
+                }
+
+                let secondary = ordered::Map::from_iter_dedup(active_validators.into_iter());
+
+                Ok((primary, secondary))
+            })?;
+        Ok(Peers { primary, secondary })
+    }
+}
+
 #[derive(Debug)]
 struct LastTrackedPeerSet {
     height: u64,
-    peers: ordered::Map<PublicKey, commonware_p2p::Address>,
+    peers: Peers,
 }
 
 #[instrument(skip_all, fields(height), err)]
