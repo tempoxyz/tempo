@@ -84,8 +84,8 @@ const KEY_AUTH_BASE_GAS: u64 = 27_000;
 /// Gas per spending limit in KeyAuthorization
 const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
 
-/// Extra buffer for the second LOG3 emitted by T5 witness-bearing key authorizations.
-const KEY_AUTH_T5_WITNESS_EVENT_BUFFER: u64 = 1_500;
+/// Rounded buffer for each extra LOG3/no-data event emitted by key authorizations.
+const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 
 /// Gas cost for expiring nonce transactions (replay check + insert).
 ///
@@ -366,7 +366,7 @@ fn calculate_key_authorization_gas(
         // T1B+: Accurate gas matching actual precompile storage operations.
         // authorize_key does: 1 SLOAD (read existing key) + 1 SSTORE (write key)
         //   + N SSTOREs (one per spending limit) + 2k buffer (TSTORE + keccak + event)
-        // T5 witness authorizations emit one additional LOG3 event with no data.
+        // T5 witness and T6 admin authorizations emit additional LOG3 events with no data.
         const BUFFER: u64 = 2_000;
         let sload_cost =
             gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
@@ -392,11 +392,15 @@ fn calculate_key_authorization_gas(
         // T6 account-bound authorizations may be signed by an existing admin key instead of the
         // root key. Charge one worst-case cold read for validating that admin signer row.
         if spec.is_t6() && key_auth.account.is_some() {
-            total_gas += sload_cost;
+            regular_gas += sload_cost;
         }
 
         if has_t5_witness {
-            regular_gas += sload_cost + KEY_AUTH_T5_WITNESS_EVENT_BUFFER;
+            regular_gas += sload_cost + KEY_AUTH_EXTRA_EVENT_BUFFER;
+        }
+
+        if spec.is_t6() && key_auth.is_admin() {
+            regular_gas += KEY_AUTH_EXTRA_EVENT_BUFFER;
         }
 
         // T4+: include extra gas for call scopes configuration
@@ -3355,7 +3359,7 @@ mod tests {
 
         assert_eq!(
             witness_t5_gas - base_t5_gas,
-            t5_sload + KEY_AUTH_T5_WITNESS_EVENT_BUFFER,
+            t5_sload + KEY_AUTH_EXTRA_EVENT_BUFFER,
             "T5 witness adds one burned-witness SLOAD and one event"
         );
         assert_eq!(
@@ -3401,12 +3405,18 @@ mod tests {
         );
         assert_eq!(
             admin_t6_gas - base_t6_gas,
-            t6_sload,
-            "T6 account-bound admin authorization charges one admin-signer cold read"
+            t6_sload + KEY_AUTH_EXTRA_EVENT_BUFFER,
+            "T6 account-bound admin authorization charges one admin-signer cold read and one extra event buffer"
         );
         assert_eq!(
-            unbound_admin_t6_gas, base_t6_gas,
-            "T6 root-signed admin authorization without account does not charge admin-signer read"
+            admin_t6_gas - account_bound_t6_gas,
+            KEY_AUTH_EXTRA_EVENT_BUFFER,
+            "T6 admin authorization pays one extra event buffer over non-admin account-bound authorization"
+        );
+        assert_eq!(
+            unbound_admin_t6_gas - base_t6_gas,
+            KEY_AUTH_EXTRA_EVENT_BUFFER,
+            "T6 root-signed admin authorization without account charges only the extra event buffer"
         );
         assert_eq!(
             account_bound_t6_state_gas, base_t6_state_gas,
