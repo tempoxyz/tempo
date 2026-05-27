@@ -730,8 +730,11 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let hardfork = ($run | get -o hardfork | default "")
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
+    let no_extra_args = if $run_type == "baseline" { $ctx.baseline_no_extra_args } else { $ctx.feature_no_extra_args }
     let extra_args = (parse-cli-args $side_args)
-    let local_reth_extra_args = if $ctx.extra_args != "" {
+    let local_reth_extra_args = if $no_extra_args {
+        []
+    } else if $ctx.extra_args != "" {
         parse-cli-args $ctx.extra_args
     } else {
         $E2E_LOCAL_RETH_EXTRA_ARGS
@@ -1042,6 +1045,8 @@ def "main e2e" [
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
     --extra-args: string = ""                           # Override default extra local reth args for both node phases
+    --baseline-no-extra-args                            # Disable extra local reth args for baseline phases
+    --feature-no-extra-args                             # Disable extra local reth args for feature phases
     --bench-args: string = ""                           # Additional txgen generate arguments
     --baseline-env: string = ""                         # Environment vars for baseline node phases
     --feature-env: string = ""                          # Environment vars for feature node phases
@@ -1318,6 +1323,8 @@ def "main e2e" [
         baseline_args: $baseline_args
         feature_args: $feature_args
         extra_args: $extra_args
+        baseline_no_extra_args: $baseline_no_extra_args
+        feature_no_extra_args: $feature_no_extra_args
         bench_args: $bench_args
         baseline_env: $baseline_env
         feature_env: $feature_env
