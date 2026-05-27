@@ -25,12 +25,50 @@ const E2E_LOCAL_RETH_ARGS = [
     "--disable-discovery"
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
-    "--consensus.no-legacy-archive"
     "--builder.max-tasks" "1"
     "--engine.share-sparse-trie-with-payload-builder"
     "--engine.share-execution-cache-with-payload-builder"
     "--builder.enable-prewarming"
+    "--consensus.no-legacy-archive"
 ]
+
+def supported-node-args [tempo_bin: string, args: list<string>] {
+    let help = (run-external $tempo_bin "node" "--help" | complete)
+    if $help.exit_code != 0 {
+        print $"Warning: failed to inspect supported node args for ($tempo_bin); skipping optional args"
+        return []
+    }
+    mut supported = []
+    mut idx = 0
+    while $idx < ($args | length) {
+        let arg = ($args | get $idx)
+        if not ($arg | str starts-with "--") {
+            $supported = ($supported | append $arg)
+            $idx = $idx + 1
+            continue
+        }
+        if not ($help.stdout | str contains $arg) {
+            let next = ($args | get -o ($idx + 1) | default "")
+            if $next != "" and not ($next | str starts-with "--") {
+                $idx = $idx + 2
+            } else {
+                $idx = $idx + 1
+            }
+            continue
+        }
+        $supported = ($supported | append $arg)
+        $idx = $idx + 1
+    }
+    $supported
+}
+
+def tempo-command-supported [tempo_bin: string, command: string] {
+    let help = (run-external $tempo_bin "--help" | complete)
+    if $help.exit_code != 0 {
+        return false
+    }
+    $help.stdout | str contains $command
+}
 
 def run-bench-schelk [...args: string] {
     let result = (nu $BENCH_SCHELK_SCRIPT ...$args | complete)
@@ -347,6 +385,11 @@ def e2e-regenesis [
     }
     if not $gas_limit_matches {
         $changes = ($changes | append $"gas_limit=($current_gas_limit) -> ($target_gas_limit)")
+    }
+    if not (tempo-command-supported $tempo_bin "regenesis") {
+        print $"Error: tempo binary ($tempo_bin) does not support regenesis, but snapshot metadata needs (($changes | str join ', '))."
+        print "Use a gas-limit/hardfork matching the existing snapshot, or rerun with --force-bloat to regenerate snapshots."
+        exit 1
     }
     print $"Running tempo regenesis for ($datadir): ($changes | str join ', ') with ($target_genesis)..."
     let result = (run-external $tempo_bin "regenesis" "--chain" $target_genesis "--datadir" $datadir | complete)
@@ -781,14 +824,14 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let b_rpc = "http://127.0.0.1:8645"
     let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
         | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
-        | append $E2E_LOCAL_RETH_ARGS
+        | append (supported-node-args $run.tempo $E2E_LOCAL_RETH_ARGS)
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
         | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
-        | append $E2E_LOCAL_RETH_ARGS
+        | append (supported-node-args $run.tempo $E2E_LOCAL_RETH_ARGS)
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
