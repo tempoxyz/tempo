@@ -77,6 +77,10 @@ impl TIP20Token {
     /// Rewards are accumulated in the delegated recipient's rewardBalance.
     /// Returns the holder's delegated recipient address.
     pub fn update_rewards(&mut self, holder: Address) -> Result<Address> {
+        Ok(self.update_rewards_info(holder)?.reward_recipient)
+    }
+
+    fn update_rewards_info(&mut self, holder: Address) -> Result<UserRewardInfo> {
         let mut info = self.user_reward_info[holder].read()?;
 
         let cached_delegate = info.reward_recipient;
@@ -113,7 +117,7 @@ impl TIP20Token {
             self.user_reward_info[holder].write(info)?;
         }
 
-        Ok(cached_delegate)
+        Ok(info)
     }
 
     /// Sets or changes the reward recipient for a token holder.
@@ -189,9 +193,7 @@ impl TIP20Token {
         self.check_not_paused()?;
         self.ensure_transfer_authorized(self.address, msg_sender)?;
 
-        self.update_rewards(msg_sender)?;
-
-        let mut info = self.user_reward_info[msg_sender].read()?;
+        let mut info = self.update_rewards_info(msg_sender)?;
         let amount = info.reward_balance;
         let contract_address = self.address;
         let contract_balance = self.get_balance(contract_address)?;
@@ -356,7 +358,7 @@ impl TIP20Token {
 }
 
 /// Per-user reward tracking state for the opt-in staking rewards system.
-#[derive(Debug, Clone, Storable)]
+#[derive(Debug, Clone, Copy, Storable)]
 pub struct UserRewardInfo {
     /// Address that receives this user's accrued rewards (`Address::ZERO` = opted out).
     pub reward_recipient: Address,
