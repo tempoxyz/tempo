@@ -944,6 +944,7 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `InvalidToken` — address does not carry the `0x20C0` TIP-20 prefix
+    #[inline(always)]
     pub fn from_address(address: Address) -> Result<Self> {
         if !address.is_tip20() {
             return Err(TIP20Error::invalid_token().into());
@@ -955,7 +956,7 @@ impl TIP20Token {
     ///
     /// # Safety
     /// Caller must ensure `is_tip20_prefix(address)` returns true.
-    #[inline]
+    #[inline(always)]
     pub fn from_address_unchecked(address: Address) -> Self {
         debug_assert!(address.is_tip20(), "address must have TIP20 prefix");
         Self::__new(address)
