@@ -808,6 +808,10 @@ where
         let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
+            if can_execute_aa_as_single_call(tempo_tx_env) {
+                return self.execute_single_call(evm, gas_limit, reservoir);
+            }
+
             let calls = tempo_tx_env.aa_calls.clone();
             self.execute_multi_call(evm, gas_limit, reservoir, calls)
         } else {
@@ -2158,6 +2162,10 @@ where
         let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
+            if can_execute_aa_as_single_call(tempo_tx_env) {
+                return self.inspect_execute_single_call(evm, gas_limit, reservoir);
+            }
+
             let calls = tempo_tx_env.aa_calls.clone();
             self.inspect_execute_multi_call(evm, gas_limit, reservoir, calls)
         } else {
@@ -2196,6 +2204,16 @@ fn check_gas_limit(
         return Some(oog_frame_result(kind, tx.gas_limit()));
     }
     None
+}
+
+#[inline]
+fn can_execute_aa_as_single_call(tempo_tx_env: &TempoBatchCallEnv) -> bool {
+    tempo_tx_env.aa_calls.len() == 1
+        && !tempo_tx_env.signature.is_keychain()
+        && tempo_tx_env
+            .aa_calls
+            .first()
+            .is_some_and(|call| call.to.is_call())
 }
 
 /// Validates time window for AA transactions
