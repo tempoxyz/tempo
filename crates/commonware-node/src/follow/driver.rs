@@ -126,13 +126,13 @@ pub(super) struct Config {
 
 #[derive(Debug)]
 enum Message {
-    Event(Event),
+    Event(Box<Event>),
     Finalized(marshal::Update<Block>),
 }
 
 impl From<Event> for Message {
     fn from(value: Event) -> Self {
-        Self::Event(value)
+        Self::Event(Box::new(value))
     }
 }
 
@@ -212,7 +212,7 @@ where
                     match message {
                         Message::Event(event) => {
                             // Emits an event on error.
-                            let _: Result<_, _> = self.process_event(event).await;
+                            let _: Result<_, _> = self.process_event(*event).await;
                         }
                         Message::Finalized(update) => {
                             self.process_update(update).await;
