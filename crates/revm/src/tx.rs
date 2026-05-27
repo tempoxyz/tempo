@@ -93,6 +93,9 @@ pub struct TempoTxEnv {
     /// - None corresponds to a transaction without a fee payer
     pub fee_payer: Option<Option<Address>>,
 
+    /// Cached TIP-1059 discounted-payment shape for recovered transactions.
+    pub cached_discounted_payment: Option<bool>,
+
     /// AA-specific transaction environment (boxed to keep TempoTxEnv lean for non-AA tx)
     pub tempo_tx_env: Option<Box<TempoBatchCallEnv>>,
 }
@@ -170,6 +173,16 @@ impl TempoTxEnv {
     ///
     /// See: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#eligibility-rules>
     pub fn is_discounted_payment(&self) -> bool {
+        self.cached_discounted_payment
+            .unwrap_or_else(|| self.compute_is_discounted_payment())
+    }
+
+    fn with_discounted_payment_cache(mut self) -> Self {
+        self.cached_discounted_payment = Some(self.compute_is_discounted_payment());
+        self
+    }
+
+    fn compute_is_discounted_payment(&self) -> bool {
         if self
             .access_list()
             .is_some_and(|mut list| list.next().is_some())
@@ -305,6 +318,7 @@ impl TransactionEnvMut for TempoTxEnv {
 
     fn set_access_list(&mut self, access_list: AccessList) {
         self.inner.set_access_list(access_list);
+        self.cached_discounted_payment = None;
     }
 }
 
@@ -387,6 +401,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             fee_payer: fee_payer_signature.map(|sig| {
                 secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
             }),
+            cached_discounted_payment: None,
             // Bundle AA-specific fields into TempoBatchCallEnv
             tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
                 signature: signature.clone(),
@@ -409,6 +424,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 expiring_nonce_idx: None,
             })),
         }
+        .with_discounted_payment_cache()
     }
 }
 
@@ -421,23 +437,28 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
                 is_system_tx: tx.is_system_tx(),
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
                 fee_payer: None,
+                cached_discounted_payment: None,
                 tempo_tx_env: None, // Non-AA transaction
-            },
+            }
+            .with_discounted_payment_cache(),
             TempoTxEnvelope::Eip2930(inner) => Self {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
                 ..Default::default()
-            },
+            }
+            .with_discounted_payment_cache(),
             TempoTxEnvelope::Eip1559(inner) => Self {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
                 ..Default::default()
-            },
+            }
+            .with_discounted_payment_cache(),
             TempoTxEnvelope::Eip7702(inner) => Self {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
                 unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
                 ..Default::default()
-            },
+            }
+            .with_discounted_payment_cache(),
             TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx, sender),
         }
     }

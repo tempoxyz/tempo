@@ -141,6 +141,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
             is_system_tx: false,
             unique_tx_identifier: Some(RPC_SIMULATION_UNIQUE_TX_IDENTIFIER),
             fee_payer,
+            cached_discounted_payment: None,
             tempo_tx_env: if !calls.is_empty()
                 || !tempo_authorization_list.is_empty()
                 || nonce_key.is_some()
