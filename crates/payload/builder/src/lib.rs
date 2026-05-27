@@ -1090,7 +1090,7 @@ where
             crossbeam_channel::unbounded::<(BuilderTx, TempoReceipt)>();
         let (result_tx, result_rx) = oneshot::channel();
 
-        self.executor.spawn_blocking_named("transactions-root", || {
+        self.executor.spawn_blocking_named("builder-roots-task", || {
             let mut transactions = Vec::new();
             let mut senders = Vec::new();
 
