@@ -781,7 +781,6 @@ impl TIP20Token {
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     /// - `InsufficientBalance` — sender balance lower than transfer amount
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
-        trace!(%msg_sender, ?call, "transferring TIP20");
         let Some(to) =
             self.validate_transfer(None, msg_sender, call.to, call.amount, B256::ZERO)?
         else {
