@@ -35,7 +35,7 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached cost of the transaction in the fee token.
     fee_token_cost: U256,
-    /// Cached payment classification for efficient block building
+    /// Cached T5+ payment classification for efficient block building.
     is_payment: bool,
     /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
     expiring_nonce_hash: Option<B256>,
@@ -132,7 +132,7 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns whether this is a payment transaction according to the builder criteria.
+    /// Returns whether this is a payment transaction according to the T5+ builder criteria.
     pub fn is_payment(&self) -> bool {
         self.is_payment
     }

@@ -518,8 +518,6 @@ where
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut skipped_oversized_block = false;
-        let mut normal_included_transaction_execution_elapsed = Duration::ZERO;
-        let mut normal_invalid_transaction_execution_elapsed = Duration::ZERO;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         let payload_build_budget = attributes.payload_build_budget();
@@ -598,7 +596,7 @@ where
             }
 
             let is_payment = if hardfork.is_t5() {
-                pool_tx.transaction.inner().is_payment_v2()
+                pool_tx.transaction.is_payment()
             } else {
                 pool_tx.transaction.inner().is_payment_v1()
             };
@@ -642,7 +640,6 @@ where
                 .then(|| format!("{:?}", pool_tx.transaction))
                 .unwrap_or_default();
 
-            let tx_execution_start = Instant::now();
             let tx_with_env = pool_tx.transaction.clone_into_with_tx_env();
             let execution_result =
                 builder.execute_transaction_with_result_closure(tx_with_env, |result| {
@@ -659,8 +656,6 @@ where
                     // Notify transactions iterator about the new state.
                     best_txs.on_new_result(result);
                 });
-            let elapsed = tx_execution_start.elapsed();
-
             if let Err(err) = execution_result {
                 if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,
@@ -668,10 +663,6 @@ where
                 }) = &err
                 {
                     invalid_pool_transaction_execution_attempts += 1;
-                    normal_invalid_transaction_execution_elapsed += elapsed;
-                    self.metrics
-                        .normal_invalid_transaction_execution_duration_seconds
-                        .record(elapsed);
 
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
@@ -694,11 +685,7 @@ where
                     return Err(PayloadBuilderError::evm(err));
                 }
             };
-            normal_included_transaction_execution_elapsed += elapsed;
-            self.metrics
-                .normal_included_transaction_execution_duration_seconds
-                .record(elapsed);
-            trace!(?elapsed, "Transaction executed");
+            trace!("Transaction executed");
 
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
@@ -710,20 +697,9 @@ where
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
         let normal_transaction_fill_elapsed = execution_start.elapsed();
-        let normal_transaction_execution_elapsed = normal_included_transaction_execution_elapsed
-            + normal_invalid_transaction_execution_elapsed;
-        let normal_transaction_fill_overhead_elapsed = normal_transaction_fill_elapsed
-            .saturating_sub(normal_transaction_execution_elapsed)
-            .saturating_sub(normal_transaction_fill_idle_elapsed);
         self.metrics
             .normal_transaction_fill_idle_duration_seconds
             .record(normal_transaction_fill_idle_elapsed);
-        self.metrics
-            .normal_transaction_fill_overhead_duration_seconds
-            .record(normal_transaction_fill_overhead_elapsed);
-        self.metrics
-            .total_normal_invalid_transaction_execution_duration_seconds
-            .record(normal_invalid_transaction_execution_elapsed);
         self.metrics
             .payment_transactions
             .record(payment_transactions as f64);
@@ -815,14 +791,6 @@ where
         self.metrics
             .system_transactions_execution_duration_seconds
             .record(system_txs_execution_elapsed);
-
-        let total_included_transaction_execution_elapsed =
-            normal_included_transaction_execution_elapsed
-                + total_subblock_transaction_execution_elapsed
-                + system_txs_execution_elapsed;
-        self.metrics
-            .total_normal_included_transaction_execution_duration_seconds
-            .record(total_included_transaction_execution_elapsed);
 
         let payload_finalization_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
@@ -1005,14 +973,9 @@ where
             subblock_transactions,
             total_transactions,
             ?elapsed,
-            tx_exec = ?normal_transaction_execution_elapsed,
-            tx_exec_included = ?normal_included_transaction_execution_elapsed,
-            tx_exec_invalid = ?normal_invalid_transaction_execution_elapsed,
-            tx_exec_included_total = ?total_included_transaction_execution_elapsed,
             ?validation_work_duration,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
-            ?normal_transaction_fill_overhead_elapsed,
             ?total_subblock_transaction_execution_elapsed,
             ?sparse_trie_state_root_wait_elapsed,
             ?builder_finish_elapsed,

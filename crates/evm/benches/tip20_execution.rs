@@ -38,8 +38,20 @@ use revm::{
     context::{BlockEnv, CfgEnv, JournalTr},
     database::{CacheDB, DbAccount, EmptyDB},
 };
-use std::{collections::BTreeSet, fs, hint::black_box, num::NonZeroU64, path::Path, sync::Arc};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};
+use std::{
+    collections::BTreeSet,
+    fs,
+    hint::black_box,
+    num::NonZeroU64,
+    path::Path,
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+    spec::TEMPO_T1_BASE_FEE,
+};
 use tempo_contracts::precompiles::ITIP20;
 use tempo_evm::{
     TempoBlockEnv, TempoBlockExecutionCtx, TempoEvmConfig, TempoEvmFactory, evm::TempoEvm,
@@ -274,8 +286,37 @@ impl HashedPostStateProvider for InMemoryStateProvider {
     }
 }
 
-fn bench_env(block_timestamp: u64) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
-    let spec = TempoHardfork::T5;
+fn current_active_hardfork() -> TempoHardfork {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("system clock is before UNIX_EPOCH")
+        .as_secs();
+    TempoChainSpec::mainnet().tempo_hardfork_at(now)
+}
+
+fn latest_known_hardfork() -> TempoHardfork {
+    *TempoHardfork::VARIANTS
+        .last()
+        .expect("TempoHardfork must define at least one variant")
+}
+
+fn hardfork_bench_cases() -> Vec<(&'static str, TempoHardfork)> {
+    let current = current_active_hardfork();
+    let latest = latest_known_hardfork();
+    let mut cases = vec![("current", current)];
+
+    if latest != current {
+        cases.push(("latest", latest));
+    }
+
+    cases
+}
+
+fn bench_env(
+    hardfork: TempoHardfork,
+    block_timestamp: u64,
+) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
+    let spec = hardfork;
     let amsterdam_eip8037_enabled = false;
     let mut cfg_env = CfgEnv::default();
     cfg_env.chain_id = CHAIN_ID;
@@ -303,11 +344,14 @@ fn seed_in_memory_cache_db(
     participants: &[Address],
     block_timestamp: u64,
     reward_seed: Option<(&[Address], RewardBenchKind)>,
+    hardfork: TempoHardfork,
 ) -> CacheDB<EmptyDB> {
     // This setup database only materializes the benchmark fixture in memory. The measured
     // execution path below uses Reth's fixed-cache execution provider, not CacheDB.
-    let mut evm = TempoEvmFactory::default()
-        .create_evm(CacheDB::new(EmptyDB::default()), bench_env(block_timestamp));
+    let mut evm = TempoEvmFactory::default().create_evm(
+        CacheDB::new(EmptyDB::default()),
+        bench_env(hardfork, block_timestamp),
+    );
     let admin = participants
         .first()
         .copied()
@@ -363,8 +407,9 @@ fn setup_fixed_cache_state(
     participants: &[Address],
     block_timestamp: u64,
     reward_seed: Option<(&[Address], RewardBenchKind)>,
+    hardfork: TempoHardfork,
 ) -> ExecutionFixture {
-    let seeded = seed_in_memory_cache_db(participants, block_timestamp, reward_seed);
+    let seeded = seed_in_memory_cache_db(participants, block_timestamp, reward_seed, hardfork);
     let state_cache = seeded.cache;
     let execution_cache = ExecutionCache::new(EXECUTION_CACHE_BYTES);
 
@@ -803,11 +848,13 @@ fn execute_txs<DB>(
     db: DB,
     txs: &[Recovered<TempoTxEnvelope>],
     block_timestamp: u64,
+    hardfork: TempoHardfork,
 ) -> ExecutionStats
 where
     DB: StateDB,
 {
-    let evm: TempoEvm<_, _> = TempoEvmFactory::default().create_evm(db, bench_env(block_timestamp));
+    let evm: TempoEvm<_, _> =
+        TempoEvmFactory::default().create_evm(db, bench_env(hardfork, block_timestamp));
     let ctx = TempoBlockExecutionCtx {
         inner: EthBlockExecutionCtx {
             parent_hash: B256::ZERO,
@@ -854,61 +901,36 @@ where
 
 fn tip20_execution(c: &mut Criterion) {
     let workload = workload();
+    let hardfork_cases = hardfork_bench_cases();
     let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
-    let fixture = setup_fixed_cache_state(&workload.participants, workload.block_timestamp, None);
-    execute_txs(
-        &config,
-        fixture.prewarm_state_db(),
-        &workload.transactions,
-        workload.block_timestamp,
-    );
 
-    let mut group = c.benchmark_group("tip20_execution");
-    group.throughput(Throughput::Elements(workload.transactions.len() as u64));
-    group.bench_function("txgen_tip20_pure_execution", |b| {
-        b.iter_batched(
-            || fixture.state_db(),
-            |db| {
-                let stats = execute_txs(
-                    &config,
-                    db,
-                    &workload.transactions,
-                    workload.block_timestamp,
-                );
-                black_box(stats.gas_used);
-            },
-            BatchSize::SmallInput,
-        )
-    });
-    group.finish();
-
-    let reward_workloads = reward_bench_workloads();
-    for reward_workload in reward_workloads {
+    for &(label, hardfork) in &hardfork_cases {
         let fixture = setup_fixed_cache_state(
-            &reward_workload.participants,
-            DEFAULT_BLOCK_TIMESTAMP,
-            Some((&reward_workload.delegates, reward_workload.kind)),
+            &workload.participants,
+            workload.block_timestamp,
+            None,
+            hardfork,
         );
         execute_txs(
             &config,
             fixture.prewarm_state_db(),
-            &reward_workload.transactions,
-            DEFAULT_BLOCK_TIMESTAMP,
+            &workload.transactions,
+            workload.block_timestamp,
+            hardfork,
         );
 
-        let mut group = c.benchmark_group("tip20_rewards");
-        group.throughput(Throughput::Elements(
-            reward_workload.transactions.len() as u64
-        ));
-        group.bench_function(reward_workload.name, |b| {
+        let mut group = c.benchmark_group(format!("{label}/tip20_execution"));
+        group.throughput(Throughput::Elements(workload.transactions.len() as u64));
+        group.bench_function("txgen_tip20_pure_execution", |b| {
             b.iter_batched(
                 || fixture.state_db(),
                 |db| {
                     let stats = execute_txs(
                         &config,
                         db,
-                        &reward_workload.transactions,
-                        DEFAULT_BLOCK_TIMESTAMP,
+                        &workload.transactions,
+                        workload.block_timestamp,
+                        hardfork,
                     );
                     black_box(stats.gas_used);
                 },
@@ -916,6 +938,47 @@ fn tip20_execution(c: &mut Criterion) {
             )
         });
         group.finish();
+    }
+
+    let reward_workloads = reward_bench_workloads();
+    for &(label, hardfork) in &hardfork_cases {
+        for reward_workload in &reward_workloads {
+            let fixture = setup_fixed_cache_state(
+                &reward_workload.participants,
+                DEFAULT_BLOCK_TIMESTAMP,
+                Some((&reward_workload.delegates, reward_workload.kind)),
+                hardfork,
+            );
+            execute_txs(
+                &config,
+                fixture.prewarm_state_db(),
+                &reward_workload.transactions,
+                DEFAULT_BLOCK_TIMESTAMP,
+                hardfork,
+            );
+
+            let mut group = c.benchmark_group(format!("{label}/tip20_rewards"));
+            group.throughput(Throughput::Elements(
+                reward_workload.transactions.len() as u64
+            ));
+            group.bench_function(reward_workload.name, |b| {
+                b.iter_batched(
+                    || fixture.state_db(),
+                    |db| {
+                        let stats = execute_txs(
+                            &config,
+                            db,
+                            &reward_workload.transactions,
+                            DEFAULT_BLOCK_TIMESTAMP,
+                            hardfork,
+                        );
+                        black_box(stats.gas_used);
+                    },
+                    BatchSize::SmallInput,
+                )
+            });
+            group.finish();
+        }
     }
 }
 
