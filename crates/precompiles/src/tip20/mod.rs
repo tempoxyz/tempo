@@ -1155,7 +1155,19 @@ impl TIP20Token {
             );
         }
 
-        self.handle_rewards_on_transfer(from, to.target, amount)?;
+        let to_balance = if to.target != Address::ZERO && to.target != from {
+            Some(self.get_balance(to.target)?)
+        } else {
+            None
+        };
+
+        self.handle_rewards_on_transfer_with_balances(
+            from,
+            to.target,
+            amount,
+            from_balance,
+            to_balance,
+        )?;
 
         // Adjust balances
         let new_from_balance = from_balance
@@ -1165,7 +1177,10 @@ impl TIP20Token {
         self.set_balance(from, new_from_balance)?;
 
         if to.target != Address::ZERO {
-            let to_balance = self.get_balance(to.target)?;
+            let to_balance = match to_balance {
+                Some(balance) => balance,
+                None => self.get_balance(to.target)?,
+            };
             let new_to_balance = to_balance
                 .checked_add(amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;

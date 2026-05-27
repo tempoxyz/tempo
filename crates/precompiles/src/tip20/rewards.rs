@@ -77,6 +77,14 @@ impl TIP20Token {
     /// Rewards are accumulated in the delegated recipient's rewardBalance.
     /// Returns the holder's delegated recipient address.
     pub fn update_rewards(&mut self, holder: Address) -> Result<Address> {
+        self.update_rewards_with_balance(holder, None)
+    }
+
+    fn update_rewards_with_balance(
+        &mut self,
+        holder: Address,
+        holder_balance: Option<U256>,
+    ) -> Result<Address> {
         let mut info = self.user_reward_info[holder].read()?;
 
         let cached_delegate = info.reward_recipient;
@@ -88,7 +96,10 @@ impl TIP20Token {
 
         if reward_per_token_delta != U256::ZERO {
             if cached_delegate != Address::ZERO {
-                let holder_balance = self.get_balance(holder)?;
+                let holder_balance = match holder_balance {
+                    Some(balance) => balance,
+                    None => self.get_balance(holder)?,
+                };
                 let reward = holder_balance
                     .checked_mul(reward_per_token_delta)
                     .and_then(|v| v.checked_div(ACC_PRECISION))
@@ -263,8 +274,30 @@ impl TIP20Token {
         to: Address,
         amount: U256,
     ) -> Result<()> {
-        let from_delegate = self.update_rewards(from)?;
-        let to_delegate = self.update_rewards(to)?;
+        self.handle_rewards_on_transfer_inner(from, to, amount, None, None)
+    }
+
+    pub(crate) fn handle_rewards_on_transfer_with_balances(
+        &mut self,
+        from: Address,
+        to: Address,
+        amount: U256,
+        from_balance: U256,
+        to_balance: Option<U256>,
+    ) -> Result<()> {
+        self.handle_rewards_on_transfer_inner(from, to, amount, Some(from_balance), to_balance)
+    }
+
+    fn handle_rewards_on_transfer_inner(
+        &mut self,
+        from: Address,
+        to: Address,
+        amount: U256,
+        from_balance: Option<U256>,
+        to_balance: Option<U256>,
+    ) -> Result<()> {
+        let from_delegate = self.update_rewards_with_balance(from, from_balance)?;
+        let to_delegate = self.update_rewards_with_balance(to, to_balance)?;
 
         if !from_delegate.is_zero() {
             if to_delegate.is_zero() {
