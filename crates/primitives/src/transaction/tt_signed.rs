@@ -38,6 +38,8 @@ pub struct AASigned {
     hash: OnceLock<B256>,
     /// Cached transaction signing hash.
     signature_hash: OnceLock<B256>,
+    /// Cached recovered signer.
+    signer: OnceLock<Address>,
 }
 
 impl AASigned {
@@ -52,6 +54,7 @@ impl AASigned {
             signature,
             hash: value,
             signature_hash: OnceLock::new(),
+            signer: OnceLock::new(),
         }
     }
 
@@ -63,6 +66,7 @@ impl AASigned {
             signature,
             hash: OnceLock::new(),
             signature_hash: OnceLock::new(),
+            signer: OnceLock::new(),
         }
     }
 
@@ -347,8 +351,14 @@ impl alloy_consensus::transaction::SignerRecoverable for AASigned {
     fn recover_signer(
         &self,
     ) -> Result<alloy_primitives::Address, alloy_consensus::crypto::RecoveryError> {
+        if let Some(signer) = self.signer.get() {
+            return Ok(*signer);
+        }
+
         let sig_hash = self.signature_hash();
-        self.signature.recover_signer(&sig_hash)
+        let signer = self.signature.recover_signer(&sig_hash)?;
+        let _ = self.signer.set(signer);
+        Ok(signer)
     }
 
     fn recover_signer_unchecked(
