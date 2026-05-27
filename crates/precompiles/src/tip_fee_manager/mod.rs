@@ -150,8 +150,9 @@ impl TipFeeManager {
     /// Reserves liquidity on T1C+, with a two-hop fallback through `userToken.quoteToken()` on T5+.
     /// Returns the user's fee token.
     ///
+    /// The caller must pass a fee token that has already passed TIP-20 prefix validation.
+    ///
     /// # Errors
-    /// - `InvalidToken` — `user_token` does not have a valid TIP-20 prefix
     /// - `PolicyForbids` — TIP-403 policy rejects the fee token transfer
     /// - `InsufficientLiquidity` — AMM pool lacks liquidity for the fee swap (T5+: with two-hop fallback)
     pub fn collect_fee_pre_tx(
@@ -165,7 +166,7 @@ impl TipFeeManager {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
 
-        let mut tip20_token = TIP20Token::from_address(user_token)?;
+        let mut tip20_token = TIP20Token::from_address_unchecked(user_token);
 
         // Ensure that user and FeeManager are authorized to interact with the token
         tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
@@ -222,8 +223,9 @@ impl TipFeeManager {
     /// the validator-credited amount (post-feeAMM haircut, in the validator's fee token), which
     /// is used by the payload builder to score blocks by actual proposer revenue.
     ///
+    /// The caller must pass a fee token that has already passed TIP-20 prefix validation.
+    ///
     /// # Errors
-    /// - `InvalidToken` — `fee_token` does not have a valid TIP-20 prefix
     /// - `InsufficientLiquidity` — AMM pool lacks liquidity for the fee swap
     /// - `UnderOverflow` — collected-fee accumulator overflows
     pub fn collect_fee_post_tx(
@@ -235,7 +237,7 @@ impl TipFeeManager {
         beneficiary: Address,
     ) -> Result<U256> {
         // Refund unused tokens to user
-        let mut tip20_token = TIP20Token::from_address(fee_token)?;
+        let mut tip20_token = TIP20Token::from_address_unchecked(fee_token);
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
         // Execute fee swap and track collected fees
