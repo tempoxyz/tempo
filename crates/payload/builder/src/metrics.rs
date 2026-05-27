@@ -75,18 +75,8 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) state_setup_duration_seconds: Histogram,
     /// The time it took to prepare system transactions in seconds.
     pub(crate) prepare_system_transactions_duration_seconds: Histogram,
-    /// The time it took to prepare and execute one included normal transaction.
-    pub(crate) normal_included_transaction_execution_duration_seconds: Histogram,
-    /// The time it took to prepare and execute one invalid normal transaction attempt.
-    pub(crate) normal_invalid_transaction_execution_duration_seconds: Histogram,
-    /// Total time spent executing transactions included in the payload.
-    pub(crate) total_normal_included_transaction_execution_duration_seconds: Histogram,
-    /// Total time spent preparing and executing invalid normal pool transaction attempts.
-    pub(crate) total_normal_invalid_transaction_execution_duration_seconds: Histogram,
     /// Time spent waiting for more normal transactions during block fill.
     pub(crate) normal_transaction_fill_idle_duration_seconds: Histogram,
-    /// Normal block-fill time not spent preparing or executing transactions.
-    pub(crate) normal_transaction_fill_overhead_duration_seconds: Histogram,
     /// The time it took to execute subblock transactions in seconds.
     pub(crate) total_subblock_transaction_execution_duration_seconds: Histogram,
     /// Execution time for a single subblock.
