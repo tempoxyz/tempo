@@ -18,6 +18,7 @@ use crate::{
     prewarming::BestTransactionsPrewarming,
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
+use alloy_eip7928::compute_block_access_list_hash;
 use alloy_primitives::{Address, U256};
 use alloy_rlp::{Decodable, Encodable};
 use reth_basic_payload_builder::{
@@ -34,14 +35,19 @@ use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
     block::{BlockExecutionError, BlockExecutor, BlockValidationError},
-    execute::{BlockBuilder, BlockBuilderOutcome},
+    execute::{BlockAssembler, BlockAssemblerInput},
 };
 use reth_execution_types::BlockExecutionOutput;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
-use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
-use reth_revm::{State, context::Block, database::StateProviderDatabase};
-use reth_storage_api::StateProviderFactory;
+use reth_primitives_traits::{
+    Recovered, RecoveredBlock, transaction::error::InvalidTransactionError,
+};
+use reth_revm::{
+    State, context::Block, database::StateProviderDatabase,
+    db::states::bundle_state::BundleRetention,
+};
+use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
@@ -430,44 +436,48 @@ where
             })
             .collect();
 
-        let mut builder = self
+        let next_attributes = TempoNextBlockEnvAttributes {
+            inner: NextBlockEnvAttributes {
+                timestamp: attributes.timestamp,
+                suggested_fee_recipient: attributes.suggested_fee_recipient,
+                prev_randao: attributes.prev_randao,
+                gas_limit: block_gas_limit,
+                parent_beacon_block_root: attributes.parent_beacon_block_root,
+                withdrawals: attributes.withdrawals.clone().map(Into::into),
+                extra_data: attributes.extra_data().clone(),
+                slot_number: attributes.slot_number,
+            },
+            general_gas_limit,
+            shared_gas_limit,
+            timestamp_millis_part: attributes.timestamp_millis_part(),
+            consensus_context: attributes.consensus_context(),
+            subblock_fee_recipients,
+        };
+        let evm_env = self
             .evm_config
-            .builder_for_next_block(
-                &mut db,
-                &parent_header,
-                TempoNextBlockEnvAttributes {
-                    inner: NextBlockEnvAttributes {
-                        timestamp: attributes.timestamp,
-                        suggested_fee_recipient: attributes.suggested_fee_recipient,
-                        prev_randao: attributes.prev_randao,
-                        gas_limit: block_gas_limit,
-                        parent_beacon_block_root: attributes.parent_beacon_block_root,
-                        withdrawals: attributes.withdrawals.clone().map(Into::into),
-                        extra_data: attributes.extra_data().clone(),
-                        slot_number: attributes.slot_number,
-                    },
-                    general_gas_limit,
-                    shared_gas_limit,
-                    timestamp_millis_part: attributes.timestamp_millis_part(),
-                    consensus_context: attributes.consensus_context(),
-                    subblock_fee_recipients,
-                },
-            )
+            .next_evm_env(&parent_header, &next_attributes)
             .map_err(PayloadBuilderError::other)?;
+        let ctx = self
+            .evm_config
+            .context_for_next_block(&parent_header, next_attributes)
+            .map_err(PayloadBuilderError::other)?;
+
+        let evm = self.evm_config.evm_with_env(&mut db, evm_env);
+        let mut executor = self.evm_config.create_executor(evm, ctx.clone());
+
+        let mut transactions = vec![];
 
         check_cancel!();
 
         // Override the fee recipient with the on-chain value from the V2
         // validator config contract, if available.
-        maybe_override_fee_recipient(&mut builder, &attributes);
+        maybe_override_fee_recipient(&mut executor, &attributes);
 
         if let Some(ref handle) = trie_handle {
-            builder
-                .executor_mut()
-                .set_state_hook(Some(Box::new(handle.state_hook())));
+            executor.set_state_hook(Some(Box::new(handle.state_hook())));
         }
 
-        builder.apply_pre_execution_changes().map_err(|err| {
+        executor.apply_pre_execution_changes().map_err(|err| {
             warn!(%err, "failed to apply pre-execution changes");
             PayloadBuilderError::Internal(err.into())
         })?;
@@ -478,7 +488,7 @@ where
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
-        let system_txs = self.build_seal_block_txs(builder.evm(), &subblocks);
+        let system_txs = self.build_seal_block_txs(executor.evm(), &subblocks);
         for tx in &system_txs {
             block_size_used += tx.inner().length();
         }
@@ -487,12 +497,12 @@ where
             .prepare_system_transactions_duration_seconds
             .record(prepare_system_txs_elapsed);
 
-        let base_fee = builder.evm_mut().block().basefee;
+        let base_fee = executor.evm().block().basefee;
         let pool_fetch_start = Instant::now();
         let best_txs = best_txs(BestTransactionsAttributes::new(
             base_fee,
-            builder
-                .evm_mut()
+            executor
+                .evm()
                 .block()
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
@@ -505,7 +515,7 @@ where
                 self.provider.clone(),
                 execution_cache,
                 parent_header.hash(),
-                builder.evm().evm_env(),
+                executor.evm().evm_env(),
                 best_txs,
             )) as Box<dyn BestTransactions<Item = _>>
         } else {
@@ -574,7 +584,7 @@ where
 
             let max_regular_gas_used = core::cmp::min(
                 pool_tx.gas_limit(),
-                builder.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+                executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
             );
 
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
@@ -640,9 +650,9 @@ where
                 .then(|| format!("{:?}", pool_tx.transaction))
                 .unwrap_or_default();
 
-            let tx_with_env = pool_tx.transaction.clone_into_with_tx_env();
-            let execution_result =
-                builder.execute_transaction_with_result_closure(tx_with_env, |result| {
+            let execution_result = executor.execute_transaction_with_result_closure(
+                pool_tx.transaction.executable(),
+                |result| {
                     cumulative_gas_used += result.block_gas_used();
                     cumulative_state_gas_used += result.state_gas_used();
                     if !is_payment {
@@ -655,7 +665,10 @@ where
 
                     // Notify transactions iterator about the new state.
                     best_txs.on_new_result(result);
-                });
+
+                    transactions.push(pool_tx.transaction.inner().clone());
+                },
+            );
             if let Err(err) = execution_result {
                 if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,
@@ -714,7 +727,7 @@ where
             && !is_more_subblocks(best_payload.as_ref(), &subblocks)
         {
             // Release db
-            drop(builder);
+            drop(executor);
             drop(db);
             // can skip building the block
             return Ok(BuildOutcome::Aborted {
@@ -734,7 +747,7 @@ where
             let mut subblock_tx_count = 0f64;
 
             for tx in subblock.transactions_recovered() {
-                if let Err(err) = builder.execute_transaction(tx.cloned()) {
+                if let Err(err) = executor.execute_transaction(&tx) {
                     if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                         ..
                     }) = &err
@@ -744,7 +757,7 @@ where
                             "subblock transaction failed execution, aborting payload building"
                         );
                         self.highest_invalid_subblock
-                            .store(builder.evm().block().number.to(), Ordering::Relaxed);
+                            .store(executor.evm().block().number.to(), Ordering::Relaxed);
                         self.metrics.inc_build_failure("subblock_invalid_tx");
                         return Err(PayloadBuilderError::evm(err));
                     } else {
@@ -753,6 +766,7 @@ where
                 }
 
                 subblock_tx_count += 1.0;
+                transactions.push(tx.cloned());
             }
 
             self.metrics
@@ -782,9 +796,10 @@ where
         let _system_txs_span =
             debug_span!(target: "payload_builder", "execute_system_txs").entered();
         for system_tx in system_txs {
-            builder
-                .execute_transaction(system_tx)
+            executor
+                .execute_transaction(&system_tx)
                 .map_err(PayloadBuilderError::evm)?;
+            transactions.push(system_tx);
         }
         drop(_system_txs_span);
         let system_txs_execution_elapsed = system_txs_execution_start.elapsed();
@@ -794,7 +809,7 @@ where
 
         let payload_finalization_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
-        let finish_provider = || InstrumentedFinishProvider {
+        let finish_provider = InstrumentedFinishProvider {
             inner: &*state_provider,
             metrics: self.metrics.clone(),
         };
@@ -805,7 +820,7 @@ where
             if let Some(mut handle) = trie_handle {
                 // Dropping the hook signals that execution is complete and the sparse trie task can
                 // finalize the state root it has been updating incrementally.
-                builder.executor_mut().set_state_hook(None);
+                executor.set_state_hook(None);
 
                 let state_root_wait_start = Instant::now();
                 match handle.state_root() {
@@ -838,23 +853,48 @@ where
             .unzip();
 
         let builder_finish_start = Instant::now();
-        let BlockBuilderOutcome {
-            execution_result,
-            block,
-            hashed_state,
-            trie_updates,
-            ..
-        } = if let Some(outcome) = state_root_outcome {
-            builder.finish(
-                finish_provider(),
-                Some((
-                    outcome.state_root,
-                    Arc::unwrap_or_clone(outcome.trie_updates),
-                )),
-            )
+        let (evm, execution_result) = executor.finish()?;
+        let evm_env = evm.into_env();
+
+        // merge all transitions into bundle state
+        db.merge_transitions(BundleRetention::Reverts);
+
+        let block_access_list = db.take_built_alloy_bal();
+        let block_access_list_hash = block_access_list
+            .as_ref()
+            .map(|bal| compute_block_access_list_hash(bal.as_slice()));
+
+        let hashed_state = finish_provider.hashed_post_state(&db.bundle_state);
+
+        let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
+            (outcome.state_root, outcome.trie_updates)
         } else {
-            builder.finish(finish_provider(), None)
-        }?;
+            let (state_root, trie_updates) = finish_provider
+                .state_root_with_updates(hashed_state.clone())
+                .map_err(BlockExecutionError::other)?;
+
+            (state_root, Arc::new(trie_updates))
+        };
+
+        let (transactions, senders) = transactions.into_iter().map(|tx| tx.into_parts()).unzip();
+
+        let block = self
+            .evm_config
+            .block_assembler
+            .assemble_block(BlockAssemblerInput::new(
+                evm_env,
+                ctx,
+                &parent_header,
+                transactions,
+                &execution_result,
+                &db.bundle_state,
+                &finish_provider,
+                state_root,
+                block_access_list_hash,
+            ))?;
+
+        let block = RecoveredBlock::new_unhashed(block, senders);
+
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics
             .builder_finish_duration_seconds
@@ -994,7 +1034,7 @@ where
             recovered_block: block,
             execution_output: Arc::new(execution_output),
             hashed_state: Arc::new(hashed_state),
-            trie_updates: Arc::new(trie_updates),
+            trie_updates,
         };
 
         let payload = TempoBuiltPayload::new(
@@ -1042,13 +1082,13 @@ pub fn is_more_subblocks(
 /// V2 validator config contract, if the contract is active and returns a
 /// non-zero address for the given `public_key`.
 fn maybe_override_fee_recipient<DB: Database>(
-    builder: &mut impl BlockBuilder<Executor: BlockExecutor<Evm = TempoEvm<DB>>>,
+    executor: &mut impl BlockExecutor<Evm = TempoEvm<DB>>,
     attributes: &TempoPayloadAttributes,
 ) {
     let Some(public_key) = attributes.proposer_public_key() else {
         return;
     };
-    let ctx = builder.evm_mut().ctx_mut();
+    let ctx = executor.evm_mut().ctx_mut();
     if !ctx.cfg.spec.is_t2() {
         return;
     }
@@ -1082,7 +1122,7 @@ fn maybe_override_fee_recipient<DB: Database>(
     ) {
         Ok(Some(fee_recipient)) => {
             debug!(%fee_recipient, "resolved fee recipient from contract");
-            builder.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
+            executor.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
         }
         Ok(None) => {}
         Err(err) => {
