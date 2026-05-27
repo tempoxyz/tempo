@@ -4,9 +4,32 @@ const fs = require('fs');
 const path = require('path');
 const readline = require('readline');
 const zlib = require('zlib');
+const { performance } = require('perf_hooks');
 
 const CLICKHOUSE_CONFIG_KEYS = new Set(['tps', 'max_concurrent', 'chain_id', 'scrape_interval_ms']);
 const CLICKHOUSE_REQUIRED_METADATA = ['scenario', 'platform', 'git-sha', 'git-ref'];
+
+function log(message, fields = {}) {
+  const details = Object.entries(fields)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => `${key}=${value}`)
+    .join(' ');
+  const suffix = details ? ` ${details}` : '';
+  console.log(`[metrics] ${new Date().toISOString()} ${message}${suffix}`);
+}
+
+function logError(message, fields = {}) {
+  const details = Object.entries(fields)
+    .filter(([, value]) => value !== undefined && value !== null && value !== '')
+    .map(([key, value]) => `${key}=${value}`)
+    .join(' ');
+  const suffix = details ? ` ${details}` : '';
+  console.error(`[metrics] ${new Date().toISOString()} ${message}${suffix}`);
+}
+
+function elapsedMs(startedAt) {
+  return Math.round(performance.now() - startedAt);
+}
 
 function parseArgs(argv) {
   const args = {
@@ -153,7 +176,7 @@ function clickHouseConfig(clickhouseUrl) {
   };
 }
 
-async function insertClickHouseRows(config, table, rows) {
+async function insertClickHouseRows(config, table, rows, task) {
   if (rows.length === 0) return;
 
   const query = `INSERT INTO ${config.database}.${table} FORMAT JSONEachRow`;
@@ -163,7 +186,15 @@ async function insertClickHouseRows(config, table, rows) {
   if (config.password) headers['X-ClickHouse-Key'] = config.password;
 
   const body = `${rows.map(row => JSON.stringify(row)).join('\n')}\n`;
+  const startedAt = performance.now();
+  log('clickhouse insert start', { task, table, rows: rows.length });
   await post(url, body, headers, 60);
+  log('clickhouse insert complete', {
+    task,
+    table,
+    rows: rows.length,
+    duration_ms: elapsedMs(startedAt),
+  });
 }
 
 function splitClickHouseMetadata(metadata) {
@@ -250,33 +281,45 @@ function clickHouseSampleRow(runId, sample) {
 }
 
 async function uploadClickHouseRun(resultsDir, label, loaded, config) {
+  const task = `clickhouse:${label}`;
+  const startedAt = performance.now();
   const { reportPath, report } = loaded;
   const runRow = clickHouseRunRow(resultsDir, label, report);
   const runId = runRow.run_id;
   const blockRows = clickHouseBlockRows(runId, report);
 
-  console.log(`[metrics] ${label}: uploading ClickHouse rows`);
-  await insertClickHouseRows(config, 'txgen_runs', [runRow]);
-  await insertClickHouseRows(config, 'txgen_blocks', blockRows);
+  log('task start', { task, run_id: runId });
+  await insertClickHouseRows(config, 'txgen_runs', [runRow], task);
+  await insertClickHouseRows(config, 'txgen_blocks', blockRows, task);
 
   let batch = [];
   let samples = 0;
+  let batches = 0;
   for await (const sample of iterSamples(reportPath, report)) {
     const row = clickHouseSampleRow(runId, sample);
     if (!row) continue;
     batch.push(row);
     if (batch.length >= config.sampleBatchSize) {
-      await insertClickHouseRows(config, 'txgen_metric_samples', batch);
+      batches += 1;
+      await insertClickHouseRows(config, 'txgen_metric_samples', batch, task);
       samples += batch.length;
       batch = [];
     }
   }
   if (batch.length > 0) {
-    await insertClickHouseRows(config, 'txgen_metric_samples', batch);
+    batches += 1;
+    await insertClickHouseRows(config, 'txgen_metric_samples', batch, task);
     samples += batch.length;
   }
 
-  console.log(`[metrics] ${label}: ClickHouse upload complete (${blockRows.length} blocks, ${samples} samples)`);
+  log('task complete', {
+    task,
+    run_id: runId,
+    blocks: blockRows.length,
+    samples,
+    batches,
+    duration_ms: elapsedMs(startedAt),
+  });
   return { label, runId };
 }
 
@@ -352,9 +395,11 @@ function addVictoriaSample(series, sample) {
   return true;
 }
 
-async function flushVictoriaSeries(config, series) {
+async function flushVictoriaSeries(config, series, task, batch) {
   if (series.size === 0) return;
 
+  const seriesCount = series.size;
+  const sampleCount = [...series.values()].reduce((sum, item) => sum + item.values.length, 0);
   const body = `${[...series.values()].map(item => JSON.stringify(item)).join('\n')}\n`;
   const headers = {
     'Content-Type': 'application/json',
@@ -368,36 +413,51 @@ async function flushVictoriaSeries(config, series) {
     headers.Authorization = `Basic ${token}`;
   }
 
+  const startedAt = performance.now();
+  log('victoriametrics batch start', { task, batch, samples: sampleCount, series: seriesCount });
   await post(config.importUrl, zlib.gzipSync(body), headers, config.timeoutSecs);
+  log('victoriametrics batch complete', {
+    task,
+    batch,
+    samples: sampleCount,
+    series: seriesCount,
+    duration_ms: elapsedMs(startedAt),
+  });
   series.clear();
 }
 
 async function uploadVictoriaRun(label, loaded, config) {
+  const task = `victoriametrics:${label}`;
+  const startedAt = performance.now();
   const { reportPath, report } = loaded;
   let series = new Map();
   let batchSamples = 0;
   let samples = 0;
+  let batches = 0;
 
-  console.log(`[metrics] ${label}: uploading VictoriaMetrics samples`);
+  log('task start', { task });
   for await (const sample of iterSamples(reportPath, report)) {
     if (!addVictoriaSample(series, sample)) continue;
     batchSamples += 1;
     if (batchSamples >= config.batchSize) {
-      await flushVictoriaSeries(config, series);
+      batches += 1;
+      await flushVictoriaSeries(config, series, task, batches);
       samples += batchSamples;
       batchSamples = 0;
     }
   }
   if (batchSamples > 0) {
-    await flushVictoriaSeries(config, series);
+    batches += 1;
+    await flushVictoriaSeries(config, series, task, batches);
     samples += batchSamples;
   }
 
-  console.log(`[metrics] ${label}: VictoriaMetrics upload complete (${samples} samples)`);
+  log('task complete', { task, samples, batches, duration_ms: elapsedMs(startedAt) });
   return { label, samples };
 }
 
 async function main() {
+  const startedAt = performance.now();
   const args = parseArgs(process.argv.slice(2));
   if (!fs.existsSync(args.resultsDir)) {
     throw new Error(`results directory not found: ${args.resultsDir}`);
@@ -411,6 +471,12 @@ async function main() {
   const loadedReports = new Map(runLabels.map(label => [label, loadReport(args.resultsDir, label)]));
   const tasks = [];
   const clickHouseUploads = [];
+  log('upload plan', {
+    runs: runLabels.length,
+    victoriametrics: args.victoriametricsUrl ? 'enabled' : 'disabled',
+    clickhouse: args.clickhouseUrl ? 'enabled' : 'disabled',
+    clickhouse_run: args.clickhouseUrl ? args.clickhouseRun : '',
+  });
 
   if (args.victoriametricsUrl) {
     const config = victoriaConfig(args.victoriametricsUrl);
@@ -436,7 +502,7 @@ async function main() {
   }
 
   if (tasks.length === 0) {
-    console.log('[metrics] no upload destinations configured');
+    log('no upload destinations configured');
     return;
   }
 
@@ -450,10 +516,10 @@ async function main() {
     fs.writeFileSync(path.join(args.resultsDir, 'clickhouse-run-id.txt'), `${preferred.runId}\n`);
   }
 
-  console.log(`[metrics] uploads complete (${results.length} job${results.length === 1 ? '' : 's'})`);
+  log('uploads complete', { jobs: results.length, duration_ms: elapsedMs(startedAt) });
 }
 
 main().catch(err => {
-  console.error(`[metrics] upload failed: ${err.stack || err.message}`);
+  logError('upload failed', { error: err.stack || err.message });
   process.exit(1);
 });
