@@ -27,7 +27,7 @@ use crate::{
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, TIP403Registry, is_policy_lookup_error},
 };
-use alloy::primitives::{Address, B256, FixedBytes, U256};
+use alloy::primitives::{Address, B256, U256};
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
 
@@ -1664,7 +1664,7 @@ fn is_authorized_for_token(token: Address, address: Address, role: AuthRole) -> 
 #[cfg(test)]
 mod tests {
     use alloy::{
-        primitives::IntoLogData,
+        primitives::{FixedBytes, IntoLogData},
         sol_types::{SolEvent, SolInterface},
     };
     use tempo_chainspec::hardfork::TempoHardfork;
