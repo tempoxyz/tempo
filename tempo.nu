@@ -931,7 +931,7 @@ def generate-summary [
         if ($clean_values | length) > 0 { $clean_values | math avg | math round --precision 0 } else { 0.0 }
     }
 
-    let counter_delta_values = { |samples: list<any>, metric: string, scale: float|
+    let counter_delta_points = { |samples: list<any>, metric: string|
         let sum_name = $"($metric)_sum"
         let count_name = $"($metric)_count"
         let counter_samples = ($samples | where { |sample| $sample.name in [$sum_name $count_name] })
@@ -966,12 +966,25 @@ def generate-summary [
                             let delta_count = (($curr.count - $prev.count) | into int)
                             let delta_sum = ($curr.sum - $prev.sum)
                             if $delta_count > 0 and $delta_sum >= 0 {
-                                let value = (($delta_sum / $delta_count) * $scale)
-                                0..<$delta_count | each { $value }
-                            } else { [] }
+                                {
+                                    labels: $series.labels
+                                    unix_ms: $curr.unix_ms
+                                    count: $delta_count
+                                    sum: $delta_sum
+                                }
+                            } else { null }
                         }
-                        | flatten
+                        | where { |point| $point != null }
                 } else { [] }
+            }
+            | flatten
+    }
+
+    let counter_delta_values = { |samples: list<any>, metric: string, scale: float|
+        do $counter_delta_points $samples $metric
+            | each { |point|
+                let value = (($point.sum / $point.count) * $scale)
+                0..<$point.count | each { $value }
             }
             | flatten
     }
@@ -1007,6 +1020,47 @@ def generate-summary [
                     }
             )
             if ($deltas | length) > 0 { $deltas | math sum | math round --precision 0 } else { 0.0 }
+        }
+    }
+
+    let throughput_window_samples = { |blocks: list<any>, window_ms: int|
+        if ($blocks | length) == 0 {
+            []
+        } else {
+            let sorted_blocks = ($blocks | sort-by timestamp)
+            let first_timestamp = ($sorted_blocks | get timestamp | first)
+            let last_timestamp = ($sorted_blocks | get timestamp | last)
+            let window_count = (((($last_timestamp - $first_timestamp) // $window_ms) | into int) + 1)
+            let window_seconds = $window_ms / 1000.0
+            let populated_windows = (
+                $sorted_blocks
+                    | each { |block|
+                        {
+                            index: (((($block.timestamp - $first_timestamp) // $window_ms) | into int))
+                            tx_count: $block.tx_count
+                            gas_used: $block.gas_used
+                        }
+                    }
+                    | group-by index
+                    | transpose index blocks
+                    | each { |window|
+                        {
+                            index: ($window.index | into int)
+                            tx_count: ($window.blocks | get tx_count | math sum)
+                            gas_used: ($window.blocks | get gas_used | math sum)
+                        }
+                    }
+            )
+
+            0..<$window_count | each { |index|
+                let matches = ($populated_windows | where index == $index)
+                let tx_count = if ($matches | length) > 0 { $matches | first | get tx_count } else { 0 }
+                let gas_used = if ($matches | length) > 0 { $matches | first | get gas_used } else { 0 }
+                {
+                    tps: ($tx_count / $window_seconds)
+                    gas_s: ($gas_used / $window_seconds)
+                }
+            }
         }
     }
 
@@ -1117,27 +1171,23 @@ def generate-summary [
         }
 
         let sorted_blocks = ($blocks | sort-by timestamp)
-        let timestamps = ($sorted_blocks | get timestamp)
         let block_intervals = ($sorted_blocks | where block_time_ms != null | get block_time_ms)
 
-        # Attribute each interval's throughput to the later block so TPS quantiles stay
-        # within a single run and avoid the inter-run gaps that skew merged samples.
-        let block_tps_samples = if ($sorted_blocks | length) > 1 {
-            $sorted_blocks | window 2 | each { |pair|
-                let earlier = ($pair | first)
-                let later = ($pair | last)
-                let interval_ms = [((($later | get timestamp) - ($earlier | get timestamp))) 1] | math max
-                (($later | get tx_count) / ($interval_ms / 1000.0))
-            }
-        } else { [] }
-        let run_tps = do $compute_tps_stats $block_tps_samples
+        # Use fixed wall-clock windows for top-level throughput. Adjacent canonical
+        # block gaps can spike around empty blocks, forks, view changes, or lost
+        # proposals, while builder time measures component capacity rather than
+        # sustained chain throughput.
+        let throughput_samples = (do $throughput_window_samples $sorted_blocks 1000)
+        let run_tps_samples = ($throughput_samples | get tps)
+        let run_gas_samples = ($throughput_samples | get gas_s)
+        let run_tps = do $compute_tps_stats $run_tps_samples
         let run_bt = do $compute_block_time_stats $block_intervals
 
         # Collect blocks into baseline/feature groups
         if ($label | str starts-with "baseline") {
             $baseline_blocks = ($baseline_blocks | append $blocks)
             $baseline_intervals = ($baseline_intervals | append $block_intervals)
-            $baseline_tps_samples = ($baseline_tps_samples | append $block_tps_samples)
+            $baseline_tps_samples = ($baseline_tps_samples | append $run_tps_samples)
             $baseline_builder_latency_values = ($baseline_builder_latency_values | append $builder_latency_values)
             $baseline_builder_finish_samples = ($baseline_builder_finish_samples | append $builder_finish_samples)
             $baseline_builder_invalid_tx_execution_attempts_samples = ($baseline_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
@@ -1150,7 +1200,7 @@ def generate-summary [
         } else {
             $feature_blocks = ($feature_blocks | append $blocks)
             $feature_intervals = ($feature_intervals | append $block_intervals)
-            $feature_tps_samples = ($feature_tps_samples | append $block_tps_samples)
+            $feature_tps_samples = ($feature_tps_samples | append $run_tps_samples)
             $feature_builder_latency_values = ($feature_builder_latency_values | append $builder_latency_values)
             $feature_builder_finish_samples = ($feature_builder_finish_samples | append $builder_finish_samples)
             $feature_builder_invalid_tx_execution_attempts_samples = ($feature_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
@@ -1172,18 +1222,8 @@ def generate-summary [
         let run_validation = do $compute_value_stats $validation_latency_values
         let run_builder_gas = do $compute_value_mean $builder_gas_values
         let run_validation_gas = do $compute_value_mean $validation_gas_values
-
-        # Compute TPS from block timestamps (timestamps are in milliseconds)
-        let time_span_ms = if ($timestamps | length) > 1 {
-            let first = ($timestamps | first)
-            let last = ($timestamps | last)
-            [($last - $first) 1] | math max
-        } else { 1 }
-        let time_span_s = $time_span_ms / 1000.0
-        let actual_tps = ($total_tx / $time_span_s) | math round --precision 0
-
-        let gas_per_sec = ($total_gas / $time_span_s)
-        let mgas_per_sec = ($gas_per_sec / 1_000_000) | math round --precision 1
+        let measured_tps = if ($run_tps_samples | length) > 0 { $run_tps_samples | math avg | math round --precision 0 } else { 0.0 }
+        let mgas_per_sec = if ($run_gas_samples | length) > 0 { (($run_gas_samples | math avg) / 1_000_000.0) | math round --precision 1 } else { 0.0 }
 
         let success_rate = if $total_tx > 0 {
             (($total_ok / $total_tx) * 100) | math round --precision 1
@@ -1201,7 +1241,7 @@ def generate-summary [
             builder_latency_p90: $run_builder.p90
             builder_latency_p99: $run_builder.p99
             builder_gas_s: $run_builder_gas
-            tps: $actual_tps
+            tps: $measured_tps
             tps_p50: $run_tps.p50
             tps_p90: $run_tps.p90
             tps_p99: $run_tps.p99
@@ -1261,7 +1301,7 @@ def generate-summary [
     let b_tps_stats = do $compute_tps_stats $baseline_tps_samples
     let f_tps_stats = do $compute_tps_stats $feature_tps_samples
 
-    # Aggregate TPS and Mgas/s from per-run totals (total_tx / total_time)
+    # Aggregate measured per-run throughput.
     let baseline_runs = ($run_data | where { |r| $r.label | str starts-with "baseline" })
     let feature_runs = ($run_data | where { |r| $r.label | str starts-with "feature" })
     let run_pairs = ([($baseline_runs | length) ($feature_runs | length)] | math max)
@@ -1366,6 +1406,7 @@ def generate-summary [
         $"- Duration: ($duration)s"
         $"- Run pairs: ($run_pairs)"
         $"- Snapshot: (if (has-schelk) { 'schelk' } else { 'cp fallback' })"
+        $"- Throughput source: canonical transactions and gas in 1s timestamp windows"
         $"- Baseline blocks: ($b_block_time.n)"
         $"- Feature blocks: ($f_block_time.n)"
     ])
@@ -1452,6 +1493,7 @@ def generate-summary [
             duration: $duration
             run_pairs: $run_pairs
             derek_command: $derek_bench_command
+            throughput_source: "canonical transactions and gas in 1s timestamp windows"
             baseline_hardfork: $baseline_hardfork
             feature_hardfork: $feature_hardfork
         }

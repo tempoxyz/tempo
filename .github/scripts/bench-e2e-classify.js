@@ -207,6 +207,7 @@ function buildMarkdown(summary) {
   const derekCommand = summary.config?.derek_command || '';
   const baselineRemovedArgs = summary.config?.baseline_removed_args || '';
   const featureRemovedArgs = summary.config?.feature_removed_args || '';
+  const throughputSource = summary.config?.throughput_source || '';
   const lines = [
     `# ${c.emoji} Bench Comparison: ${c.label}`,
     '',
@@ -220,6 +221,7 @@ function buildMarkdown(summary) {
     `- Target TPS: ${summary.config.tps}`,
     `- Duration: ${summary.config.duration}s`,
     `- Run pairs: ${summary.config.run_pairs}`,
+    ...(throughputSource ? [`- Throughput source: ${throughputSource}`] : []),
     ...(baselineRemovedArgs ? [`- Baseline removed args: \`${baselineRemovedArgs}\``] : []),
     ...(featureRemovedArgs ? [`- Feature removed args: \`${featureRemovedArgs}\``] : []),
     `- Baseline blocks: ${summary.results.baseline.blocks}`,
