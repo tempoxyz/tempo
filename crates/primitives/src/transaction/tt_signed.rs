@@ -96,7 +96,7 @@ impl AASigned {
 
     /// Calculate the transaction hash
     fn compute_hash(&self) -> B256 {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(self.eip2718_encoded_length());
         self.eip2718_encode(&mut buf);
         alloy_primitives::keccak256(&buf)
     }
