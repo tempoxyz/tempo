@@ -253,6 +253,8 @@ impl AccountKeychain {
         if key_id == Address::ZERO {
             return Err(AccountKeychainError::zero_public_key().into());
         }
+        // T6+ keeps the account root key implicit. Do not create a stored access-key row
+        // using the root key id.
         if self.storage.spec().is_t6() && key_id == msg_sender {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
@@ -373,6 +375,7 @@ impl AccountKeychain {
         if key_id == Address::ZERO {
             return Err(AccountKeychainError::zero_public_key().into());
         }
+        // Admin keys are explicit access-key rows; the root key remains implicit.
         if key_id == msg_sender {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
@@ -437,14 +440,11 @@ impl AccountKeychain {
     /// this account, preventing replay of old `KeyAuthorization` signatures.
     ///
     /// # Errors
-    /// - `UnauthorizedCaller` — only the main key can authorize/revoke and, for contract
-    ///   callers on T2+, `msg.sender` must match `tx.origin`
+    /// - `UnauthorizedCaller` — only the root key or, on T6+, an admin access key can revoke;
+    ///   for contract callers on T2+, `msg.sender` must match `tx.origin`
     /// - `KeyNotFound` — no key registered with this ID
     pub fn revoke_key(&mut self, msg_sender: Address, call: revokeKeyCall) -> Result<()> {
         self.ensure_admin_caller(msg_sender)?;
-        if self.storage.spec().is_t6() && call.keyId == msg_sender {
-            return Err(AccountKeychainError::invalid_key_id().into());
-        }
 
         let key = self.keys[msg_sender][call.keyId].read()?;
 
@@ -472,8 +472,9 @@ impl AccountKeychain {
     /// limited one. Delegates to `load_active_key` for existence/revocation/expiry checks.
     ///
     /// # Errors
-    /// - `UnauthorizedCaller` — the transaction wasn't signed by the main key, or on T2+
-    ///   contract callers where `msg.sender != tx.origin`
+    /// - `UnauthorizedCaller` — the transaction wasn't signed by the root key or, on T6+, an
+    ///   admin access key, or on T2+ contract callers where `msg.sender != tx.origin`
+    /// - `InvalidKeyId` — on T6+, `keyId` cannot be an admin access key
     /// - `KeyAlreadyRevoked` — the target key has been permanently revoked
     /// - `KeyNotFound` — no key is registered under the given `keyId`
     /// - `KeyExpired` — the key's expiry is at or before the current block timestamp
@@ -483,10 +484,6 @@ impl AccountKeychain {
         call: updateSpendingLimitCall,
     ) -> Result<()> {
         self.ensure_admin_caller(msg_sender)?;
-
-        if self.storage.spec().is_t6() && call.keyId == msg_sender {
-            return Err(AccountKeychainError::invalid_key_id().into());
-        }
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let mut key = self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
@@ -586,7 +583,7 @@ impl AccountKeychain {
         })
     }
 
-    /// Root-only create-or-replace updates for one or more target call scopes.
+    /// Root/admin-only create-or-replace updates for one or more target call scopes.
     pub fn set_allowed_calls(
         &mut self,
         msg_sender: Address,
@@ -597,10 +594,6 @@ impl AccountKeychain {
         }
 
         self.ensure_admin_caller(msg_sender)?;
-
-        if self.storage.spec().is_t6() && call.keyId == msg_sender {
-            return Err(AccountKeychainError::invalid_key_id().into());
-        }
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let key = self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
@@ -624,17 +617,13 @@ impl AccountKeychain {
         self.key_scopes[key_hash].is_scoped.write(true)
     }
 
-    /// Root-only removal of one target call scope.
+    /// Root/admin-only removal of one target call scope.
     pub fn remove_allowed_calls(
         &mut self,
         msg_sender: Address,
         call: removeAllowedCallsCall,
     ) -> Result<()> {
         self.ensure_admin_caller(msg_sender)?;
-
-        if self.storage.spec().is_t6() && call.keyId == msg_sender {
-            return Err(AccountKeychainError::invalid_key_id().into());
-        }
 
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let key = self.load_active_key(msg_sender, call.keyId, current_timestamp)?;
@@ -1612,6 +1601,18 @@ mod tests {
         }
     }
 
+    fn assert_key_not_found(error: TempoPrecompileError) {
+        match error {
+            TempoPrecompileError::AccountKeychainError(e) => {
+                assert!(
+                    matches!(e, AccountKeychainError::KeyNotFound(_)),
+                    "Expected KeyNotFound error, got: {e:?}"
+                );
+            }
+            _ => panic!("Expected AccountKeychainError, got: {error:?}"),
+        }
+    }
+
     fn unrestricted_restrictions() -> KeyRestrictions {
         tempo_alloy::provider::keychain::KeyRestrictions::default().into()
     }
@@ -1754,7 +1755,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t6_admin_key_restrictions_and_root_slot_rejected() -> eyre::Result<()> {
+    fn test_t6_admin_key_restrictions_and_root_authorization_rejected() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         let account = Address::random();
         let admin_key = Address::random();
@@ -1780,9 +1781,16 @@ mod tests {
             );
 
             assert_invalid_key_id(
-                keychain
-                    .revoke_key(account, revokeKeyCall { keyId: account })
-                    .expect_err("root key cannot be revoked"),
+                authorize_key(
+                    &mut keychain,
+                    account,
+                    authorizeKeyCall {
+                        keyId: account,
+                        signatureType: SignatureType::Secp256k1,
+                        config: unrestricted_restrictions(),
+                    },
+                )
+                .expect_err("root key cannot be registered as an access key"),
             );
 
             assert_invalid_key_id(
@@ -1796,17 +1804,24 @@ mod tests {
     }
 
     #[test]
-    fn test_t6_restriction_mutators_reject_root_slot() -> eyre::Result<()> {
+    fn test_t6_root_slot_mutators_use_stored_key_row() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         let account = Address::random();
         let token = Address::random();
+        let target = Address::random();
 
         StorageCtx::enter(&mut storage, || {
             let mut keychain = AccountKeychain::new();
             keychain.initialize()?;
             keychain.set_tx_origin(account)?;
 
-            assert_invalid_key_id(
+            assert_key_not_found(
+                keychain
+                    .revoke_key(account, revokeKeyCall { keyId: account })
+                    .expect_err("missing self-key row cannot be revoked"),
+            );
+
+            assert_key_not_found(
                 keychain
                     .update_spending_limit(
                         account,
@@ -1816,34 +1831,34 @@ mod tests {
                             newLimit: U256::from(1),
                         },
                     )
-                    .expect_err("root slot cannot receive spending limits"),
+                    .expect_err("missing self-key row cannot receive spending limits"),
             );
 
-            assert_invalid_key_id(
+            assert_key_not_found(
                 keychain
                     .set_allowed_calls(
                         account,
                         setAllowedCallsCall {
                             keyId: account,
                             scopes: vec![CallScope {
-                                target: Address::random(),
+                                target,
                                 selectorRules: vec![],
                             }],
                         },
                     )
-                    .expect_err("root slot cannot receive call scopes"),
+                    .expect_err("missing self-key row cannot receive call scopes"),
             );
 
-            assert_invalid_key_id(
+            assert_key_not_found(
                 keychain
                     .remove_allowed_calls(
                         account,
                         removeAllowedCallsCall {
                             keyId: account,
-                            target: Address::random(),
+                            target,
                         },
                     )
-                    .expect_err("root slot cannot remove call scopes"),
+                    .expect_err("missing self-key row cannot remove call scopes"),
             );
 
             keychain.keys[account][account].write(AuthorizedKey {
@@ -1854,18 +1869,58 @@ mod tests {
                 is_admin: false,
             })?;
 
-            assert_invalid_key_id(
-                keychain
-                    .update_spending_limit(
-                        account,
-                        updateSpendingLimitCall {
-                            keyId: account,
-                            token,
-                            newLimit: U256::from(1),
-                        },
-                    )
-                    .expect_err("legacy self-key row cannot receive spending limits"),
+            keychain.update_spending_limit(
+                account,
+                updateSpendingLimitCall {
+                    keyId: account,
+                    token,
+                    newLimit: U256::from(1),
+                },
+            )?;
+            assert_eq!(
+                keychain.get_remaining_limit(getRemainingLimitCall {
+                    account,
+                    keyId: account,
+                    token,
+                })?,
+                U256::from(1)
             );
+
+            keychain.set_allowed_calls(
+                account,
+                setAllowedCallsCall {
+                    keyId: account,
+                    scopes: vec![CallScope {
+                        target,
+                        selectorRules: vec![],
+                    }],
+                },
+            )?;
+            let allowed_calls = keychain.get_allowed_calls(getAllowedCallsCall {
+                account,
+                keyId: account,
+            })?;
+            assert!(allowed_calls.isScoped);
+            assert_eq!(allowed_calls.scopes.len(), 1);
+            assert_eq!(allowed_calls.scopes[0].target, target);
+
+            keychain.remove_allowed_calls(
+                account,
+                removeAllowedCallsCall {
+                    keyId: account,
+                    target,
+                },
+            )?;
+            let allowed_calls = keychain.get_allowed_calls(getAllowedCallsCall {
+                account,
+                keyId: account,
+            })?;
+            assert!(allowed_calls.isScoped);
+            assert!(allowed_calls.scopes.is_empty());
+
+            keychain.revoke_key(account, revokeKeyCall { keyId: account })?;
+            assert!(keychain.keys[account][account].read()?.is_revoked);
+            assert!(keychain.is_admin_key(account, account)?);
 
             Ok(())
         })
