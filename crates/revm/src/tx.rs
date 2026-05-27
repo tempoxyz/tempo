@@ -414,8 +414,6 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
 
 impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
     fn from_recovered_tx(tx: &TempoTxEnvelope, sender: Address) -> Self {
-        // [`TempoTxEnv::from_recovered_tx`] calculates `unique_tx_identifier` on its own,
-        // so we compute it on demand only for non-AA transactions
         match tx {
             tx @ TempoTxEnvelope::Legacy(inner) => Self {
                 inner: TxEnv::from_recovered_tx(inner.tx(), sender),
