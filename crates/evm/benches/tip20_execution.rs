@@ -94,17 +94,6 @@ struct Workload {
 }
 
 #[derive(Clone, Copy)]
-struct HardforkBenchCase {
-    hardfork: TempoHardfork,
-}
-
-impl HardforkBenchCase {
-    fn bench_label(self) -> String {
-        self.hardfork.to_string()
-    }
-}
-
-#[derive(Clone, Copy)]
 enum RewardSeedMode {
     None,
     SelfRecipient,
@@ -311,13 +300,13 @@ fn latest_known_hardfork() -> TempoHardfork {
         .expect("TempoHardfork must define at least one variant")
 }
 
-fn hardfork_bench_cases() -> Vec<HardforkBenchCase> {
+fn hardfork_bench_cases() -> Vec<TempoHardfork> {
     let current = current_active_hardfork();
     let latest = latest_known_hardfork();
-    let mut cases = vec![HardforkBenchCase { hardfork: current }];
+    let mut cases = vec![current];
 
     if latest != current {
-        cases.push(HardforkBenchCase { hardfork: latest });
+        cases.push(latest);
     }
 
     cases
@@ -915,23 +904,22 @@ fn tip20_execution(c: &mut Criterion) {
     let hardfork_cases = hardfork_bench_cases();
     let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
 
-    for hardfork_case in &hardfork_cases {
+    for &hardfork in &hardfork_cases {
         let fixture = setup_fixed_cache_state(
             &workload.participants,
             workload.block_timestamp,
             None,
-            hardfork_case.hardfork,
+            hardfork,
         );
         execute_txs(
             &config,
             fixture.prewarm_state_db(),
             &workload.transactions,
             workload.block_timestamp,
-            hardfork_case.hardfork,
+            hardfork,
         );
 
-        let mut group =
-            c.benchmark_group(format!("{}/tip20_execution", hardfork_case.bench_label()));
+        let mut group = c.benchmark_group(format!("{hardfork}/tip20_execution"));
         group.throughput(Throughput::Elements(workload.transactions.len() as u64));
         group.bench_function("txgen_tip20_pure_execution", |b| {
             b.iter_batched(
@@ -942,7 +930,7 @@ fn tip20_execution(c: &mut Criterion) {
                         db,
                         &workload.transactions,
                         workload.block_timestamp,
-                        hardfork_case.hardfork,
+                        hardfork,
                     );
                     black_box(stats.gas_used);
                 },
@@ -953,24 +941,23 @@ fn tip20_execution(c: &mut Criterion) {
     }
 
     let reward_workloads = reward_bench_workloads();
-    for hardfork_case in &hardfork_cases {
+    for &hardfork in &hardfork_cases {
         for reward_workload in &reward_workloads {
             let fixture = setup_fixed_cache_state(
                 &reward_workload.participants,
                 DEFAULT_BLOCK_TIMESTAMP,
                 Some((&reward_workload.delegates, reward_workload.kind)),
-                hardfork_case.hardfork,
+                hardfork,
             );
             execute_txs(
                 &config,
                 fixture.prewarm_state_db(),
                 &reward_workload.transactions,
                 DEFAULT_BLOCK_TIMESTAMP,
-                hardfork_case.hardfork,
+                hardfork,
             );
 
-            let mut group =
-                c.benchmark_group(format!("{}/tip20_rewards", hardfork_case.bench_label()));
+            let mut group = c.benchmark_group(format!("{hardfork}/tip20_rewards"));
             group.throughput(Throughput::Elements(
                 reward_workload.transactions.len() as u64
             ));
@@ -983,7 +970,7 @@ fn tip20_execution(c: &mut Criterion) {
                             db,
                             &reward_workload.transactions,
                             DEFAULT_BLOCK_TIMESTAMP,
-                            hardfork_case.hardfork,
+                            hardfork,
                         );
                         black_box(stats.gas_used);
                     },
