@@ -21,7 +21,7 @@ use alloy_primitives::{
 };
 use alloy_sol_types::SolInterface;
 use reth_evm::{Database, block::TxResult};
-use reth_revm::state::{EvmStorageSlot, TransactionId};
+use reth_revm::state::{EvmState, EvmStorageSlot, TransactionId};
 use reth_transaction_pool::PoolTransaction;
 use std::fmt;
 use tempo_evm::TempoTxResult;
@@ -745,40 +745,63 @@ fn rewrite_covered_storage(
     original_values: &HashMap<BlockStmAccessKey, U256>,
 ) {
     let state = &mut result.result_mut().state;
+    rewrite_covered_storage_state(state, covered_keys, final_writes, original_values);
+}
 
+fn rewrite_covered_storage_state(
+    state: &mut EvmState,
+    covered_keys: &HashSet<BlockStmAccessKey>,
+    final_writes: &BlockStmWriteSet,
+    original_values: &HashMap<BlockStmAccessKey, U256>,
+) {
     for key in covered_keys {
-        let BlockStmAccessKey::Storage { address, slot } = *key else {
-            continue;
-        };
+        rewrite_semantic_storage_key(state, *key, final_writes, original_values);
+    }
 
-        if let Some(value) = final_writes.get(key) {
-            let original = original_values
-                .get(key)
-                .copied()
-                .or_else(|| {
-                    state
-                        .get(&address)
-                        .and_then(|account| account.storage.get(&slot))
-                        .map(|slot| slot.original_value())
-                })
-                .unwrap_or_default();
-            let account = state.entry(address).or_default();
-            account.mark_touch();
-            account
-                .storage
-                .entry(slot)
-                .and_modify(|storage_slot| {
-                    storage_slot.original_value = original;
-                    storage_slot.present_value = value.as_u256();
-                })
-                .or_insert_with(|| {
-                    EvmStorageSlot::new_changed(original, value.as_u256(), TransactionId::ZERO)
-                });
-        } else if let Some(account) = state.get_mut(&address)
-            && let Some(storage_slot) = account.storage.get_mut(&slot)
-        {
-            storage_slot.present_value = storage_slot.original_value();
+    for (key, _) in final_writes.ordered() {
+        if !covered_keys.contains(&key) {
+            rewrite_semantic_storage_key(state, key, final_writes, original_values);
         }
+    }
+}
+
+fn rewrite_semantic_storage_key(
+    state: &mut EvmState,
+    key: BlockStmAccessKey,
+    final_writes: &BlockStmWriteSet,
+    original_values: &HashMap<BlockStmAccessKey, U256>,
+) {
+    let BlockStmAccessKey::Storage { address, slot } = key else {
+        return;
+    };
+
+    if let Some(value) = final_writes.get(&key) {
+        let original = original_values
+            .get(&key)
+            .copied()
+            .or_else(|| {
+                state
+                    .get(&address)
+                    .and_then(|account| account.storage.get(&slot))
+                    .map(|slot| slot.original_value())
+            })
+            .unwrap_or_default();
+        let account = state.entry(address).or_default();
+        account.mark_touch();
+        account
+            .storage
+            .entry(slot)
+            .and_modify(|storage_slot| {
+                storage_slot.original_value = original;
+                storage_slot.present_value = value.as_u256();
+            })
+            .or_insert_with(|| {
+                EvmStorageSlot::new_changed(original, value.as_u256(), TransactionId::ZERO)
+            });
+    } else if let Some(account) = state.get_mut(&address)
+        && let Some(storage_slot) = account.storage.get_mut(&slot)
+    {
+        storage_slot.present_value = storage_slot.original_value();
     }
 }
 
@@ -859,6 +882,66 @@ mod tests {
     }
 
     #[test]
+    fn blockstm_actions_rewrite_materializes_resolved_nonce_slots() {
+        let hash = B256::repeat_byte(0x42);
+        let speculative_ring_key = expiring_nonce_ring_key(0);
+        let resolved_ring_key = expiring_nonce_ring_key(1);
+        let ptr_key = expiring_nonce_ring_ptr_key();
+        let seen_key = expiring_nonce_seen_key(hash);
+        let BlockStmAccessKey::Storage {
+            address,
+            slot: speculative_ring_slot,
+        } = speculative_ring_key
+        else {
+            unreachable!("nonce ring key must be storage");
+        };
+
+        let mut evm_state = EvmState::default();
+        evm_state.entry(address).or_default().storage.insert(
+            speculative_ring_slot,
+            EvmStorageSlot::new_changed(
+                U256::ZERO,
+                U256::from_be_bytes(hash.0),
+                TransactionId::ZERO,
+            ),
+        );
+
+        let mut covered_keys = HashSet::default();
+        covered_keys.insert(speculative_ring_key);
+        covered_keys.insert(ptr_key);
+        covered_keys.insert(seen_key);
+
+        let mut final_writes = BlockStmWriteSet::default();
+        final_writes.record(resolved_ring_key, hash);
+        final_writes.record(ptr_key, U256::from(2));
+        final_writes.record(seen_key, U256::from(110));
+
+        let mut original_values = HashMap::default();
+        original_values.insert(speculative_ring_key, U256::ZERO);
+        original_values.insert(resolved_ring_key, U256::ZERO);
+        original_values.insert(ptr_key, U256::ZERO);
+        original_values.insert(seen_key, U256::ZERO);
+
+        rewrite_covered_storage_state(
+            &mut evm_state,
+            &covered_keys,
+            &final_writes,
+            &original_values,
+        );
+
+        assert_eq!(
+            storage_present_value(&evm_state, speculative_ring_key),
+            U256::ZERO
+        );
+        assert_eq!(
+            storage_present_value(&evm_state, resolved_ring_key),
+            U256::from_be_bytes(hash.0)
+        );
+        assert_eq!(storage_present_value(&evm_state, ptr_key), U256::from(2));
+        assert_eq!(storage_present_value(&evm_state, seen_key), U256::from(110));
+    }
+
+    #[test]
     fn blockstm_actions_online_fee_escrow_checks_precharge() {
         let token = DEFAULT_FEE_TOKEN;
         let payer = address!("0x00000000000000000000000000000000000000aa");
@@ -886,5 +969,17 @@ mod tests {
             ),
             Err(BlockStmSemanticError::InsufficientBalance { .. })
         ));
+    }
+
+    fn storage_present_value(state: &EvmState, key: BlockStmAccessKey) -> U256 {
+        let BlockStmAccessKey::Storage { address, slot } = key else {
+            return U256::ZERO;
+        };
+
+        state
+            .get(&address)
+            .and_then(|account| account.storage.get(&slot))
+            .map(|slot| slot.present_value)
+            .unwrap_or_default()
     }
 }
