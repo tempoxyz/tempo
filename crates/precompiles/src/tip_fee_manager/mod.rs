@@ -279,7 +279,7 @@ impl TipFeeManager {
         self.collected_fees[validator][token].write(
             collected_fees
                 .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?,
+                .ok_or_else(TempoPrecompileError::under_overflow)?,
         )?;
 
         Ok(())

@@ -28,7 +28,7 @@ pub fn compute_amount_out(amount_in: U256) -> Result<U256> {
     amount_in
         .checked_mul(M)
         .map(|product| product / SCALE)
-        .ok_or(TempoPrecompileError::under_overflow())
+        .ok_or_else(TempoPrecompileError::under_overflow)
 }
 
 /// AMM pool reserves for a user-token / validator-token pair.
@@ -586,11 +586,11 @@ impl TipFeeManager {
         pool.reserve_user_token = pool
             .reserve_user_token
             .checked_add(amount_in_u128)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
         pool.reserve_validator_token = pool
             .reserve_validator_token
             .checked_sub(amount_out_u128)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+            .ok_or_else(TempoPrecompileError::under_overflow)?;
 
         self.pools[pool_id].write(pool)?;
 
