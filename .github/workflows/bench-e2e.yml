@@ -120,6 +120,21 @@ on:
         type: string
         required: false
         default: ""
+      extra-args:
+        description: Extra local reth args appended to both nodes.
+        type: string
+        required: false
+        default: ""
+      baseline-no-extra-args:
+        description: Disable extra local reth args for baseline phases.
+        type: boolean
+        required: true
+        default: false
+      feature-no-extra-args:
+        description: Disable extra local reth args for feature phases.
+        type: boolean
+        required: true
+        default: false
       gas-limit:
         description: Builder gas limit.
         type: string
@@ -262,6 +277,18 @@ on:
         type: string
         required: false
         default: ""
+      extra-args:
+        type: string
+        required: false
+        default: ""
+      baseline-no-extra-args:
+        type: string
+        required: false
+        default: "false"
+      feature-no-extra-args:
+        type: string
+        required: false
+        default: "false"
       gas-limit:
         type: string
         required: false
@@ -375,6 +402,9 @@ jobs:
       BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
+      BENCH_EXTRA_ARGS: ${{ inputs.extra-args }}
+      BENCH_BASELINE_NO_EXTRA_ARGS: ${{ inputs.baseline-no-extra-args || 'false' }}
+      BENCH_FEATURE_NO_EXTRA_ARGS: ${{ inputs.feature-no-extra-args || 'false' }}
       BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '1000000000' }}
       BENCH_RUN_TYPE: ${{ inputs.run-type || 'dispatch' }}
       BENCH_FORCE_BLOAT: ${{ inputs.force-bloat }}
@@ -750,6 +780,9 @@ jobs:
           [ -n "$BENCH_FEATURE_HARDFORK" ] && cmd+=(--feature-hardfork="$BENCH_FEATURE_HARDFORK")
           [ -n "$BENCH_BASELINE_ARGS" ] && cmd+=(--baseline-args="$BENCH_BASELINE_ARGS")
           [ -n "$BENCH_FEATURE_ARGS" ] && cmd+=(--feature-args="$BENCH_FEATURE_ARGS")
+          [ -n "$BENCH_EXTRA_ARGS" ] && cmd+=(--extra-args="$BENCH_EXTRA_ARGS")
+          [ "$BENCH_BASELINE_NO_EXTRA_ARGS" = "true" ] && cmd+=(--baseline-no-extra-args)
+          [ "$BENCH_FEATURE_NO_EXTRA_ARGS" = "true" ] && cmd+=(--feature-no-extra-args)
           [ -n "$BENCH_BENCH_ARGS" ] && cmd+=(--bench-args="$BENCH_BENCH_ARGS")
           [ -n "$BENCH_BENCH_ENV" ] && cmd+=(--bench-env="$BENCH_BENCH_ENV")
           [ -n "$BENCH_BASELINE_ENV" ] && cmd+=(--baseline-env="$BENCH_BASELINE_ENV")
@@ -808,6 +841,9 @@ jobs:
           [ "$BENCH_TRACY" != "off" ] && derek_cmd+=(tracy="$BENCH_TRACY" tracy-seconds="$BENCH_TRACY_SECONDS" tracy-offset="$BENCH_TRACY_OFFSET")
           [ -n "$BENCH_BASELINE_ARGS" ] && derek_cmd+=(baseline-args="$BENCH_BASELINE_ARGS")
           [ -n "$BENCH_FEATURE_ARGS" ] && derek_cmd+=(feature-args="$BENCH_FEATURE_ARGS")
+          [ -n "$BENCH_EXTRA_ARGS" ] && derek_cmd+=(extra-args="$BENCH_EXTRA_ARGS")
+          [ "$BENCH_BASELINE_NO_EXTRA_ARGS" = "true" ] && derek_cmd+=(baseline-no-extra-args)
+          [ "$BENCH_FEATURE_NO_EXTRA_ARGS" = "true" ] && derek_cmd+=(feature-no-extra-args)
           [ -n "$BENCH_BENCH_ARGS" ] && derek_cmd+=(bench-args="$BENCH_BENCH_ARGS")
           [ -n "$BENCH_BENCH_ENV" ] && derek_cmd+=(bench-env="$BENCH_BENCH_ENV")
           [ -n "$BENCH_BASELINE_ENV" ] && derek_cmd+=(baseline-env="$BENCH_BASELINE_ENV")

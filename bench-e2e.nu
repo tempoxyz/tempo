@@ -1044,7 +1044,7 @@ def "main e2e" [
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
-    --extra-args: string = ""                           # Override default extra local reth args for both node phases
+    --extra-args: string = ""                           # Additional extra local reth args appended for both node phases
     --baseline-no-extra-args                            # Disable extra local reth args for baseline phases
     --feature-no-extra-args                             # Disable extra local reth args for feature phases
     --bench-args: string = ""                           # Additional txgen generate arguments
