@@ -398,6 +398,7 @@ where
         }
     }
 
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn validate_tx(
         &self,
         tx: &TempoTxEnvelope,
@@ -406,7 +407,19 @@ where
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
             self.validate_system_tx(tx)
-        } else if let Some(tx_proposer) = tx.subblock_proposer() {
+        } else {
+            self.validate_non_system_tx(tx, gas_used)
+        }
+    }
+
+    pub(crate) fn validate_non_system_tx(
+        &self,
+        tx: &TempoTxEnvelope,
+        gas_used: u64,
+    ) -> Result<BlockSection, BlockValidationError> {
+        debug_assert!(!tx.is_system_tx());
+
+        if let Some(tx_proposer) = tx.subblock_proposer() {
             match self.section {
                 BlockSection::GasIncentive | BlockSection::System { .. } => {
                     Err(BlockValidationError::msg("subblock section already passed"))
@@ -548,7 +561,7 @@ where
             // If pre-execution validation returned a section to use, just use it.
             next_section
         } else {
-            self.validate_tx(recovered.tx(), block_gas_used)?
+            self.validate_non_system_tx(recovered.tx(), block_gas_used)?
         };
         // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
         let validator_fee = self.evm().validator_fee();
