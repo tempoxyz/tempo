@@ -5,9 +5,9 @@ expression: gas
 close_existing_channel_after_settlement: 49713
 close_existing_channel_no_prior_settlement: 49713
 open_new_channel_existing_reserve_balance: 287825
-open_new_channel_first_reserve_balance: 791325
+open_new_channel_first_reserve_balance: 787125
 request_close_existing_channel: 30123
 settle_existing_channel_existing_payee_balance: 295031
-settle_existing_channel_new_payee_balance: 553571
+settle_existing_channel_new_payee_balance: 549371
 top_up_existing_channel: 40205
 top_up_existing_channel_cancel_close_request: 42080

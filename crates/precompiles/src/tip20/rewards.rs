@@ -148,7 +148,15 @@ impl TIP20Token {
     ) -> Result<RewardFlag> {
         // On T6, once initialized, the balance flag is the source of truth for user reward state.
         let holder_balance = self.get_balance(holder)?;
-        if holder_balance.flag.is_opted_out() {
+
+        // Check uninitialized opt-outs before loading global rewards; first transfers hit this path.
+        let delegate = if holder_balance.flag.is_uninitialized() {
+            Some(self.user_reward_info[holder].reward_recipient.read()?)
+        } else {
+            None
+        };
+
+        if matches!(delegate, Some(Address::ZERO)) || holder_balance.flag.is_opted_out() {
             if checkpoint_opted_out_rewards {
                 let global_reward_per_token = self.get_global_reward_per_token()?;
                 self.user_reward_info[holder]
@@ -160,9 +168,8 @@ impl TIP20Token {
 
         let global_reward_per_token = self.get_global_reward_per_token()?;
 
-        // No rewards have been distributed yet, so there is no delegate to consult.
-        // Preserve the canonical opted-in flag without consulting legacy delegate storage.
-        if global_reward_per_token.is_zero() && holder_balance.flag.is_opted_in() {
+        // No distributed rewards means no delegate read is needed.
+        if global_reward_per_token.is_zero() {
             return Ok(RewardFlag::OptedIn);
         }
 
@@ -171,23 +178,15 @@ impl TIP20Token {
             .checked_sub(holder_reward_per_token)
             .ok_or(TempoPrecompileError::under_overflow())?;
 
-        // The holder is already checkpointed at the current rewards-per-token.
-        // Preserve the canonical opted-in flag without consulting legacy delegate storage.
-        if reward_per_token_delta == U256::ZERO && holder_balance.flag.is_opted_in() {
+        // Already-checkpointed holders have no new rewards to route.
+        if reward_per_token_delta == U256::ZERO {
             return Ok(RewardFlag::OptedIn);
         }
 
-        // A nonzero rewards-per-token delta needs a delegate to receive accrued rewards.
-        // If migrated delegate storage is zero, treat the account as effectively opted out.
-        let delegate = self.user_reward_info[holder].reward_recipient.read()?;
-        if delegate.is_zero() {
-            if checkpoint_opted_out_rewards {
-                self.user_reward_info[holder]
-                    .reward_per_token
-                    .write(global_reward_per_token)?;
-            }
-            return Ok(RewardFlag::OptedOut);
-        }
+        let delegate = match delegate {
+            Some(delegate) => delegate,
+            None => self.user_reward_info[holder].reward_recipient.read()?,
+        };
 
         let reward = holder_balance
             .checked_mul(reward_per_token_delta)?

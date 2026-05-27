@@ -4,7 +4,7 @@ expression: gas
 ---
 cancel_tail_bid_order: 294241
 place_bid_append_same_level: 1599985
-place_bid_empty_level: 2587085
-place_flip_ask_empty_level: 2589919
+place_bid_empty_level: 2582885
+place_flip_ask_empty_level: 2585719
 swap_exact_in_partial_bid_fill: 349485
 swap_exact_out_full_flip_ask_fill: 644076

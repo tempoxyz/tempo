@@ -36,6 +36,10 @@ impl RewardFlag {
         matches!(self, Self::OptedIn)
     }
 
+    pub fn is_uninitialized(&self) -> bool {
+        matches!(self, Self::Uninitialized)
+    }
+
     pub fn from_delegate(delegate: Address) -> Self {
         if delegate.is_zero() {
             Self::OptedOut
@@ -48,7 +52,7 @@ impl RewardFlag {
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UserState {
     pub(super) amount: u128,
-    /// (T6+) Cached reward opt-in status. Tracks `reward_recipient`, which remains the source of truth.
+    /// (T6+) Canonical reward opt-in status for initialized balances.
     pub(super) flag: RewardFlag,
 }
 
