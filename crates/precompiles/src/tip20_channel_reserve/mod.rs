@@ -683,7 +683,6 @@ mod tests {
     use tempo_contracts::precompiles::{
         ITIP20ChannelReserve::ITIP20ChannelReserveCalls, TIP20Error,
     };
-    use tempo_primitives::{MasterId, UserTag};
 
     fn descriptor(
         payer: Address,
@@ -833,13 +832,13 @@ mod tests {
     fn test_open_rejects_invalid_payees() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         let payer = Address::random();
-        let virtual_payee = Address::new_virtual(MasterId::random(), UserTag::random());
 
         StorageCtx::enter(&mut storage, || {
             let token = TIP20Setup::path_usd(payer)
                 .with_issuer(payer)
                 .with_mint(payer, U256::from(100u128))
                 .apply()?;
+            let (_, virtual_payee) = register_virtual_master(&mut AddressRegistry::new())?;
             let mut reserve = TIP20ChannelReserve::new();
             reserve.initialize()?;
             seed_expiring_nonce_hash(&mut reserve)?;
