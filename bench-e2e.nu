@@ -20,11 +20,13 @@ const E2E_GAS_LIMIT = "1000000000"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
-const E2E_LOCAL_RETH_ARGS = [
+const E2E_LOCAL_RETH_REQUIRED_ARGS = [
     "--ipcdisable"
     "--disable-discovery"
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
+]
+const E2E_LOCAL_RETH_EXTRA_ARGS = [
     "--consensus.no-legacy-archive"
     "--builder.max-tasks" "1"
     "--engine.share-sparse-trie-with-payload-builder"
@@ -729,6 +731,11 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let side_args = if $run_type == "baseline" { $ctx.baseline_args } else { $ctx.feature_args }
     let side_env = if $run_type == "baseline" { $ctx.baseline_env } else { $ctx.feature_env }
     let extra_args = (parse-cli-args $side_args)
+    let local_reth_extra_args = if $ctx.extra_args != "" {
+        parse-cli-args $ctx.extra_args
+    } else {
+        $E2E_LOCAL_RETH_EXTRA_ARGS
+    }
 
     cleanup-local-e2e-processes
     bench-restore-at $ctx.a.state_path $ctx.a.mount $ctx.a.datadir
@@ -781,14 +788,16 @@ def run-local-e2e-phase [run: record, ctx: record] {
     let b_rpc = "http://127.0.0.1:8645"
     let a_base_args = (build-base-args $genesis $ctx.a.datadir $a_log_dir "0.0.0.0" 8545 9001)
         | append (build-e2e-consensus-args $ctx.a.node_dir $ctx.trusted_peers $ctx.a.consensus_port $ctx.a.ip)
-        | append $E2E_LOCAL_RETH_ARGS
+        | append $E2E_LOCAL_RETH_REQUIRED_ARGS
+        | append $local_reth_extra_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
         | append (if $ctx.tracing_otlp != "" { [$"--tracing-otlp=($ctx.tracing_otlp)"] } else { [] })
     let b_base_args = (build-base-args $genesis $ctx.b.datadir $b_log_dir "0.0.0.0" 8645 9101)
         | append (build-e2e-consensus-args $ctx.b.node_dir $ctx.trusted_peers $ctx.b.consensus_port $ctx.b.ip)
-        | append $E2E_LOCAL_RETH_ARGS
+        | append $E2E_LOCAL_RETH_REQUIRED_ARGS
+        | append $local_reth_extra_args
         | append (log-filter-args $ctx.loud)
         | append (if $ctx.gas_limit != "" { ["--builder.gaslimit" $ctx.gas_limit] } else { [] })
         | append (if $ctx.tracy != "off" { ["--log.tracy" "--log.tracy.filter" $ctx.tracy_filter] } else { [] })
@@ -1032,6 +1041,7 @@ def "main e2e" [
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
+    --extra-args: string = ""                           # Override default extra local reth args for both node phases
     --bench-args: string = ""                           # Additional txgen generate arguments
     --baseline-env: string = ""                         # Environment vars for baseline node phases
     --feature-env: string = ""                          # Environment vars for feature node phases
@@ -1307,6 +1317,7 @@ def "main e2e" [
         tracy_offset: $tracy_offset
         baseline_args: $baseline_args
         feature_args: $feature_args
+        extra_args: $extra_args
         bench_args: $bench_args
         baseline_env: $baseline_env
         feature_env: $feature_env
