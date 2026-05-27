@@ -391,7 +391,7 @@ fn calculate_key_authorization_gas(
 
         // T6 account-bound authorizations may be signed by an existing admin key instead of the
         // root key. Charge one worst-case cold read for validating that admin signer row.
-        if spec.is_t6() && (key_auth.is_admin || key_auth.account.is_some()) {
+        if spec.is_t6() && key_auth.account.is_some() {
             total_gas += sload_cost;
         }
 
@@ -1831,13 +1831,6 @@ where
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
                                 reason: "admin key authorizations cannot carry expiry, limits, or call scopes"
                                     .to_string(),
-                        }
-                        .into());
-                    }
-
-                    if key_auth.account != Some(tx.caller) {
-                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                            reason: "admin key authorization account mismatch".to_string(),
                         }
                         .into());
                     }
@@ -3383,6 +3376,8 @@ mod tests {
         admin_t6_key_auth.authorization = admin_t6_key_auth
             .authorization
             .into_admin(Address::random());
+        let mut unbound_admin_t6_key_auth = create_key_auth(0);
+        unbound_admin_t6_key_auth.authorization.is_admin = true;
 
         let (base_t6_gas, base_t6_state_gas) =
             calculate_key_authorization_gas(&base_t6_key_auth, &t6_gas_params, TempoHardfork::T6);
@@ -3393,6 +3388,11 @@ mod tests {
         );
         let (admin_t6_gas, admin_t6_state_gas) =
             calculate_key_authorization_gas(&admin_t6_key_auth, &t6_gas_params, TempoHardfork::T6);
+        let (unbound_admin_t6_gas, unbound_admin_t6_state_gas) = calculate_key_authorization_gas(
+            &unbound_admin_t6_key_auth,
+            &t6_gas_params,
+            TempoHardfork::T6,
+        );
 
         assert_eq!(
             account_bound_t6_gas - base_t6_gas,
@@ -3402,7 +3402,11 @@ mod tests {
         assert_eq!(
             admin_t6_gas - base_t6_gas,
             t6_sload,
-            "T6 admin authorization charges one admin-signer cold read"
+            "T6 account-bound admin authorization charges one admin-signer cold read"
+        );
+        assert_eq!(
+            unbound_admin_t6_gas, base_t6_gas,
+            "T6 root-signed admin authorization without account does not charge admin-signer read"
         );
         assert_eq!(
             account_bound_t6_state_gas, base_t6_state_gas,
@@ -3411,6 +3415,10 @@ mod tests {
         assert_eq!(
             admin_t6_state_gas, base_t6_state_gas,
             "T6 admin-signer read does not add state gas"
+        );
+        assert_eq!(
+            unbound_admin_t6_state_gas, base_t6_state_gas,
+            "T6 unbound admin authorization does not add state gas"
         );
 
         let scoped = SignedKeyAuthorization {
@@ -5190,6 +5198,35 @@ mod tests {
                 ),
                 "admin key authorization should be bound to tx.caller, got: {result:?}"
             );
+        }
+
+        #[test]
+        fn test_t6_root_admin_key_authorization_allows_omitted_account() {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let mut key_auth = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key);
+            key_auth.is_admin = true;
+            assert_eq!(key_auth.account, None);
+
+            let signed = sign_key_auth(&signer, key_auth);
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T6, None, false);
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                result.is_ok(),
+                "root-signed admin key authorization should not require account, got: {result:?}"
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let keychain = AccountKeychain::new();
+                assert!(
+                    keychain
+                        .is_admin_key(user, key)
+                        .expect("admin key status read succeeds"),
+                    "root-signed admin key should be registered as admin"
+                );
+            });
         }
 
         #[test]

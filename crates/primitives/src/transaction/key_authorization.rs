@@ -223,8 +223,8 @@ pub struct KeyAuthorization {
 
     /// Account this authorization targets.
     ///
-    /// Required for admin-signed authorizations and admin-key creation so signatures cannot be
-    /// replayed across accounts that share the same admin key.
+    /// Required for admin-signed authorizations so signatures cannot be replayed across accounts
+    /// that share the same admin key. Root-signed authorizations may omit it.
     pub account: Option<Address>,
 }
 
