@@ -485,7 +485,8 @@ impl StablecoinDEX {
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
             // For bids, escrow quote tokens based on price
-            let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)?;
+            let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)
+                .map_err(|_| StablecoinDEXError::insufficient_balance().into())?;
             (quote_token, quote_amount, token)
         } else {
             // For asks, escrow base tokens
@@ -648,7 +649,8 @@ impl StablecoinDEX {
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount, non_escrow_token) = if is_bid {
             // For bids, escrow quote tokens based on price
-            let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)?;
+            let quote_amount = base_to_quote(amount, tick, RoundingDirection::Up)
+                .map_err(|_| StablecoinDEXError::insufficient_balance().into())?;
             (quote_token, quote_amount, token)
         } else {
             // For asks, escrow base tokens
@@ -736,7 +738,8 @@ impl StablecoinDEX {
         // Calculate escrow amount and token based on order side
         let (escrow_token, escrow_amount, non_escrow_token) = if flipped.is_bid {
             // For bids, escrow quote tokens based on price
-            let quote_amount = base_to_quote(flipped.amount, flipped.tick, RoundingDirection::Up)?;
+            let quote_amount = base_to_quote(flipped.amount, flipped.tick, RoundingDirection::Up)
+                .map_err(|_| StablecoinDEXError::insufficient_balance().into())?;
             (quote_token, quote_amount, base_token)
         } else {
             // For asks, escrow base tokens
