@@ -54,11 +54,59 @@ fn gen_storable_layout_impl(type_path: &TokenStream, byte_count: usize) -> Token
 
 /// Generate a `StorageKey` implementation based on the conversion strategy
 fn gen_storage_key_impl(type_path: &TokenStream, strategy: &StorageKeyStrategy) -> TokenStream {
-    let conversion = match strategy {
-        StorageKeyStrategy::Simple => quote! { self.to_be_bytes() },
-        StorageKeyStrategy::WithSize(size) => quote! { self.to_be_bytes::<#size>() },
-        StorageKeyStrategy::SignedRaw(size) => quote! { self.into_raw().to_be_bytes::<#size>() },
-        StorageKeyStrategy::AsSlice => quote! { self.as_slice() },
+    let (conversion, mapping_slot) = match strategy {
+        StorageKeyStrategy::Simple => (
+            quote! { self.to_be_bytes() },
+            quote! {
+                #[inline]
+                fn mapping_slot(&self, slot: ::alloy::primitives::U256) -> ::alloy::primitives::U256 {
+                    let key_bytes = self.to_be_bytes();
+                    let mut buf = [0u8; 64];
+                    buf[32 - key_bytes.len()..32].copy_from_slice(&key_bytes);
+                    buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
+                    ::alloy::primitives::U256::from_be_bytes(::alloy::primitives::keccak256(buf).0)
+                }
+            },
+        ),
+        StorageKeyStrategy::WithSize(size) => (
+            quote! { self.to_be_bytes::<#size>() },
+            quote! {
+                #[inline]
+                fn mapping_slot(&self, slot: ::alloy::primitives::U256) -> ::alloy::primitives::U256 {
+                    let key_bytes = self.to_be_bytes::<#size>();
+                    let mut buf = [0u8; 64];
+                    buf[32 - #size..32].copy_from_slice(&key_bytes);
+                    buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
+                    ::alloy::primitives::U256::from_be_bytes(::alloy::primitives::keccak256(buf).0)
+                }
+            },
+        ),
+        StorageKeyStrategy::SignedRaw(size) => (
+            quote! { self.into_raw().to_be_bytes::<#size>() },
+            quote! {
+                #[inline]
+                fn mapping_slot(&self, slot: ::alloy::primitives::U256) -> ::alloy::primitives::U256 {
+                    let key_bytes = self.into_raw().to_be_bytes::<#size>();
+                    let mut buf = [0u8; 64];
+                    buf[32 - #size..32].copy_from_slice(&key_bytes);
+                    buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
+                    ::alloy::primitives::U256::from_be_bytes(::alloy::primitives::keccak256(buf).0)
+                }
+            },
+        ),
+        StorageKeyStrategy::AsSlice => (
+            quote! { self.as_slice() },
+            quote! {
+                #[inline]
+                fn mapping_slot(&self, slot: ::alloy::primitives::U256) -> ::alloy::primitives::U256 {
+                    let key_bytes = self.as_slice();
+                    let mut buf = [0u8; 64];
+                    buf[32 - key_bytes.len()..32].copy_from_slice(key_bytes);
+                    buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
+                    ::alloy::primitives::U256::from_be_bytes(::alloy::primitives::keccak256(buf).0)
+                }
+            },
+        ),
     };
 
     quote! {
@@ -67,6 +115,8 @@ fn gen_storage_key_impl(type_path: &TokenStream, strategy: &StorageKeyStrategy) 
             fn as_storage_bytes(&self) -> impl AsRef<[u8]> {
                 #conversion
             }
+
+            #mapping_slot
         }
     }
 }
