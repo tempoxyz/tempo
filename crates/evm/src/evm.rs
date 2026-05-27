@@ -69,16 +69,14 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
-    pub fn new(db: DB, mut input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
+    pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
         // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
         // and is independent of the T4 hardfork. The caller is responsible for setting the
         // flag on the input `EvmEnv`; here we pass it through unchanged.
         //
         // Tempo's TIP-1016 gas params (`tempo_gas_params_with_amsterdam`) store absolute
-        // state-gas values (e.g. 230_000 for SSTORE zero→non-zero). Upstream revm now
-        // multiplies state-gas params by `cpsb` at charge time. Pin `cpsb = 1` so the
-        // multiplication is a no-op and the stored values are charged verbatim.
-        input.cfg_env.cpsb_override.get_or_insert(1);
+        // state-gas values (e.g. 230_000 for SSTORE zero→non-zero), which are charged
+        // verbatim by upstream revm.
         let ctx = Context::mainnet()
             .with_db(db)
             .with_block(input.block_env)
@@ -466,7 +464,7 @@ mod tests {
         // T1 has tx_eip7702_per_empty_account_cost = 12,500
         let gas_params = &evm.ctx().cfg.gas_params;
         assert_eq!(
-            gas_params.tx_eip7702_per_empty_account_cost(0),
+            gas_params.tx_eip7702_per_empty_account_cost(),
             12_500,
             "T1 should have EIP-7702 per empty account cost of 12,500"
         );
@@ -505,12 +503,12 @@ mod tests {
             .ctx()
             .cfg
             .gas_params
-            .tx_eip7702_per_empty_account_cost(0);
+            .tx_eip7702_per_empty_account_cost();
         let t1_eip7702_cost = t1_evm
             .ctx()
             .cfg
             .gas_params
-            .tx_eip7702_per_empty_account_cost(0);
+            .tx_eip7702_per_empty_account_cost();
 
         assert_eq!(t0_eip7702_cost, 25_000, "T0 should have default 25,000");
         assert_eq!(t1_eip7702_cost, 12_500, "T1 should have reduced 12,500");

@@ -203,7 +203,7 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "980872d", feat
   "std",
   "optional-checks",
 ] }
-revm = { version = "40.0.2", features = ["optional_fee_charge"], default-features = false }
+revm = { version = "40.0.3", features = ["optional_fee_charge"], default-features = false }
 
 alloy = { version = "2.0.5", default-features = false }
 alloy-consensus = { version = "2.0.5", default-features = false }
