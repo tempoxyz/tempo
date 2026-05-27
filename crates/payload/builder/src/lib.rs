@@ -308,10 +308,7 @@ where
         check_cancel!();
 
         let chain_spec = self.provider.chain_spec();
-        let is_osaka = self
-            .provider
-            .chain_spec()
-            .is_osaka_active_at_timestamp(attributes.timestamp);
+        let is_osaka = chain_spec.is_osaka_active_at_timestamp(attributes.timestamp);
 
         let block_gas_limit: u64 = parent_header.gas_limit();
         let shared_gas_limit =
@@ -439,6 +436,8 @@ where
             .record(prepare_system_txs_elapsed);
 
         let base_fee = builder.evm_mut().block().basefee;
+        let tx_gas_limit_cap = builder.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX);
+        let use_t5_payment_rules = hardfork.is_t5();
         let pool_fetch_start = Instant::now();
         let best_txs = best_txs(BestTransactionsAttributes::new(
             base_fee,
@@ -497,10 +496,7 @@ where
             };
             pool_transactions_yielded += 1;
 
-            let max_regular_gas_used = core::cmp::min(
-                pool_tx.gas_limit(),
-                builder.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
-            );
+            let max_regular_gas_used = core::cmp::min(pool_tx.gas_limit(), tx_gas_limit_cap);
 
             // Ensure we still have capacity for this transaction within the non-shared gas limit.
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
@@ -520,7 +516,7 @@ where
                 continue;
             }
 
-            let is_payment = if hardfork.is_t5() {
+            let is_payment = if use_t5_payment_rules {
                 pool_tx.transaction.inner().is_payment_v2()
             } else {
                 pool_tx.transaction.inner().is_payment_v1()
