@@ -17,6 +17,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use reth_node_core::primitives::SealedBlock;
+use std::sync::Arc;
 use tracing::warn;
 
 use crate::consensus::Digest;
@@ -28,15 +29,15 @@ use crate::consensus::Digest;
 // Sealed because of the frequent accesses to the hash.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[repr(transparent)]
-pub(crate) struct Block(SealedBlock<tempo_primitives::Block>);
+pub(crate) struct Block(Arc<SealedBlock<tempo_primitives::Block>>);
 
 impl Block {
     pub(crate) fn from_execution_block(block: SealedBlock<tempo_primitives::Block>) -> Self {
-        Self(block)
+        Self(Arc::new(block))
     }
 
     pub(crate) fn into_inner(self) -> SealedBlock<tempo_primitives::Block> {
-        self.0
+        Arc::unwrap_or_clone(self.0)
     }
 
     /// Returns the (eth) hash of the wrapped block.
@@ -62,7 +63,7 @@ impl std::ops::Deref for Block {
     type Target = SealedBlock<tempo_primitives::Block>;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        self.0.as_ref()
     }
 }
 
