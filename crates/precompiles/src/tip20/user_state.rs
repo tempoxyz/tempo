@@ -18,6 +18,9 @@ use crate::{
 use alloy::primitives::{Address, U256};
 use tempo_precompiles_macros::{Storable, StorableLayout};
 
+// NOTE: `RewardFlag` derives `Storable`, so the cached flag occupies 1 byte in storage despite
+// only needing 2 bits (as per the spec). If the balance slot needs to pack more metadata in the
+// future, `UserState` should not derive `StorableLayout` and switch to a manual bit-level layout.
 #[derive(Default, Debug, Clone, Storable, Copy, PartialEq)]
 #[repr(u8)]
 pub enum RewardFlag {
@@ -45,6 +48,8 @@ impl RewardFlag {
     }
 }
 
+// NOTE: `StorableLayout` is byte-granular, matching the `RewardFlag` byte above.
+// This keeps generated handlers correct, but cannot represent future sub-byte fields.
 #[derive(Debug, Clone, StorableLayout, Copy, PartialEq)]
 pub struct UserState {
     pub(super) amount: u128,
