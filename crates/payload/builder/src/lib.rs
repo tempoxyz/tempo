@@ -5,6 +5,7 @@
 
 mod budget;
 mod metrics;
+mod pending_hints;
 mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
@@ -15,6 +16,7 @@ use crate::{
         payload_budget_exhausted, scaled_build_time_multiplier,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
+    pending_hints::PendingPaymentPrewarmHints,
     prewarming::BestTransactionsPrewarming,
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
@@ -104,6 +106,8 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     enable_prewarming: bool,
+    /// Background pending payment prewarm hint computation service.
+    pending_prewarm_hints: Option<PendingPaymentPrewarmHints<Provider>>,
     /// Conservative estimate of total replayable build work divided by work at tx cutoff.
     build_time_multiplier: Arc<AtomicU64>,
 }
@@ -132,7 +136,15 @@ impl Default for TempoPayloadBuilderConfig {
     }
 }
 
-impl<Provider> TempoPayloadBuilder<Provider> {
+impl<Provider> TempoPayloadBuilder<Provider>
+where
+    Provider: StateProviderFactory
+        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
+{
     pub fn new(
         pool: TempoTransactionPool<Provider>,
         provider: Provider,
@@ -140,17 +152,23 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         evm_config: TempoEvmConfig,
         config: TempoPayloadBuilderConfig,
     ) -> Self {
+        let metrics = TempoPayloadBuilderMetrics::default();
+        let pending_prewarm_hints = config
+            .enable_prewarming
+            .then(|| PendingPaymentPrewarmHints::spawn(pool.clone(), metrics.clone()));
+
         Self {
             pool,
             provider,
             executor,
             evm_config,
-            metrics: TempoPayloadBuilderMetrics::default(),
+            metrics,
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             highest_invalid_subblock: Default::default(),
             is_dev: config.is_dev,
             state_provider_metrics: config.state_provider_metrics,
             enable_prewarming: config.enable_prewarming,
+            pending_prewarm_hints,
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
@@ -223,8 +241,12 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
 
 impl<Provider> PayloadBuilder for TempoPayloadBuilder<Provider>
 where
-    Provider:
-        StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
+    Provider: StateProviderFactory
+        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     type Attributes = TempoPayloadAttributes;
     type BuiltPayload = TempoBuiltPayload;
@@ -270,8 +292,12 @@ where
 
 impl<Provider> TempoPayloadBuilder<Provider>
 where
-    Provider:
-        StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + Clone + 'static,
+    Provider: StateProviderFactory
+        + ChainSpecProvider<ChainSpec = TempoChainSpec>
+        + Clone
+        + Send
+        + Sync
+        + 'static,
 {
     #[instrument(
         target = "payload_builder",
@@ -307,6 +333,10 @@ where
             attributes,
             payload_id,
         } = config;
+        let _pending_prewarm_hints_pause = self
+            .pending_prewarm_hints
+            .as_ref()
+            .map(PendingPaymentPrewarmHints::pause);
         let build_once_with_shared_trie =
             // When trie handle is provided, we build the payload once so the shared trie can be reused.
             trie_handle.is_some()

@@ -156,6 +156,40 @@ impl TempoPayloadBuilderMetrics {
     pub(crate) fn inc_subblocks_expired(&self) {
         metrics::counter!("tempo_payload_builder_subblocks_expired_total").increment(1);
     }
+
+    /// Increments the queued pending payment prewarm hint counter.
+    #[inline]
+    pub(crate) fn inc_pending_prewarm_hint_queued(&self) {
+        metrics::counter!("tempo_payload_builder_pending_prewarm_hints_queued_total").increment(1);
+    }
+
+    /// Increments the computed pending payment prewarm hint counter.
+    #[inline]
+    pub(crate) fn inc_pending_prewarm_hint_computed(&self) {
+        metrics::counter!("tempo_payload_builder_pending_prewarm_hints_computed_total")
+            .increment(1);
+    }
+
+    /// Increments the skipped pending payment prewarm hint counter.
+    #[inline]
+    pub(crate) fn inc_pending_prewarm_hint_skipped(&self, reason: &'static str) {
+        metrics::counter!("tempo_payload_builder_pending_prewarm_hints_skipped_total", "reason" => reason)
+            .increment(1);
+    }
+
+    /// Increments the full-queue drop counter.
+    #[inline]
+    pub(crate) fn inc_pending_prewarm_hint_dropped_full_queue(&self) {
+        metrics::counter!("tempo_payload_builder_pending_prewarm_hints_dropped_full_queue_total")
+            .increment(1);
+    }
+
+    /// Sets the number of active pending payment prewarm hint workers.
+    #[inline]
+    pub(crate) fn set_pending_prewarm_hint_active_workers(&self, active_workers: usize) {
+        metrics::gauge!("tempo_payload_builder_pending_prewarm_hint_active_workers")
+            .set(active_workers as f64);
+    }
 }
 
 /// Wraps a [`StateProvider`] reference to instrument `hashed_post_state` and

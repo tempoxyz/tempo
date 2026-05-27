@@ -27,6 +27,38 @@ use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 use thiserror::Error;
 
+/// A state location that can be prefetched before executing a pooled transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PrewarmTouch {
+    /// An account touch.
+    Account(Address),
+    /// A storage touch.
+    Storage { address: Address, slot: U256 },
+}
+
+/// Opportunistic prewarming hint attached to a pooled transaction.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PrewarmHint {
+    touches: Vec<PrewarmTouch>,
+}
+
+impl PrewarmHint {
+    /// Creates a new prewarming hint from the given touches.
+    pub fn new(touches: Vec<PrewarmTouch>) -> Self {
+        Self { touches }
+    }
+
+    /// Returns the touched accounts and storage slots.
+    pub fn touches(&self) -> &[PrewarmTouch] {
+        &self.touches
+    }
+
+    /// Consumes the hint and returns the touched accounts and storage slots.
+    pub fn into_touches(self) -> Vec<PrewarmTouch> {
+        self.touches
+    }
+}
+
 /// Tempo pooled transaction representation.
 ///
 /// This is a wrapper around the regular ethereum [`EthPooledTransaction`], but with tempo specific implementations.
@@ -60,6 +92,8 @@ pub struct TempoPooledTransaction {
     /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
     /// can check if the fee payer's balance was modified without recomputing the keccak.
     fee_balance_slot: OnceLock<Option<(Address, U256)>>,
+    /// Opportunistic storage prewarm hint computed while the transaction is pending.
+    prewarm_hint: OnceLock<Arc<PrewarmHint>>,
 }
 
 impl TempoPooledTransaction {
@@ -93,6 +127,7 @@ impl TempoPooledTransaction {
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
+            prewarm_hint: OnceLock::new(),
         }
     }
 
@@ -341,6 +376,18 @@ impl TempoPooledTransaction {
             let hash = self.expiring_nonce_hash()?;
             Some(NonceManager::new().expiring_nonce_seen[hash].slot())
         })
+    }
+
+    /// Attaches an opportunistic prewarming hint to this pooled transaction.
+    ///
+    /// Returns true if the hint was stored by this call. Existing hints are kept.
+    pub fn set_prewarm_hint(&self, hint: PrewarmHint) -> bool {
+        self.prewarm_hint.set(Arc::new(hint)).is_ok()
+    }
+
+    /// Returns the opportunistic prewarming hint, if one has been computed.
+    pub fn prewarm_hint(&self) -> Option<Arc<PrewarmHint>> {
+        self.prewarm_hint.get().cloned()
     }
 }
 
@@ -756,6 +803,50 @@ mod tests {
         tt_signature::{PrimitiveSignature, TempoSignature},
         tt_signed::AASigned,
     };
+
+    #[test]
+    fn prewarm_hint_storage_is_single_assignment_and_cloned() {
+        let tx = TxEip1559 {
+            to: TxKind::Call(PATH_USD_ADDRESS),
+            gas_limit: 21000,
+            ..Default::default()
+        };
+        let envelope = TempoTxEnvelope::Eip1559(alloy_consensus::Signed::new_unchecked(
+            tx,
+            Signature::test_signature(),
+            B256::ZERO,
+        ));
+        let pooled_tx = TempoPooledTransaction::new(Recovered::new_unchecked(
+            envelope,
+            address!("0000000000000000000000000000000000000001"),
+        ));
+
+        assert!(pooled_tx.prewarm_hint().is_none());
+
+        let first_touch = PrewarmTouch::Account(Address::repeat_byte(0x11));
+        assert!(pooled_tx.set_prewarm_hint(PrewarmHint::new(vec![first_touch])));
+        assert_eq!(
+            pooled_tx.prewarm_hint().expect("hint").touches(),
+            &[first_touch]
+        );
+
+        let second_touch = PrewarmTouch::Account(Address::repeat_byte(0x22));
+        assert!(!pooled_tx.set_prewarm_hint(PrewarmHint::new(vec![second_touch])));
+        assert_eq!(
+            pooled_tx.prewarm_hint().expect("hint").touches(),
+            &[first_touch]
+        );
+
+        let cloned = pooled_tx.clone();
+        assert_eq!(
+            cloned.prewarm_hint().expect("cloned hint").touches(),
+            &[first_touch]
+        );
+        assert_eq!(
+            pooled_tx.prewarm_hint().expect("original hint").touches(),
+            &[first_touch]
+        );
+    }
 
     #[test]
     fn test_payment_classification_positive() {

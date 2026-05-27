@@ -1,7 +1,11 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    cell::RefCell,
+    collections::HashMap,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, AtomicUsize, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -23,10 +27,20 @@ use tempo_precompiles::{
     tip20::{ITIP20, tip20_slots},
 };
 use tempo_primitives::TempoAddressExt;
-use tempo_transaction_pool::best::BestTransaction;
+use tempo_transaction_pool::{
+    best::BestTransaction,
+    transaction::{PrewarmHint, PrewarmTouch},
+};
 use tracing::trace;
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+
+thread_local! {
+    static PREWARM_EVM_STATES: RefCell<HashMap<usize, PrewarmEvmState>> =
+        RefCell::new(HashMap::new());
+}
+
+static NEXT_PREWARM_EVM_CACHE_ID: AtomicUsize = AtomicUsize::new(1);
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -61,6 +75,7 @@ impl BestTransactionsPrewarming {
             cache,
             evm_env,
             stop: stop.clone(),
+            cache_id: NEXT_PREWARM_EVM_CACHE_ID.fetch_add(1, Ordering::Relaxed),
         };
 
         let this = Self {
@@ -99,11 +114,6 @@ impl BestTransactionsPrewarming {
         let pool = executor.prewarming_pool();
 
         pool.in_place_scope(|scope| {
-            let prewarm = ctx.prewarm.clone();
-            scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-            });
-
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
@@ -161,7 +171,7 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        ctx.prewarm.clear_worker_evms(pool);
     }
 
     fn prewarm_transaction<Provider>(
@@ -174,14 +184,34 @@ impl BestTransactionsPrewarming {
             return;
         }
 
-        WorkerPool::with_worker_mut(|worker| {
-            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
-                return;
-            };
-
+        let _ = prewarm.with_evm(|evm| {
             let tx_hash = *tx.hash();
 
-            let touched = if is_tip20_transfer_transaction(&tx) {
+            let touched = if let Some(hint) = tx.transaction.prewarm_hint() {
+                let mut touches = hint.touches().to_vec();
+                add_fee_manager_touches_for_transaction(
+                    &mut touches,
+                    &tx,
+                    prewarm.evm_env.block_env.beneficiary,
+                );
+
+                for touch in &touches {
+                    if prewarm.is_stopped() {
+                        return;
+                    }
+                    if let Err(err) = warm_prewarm_touch(touch, evm) {
+                        trace!(
+                            target: "payload_builder",
+                            %err,
+                            ?tx_hash,
+                            "Failed to prewarm hinted transaction storage"
+                        );
+                        return;
+                    }
+                }
+
+                Some(touches.len())
+            } else if is_tip20_static_prewarm_transaction(&tx) {
                 let touches =
                     storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary);
 
@@ -189,7 +219,7 @@ impl BestTransactionsPrewarming {
                     if prewarm.is_stopped() {
                         return;
                     }
-                    if let Err(err) = touch.warm(evm) {
+                    if let Err(err) = warm_prewarm_touch(touch, evm) {
                         trace!(
                             target: "payload_builder",
                             %err,
@@ -292,6 +322,7 @@ struct PrewarmingExecutionContext<Provider> {
     cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
+    cache_id: usize,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -329,6 +360,31 @@ where
         Some(TempoEvm::new(state_provider, evm_env))
     }
 
+    fn with_evm<R>(
+        &self,
+        f: impl FnOnce(&mut TempoEvm<StateProviderDatabase<StateProviderBox>>) -> R,
+    ) -> Option<R> {
+        PREWARM_EVM_STATES.with_borrow_mut(|states| {
+            let evm = states
+                .entry(self.cache_id)
+                .or_insert_with(|| self.evm_for_ctx())
+                .as_mut()?;
+            Some(f(evm))
+        })
+    }
+
+    fn clear_worker_evms(&self, pool: &WorkerPool) {
+        let cache_id = self.cache_id;
+        pool.broadcast(pool.current_num_threads(), move |_| {
+            PREWARM_EVM_STATES.with_borrow_mut(|states| {
+                states.remove(&cache_id);
+            });
+        });
+        PREWARM_EVM_STATES.with_borrow_mut(|states| {
+            states.remove(&cache_id);
+        });
+    }
+
     fn is_stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
@@ -338,43 +394,43 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StorageTouch {
-    Account(Address),
-    Storage { address: Address, slot: U256 },
-}
-
-impl StorageTouch {
-    fn warm<DB: Database>(&self, evm: &mut TempoEvm<DB>) -> Result<(), DB::Error> {
-        match *self {
-            Self::Account(address) => {
-                let _ = evm.db_mut().basic(address)?;
-            }
-            Self::Storage { address, slot } => {
-                let _ = evm.db_mut().storage(address, slot)?;
-            }
+fn warm_prewarm_touch<DB: Database>(
+    touch: &PrewarmTouch,
+    evm: &mut TempoEvm<DB>,
+) -> Result<(), DB::Error> {
+    match *touch {
+        PrewarmTouch::Account(address) => {
+            let _ = evm.db_mut().basic(address)?;
         }
-
-        Ok(())
+        PrewarmTouch::Storage { address, slot } => {
+            let _ = evm.db_mut().storage(address, slot)?;
+        }
     }
+
+    Ok(())
 }
 
-fn is_tip20_transfer_transaction(tx: &BestTransaction) -> bool {
-    tx.transaction.is_payment() && is_tip20_transfer_calls(tx.transaction.inner().calls())
+pub(crate) fn prewarm_hint_for_pending_payment(tx: &BestTransaction) -> Option<PrewarmHint> {
+    is_tip20_static_prewarm_transaction(tx)
+        .then(|| PrewarmHint::new(storage_touches_for_transaction_without_fee_recipient(tx)))
 }
 
-fn is_tip20_transfer_calls<'a>(calls: impl IntoIterator<Item = (TxKind, &'a Bytes)>) -> bool {
+fn is_tip20_static_prewarm_transaction(tx: &BestTransaction) -> bool {
+    tx.transaction.is_payment() && is_tip20_static_prewarm_calls(tx.transaction.inner().calls())
+}
+
+fn is_tip20_static_prewarm_calls<'a>(calls: impl IntoIterator<Item = (TxKind, &'a Bytes)>) -> bool {
     let mut has_call = false;
     for (kind, input) in calls {
         has_call = true;
-        if !is_tip20_transfer_call(kind, input) {
+        if !is_tip20_static_prewarm_call(kind, input) {
             return false;
         }
     }
     has_call
 }
 
-fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
+fn is_tip20_static_prewarm_call(kind: TxKind, input: &[u8]) -> bool {
     let Some(token) = kind.to().copied() else {
         return false;
     };
@@ -387,14 +443,27 @@ fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
         Ok(ITIP20::ITIP20Calls::transfer(_)
             | ITIP20::ITIP20Calls::transferWithMemo(_)
             | ITIP20::ITIP20Calls::transferFrom(_)
-            | ITIP20::ITIP20Calls::transferFromWithMemo(_))
+            | ITIP20::ITIP20Calls::transferFromWithMemo(_)
+            | ITIP20::ITIP20Calls::approve(_)
+            | ITIP20::ITIP20Calls::mint(_)
+            | ITIP20::ITIP20Calls::mintWithMemo(_)
+            | ITIP20::ITIP20Calls::burn(_)
+            | ITIP20::ITIP20Calls::burnWithMemo(_))
     )
 }
 
 fn storage_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
-) -> Vec<StorageTouch> {
+) -> Vec<PrewarmTouch> {
+    let mut touches = storage_touches_for_transaction_without_fee_recipient(tx);
+    add_fee_manager_touches_for_transaction(&mut touches, tx, fee_recipient);
+    touches
+}
+
+fn storage_touches_for_transaction_without_fee_recipient(
+    tx: &BestTransaction,
+) -> Vec<PrewarmTouch> {
     let mut touches = Vec::new();
     let sender = tx.transaction.sender();
     let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
@@ -406,7 +475,6 @@ fn storage_touches_for_transaction(
     });
 
     add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
-    add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
 
     if tx.transaction.is_payment() {
         for (kind, input) in tx.transaction.inner().calls() {
@@ -419,7 +487,21 @@ fn storage_touches_for_transaction(
     touches
 }
 
-fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
+fn add_fee_manager_touches_for_transaction(
+    touches: &mut Vec<PrewarmTouch>,
+    tx: &BestTransaction,
+    fee_recipient: Address,
+) {
+    let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
+        tx.transaction
+            .inner()
+            .fee_token()
+            .unwrap_or(DEFAULT_FEE_TOKEN)
+    });
+    add_fee_manager_touches(touches, fee_recipient, fee_token);
+}
+
+fn add_tip20_fee_touches(touches: &mut Vec<PrewarmTouch>, fee_token: Address, fee_payer: Address) {
     if !fee_token.is_tip20() {
         return;
     }
@@ -431,7 +513,7 @@ fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fe
 }
 
 fn add_tip20_call_touches(
-    touches: &mut Vec<StorageTouch>,
+    touches: &mut Vec<PrewarmTouch>,
     sender: Address,
     kind: TxKind,
     input: &[u8],
@@ -494,7 +576,7 @@ fn add_tip20_call_touches(
     }
 }
 
-fn add_tip20_common_touches(touches: &mut Vec<StorageTouch>, token: Address) {
+fn add_tip20_common_touches(touches: &mut Vec<PrewarmTouch>, token: Address) {
     add_account_touch(touches, token);
     add_storage_touch(touches, token, tip20_slots::CURRENCY);
     add_storage_touch(touches, token, tip20_slots::PAUSED);
@@ -503,12 +585,12 @@ fn add_tip20_common_touches(touches: &mut Vec<StorageTouch>, token: Address) {
     add_storage_touch(touches, token, tip20_slots::OPTED_IN_SUPPLY);
 }
 
-fn add_tip20_balance_touch(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
+fn add_tip20_balance_touch(touches: &mut Vec<PrewarmTouch>, token: Address, account: Address) {
     add_storage_touch(touches, token, account.mapping_slot(tip20_slots::BALANCES));
 }
 
 fn add_tip20_allowance_touch(
-    touches: &mut Vec<StorageTouch>,
+    touches: &mut Vec<PrewarmTouch>,
     token: Address,
     owner: Address,
     spender: Address,
@@ -520,7 +602,7 @@ fn add_tip20_allowance_touch(
     );
 }
 
-fn add_tip20_reward_touches(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
+fn add_tip20_reward_touches(touches: &mut Vec<PrewarmTouch>, token: Address, account: Address) {
     let base_slot = account.mapping_slot(tip20_slots::USER_REWARD_INFO);
     add_storage_touch(touches, token, base_slot);
     add_storage_touch(touches, token, base_slot + U256::from(1));
@@ -528,7 +610,7 @@ fn add_tip20_reward_touches(touches: &mut Vec<StorageTouch>, token: Address, acc
 }
 
 fn add_fee_manager_touches(
-    touches: &mut Vec<StorageTouch>,
+    touches: &mut Vec<PrewarmTouch>,
     fee_recipient: Address,
     fee_token: Address,
 ) {
@@ -545,7 +627,7 @@ fn add_fee_manager_touches(
     );
 }
 
-fn add_expiring_nonce_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransaction) {
+fn add_expiring_nonce_touches(touches: &mut Vec<PrewarmTouch>, tx: &BestTransaction) {
     let Some(expiring_nonce_slot) = tx.transaction.expiring_nonce_slot() else {
         return;
     };
@@ -559,16 +641,16 @@ fn add_expiring_nonce_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransact
     );
 }
 
-fn add_account_touch(touches: &mut Vec<StorageTouch>, address: Address) {
-    add_unique_touch(touches, StorageTouch::Account(address));
+fn add_account_touch(touches: &mut Vec<PrewarmTouch>, address: Address) {
+    add_unique_touch(touches, PrewarmTouch::Account(address));
 }
 
-fn add_storage_touch(touches: &mut Vec<StorageTouch>, address: Address, slot: U256) {
+fn add_storage_touch(touches: &mut Vec<PrewarmTouch>, address: Address, slot: U256) {
     add_account_touch(touches, address);
-    add_unique_touch(touches, StorageTouch::Storage { address, slot });
+    add_unique_touch(touches, PrewarmTouch::Storage { address, slot });
 }
 
-fn add_unique_touch(touches: &mut Vec<StorageTouch>, touch: StorageTouch) {
+fn add_unique_touch(touches: &mut Vec<PrewarmTouch>, touch: PrewarmTouch) {
     if !touches.contains(&touch) {
         touches.push(touch);
     }
@@ -853,19 +935,19 @@ mod tests {
             );
         }
 
-        assert!(touches.contains(&StorageTouch::Account(token)));
-        assert!(touches.contains(&StorageTouch::Storage {
+        assert!(touches.contains(&PrewarmTouch::Account(token)));
+        assert!(touches.contains(&PrewarmTouch::Storage {
             address: token,
             slot: sender.mapping_slot(tip20_slots::BALANCES)
         }));
-        assert!(touches.contains(&StorageTouch::Storage {
+        assert!(touches.contains(&PrewarmTouch::Storage {
             address: token,
             slot: recipient.mapping_slot(tip20_slots::BALANCES)
         }));
     }
 
     #[test]
-    fn tip20_fast_path_is_limited_to_transfers() {
+    fn tip20_static_prewarm_path_accepts_payment_calls() {
         let token = DEFAULT_FEE_TOKEN;
         let transfer = Bytes::from(
             ITIP20::transferCall {
@@ -889,19 +971,74 @@ mod tests {
             }
             .abi_encode(),
         );
+        let burn = Bytes::from(
+            ITIP20::burnCall {
+                amount: U256::from(1),
+            }
+            .abi_encode(),
+        );
 
-        assert!(is_tip20_transfer_call(TxKind::Call(token), &transfer));
-        assert!(is_tip20_transfer_calls(
-            [&transfer, &transfer_from]
+        assert!(is_tip20_static_prewarm_call(TxKind::Call(token), &transfer));
+        assert!(is_tip20_static_prewarm_calls(
+            [&transfer, &transfer_from, &approve, &burn]
                 .into_iter()
                 .map(|input| (TxKind::Call(token), input)),
         ));
-        assert!(!is_tip20_transfer_call(TxKind::Call(token), &approve));
-        assert!(!is_tip20_transfer_calls(
-            [&transfer, &approve]
+        assert!(!is_tip20_static_prewarm_calls(
+            [&transfer, &Bytes::new()]
                 .into_iter()
                 .map(|input| (TxKind::Call(token), input)),
         ));
+    }
+
+    #[test]
+    fn pending_payment_hint_excludes_fee_recipient_touches() {
+        let sender = Address::random();
+        let recipient = Address::random();
+        let token = DEFAULT_FEE_TOKEN;
+        let tx = TxLegacy {
+            chain_id: Some(42431),
+            nonce: 0,
+            gas_price: 20_000_000_000,
+            gas_limit: 21_000,
+            to: TxKind::Call(token),
+            value: U256::ZERO,
+            input: Bytes::from(
+                ITIP20::transferCall {
+                    to: recipient,
+                    amount: U256::from(1),
+                }
+                .abi_encode(),
+            ),
+        };
+        let envelope =
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+        let pooled = TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender));
+        let best = Arc::new(ValidPoolTransaction {
+            transaction_id: TransactionId::new(0u64.into(), 0),
+            transaction: pooled,
+            propagate: true,
+            timestamp: Instant::now(),
+            origin: TransactionOrigin::External,
+            authority_ids: None,
+        });
+
+        let hint = prewarm_hint_for_pending_payment(&best).expect("hint");
+
+        assert!(hint.touches().contains(&PrewarmTouch::Storage {
+            address: token,
+            slot: sender.mapping_slot(tip20_slots::BALANCES)
+        }));
+        assert!(hint.touches().contains(&PrewarmTouch::Storage {
+            address: token,
+            slot: recipient.mapping_slot(tip20_slots::BALANCES)
+        }));
+        assert!(
+            !hint
+                .touches()
+                .iter()
+                .any(|touch| matches!(touch, PrewarmTouch::Storage { address, .. } if *address == TIP_FEE_MANAGER_ADDRESS))
+        );
     }
 
     #[test]
