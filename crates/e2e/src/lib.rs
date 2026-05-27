@@ -136,7 +136,7 @@ pub struct Setup {
 
     /// The amount of time the node waits for the execution layer to return
     /// a build a payload.
-    pub payload_return_time: Duration,
+    pub new_payload_wait_time: Duration,
 
     /// The t4 hardfork time.
     ///
@@ -167,7 +167,7 @@ impl Setup {
                 success_rate: 1.0,
             },
             epoch_length: 20,
-            payload_return_time: Duration::from_millis(300),
+            new_payload_wait_time: Duration::from_millis(300),
             t4_time: None,
             with_subblocks: false,
             fee_recipient: Address::ZERO,
@@ -204,9 +204,9 @@ impl Setup {
         }
     }
 
-    pub fn payload_return_time(self, payload_return_time: Duration) -> Self {
+    pub fn new_payload_wait_time(self, new_payload_wait_time: Duration) -> Self {
         Self {
-            payload_return_time,
+            new_payload_wait_time,
             ..self
         }
     }
@@ -259,7 +259,7 @@ pub async fn setup_validators(
         how_many_signers,
         how_many_verifiers,
         linkage,
-        payload_return_time,
+        new_payload_wait_time,
         t4_time,
         with_subblocks,
         fee_recipient,
@@ -330,7 +330,7 @@ pub async fn setup_validators(
             time_for_peer_response: Duration::from_secs(2),
             views_to_track: 10,
             views_until_leader_skip: 5,
-            payload_return_time,
+            new_payload_wait_time,
             time_to_build_subblock: Duration::from_millis(100),
             subblock_broadcast_interval: Duration::from_millis(50),
             fcu_heartbeat_interval: Duration::from_secs(3),
