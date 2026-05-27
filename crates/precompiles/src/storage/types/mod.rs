@@ -378,7 +378,7 @@ pub trait StorageKey: sealed::OnlyPrimitives {
 /// Re-entrant access will panic rather than cause undefined behavior.
 #[derive(Debug, Default)]
 pub(super) struct HandlerCache<K, H> {
-    inner: RefCell<HashMap<K, Box<H>>>,
+    inner: RefCell<Option<HashMap<K, Box<H>>>>,
 }
 
 impl<K, H> HandlerCache<K, H> {
@@ -386,7 +386,7 @@ impl<K, H> HandlerCache<K, H> {
     #[inline]
     pub(super) fn new() -> Self {
         Self {
-            inner: RefCell::new(HashMap::new()),
+            inner: RefCell::new(None),
         }
     }
 }
@@ -402,7 +402,8 @@ impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
     /// Returns a reference to a lazily initialized handler for the given key.
     #[inline]
     pub(super) fn get_or_insert(&self, key: &K, f: impl FnOnce() -> H) -> &H {
-        let mut cache = self.inner.borrow_mut();
+        let mut inner = self.inner.borrow_mut();
+        let cache = inner.get_or_insert_with(HashMap::new);
         // Lookup first to avoid cloning on cache hit
         if let Some(boxed) = cache.get(key) {
             // SAFETY: Box provides stable heap address. Cache is append-only.
@@ -416,7 +417,8 @@ impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
     /// Returns a mutable reference to a lazily initialized handler for the given key.
     #[inline]
     pub(super) fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> &mut H {
-        let mut cache = self.inner.borrow_mut();
+        let mut inner = self.inner.borrow_mut();
+        let cache = inner.get_or_insert_with(HashMap::new);
         // Lookup first to avoid cloning on cache hit
         if let Some(boxed) = cache.get_mut(key) {
             // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
