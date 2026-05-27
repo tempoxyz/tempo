@@ -162,6 +162,28 @@ impl TipFeeManager {
         beneficiary: Address,
         skip_liquidity_check: bool,
     ) -> Result<Address> {
+        self.collect_fee_pre_tx_validator_token(
+            fee_payer,
+            user_token,
+            max_amount,
+            beneficiary,
+            skip_liquidity_check,
+        )?;
+
+        // Return the user's token preference
+        Ok(user_token)
+    }
+
+    /// Collects fees before transaction execution and returns the validator token selected for
+    /// settlement.
+    pub fn collect_fee_pre_tx_validator_token(
+        &mut self,
+        fee_payer: Address,
+        user_token: Address,
+        max_amount: U256,
+        beneficiary: Address,
+        skip_liquidity_check: bool,
+    ) -> Result<Address> {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
 
@@ -177,8 +199,7 @@ impl TipFeeManager {
             self.reserve_fee_liquidity(user_token, validator_token, max_amount, route)?;
         }
 
-        // Return the user's token preference
-        Ok(user_token)
+        Ok(validator_token)
     }
 
     /// Reserves AMM liquidity needed to settle the selected fee route after transaction execution.
@@ -234,13 +255,56 @@ impl TipFeeManager {
         fee_token: Address,
         beneficiary: Address,
     ) -> Result<U256> {
+        self.collect_fee_post_tx_inner(
+            fee_payer,
+            actual_spending,
+            refund_amount,
+            fee_token,
+            beneficiary,
+            None,
+        )
+    }
+
+    /// Finalizes fee collection after transaction execution using a validator token already read
+    /// during pre-transaction fee collection.
+    pub fn collect_fee_post_tx_with_validator_token(
+        &mut self,
+        fee_payer: Address,
+        actual_spending: U256,
+        refund_amount: U256,
+        fee_token: Address,
+        beneficiary: Address,
+        validator_token: Address,
+    ) -> Result<U256> {
+        self.collect_fee_post_tx_inner(
+            fee_payer,
+            actual_spending,
+            refund_amount,
+            fee_token,
+            beneficiary,
+            Some(validator_token),
+        )
+    }
+
+    fn collect_fee_post_tx_inner(
+        &mut self,
+        fee_payer: Address,
+        actual_spending: U256,
+        refund_amount: U256,
+        fee_token: Address,
+        beneficiary: Address,
+        validator_token: Option<Address>,
+    ) -> Result<U256> {
         // Refund unused tokens to user
         let mut tip20_token = TIP20Token::from_address(fee_token)?;
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
         // Execute fee swap and track collected fees
         let hop_token = self.two_hop_intermediate.t_read()?;
-        let validator_token = self.get_validator_token(beneficiary)?;
+        let validator_token = match validator_token {
+            Some(token) => token,
+            None => self.get_validator_token(beneficiary)?,
+        };
 
         let amount = if fee_token == validator_token {
             actual_spending
