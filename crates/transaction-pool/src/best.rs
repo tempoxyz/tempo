@@ -140,13 +140,28 @@ where
             }
 
             for (&slot, storage_slot) in &account.storage {
-                if storage_slot.present_value < storage_slot.original_value {
-                    self.decreased_balances
-                        .insert((address, slot), storage_slot.present_value);
-                } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
-                    *balance = storage_slot.present_value;
-                }
+                self.record_tip20_storage_change(
+                    address,
+                    slot,
+                    storage_slot.original_value,
+                    storage_slot.present_value,
+                );
             }
+        }
+    }
+
+    fn record_tip20_storage_change(
+        &mut self,
+        address: Address,
+        slot: U256,
+        original_value: U256,
+        present_value: U256,
+    ) {
+        let key = (address, slot);
+        if present_value < original_value {
+            self.decreased_balances.insert(key, present_value);
+        } else {
+            self.decreased_balances.remove(&key);
         }
     }
 }
@@ -501,5 +516,32 @@ mod tests {
 
         assert_eq!(merged.next().map(|tx| *tx.hash()), Some(*right_tx.hash()));
         assert!(merged.next().is_none());
+    }
+
+    #[test]
+    fn state_aware_balance_tracking_removes_restored_slots() {
+        let mut state_aware =
+            StateAwareBestTransactions::new(merged_best_transactions(vec![], vec![]));
+        let token = Address::random();
+        let slot = U256::from(7);
+        let key = (token, slot);
+
+        state_aware.record_tip20_storage_change(token, slot, U256::from(10), U256::from(8));
+        assert_eq!(
+            state_aware.decreased_balances.get(&key),
+            Some(&U256::from(8))
+        );
+
+        state_aware.record_tip20_storage_change(token, slot, U256::from(10), U256::from(10));
+        assert!(!state_aware.decreased_balances.contains_key(&key));
+
+        state_aware.record_tip20_storage_change(token, slot, U256::from(10), U256::from(7));
+        assert_eq!(
+            state_aware.decreased_balances.get(&key),
+            Some(&U256::from(7))
+        );
+
+        state_aware.record_tip20_storage_change(token, slot, U256::from(10), U256::from(11));
+        assert!(!state_aware.decreased_balances.contains_key(&key));
     }
 }
