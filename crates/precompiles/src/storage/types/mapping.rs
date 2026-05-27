@@ -43,6 +43,7 @@ use crate::storage::{Layout, LayoutCtx, StorableType, StorageKey, types::Handler
 #[derive(Debug, Clone)]
 pub struct Mapping<K, V: StorableType> {
     base_slot: U256,
+    base_slot_bytes: [u8; 32],
     address: Address,
     cache: HandlerCache<K, V::Handler>,
 }
@@ -55,6 +56,7 @@ impl<K, V: StorableType> Mapping<K, V> {
     pub fn new(base_slot: U256, address: Address) -> Self {
         Self {
             base_slot,
+            base_slot_bytes: base_slot.to_be_bytes(),
             address,
             cache: HandlerCache::new(),
         }
@@ -78,9 +80,13 @@ impl<K, V: StorableType> Mapping<K, V> {
     where
         K: StorageKey + Hash + Eq + Clone,
     {
-        let (base_slot, address) = (self.base_slot, self.address);
+        let (base_slot_bytes, address) = (self.base_slot_bytes, self.address);
         self.cache.get_or_insert(key, || {
-            V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
+            V::handle(
+                key.mapping_slot_with_base_slot_bytes(&base_slot_bytes),
+                LayoutCtx::FULL,
+                address,
+            )
         })
     }
 
@@ -94,9 +100,13 @@ impl<K, V: StorableType> Mapping<K, V> {
     where
         K: StorageKey + Hash + Eq + Clone,
     {
-        let (base_slot, address) = (self.base_slot, self.address);
+        let (base_slot_bytes, address) = (self.base_slot_bytes, self.address);
         self.cache.get_or_insert_mut(key, || {
-            V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
+            V::handle(
+                key.mapping_slot_with_base_slot_bytes(&base_slot_bytes),
+                LayoutCtx::FULL,
+                address,
+            )
         })
     }
 }
@@ -117,9 +127,13 @@ where
     ///
     /// The handler is computed on first access and cached for subsequent accesses.
     fn index(&self, key: K) -> &Self::Output {
-        let (base_slot, address) = (self.base_slot, self.address);
+        let (base_slot_bytes, address) = (self.base_slot_bytes, self.address);
         self.cache.get_or_insert(&key, || {
-            V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
+            V::handle(
+                key.mapping_slot_with_base_slot_bytes(&base_slot_bytes),
+                LayoutCtx::FULL,
+                address,
+            )
         })
     }
 }
@@ -130,9 +144,13 @@ where
 {
     /// Returns a mutable reference to the cached handler for the given key.
     fn index_mut(&mut self, key: K) -> &mut Self::Output {
-        let (base_slot, address) = (self.base_slot, self.address);
+        let (base_slot_bytes, address) = (self.base_slot_bytes, self.address);
         self.cache.get_or_insert_mut(&key, || {
-            V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
+            V::handle(
+                key.mapping_slot_with_base_slot_bytes(&base_slot_bytes),
+                LayoutCtx::FULL,
+                address,
+            )
         })
     }
 }

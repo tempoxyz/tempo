@@ -357,13 +357,20 @@ pub trait StorageKey: sealed::OnlyPrimitives {
     ///
     /// Left-pads the key to 32 bytes, concatenates with the slot, and hashes.
     fn mapping_slot(&self, slot: U256) -> U256 {
+        self.mapping_slot_with_base_slot_bytes(&slot.to_be_bytes::<32>())
+    }
+
+    /// Compute storage slot for a mapping with a pre-encoded base slot.
+    ///
+    /// This keeps hot mapping handlers from serializing the same base slot for every key access.
+    fn mapping_slot_with_base_slot_bytes(&self, base_slot_bytes: &[u8; 32]) -> U256 {
         let key_bytes = self.as_storage_bytes();
         let key_bytes = key_bytes.as_ref();
         debug_assert!(key_bytes.len() <= 32);
 
         let mut buf = [0u8; 64];
         buf[32 - key_bytes.len()..32].copy_from_slice(key_bytes);
-        buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
+        buf[32..].copy_from_slice(base_slot_bytes);
 
         U256::from_be_bytes(keccak256(buf).0)
     }
