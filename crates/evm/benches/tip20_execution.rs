@@ -300,25 +300,16 @@ fn latest_known_hardfork() -> TempoHardfork {
         .expect("TempoHardfork must define at least one variant")
 }
 
-fn hardfork_bench_cases() -> Vec<TempoHardfork> {
+fn hardfork_bench_cases() -> Vec<(&'static str, TempoHardfork)> {
     let current = current_active_hardfork();
     let latest = latest_known_hardfork();
-    let variants = TempoHardfork::VARIANTS;
-    let current_idx = variants
-        .iter()
-        .position(|&hardfork| hardfork == current)
-        .expect("current hardfork must be a known Tempo hardfork");
-    let latest_idx = variants
-        .iter()
-        .position(|&hardfork| hardfork == latest)
-        .expect("latest hardfork must be a known Tempo hardfork");
+    let mut cases = vec![("current", current)];
 
-    variants
-        .iter()
-        .skip(current_idx)
-        .take(latest_idx.saturating_sub(current_idx) + 1)
-        .copied()
-        .collect()
+    if latest != current {
+        cases.push(("latest", latest));
+    }
+
+    cases
 }
 
 fn bench_env(
@@ -913,7 +904,7 @@ fn tip20_execution(c: &mut Criterion) {
     let hardfork_cases = hardfork_bench_cases();
     let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
 
-    for &hardfork in &hardfork_cases {
+    for &(label, hardfork) in &hardfork_cases {
         let fixture = setup_fixed_cache_state(
             &workload.participants,
             workload.block_timestamp,
@@ -928,7 +919,7 @@ fn tip20_execution(c: &mut Criterion) {
             hardfork,
         );
 
-        let mut group = c.benchmark_group(format!("{hardfork}/tip20_execution"));
+        let mut group = c.benchmark_group(format!("{label}/tip20_execution"));
         group.throughput(Throughput::Elements(workload.transactions.len() as u64));
         group.bench_function("txgen_tip20_pure_execution", |b| {
             b.iter_batched(
@@ -950,7 +941,7 @@ fn tip20_execution(c: &mut Criterion) {
     }
 
     let reward_workloads = reward_bench_workloads();
-    for &hardfork in &hardfork_cases {
+    for &(label, hardfork) in &hardfork_cases {
         for reward_workload in &reward_workloads {
             let fixture = setup_fixed_cache_state(
                 &reward_workload.participants,
@@ -966,7 +957,7 @@ fn tip20_execution(c: &mut Criterion) {
                 hardfork,
             );
 
-            let mut group = c.benchmark_group(format!("{hardfork}/tip20_rewards"));
+            let mut group = c.benchmark_group(format!("{label}/tip20_rewards"));
             group.throughput(Throughput::Elements(
                 reward_workload.transactions.len() as u64
             ));
