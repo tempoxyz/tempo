@@ -4,19 +4,16 @@
 //! At T6, the same storage slot is interpreted as a packed [`UserState`] containing a `u128`
 //! amount and a cached reward opt-in flag.
 //!
-//! The manual [`Storable`] impl preserves pre-T6 storage compatibility while keeping T6+ full-state
-//! reads and writes to one underlying [`StorageOps`] operation.
+//! The custom [`Storable`] impl preserves pre-T6 storage compatibility and delegates T6+ packing to
+//! a derived storage type.
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{
-        Handler, Layout, LayoutCtx, Slot, Storable, StorableType, StorageCtx, StorageOps,
-        packing::PackedSlot,
-    },
+    storage::{Layout, LayoutCtx, Slot, Storable, StorableType, StorageCtx, StorageOps},
     tip20::U128_MAX,
 };
 use alloy::primitives::{Address, U256};
-use tempo_precompiles_macros::{Storable, StorableLayout};
+use tempo_precompiles_macros::Storable;
 
 // NOTE: `RewardFlag` derives `Storable`, so the cached flag occupies 1 byte in storage despite
 // only needing 2 bits (as per the spec). If the balance slot needs to pack more metadata in the
@@ -48,13 +45,37 @@ impl RewardFlag {
     }
 }
 
-// NOTE: `StorableLayout` is byte-granular, matching the `RewardFlag` byte above.
-// This keeps generated handlers correct, but cannot represent future sub-byte fields.
-#[derive(Debug, Clone, StorableLayout, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct UserState {
     pub(super) amount: u128,
     /// (T6+) Cached reward opt-in status. Tracks `reward_recipient`, which remains the source of truth.
     pub(super) flag: RewardFlag,
+}
+
+// NOTE: derived storage layout is byte-granular, matching the `RewardFlag` byte above.
+// This keeps generated T6+ packing correct, but cannot represent future sub-byte fields.
+#[derive(Debug, Clone, Storable, Copy, PartialEq)]
+struct PackedUserState {
+    amount: u128,
+    flag: RewardFlag,
+}
+
+impl From<PackedUserState> for UserState {
+    fn from(value: PackedUserState) -> Self {
+        Self {
+            amount: value.amount,
+            flag: value.flag,
+        }
+    }
+}
+
+impl From<UserState> for PackedUserState {
+    fn from(value: UserState) -> Self {
+        Self {
+            amount: value.amount,
+            flag: value.flag,
+        }
+    }
 }
 
 impl UserState {
@@ -87,74 +108,24 @@ impl UserState {
 }
 
 impl StorableType for UserState {
-    const LAYOUT: Layout = Layout::Slots(__packing_user_state::SLOT_COUNT);
+    const LAYOUT: Layout = PackedUserState::LAYOUT;
 
-    type Handler = UserStateHandler;
+    type Handler = Slot<Self>;
 
-    fn handle(slot: U256, _ctx: LayoutCtx, address: Address) -> Self::Handler {
-        UserStateHandler::new(slot, address)
+    fn handle(slot: U256, ctx: LayoutCtx, address: Address) -> Self::Handler {
+        Slot::new_with_ctx(slot, ctx, address)
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct UserStateHandler {
-    address: Address,
-    base_slot: U256,
-    pub amount: Slot<u128>,
-    pub flag: Slot<RewardFlag>,
-}
-
-impl UserStateHandler {
-    pub fn new(base_slot: U256, address: Address) -> Self {
-        Self {
-            address,
-            base_slot,
-            amount: Slot::new_at_loc(base_slot, __packing_user_state::AMOUNT_LOC, address),
-            flag: Slot::new_at_loc(base_slot, __packing_user_state::FLAG_LOC, address),
-        }
-    }
-
+impl Slot<UserState> {
     pub fn base_slot(&self) -> U256 {
-        self.base_slot
-    }
-
-    fn as_slot(&self) -> Slot<UserState> {
-        Slot::new(self.base_slot, self.address)
-    }
-}
-
-impl Handler<UserState> for UserStateHandler {
-    fn read(&self) -> Result<UserState> {
-        self.as_slot().read()
-    }
-
-    fn write(&mut self, value: UserState) -> Result<()> {
-        self.as_slot().write(value)
-    }
-
-    fn delete(&mut self) -> Result<()> {
-        self.as_slot().delete()
-    }
-
-    fn t_read(&self) -> Result<UserState> {
-        self.as_slot().t_read()
-    }
-
-    fn t_write(&mut self, value: UserState) -> Result<()> {
-        self.as_slot().t_write(value)
-    }
-
-    fn t_delete(&mut self) -> Result<()> {
-        self.as_slot().t_delete()
+        self.slot()
     }
 }
 
 impl Storable for UserState {
     fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
-        debug_assert!(
-            ctx.is_full(),
-            "UserState can only be loaded from a full slot"
-        );
+        debug_assert!(ctx.is_full(), "`UserState` is only loadable as a full slot");
 
         if !StorageCtx.spec().is_t6() {
             let amount = u128::try_from(storage.load(slot)?)
@@ -165,40 +136,17 @@ impl Storable for UserState {
             });
         }
 
-        let packed = PackedSlot(storage.load(slot)?);
-        Ok(Self {
-            amount: u128::load(
-                &packed,
-                slot + __packing_user_state::AMOUNT,
-                LayoutCtx::packed(__packing_user_state::AMOUNT_OFFSET),
-            )?,
-            flag: RewardFlag::load(
-                &packed,
-                slot + __packing_user_state::FLAG,
-                LayoutCtx::packed(__packing_user_state::FLAG_OFFSET),
-            )?,
-        })
+        PackedUserState::load(storage, slot, ctx).map(Into::into)
     }
 
     fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
-        debug_assert!(ctx.is_full(), "UserState can only be stored in a full slot");
+        debug_assert!(ctx.is_full(), "`UserState` is only storable as a full slot");
 
         if !StorageCtx.spec().is_t6() {
             return storage.store(slot, U256::from(self.amount));
         }
 
-        let mut packed = PackedSlot(U256::ZERO);
-        self.amount.store(
-            &mut packed,
-            slot + __packing_user_state::AMOUNT,
-            LayoutCtx::packed(__packing_user_state::AMOUNT_OFFSET),
-        )?;
-        self.flag.store(
-            &mut packed,
-            slot + __packing_user_state::FLAG,
-            LayoutCtx::packed(__packing_user_state::FLAG_OFFSET),
-        )?;
-        storage.store(slot, packed.0)
+        PackedUserState::from(*self).store(storage, slot, ctx)
     }
 }
 

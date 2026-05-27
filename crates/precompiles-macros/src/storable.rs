@@ -28,26 +28,39 @@ pub(crate) fn derive_impl(input: DeriveInput) -> syn::Result<TokenStream> {
     }
 }
 
-pub(crate) fn derive_layout_impl(input: DeriveInput) -> syn::Result<TokenStream> {
-    let Data::Struct(data_struct) = &input.data else {
-        return Err(syn::Error::new_spanned(
-            &input.ident,
-            "`StorableLayout` can only be derived for structs with named fields",
-        ));
-    };
-    let (_, field_infos) = parse_storable_struct(&input, data_struct, "StorableLayout")?;
-    let layout_fields = packing::allocate_slots(&field_infos)?;
-    let mod_ident = format_ident!("__packing_{}", to_snake_case(&input.ident.to_string()));
-    Ok(gen_packing_module_from_ir(&layout_fields, &mod_ident))
-}
-
 fn derive_struct_impl(input: &DeriveInput, data_struct: &DataStruct) -> syn::Result<TokenStream> {
     // Extract struct name, generics
     let strukt = &input.ident;
     let (impl_generics, ty_generics, where_clause) = input.generics.split_for_impl();
 
     // Parse struct fields
-    let (fields, field_infos) = parse_storable_struct(input, data_struct, "Storable")?;
+    let fields = match &data_struct.fields {
+        Fields::Named(fields_named) => &fields_named.named,
+        _ => {
+            return Err(syn::Error::new_spanned(
+                &input.ident,
+                "`Storable` can only be derived for structs with named fields",
+            ));
+        }
+    };
+
+    if fields.is_empty() {
+        return Err(syn::Error::new_spanned(
+            &input.ident,
+            "`Storable` cannot be derived for empty structs",
+        ));
+    }
+
+    // Extract field names and types into `FieldInfo` structs
+    let field_infos: Vec<_> = fields
+        .iter()
+        .map(|f| FieldInfo {
+            name: f.ident.as_ref().unwrap().clone(),
+            ty: f.ty.clone(),
+            slot: None,
+            base_slot: None,
+        })
+        .collect();
 
     // Build layout IR using the unified function
     let layout_fields = packing::allocate_slots(&field_infos)?;
@@ -169,45 +182,6 @@ fn derive_struct_impl(input: &DeriveInput, data_struct: &DataStruct) -> syn::Res
     };
 
     Ok(combined)
-}
-
-fn parse_storable_struct<'a>(
-    input: &DeriveInput,
-    data_struct: &'a DataStruct,
-    derive_name: &str,
-) -> syn::Result<(
-    &'a syn::punctuated::Punctuated<syn::Field, syn::Token![,]>,
-    Vec<FieldInfo>,
-)> {
-    let fields = match &data_struct.fields {
-        Fields::Named(fields_named) => &fields_named.named,
-        _ => {
-            return Err(syn::Error::new_spanned(
-                &input.ident,
-                format!("`{derive_name}` can only be derived for structs with named fields"),
-            ));
-        }
-    };
-
-    if fields.is_empty() {
-        return Err(syn::Error::new_spanned(
-            &input.ident,
-            format!("`{derive_name}` cannot be derived for empty structs"),
-        ));
-    }
-
-    // Extract field names and types into `FieldInfo` structs
-    let field_infos: Vec<_> = fields
-        .iter()
-        .map(|f| FieldInfo {
-            name: f.ident.as_ref().unwrap().clone(),
-            ty: f.ty.clone(),
-            slot: None,
-            base_slot: None,
-        })
-        .collect();
-
-    Ok((fields, field_infos))
 }
 
 fn derive_unit_enum_impl(input: &DeriveInput, data_enum: &DataEnum) -> syn::Result<TokenStream> {
