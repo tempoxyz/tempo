@@ -593,7 +593,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         mut remaining_gas: u64,
         mut reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: &[tempo_primitives::transaction::Call],
         mut execute_single: F,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
@@ -733,7 +733,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: &[tempo_primitives::transaction::Call],
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
         self.execute_multi_call_with(evm, gas_limit, reservoir, calls, Self::execute_single_call)
     }
@@ -763,7 +763,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: &[tempo_primitives::transaction::Call],
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
         I: Inspector<TempoContext<DB>, EthInterpreter>,
@@ -814,7 +814,7 @@ where
 
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
             let calls = tempo_tx_env.aa_calls.clone();
-            self.execute_multi_call(evm, gas_limit, reservoir, calls)
+            self.execute_multi_call(evm, gas_limit, reservoir, &calls)
         } else {
             self.execute_single_call(evm, gas_limit, reservoir)
         }
@@ -1919,7 +1919,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     access_list: Option<impl Iterator<Item = &'a AccessListItem>>,
     spec: tempo_chainspec::hardfork::TempoHardfork,
 ) -> Result<InitialAndFloorGas, TempoInvalidTransaction> {
-    let calls = &aa_env.aa_calls;
+    let calls = aa_env.aa_calls.as_ref();
     let signature = &aa_env.signature;
     let authorization_list = &aa_env.tempo_authorization_list;
     let key_authorization = aa_env.key_authorization.as_ref();
@@ -2037,7 +2037,7 @@ where
         .as_ref()
         .expect("validate_aa_initial_tx_gas called for non-AA transaction");
 
-    let calls = &aa_env.aa_calls;
+    let calls = aa_env.aa_calls.as_ref();
 
     // Validate all CREATE calls' initcode size upfront (EIP-3860)
     let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
@@ -2155,7 +2155,7 @@ where
 
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
             let calls = tempo_tx_env.aa_calls.clone();
-            self.inspect_execute_multi_call(evm, gas_limit, reservoir, calls)
+            self.inspect_execute_multi_call(evm, gas_limit, reservoir, &calls)
         } else {
             self.inspect_execute_single_call(evm, gas_limit, reservoir)
         }
@@ -2603,7 +2603,7 @@ mod tests {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
             )), // dummy secp256k1 sig
-            aa_calls: vec![call],
+            aa_calls: vec![call].into(),
             key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
@@ -2667,7 +2667,7 @@ mod tests {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
             )),
-            aa_calls: calls,
+            aa_calls: calls.into(),
             key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
@@ -2722,7 +2722,7 @@ mod tests {
                     pre_hash: false,
                 },
             )),
-            aa_calls: vec![call],
+            aa_calls: vec![call].into(),
             key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
@@ -2764,7 +2764,7 @@ mod tests {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
             )),
-            aa_calls: vec![call],
+            aa_calls: vec![call].into(),
             key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
@@ -2806,7 +2806,7 @@ mod tests {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
             )),
-            aa_calls: vec![call],
+            aa_calls: vec![call].into(),
             key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
@@ -2845,7 +2845,7 @@ mod tests {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
             )),
-            aa_calls: vec![call],
+            aa_calls: vec![call].into(),
             key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
@@ -2937,7 +2937,7 @@ mod tests {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
             )),
-            aa_calls: vec![call],
+            aa_calls: vec![call].into(),
             key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
@@ -3372,7 +3372,7 @@ mod tests {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
             )),
-            aa_calls: vec![call.clone()],
+            aa_calls: vec![call.clone()].into(),
             key_authorization: Some(key_auth),
             signature_hash: B256::ZERO,
             ..Default::default()
@@ -3382,7 +3382,7 @@ mod tests {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
             )),
-            aa_calls: vec![call],
+            aa_calls: vec![call].into(),
             key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
@@ -3470,7 +3470,7 @@ mod tests {
                                 to: TxKind::Call(Address::random()),
                                 value: U256::ZERO,
                                 input: Bytes::new(),
-                            }],
+                            }].into(),
                             nonce_key,
                             ..Default::default()
                         })),
@@ -3586,7 +3586,7 @@ mod tests {
                                 to: TxKind::Call(Address::random()),
                                 value: U256::ZERO,
                                 input: Bytes::new(),
-                            }],
+                            }].into(),
                             nonce_key: U256::ONE,
                             ..Default::default()
                         })),
@@ -3654,7 +3654,7 @@ mod tests {
                     to: TxKind::Call(target),
                     value: U256::ZERO,
                     input: Bytes::from_static(&CALL_SCOPE_SELECTOR),
-                }],
+                }].into(),
                 signature_hash: B256::ZERO,
                 override_key_id: Some(access_key),
                 ..Default::default()
@@ -3770,7 +3770,7 @@ mod tests {
                     to: TxKind::Call(target),
                     value: U256::ZERO,
                     input: Bytes::from_static(&DENIED_SELECTOR),
-                }],
+                }].into(),
                 signature_hash: B256::ZERO,
                 override_key_id: Some(access_key),
                 ..Default::default()
@@ -3867,7 +3867,7 @@ mod tests {
             },
             tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
                 signature,
-                aa_calls: vec![],
+                aa_calls: vec![].into(),
                 signature_hash: B256::ZERO,
                 override_key_id: Some(access_key),
                 ..Default::default()
@@ -3955,7 +3955,7 @@ mod tests {
             &mut evm,
             GAS_LIMIT - INTRINSIC_GAS,
             0,
-            calls,
+            &calls,
             |_handler, _evm, gas, _reservoir| {
                 let (spent, refund) = calls_gas[call_idx];
                 call_idx += 1;
@@ -4014,7 +4014,7 @@ mod tests {
     fn make_aa_env(calls: Vec<Call>) -> TempoBatchCallEnv {
         TempoBatchCallEnv {
             signature: secp256k1_sig(),
-            aa_calls: calls,
+            aa_calls: calls.into(),
             key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
@@ -4263,7 +4263,7 @@ mod tests {
             let tx_env = TempoTxEnv {
                 inner: revm::context::TxEnv::default(),
                 tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
-                    aa_calls: calls,
+                    aa_calls: calls.into(),
                     signature: secp256k1_sig(),
                     signature_hash: B256::ZERO,
                     ..Default::default()
@@ -4285,7 +4285,7 @@ mod tests {
             let tx_env = TempoTxEnv {
                 inner: revm::context::TxEnv::default(),
                 tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
-                    aa_calls: vec![],
+                    aa_calls: vec![].into(),
                     signature: secp256k1_sig(),
                     signature_hash: B256::ZERO,
                     ..Default::default()
@@ -4473,7 +4473,7 @@ mod tests {
                             to: TxKind::Call(TEST_TARGET),
                             value: U256::ZERO,
                             input: Bytes::new(),
-                        }],
+                        }].into(),
                         nonce_key,
                         ..Default::default()
                     })),
@@ -4567,7 +4567,7 @@ mod tests {
                             to: TxKind::Call(TEST_TARGET),
                             value: U256::ZERO,
                             input: Bytes::new(),
-                        }],
+                        }].into(),
                         nonce_key,
                         ..Default::default()
                     })),
@@ -4676,7 +4676,7 @@ mod tests {
                         to: TxKind::Call(Address::ZERO),
                         value: U256::ZERO,
                         input: Bytes::new(),
-                    }],
+                    }].into(),
                     key_authorization: key_auth,
                     signature_hash: B256::ZERO,
                     override_key_id: Some(access_key),
@@ -5111,7 +5111,7 @@ mod tests {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
             )),
-            aa_calls: vec![call],
+            aa_calls: vec![call].into(),
             key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
@@ -5149,7 +5149,7 @@ mod tests {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
             )),
-            aa_calls: vec![call],
+            aa_calls: vec![call].into(),
             key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
@@ -5438,7 +5438,7 @@ mod tests {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
             )),
-            aa_calls: calls,
+            aa_calls: calls.into(),
             key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
@@ -5484,7 +5484,7 @@ mod tests {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
             )),
-            aa_calls: calls,
+            aa_calls: calls.into(),
             key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
@@ -5574,7 +5574,7 @@ mod tests {
                 to: TxKind::Call(Address::random()),
                 value: U256::ZERO,
                 input: Bytes::from(vec![1, 2, 3]),
-            }],
+            }].into(),
             tempo_authorization_list: vec![RecoveredTempoAuthorization::new(
                 TempoSignedAuthorization::new_unchecked(
                     alloy_eips::eip7702::Authorization {
@@ -5618,7 +5618,7 @@ mod tests {
                 to: TxKind::Call(Address::random()),
                 value: U256::ZERO,
                 input: Bytes::from(vec![1, 2, 3]),
-            }],
+            }].into(),
             nonce_key: U256::ONE,
             ..Default::default()
         };
@@ -5654,7 +5654,7 @@ mod tests {
                 to: TxKind::Call(Address::random()),
                 value: U256::ZERO,
                 input: Bytes::from(vec![1, 2, 3]),
-            }],
+            }].into(),
             tempo_authorization_list: vec![RecoveredTempoAuthorization::new(
                 TempoSignedAuthorization::new_unchecked(
                     alloy_eips::eip7702::Authorization {
@@ -5741,7 +5741,7 @@ mod tests {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
                 alloy_primitives::Signature::test_signature(),
             )),
-            aa_calls: vec![call],
+            aa_calls: vec![call].into(),
             key_authorization: None,
             signature_hash: B256::ZERO,
             ..Default::default()
@@ -5777,7 +5777,7 @@ mod tests {
                 to: TxKind::Call(Address::random()),
                 value: U256::ZERO,
                 input: Bytes::from(vec![1, 2, 3]),
-            }],
+            }].into(),
             tempo_authorization_list: vec![RecoveredTempoAuthorization::new(
                 TempoSignedAuthorization::new_unchecked(
                     alloy_eips::eip7702::Authorization {
@@ -5855,7 +5855,7 @@ mod tests {
                 &mut test.evm,
                 gas_limit,
                 reservoir,
-                calls,
+                &calls,
                 |_handler, _evm, gas, _reservoir| {
                     // Feed the batch executor deterministic per-call outcomes without running real EVM code.
                     let (instruction_result, spent) = call_results[call_idx];

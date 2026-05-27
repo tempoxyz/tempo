@@ -175,7 +175,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                 }
 
                 Some(Box::new(TempoBatchCallEnv {
-                    aa_calls: calls,
+                    aa_calls: calls.into(),
                     signature: mock_signature,
                     tempo_authorization_list: tempo_authorization_list
                         .into_iter()
@@ -387,7 +387,7 @@ mod tests {
         let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
         let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
 
-        assert_eq!(estimated_calls, built_calls);
+        assert_eq!(estimated_calls.as_ref(), built_calls.as_slice());
     }
 
     #[test]
@@ -568,7 +568,8 @@ mod tests {
         let aa_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
 
         assert_eq!(
-            aa_calls, calls,
+            aa_calls.as_ref(),
+            calls.as_slice(),
             "roundtrip via try_into_tx_env must preserve exact call list"
         );
     }
