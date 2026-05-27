@@ -1,11 +1,11 @@
 //! TIP-20 per-account balance state.
 //!
 //! Before T6, balance slots store the legacy `U256` amount directly, without packing.
-//! At T6, the same storage slot is interpreted as a packed [`UserState`] containing a `u128` amount
-//! and a cached reward opt-in flag.
+//! At T6, the same storage slot is interpreted as a packed [`UserState`] containing a `u128`
+//! amount and a cached reward opt-in flag.
 //!
-//! The manual [`Storable`] impl is necessary to preserve backwards compatibility, and optimally
-//! handle [`StorageOps`] across all hardforks.
+//! The manual [`Storable`] impl preserves pre-T6 storage compatibility while keeping T6+ full-state
+//! reads and writes to one underlying [`StorageOps`] operation.
 
 use crate::{
     error::{Result, TempoPrecompileError},
@@ -13,10 +13,37 @@ use crate::{
         Handler, Layout, LayoutCtx, Slot, Storable, StorableType, StorageCtx, StorageOps,
         packing::PackedSlot,
     },
-    tip20::{U128_MAX, rewards::RewardFlag},
+    tip20::U128_MAX,
 };
 use alloy::primitives::{Address, U256};
-use tempo_precompiles_macros::StorableLayout;
+use tempo_precompiles_macros::{Storable, StorableLayout};
+
+#[derive(Default, Debug, Clone, Storable, Copy, PartialEq)]
+#[repr(u8)]
+pub enum RewardFlag {
+    #[default]
+    Uninitialized,
+    OptedOut,
+    OptedIn,
+}
+
+impl RewardFlag {
+    pub fn is_opted_out(&self) -> bool {
+        matches!(self, Self::OptedOut)
+    }
+
+    pub fn is_opted_in(&self) -> bool {
+        matches!(self, Self::OptedIn)
+    }
+
+    pub fn from_delegate(delegate: Address) -> Self {
+        if delegate.is_zero() {
+            Self::OptedOut
+        } else {
+            Self::OptedIn
+        }
+    }
+}
 
 #[derive(Debug, Clone, StorableLayout, Copy, PartialEq)]
 pub struct UserState {
@@ -183,6 +210,18 @@ pub fn decode_tip20_balance(slot_value: U256) -> U256 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn reward_flag_from_delegate() {
+        assert_eq!(
+            RewardFlag::from_delegate(Address::ZERO),
+            RewardFlag::OptedOut
+        );
+        assert_eq!(
+            RewardFlag::from_delegate(Address::random()),
+            RewardFlag::OptedIn
+        );
+    }
 
     #[test]
     fn decode_tip20_balance_masks_user_state_cache() {

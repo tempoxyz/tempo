@@ -9,7 +9,7 @@
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::Handler,
-    tip20::{Recipient, TIP20Token, UserState},
+    tip20::{Recipient, RewardFlag, TIP20Token, UserState},
 };
 use alloy::primitives::{Address, U256, uint};
 use core::ops::Div;
@@ -450,33 +450,6 @@ impl TIP20Token {
         pending
             .try_into()
             .map_err(|_| TempoPrecompileError::under_overflow())
-    }
-}
-
-#[derive(Default, Debug, Clone, Storable, Copy, PartialEq)]
-#[repr(u8)]
-pub enum RewardFlag {
-    #[default]
-    Uninitialized,
-    OptedOut,
-    OptedIn,
-}
-
-impl RewardFlag {
-    pub fn is_opted_out(&self) -> bool {
-        matches!(self, Self::OptedOut)
-    }
-
-    pub fn is_opted_in(&self) -> bool {
-        matches!(self, Self::OptedIn)
-    }
-
-    pub fn from_delegate(delegate: Address) -> Self {
-        if delegate.is_zero() {
-            Self::OptedOut
-        } else {
-            Self::OptedIn
-        }
     }
 }
 
