@@ -837,6 +837,9 @@ where
         let (evm, execution_result) = executor.finish()?;
         let evm_env = evm.into_env();
 
+        // merge all transitions into bundle state before deriving the hashed post-state
+        db.merge_transitions(BundleRetention::Reverts);
+
         let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
             .as_mut()
             .map(|handle| handle.take_hashed_state_rx().recv())
@@ -877,9 +880,6 @@ where
                 None
             }
             .unzip();
-
-        // merge all transitions into bundle state
-        db.merge_transitions(BundleRetention::Reverts);
 
         let block_access_list = db.take_built_alloy_bal();
         let block_access_list_hash = block_access_list
