@@ -883,6 +883,8 @@ def generate-summary [
     mut feature_builder_latency_values = []
     mut baseline_builder_finish_samples = []
     mut feature_builder_finish_samples = []
+    mut baseline_builder_pool_fetch_samples = []
+    mut feature_builder_pool_fetch_samples = []
     mut baseline_builder_invalid_tx_execution_attempts_samples = []
     mut feature_builder_invalid_tx_execution_attempts_samples = []
     mut baseline_builder_invalid_tx_skips = []
@@ -1013,6 +1015,8 @@ def generate-summary [
     let metric_sample_names = [
         "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum"
         "reth_tempo_payload_builder_payload_finalization_duration_seconds_count"
+        "reth_tempo_payload_builder_pool_fetch_duration_seconds_sum"
+        "reth_tempo_payload_builder_pool_fetch_duration_seconds_count"
         "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_sum"
         "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_count"
         "reth_tempo_payload_builder_pool_transactions_skipped_total"
@@ -1079,6 +1083,7 @@ def generate-summary [
         }
         let builder_latency_values = (do $optional_counter_metric_values "reth_tempo_payload_builder_payload_build_duration_seconds" 1000.0)
         let builder_finish_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_payload_finalization_duration_seconds" 1000.0)
+        let builder_pool_fetch_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_pool_fetch_duration_seconds" 1000.0)
         let builder_invalid_tx_execution_attempts_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts" 1.0)
         let builder_pool_tx_skip_samples = ($metric_samples | where name == "reth_tempo_payload_builder_pool_transactions_skipped_total")
         let builder_pool_tx_skips_for_reason = { |reason: string|
@@ -1140,6 +1145,7 @@ def generate-summary [
             $baseline_tps_samples = ($baseline_tps_samples | append $block_tps_samples)
             $baseline_builder_latency_values = ($baseline_builder_latency_values | append $builder_latency_values)
             $baseline_builder_finish_samples = ($baseline_builder_finish_samples | append $builder_finish_samples)
+            $baseline_builder_pool_fetch_samples = ($baseline_builder_pool_fetch_samples | append $builder_pool_fetch_samples)
             $baseline_builder_invalid_tx_execution_attempts_samples = ($baseline_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
             $baseline_builder_invalid_tx_skips = ($baseline_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
             $baseline_builder_nonce_too_low_skips = ($baseline_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
@@ -1153,6 +1159,7 @@ def generate-summary [
             $feature_tps_samples = ($feature_tps_samples | append $block_tps_samples)
             $feature_builder_latency_values = ($feature_builder_latency_values | append $builder_latency_values)
             $feature_builder_finish_samples = ($feature_builder_finish_samples | append $builder_finish_samples)
+            $feature_builder_pool_fetch_samples = ($feature_builder_pool_fetch_samples | append $builder_pool_fetch_samples)
             $feature_builder_invalid_tx_execution_attempts_samples = ($feature_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
             $feature_builder_invalid_tx_skips = ($feature_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
             $feature_builder_nonce_too_low_skips = ($feature_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
@@ -1241,6 +1248,8 @@ def generate-summary [
     let f_builder = do $compute_value_stats $feature_builder_latency_values
     let b_builder_finish = do $compute_value_stats $baseline_builder_finish_samples
     let f_builder_finish = do $compute_value_stats $feature_builder_finish_samples
+    let b_builder_pool_fetch = do $compute_value_stats $baseline_builder_pool_fetch_samples
+    let f_builder_pool_fetch = do $compute_value_stats $feature_builder_pool_fetch_samples
     let b_builder_invalid_tx_execution_attempts = do $compute_value_stats $baseline_builder_invalid_tx_execution_attempts_samples
     let f_builder_invalid_tx_execution_attempts = do $compute_value_stats $feature_builder_invalid_tx_execution_attempts_samples
     let b_builder_invalid_tx_skips = if ($baseline_builder_invalid_tx_skips | length) > 0 { $baseline_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
@@ -1402,6 +1411,9 @@ def generate-summary [
         $"| Latency P99 [ms] | ($b_builder.p99) | ($f_builder.p99) | (do $delta $b_builder.p99 $f_builder.p99)% |"
         (do $stat_row "Finish P50 [ms]" $b_builder_finish $f_builder_finish p50)
         (do $stat_row "Finish P99 [ms]" $b_builder_finish $f_builder_finish p99)
+        $"| Pool Fetch P50 [ms] | (do $fmt_stat $b_builder_pool_fetch p50) | (do $fmt_stat $f_builder_pool_fetch p50) | (do $fmt_stat_delta $b_builder_pool_fetch $f_builder_pool_fetch p50) |"
+        $"| Pool Fetch P90 [ms] | (do $fmt_stat $b_builder_pool_fetch p90) | (do $fmt_stat $f_builder_pool_fetch p90) | (do $fmt_stat_delta $b_builder_pool_fetch $f_builder_pool_fetch p90) |"
+        $"| Pool Fetch P99 [ms] | (do $fmt_stat $b_builder_pool_fetch p99) | (do $fmt_stat $f_builder_pool_fetch p99) | (do $fmt_stat_delta $b_builder_pool_fetch $f_builder_pool_fetch p99) |"
         (do $nonzero_stat_row "Invalid Tx Attempts P50" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p50)
         (do $nonzero_stat_row "Invalid Tx Attempts P99" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p99)
         (do $nonzero_count_row "Invalid Tx Skips" $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
@@ -1464,6 +1476,9 @@ def generate-summary [
                 builder_finish_p50: $b_builder_finish.p50
                 builder_finish_p90: $b_builder_finish.p90
                 builder_finish_p99: $b_builder_finish.p99
+                builder_pool_fetch_p50: $b_builder_pool_fetch.p50
+                builder_pool_fetch_p90: $b_builder_pool_fetch.p90
+                builder_pool_fetch_p99: $b_builder_pool_fetch.p99
                 builder_invalid_tx_execution_attempts_p50: $b_builder_invalid_tx_execution_attempts.p50
                 builder_invalid_tx_execution_attempts_p90: $b_builder_invalid_tx_execution_attempts.p90
                 builder_invalid_tx_execution_attempts_p99: $b_builder_invalid_tx_execution_attempts.p99
@@ -1495,6 +1510,9 @@ def generate-summary [
                 builder_finish_p50: $f_builder_finish.p50
                 builder_finish_p90: $f_builder_finish.p90
                 builder_finish_p99: $f_builder_finish.p99
+                builder_pool_fetch_p50: $f_builder_pool_fetch.p50
+                builder_pool_fetch_p90: $f_builder_pool_fetch.p90
+                builder_pool_fetch_p99: $f_builder_pool_fetch.p99
                 builder_invalid_tx_execution_attempts_p50: $f_builder_invalid_tx_execution_attempts.p50
                 builder_invalid_tx_execution_attempts_p90: $f_builder_invalid_tx_execution_attempts.p90
                 builder_invalid_tx_execution_attempts_p99: $f_builder_invalid_tx_execution_attempts.p99
@@ -1526,6 +1544,9 @@ def generate-summary [
                 builder_finish_p50: (do $delta $b_builder_finish.p50 $f_builder_finish.p50)
                 builder_finish_p90: (do $delta $b_builder_finish.p90 $f_builder_finish.p90)
                 builder_finish_p99: (do $delta $b_builder_finish.p99 $f_builder_finish.p99)
+                builder_pool_fetch_p50: (do $delta $b_builder_pool_fetch.p50 $f_builder_pool_fetch.p50)
+                builder_pool_fetch_p90: (do $delta $b_builder_pool_fetch.p90 $f_builder_pool_fetch.p90)
+                builder_pool_fetch_p99: (do $delta $b_builder_pool_fetch.p99 $f_builder_pool_fetch.p99)
                 builder_invalid_tx_execution_attempts_p50: (do $delta $b_builder_invalid_tx_execution_attempts.p50 $f_builder_invalid_tx_execution_attempts.p50)
                 builder_invalid_tx_execution_attempts_p90: (do $delta $b_builder_invalid_tx_execution_attempts.p90 $f_builder_invalid_tx_execution_attempts.p90)
                 builder_invalid_tx_execution_attempts_p99: (do $delta $b_builder_invalid_tx_execution_attempts.p99 $f_builder_invalid_tx_execution_attempts.p99)
