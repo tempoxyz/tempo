@@ -40,7 +40,7 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     ECRECOVER_GAS,
     account_keychain::{
-        AccountKeychain, CallScope as PrecompileCallScope, KeyRestrictions,
+        AccountKeychain, AuthorizedKey, CallScope as PrecompileCallScope, KeyRestrictions,
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
@@ -143,11 +143,10 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone)]
 struct LoadedTxAccessKey {
     key_id: Address,
-    is_admin: bool,
-    signature_type: u8,
+    key: AuthorizedKey,
 }
 
 /// Counts the scope storage rows that pay the dynamic SSTORE-set path for the active spec.
@@ -1144,6 +1143,7 @@ where
         // already exists. Same-tx auth+use is the exception: that key is registered only after fees
         // are collected, so fee-limit validation uses the inline authorization payload instead.
         let mut loaded_tx_access_key = None;
+        let mut same_tx_key_authorization_use = false;
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(keychain_sig) = tempo_tx_env.signature.as_keychain()
         {
@@ -1171,26 +1171,39 @@ where
 
             let key_auth = tempo_tx_env.key_authorization.as_ref();
             // Classify whether this keychain-signed tx is using the same access key that the
-            // inline authorization registers. Before T6, keychain-signed transactions with inline
-            // key authorizations must have this shape because access keys cannot authorize other
-            // keys; root-signed key authorizations are handled outside this keychain-signer path.
-            let same_tx_auth_use = key_auth.is_some_and(|key_auth| {
-                if cfg.spec.is_t6() {
-                    access_key_addr == key_auth.key_id
-                } else {
-                    true
+            // inline authorization registers.
+            same_tx_key_authorization_use =
+                key_auth.is_some_and(|key_auth| access_key_addr == key_auth.key_id);
+
+            if same_tx_key_authorization_use {
+                let key_auth = key_auth.expect("same-tx auth/use requires inline authorization");
+
+                // Same-tx auth+use path: the access key does not exist in storage yet, so the fee
+                // check must use the inline limits directly. `collectFeePreTx` cannot enforce this
+                // because `transaction_key` is intentionally not set until after authorization.
+                if !gas_balance_spending.is_zero()
+                    && fee_payer == tx.caller
+                    && let Some(limits) = key_auth.limits.as_ref()
+                {
+                    let remaining = limits
+                        .iter()
+                        .rev()
+                        .find(|limit| limit.token == fee_token)
+                        .map(|limit| limit.limit)
+                        .unwrap_or_default();
+
+                    if gas_balance_spending > remaining {
+                        return Err(
+                            FeePaymentError::Other("SpendingLimitExceeded".to_string()).into()
+                        );
+                    }
                 }
-            });
-
-            let should_validate_existing_tx_key =
-                key_auth.is_none() || (cfg.spec.is_t6() && !same_tx_auth_use);
-
-            if should_validate_existing_tx_key {
+            } else {
                 // Existing-key path:
                 // - ordinary keychain txs must validate the acting access key before fees are paid
                 // - T6 delegated key authorizations also validate the acting key here, then reuse
                 //   the loaded admin/signature-type facts below when the sidecar signer is the same key
-                let (stored_key_expiry, loaded_key) = StorageCtx::enter_precompile(
+                let loaded_key = StorageCtx::enter_precompile(
                     journal,
                     block,
                     cfg,
@@ -1217,7 +1230,7 @@ where
 
                         // T6 adds admin delegation: a keychain signer may authorize a different
                         // child key only if the acting transaction key is itself an active admin key.
-                        if key_auth.is_some() && !same_tx_auth_use && !key.is_admin {
+                        if key_auth.is_some() && !key.is_admin {
                             return Err(
                                 TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into()
                             );
@@ -1230,43 +1243,15 @@ where
                             .set_transaction_key(access_key_addr)
                             .map_err(|e| EVMError::Custom(e.to_string()))?;
 
-                        Ok::<_, EVMError<_, TempoInvalidTransaction>>((
-                            key.expiry,
-                            LoadedTxAccessKey {
-                                key_id: access_key_addr,
-                                is_admin: key.is_admin,
-                                signature_type: key.signature_type as u8,
-                            },
-                        ))
+                        Ok::<_, EVMError<_, TempoInvalidTransaction>>(LoadedTxAccessKey {
+                            key_id: access_key_addr,
+                            key,
+                        })
                     },
                 )?;
 
-                evm.key_expiry = Some(stored_key_expiry);
+                evm.key_expiry = Some(loaded_key.key.expiry);
                 loaded_tx_access_key = Some(loaded_key);
-            }
-
-            if let Some(key_auth) = key_auth {
-                // Same-tx auth+use path: the access key does not exist in storage yet, so the fee
-                // check must use the inline limits directly. `collectFeePreTx` cannot enforce this
-                // because `transaction_key` is intentionally not set until after authorization.
-                if !gas_balance_spending.is_zero()
-                    && fee_payer == tx.caller
-                    && same_tx_auth_use
-                    && let Some(limits) = key_auth.limits.as_ref()
-                {
-                    let remaining = limits
-                        .iter()
-                        .rev()
-                        .find(|limit| limit.token == fee_token)
-                        .map(|limit| limit.limit)
-                        .unwrap_or_default();
-
-                    if gas_balance_spending > remaining {
-                        return Err(
-                            FeePaymentError::Other("SpendingLimitExceeded".to_string()).into()
-                        );
-                    }
-                }
             }
         }
 
@@ -1284,9 +1269,9 @@ where
                 let signer_is_admin = match loaded_tx_access_key {
                     Some(loaded_key)
                         if loaded_key.key_id == auth_signer
-                            && loaded_key.signature_type == key_auth_sig_type =>
+                            && (loaded_key.key.signature_type as u8) == key_auth_sig_type =>
                     {
-                        loaded_key.is_admin
+                        loaded_key.key.is_admin
                     }
                     Some(_) | None => {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
@@ -1521,45 +1506,29 @@ where
             // If this is a same tx auth+use, set the transient key_id to the newly authorized
             // key and decrement the fee from its spending limit. Admin delegation must keep the
             // actual signer as the transaction key.
-            if let Some(keychain_sig) = tempo_tx_env.signature.as_keychain() {
-                let same_tx_auth_use = if cfg.spec.is_t6() {
-                    let access_key_addr =
-                        if let Some(override_key_id) = tempo_tx_env.override_key_id {
-                            override_key_id
-                        } else {
-                            keychain_sig
-                                .key_id(&tempo_tx_env.signature_hash)
-                                .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
-                        };
+            if same_tx_key_authorization_use {
+                StorageCtx::enter_precompile(
+                    journal,
+                    block,
+                    cfg,
+                    tx,
+                    |mut keychain: AccountKeychain| {
+                        keychain
+                            .set_transaction_key(key_auth.key_id)
+                            .map_err(|e| EVMError::Custom(e.to_string()))?;
 
-                    access_key_addr == key_auth.key_id
-                } else {
-                    true
-                };
-                if same_tx_auth_use {
-                    StorageCtx::enter_precompile(
-                        journal,
-                        block,
-                        cfg,
-                        tx,
-                        |mut keychain: AccountKeychain| {
-                            keychain
-                                .set_transaction_key(key_auth.key_id)
-                                .map_err(|e| EVMError::Custom(e.to_string()))?;
+                        if evm.collected_fee.is_zero() {
+                            return Ok(());
+                        }
 
-                            if evm.collected_fee.is_zero() {
-                                return Ok(());
-                            }
-
-                            keychain
-                                .authorize_transfer(fee_payer, fee_token, evm.collected_fee)
-                                .map_err(|err| match err {
-                                    TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                                    err => FeePaymentError::Other(err.to_string()).into(),
-                                })
-                        },
-                    )?;
-                }
+                        keychain
+                            .authorize_transfer(fee_payer, fee_token, evm.collected_fee)
+                            .map_err(|err| match err {
+                                TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                                err => FeePaymentError::Other(err.to_string()).into(),
+                            })
+                    },
+                )?;
             }
         }
 
