@@ -52,7 +52,7 @@ use tempo_precompiles::{
         Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
     },
     tip_fee_manager::TipFeeManager,
-    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token},
+    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, decode_tip20_balance},
     tip20_channel_reserve::TIP20ChannelReserve,
 };
 use tempo_primitives::{
@@ -2309,10 +2309,11 @@ where
     let balance_slot = TIP20Token::from_address(token)
         .expect("TIP20 prefix already validated")
         .balances[sender]
-        .slot();
-    let balance = journal.sload(token, balance_slot)?.data;
-
-    Ok(balance)
+        .base_slot();
+    // T6 packs reward state into the high 128 bits; fee validation only needs the low 128-bit token amount.
+    Ok(decode_tip20_balance(
+        journal.sload(token, balance_slot)?.data,
+    ))
 }
 
 impl<DB, I> InspectorHandler for TempoEvmHandler<DB, I>
@@ -2688,13 +2689,17 @@ mod tests {
         // Use PATH_USD_ADDRESS which has the TIP20 prefix
         let token = PATH_USD_ADDRESS;
         let account = Address::random();
-        let expected_balance = U256::random();
+        let expected_balance = decode_tip20_balance(U256::random());
 
-        // Set up initial balance
-        let balance_slot = TIP20Token::from_address(token)?.balances[account].slot();
+        // Set up packed user state with non-zero high bits to ensure get_token_balance returns only the low 128-bit amount.
+        let balance_slot = TIP20Token::from_address(token)?.balances[account].base_slot();
         journal.load_account(token)?;
         journal
-            .sstore(token, balance_slot, expected_balance)
+            .sstore(
+                token,
+                balance_slot,
+                U256::MAX ^ (decode_tip20_balance(U256::MAX) ^ expected_balance),
+            )
             .unwrap();
 
         let balance = get_token_balance(&mut journal, token, account)?;
