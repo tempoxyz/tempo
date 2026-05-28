@@ -30,7 +30,7 @@ on:
       measurement_modes:
         description: "CodSpeed measurement mode(s), separated by commas"
         required: true
-        default: "simulation"
+        default: "simulation,walltime"
         type: string
 
 concurrency:
@@ -45,7 +45,7 @@ env:
 jobs:
   codspeed:
     name: CodSpeed microbenchmarks
-    runs-on: depot-ubuntu-latest-4
+    runs-on: codspeed-macro
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
@@ -66,7 +66,7 @@ jobs:
           INPUT_PACKAGES: ${{ inputs.packages || 'tempo-evm' }}
           INPUT_BENCHMARKS: ${{ inputs.benchmarks || 'tip20_execution' }}
           INPUT_FILTERS: ${{ inputs.filters || 'tip20_' }}
-          INPUT_MEASUREMENT_MODES: ${{ inputs.measurement_modes || 'simulation' }}
+          INPUT_MEASUREMENT_MODES: ${{ inputs.measurement_modes || 'simulation,walltime' }}
         run: |
           set -euo pipefail
 
