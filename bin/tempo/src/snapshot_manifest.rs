@@ -1,18 +1,33 @@
 use std::{
     fs,
     path::{Path, PathBuf},
+    sync::Arc,
     time::Instant,
 };
 
+use alloy_consensus::Sealable;
 use alloy_primitives::hex;
 use clap::{ArgMatches, FromArgMatches, Parser};
 use commonware_codec::Encode as _;
+use commonware_consensus::simplex::{scheme::bls12381_threshold::vrf::Scheme, types::Finalization};
+use commonware_cryptography::{bls12381::primitives::variant::MinSig, ed25519::PublicKey};
 use commonware_runtime::Runner as _;
-use eyre::{Context as _, OptionExt, Result, ensure};
+use eyre::{Context as _, OptionExt, Result, bail, ensure};
+use reth_chainspec::EthChainSpec;
 use reth_cli_commands::download::{
     manifest::SnapshotManifest, manifest_cmd::SnapshotManifestCommand,
 };
+use reth_cli_runner::CliRunner;
+use reth_db::DatabaseEnv;
+use reth_node_builder::NodeTypesWithDBAdapter;
+use reth_provider::{
+    BlockReader as _,
+    providers::{BlockchainProvider, ReadOnlyConfig},
+};
 use serde::{Deserialize, Serialize};
+use tempo_chainspec::{TempoChainSpec, spec::chainspec_from_chain_id};
+use tempo_commonware_node::consensus::Digest;
+use tempo_node::node::TempoNode;
 
 pub(crate) const TEMPO_CONSENSUS_MANIFEST_KEY: &str = "consensus";
 
@@ -37,6 +52,11 @@ pub(crate) struct Args {
     /// Consensus storage directory. If not set, this will be dirived from --datadir.
     #[arg(long)]
     consensus_source_dir: Option<PathBuf>,
+
+    /// Chain spec override for local/unknown chains (mainnet, testnet, moderato, or path to
+    /// chainspec file). Resolved automatically from the RPC chain id when omitted.
+    #[arg(long, short, value_parser = tempo_chainspec::spec::chain_value_parser)]
+    chain: Option<Arc<TempoChainSpec>>,
 }
 
 pub(crate) fn run(matches: &ArgMatches) -> Result<()> {
@@ -57,6 +77,8 @@ pub(crate) fn run(matches: &ArgMatches) -> Result<()> {
 
 impl Args {
     fn execute(self, source_datadir: &Path, output_dir: &Path) -> Result<()> {
+        let chainspec = self.chain;
+
         fs::create_dir_all(output_dir)
             .wrap_err_with(|| format!("failed to create output dir: {output_dir:?}"))?;
 
@@ -72,26 +94,44 @@ impl Args {
             return Ok(());
         }
 
+        let manifest_path = output_dir.join("manifest.json");
+        let manifest_bytes = fs::read(&manifest_path)
+            .wrap_err_with(|| format!("failed to read {manifest_path:?}"))?;
+        let manifest: SnapshotManifest = serde_json::from_slice(&manifest_bytes)
+            .wrap_err("failed to parse manifest.json produced by reth snapshot-manifest")?;
+
+        eprintln!("reading snapshot block and finalization {}", manifest.block);
+
+        let chainspec = match chainspec {
+            None => chainspec_from_chain_id(manifest.chain_id).ok_or_eyre(format!(
+                "unknown chain id {}, pass --chain explicitly",
+                manifest.chain_id
+            ))?,
+            Some(spec) if spec.chain_id() == manifest.chain_id => spec,
+            Some(spec) => bail!(
+                "mismatch in --chain id {} and manifest chain id {}",
+                spec.chain_id(),
+                manifest.chain_id
+            ),
+        };
+
+        let block = execution_provider(chainspec, source_datadir)?
+            .block_by_number(manifest.block)
+            .wrap_err("failed to read block")?
+            .ok_or_eyre("missing block")?;
+
         let consensus_dir = self
             .consensus_source_dir
             .clone()
             .unwrap_or_else(|| source_datadir.join("consensus"));
 
+        let finalization = read_finalization_at_height(manifest.block, &consensus_dir)?;
+        let block_digest = Digest(block.hash_slow());
+        let finalization_digest = finalization.proposal.payload;
         ensure!(
-            consensus_dir.is_dir(),
-            format!("consensus dir does not exist: {consensus_dir:?}")
+            finalization_digest == block_digest,
+            format!("digest mismatch. Finalized: {finalization_digest}, Execution: {block_digest}")
         );
-
-        let manifest_path = output_dir.join("manifest.json");
-        let manifest_bytes = fs::read(&manifest_path)
-            .wrap_err_with(|| format!("failed to read {manifest_path:?}"))?;
-
-        let manifest: SnapshotManifest = serde_json::from_slice(&manifest_bytes)
-            .wrap_err("failed to parse manifest.json produced by reth snapshot-manifest")?;
-
-        eprintln!("reading finalization at snapshot block {}", manifest.block);
-        let finalization = read_finalization_certificate(&consensus_dir, manifest.block)?;
-        let consensus_manifest = TempoConsensusManifest { finalization };
 
         let mut manifest_json =
             serde_json::to_value(&manifest).wrap_err("failed to serialize merged manifest")?;
@@ -101,23 +141,31 @@ impl Args {
             .ok_or_eyre("serialized manifest was not a JSON object")?
             .insert(
                 TEMPO_CONSENSUS_MANIFEST_KEY.to_string(),
-                serde_json::to_value(&consensus_manifest)
-                    .wrap_err("failed to serialize Tempo consensus manifest extension")?,
+                serde_json::to_value(TempoConsensusManifest {
+                    finalization: hex::encode(finalization.encode().to_vec()),
+                })
+                .wrap_err("failed to serialize Tempo consensus manifest extension")?,
             );
 
-        serde_json::to_string_pretty(&manifest_json)
-            .wrap_err("failed to serialize manifest")
-            .and_then(|json| {
-                fs::write(&manifest_path, json)
-                    .wrap_err_with(|| format!("failed to write {manifest_path:?}"))
-            })?;
+        let manifest_json = serde_json::to_string_pretty(&manifest_json)
+            .wrap_err("failed to serialize manifest")?;
+        fs::write(&manifest_path, manifest_json)
+            .wrap_err_with(|| format!("failed to write {manifest_path:?}"))?;
 
         eprintln!("finalization encoded in snapshot manifest");
         Ok(())
     }
 }
 
-fn read_finalization_certificate(consensus_dir: &Path, height: u64) -> Result<String> {
+fn read_finalization_at_height(
+    height: u64,
+    consensus_dir: &Path,
+) -> Result<Finalization<Scheme<PublicKey, MinSig>, Digest>> {
+    ensure!(
+        consensus_dir.is_dir(),
+        format!("consensus dir does not exist: {consensus_dir:?}")
+    );
+
     let runtime_config =
         commonware_runtime::tokio::Config::default().with_storage_directory(consensus_dir);
 
@@ -128,7 +176,22 @@ fn read_finalization_certificate(consensus_dir: &Path, height: u64) -> Result<St
         })
         .wrap_err("failed to read finalization certificate")?;
 
-    finalization
-        .ok_or_eyre("no finalization certificate")
-        .map(|f| hex::encode(f.encode().to_vec()))
+    finalization.ok_or_eyre("no finalization certificate")
+}
+
+fn execution_provider(
+    chainspec: Arc<TempoChainSpec>,
+    source_datadir: &Path,
+) -> eyre::Result<BlockchainProvider<NodeTypesWithDBAdapter<TempoNode, DatabaseEnv>>> {
+    let runner = CliRunner::try_default_runtime().wrap_err("failed to fetch execution runtime")?;
+
+    let read_cfg = ReadOnlyConfig::from_datadir(source_datadir);
+    let factory = TempoNode::provider_factory_builder()
+        .open_read_only(chainspec, read_cfg, runner.runtime())
+        .wrap_err("failed to open execution")?;
+
+    let provider =
+        BlockchainProvider::new(factory).wrap_err("failed to create execution provider")?;
+
+    Ok(provider)
 }

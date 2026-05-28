@@ -42,8 +42,6 @@ pub(crate) use hybrid::{FinalizedBlocksProvider, Hybrid};
 const FINALIZATIONS_BY_HEIGHT: &str = "finalizations-by-height";
 const PRUNABLE_FINALIZED_BLOCKS: &str = "finalized-blocks-prunable";
 
-pub type FinalizationCertificate = Finalization<Scheme<PublicKey, MinSig>, Digest>;
-
 pub(in crate::storage) const IMMUTABLE_ITEMS_PER_SECTION: std::num::NonZeroU64 = NZU64!(262_144);
 pub(in crate::storage) const FREEZER_TABLE_RESIZE_FREQUENCY: u8 = 4;
 pub(in crate::storage) const FREEZER_TABLE_RESIZE_CHUNK_SIZE: u32 = 2u32.pow(16); // 64KB chunks
@@ -126,26 +124,6 @@ where
     );
 
     archive
-}
-
-/// Reads the finalization certificate stored at `height`
-pub async fn read_finalization_at_height<TContext>(
-    context: &TContext,
-    height: u64,
-) -> eyre::Result<Option<FinalizationCertificate>>
-where
-    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
-{
-    let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
-
-    let archive = init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache)
-        .await
-        .wrap_err("failed to open finalizations-by-height archive")?;
-
-    archive
-        .get(Identifier::Index(height))
-        .await
-        .wrap_err_with(|| format!("failed reading finalization certificate at height {height}"))
 }
 
 /// Initialize the [`Hybrid`] finalized blocks store backed by a prunable
@@ -236,4 +214,24 @@ where
     );
 
     archive
+}
+
+/// Reads the finalization certificate stored at `height`
+pub async fn read_finalization_at_height<TContext>(
+    context: &TContext,
+    height: u64,
+) -> eyre::Result<Option<Finalization<Scheme<PublicKey, MinSig>, Digest>>>
+where
+    TContext: Clock + Metrics + Spawner + Storage + BufferPooler + Clone + Send + 'static,
+{
+    let page_cache = CacheRef::from_pooler(context, BUFFER_POOL_PAGE_SIZE, BUFFER_POOL_CAPACITY);
+
+    let archive = init_finalizations_archive(context, crate::PARTITION_PREFIX, page_cache)
+        .await
+        .wrap_err("failed to open finalizations-by-height archive")?;
+
+    archive
+        .get(Identifier::Index(height))
+        .await
+        .wrap_err_with(|| format!("failed reading finalization certificate at height {height}"))
 }
