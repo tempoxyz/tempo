@@ -857,6 +857,10 @@ where
             .map(|aa_env| !aa_env.tempo_authorization_list.is_empty())
             .unwrap_or(false);
 
+        if !has_aa_auth_list && ctx.tx.authorization_list_len() == 0 {
+            return Ok(0);
+        }
+
         let refunded_accounts = if has_aa_auth_list {
             let tempo_tx_env = ctx.tx.tempo_tx_env.as_ref().unwrap();
 
