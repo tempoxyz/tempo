@@ -34,8 +34,8 @@ use crate::{
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
 };
 use alloy::{
-    primitives::{Address, B256, U256, keccak256, uint},
-    sol_types::SolValue,
+    primitives::{Address, B256, Bytes, LogData, U256, keccak256, uint},
+    sol_types::{SolEvent, SolValue},
 };
 use std::sync::LazyLock;
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -1018,6 +1018,26 @@ impl TIP20Token {
         self.total_supply.write(amount)
     }
 
+    fn address_topic(address: Address) -> B256 {
+        B256::left_padding_from(address.as_slice())
+    }
+
+    fn transfer_log_data(from: Address, to: Address, amount: U256) -> LogData {
+        LogData::new_unchecked(
+            vec![
+                ITIP20::Transfer::SIGNATURE_HASH,
+                Self::address_topic(from),
+                Self::address_topic(to),
+            ],
+            Bytes::copy_from_slice(&amount.to_be_bytes::<32>()),
+        )
+    }
+
+    fn emit_transfer_event(&mut self, from: Address, to: Address, amount: U256) -> Result<()> {
+        self.storage
+            .emit_event(self.address, Self::transfer_log_data(from, to, amount))
+    }
+
     pub fn check_not_paused(&self) -> Result<()> {
         if self.paused()? {
             return Err(TIP20Error::contract_paused().into());
@@ -1178,7 +1198,7 @@ impl TIP20Token {
             )?;
         }
 
-        self.emit_event(to.build_transfer_event(from, amount))
+        self.emit_transfer_event(from, to.virtual_addr.unwrap_or(to.target), amount)
     }
 
     /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
@@ -1314,11 +1334,7 @@ impl TIP20Token {
         refund: U256,
         actual_spending: U256,
     ) -> Result<()> {
-        self.emit_event(TIP20Event::transfer(
-            to,
-            TIP_FEE_MANAGER_ADDRESS,
-            actual_spending,
-        ))?;
+        self.emit_transfer_event(to, TIP_FEE_MANAGER_ADDRESS, actual_spending)?;
 
         // Exit early if there is no refund
         if refund.is_zero() {
