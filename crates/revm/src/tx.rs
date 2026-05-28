@@ -170,10 +170,7 @@ impl TempoTxEnv {
     ///
     /// See: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#eligibility-rules>
     pub fn is_discounted_payment(&self) -> bool {
-        if self
-            .access_list()
-            .is_some_and(|mut list| list.next().is_some())
-        {
+        if !self.inner.access_list.is_empty() {
             return false;
         }
 
