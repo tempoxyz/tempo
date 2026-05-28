@@ -1043,8 +1043,7 @@ impl AA2dPool {
 
         let worst_expiring = self
             .expiring_nonce_eviction_order
-            .iter()
-            .next()
+            .first()
             .map(|key| (key.expiring_hash, key.priority.clone(), key.submission_id));
 
         match (worst_2d, worst_expiring) {
