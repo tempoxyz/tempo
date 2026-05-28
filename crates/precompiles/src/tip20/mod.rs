@@ -1014,8 +1014,9 @@ impl TIP20Token {
         self.total_supply.write(amount)
     }
 
+    #[inline]
     pub fn check_not_paused(&self) -> Result<()> {
-        if self.paused()? {
+        if self.paused.read()? {
             return Err(TIP20Error::contract_paused().into());
         }
         Ok(())
