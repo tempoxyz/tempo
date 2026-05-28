@@ -178,16 +178,18 @@ impl TempoTxEnv {
         }
 
         if let Some(aa) = self.tempo_tx_env.as_ref() {
-            !aa.aa_calls.is_empty()
-                && aa.tempo_authorization_list.is_empty()
+            aa.tempo_authorization_list.is_empty()
                 && aa
                     .key_authorization
                     .as_ref()
                     .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
-                && aa
-                    .aa_calls
-                    .iter()
-                    .all(|call| is_discounted_tip20_call(&call.to, &call.input))
+                && match aa.aa_calls.as_slice() {
+                    [] => false,
+                    [call] => is_discounted_tip20_call(&call.to, &call.input),
+                    calls => calls
+                        .iter()
+                        .all(|call| is_discounted_tip20_call(&call.to, &call.input)),
+                }
         } else {
             self.authorization_list_len() == 0
                 && is_discounted_tip20_call(&self.inner.kind, self.input())
