@@ -193,9 +193,16 @@ impl TIP20Token {
 
         let mut info = self.user_reward_info[msg_sender].read()?;
         let amount = info.reward_balance;
+        if amount == U256::ZERO {
+            return Ok(U256::ZERO);
+        }
+
         let contract_address = self.address;
         let contract_balance = self.get_balance(contract_address)?;
         let max_amount = amount.min(contract_balance);
+        if max_amount == U256::ZERO {
+            return Ok(U256::ZERO);
+        }
 
         let reward_recipient = info.reward_recipient;
         info.reward_balance = amount
@@ -203,35 +210,33 @@ impl TIP20Token {
             .ok_or(TempoPrecompileError::under_overflow())?;
         self.user_reward_info[msg_sender].write(info)?;
 
-        if max_amount > U256::ZERO {
-            let new_contract_balance = contract_balance
-                .checked_sub(max_amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_balance(contract_address, new_contract_balance)?;
+        let new_contract_balance = contract_balance
+            .checked_sub(max_amount)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        self.set_balance(contract_address, new_contract_balance)?;
 
-            let recipient_balance = self
-                .get_balance(msg_sender)?
+        let recipient_balance = self
+            .get_balance(msg_sender)?
+            .checked_add(max_amount)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        self.set_balance(msg_sender, recipient_balance)?;
+
+        if reward_recipient != Address::ZERO {
+            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
                 .checked_add(max_amount)
                 .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_balance(msg_sender, recipient_balance)?;
-
-            if reward_recipient != Address::ZERO {
-                let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                    .checked_add(max_amount)
-                    .ok_or(TempoPrecompileError::under_overflow())?;
-                self.set_opted_in_supply(
-                    opted_in_supply
-                        .try_into()
-                        .map_err(|_| TempoPrecompileError::under_overflow())?,
-                )?;
-            }
-
-            self.emit_event(TIP20Event::transfer(
-                contract_address,
-                msg_sender,
-                max_amount,
-            ))?;
+            self.set_opted_in_supply(
+                opted_in_supply
+                    .try_into()
+                    .map_err(|_| TempoPrecompileError::under_overflow())?,
+            )?;
         }
+
+        self.emit_event(TIP20Event::transfer(
+            contract_address,
+            msg_sender,
+            max_amount,
+        ))?;
 
         Ok(max_amount)
     }
