@@ -1004,32 +1004,66 @@ def generate-summary [
             if ($deltas | length) > 0 { $deltas | math sum | math round --precision 0 } else { 0.0 }
         }
     }
-    let counter_delta_sum_total = { |samples: list<any>, metric: string|
-        let sum_name = $"($metric)_sum"
-        let sum_samples = ($samples | where name == $sum_name)
-        if ($sum_samples | length) == 0 {
-            0.0
-        } else {
-            let deltas = (
-                $sum_samples
-                    | group-by { |sample| $sample.labels | to json --raw }
-                    | transpose labels samples
-                    | each { |series|
-                        let points = (
-                            $series.samples
-                                | where { |sample| ($sample | get -o value | default null) != null }
-                                | sort-by unix_ms
-                        )
-                        if ($points | length) > 1 {
-                            let first = ($points | first)
-                            let last = ($points | last)
-                            let delta = ($last.value - $first.value)
-                            if $delta >= 0 { $delta } else { $last.value }
-                        } else { 0.0 }
+    let counter_delta_tps_values = { |samples: list<any>, tx_metric: string, duration_metric: string|
+        let tx_sum_name = $"($tx_metric)_sum"
+        let tx_count_name = $"($tx_metric)_count"
+        let duration_sum_name = $"($duration_metric)_sum"
+        let duration_count_name = $"($duration_metric)_count"
+        let counter_samples = ($samples | where { |sample| $sample.name in [$tx_sum_name $tx_count_name $duration_sum_name $duration_count_name] })
+        let observation_values = { |series_samples: list<any>, sum_name: string, count_name: string|
+            let points = (
+                $series_samples
+                    | where { |sample| $sample.name in [$sum_name $count_name] }
+                    | group-by unix_ms
+                    | transpose unix_ms samples
+                    | each { |point|
+                        let sum_values = ($point.samples | where name == $sum_name | get value)
+                        let count_values = ($point.samples | where name == $count_name | get value)
+                        if (($sum_values | length) > 0) and (($count_values | length) > 0) {
+                            {
+                                unix_ms: ($point.unix_ms | into int)
+                                sum: ($sum_values | first)
+                                count: ($count_values | first)
+                            }
+                        } else { null }
                     }
+                    | where { |point| $point != null }
+                    | sort-by unix_ms
             )
-            if ($deltas | length) > 0 { $deltas | math sum } else { 0.0 }
+            if ($points | length) > 1 {
+                $points
+                    | window 2
+                    | each { |pair|
+                        let prev = ($pair | first)
+                        let curr = ($pair | last)
+                        let delta_count = (($curr.count - $prev.count) | into int)
+                        let delta_sum = ($curr.sum - $prev.sum)
+                        if $delta_count > 0 and $delta_sum >= 0.0 {
+                            let value = ($delta_sum / $delta_count)
+                            0..<$delta_count | each { $value }
+                        } else { [] }
+                    }
+                    | flatten
+            } else { [] }
         }
+        $counter_samples
+            | group-by { |sample| $sample.labels | to json --raw }
+            | transpose labels samples
+            | each { |series|
+                let tx_values = (do $observation_values $series.samples $tx_sum_name $tx_count_name)
+                let duration_values = (do $observation_values $series.samples $duration_sum_name $duration_count_name)
+                let pair_count = [($tx_values | length) ($duration_values | length)] | math min
+                if $pair_count > 0 {
+                    0..<$pair_count | each { |idx|
+                        let tx_value = ($tx_values | get $idx)
+                        let duration_value = ($duration_values | get $idx)
+                        if $tx_value > 0.0 and $duration_value >= 0.01 {
+                            ($tx_value / $duration_value)
+                        } else { null }
+                    } | where { |value| $value != null }
+                } else { [] }
+            }
+            | flatten
     }
 
     let metric_sample_names = [
@@ -1123,12 +1157,10 @@ def generate-summary [
         let validation_latency_values = (do $optional_counter_metric_values "reth_consensus_engine_beacon_new_payload_latency" 1000.0)
         let builder_gas_values = (do $optional_counter_metric_values "reth_tempo_payload_builder_gas_per_second" 1.0)
         let validation_gas_values = (do $optional_counter_metric_values "reth_consensus_engine_beacon_new_payload_gas_per_second" 1.0)
-        let builder_payment_transactions = (do $counter_delta_sum_total $metric_samples "reth_tempo_payload_builder_payment_transactions")
-        let builder_build_seconds = (do $counter_delta_sum_total $metric_samples "reth_tempo_payload_builder_payload_build_duration_seconds")
-        let builder_avg_tps = if $builder_build_seconds > 0.0 { ($builder_payment_transactions / $builder_build_seconds) | math round --precision 0 } else { 0.0 }
-        let validation_total_transactions = (do $counter_delta_sum_total $metric_samples "reth_tempo_payload_builder_total_transactions")
-        let validation_seconds = (do $counter_delta_sum_total $metric_samples "reth_consensus_engine_beacon_new_payload_latency")
-        let validation_avg_tps = if $validation_seconds > 0.0 { ($validation_total_transactions / $validation_seconds) | math round --precision 0 } else { 0.0 }
+        let builder_tps_values = (do $counter_delta_tps_values $metric_samples "reth_tempo_payload_builder_payment_transactions" "reth_tempo_payload_builder_payload_build_duration_seconds")
+        let builder_avg_tps = if ($builder_tps_values | length) > 0 { $builder_tps_values | math avg | math round --precision 0 } else { 0.0 }
+        let validation_tps_values = (do $counter_delta_tps_values $metric_samples "reth_tempo_payload_builder_total_transactions" "reth_consensus_engine_beacon_new_payload_latency")
+        let validation_avg_tps = if ($validation_tps_values | length) > 0 { $validation_tps_values | math avg | math round --precision 0 } else { 0.0 }
         let blocks = ($report | get blocks | each { |b|
             let tx_count = ($b | get tx_count)
             let timestamp = if (($b | get -o timestamp | default null) != null) {
@@ -1424,7 +1456,7 @@ def generate-summary [
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
         $"| Gas Throughput [Mgas/s] | ($b_builder_mgas) | ($f_builder_mgas) | (do $delta $b_builder_gas $f_builder_gas)% |"
-        $"| Average TPS | ($b_builder_tps) | ($f_builder_tps) | (do $delta $b_builder_tps $f_builder_tps)% |"
+        $"| Non-empty Avg TPS | ($b_builder_tps) | ($f_builder_tps) | (do $delta $b_builder_tps $f_builder_tps)% |"
         $"| Latency P50 [ms] | ($b_builder.p50) | ($f_builder.p50) | (do $delta $b_builder.p50 $f_builder.p50)% |"
         $"| Latency P90 [ms] | ($b_builder.p90) | ($f_builder.p90) | (do $delta $b_builder.p90 $f_builder.p90)% |"
         $"| Latency P99 [ms] | ($b_builder.p99) | ($f_builder.p99) | (do $delta $b_builder.p99 $f_builder.p99)% |"
@@ -1445,7 +1477,7 @@ def generate-summary [
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
         $"| Gas Throughput [Mgas/s] | ($b_validation_mgas) | ($f_validation_mgas) | (do $delta $b_validation_gas $f_validation_gas)% |"
-        $"| Average TPS | ($b_validation_tps) | ($f_validation_tps) | (do $delta $b_validation_tps $f_validation_tps)% |"
+        $"| Non-empty Avg TPS | ($b_validation_tps) | ($f_validation_tps) | (do $delta $b_validation_tps $f_validation_tps)% |"
         $"| P50 [ms] | ($b_validation.p50) | ($f_validation.p50) | (do $delta $b_validation.p50 $f_validation.p50)% |"
         $"| P90 [ms] | ($b_validation.p90) | ($f_validation.p90) | (do $delta $b_validation.p90 $f_validation.p90)% |"
         $"| P99 [ms] | ($b_validation.p99) | ($f_validation.p99) | (do $delta $b_validation.p99 $f_validation.p99)% |"

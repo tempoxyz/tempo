@@ -41,7 +41,7 @@ const SECTIONS = [
     title: 'Builder',
     rows: [
       ['Gas Throughput [Mgas/s]', 'builder_gas_s', v => fmtVal(v / 1_000_000, 1)],
-      ['Average TPS', 'builder_tps', v => fmtVal(v, 0)],
+      ['Non-empty Avg TPS', 'builder_tps', v => fmtVal(v, 0)],
       ['P50 [ms]', 'builder_latency_p50', v => fmtVal(v, 1)],
       ['P90 [ms]', 'builder_latency_p90', v => fmtVal(v, 1)],
       ['P99 [ms]', 'builder_latency_p99', v => fmtVal(v, 1)],
@@ -51,7 +51,7 @@ const SECTIONS = [
     title: 'Validator',
     rows: [
       ['Gas Throughput [Mgas/s]', 'validation_gas_s', v => fmtVal(v / 1_000_000, 1)],
-      ['Average TPS', 'validation_tps', v => fmtVal(v, 0)],
+      ['Non-empty Avg TPS', 'validation_tps', v => fmtVal(v, 0)],
       ['P50 [ms]', 'validation_latency_p50', v => fmtVal(v, 1)],
       ['P90 [ms]', 'validation_latency_p90', v => fmtVal(v, 1)],
       ['P99 [ms]', 'validation_latency_p99', v => fmtVal(v, 1)],
