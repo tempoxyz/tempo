@@ -26,9 +26,9 @@ pub use tempo_transaction::{
 };
 pub use tt_signed::AASigned;
 
-use alloc::vec::Vec;
 use alloy_consensus::SignableTransaction;
-use alloy_primitives::{Address, B256, Signature, U256, uint};
+use alloy_primitives::{Address, B256, Keccak256, Signature, U256, uint};
+use alloy_rlp::{BufMut, bytes::buf::UninitSlice};
 
 /// Computes the sender-scoped transaction identifier used for replay-sensitive features.
 ///
@@ -38,10 +38,61 @@ pub(crate) fn unique_tx_identifier_from_signable<T>(tx: &T, sender: Address) -> 
 where
     T: SignableTransaction<Signature>,
 {
-    let mut buf = Vec::with_capacity(tx.payload_len_for_signature() + sender.as_slice().len());
-    tx.encode_for_signing(&mut buf);
-    buf.extend_from_slice(sender.as_slice());
-    alloy_primitives::keccak256(buf)
+    let mut hasher = Keccak256::new();
+    let mut out = KeccakBuf::new(&mut hasher);
+    tx.encode_for_signing(&mut out);
+    hasher.update(sender.as_slice());
+    hasher.finalize()
+}
+
+struct KeccakBuf<'a> {
+    hasher: &'a mut Keccak256,
+    scratch: [u8; 64],
+}
+
+impl<'a> KeccakBuf<'a> {
+    fn new(hasher: &'a mut Keccak256) -> Self {
+        Self {
+            hasher,
+            scratch: [0; 64],
+        }
+    }
+}
+
+unsafe impl BufMut for KeccakBuf<'_> {
+    #[inline]
+    fn remaining_mut(&self) -> usize {
+        usize::MAX
+    }
+
+    #[inline]
+    unsafe fn advance_mut(&mut self, cnt: usize) {
+        assert!(cnt <= self.scratch.len());
+        self.hasher.update(&self.scratch[..cnt]);
+    }
+
+    #[inline]
+    fn chunk_mut(&mut self) -> &mut UninitSlice {
+        UninitSlice::new(&mut self.scratch)
+    }
+
+    #[inline]
+    fn put_slice(&mut self, src: &[u8]) {
+        self.hasher.update(src);
+    }
+
+    #[inline]
+    fn put_bytes(&mut self, val: u8, mut cnt: usize) {
+        const CHUNK: usize = 64;
+        let buf = [val; CHUNK];
+        while cnt >= CHUNK {
+            self.hasher.update(&buf);
+            cnt -= CHUNK;
+        }
+        if cnt != 0 {
+            self.hasher.update(&buf[..cnt]);
+        }
+    }
 }
 
 /// Scaling factor for converting gas prices (attodollars) to TIP-20 token amounts (microdollars).
