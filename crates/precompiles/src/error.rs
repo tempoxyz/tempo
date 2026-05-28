@@ -11,7 +11,7 @@ use std::{
 
 use crate::tip20::TIP20Error;
 use alloy::{
-    primitives::{Selector, U256},
+    primitives::{FixedBytes, Selector, U256},
     sol_types::{Panic, PanicKind, SolError, SolInterface},
 };
 use alloy_evm::EvmInternalsError;
@@ -139,6 +139,31 @@ impl From<JournalLoadError<revm::context::ErasedError>> for TempoPrecompileError
 pub type Result<T> = std::result::Result<T, TempoPrecompileError>;
 
 impl TempoPrecompileError {
+    /// Returns this error's ABI selector. For those variants which can't be encoded as a selector, it returns `FixedBytes<4>::ZERO`.
+    pub fn selector(&self) -> FixedBytes<4> {
+        match self {
+            Self::StablecoinDEX(e) => e.selector(),
+            Self::TIP20(e) => e.selector(),
+            Self::TIP20ChannelReserveError(e) => e.selector(),
+            Self::NonceError(e) => e.selector(),
+            Self::TIP20Factory(e) => e.selector(),
+            Self::RolesAuthError(e) => e.selector(),
+            Self::AddrRegistryError(e) => e.selector(),
+            Self::TIPFeeAMMError(e) => e.selector(),
+            Self::FeeManagerError(e) => e.selector(),
+            Self::TIP403RegistryError(e) => e.selector(),
+            Self::ValidatorConfigError(e) => e.selector(),
+            Self::ValidatorConfigV2Error(e) => e.selector(),
+            Self::AccountKeychainError(e) => e.selector(),
+            Self::SignatureVerifierError(e) => e.selector(),
+            Self::ReceivePolicyGuardError(e) => e.selector(),
+            Self::UnknownFunctionSelector(selector) => *selector,
+            Self::Panic(_) => Panic::SELECTOR,
+            Self::OutOfGas | Self::Fatal(_) => [0, 0, 0, 0],
+        }
+        .into()
+    }
+
     /// Returns true if this error represents a system-level failure that must be propagated
     /// rather than swallowed, because state may be inconsistent.
     pub fn is_system_error(&self) -> bool {

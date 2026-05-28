@@ -78,7 +78,7 @@ jobs:
         with:
           repository: foundry-rs/foundry
           # tmp: rus/bump-tempo-v1.7
-          ref: 2a70688470dd684e00d54b4ac1a9b165162960be
+          ref: 5ad62bb61e88facba18f800c73b9ff7b60ef3fb7
           path: foundry
           persist-credentials: false
 
@@ -221,7 +221,7 @@ jobs:
         with:
           repository: foundry-rs/foundry
           # tmp: rus/bump-tempo-v1.7
-          ref: 2a70688470dd684e00d54b4ac1a9b165162960be
+          ref: 5ad62bb61e88facba18f800c73b9ff7b60ef3fb7
           path: foundry
           persist-credentials: false
 
