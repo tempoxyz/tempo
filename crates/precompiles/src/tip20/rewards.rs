@@ -76,6 +76,7 @@ impl TIP20Token {
     /// balance and the reward per token difference since their last update.
     /// Rewards are accumulated in the delegated recipient's rewardBalance.
     /// Returns the holder's delegated recipient address.
+    #[inline(always)]
     pub fn update_rewards(&mut self, holder: Address) -> Result<Address> {
         let mut info = self.user_reward_info[holder].read()?;
 
@@ -257,6 +258,7 @@ impl TIP20Token {
     }
 
     /// Handles reward accounting for both sender and receiver during token transfers.
+    #[inline(always)]
     pub fn handle_rewards_on_transfer(
         &mut self,
         from: Address,
