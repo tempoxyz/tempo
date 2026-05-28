@@ -302,15 +302,12 @@ impl TIP20Token {
         self.user_reward_info[msg_sender].write(info)?;
 
         if max_amount > U256::ZERO {
-            let new_contract_balance = UserState::new(
-                contract_balance.checked_sub(max_amount)?,
-                contract_balance.flag,
-            )?;
+            let new_contract_balance =
+                contract_balance.with_subtracted(max_amount, contract_balance.flag)?;
             self.set_balance(contract_address, new_contract_balance)?;
 
             let recipient_balance = self.get_balance(msg_sender)?;
-            let new_recipient_balance =
-                UserState::new(recipient_balance.checked_add(max_amount)?, flag)?;
+            let new_recipient_balance = recipient_balance.with_added(max_amount, flag)?;
             self.set_balance(msg_sender, new_recipient_balance)?;
 
             if flag.is_opted_in() {
