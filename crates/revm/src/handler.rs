@@ -1763,12 +1763,14 @@ where
                 tx.authorization_list_len() as u64,
             );
             // TIP-1000: Storage pricing updates for launch
-            // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
-            // no need for v1 fork check as gas_params would be zero
-            for auth in tx.authorization_list() {
-                if auth.nonce == 0 {
-                    init_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
-                    init_gas.initial_state_gas += gas_params.new_account_state_gas();
+            // EIP-7702 authorisation list entries with `auth_list.nonce == 0`
+            // require an additional 250,000 gas on T1+ only.
+            if spec.is_t1() {
+                for auth in tx.authorization_list() {
+                    if auth.nonce == 0 {
+                        init_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
+                        init_gas.initial_state_gas += gas_params.new_account_state_gas();
+                    }
                 }
             }
 
@@ -5700,6 +5702,43 @@ mod tests {
             init_gas.initial_state_gas,
             test.gas_params().new_account_state_gas(),
             "T4 standard tx with nonce==0 should track new_account_state_gas"
+        );
+    }
+
+    #[test]
+    fn test_pre_t1_eip7702_auth_nonce_zero_skips_tip1000_surcharge() {
+        let calldata = Bytes::from(vec![1, 2, 3]);
+        let auth = revm::context::transaction::Authorization {
+            chain_id: U256::from(42431),
+            address: Address::random(),
+            nonce: 0,
+        };
+
+        let mut test = TestHandlerEvm::tx(TempoHardfork::Genesis, |tx_env| {
+            tx_env.inner.tx_type = TransactionType::Eip7702 as u8;
+            tx_env.inner.kind = TxKind::Call(Address::random());
+            tx_env.inner.gas_limit = 1_000_000;
+            tx_env.inner.data = calldata.clone();
+            tx_env.inner.authorization_list = vec![revm::context::either::Either::Left(
+                revm::context::transaction::SignedAuthorization::new_unchecked(
+                    auth,
+                    0,
+                    U256::ONE,
+                    U256::ONE,
+                ),
+            )];
+        });
+
+        let init_gas = test.validate_initial_tx_gas();
+        let expected = test
+            .gas_params()
+            .initial_tx_gas(&calldata, false, 0, 0, 1)
+            .initial_total_gas();
+
+        assert_eq!(
+            init_gas.initial_total_gas(),
+            expected,
+            "pre-T1 EIP-7702 auth nonce==0 must not add the TIP-1000 auth-account surcharge"
         );
     }
 
