@@ -51,7 +51,7 @@ pub(crate) fn gen_handler_field_init(
     let slot_expr = if is_contract {
         quote! { #const_mod::#slot_const }
     } else {
-        quote! { base_slot.saturating_add(::alloy::primitives::U256::from_limbs([#const_mod::#loc_const.offset_slots as u64, 0, 0, 0])) }
+        quote! { base_slot.wrapping_add(::alloy::primitives::U256::from_limbs([#const_mod::#loc_const.offset_slots as u64, 0, 0, 0])) }
     };
 
     match &field.kind {

@@ -67,7 +67,7 @@ impl<T> Slot<T> {
     #[inline]
     pub fn new_at_offset(base_slot: U256, offset_slots: usize, address: Address) -> Self {
         Self {
-            slot: base_slot.saturating_add(U256::from_limbs([offset_slots as u64, 0, 0, 0])),
+            slot: base_slot.wrapping_add(U256::from_limbs([offset_slots as u64, 0, 0, 0])),
             ctx: LayoutCtx::FULL,
             address,
             _ty: PhantomData,
@@ -90,7 +90,7 @@ impl<T> Slot<T> {
             "`fn new_at_loc` can only be used with packable types"
         );
         Self {
-            slot: base_slot.saturating_add(U256::from_limbs([loc.offset_slots as u64, 0, 0, 0])),
+            slot: base_slot.wrapping_add(U256::from_limbs([loc.offset_slots as u64, 0, 0, 0])),
             ctx: LayoutCtx::packed(loc.offset_bytes),
             address,
             _ty: PhantomData,
