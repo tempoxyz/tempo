@@ -33,6 +33,7 @@ enum TIP20Call {
 }
 
 impl TIP20Call {
+    #[inline(always)]
     fn decode(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
         // safe to expect as `dispatch_call` pre-validates calldata len
         let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
