@@ -257,14 +257,18 @@ impl TIP20ChannelReserve {
         }
 
         let additional = call.additionalDeposit;
-        let next_deposit = state
-            .deposit
-            .checked_add(additional)
-            .ok_or_else(TIP20ChannelReserveError::deposit_overflow)?;
-
         let had_close_request = state.close_requested_at().is_some();
 
+        if additional.is_zero() && !had_close_request {
+            return Ok(());
+        }
+
         if !additional.is_zero() {
+            let next_deposit = state
+                .deposit
+                .checked_add(additional)
+                .ok_or_else(TIP20ChannelReserveError::deposit_overflow)?;
+
             state.deposit = next_deposit;
             let mut token = TIP20Token::from_address(call.descriptor.token)?;
             token.ensure_authorized_as(
@@ -1495,6 +1499,66 @@ mod tests {
             assert_eq!(
                 result.unwrap_err(),
                 TIP20ChannelReserveError::not_payee_or_operator().into()
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_zero_top_up_without_close_request_is_noop() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let payer = Address::random();
+        let payee = Address::random();
+        let salt = B256::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let token = TIP20Setup::path_usd(payer)
+                .with_issuer(payer)
+                .with_mint(payer, U256::from(1_000u128))
+                .apply()?;
+            let mut reserve = TIP20ChannelReserve::new();
+            reserve.initialize()?;
+
+            let expiring_nonce_hash = seed_expiring_nonce_hash(&mut reserve)?;
+            let descriptor = descriptor(
+                payer,
+                payee,
+                Address::ZERO,
+                token.address(),
+                salt,
+                Address::ZERO,
+                expiring_nonce_hash,
+            );
+            reserve.open(
+                payer,
+                open_call(
+                    payee,
+                    Address::ZERO,
+                    token.address(),
+                    100,
+                    salt,
+                    Address::ZERO,
+                ),
+            )?;
+            reserve.clear_emitted_events();
+
+            reserve.top_up(
+                payer,
+                ITIP20ChannelReserve::topUpCall {
+                    descriptor: descriptor.clone(),
+                    additionalDeposit: U96::ZERO,
+                },
+            )?;
+
+            let channel =
+                reserve.get_channel(ITIP20ChannelReserve::getChannelCall { descriptor })?;
+            assert_eq!(channel.state.closeRequestedAt, 0);
+            assert_eq!(channel.state.deposit, 100);
+            assert!(
+                StorageCtx
+                    .get_events(TIP20_CHANNEL_RESERVE_ADDRESS)
+                    .is_empty()
             );
 
             Ok(())

@@ -7,23 +7,23 @@ const BOOTSTRAP_ITERATIONS = 10000;
 const SIG_EMOJI = { good: '✅', bad: '❌', neutral: '⚪' };
 
 const AXES = {
-  builder_latency_p50: { floor: 0.70, lower: true },
-  builder_latency_p90: { floor: 1.35, lower: true },
-  builder_latency_p99: { floor: 5.0, lower: true },
-  builder_gas_s: { floor: 0.45, lower: false },
-  tps: { floor: 0.45, lower: false },
-  tps_p50: { floor: 0.70, lower: false },
-  tps_p90: { floor: 1.35, lower: false },
-  tps_p99: { floor: 5.0, lower: false },
-  mgas_s: { floor: 0.45, lower: false },
-  block_time_mean: { floor: 0.70, lower: true },
+  builder_latency_p50: { floor: 0.35, lower: true },
+  builder_latency_p90: { floor: 0.70, lower: true },
+  builder_latency_p99: { floor: 0.95, lower: true },
+  builder_gas_s: { floor: 0.70, lower: false },
+  tps: { floor: 0.55, lower: false },
+  tps_p50: { floor: 1.05, lower: false },
+  tps_p90: { floor: 4.10, lower: false },
+  tps_p99: { floor: 4.10, lower: false },
+  mgas_s: { floor: 0.50, lower: false },
+  block_time_mean: { floor: 0.40, lower: true },
   block_time_p50: { floor: 0.70, lower: true },
-  block_time_p90: { floor: 1.35, lower: true },
-  block_time_p99: { floor: 5.0, lower: true },
-  validation_latency_p50: { floor: 0.70, lower: true },
-  validation_latency_p90: { floor: 1.35, lower: true },
-  validation_latency_p99: { floor: 5.0, lower: true },
-  validation_gas_s: { floor: 0.45, lower: false },
+  block_time_p90: { floor: 0.70, lower: true },
+  block_time_p99: { floor: 1.60, lower: true },
+  validation_latency_p50: { floor: 1.55, lower: true },
+  validation_latency_p90: { floor: 1.55, lower: true },
+  validation_latency_p99: { floor: 2.05, lower: true },
+  validation_gas_s: { floor: 0.65, lower: false },
 };
 
 const SECTIONS = [
@@ -205,6 +205,8 @@ function appendBuilderDetails(lines, summary) {
 function buildMarkdown(summary) {
   const c = summary.classification;
   const derekCommand = summary.config?.derek_command || '';
+  const baselineRemovedArgs = summary.config?.baseline_removed_args || '';
+  const featureRemovedArgs = summary.config?.feature_removed_args || '';
   const lines = [
     `# ${c.emoji} Bench Comparison: ${c.label}`,
     '',
@@ -218,6 +220,8 @@ function buildMarkdown(summary) {
     `- Target TPS: ${summary.config.tps}`,
     `- Duration: ${summary.config.duration}s`,
     `- Run pairs: ${summary.config.run_pairs}`,
+    ...(baselineRemovedArgs ? [`- Baseline removed args: \`${baselineRemovedArgs}\``] : []),
+    ...(featureRemovedArgs ? [`- Feature removed args: \`${featureRemovedArgs}\``] : []),
     `- Baseline blocks: ${summary.results.baseline.blocks}`,
     `- Feature blocks: ${summary.results.feature.blocks}`,
     '',

@@ -3,10 +3,17 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod budget;
 mod metrics;
 mod prewarming;
 
+pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
+
 use crate::{
+    budget::{
+        BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
+        payload_budget_exhausted, scaled_build_time_multiplier,
+    },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
 };
@@ -49,7 +56,7 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
-use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
+use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoTxEnvelope,
@@ -97,6 +104,32 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     enable_prewarming: bool,
+    /// Conservative estimate of total replayable build work divided by work at tx cutoff.
+    build_time_multiplier: Arc<AtomicU64>,
+}
+
+/// Runtime settings for the Tempo payload builder.
+#[derive(Debug, Clone, Copy)]
+pub struct TempoPayloadBuilderConfig {
+    /// Whether the node is configured in `--dev` miner mode.
+    pub is_dev: bool,
+    /// Whether to enable state provider metrics.
+    pub state_provider_metrics: bool,
+    /// Whether to enable prewarming of best transactions.
+    pub enable_prewarming: bool,
+    /// Initial estimate of total replayable build work divided by work at tx cutoff.
+    pub build_time_multiplier: f64,
+}
+
+impl Default for TempoPayloadBuilderConfig {
+    fn default() -> Self {
+        Self {
+            is_dev: false,
+            state_provider_metrics: false,
+            enable_prewarming: false,
+            build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+        }
+    }
 }
 
 impl<Provider> TempoPayloadBuilder<Provider> {
@@ -105,9 +138,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
         provider: Provider,
         executor: TaskExecutor,
         evm_config: TempoEvmConfig,
-        is_dev: bool,
-        state_provider_metrics: bool,
-        enable_prewarming: bool,
+        config: TempoPayloadBuilderConfig,
     ) -> Self {
         Self {
             pool,
@@ -117,10 +148,28 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             metrics: TempoPayloadBuilderMetrics::default(),
             cache_metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             highest_invalid_subblock: Default::default(),
-            is_dev,
-            state_provider_metrics,
-            enable_prewarming,
+            is_dev: config.is_dev,
+            state_provider_metrics: config.state_provider_metrics,
+            enable_prewarming: config.enable_prewarming,
+            build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
+                config.build_time_multiplier,
+            ))),
         }
+    }
+
+    fn build_time_multiplier(&self) -> u64 {
+        self.build_time_multiplier.load(Ordering::Relaxed)
+    }
+
+    fn update_build_time_multiplier(&self, total_work: Duration, work_at_tx_cutoff: Duration) {
+        let Some(observed) = observed_build_time_multiplier(total_work, work_at_tx_cutoff) else {
+            return;
+        };
+        let _ = self.build_time_multiplier.fetch_update(
+            Ordering::Relaxed,
+            Ordering::Relaxed,
+            |current| Some(decay_build_time_multiplier(current, observed)),
+        );
     }
 }
 
@@ -258,10 +307,10 @@ where
             attributes,
             payload_id,
         } = config;
-        let build_until_interrupt =
-            // When trie handle is provided, we only build the payload once, until the interrupt is triggered
+        let build_once_with_shared_trie =
+            // When trie handle is provided, we build the payload once so the shared trie can be reused.
             trie_handle.is_some()
-            // `--dev` mode doesn't have payload building interrupts
+            // `--dev` mode does not use the shared-trie builder flow.
             && !self.is_dev;
 
         macro_rules! check_cancel {
@@ -469,19 +518,45 @@ where
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut skipped_oversized_block = false;
-        let mut normal_included_transaction_execution_elapsed = Duration::ZERO;
-        let mut normal_invalid_transaction_execution_elapsed = Duration::ZERO;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let payload_build_budget = attributes.payload_build_budget();
+        let build_time_multiplier = self.build_time_multiplier();
+        let marshal_persist = marshal_persist_estimate();
         let block_build_stop_reason = loop {
-            if attributes.is_interrupted() {
-                break BlockBuildStopReason::TimeLimit;
-            }
-
             check_cancel!();
 
+            if let Some(build_budget) = payload_build_budget {
+                let elapsed = start.elapsed();
+                if payload_budget_exhausted(
+                    elapsed,
+                    normal_transaction_fill_idle_elapsed,
+                    build_time_multiplier,
+                    build_budget,
+                    marshal_persist,
+                    block_size_used,
+                ) {
+                    let estimated_marshal_persist = marshal_persist.estimate(block_size_used);
+                    debug!(
+                        target: "payload_builder",
+                        ?elapsed,
+                        ?normal_transaction_fill_idle_elapsed,
+                        ?build_budget,
+                        ?estimated_marshal_persist,
+                        block_size_used,
+                        build_time_multiplier = build_time_multiplier as f64
+                            / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                        "stopping pool transaction execution before payload build budget is exhausted"
+                    );
+                    break BlockBuildStopReason::BuildBudget;
+                }
+            }
+
             let Some(pool_tx) = best_txs.next() else {
-                if build_until_interrupt && cumulative_gas_used < non_shared_gas_limit {
+                if build_once_with_shared_trie
+                    && payload_build_budget.is_some()
+                    && cumulative_gas_used < non_shared_gas_limit
+                {
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
@@ -521,7 +596,7 @@ where
             }
 
             let is_payment = if hardfork.is_t5() {
-                pool_tx.transaction.inner().is_payment_v2()
+                pool_tx.transaction.is_payment()
             } else {
                 pool_tx.transaction.inner().is_payment_v1()
             };
@@ -538,11 +613,6 @@ where
                 self.metrics
                     .inc_pool_tx_skipped("exceeds_general_gas_limit");
                 continue;
-            }
-
-            // check if the job was interrupted, if so we can skip remaining transactions
-            if attributes.is_interrupted() {
-                break BlockBuildStopReason::TimeLimit;
             }
 
             check_cancel!();
@@ -570,7 +640,6 @@ where
                 .then(|| format!("{:?}", pool_tx.transaction))
                 .unwrap_or_default();
 
-            let tx_execution_start = Instant::now();
             let tx_with_env = pool_tx.transaction.clone_into_with_tx_env();
             let execution_result =
                 builder.execute_transaction_with_result_closure(tx_with_env, |result| {
@@ -587,8 +656,6 @@ where
                     // Notify transactions iterator about the new state.
                     best_txs.on_new_result(result);
                 });
-            let elapsed = tx_execution_start.elapsed();
-
             if let Err(err) = execution_result {
                 if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,
@@ -596,10 +663,6 @@ where
                 }) = &err
                 {
                     invalid_pool_transaction_execution_attempts += 1;
-                    normal_invalid_transaction_execution_elapsed += elapsed;
-                    self.metrics
-                        .normal_invalid_transaction_execution_duration_seconds
-                        .record(elapsed);
 
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
@@ -622,33 +685,24 @@ where
                     return Err(PayloadBuilderError::evm(err));
                 }
             };
-            normal_included_transaction_execution_elapsed += elapsed;
-            self.metrics
-                .normal_included_transaction_execution_duration_seconds
-                .record(elapsed);
-            trace!(?elapsed, "Transaction executed");
+            trace!("Transaction executed");
 
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
         };
+        let elapsed_at_tx_cutoff = start.elapsed();
+        let validation_work_at_tx_cutoff =
+            elapsed_at_tx_cutoff.saturating_sub(normal_transaction_fill_idle_elapsed);
         drop(_block_fill_span);
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
         let normal_transaction_fill_elapsed = execution_start.elapsed();
-        let normal_transaction_execution_elapsed = normal_included_transaction_execution_elapsed
-            + normal_invalid_transaction_execution_elapsed;
-        let normal_transaction_fill_overhead_elapsed = normal_transaction_fill_elapsed
-            .saturating_sub(normal_transaction_execution_elapsed)
-            .saturating_sub(normal_transaction_fill_idle_elapsed);
+        self.metrics
+            .total_normal_transaction_fill_duration_seconds
+            .record(normal_transaction_fill_elapsed);
         self.metrics
             .normal_transaction_fill_idle_duration_seconds
             .record(normal_transaction_fill_idle_elapsed);
-        self.metrics
-            .normal_transaction_fill_overhead_duration_seconds
-            .record(normal_transaction_fill_overhead_elapsed);
-        self.metrics
-            .total_normal_invalid_transaction_execution_duration_seconds
-            .record(normal_invalid_transaction_execution_elapsed);
         self.metrics
             .payment_transactions
             .record(payment_transactions as f64);
@@ -741,13 +795,12 @@ where
             .system_transactions_execution_duration_seconds
             .record(system_txs_execution_elapsed);
 
-        let total_included_transaction_execution_elapsed =
-            normal_included_transaction_execution_elapsed
-                + total_subblock_transaction_execution_elapsed
-                + system_txs_execution_elapsed;
+        let total_transaction_execution_elapsed = normal_transaction_fill_elapsed
+            + total_subblock_transaction_execution_elapsed
+            + system_txs_execution_elapsed;
         self.metrics
-            .total_normal_included_transaction_execution_duration_seconds
-            .record(total_included_transaction_execution_elapsed);
+            .total_transaction_execution_duration_seconds
+            .record(total_transaction_execution_elapsed);
 
         let payload_finalization_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
@@ -896,6 +949,13 @@ where
             .set(pool_transactions_inclusion_ratio);
 
         let elapsed = start.elapsed();
+        let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
+        if payload_build_budget.is_some() {
+            self.update_build_time_multiplier(
+                validation_work_duration,
+                validation_work_at_tx_cutoff,
+            );
+        }
         self.metrics.payload_build_duration_seconds.record(elapsed);
         let gas_per_second = block.gas_used() as f64 / elapsed.as_secs_f64();
         self.metrics.gas_per_second.record(gas_per_second);
@@ -923,14 +983,12 @@ where
             subblock_transactions,
             total_transactions,
             ?elapsed,
-            tx_exec = ?normal_transaction_execution_elapsed,
-            tx_exec_included = ?normal_included_transaction_execution_elapsed,
-            tx_exec_invalid = ?normal_invalid_transaction_execution_elapsed,
-            tx_exec_included_total = ?total_included_transaction_execution_elapsed,
+            ?validation_work_duration,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
-            ?normal_transaction_fill_overhead_elapsed,
             ?total_subblock_transaction_execution_elapsed,
+            ?system_txs_execution_elapsed,
+            ?total_transaction_execution_elapsed,
             ?sparse_trie_state_root_wait_elapsed,
             ?builder_finish_elapsed,
             "Built payload"
@@ -951,10 +1009,15 @@ where
             trie_updates: Arc::new(trie_updates),
         };
 
-        let payload = TempoBuiltPayload::new(eth_payload, Some(executed_block));
+        let payload = TempoBuiltPayload::new(
+            eth_payload,
+            Some(executed_block),
+            validation_work_duration,
+            rlp_length,
+        );
 
         drop(db);
-        if build_until_interrupt {
+        if build_once_with_shared_trie {
             Ok(BuildOutcome::Freeze(payload))
         } else {
             Ok(BuildOutcome::Better {
@@ -1128,8 +1191,9 @@ mod tests {
         }
         .try_into_recovered()
         .unwrap();
+        let rlp_length = block.rlp_length();
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None)
+        TempoBuiltPayload::new(eth, None, Duration::ZERO, rlp_length)
     }
 
     #[test]
