@@ -287,8 +287,8 @@ def txgen-run-preset-pipeline [
         "--drain-timeout" $TXGEN_HELPER_DRAIN_TIMEOUT_SECS
     ]
         | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
-        | append (if $victoriametrics_url != "" { ["--metrics-forward" $victoriametrics_url] } else { [] })
     let report_args = ["--report" $"json:($report_path)"]
+        | append (if $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
         | append (if $clickhouse_url != "" { ["--report" $"clickhouse:($clickhouse_url)"] } else { [] })
     let metadata_args = [
         "-m" "job=github-tempo-bench-e2e"

@@ -38,6 +38,8 @@ pub struct AASigned {
     hash: OnceLock<B256>,
     /// Cached transaction signing hash.
     signature_hash: OnceLock<B256>,
+    /// Cached sender-scoped replay hash for the first recovered sender.
+    expiring_nonce_hash: OnceLock<(Address, B256)>,
 }
 
 impl AASigned {
@@ -52,6 +54,7 @@ impl AASigned {
             signature,
             hash: value,
             signature_hash: OnceLock::new(),
+            expiring_nonce_hash: OnceLock::new(),
         }
     }
 
@@ -63,6 +66,7 @@ impl AASigned {
             signature,
             hash: OnceLock::new(),
             signature_hash: OnceLock::new(),
+            expiring_nonce_hash: OnceLock::new(),
         }
     }
 
@@ -117,7 +121,16 @@ impl AASigned {
     /// - **Unique per sender**: different signers produce different recovered addresses, so the
     ///   hash differs even for identical transaction payloads.
     pub fn expiring_nonce_hash(&self, sender: Address) -> B256 {
-        unique_tx_identifier_from_signable(&self.tx, sender)
+        let cached = self.expiring_nonce_hash.get_or_init(|| {
+            let hash = unique_tx_identifier_from_signable(&self.tx, sender);
+            #[allow(clippy::useless_conversion)]
+            (sender, hash).into()
+        });
+        if cached.0 == sender {
+            cached.1
+        } else {
+            unique_tx_identifier_from_signable(&self.tx, sender)
+        }
     }
 
     /// Returns the RLP header for the transaction and signature, encapsulating both

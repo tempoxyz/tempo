@@ -45,6 +45,11 @@ pub struct TempoPoolUpdates {
     /// Revoked keychain keys.
     /// Indexed by account for efficient lookup.
     pub revoked_keys: RevokedKeys,
+    /// Inline key authorization target-key status changes.
+    ///
+    /// A pending inline authorization for `(account, key)` is stale once another transaction
+    /// authorizes, admin-authorizes, or revokes that same key.
+    pub key_authorization_target_changes: RevokedKeys,
     /// Spending limit changes.
     /// When a spending limit changes, transactions from that key paying with that token
     /// may become unexecutable if the new limit is below their value.
@@ -105,6 +110,7 @@ impl TempoPoolUpdates {
     pub fn is_empty(&self) -> bool {
         self.expired_txs.is_empty()
             && self.revoked_keys.is_empty()
+            && self.key_authorization_target_changes.is_empty()
             && self.spending_limit_changes.is_empty()
             && self.validator_token_changes.is_empty()
             && self.user_token_changes.is_empty()
@@ -138,6 +144,19 @@ impl TempoPoolUpdates {
                 match AccountKeychainPoolEvent::decode(log) {
                     Some(AccountKeychainPoolEvent::KeyRevoked(event)) => {
                         updates.revoked_keys.insert(event.account, event.publicKey);
+                        updates
+                            .key_authorization_target_changes
+                            .insert(event.account, event.publicKey);
+                    }
+                    Some(AccountKeychainPoolEvent::KeyAuthorized(event)) => {
+                        updates
+                            .key_authorization_target_changes
+                            .insert(event.account, event.publicKey);
+                    }
+                    Some(AccountKeychainPoolEvent::AdminKeyAuthorized(event)) => {
+                        updates
+                            .key_authorization_target_changes
+                            .insert(event.account, event.publicKey);
                     }
                     Some(AccountKeychainPoolEvent::SpendingLimitUpdated(event)) => {
                         updates.spending_limit_changes.insert(
@@ -223,6 +242,7 @@ impl TempoPoolUpdates {
     /// Returns true if there are any invalidation events that require scanning the pool.
     pub fn has_invalidation_events(&self) -> bool {
         self.has_keychain_subject_updates()
+            || !self.key_authorization_target_changes.is_empty()
             || !self.validator_token_changes.is_empty()
             || !self.user_token_changes.is_empty()
             || !self.blacklist_additions.is_empty()
@@ -241,6 +261,10 @@ impl TempoPoolUpdates {
 
 /// Transaction-pool relevant subset of `IAccountKeychain::IAccountKeychainEvents`.
 enum AccountKeychainPoolEvent {
+    /// [`IAccountKeychain::KeyAuthorized`] log.
+    KeyAuthorized(IAccountKeychain::KeyAuthorized),
+    /// [`IAccountKeychain::AdminKeyAuthorized`] log.
+    AdminKeyAuthorized(IAccountKeychain::AdminKeyAuthorized),
     /// [`IAccountKeychain::KeyRevoked`] log.
     KeyRevoked(IAccountKeychain::KeyRevoked),
     /// [`IAccountKeychain::SpendingLimitUpdated`] log.
@@ -255,6 +279,12 @@ impl AccountKeychainPoolEvent {
     /// Decodes only account-keychain events used by transaction-pool maintenance.
     fn decode(log: &Log) -> Option<Self> {
         match first_topic(log)? {
+            IAccountKeychain::KeyAuthorized::SIGNATURE_HASH => {
+                decode_event(log).map(Self::KeyAuthorized)
+            }
+            IAccountKeychain::AdminKeyAuthorized::SIGNATURE_HASH => {
+                decode_event(log).map(Self::AdminKeyAuthorized)
+            }
             IAccountKeychain::KeyRevoked::SIGNATURE_HASH => decode_event(log).map(Self::KeyRevoked),
             IAccountKeychain::SpendingLimitUpdated::SIGNATURE_HASH => {
                 decode_event(log).map(Self::SpendingLimitUpdated)
@@ -771,11 +801,13 @@ where
                 // 7. Evict hard keychain invalidations from paused pool
                 // Ignore spending_limit_spends here: AccessKeySpend only proves partial limit consumption, and paused txs are fully revalidated on unpause.
                 if !updates.revoked_keys.is_empty()
+                    || !updates.key_authorization_target_changes.is_empty()
                     || !updates.spending_limit_changes.is_empty()
                     || !updates.key_authorization_witness_burns.is_empty()
                 {
                     state.paused_pool.evict_invalidated(
                         &updates.revoked_keys,
+                        &updates.key_authorization_target_changes,
                         &updates.spending_limit_changes,
                         &updates.key_authorization_witness_burns,
                     );
@@ -853,6 +885,8 @@ where
                     debug!(
                         target: "txpool",
                         revoked_keys = updates.revoked_keys.len(),
+                        key_authorization_target_changes =
+                            updates.key_authorization_target_changes.len(),
                         spending_limit_changes = updates.spending_limit_changes.len(),
                         spending_limit_spends = updates.spending_limit_spends.len(),
                         validator_token_changes = updates.validator_token_changes.len(),
@@ -1140,6 +1174,36 @@ mod tests {
 
         #[test]
         fn account_keychain_decode_matches_generated_event_decoders() {
+            let log = event_log(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                IAccountKeychain::KeyAuthorized {
+                    account: Address::random(),
+                    publicKey: Address::random(),
+                    signatureType: 0,
+                    expiry: u64::MAX,
+                },
+            );
+            assert_decodes_like_generated!(
+                AccountKeychainPoolEvent,
+                KeyAuthorized,
+                IAccountKeychain::KeyAuthorized,
+                log
+            );
+
+            let log = event_log(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                IAccountKeychain::AdminKeyAuthorized {
+                    account: Address::random(),
+                    publicKey: Address::random(),
+                },
+            );
+            assert_decodes_like_generated!(
+                AccountKeychainPoolEvent,
+                AdminKeyAuthorized,
+                IAccountKeychain::AdminKeyAuthorized,
+                log
+            );
+
             let log = event_log(
                 ACCOUNT_KEYCHAIN_ADDRESS,
                 IAccountKeychain::KeyRevoked {

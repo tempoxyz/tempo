@@ -55,6 +55,10 @@ pub struct TempoPooledTransaction {
     /// Used by `keychain_subject()` so pool maintenance matches against the same token
     /// that was validated without requiring state access.
     resolved_fee_token: OnceLock<Address>,
+    /// Cached keychain subject for the signer of an inline `KeyAuthorization`.
+    key_authorization_signer_subject: OnceLock<Option<KeychainSubject>>,
+    /// Cached target key of an inline `KeyAuthorization`.
+    key_authorization_target_subject: OnceLock<Option<KeyAuthorizationTargetSubject>>,
     /// Cached TIP20 balance storage slot for the fee payer.
     ///
     /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
@@ -92,6 +96,8 @@ impl TempoPooledTransaction {
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
+            key_authorization_signer_subject: OnceLock::new(),
+            key_authorization_target_subject: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
         }
     }
@@ -169,6 +175,47 @@ impl TempoPooledTransaction {
             account: keychain_sig.user_address,
             key_id,
             fee_token,
+        })
+    }
+
+    /// Extracts the keychain subject for the signer of an inline `KeyAuthorization`.
+    ///
+    /// Used for revocation matching: if the access key that signed an inline authorization is
+    /// revoked while the transaction is still in the pool, the transaction must be revalidated.
+    pub fn key_authorization_signer_subject(&self) -> Option<KeychainSubject> {
+        *self.key_authorization_signer_subject.get_or_init(|| {
+            let aa_tx = self.inner().as_aa()?;
+            let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
+            let key_id = key_authorization.recover_signer().ok()?;
+            let account = key_authorization
+                .authorization
+                .account
+                .unwrap_or(*self.sender_ref());
+            let fee_token = self.effective_fee_token();
+            Some(KeychainSubject {
+                account,
+                key_id,
+                fee_token,
+            })
+        })
+    }
+
+    /// Extracts the target key of an inline `KeyAuthorization`.
+    ///
+    /// Used for matching pending authorizations against key status changes emitted by
+    /// already-included authorizations or revocations.
+    pub fn key_authorization_target_subject(&self) -> Option<KeyAuthorizationTargetSubject> {
+        *self.key_authorization_target_subject.get_or_init(|| {
+            let aa_tx = self.inner().as_aa()?;
+            let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
+            let account = key_authorization
+                .authorization
+                .account
+                .unwrap_or(*self.sender_ref());
+            Some(KeyAuthorizationTargetSubject {
+                account,
+                key_id: key_authorization.authorization.key_id,
+            })
         })
     }
 
@@ -1267,15 +1314,6 @@ pub struct KeychainSubject {
     pub fee_token: Address,
 }
 
-/// Key-authorization witness identity extracted from an AA transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyAuthorizationWitnessSubject {
-    /// The account whose key-authorization witness is carried or burned.
-    pub account: Address,
-    /// The TIP-1053 witness.
-    pub witness: B256,
-}
-
 impl KeychainSubject {
     /// Returns true if this subject matches any of the revoked keys.
     ///
@@ -1294,5 +1332,30 @@ impl KeychainSubject {
         spending_limit_updates: &SpendingLimitUpdates,
     ) -> bool {
         spending_limit_updates.contains(self.account, self.key_id, self.fee_token)
+    }
+}
+
+/// Key-authorization witness identity extracted from an AA transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyAuthorizationWitnessSubject {
+    /// The account whose key-authorization witness is carried or burned.
+    pub account: Address,
+    /// The TIP-1053 witness.
+    pub witness: B256,
+}
+
+/// Target key identity extracted from an inline key authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyAuthorizationTargetSubject {
+    /// The account that owns the target key.
+    pub account: Address,
+    /// The key being authorized.
+    pub key_id: Address,
+}
+
+impl KeyAuthorizationTargetSubject {
+    /// Returns true if this target key is affected by a key status update.
+    pub fn matches_key_update(&self, key_updates: &RevokedKeys) -> bool {
+        key_updates.contains(self.account, self.key_id)
     }
 }
