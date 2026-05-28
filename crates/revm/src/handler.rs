@@ -915,8 +915,13 @@ where
         }
 
         // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
-        // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
-        if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
+        // Zero-value transactions can answer that without constructing the full U256 fee budget.
+        let charges_fee_balance = if tx.value().is_zero() {
+            tx.gas_limit() != 0 && tx.max_fee_per_gas() != 0
+        } else {
+            !tx.max_balance_spending()?.is_zero()
+        };
+        if charges_fee_balance || tx.is_subblock_transaction() {
             journal.ensure_tip20_usd(cfg.spec, fee_token)?;
         }
 
