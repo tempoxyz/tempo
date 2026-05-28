@@ -1428,19 +1428,18 @@ contract TIP20InvariantTest is InvariantBaseTest {
             assertEq(totalSupply, expectedSupply, "TEMPO-TIP18: Supply conservation violated");
 
             // TEMPO-TIP20: Balance sum equals supply
-            address[] storage holders = _tokenHolders[tokenAddr];
-            uint256 balanceSum = 0;
-            for (uint256 j = 0; j < holders.length; j++) {
-                balanceSum += token.balanceOf(holders[j]);
-            }
-            assertEq(balanceSum, totalSupply, "TEMPO-TIP20: Balance sum does not equal totalSupply");
-
             // TIP-1065: T6 packed user-state balance slots must expose only low 128-bit balances
             // through balanceOf, keep reserved bits zero, and keep initialized rewardFlag values
             // consistent with rewardRecipient, which remains the source of truth.
+            address[] storage holders = _tokenHolders[tokenAddr];
+            uint256 balanceSum = 0;
             for (uint256 j = 0; j < holders.length; j++) {
-                _assertTip1065UserState(token, holders[j]);
+                address holder = holders[j];
+                uint256 exposedBalance = token.balanceOf(holder);
+                balanceSum += exposedBalance;
+                _assertTip1065UserState(token, holder, exposedBalance);
             }
+            assertEq(balanceSum, totalSupply, "TEMPO-TIP20: Balance sum does not equal totalSupply");
 
             // Rewards conservation: claimed <= distributed, dust bounded
             uint256 distributed = _tokenRewardsDistributed[tokenAddr];
@@ -1489,11 +1488,16 @@ contract TIP20InvariantTest is InvariantBaseTest {
         );
     }
 
-    function _assertTip1065UserState(ITIP20 token, address account) internal view {
+    function _assertTip1065UserState(
+        ITIP20 token,
+        address account,
+        uint256 exposedBalance
+    )
+        internal
+        view
+    {
         (uint256 decodedBalance, RewardFlag rewardFlag, uint256 reservedBits) =
             _userState(address(token), account);
-        uint256 exposedBalance = token.balanceOf(account);
-        (address rewardRecipient,,) = token.userRewardInfo(account);
 
         assertEq(
             decodedBalance, exposedBalance, "TIP-1065: low 128 bits must equal balanceOf(account)"
@@ -1506,6 +1510,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
         assertEq(reservedBits, 0, "TIP-1065: reserved user-state bits must remain zero");
 
         if (rewardFlag != RewardFlag.Uninitialized) {
+            (address rewardRecipient,,) = token.userRewardInfo(account);
             RewardFlag expectedFlag =
                 rewardRecipient == address(0) ? RewardFlag.OptedOut : RewardFlag.OptedIn;
             assertEq(
