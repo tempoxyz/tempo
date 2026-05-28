@@ -71,8 +71,8 @@ pub struct TempoNodeArgs {
     #[arg(long = "builder.enable-prewarming", default_value_t = true)]
     pub builder_enable_prewarming: bool,
 
-    /// Include an RLP-encoded block access list in built execution payloads.
-    #[arg(long = "builder.enable-bal", default_value_t = false)]
+    /// Include an RLP-encoded block access list in built execution payloads. (EXPERIMENTAL)
+    #[arg(long = "builder.enable-bal", default_value_t = false, hide = true)]
     pub builder_enable_bal: bool,
 
     /// Initial multiplier for predicting replayable payload build work.
