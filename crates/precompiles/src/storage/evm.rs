@@ -79,7 +79,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         )
     }
 
-    #[inline]
+    #[inline(always)]
     fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
         if !self.gas_tracker.record_state_cost(gas) {
             return Err(TempoPrecompileError::OutOfGas);
@@ -89,23 +89,27 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
 }
 
 impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
+    #[inline(always)]
     fn chain_id(&self) -> u64 {
         self.internals.chain_id()
     }
 
+    #[inline(always)]
     fn timestamp(&self) -> U256 {
         self.internals.block_timestamp()
     }
 
+    #[inline(always)]
     fn beneficiary(&self) -> Address {
         self.internals.block_env().beneficiary()
     }
 
+    #[inline(always)]
     fn block_number(&self) -> u64 {
         self.internals.block_env().number().to::<u64>()
     }
 
-    #[inline]
+    #[inline(always)]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
         let code_len = code.len();
         self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
@@ -130,7 +134,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     fn with_account_info(
         &mut self,
         address: Address,
@@ -168,7 +172,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     fn sstore(
         &mut self,
         address: Address,
@@ -208,7 +212,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     fn tstore(
         &mut self,
         address: Address,
@@ -220,7 +224,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
         self.deduct_gas(
             gas::LOG
@@ -237,7 +241,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
         let additional_cost = self.gas_params.cold_storage_additional_cost();
 
@@ -271,65 +275,65 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         Ok(value)
     }
 
-    #[inline]
+    #[inline(always)]
     fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
         self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
 
         Ok(self.internals.tload(address, key))
     }
 
-    #[inline]
+    #[inline(always)]
     fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
         deduct_gas(&mut self.gas_tracker, gas)
     }
 
-    #[inline]
+    #[inline(always)]
     fn refund_gas(&mut self, gas: i64) {
         self.gas_tracker.record_refund(gas);
     }
 
-    #[inline]
+    #[inline(always)]
     fn gas_limit(&self) -> u64 {
         self.gas_tracker.limit()
     }
 
-    #[inline]
+    #[inline(always)]
     fn gas_used(&self) -> u64 {
         self.gas_tracker.limit() - self.gas_tracker.remaining()
     }
 
-    #[inline]
+    #[inline(always)]
     fn state_gas_used(&self) -> u64 {
         // SAFETY: we never decrement the state gas spent counter
         self.gas_tracker.state_gas_spent() as u64
     }
 
-    #[inline]
+    #[inline(always)]
     fn gas_refunded(&self) -> i64 {
         self.gas_tracker.refunded()
     }
 
-    #[inline]
+    #[inline(always)]
     fn reservoir(&self) -> u64 {
         self.gas_tracker.reservoir()
     }
 
-    #[inline]
+    #[inline(always)]
     fn spec(&self) -> TempoHardfork {
         self.spec
     }
 
-    #[inline]
+    #[inline(always)]
     fn amsterdam_eip8037_enabled(&self) -> bool {
         self.amsterdam_eip8037_enabled
     }
 
-    #[inline]
+    #[inline(always)]
     fn is_static(&self) -> bool {
         self.is_static
     }
 
-    #[inline]
+    #[inline(always)]
     fn checkpoint(&mut self) -> JournalCheckpoint {
         let cp = self.internals.checkpoint();
         #[cfg(debug_assertions)]
@@ -337,14 +341,14 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         cp
     }
 
-    #[inline]
+    #[inline(always)]
     fn checkpoint_commit(&mut self, _checkpoint: JournalCheckpoint) {
         #[cfg(debug_assertions)]
         self.assert_lifo(&_checkpoint, "commit");
         self.internals.checkpoint_commit()
     }
 
-    #[inline]
+    #[inline(always)]
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
         #[cfg(debug_assertions)]
         self.assert_lifo(&checkpoint, "revert");
@@ -380,7 +384,7 @@ impl EvmPrecompileStorageProvider<'_> {
 }
 
 /// Deducts gas from the remaining gas and returns an error if insufficient.
-#[inline]
+#[inline(always)]
 pub fn deduct_gas(
     gas_tracker: &mut GasTracker,
     additional_cost: u64,
