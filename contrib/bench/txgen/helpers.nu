@@ -1,6 +1,6 @@
 const TXGEN_HELPER_ACCOUNT_MNEMONIC = "test test test test test test test test test test test junk"
 const TXGEN_HELPER_DEFAULT_SEED = 99
-const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 500
+const TXGEN_HELPER_SCRAPE_INTERVAL_MS = 200
 const TXGEN_HELPER_DRAIN_TIMEOUT_SECS = 300
 const TXGEN_HELPER_FUND_DRAIN_TIMEOUT_SECS = 120
 const TXGEN_HELPER_PRESETS_DIR = "contrib/bench/txgen/presets"
@@ -287,8 +287,8 @@ def txgen-run-preset-pipeline [
         "--drain-timeout" $TXGEN_HELPER_DRAIN_TIMEOUT_SECS
     ]
         | append (if $victoriametrics_url != "" and $benchmark_start > 0 { ["--metrics-align" $"($benchmark_start)"] } else { [] })
+        | append (if $victoriametrics_url != "" { ["--metrics-forward" $victoriametrics_url] } else { [] })
     let report_args = ["--report" $"json:($report_path)"]
-        | append (if $victoriametrics_url != "" { ["--report" $"victoriametrics:($victoriametrics_url)"] } else { [] })
         | append (if $clickhouse_url != "" { ["--report" $"clickhouse:($clickhouse_url)"] } else { [] })
     let metadata_args = [
         "-m" "job=github-tempo-bench-e2e"

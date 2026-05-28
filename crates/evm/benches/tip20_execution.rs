@@ -143,8 +143,7 @@ struct ExecutionFixture {
     metrics: CachedStateMetrics,
 }
 
-type FixedCacheDb<const PREWARM: bool = false> =
-    State<StateProviderDatabase<CachedStateProvider<InMemoryStateProvider>>>;
+type FixedCacheDb = State<StateProviderDatabase<CachedStateProvider<InMemoryStateProvider>>>;
 
 impl ExecutionFixture {
     fn state_db(&self) -> FixedCacheDb {
@@ -159,7 +158,7 @@ impl ExecutionFixture {
             .build()
     }
 
-    fn prewarm_state_db(&self) -> FixedCacheDb<true> {
+    fn prewarm_state_db(&self) -> FixedCacheDb {
         let provider = CachedStateProvider::new_prewarm(self.provider.clone(), self.cache.clone());
         State::builder()
             .with_database(StateProviderDatabase::new(provider))
