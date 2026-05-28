@@ -506,6 +506,14 @@ where
                 execution_cache,
                 parent_header.hash(),
                 builder.evm().evm_env(),
+                start,
+                attributes.payload_build_budget(),
+                self.build_time_multiplier(),
+                marshal_persist_estimate(),
+                block_size_used,
+                non_shared_gas_limit,
+                builder.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+                is_osaka,
                 best_txs,
             )) as Box<dyn BestTransactions<Item = _>>
         } else {

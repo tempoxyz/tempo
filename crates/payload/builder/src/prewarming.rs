@@ -1,11 +1,16 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
+    time::{Duration, Instant},
 };
 
+use crate::budget::payload_budget_exhausted;
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_sol_types::SolInterface;
+use reth_consensus_common::validation::MAX_RLP_BLOCK_SIZE;
 use reth_engine_tree::tree::{CachedStateMetrics, CachedStateProvider, SavedCache};
 use reth_evm::{Database, Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
@@ -15,6 +20,7 @@ use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
+use tempo_payload_types::MarshalPersistEstimator;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     nonce::slots as nonce_slots,
@@ -46,6 +52,14 @@ impl BestTransactionsPrewarming {
         cache: Option<SavedCache>,
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
+        start: Instant,
+        payload_build_budget: Option<Duration>,
+        build_time_multiplier: u64,
+        marshal_persist: MarshalPersistEstimator,
+        block_size_used: usize,
+        non_shared_gas_limit: u64,
+        tx_gas_limit_cap: u64,
+        is_osaka: bool,
         best_txs: Txs,
     ) -> Self
     where
@@ -79,6 +93,15 @@ impl BestTransactionsPrewarming {
                     commands_rx,
                     commands_tx,
                     prewarm,
+                    start,
+                    payload_build_budget,
+                    build_time_multiplier,
+                    marshal_persist,
+                    block_size_used,
+                    cumulative_gas_used: 0,
+                    non_shared_gas_limit,
+                    tx_gas_limit_cap,
+                    is_osaka,
                 },
             );
         });
@@ -105,10 +128,34 @@ impl BestTransactionsPrewarming {
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
+                let is_exhausted = ctx.cumulative_gas_used >= ctx.non_shared_gas_limit
+                    || (ctx.is_osaka && ctx.block_size_used >= MAX_RLP_BLOCK_SIZE)
+                    || ctx.payload_build_budget.is_some_and(|build_budget| {
+                        payload_budget_exhausted(
+                            ctx.start.elapsed(),
+                            Duration::ZERO,
+                            ctx.build_time_multiplier,
+                            build_budget,
+                            ctx.marshal_persist,
+                            ctx.block_size_used,
+                        )
+                    });
+
+                if is_exhausted {
+                    let _ = ctx.transactions_tx.send(None);
+                    return;
+                }
+
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
+
+                let gas_used = core::cmp::min(tx.gas_limit(), ctx.tx_gas_limit_cap);
+                ctx.cumulative_gas_used = ctx.cumulative_gas_used.saturating_add(gas_used);
+                ctx.block_size_used = ctx
+                    .block_size_used
+                    .saturating_add(tx.transaction.encoded_length());
                 let _ = ctx.transactions_tx.send(Some(tx.clone()));
 
                 let prewarm = ctx.prewarm.clone();
@@ -282,6 +329,15 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
+    start: Instant,
+    payload_build_budget: Option<Duration>,
+    build_time_multiplier: u64,
+    marshal_persist: MarshalPersistEstimator,
+    block_size_used: usize,
+    cumulative_gas_used: u64,
+    non_shared_gas_limit: u64,
+    tx_gas_limit_cap: u64,
+    is_osaka: bool,
 }
 
 /// Context needed to prewarm transaction storage independently of the real builder.
