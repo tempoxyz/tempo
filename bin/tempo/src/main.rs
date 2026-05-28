@@ -321,6 +321,11 @@ fn main() -> eyre::Result<()> {
         unsafe { std::env::set_var("RUST_BACKTRACE", "1") };
     }
 
+    #[cfg(feature = "keccak-cache-global")]
+    if !alloy_primitives::init_keccak_cache(1 << 22) {
+        warn!("failed to initialize global keccak cache");
+    }
+
     tempo_node::init_version_metadata();
     defaults::init_defaults();
 
@@ -356,11 +361,6 @@ fn main() -> eyre::Result<()> {
             err.exit();
         }
     };
-
-    #[cfg(feature = "keccak-cache-global")]
-    if !alloy_primitives::init_keccak_cache(1 << 22) {
-        warn!("failed to initialize global keccak cache");
-    }
 
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
