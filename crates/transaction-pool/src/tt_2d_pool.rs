@@ -1461,28 +1461,22 @@ impl AA2dPool {
         for key in &self.expiring_nonce_eviction_order {
             let expiring_hash = key.expiring_hash();
             let Some(pending_tx) = self.expiring_nonce_txs.get(&expiring_hash) else {
-                panic!(
-                    "Expiring nonce eviction key {:?} not in expiring_nonce_txs",
-                    expiring_hash
-                );
+                panic!("Expiring nonce eviction key {expiring_hash:?} not in expiring_nonce_txs");
             };
             assert_eq!(
                 key.submission_id(),
                 pending_tx.submission_id,
-                "Expiring nonce eviction key {:?} has mismatched submission id",
-                expiring_hash
+                "Expiring nonce eviction key {expiring_hash:?} has mismatched submission id"
             );
             assert_eq!(
                 key.priority(),
                 &pending_tx.priority,
-                "Expiring nonce eviction key {:?} has mismatched priority",
-                expiring_hash
+                "Expiring nonce eviction key {expiring_hash:?} has mismatched priority"
             );
             assert_eq!(
                 key.transaction.hash(),
                 pending_tx.transaction.hash(),
-                "Expiring nonce eviction key {:?} has mismatched transaction hash",
-                expiring_hash
+                "Expiring nonce eviction key {expiring_hash:?} has mismatched transaction hash"
             );
         }
     }
