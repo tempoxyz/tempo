@@ -372,12 +372,6 @@ fn calculate_key_authorization_gas(
         let sstore_cost = gas_params.get(GasId::sstore_set_without_load_cost());
         let mut regular_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
 
-        // T6 account-bound authorizations may be signed by an existing admin key instead of the
-        // root key. Charge one worst-case cold read for validating that admin signer row.
-        if spec.is_t6() && key_auth.account.is_some() {
-            regular_gas += sload_cost;
-        }
-
         if has_t5_witness {
             regular_gas += sload_cost + KEY_AUTH_EXTRA_EVENT_BUFFER;
         }
@@ -1286,11 +1280,7 @@ where
                 .expect("T6 key authorization signer is set during validate_env");
 
             if auth_signer != tx.caller {
-                let key_auth_sig_type = key_auth.signature.signature_type().into();
-                // The tx key signer and the KeyAuthorization signer are distinct roles. Usually
-                // they are the same admin key, so reuse the key loaded above. If the sidecar was
-                // signed by another admin key, or if the sidecar signature type differs, fall back
-                // to storage validation so the prior SignatureTypeMismatch behavior is preserved.
+                let key_auth_sig_type: u8 = key_auth.signature.signature_type().into();
                 let signer_is_admin = match loaded_tx_access_key {
                     Some(loaded_key)
                         if loaded_key.key_id == auth_signer
@@ -1298,25 +1288,14 @@ where
                     {
                         loaded_key.is_admin
                     }
-                    _ => StorageCtx::enter_precompile(
-                        journal,
-                        block,
-                        cfg,
-                        tx,
-                        |keychain: AccountKeychain| {
-                            keychain
-                                .validate_keychain_authorization(
-                                    tx.caller,
-                                    auth_signer,
-                                    block.timestamp().to::<u64>(),
-                                    Some(key_auth_sig_type),
-                                )
-                                .map(|key| key.is_admin)
-                                .map_err(|e| TempoInvalidTransaction::KeychainValidationFailed {
-                                    reason: format!("{e:?}"),
-                                })
-                        },
-                    )?,
+                    Some(_) | None => {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                            reason:
+                                "admin-signed key authorization must be signed by transaction key"
+                                    .to_string(),
+                        }
+                        .into());
+                    }
                 };
 
                 if !signer_is_admin {
@@ -1882,6 +1861,46 @@ where
                             reason: "admin-signed key authorization account mismatch".to_string(),
                         }
                         .into());
+                    }
+
+                    if auth_signer != tx.caller {
+                        let Some(keychain_sig) = aa_env.signature.as_keychain() else {
+                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                                reason:
+                                    "admin-signed key authorization must be signed by transaction key"
+                                        .to_string(),
+                            }
+                            .into());
+                        };
+
+                        let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id
+                        {
+                            override_key_id
+                        } else {
+                            keychain_sig
+                                .key_id(&aa_env.signature_hash)
+                                .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+                        };
+
+                        if access_key_addr != auth_signer {
+                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                                reason:
+                                    "admin-signed key authorization must be signed by transaction key"
+                                        .to_string(),
+                            }
+                            .into());
+                        }
+
+                        if key_auth.signature.signature_type()
+                            != keychain_sig.signature.signature_type()
+                        {
+                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                                reason:
+                                    "admin-signed key authorization signature type does not match transaction key signature type"
+                                        .to_string(),
+                            }
+                            .into());
+                        }
                     }
 
                     key_authorization_signer = Some(auth_signer);
@@ -3365,8 +3384,6 @@ mod tests {
         );
 
         let t6_gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T6);
-        let t6_sload =
-            t6_gas_params.warm_storage_read_cost() + t6_gas_params.cold_storage_additional_cost();
         let base_t6_key_auth = create_key_auth(0);
         let mut account_bound_t6_key_auth = create_key_auth(0);
         account_bound_t6_key_auth.authorization = account_bound_t6_key_auth
@@ -3396,13 +3413,13 @@ mod tests {
 
         assert_eq!(
             account_bound_t6_gas - base_t6_gas,
-            t6_sload,
-            "T6 account-bound authorization charges one admin-signer cold read"
+            0,
+            "T6 account-bound authorization does not add key authorization gas"
         );
         assert_eq!(
             admin_t6_gas - base_t6_gas,
-            t6_sload + KEY_AUTH_EXTRA_EVENT_BUFFER,
-            "T6 account-bound admin authorization charges one admin-signer cold read and one extra event buffer"
+            KEY_AUTH_EXTRA_EVENT_BUFFER,
+            "T6 account-bound admin authorization charges one extra event buffer"
         );
         assert_eq!(
             admin_t6_gas - account_bound_t6_gas,
@@ -3416,11 +3433,11 @@ mod tests {
         );
         assert_eq!(
             account_bound_t6_state_gas, base_t6_state_gas,
-            "T6 admin-signer read does not add state gas"
+            "T6 account binding does not add state gas"
         );
         assert_eq!(
             admin_t6_state_gas, base_t6_state_gas,
-            "T6 admin-signer read does not add state gas"
+            "T6 admin authorization event buffer does not add state gas"
         );
         assert_eq!(
             unbound_admin_t6_state_gas, base_t6_state_gas,
@@ -5335,6 +5352,37 @@ mod tests {
                     "child key should be registered as admin"
                 );
             });
+        }
+
+        #[test]
+        fn test_t6_admin_key_authorization_rejects_different_transaction_admin_key() {
+            let (authorization_signer, authorization_admin_key) = generate_keypair();
+            let (_, tx_admin_key) = generate_keypair();
+            let user = Address::random();
+            let child_key = Address::random();
+            let signed = sign_key_auth(
+                &authorization_signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key)
+                    .with_account(user),
+            );
+            let (mut evm, h) = make_evm(
+                user,
+                tx_admin_key,
+                Some(signed),
+                TempoHardfork::T6,
+                None,
+                false,
+            );
+
+            let result = h.validate_env(&mut evm);
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("must be signed by transaction key")
+                ),
+                "admin-signed key authorization must use the transaction admin key; auth signer {authorization_admin_key}, tx signer {tx_admin_key}, got: {result:?}"
+            );
         }
 
         #[test]
