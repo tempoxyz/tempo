@@ -215,20 +215,34 @@ impl ITIP20::ITIP20Calls {
     /// Approvals and mints remain payment-lane eligible via [`Self::is_payment`] but do not
     /// receive the settlement discount.
     pub fn is_discounted_payment_call(input: &[u8]) -> bool {
-        fn is_call<C: SolCall>(input: &[u8]) -> bool {
-            let Some(encoded_size) = <C::Parameters<'_> as SolType>::ENCODED_SIZE else {
-                return false;
-            };
+        const SELECTOR_LEN: usize = 4;
+        const WORD: usize = 32;
 
-            input.first_chunk::<4>() == Some(&C::SELECTOR) && input.len() == 4 + encoded_size
+        let Some(selector) = input.first_chunk::<SELECTOR_LEN>() else {
+            return false;
+        };
+
+        match *selector {
+            selector if selector == ITIP20::transferCall::SELECTOR => {
+                input.len() == SELECTOR_LEN + 2 * WORD
+            }
+            selector if selector == ITIP20::transferWithMemoCall::SELECTOR => {
+                input.len() == SELECTOR_LEN + 3 * WORD
+            }
+            selector if selector == ITIP20::transferFromCall::SELECTOR => {
+                input.len() == SELECTOR_LEN + 3 * WORD
+            }
+            selector if selector == ITIP20::transferFromWithMemoCall::SELECTOR => {
+                input.len() == SELECTOR_LEN + 4 * WORD
+            }
+            selector if selector == ITIP20::burnCall::SELECTOR => {
+                input.len() == SELECTOR_LEN + WORD
+            }
+            selector if selector == ITIP20::burnWithMemoCall::SELECTOR => {
+                input.len() == SELECTOR_LEN + 2 * WORD
+            }
+            _ => false,
         }
-
-        is_call::<ITIP20::transferCall>(input)
-            || is_call::<ITIP20::transferWithMemoCall>(input)
-            || is_call::<ITIP20::transferFromCall>(input)
-            || is_call::<ITIP20::transferFromWithMemoCall>(input)
-            || is_call::<ITIP20::burnCall>(input)
-            || is_call::<ITIP20::burnWithMemoCall>(input)
     }
 }
 
