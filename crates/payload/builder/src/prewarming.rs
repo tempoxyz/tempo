@@ -370,7 +370,10 @@ impl StorageTouch {
             Self::ExpiringNonceRing { offset } => {
                 let ptr = evm
                     .db_mut()
-                    .storage(NONCE_PRECOMPILE_ADDRESS, nonce_slots::EXPIRING_NONCE_RING_PTR)?
+                    .storage(
+                        NONCE_PRECOMPILE_ADDRESS,
+                        nonce_slots::EXPIRING_NONCE_RING_PTR,
+                    )?
                     .saturating_to::<u32>();
                 let idx =
                     (u64::from(ptr) + u64::from(offset)) % u64::from(EXPIRING_NONCE_SET_CAPACITY);
