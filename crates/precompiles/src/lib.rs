@@ -74,9 +74,12 @@ pub const ECRECOVER_GAS: u64 = 3_000;
 /// Returns the gas cost for decoding calldata of the given length, rounded up to word boundaries.
 #[inline]
 pub fn input_cost(calldata_len: usize) -> u64 {
-    calldata_len
-        .div_ceil(32)
-        .saturating_mul(INPUT_PER_WORD_COST as usize) as u64
+    let words = if calldata_len == 0 {
+        0
+    } else {
+        ((calldata_len - 1) >> 5) + 1
+    };
+    words.saturating_mul(INPUT_PER_WORD_COST as usize) as u64
 }
 
 /// Trait implemented by all Tempo precompile contract types.
