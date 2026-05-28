@@ -32,7 +32,7 @@ use tracing::{debug, error};
 
 /// Evict transactions this many seconds before they expire to reduce propagation
 /// of near-expiry transactions that are likely to fail validation on peers.
-const EVICTION_BUFFER_SECS: u64 = 3;
+pub(crate) const EVICTION_BUFFER_SECS: u64 = 3;
 
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
@@ -394,7 +394,7 @@ fn decode_event<T: SolEvent>(log: &Log) -> Option<T> {
 /// when we check `pool.contains()` before eviction. This avoids the overhead of
 /// subscribing to all transaction lifecycle events.
 #[derive(Default)]
-struct TempoPoolState {
+pub(crate) struct TempoPoolState {
     /// Maps timestamp to transactions that are going to be invalidated at that time (due to `valid_after` or keychain-related expiry).
     expiry_map: BTreeMap<u64, B256Set>,
     /// Reverse mapping: tx_hash -> valid_before timestamp (for cleanup during drain).
@@ -407,7 +407,7 @@ struct TempoPoolState {
 
 impl TempoPoolState {
     /// Tracks an AA transaction with a `valid_before` timestamp.
-    fn track(&mut self, tx: &TempoPooledTransaction) {
+    pub(crate) fn track(&mut self, tx: &TempoPooledTransaction) {
         let valid_before = tx
             .inner()
             .as_aa()
@@ -467,7 +467,7 @@ impl TempoPoolState {
 
     /// Collects and removes all expired transactions up to the given timestamp.
     /// Returns the list of expired transaction hashes.
-    fn drain_expired(&mut self, tip_timestamp: u64) -> Vec<TxHash> {
+    pub(crate) fn drain_expired(&mut self, tip_timestamp: u64) -> Vec<TxHash> {
         let mut expired = Vec::new();
         while let Some(entry) = self.expiry_map.first_entry()
             && *entry.key() <= tip_timestamp

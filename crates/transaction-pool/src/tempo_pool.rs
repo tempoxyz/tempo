@@ -480,7 +480,7 @@ where
     /// [`TempoPooledTransaction::is_aa_2d`] routes AA transactions with non-zero
     /// nonce keys, including expiring nonces, to the 2D nonce pool. Everything else
     /// stays in the protocol pool.
-    fn add_validated_transaction(
+    pub(crate) fn add_validated_transaction(
         &self,
         origin: TransactionOrigin,
         transaction: TransactionValidationOutcome<TempoPooledTransaction>,
