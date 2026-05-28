@@ -7,7 +7,7 @@ use crate::{
     view,
 };
 use alloy::{
-    primitives::Address,
+    primitives::{Address, U256},
     sol_types::{SolCall, SolInterface},
 };
 use revm::precompile::PrecompileResult;
@@ -59,6 +59,15 @@ impl Precompile for TIP20Token {
         };
         if !initialized {
             return self.storage.error_result(TIP20Error::uninitialized());
+        }
+
+        if calldata.len() == 36 && calldata[..4] == ITIP20::distributeRewardCall::SELECTOR {
+            let amount = U256::from_be_slice(&calldata[4..36]);
+            return mutate_void(
+                ITIP20::distributeRewardCall { amount },
+                msg_sender,
+                |sender, call| self.distribute_reward(sender, call),
+            );
         }
 
         dispatch_call(
