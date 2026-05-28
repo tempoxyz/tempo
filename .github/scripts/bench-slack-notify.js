@@ -137,6 +137,8 @@ function buildMetricRows(summary) {
   return [
     { label: 'TPS Mean',        baseline: fmtVal(b.tps, '', 0),     feature: fmtVal(f.tps, '', 0),     change: fmtChange(c.tps) },
     { label: 'Gas/s',           baseline: fmtVal(b.mgas_s, ' Mgas/s', 1), feature: fmtVal(f.mgas_s, ' Mgas/s', 1), change: fmtChange(c.mgas_s) },
+    { label: 'Builder Avg TPS', baseline: fmtVal(b.builder_tps, '', 0), feature: fmtVal(f.builder_tps, '', 0), change: fmtChange(c.builder_tps) },
+    { label: 'Validator Avg TPS', baseline: fmtVal(b.validation_tps, '', 0), feature: fmtVal(f.validation_tps, '', 0), change: fmtChange(c.validation_tps) },
     { label: 'Block Time Mean', baseline: fmtMs(b.block_time_mean), feature: fmtMs(f.block_time_mean), change: fmtChange(c.block_time_mean) },
     { label: 'Block P50',       baseline: fmtMs(b.block_time_p50),  feature: fmtMs(f.block_time_p50),  change: fmtChange(c.block_time_p50) },
     { label: 'Block P90',       baseline: fmtMs(b.block_time_p90),  feature: fmtMs(f.block_time_p90),  change: fmtChange(c.block_time_p90) },

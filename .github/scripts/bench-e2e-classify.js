@@ -11,6 +11,7 @@ const AXES = {
   builder_latency_p90: { floor: 0.70, lower: true },
   builder_latency_p99: { floor: 0.95, lower: true },
   builder_gas_s: { floor: 0.70, lower: false },
+  builder_tps: { floor: 0.55, lower: false },
   tps: { floor: 0.55, lower: false },
   mgas_s: { floor: 0.50, lower: false },
   block_time_mean: { floor: 0.40, lower: true },
@@ -21,6 +22,7 @@ const AXES = {
   validation_latency_p90: { floor: 1.55, lower: true },
   validation_latency_p99: { floor: 2.05, lower: true },
   validation_gas_s: { floor: 0.65, lower: false },
+  validation_tps: { floor: 0.55, lower: false },
 };
 
 const SECTIONS = [
@@ -39,6 +41,7 @@ const SECTIONS = [
     title: 'Builder',
     rows: [
       ['Gas Throughput [Mgas/s]', 'builder_gas_s', v => fmtVal(v / 1_000_000, 1)],
+      ['Average TPS', 'builder_tps', v => fmtVal(v, 0)],
       ['P50 [ms]', 'builder_latency_p50', v => fmtVal(v, 1)],
       ['P90 [ms]', 'builder_latency_p90', v => fmtVal(v, 1)],
       ['P99 [ms]', 'builder_latency_p99', v => fmtVal(v, 1)],
@@ -48,6 +51,7 @@ const SECTIONS = [
     title: 'Validator',
     rows: [
       ['Gas Throughput [Mgas/s]', 'validation_gas_s', v => fmtVal(v / 1_000_000, 1)],
+      ['Average TPS', 'validation_tps', v => fmtVal(v, 0)],
       ['P50 [ms]', 'validation_latency_p50', v => fmtVal(v, 1)],
       ['P90 [ms]', 'validation_latency_p90', v => fmtVal(v, 1)],
       ['P99 [ms]', 'validation_latency_p99', v => fmtVal(v, 1)],

@@ -897,6 +897,10 @@ def generate-summary [
     mut feature_builder_gas_values = []
     mut baseline_validation_gas_values = []
     mut feature_validation_gas_values = []
+    mut baseline_builder_tps_values = []
+    mut feature_builder_tps_values = []
+    mut baseline_validation_tps_values = []
+    mut feature_validation_tps_values = []
 
     let compute_block_time_stats = { |intervals: list<any>|
         let sorted_intervals = ($intervals | sort)
@@ -1000,6 +1004,33 @@ def generate-summary [
             if ($deltas | length) > 0 { $deltas | math sum | math round --precision 0 } else { 0.0 }
         }
     }
+    let counter_delta_sum_total = { |samples: list<any>, metric: string|
+        let sum_name = $"($metric)_sum"
+        let sum_samples = ($samples | where name == $sum_name)
+        if ($sum_samples | length) == 0 {
+            0.0
+        } else {
+            let deltas = (
+                $sum_samples
+                    | group-by { |sample| $sample.labels | to json --raw }
+                    | transpose labels samples
+                    | each { |series|
+                        let points = (
+                            $series.samples
+                                | where { |sample| ($sample | get -o value | default null) != null }
+                                | sort-by unix_ms
+                        )
+                        if ($points | length) > 1 {
+                            let first = ($points | first)
+                            let last = ($points | last)
+                            let delta = ($last.value - $first.value)
+                            if $delta >= 0 { $delta } else { $last.value }
+                        } else { 0.0 }
+                    }
+            )
+            if ($deltas | length) > 0 { $deltas | math sum } else { 0.0 }
+        }
+    }
 
     let metric_sample_names = [
         "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum"
@@ -1013,6 +1044,10 @@ def generate-summary [
         "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_count"
         "reth_tempo_payload_builder_payload_build_duration_seconds_sum"
         "reth_tempo_payload_builder_payload_build_duration_seconds_count"
+        "reth_tempo_payload_builder_payment_transactions_sum"
+        "reth_tempo_payload_builder_payment_transactions_count"
+        "reth_tempo_payload_builder_total_transactions_sum"
+        "reth_tempo_payload_builder_total_transactions_count"
         "reth_consensus_engine_beacon_new_payload_latency_sum"
         "reth_consensus_engine_beacon_new_payload_latency_count"
         "reth_tempo_payload_builder_gas_per_second_sum"
@@ -1088,6 +1123,12 @@ def generate-summary [
         let validation_latency_values = (do $optional_counter_metric_values "reth_consensus_engine_beacon_new_payload_latency" 1000.0)
         let builder_gas_values = (do $optional_counter_metric_values "reth_tempo_payload_builder_gas_per_second" 1.0)
         let validation_gas_values = (do $optional_counter_metric_values "reth_consensus_engine_beacon_new_payload_gas_per_second" 1.0)
+        let builder_payment_transactions = (do $counter_delta_sum_total $metric_samples "reth_tempo_payload_builder_payment_transactions")
+        let builder_build_seconds = (do $counter_delta_sum_total $metric_samples "reth_tempo_payload_builder_payload_build_duration_seconds")
+        let builder_avg_tps = if $builder_build_seconds > 0.0 { ($builder_payment_transactions / $builder_build_seconds) | math round --precision 0 } else { 0.0 }
+        let validation_total_transactions = (do $counter_delta_sum_total $metric_samples "reth_tempo_payload_builder_total_transactions")
+        let validation_seconds = (do $counter_delta_sum_total $metric_samples "reth_consensus_engine_beacon_new_payload_latency")
+        let validation_avg_tps = if $validation_seconds > 0.0 { ($validation_total_transactions / $validation_seconds) | math round --precision 0 } else { 0.0 }
         let blocks = ($report | get blocks | each { |b|
             let tx_count = ($b | get tx_count)
             let timestamp = if (($b | get -o timestamp | default null) != null) {
@@ -1130,6 +1171,8 @@ def generate-summary [
             $baseline_validation_latency_values = ($baseline_validation_latency_values | append $validation_latency_values)
             $baseline_builder_gas_values = ($baseline_builder_gas_values | append $builder_gas_values)
             $baseline_validation_gas_values = ($baseline_validation_gas_values | append $validation_gas_values)
+            $baseline_builder_tps_values = ($baseline_builder_tps_values | append $builder_avg_tps)
+            $baseline_validation_tps_values = ($baseline_validation_tps_values | append $validation_avg_tps)
         } else {
             $feature_blocks = ($feature_blocks | append $blocks)
             $feature_intervals = ($feature_intervals | append $block_intervals)
@@ -1143,6 +1186,8 @@ def generate-summary [
             $feature_validation_latency_values = ($feature_validation_latency_values | append $validation_latency_values)
             $feature_builder_gas_values = ($feature_builder_gas_values | append $builder_gas_values)
             $feature_validation_gas_values = ($feature_validation_gas_values | append $validation_gas_values)
+            $feature_builder_tps_values = ($feature_builder_tps_values | append $builder_avg_tps)
+            $feature_validation_tps_values = ($feature_validation_tps_values | append $validation_avg_tps)
         }
 
         let total_tx = ($blocks | get tx_count | math sum)
@@ -1184,6 +1229,7 @@ def generate-summary [
             builder_latency_p90: $run_builder.p90
             builder_latency_p99: $run_builder.p99
             builder_gas_s: $run_builder_gas
+            builder_tps: $builder_avg_tps
             tps: $actual_tps
             mgas_s: $mgas_per_sec
             block_time_p50: $run_bt.p50
@@ -1193,6 +1239,7 @@ def generate-summary [
             validation_latency_p90: $run_validation.p90
             validation_latency_p99: $run_validation.p99
             validation_gas_s: $run_validation_gas
+            validation_tps: $validation_avg_tps
             success_rate: $success_rate
         }])
     }
@@ -1237,6 +1284,10 @@ def generate-summary [
     let f_builder_gas = do $compute_value_mean $feature_builder_gas_values
     let b_validation_gas = do $compute_value_mean $baseline_validation_gas_values
     let f_validation_gas = do $compute_value_mean $feature_validation_gas_values
+    let b_builder_tps = do $compute_value_mean $baseline_builder_tps_values
+    let f_builder_tps = do $compute_value_mean $feature_builder_tps_values
+    let b_validation_tps = do $compute_value_mean $baseline_validation_tps_values
+    let f_validation_tps = do $compute_value_mean $feature_validation_tps_values
 
     let b_bt = do $compute_block_time_stats $baseline_intervals
     let f_bt = do $compute_block_time_stats $feature_intervals
@@ -1373,6 +1424,7 @@ def generate-summary [
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
         $"| Gas Throughput [Mgas/s] | ($b_builder_mgas) | ($f_builder_mgas) | (do $delta $b_builder_gas $f_builder_gas)% |"
+        $"| Average TPS | ($b_builder_tps) | ($f_builder_tps) | (do $delta $b_builder_tps $f_builder_tps)% |"
         $"| Latency P50 [ms] | ($b_builder.p50) | ($f_builder.p50) | (do $delta $b_builder.p50 $f_builder.p50)% |"
         $"| Latency P90 [ms] | ($b_builder.p90) | ($f_builder.p90) | (do $delta $b_builder.p90 $f_builder.p90)% |"
         $"| Latency P99 [ms] | ($b_builder.p99) | ($f_builder.p99) | (do $delta $b_builder.p99 $f_builder.p99)% |"
@@ -1393,6 +1445,7 @@ def generate-summary [
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
         $"| Gas Throughput [Mgas/s] | ($b_validation_mgas) | ($f_validation_mgas) | (do $delta $b_validation_gas $f_validation_gas)% |"
+        $"| Average TPS | ($b_validation_tps) | ($f_validation_tps) | (do $delta $b_validation_tps $f_validation_tps)% |"
         $"| P50 [ms] | ($b_validation.p50) | ($f_validation.p50) | (do $delta $b_validation.p50 $f_validation.p50)% |"
         $"| P90 [ms] | ($b_validation.p90) | ($f_validation.p90) | (do $delta $b_validation.p90 $f_validation.p90)% |"
         $"| P99 [ms] | ($b_validation.p99) | ($f_validation.p99) | (do $delta $b_validation.p99 $f_validation.p99)% |"
@@ -1455,6 +1508,7 @@ def generate-summary [
                 builder_fill_idle_p90: $b_builder_fill_idle.p90
                 builder_fill_idle_p99: $b_builder_fill_idle.p99
                 builder_gas_s: $b_builder_gas
+                builder_tps: $b_builder_tps
                 tps: $b_tps
                 mgas_s: $b_mgas
                 block_time_p50: $b_bt.p50
@@ -1464,6 +1518,7 @@ def generate-summary [
                 validation_latency_p90: $b_validation.p90
                 validation_latency_p99: $b_validation.p99
                 validation_gas_s: $b_validation_gas
+                validation_tps: $b_validation_tps
                 blocks: $b_block_time.n
             }
             feature: {
@@ -1486,6 +1541,7 @@ def generate-summary [
                 builder_fill_idle_p90: $f_builder_fill_idle.p90
                 builder_fill_idle_p99: $f_builder_fill_idle.p99
                 builder_gas_s: $f_builder_gas
+                builder_tps: $f_builder_tps
                 tps: $f_tps
                 mgas_s: $f_mgas
                 block_time_p50: $f_bt.p50
@@ -1495,6 +1551,7 @@ def generate-summary [
                 validation_latency_p90: $f_validation.p90
                 validation_latency_p99: $f_validation.p99
                 validation_gas_s: $f_validation_gas
+                validation_tps: $f_validation_tps
                 blocks: $f_block_time.n
             }
             deltas: {
@@ -1517,6 +1574,7 @@ def generate-summary [
                 builder_fill_idle_p90: (do $delta $b_builder_fill_idle.p90 $f_builder_fill_idle.p90)
                 builder_fill_idle_p99: (do $delta $b_builder_fill_idle.p99 $f_builder_fill_idle.p99)
                 builder_gas_s: (do $delta $b_builder_gas $f_builder_gas)
+                builder_tps: (do $delta $b_builder_tps $f_builder_tps)
                 tps: (do $delta $b_tps $f_tps)
                 mgas_s: (do $delta $b_mgas $f_mgas)
                 block_time_p50: (do $delta $b_bt.p50 $f_bt.p50)
@@ -1526,6 +1584,7 @@ def generate-summary [
                 validation_latency_p90: (do $delta $b_validation.p90 $f_validation.p90)
                 validation_latency_p99: (do $delta $b_validation.p99 $f_validation.p99)
                 validation_gas_s: (do $delta $b_validation_gas $f_validation_gas)
+                validation_tps: (do $delta $b_validation_tps $f_validation_tps)
             }
         }
         per_run: $run_data
