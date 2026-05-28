@@ -1110,12 +1110,8 @@ impl AccountKeychain {
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let key = match self.load_active_key(account, key_id, current_timestamp) {
             Ok(key) => key,
-            Err(crate::error::TempoPrecompileError::AccountKeychainError(
-                AccountKeychainError::KeyAlreadyRevoked(_)
-                | AccountKeychainError::KeyNotFound(_)
-                | AccountKeychainError::KeyExpired(_),
-            )) => return Ok(false),
-            Err(err) => return Err(err),
+            Err(err) if err.is_system_error() => return Err(err),
+            Err(_) => return Ok(false),
         };
 
         Ok(key.is_admin)
