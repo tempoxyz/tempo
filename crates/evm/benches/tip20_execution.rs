@@ -154,7 +154,6 @@ impl ExecutionFixture {
         );
         State::builder()
             .with_database(StateProviderDatabase::new(provider))
-            .with_bundle_update()
             .build()
     }
 
@@ -162,7 +161,6 @@ impl ExecutionFixture {
         let provider = CachedStateProvider::new_prewarm(self.provider.clone(), self.cache.clone());
         State::builder()
             .with_database(StateProviderDatabase::new(provider))
-            .with_bundle_update()
             .build()
     }
 }
