@@ -12,7 +12,10 @@ use crate::{
     storage::{Layout, LayoutCtx, Slot, Storable, StorableType, StorageCtx, StorageOps},
     tip20::U128_MAX,
 };
-use alloy::primitives::{Address, U256};
+use alloy::{
+    primitives::{Address, U256},
+    sol_types::PanicKind,
+};
 use tempo_precompiles_macros::Storable;
 
 // NOTE: `RewardFlag` derives `Storable`, so the cached flag occupies 1 byte in storage despite
@@ -136,7 +139,15 @@ impl Storable for UserState {
             });
         }
 
-        PackedUserState::load(storage, slot, ctx).map(Into::into)
+        match PackedUserState::load(storage, slot, ctx) {
+            Ok(value) => Ok(value.into()),
+            Err(TempoPrecompileError::Panic(PanicKind::EnumConversionError)) => {
+                Err(TempoPrecompileError::Fatal(
+                    "invalid T6 TIP-20 packed user state: reward flag discriminant".into(),
+                ))
+            }
+            Err(err) => Err(err),
+        }
     }
 
     fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
@@ -163,6 +174,8 @@ pub fn decode_tip20_balance(slot_value: U256) -> U256 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::storage::{Handler, hashmap::HashMapStorageProvider};
+    use tempo_chainspec::hardfork::TempoHardfork;
 
     #[test]
     fn reward_flag_from_delegate() {
@@ -184,5 +197,28 @@ mod tests {
 
         let packed = U256::MAX;
         assert_eq!(decode_tip20_balance(packed), U128_MAX);
+    }
+
+    #[test]
+    fn t6_user_state_load_fails_fatally_on_invalid_reward_flag() {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let slot = U256::from(42);
+        let address = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            Slot::<u128>::new_with_ctx(slot, LayoutCtx::packed(0), address)
+                .write(100)
+                .unwrap();
+            Slot::<u8>::new_with_ctx(slot, LayoutCtx::packed(16), address)
+                .write(3)
+                .unwrap();
+
+            assert_eq!(
+                Slot::<UserState>::new(slot, address).read().unwrap_err(),
+                TempoPrecompileError::Fatal(
+                    "invalid T6 TIP-20 packed user state: reward flag discriminant".into()
+                )
+            );
+        });
     }
 }
