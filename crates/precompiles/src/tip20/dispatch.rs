@@ -28,6 +28,7 @@ const T5_ADDED: &[[u8; 4]] = &[
 
 /// Decoded call variant — either a TIP-20 token call or a role-management call.
 enum TIP20Call {
+    Transfer(ITIP20::transferCall),
     TIP20(ITIP20Calls),
     RolesAuth(IRolesAuthCalls),
 }
@@ -37,7 +38,9 @@ impl TIP20Call {
         // safe to expect as `dispatch_call` pre-validates calldata len
         let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
 
-        if IRolesAuthCalls::valid_selector(selector) {
+        if selector == ITIP20::transferCall::SELECTOR {
+            ITIP20::transferCall::abi_decode(calldata).map(Self::Transfer)
+        } else if IRolesAuthCalls::valid_selector(selector) {
             IRolesAuthCalls::abi_decode(calldata).map(Self::RolesAuth)
         } else {
             ITIP20Calls::abi_decode(calldata).map(Self::TIP20)
@@ -69,6 +72,8 @@ impl Precompile for TIP20Token {
             ],
             TIP20Call::decode,
             |call| match call {
+                TIP20Call::Transfer(call) => mutate(call, msg_sender, |s, c| self.transfer(s, c)),
+
                 // Metadata functions (no calldata decoding needed)
                 TIP20Call::TIP20(ITIP20Calls::name(_)) => {
                     metadata::<ITIP20::nameCall>(|| self.name())
