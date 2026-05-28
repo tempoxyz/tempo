@@ -52,6 +52,8 @@ fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
 /// `elapsed` is wall-clock time spent in the builder so far. `idle_elapsed` is
 /// the proposer-only time spent waiting for more transactions, which is not
 /// replayed by validators and therefore counts once.
+/// `budget` is the remaining consensus payload build budget. `block_size_bytes`
+/// is the current encoded-size estimate used for marshal persistence.
 pub(crate) fn payload_budget_exhausted(
     elapsed: Duration,
     idle_elapsed: Duration,

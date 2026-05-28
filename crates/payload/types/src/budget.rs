@@ -25,6 +25,8 @@ pub fn marshal_persist_estimate() -> MarshalPersistEstimator {
 /// The observation is stored as nanoseconds per encoded block byte. Large
 /// blocks teach future build and return budgets how much size-dependent
 /// persistence time to reserve for both proposers and validators.
+/// Consensus records this from local `marshal.proposed` time after persisting a
+/// proposal.
 pub fn observe_marshal_persist(block_size_bytes: usize, elapsed: Duration) {
     if block_size_bytes < MIN_SAMPLE_BYTES || elapsed == Duration::ZERO {
         return;
