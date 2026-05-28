@@ -227,17 +227,20 @@ impl TempoTxEnvelope {
             }
             Self::AA(tx) => {
                 let tx = tx.tx();
-                !tx.calls.is_empty()
-                    && tx.access_list.is_empty()
-                    && tx.tempo_authorization_list.is_empty()
-                    && tx
+                if tx.calls.is_empty()
+                    || !tx.access_list.is_empty()
+                    || !tx.tempo_authorization_list.is_empty()
+                    || tx
                         .key_authorization
                         .as_ref()
-                        .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
-                    && tx
-                        .calls
+                        .is_some_and(|auth| auth.length() > KEY_AUTHORIZATION_MAX_RLP_LEN)
+                {
+                    false
+                } else {
+                    tx.calls
                         .iter()
                         .all(|call| is_tip1045_call(call.to.to(), &call.input))
+                }
             }
         }
     }
