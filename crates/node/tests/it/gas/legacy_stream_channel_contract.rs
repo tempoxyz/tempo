@@ -20,6 +20,78 @@ const DEPOSIT: u64 = 1_000_000;
 const FUNDING: u64 = 20_000_000;
 const LEGACY_STREAM_CHANNEL_SOURCE: &str =
     include_str!("../../../../../tips/verify/src/LegacyTempoStreamChannel.sol");
+const ITIP20_SOURCE: &str = r#"// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+interface ITIP20 {
+    function transfer(address to, uint256 amount) external returns (bool);
+    function transferFrom(address from, address to, uint256 amount) external returns (bool);
+}
+"#;
+const I_TEMPO_STREAM_CHANNEL_SOURCE: &str = r#"// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.20;
+
+interface ITempoStreamChannel {
+    struct Channel {
+        bool finalized;
+        uint64 closeRequestedAt;
+        address payer;
+        address payee;
+        address token;
+        address authorizedSigner;
+        uint128 deposit;
+        uint128 settled;
+    }
+
+    error AmountExceedsDeposit();
+    error AmountNotIncreasing();
+    error ChannelAlreadyExists();
+    error ChannelFinalized();
+    error ChannelNotFound();
+    error CloseNotReady();
+    error InvalidSignature();
+    error NotPayee();
+    error NotPayer();
+    error TransferFailed();
+
+    event ChannelOpened(
+        bytes32 indexed channelId,
+        address indexed payer,
+        address indexed payee,
+        address token,
+        address authorizedSigner,
+        bytes32 salt,
+        uint256 deposit
+    );
+    event Settled(
+        bytes32 indexed channelId,
+        address indexed payer,
+        address indexed payee,
+        uint256 cumulativeAmount,
+        uint256 deltaPaid,
+        uint256 newSettled
+    );
+    event TopUp(
+        bytes32 indexed channelId,
+        address indexed payer,
+        address indexed payee,
+        uint256 additionalDeposit,
+        uint256 newDeposit
+    );
+    event CloseRequested(
+        bytes32 indexed channelId, address indexed payer, address indexed payee, uint256 closeGraceEnd
+    );
+    event CloseRequestCancelled(bytes32 indexed channelId, address indexed payer, address indexed payee);
+    event ChannelClosed(
+        bytes32 indexed channelId,
+        address indexed payer,
+        address indexed payee,
+        uint256 settledToPayee,
+        uint256 refundedToPayer
+    );
+    event ChannelExpired(bytes32 indexed channelId, address indexed payer, address indexed payee);
+}
+"#;
 
 sol! {
     #[sol(rpc)]
@@ -374,20 +446,19 @@ fn compile_legacy_stream_channel() -> eyre::Result<Bytes> {
         fs::remove_dir_all(&root)?;
     }
     fs::create_dir_all(root.join("src"))?;
-
-    let tempo_std = fs::canonicalize(
-        Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tips/verify/lib/tempo-std"),
-    )?;
-    eyre::ensure!(
-        tempo_std
-            .join("src/interfaces/ITempoStreamChannel.sol")
-            .exists(),
-        "tempo-std submodule is missing; run `git submodule update --init tips/verify/lib/tempo-std`"
-    );
+    fs::create_dir_all(root.join("tempo-std/src/interfaces"))?;
 
     write_file(
         root.join("src/LegacyTempoStreamChannel.sol"),
         LEGACY_STREAM_CHANNEL_SOURCE,
+    )?;
+    write_file(
+        root.join("tempo-std/src/interfaces/ITIP20.sol"),
+        ITIP20_SOURCE,
+    )?;
+    write_file(
+        root.join("tempo-std/src/interfaces/ITempoStreamChannel.sol"),
+        I_TEMPO_STREAM_CHANNEL_SOURCE,
     )?;
     write_file(
         root.join("foundry.toml"),
@@ -395,14 +466,15 @@ fn compile_legacy_stream_channel() -> eyre::Result<Bytes> {
             r#"[profile.default]
 src = "{}/src"
 out = "{}/out"
-remappings = ["tempo-std/={}/src/"]
+remappings = ["tempo-std/={}/tempo-std/src/"]
 via_ir = true
 optimizer = true
 evm_version = "cancun"
+bytecode_hash = "none"
 "#,
             root.display(),
             root.display(),
-            tempo_std.display()
+            root.display()
         ),
     )?;
 
