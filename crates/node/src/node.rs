@@ -159,7 +159,9 @@ impl TempoNode {
             .executor(TempoExecutorBuilder::default())
             .payload(BasicPayloadServiceBuilder::new(payload_builder_builder))
             .network(EthereumNetworkBuilder::default())
-            .consensus(TempoConsensusBuilder::default())
+            .consensus(TempoConsensusBuilder {
+                ignore_bal_hash_mismatch: payload_builder_builder.enable_bal,
+            })
     }
 
     pub fn provider_factory_builder() -> ProviderFactoryBuilder<Self> {
@@ -377,7 +379,10 @@ where
 /// Builder for [`TempoConsensus`].
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
-pub struct TempoConsensusBuilder;
+pub struct TempoConsensusBuilder {
+    /// Whether to tolerate BAL hash mismatches while BAL support is experimental.
+    pub ignore_bal_hash_mismatch: bool,
+}
 
 impl<Node> ConsensusBuilder<Node> for TempoConsensusBuilder
 where
@@ -386,7 +391,10 @@ where
     type Consensus = TempoConsensus;
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
-        Ok(TempoConsensus::new(ctx.chain_spec()))
+        Ok(TempoConsensus::new_with_bal_hash_mismatch_ignored(
+            ctx.chain_spec(),
+            self.ignore_bal_hash_mismatch,
+        ))
     }
 }
 

@@ -41,14 +41,25 @@ pub const TEMPO_MAXIMUM_EXTRA_DATA_SIZE: usize = 10 * 1_024; // 10KiB
 pub struct TempoConsensus {
     /// Inner Ethereum consensus.
     inner: EthBeaconConsensus<TempoChainSpec>,
+    /// Whether to tolerate BAL hash mismatches while BAL support is experimental.
+    ignore_bal_hash_mismatch: bool,
 }
 
 impl TempoConsensus {
     /// Creates a new [`TempoConsensus`] with the given chain spec.
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
+        Self::new_with_bal_hash_mismatch_ignored(chain_spec, false)
+    }
+
+    /// Creates a new [`TempoConsensus`] with optional BAL hash mismatch tolerance.
+    pub fn new_with_bal_hash_mismatch_ignored(
+        chain_spec: Arc<TempoChainSpec>,
+        ignore_bal_hash_mismatch: bool,
+    ) -> Self {
         Self {
             inner: EthBeaconConsensus::new(chain_spec)
                 .with_max_extra_data_size(TEMPO_MAXIMUM_EXTRA_DATA_SIZE),
+            ignore_bal_hash_mismatch,
         }
     }
 
@@ -232,13 +243,21 @@ impl FullConsensus<TempoPrimitives> for TempoConsensus {
         receipt_root_bloom: Option<ReceiptRootBloom>,
         block_access_list_hash: Option<alloy_primitives::B256>,
     ) -> Result<(), ConsensusError> {
-        FullConsensus::<TempoPrimitives>::validate_block_post_execution(
+        let result = FullConsensus::<TempoPrimitives>::validate_block_post_execution(
             &self.inner,
             block,
             result,
             receipt_root_bloom,
             block_access_list_hash,
-        )
+        );
+
+        if self.ignore_bal_hash_mismatch
+            && matches!(result, Err(ConsensusError::BlockAccessListHashMismatch(_)))
+        {
+            return Ok(());
+        }
+
+        result
     }
 }
 
