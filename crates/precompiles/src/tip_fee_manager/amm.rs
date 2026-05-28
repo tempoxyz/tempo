@@ -4,10 +4,7 @@ use crate::{
     tip_fee_manager::{ITIPFeeAMM, TIPFeeAMMError, TIPFeeAMMEvent, TipFeeManager},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
 };
-use alloy::{
-    primitives::{Address, B256, U256, keccak256, uint},
-    sol_types::SolValue,
-};
+use alloy::primitives::{Address, B256, U256, keccak256, uint};
 use tempo_precompiles_macros::Storable;
 
 /// Fee multiplier for fee swaps: 0.9970 scaled by 10000 (30 bps fee).
@@ -82,7 +79,10 @@ impl PoolKey {
     /// Generates a unique pool ID by hashing the token pair addresses.
     /// Uses keccak256 to create a deterministic identifier for this pool.
     pub fn get_id(&self) -> B256 {
-        keccak256((self.user_token, self.validator_token).abi_encode())
+        let mut encoded = [0u8; 64];
+        encoded[12..32].copy_from_slice(self.user_token.as_slice());
+        encoded[44..64].copy_from_slice(self.validator_token.as_slice());
+        keccak256(encoded)
     }
 }
 
