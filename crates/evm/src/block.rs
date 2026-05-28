@@ -12,7 +12,7 @@ use alloy_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, Log, U256};
 use alloy_rlp::Decodable;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{
@@ -123,6 +123,37 @@ pub struct TempoStrippedTxCommit {
     is_payment: bool,
     tx: Option<TempoTxEnvelope>,
     block_gas_used: u64,
+}
+
+impl TempoStrippedTxCommit {
+    /// Builds a successful non-shared payment commit for a transaction whose state transition was
+    /// resolved outside the EVM.
+    pub fn successful_non_shared_payment(
+        tx_type: TempoTxType,
+        tx_gas_used: u64,
+        regular_gas_used: u64,
+        state_gas_used: u64,
+        blob_gas_used: u64,
+        block_gas_used: u64,
+        logs: Vec<Log>,
+    ) -> Self {
+        Self {
+            receipt: TempoReceipt {
+                tx_type,
+                success: true,
+                cumulative_gas_used: 0,
+                logs,
+            },
+            tx_gas_used,
+            regular_gas_used,
+            state_gas_used,
+            blob_gas_used,
+            next_section: BlockSection::NonShared,
+            is_payment: true,
+            tx: None,
+            block_gas_used,
+        }
+    }
 }
 
 impl TempoTxResult {

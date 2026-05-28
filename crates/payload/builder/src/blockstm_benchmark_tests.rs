@@ -1619,6 +1619,179 @@ fn median(mut values: Vec<Duration>) -> Duration {
     values[values.len() / 2]
 }
 
+#[test]
+fn blockstm_direct_tip20_semantic_execution_matches_serial() {
+    let signers = txgen_signers();
+    let participants = signers
+        .iter()
+        .take(16)
+        .map(PrivateKeySigner::address)
+        .collect::<Vec<_>>();
+    let txs = (0..64)
+        .map(|idx| {
+            let signer = &signers[idx % participants.len()];
+            let recipient = participants[(idx.wrapping_mul(17) + 1) % participants.len()];
+            sign_tip20_transfer(signer, recipient, idx as u64)
+        })
+        .collect::<Vec<_>>();
+    let pooled = txs
+        .iter()
+        .cloned()
+        .map(TempoPooledTransaction::new)
+        .collect::<Vec<_>>();
+
+    let fixture = seed_fixture(&participants);
+    let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
+    let expected = execute_serial(&config, &fixture, &txs, &pooled, &participants);
+
+    let mut template_executor = BlockExecutorFactory::create_executor(
+        &config,
+        TempoEvm::new(fixture.state_db(), bench_env(BLOCK_TIMESTAMP)),
+        bench_ctx(pooled.len()),
+    );
+    template_executor
+        .apply_pre_execution_changes()
+        .expect("failed to apply template pre-execution changes");
+    let template_result = template_executor
+        .execute_transaction_without_commit(pooled[0].clone_into_with_tx_env())
+        .expect("template transaction must execute");
+    let base_fee = template_executor.evm().block().basefee;
+    let spec = template_executor.evm().cfg.spec;
+    let amsterdam_eip8037_enabled = template_executor.evm().cfg.enable_amsterdam_eip8037;
+    let template =
+        crate::blockstm::action::production::BlockStmDirectTip20Template::from_evm_result(
+            &pooled[0],
+            &template_result,
+            base_fee,
+            spec,
+            amsterdam_eip8037_enabled,
+        )
+        .expect("simple TIP20 transfer should prove a direct semantic template");
+
+    let mut executor = BlockExecutorFactory::create_executor(
+        &config,
+        TempoEvm::new(fixture.state_db(), bench_env(BLOCK_TIMESTAMP)),
+        bench_ctx(pooled.len()),
+    );
+    executor
+        .apply_pre_execution_changes()
+        .expect("failed to apply direct pre-execution changes");
+    let beneficiary = executor.evm().block().beneficiary;
+    let block_timestamp = executor.evm().block().timestamp.to::<u64>();
+    let base_fee = executor.evm().block().basefee;
+    let mut records = Vec::with_capacity(pooled.len());
+    let mut gas_used = 0u64;
+    let mut validator_fees = U256::ZERO;
+    for (idx, tx) in pooled.iter().enumerate() {
+        let direct = template
+            .execute(
+                idx,
+                tx,
+                beneficiary,
+                base_fee,
+                block_timestamp,
+                spec,
+                amsterdam_eip8037_enabled,
+            )
+            .expect("generated TIP20 transfer should direct-execute semantically");
+        records.push(
+            direct
+                .semantic_plan
+                .to_record(0)
+                .expect("direct semantic plan should produce a record"),
+        );
+        validator_fees += direct.validator_fee;
+        gas_used = gas_used.saturating_add(
+            executor
+                .commit_prepared_stripped_transaction(direct.commit)
+                .tx_gas_used(),
+        );
+        executor.evm_mut().db_mut().bump_bal_index();
+    }
+
+    let reduction = crate::blockstm::action::production::reduce_tip20_semantic_records(
+        executor.evm_mut().db_mut(),
+        &records,
+        block_timestamp,
+        blockstm_bench_workers(),
+    )
+    .expect("direct semantic reduction should succeed");
+    assert!(
+        reduction.invalid_tx_indexes().is_empty(),
+        "direct semantic test transactions should all be valid"
+    );
+    let semantic_changes = crate::materialize_blockstm_semantic_reduction(
+        executor.evm_mut().db_mut(),
+        &reduction,
+        blockstm_bench_workers(),
+    )
+    .expect("direct semantic materialization should succeed");
+    executor.commit_semantic_state_changes(semantic_changes);
+
+    let direct_digest = digest(
+        &mut executor,
+        &txs,
+        &participants,
+        pooled.len() as u64,
+        gas_used,
+        validator_fees,
+    );
+    assert_eq!(direct_digest, expected);
+}
+
+#[test]
+fn blockstm_direct_tip20_template_rejects_self_transfer_variant() {
+    let signers = txgen_signers();
+    let sender = signers[0].address();
+    let recipient = signers[1].address();
+    let participants = vec![sender, recipient];
+    let normal_tx = sign_tip20_transfer(&signers[0], recipient, 0);
+    let self_tx = sign_tip20_transfer(&signers[0], sender, 1);
+    let normal_pooled = TempoPooledTransaction::new(normal_tx);
+    let self_pooled = TempoPooledTransaction::new(self_tx);
+
+    let fixture = seed_fixture(&participants);
+    let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
+    let mut template_executor = BlockExecutorFactory::create_executor(
+        &config,
+        TempoEvm::new(fixture.state_db(), bench_env(BLOCK_TIMESTAMP)),
+        bench_ctx(2),
+    );
+    template_executor
+        .apply_pre_execution_changes()
+        .expect("failed to apply template pre-execution changes");
+    let template_result = template_executor
+        .execute_transaction_without_commit(normal_pooled.clone_into_with_tx_env())
+        .expect("template transaction must execute");
+    let base_fee = template_executor.evm().block().basefee;
+    let spec = template_executor.evm().cfg.spec;
+    let amsterdam_eip8037_enabled = template_executor.evm().cfg.enable_amsterdam_eip8037;
+    let template =
+        crate::blockstm::action::production::BlockStmDirectTip20Template::from_evm_result(
+            &normal_pooled,
+            &template_result,
+            base_fee,
+            spec,
+            amsterdam_eip8037_enabled,
+        )
+        .expect("normal simple TIP20 transfer should prove a direct semantic template");
+
+    assert!(
+        template
+            .execute(
+                1,
+                &self_pooled,
+                template_executor.evm().block().beneficiary,
+                base_fee,
+                BLOCK_TIMESTAMP,
+                spec,
+                amsterdam_eip8037_enabled,
+            )
+            .is_none(),
+        "self-transfers have a different EVM gas shape and must fall back to real execution"
+    );
+}
+
 #[ignore = "25k pure TIP20 serial-vs-Block-STM benchmark; run from scripts/check-blockstm-builder.sh"]
 #[test]
 fn blockstm_pure_tip20_parallel_builder_benchmark() {

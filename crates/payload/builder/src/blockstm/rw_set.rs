@@ -74,6 +74,11 @@ impl BlockStmReadSet {
         self.reads.iter()
     }
 
+    /// Returns the number of recorded read dependencies.
+    pub fn len(&self) -> usize {
+        self.reads.len()
+    }
+
     /// Returns a copy without keys that are covered by a semantic resolver.
     pub fn without_keys<'a>(&self, ignored: impl IntoIterator<Item = &'a BlockStmAccessKey>) -> Self
     where
@@ -135,6 +140,11 @@ impl BlockStmWriteSet {
     /// Returns all writes sorted by key.
     pub fn iter(&self) -> impl Iterator<Item = (&BlockStmAccessKey, &BlockStmValue)> {
         self.writes.iter()
+    }
+
+    /// Returns the number of recorded writes.
+    pub fn len(&self) -> usize {
+        self.writes.len()
     }
 
     /// Returns a copy without keys that are covered by a semantic resolver.

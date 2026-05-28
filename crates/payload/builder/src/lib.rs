@@ -16,11 +16,14 @@ use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 use crate::{
     blockstm::{
         BlockStmAccessKey, BlockStmExecutionStats, BlockStmMetrics, BlockStmMvMemory,
-        action::production::{BlockStmSemanticState, capture_tip20_semantic_plan},
+        action::production::{
+            BlockStmDirectTip20Execution, BlockStmDirectTip20Template, BlockStmSemanticReduction,
+            BlockStmSemanticState, capture_tip20_semantic_plan, reduce_tip20_semantic_records,
+        },
         executor::BlockStmAttempt,
         state_view::{
-            BlockStmMvTrackingDb, BlockStmPrefixDb, account_write_set_from_evm_state,
-            write_set_from_evm_state,
+            BlockStmMvTrackingDb, BlockStmParentReadCache, BlockStmPrefixDb,
+            account_write_set_from_evm_state, write_set_from_evm_state,
         },
     },
     budget::{
@@ -33,9 +36,10 @@ use crate::{
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
 use alloy_primitives::{
     Address, U256,
-    map::{AddressMap, HashMap, HashSet},
+    map::{AddressMap, HashSet},
 };
 use alloy_rlp::{Decodable, Encodable};
+use rayon::prelude::*;
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
     is_better_payload,
@@ -71,7 +75,8 @@ use reth_transaction_pool::{
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::{
-    collections::VecDeque,
+    cmp::Reverse,
+    collections::{BinaryHeap, VecDeque},
     sync::{
         Arc, Condvar, Mutex,
         atomic::{AtomicU64, Ordering},
@@ -125,7 +130,8 @@ struct BlockStmPoolCandidate {
 
 #[derive(Debug)]
 struct BlockStmAttemptOutput {
-    execution_result: Result<tempo_evm::TempoTxResult, BlockExecutionError>,
+    execution_result: Option<Result<tempo_evm::TempoTxResult, BlockExecutionError>>,
+    direct_semantic_execution: Option<BlockStmDirectTip20Execution>,
     elapsed: Duration,
     semantic_plan: Option<crate::blockstm::action::production::BlockStmSemanticPlan>,
     blocking_dependency: Option<usize>,
@@ -144,6 +150,38 @@ struct BlockStmProductionTask {
     incarnation: usize,
     validation_generation: usize,
     kind: BlockStmProductionTaskKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockStmProductionQueuedTask {
+    key: (usize, u8, usize, usize),
+    task: BlockStmProductionTask,
+}
+
+impl BlockStmProductionQueuedTask {
+    fn new(task: BlockStmProductionTask) -> Self {
+        Self {
+            key: (
+                task.tx_index,
+                blockstm_task_kind_priority(task.kind),
+                task.incarnation,
+                task.validation_generation,
+            ),
+            task,
+        }
+    }
+}
+
+impl PartialOrd for BlockStmProductionQueuedTask {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for BlockStmProductionQueuedTask {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.key.cmp(&other.key)
+    }
 }
 
 fn blockstm_task_kind_priority(kind: BlockStmProductionTaskKind) -> u8 {
@@ -180,7 +218,7 @@ struct BlockStmProductionScheduler {
 
 #[derive(Debug, Default)]
 struct BlockStmProductionSchedulerInner {
-    queue: VecDeque<BlockStmProductionTask>,
+    queue: BinaryHeap<Reverse<BlockStmProductionQueuedTask>>,
     active: usize,
     done: bool,
 }
@@ -196,6 +234,8 @@ impl BlockStmProductionScheduler {
                         validation_generation: 0,
                         kind: BlockStmProductionTaskKind::Execution,
                     })
+                    .map(BlockStmProductionQueuedTask::new)
+                    .map(Reverse)
                     .collect(),
                 active: 0,
                 done: false,
@@ -213,27 +253,9 @@ impl BlockStmProductionScheduler {
             if inner.done {
                 return None;
             }
-            if !inner.queue.is_empty() {
-                let task_index = inner
-                    .queue
-                    .iter()
-                    .enumerate()
-                    .min_by_key(|(_, task)| {
-                        (
-                            task.tx_index,
-                            blockstm_task_kind_priority(task.kind),
-                            task.incarnation,
-                            task.validation_generation,
-                        )
-                    })
-                    .map(|(index, _)| index)
-                    .expect("queue is not empty");
-                let task = inner
-                    .queue
-                    .remove(task_index)
-                    .expect("task index selected from queue");
+            if let Some(Reverse(queued)) = inner.queue.pop() {
                 inner.active += 1;
-                return Some(task);
+                return Some(queued.task);
             }
             if inner.active == 0 {
                 inner.done = true;
@@ -253,7 +275,9 @@ impl BlockStmProductionScheduler {
             .lock()
             .expect("Block-STM production scheduler poisoned");
         if !inner.done {
-            inner.queue.push_back(task);
+            inner
+                .queue
+                .push(Reverse(BlockStmProductionQueuedTask::new(task)));
             self.available.notify_one();
         }
     }
@@ -282,15 +306,60 @@ fn execute_blockstm_attempt(
     evm_env: EvmEnvFor<TempoEvmConfig>,
     execution_ctx: TempoBlockExecutionCtx<'_>,
     prefix_cache: Arc<reth_revm::db::CacheState>,
+    parent_read_cache: Arc<BlockStmParentReadCache>,
     memory: &BlockStmMvMemory,
     tx_index: usize,
     attempt: usize,
     tx: WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>>,
     pool_tx: &TempoPooledTransaction,
     capture_semantic_actions: bool,
+    direct_semantic_template: &Arc<Mutex<Option<BlockStmDirectTip20Template>>>,
     beneficiary: Address,
 ) -> Result<BlockStmAttempt<BlockStmAttemptOutput>, BlockExecutionError> {
-    let state = BlockStmPrefixDb::new(StateProviderDatabase::new(state_provider), prefix_cache);
+    let base_fee = evm_env.block_env.inner.basefee;
+    let block_timestamp = evm_env.block_env.inner.timestamp.to::<u64>();
+    let spec = evm_env.cfg_env.spec;
+    let amsterdam_eip8037_enabled = evm_env.cfg_env.enable_amsterdam_eip8037;
+    if capture_semantic_actions {
+        let started = Instant::now();
+        let template = direct_semantic_template
+            .lock()
+            .expect("Block-STM direct semantic template poisoned")
+            .clone();
+        if let Some(template) = template
+            && let Some(direct_execution) = template.execute(
+                tx_index,
+                pool_tx,
+                beneficiary,
+                base_fee,
+                block_timestamp,
+                spec,
+                amsterdam_eip8037_enabled,
+            )
+        {
+            let semantic_plan = direct_execution.semantic_plan.clone();
+            return Ok(BlockStmAttempt {
+                tx_index,
+                attempt,
+                read_set: Default::default(),
+                write_set: Default::default(),
+                output: BlockStmAttemptOutput {
+                    execution_result: None,
+                    direct_semantic_execution: Some(direct_execution),
+                    elapsed: started.elapsed(),
+                    semantic_plan: Some(semantic_plan),
+                    blocking_dependency: None,
+                    account_write_set: Default::default(),
+                },
+            });
+        }
+    }
+
+    let state = BlockStmPrefixDb::with_parent_read_cache(
+        StateProviderDatabase::new(state_provider),
+        prefix_cache,
+        parent_read_cache,
+    );
     let db = State::builder()
         .with_database(state)
         .with_bundle_update()
@@ -319,6 +388,23 @@ fn execute_blockstm_attempt(
     } else {
         None
     };
+    if let (Some(semantic_plan), Ok(result)) = (semantic_plan.as_ref(), execution_result.as_ref())
+        && blockstm_result_has_only_semantic_writes(result, semantic_plan.covered_keys())
+        && let Some(template) = BlockStmDirectTip20Template::from_evm_result(
+            pool_tx,
+            result,
+            base_fee,
+            spec,
+            amsterdam_eip8037_enabled,
+        )
+    {
+        let mut guard = direct_semantic_template
+            .lock()
+            .expect("Block-STM direct semantic template poisoned");
+        if guard.is_none() {
+            *guard = Some(template);
+        }
+    }
     if let Some(semantic_plan) = semantic_plan.as_ref() {
         read_set = read_set.without_keys(semantic_plan.covered_keys().iter());
         write_set = write_set.without_keys(semantic_plan.covered_keys().iter());
@@ -330,7 +416,8 @@ fn execute_blockstm_attempt(
         read_set,
         write_set,
         output: BlockStmAttemptOutput {
-            execution_result,
+            execution_result: Some(execution_result),
+            direct_semantic_execution: None,
             elapsed,
             semantic_plan,
             blocking_dependency,
@@ -352,6 +439,17 @@ fn record_blockstm_max_in_flight(max_in_flight: &AtomicU64, active: u64) {
             Err(next) => observed = next,
         }
     }
+}
+
+fn record_blockstm_duration_nanos(total: &AtomicU64, elapsed: Duration) {
+    total.fetch_add(
+        elapsed.as_nanos().min(u128::from(u64::MAX)) as u64,
+        Ordering::AcqRel,
+    );
+}
+
+fn load_blockstm_duration(total: &AtomicU64) -> Duration {
+    Duration::from_nanos(total.load(Ordering::Relaxed))
 }
 
 fn schedule_blockstm_validation_for_ready_suffix(
@@ -509,6 +607,33 @@ fn is_blockstm_invalidated_buffered_transaction(
     }
 }
 
+fn expand_blockstm_semantic_invalidated_transactions(
+    batch: &[BlockStmPoolCandidate],
+    invalid_tx_indexes: &mut HashSet<usize>,
+) -> bool {
+    let invalid_candidates = batch
+        .iter()
+        .filter(|candidate| invalid_tx_indexes.contains(&candidate.tx_index))
+        .collect::<Vec<_>>();
+    if invalid_candidates.is_empty() {
+        return false;
+    }
+
+    let mut changed = false;
+    for candidate in batch {
+        if invalid_tx_indexes.contains(&candidate.tx_index) {
+            continue;
+        }
+        if invalid_candidates.iter().any(|invalid| {
+            is_blockstm_invalidated_buffered_transaction(&invalid.pool_tx, &candidate.pool_tx)
+        }) {
+            changed |= invalid_tx_indexes.insert(candidate.tx_index);
+        }
+    }
+
+    changed
+}
+
 fn hydrate_blockstm_commit_cache<DB>(
     db: &mut DB,
     result: &tempo_evm::TempoTxResult,
@@ -538,28 +663,50 @@ fn blockstm_result_has_only_semantic_writes(
     })
 }
 
-fn materialize_blockstm_semantic_keys<DB>(
+fn materialize_blockstm_semantic_reduction<DB>(
     db: &mut DB,
-    semantic_state: &BlockStmSemanticState,
-    keys: &HashSet<BlockStmAccessKey>,
-    original_values: &HashMap<BlockStmAccessKey, U256>,
+    reduction: &BlockStmSemanticReduction,
+    worker_count: usize,
 ) -> Result<EvmState, DB::Error>
 where
     DB: Database,
 {
+    let mut keys = reduction.touched_keys().iter().copied().collect::<Vec<_>>();
+    keys.sort_unstable();
+
+    let storage_entries = if keys.is_empty() {
+        Vec::new()
+    } else {
+        let worker_count = worker_count.max(1).min(keys.len());
+        let chunk_len = keys.len().div_ceil(worker_count).max(1);
+        keys.par_chunks(chunk_len)
+            .flat_map_iter(|chunk| {
+                let mut entries = Vec::<(Address, U256, Option<U256>, U256)>::new();
+                for key in chunk {
+                    let BlockStmAccessKey::Storage { address, slot } = *key else {
+                        continue;
+                    };
+                    let Some(value) = reduction.storage_value(key) else {
+                        continue;
+                    };
+                    entries.push((
+                        address,
+                        slot,
+                        reduction.original_values().get(key).copied(),
+                        value,
+                    ));
+                }
+                entries
+            })
+            .collect::<Vec<_>>()
+    };
+
     let mut changes = AddressMap::<Account>::default();
 
-    for key in keys {
-        let BlockStmAccessKey::Storage { address, slot } = *key else {
-            continue;
-        };
-        let Some(value) = semantic_state.storage_value(key) else {
-            continue;
-        };
-        let original = if let Some(original) = original_values.get(key).copied() {
-            original
-        } else {
-            db.storage(address, slot)?
+    for (address, slot, original, value) in storage_entries {
+        let original = match original {
+            Some(original) => original,
+            None => db.storage(address, slot)?,
         };
         if original == value {
             continue;
@@ -1061,18 +1208,36 @@ where
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let mut blockstm_stats = BlockStmExecutionStats::default();
+        let mut blockstm_batch_setup_elapsed = Duration::ZERO;
+        let mut blockstm_prefix_cache_clone_elapsed = Duration::ZERO;
         let mut blockstm_worker_elapsed = Duration::ZERO;
+        let mut blockstm_attempt_wall_elapsed_sum = Duration::ZERO;
+        let mut blockstm_evm_execution_elapsed_sum = Duration::ZERO;
+        let mut blockstm_publish_elapsed_sum = Duration::ZERO;
+        let mut blockstm_validation_elapsed_sum = Duration::ZERO;
         let mut blockstm_fast_semantic_elapsed = Duration::ZERO;
         let mut blockstm_fast_commit_elapsed = Duration::ZERO;
+        let mut blockstm_semantic_lane_build_elapsed = Duration::ZERO;
+        let mut blockstm_semantic_lane_reduce_elapsed = Duration::ZERO;
         let mut blockstm_semantic_materialize_elapsed = Duration::ZERO;
         let mut blockstm_semantic_commit_elapsed = Duration::ZERO;
+        let mut blockstm_validation_tasks = 0u64;
+        let mut blockstm_publish_tasks = 0u64;
+        let mut blockstm_read_keys = 0u64;
+        let mut blockstm_write_keys = 0u64;
+        let mut blockstm_account_write_keys = 0u64;
+        let mut blockstm_semantic_plans = 0u64;
+        let mut blockstm_direct_semantic_executions = 0u64;
+        let mut blockstm_semantic_lanes_reduced = 0u64;
+        let mut blockstm_semantic_fixpoint_iterations = 0u64;
+        let mut blockstm_semantic_invalid_txs = 0u64;
         let block_build_stop_reason = if self.blockstm_config.enabled && !empty {
             let max_batch_len = self
                 .blockstm_config
                 .workers
                 .max(1)
-                .saturating_mul(8)
-                .clamp(1, 1024);
+                .saturating_mul(512)
+                .clamp(1, 16_384);
             let parent_hash = parent_header.hash();
             let mut pending_candidates = VecDeque::<BlockStmPoolCandidate>::new();
             let mut next_blockstm_tx_index = 0usize;
@@ -1250,8 +1415,12 @@ where
                     continue;
                 }
 
+                let batch_setup_started = Instant::now();
+                let prefix_cache_clone_started = Instant::now();
                 let prefix_cache =
                     Arc::new(builder.executor_mut().evm_mut().db_mut().cache.clone());
+                blockstm_prefix_cache_clone_elapsed += prefix_cache_clone_started.elapsed();
+                let parent_read_cache = Arc::new(BlockStmParentReadCache::default());
                 let evm_env = builder.evm().evm_env();
                 let execution_ctx = builder.ctx.clone();
                 let beneficiary = builder.evm().block().beneficiary;
@@ -1276,12 +1445,26 @@ where
                     .map(|_| Mutex::new(Vec::<usize>::new()))
                     .collect::<Vec<_>>();
                 let scheduler = BlockStmProductionScheduler::new(batch.len());
+                let direct_semantic_template =
+                    Arc::new(Mutex::new(None::<BlockStmDirectTip20Template>));
                 let worker_error = Mutex::new(None);
                 let in_flight = AtomicU64::new(0);
                 let max_in_flight = AtomicU64::new(0);
                 let speculative_executions = AtomicU64::new(0);
                 let conflicts = AtomicU64::new(0);
                 let reexecutions = AtomicU64::new(0);
+                let attempt_wall_nanos = AtomicU64::new(0);
+                let evm_execution_nanos = AtomicU64::new(0);
+                let publish_nanos = AtomicU64::new(0);
+                let validation_nanos = AtomicU64::new(0);
+                let validation_task_count = AtomicU64::new(0);
+                let publish_task_count = AtomicU64::new(0);
+                let read_key_count = AtomicU64::new(0);
+                let write_key_count = AtomicU64::new(0);
+                let account_write_key_count = AtomicU64::new(0);
+                let semantic_plan_count = AtomicU64::new(0);
+                let direct_semantic_count = AtomicU64::new(0);
+                blockstm_batch_setup_elapsed += batch_setup_started.elapsed();
 
                 let worker_started = Instant::now();
                 self.executor.prewarming_pool().in_place_scope(|scope| {
@@ -1293,6 +1476,8 @@ where
                         let evm_env = evm_env.clone();
                         let execution_ctx = execution_ctx.clone();
                         let prefix_cache = prefix_cache.clone();
+                        let parent_read_cache = parent_read_cache.clone();
+                        let direct_semantic_template = direct_semantic_template.clone();
                         let attempt_slots = &attempt_slots;
                         let states = &states;
                         let dependencies = &dependencies;
@@ -1304,6 +1489,17 @@ where
                         let speculative_executions = &speculative_executions;
                         let conflicts = &conflicts;
                         let reexecutions = &reexecutions;
+                        let attempt_wall_nanos = &attempt_wall_nanos;
+                        let evm_execution_nanos = &evm_execution_nanos;
+                        let publish_nanos = &publish_nanos;
+                        let validation_nanos = &validation_nanos;
+                        let validation_task_count = &validation_task_count;
+                        let publish_task_count = &publish_task_count;
+                        let read_key_count = &read_key_count;
+                        let write_key_count = &write_key_count;
+                        let account_write_key_count = &account_write_key_count;
+                        let semantic_plan_count = &semantic_plan_count;
+                        let direct_semantic_count = &direct_semantic_count;
 
                         scope.spawn(move |_| {
                             let mut state_provider = None;
@@ -1362,25 +1558,60 @@ where
                                             .expect("Block-STM state provider initialized");
                                         let active = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
                                         record_blockstm_max_in_flight(max_in_flight, active);
+                                        let attempt_started = Instant::now();
                                         let attempt = execute_blockstm_attempt(
                                             state_provider,
                                             evm_config,
                                             evm_env.clone(),
                                             execution_ctx.clone(),
                                             prefix_cache.clone(),
+                                            parent_read_cache.clone(),
                                             memory,
                                             candidate.tx_index,
                                             task.incarnation,
                                             candidate.tx_with_env.clone(),
                                             &candidate.pool_tx.transaction,
                                             tip20_actions,
+                                            &direct_semantic_template,
                                             beneficiary,
+                                        );
+                                        record_blockstm_duration_nanos(
+                                            attempt_wall_nanos,
+                                            attempt_started.elapsed(),
                                         );
                                         in_flight.fetch_sub(1, Ordering::AcqRel);
                                         speculative_executions.fetch_add(1, Ordering::AcqRel);
 
                                         match attempt {
                                             Ok(attempt) => {
+                                                record_blockstm_duration_nanos(
+                                                    evm_execution_nanos,
+                                                    attempt.output.elapsed,
+                                                );
+                                                read_key_count.fetch_add(
+                                                    attempt.read_set.len() as u64,
+                                                    Ordering::AcqRel,
+                                                );
+                                                write_key_count.fetch_add(
+                                                    attempt.write_set.len() as u64,
+                                                    Ordering::AcqRel,
+                                                );
+                                                account_write_key_count.fetch_add(
+                                                    attempt.output.account_write_set.len() as u64,
+                                                    Ordering::AcqRel,
+                                                );
+                                                if attempt.output.semantic_plan.is_some() {
+                                                    semantic_plan_count
+                                                        .fetch_add(1, Ordering::AcqRel);
+                                                }
+                                                if attempt
+                                                    .output
+                                                    .direct_semantic_execution
+                                                    .is_some()
+                                                {
+                                                    direct_semantic_count
+                                                        .fetch_add(1, Ordering::AcqRel);
+                                                }
                                                 if let Some(blocking_tx_index) =
                                                     attempt.output.blocking_dependency
                                                 {
@@ -1409,6 +1640,7 @@ where
                                                             candidate.tx_index,
                                                             task.incarnation,
                                                         );
+                                                    let publish_started = Instant::now();
                                                     memory.publish_value(
                                                         version,
                                                         &attempt.write_set,
@@ -1417,22 +1649,43 @@ where
                                                         version,
                                                         &attempt.output.account_write_set,
                                                     );
+                                                    record_blockstm_duration_nanos(
+                                                        publish_nanos,
+                                                        publish_started.elapsed(),
+                                                    );
+                                                    publish_task_count
+                                                        .fetch_add(1, Ordering::AcqRel);
+                                                    let publishes_mv_writes =
+                                                        !attempt.write_set.is_empty()
+                                                            || !attempt
+                                                                .output
+                                                                .account_write_set
+                                                                .is_empty();
                                                     let should_revalidate_suffix = {
                                                         let mut slot = attempt_slots[task.tx_index]
                                                             .lock()
                                                             .expect("Block-STM attempt slot poisoned");
                                                         let should_revalidate = slot.as_ref().map_or(
-                                                            true,
+                                                            publishes_mv_writes,
                                                             |previous: &BlockStmAttempt<
                                                                 BlockStmAttemptOutput,
                                                             >| {
-                                                                previous.write_set != attempt.write_set
-                                                                    || previous
-                                                                        .output
-                                                                        .account_write_set
-                                                                        != attempt
+                                                                let previously_published_mv_writes =
+                                                                    !previous.write_set.is_empty()
+                                                                        || !previous
                                                                             .output
                                                                             .account_write_set
+                                                                            .is_empty();
+                                                                (publishes_mv_writes
+                                                                    || previously_published_mv_writes)
+                                                                    && (previous.write_set
+                                                                        != attempt.write_set
+                                                                        || previous
+                                                                            .output
+                                                                            .account_write_set
+                                                                            != attempt
+                                                                                .output
+                                                                                .account_write_set)
                                                             },
                                                         );
                                                         *slot = Some(attempt);
@@ -1507,12 +1760,18 @@ where
                                                 if attempt.attempt != task.incarnation {
                                                     Some(Ok(()))
                                                 } else {
-                                                    Some(
-                                                        memory.validate_reads(
-                                                            batch[task.tx_index].tx_index,
-                                                            &attempt.read_set,
-                                                        ),
-                                                    )
+                                                    validation_task_count
+                                                        .fetch_add(1, Ordering::AcqRel);
+                                                    let validation_started = Instant::now();
+                                                    let result = memory.validate_reads(
+                                                        batch[task.tx_index].tx_index,
+                                                        &attempt.read_set,
+                                                    );
+                                                    record_blockstm_duration_nanos(
+                                                        validation_nanos,
+                                                        validation_started.elapsed(),
+                                                    );
+                                                    Some(result)
                                                 }
                                             } else {
                                                 None
@@ -1616,6 +1875,18 @@ where
                     }
                 });
                 blockstm_worker_elapsed += worker_started.elapsed();
+                blockstm_attempt_wall_elapsed_sum += load_blockstm_duration(&attempt_wall_nanos);
+                blockstm_evm_execution_elapsed_sum += load_blockstm_duration(&evm_execution_nanos);
+                blockstm_publish_elapsed_sum += load_blockstm_duration(&publish_nanos);
+                blockstm_validation_elapsed_sum += load_blockstm_duration(&validation_nanos);
+                blockstm_validation_tasks += validation_task_count.load(Ordering::Relaxed);
+                blockstm_publish_tasks += publish_task_count.load(Ordering::Relaxed);
+                blockstm_read_keys += read_key_count.load(Ordering::Relaxed);
+                blockstm_write_keys += write_key_count.load(Ordering::Relaxed);
+                blockstm_account_write_keys += account_write_key_count.load(Ordering::Relaxed);
+                blockstm_semantic_plans += semantic_plan_count.load(Ordering::Relaxed);
+                blockstm_direct_semantic_executions +=
+                    direct_semantic_count.load(Ordering::Relaxed);
                 if let Some(err) = worker_error
                     .into_inner()
                     .expect("Block-STM worker error poisoned")
@@ -1631,18 +1902,16 @@ where
                 blockstm_stats.conflicts_total += conflicts.load(Ordering::Relaxed);
                 blockstm_stats.reexecutions_total += reexecutions.load(Ordering::Relaxed);
 
+                let mut attempt_slots = attempt_slots
+                    .into_iter()
+                    .map(|slot| slot.into_inner().expect("Block-STM attempt slot poisoned"))
+                    .collect::<Vec<_>>();
                 let mut invalidated = Vec::<BestTransaction>::new();
 
                 let fast_semantic_started = Instant::now();
-                let mut fast_attempt_guards = Vec::with_capacity(batch.len());
-                let fast_semantic_state = {
+                let mut fast_attempt_indices = Vec::with_capacity(batch.len());
+                let fast_semantic_reduction = {
                     let block_timestamp = builder.evm().block().timestamp.to::<u64>();
-                    let estimated_semantic_keys = batch.len().saturating_mul(5);
-                    semantic_state.reserve(estimated_semantic_keys);
-                    let mut touched_keys = HashSet::default();
-                    touched_keys.reserve(estimated_semantic_keys);
-                    let mut rollback = HashMap::default();
-                    rollback.reserve(estimated_semantic_keys);
                     let mut fast_gas_used = cumulative_gas_used;
                     let mut fast_non_payment_gas_used = non_payment_gas_used;
                     let mut fast_block_size_used = block_size_used;
@@ -1666,14 +1935,7 @@ where
                             break;
                         }
 
-                        let slot = attempt_slots[batch_index]
-                            .lock()
-                            .expect("Block-STM attempt slot poisoned");
-                        let Some(attempt) = slot.as_ref() else {
-                            eligible = false;
-                            break;
-                        };
-                        let Ok(result) = &attempt.output.execution_result else {
+                        let Some(attempt) = attempt_slots[batch_index].as_ref() else {
                             eligible = false;
                             break;
                         };
@@ -1681,14 +1943,20 @@ where
                             eligible = false;
                             break;
                         };
-                        if !blockstm_result_has_only_semantic_writes(
-                            result,
-                            semantic_plan.covered_keys(),
-                        ) {
-                            eligible = false;
-                            break;
+                        if attempt.output.direct_semantic_execution.is_none() {
+                            let Some(Ok(result)) = &attempt.output.execution_result else {
+                                eligible = false;
+                                break;
+                            };
+                            if !blockstm_result_has_only_semantic_writes(
+                                result,
+                                semantic_plan.covered_keys(),
+                            ) {
+                                eligible = false;
+                                break;
+                            }
                         }
-                        fast_attempt_guards.push(slot);
+                        fast_attempt_indices.push(batch_index);
 
                         fast_gas_used += candidate.max_regular_gas_used;
                         if !candidate.is_payment {
@@ -1697,53 +1965,90 @@ where
                         fast_block_size_used += candidate.tx_rlp_length;
                     }
 
-                    let fast_semantic_state = if eligible {
-                        let semantic_plans = fast_attempt_guards
+                    if eligible {
+                        let semantic_records = fast_attempt_indices
                             .iter()
-                            .map(|slot| {
-                                slot.as_ref()
-                                    .and_then(|attempt| attempt.output.semantic_plan.as_ref())
-                                    .expect("fast semantic eligibility checked plans")
+                            .map(|batch_index| {
+                                let attempt = attempt_slots[*batch_index]
+                                    .as_ref()
+                                    .expect("fast semantic eligibility checked attempts");
+                                attempt
+                                    .output
+                                    .semantic_plan
+                                    .as_ref()
+                                    .and_then(|plan| plan.to_record(attempt.attempt))
                             })
-                            .collect::<Vec<_>>();
-                        let mut original_values = HashMap::default();
-                        original_values.reserve(estimated_semantic_keys);
-                        for plan in &semantic_plans {
-                            for (key, value) in plan.prefix_originals() {
-                                original_values.entry(*key).or_insert(*value);
+                            .collect::<Option<Vec<_>>>();
+
+                        let mut semantic_invalid_tx_indexes = HashSet::default();
+                        let mut final_reduction = None;
+                        let mut local_lane_build_elapsed = Duration::ZERO;
+                        let mut local_lane_reduce_elapsed = Duration::ZERO;
+                        let mut local_lanes_reduced = 0u64;
+                        let mut local_fixpoint_iterations = 0u64;
+
+                        if let Some(semantic_records) = semantic_records {
+                            loop {
+                                let active_records = semantic_records
+                                    .iter()
+                                    .filter(|record| {
+                                        !semantic_invalid_tx_indexes.contains(&record.tx_index())
+                                    })
+                                    .cloned()
+                                    .collect::<Vec<_>>();
+                                let reduction = match reduce_tip20_semantic_records(
+                                    builder.executor_mut().evm_mut().db_mut(),
+                                    &active_records,
+                                    block_timestamp,
+                                    worker_count,
+                                ) {
+                                    Ok(reduction) => reduction,
+                                    Err(_) => {
+                                        eligible = false;
+                                        break;
+                                    }
+                                };
+                                local_lane_build_elapsed += reduction.timings.lane_build_elapsed;
+                                local_lane_reduce_elapsed += reduction.timings.lane_reduce_elapsed;
+                                local_lanes_reduced += reduction.lane_count as u64;
+                                local_fixpoint_iterations += reduction.fixpoint_iterations as u64;
+
+                                let before_invalid_count = semantic_invalid_tx_indexes.len();
+                                semantic_invalid_tx_indexes
+                                    .extend(reduction.invalid_tx_indexes().iter().copied());
+                                expand_blockstm_semantic_invalidated_transactions(
+                                    &batch,
+                                    &mut semantic_invalid_tx_indexes,
+                                );
+
+                                if semantic_invalid_tx_indexes.len() == before_invalid_count {
+                                    final_reduction = Some(reduction);
+                                    break;
+                                }
                             }
-                        }
-                        if semantic_state
-                            .apply_plans_to_prefix_recording(
-                                builder.executor_mut().evm_mut().db_mut(),
-                                &semantic_plans,
-                                block_timestamp,
-                                &mut touched_keys,
-                                &mut rollback,
-                            )
-                            .is_err()
-                        {
+                        } else {
                             eligible = false;
                         }
 
-                        if eligible {
-                            Some((touched_keys, original_values))
-                        } else {
-                            None
-                        }
+                        blockstm_semantic_lane_build_elapsed += local_lane_build_elapsed;
+                        blockstm_semantic_lane_reduce_elapsed += local_lane_reduce_elapsed;
+                        blockstm_semantic_lanes_reduced += local_lanes_reduced;
+                        blockstm_semantic_fixpoint_iterations += local_fixpoint_iterations;
+                        blockstm_semantic_invalid_txs += semantic_invalid_tx_indexes.len() as u64;
+
+                        eligible
+                            .then_some(final_reduction)
+                            .flatten()
+                            .map(|reduction| (reduction, semantic_invalid_tx_indexes))
                     } else {
                         None
-                    };
-
-                    if fast_semantic_state.is_none() {
-                        semantic_state.rollback_prefix(rollback);
                     }
-
-                    fast_semantic_state
                 };
                 blockstm_fast_semantic_elapsed += fast_semantic_started.elapsed();
 
-                if let Some((batch_semantic_keys, batch_semantic_originals)) = fast_semantic_state {
+                if let Some((semantic_reduction, semantic_invalid_tx_indexes)) =
+                    fast_semantic_reduction
+                {
                     builder.executor_mut().reserve_receipts(batch.len());
                     builder.transactions.reserve(batch.len());
 
@@ -1751,22 +2056,40 @@ where
                     for (batch_index, candidate) in batch.iter().enumerate() {
                         check_cancel!();
 
+                        if semantic_invalid_tx_indexes.contains(&candidate.tx_index) {
+                            best_txs.mark_invalid(
+                                &candidate.pool_tx,
+                                InvalidPoolTransactionError::Consensus(
+                                    InvalidTransactionError::TxTypeNotSupported,
+                                ),
+                            );
+                            self.metrics.inc_pool_tx_skipped("invalid_tx");
+                            invalidated.push(candidate.pool_tx.clone());
+                            pending_candidates.retain(|pending| {
+                                !is_blockstm_invalidated_buffered_transaction(
+                                    &candidate.pool_tx,
+                                    &pending.pool_tx,
+                                )
+                            });
+                            let _ = attempt_slots[batch_index].take();
+                            continue;
+                        }
+
                         if candidate.is_payment {
                             payment_transactions += 1;
                         }
 
-                        let attempt = fast_attempt_guards[batch_index]
+                        let attempt = attempt_slots[batch_index]
                             .take()
                             .expect("Block-STM attempt must be available");
                         let BlockStmAttempt { output, .. } = attempt;
                         let BlockStmAttemptOutput {
                             execution_result,
+                            direct_semantic_execution,
                             elapsed,
                             semantic_plan,
                             ..
                         } = output;
-                        let result =
-                            execution_result.expect("fast semantic batch only contains valid txs");
                         let semantic_plan =
                             semantic_plan.expect("fast semantic batch requires semantic plans");
 
@@ -1778,14 +2101,36 @@ where
                         }
                         trace!(?elapsed, "Transaction executed through Block-STM");
 
-                        cumulative_gas_used += result.block_gas_used();
-                        cumulative_state_gas_used += result.state_gas_used();
-                        if !candidate.is_payment {
-                            non_payment_gas_used += result.block_gas_used();
-                        }
-                        total_fees += result.validator_fee();
+                        let (commit, block_gas_used, state_gas_used, validator_fee) =
+                            if let Some(direct_execution) = direct_semantic_execution {
+                                (
+                                    direct_execution.commit,
+                                    direct_execution.block_gas_used,
+                                    direct_execution.state_gas_used,
+                                    direct_execution.validator_fee,
+                                )
+                            } else {
+                                let result = execution_result
+                                    .expect("fast semantic batch only contains attempted txs")
+                                    .expect("fast semantic batch only contains valid txs");
+                                let block_gas_used = result.block_gas_used();
+                                let state_gas_used = result.state_gas_used();
+                                let validator_fee = result.validator_fee();
+                                (
+                                    result.into_stripped_commit_unchecked(),
+                                    block_gas_used,
+                                    state_gas_used,
+                                    validator_fee,
+                                )
+                            };
 
-                        let commit = result.into_stripped_commit_unchecked();
+                        cumulative_gas_used += block_gas_used;
+                        cumulative_state_gas_used += state_gas_used;
+                        if !candidate.is_payment {
+                            non_payment_gas_used += block_gas_used;
+                        }
+                        total_fees += validator_fee;
+
                         builder
                             .executor_mut()
                             .commit_prepared_stripped_transaction(commit);
@@ -1800,14 +2145,14 @@ where
                     blockstm_fast_commit_elapsed += fast_commit_started.elapsed();
 
                     let semantic_materialize_started = Instant::now();
-                    let semantic_changes = materialize_blockstm_semantic_keys(
+                    let semantic_changes = materialize_blockstm_semantic_reduction(
                         builder.executor_mut().evm_mut().db_mut(),
-                        &semantic_state,
-                        &batch_semantic_keys,
-                        &batch_semantic_originals,
+                        &semantic_reduction,
+                        worker_count,
                     )
                     .map_err(|err| PayloadBuilderError::evm(BlockExecutionError::other(err)))?;
                     blockstm_semantic_materialize_elapsed += semantic_materialize_started.elapsed();
+                    semantic_state.apply_reduction(&semantic_reduction);
                     best_txs.on_state_changes(&semantic_changes);
                     if !semantic_changes.is_empty() {
                         let semantic_commit_started = Instant::now();
@@ -1819,8 +2164,6 @@ where
 
                     continue;
                 }
-                drop(fast_attempt_guards);
-
                 for (batch_index, candidate) in batch.iter().enumerate() {
                     if invalidated.iter().any(|invalid| {
                         is_blockstm_invalidated_buffered_transaction(invalid, &candidate.pool_tx)
@@ -1896,8 +2239,6 @@ where
                     }
 
                     let attempt = attempt_slots[batch_index]
-                        .lock()
-                        .expect("Block-STM attempt slot poisoned")
                         .take()
                         .expect("Block-STM attempt must be available");
 
@@ -1905,13 +2246,14 @@ where
                     let BlockStmAttemptOutput {
                         execution_result,
                         elapsed,
-                        semantic_plan,
+                        mut semantic_plan,
                         ..
                     } = output;
 
+                    let direct_attempt = execution_result.is_none();
                     let mut result = match execution_result {
-                        Ok(result) => result,
-                        Err(err) => {
+                        Some(Ok(result)) => result,
+                        Some(Err(err)) => {
                             if let BlockExecutionError::Validation(
                                 BlockValidationError::InvalidTx { error, .. },
                             ) = &err
@@ -1943,7 +2285,56 @@ where
                                 return Err(PayloadBuilderError::evm(err));
                             }
                         }
+                        None => match builder
+                            .executor_mut()
+                            .execute_transaction_without_commit(candidate.tx_with_env.clone())
+                        {
+                            Ok(result) => result,
+                            Err(err) => {
+                                if let BlockExecutionError::Validation(
+                                    BlockValidationError::InvalidTx { error, .. },
+                                ) = &err
+                                {
+                                    invalid_pool_transaction_execution_attempts += 1;
+
+                                    if error.is_nonce_too_low() {
+                                        trace!(%error, tx = %candidate.tx_debug_repr, "skipping nonce too low transaction");
+                                        self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                                    } else {
+                                        trace!(%error, tx = %candidate.tx_debug_repr, "skipping invalid transaction and its descendants");
+                                        best_txs.mark_invalid(
+                                            &candidate.pool_tx,
+                                            InvalidPoolTransactionError::Consensus(
+                                                InvalidTransactionError::TxTypeNotSupported,
+                                            ),
+                                        );
+                                        self.metrics.inc_pool_tx_skipped("invalid_tx");
+                                        invalidated.push(candidate.pool_tx.clone());
+                                        pending_candidates.retain(|pending| {
+                                            !is_blockstm_invalidated_buffered_transaction(
+                                                &candidate.pool_tx,
+                                                &pending.pool_tx,
+                                            )
+                                        });
+                                    }
+                                    continue;
+                                } else {
+                                    return Err(PayloadBuilderError::evm(err));
+                                }
+                            }
+                        },
                     };
+                    if direct_attempt {
+                        let write_set = write_set_from_evm_state(&result.result().state);
+                        semantic_plan = capture_tip20_semantic_plan(
+                            candidate.tx_index,
+                            &candidate.pool_tx.transaction,
+                            &result,
+                            &write_set,
+                            beneficiary,
+                        )
+                        .or(semantic_plan);
+                    }
 
                     if let Some(semantic_plan) = semantic_plan {
                         let block_timestamp = builder.evm().block().timestamp.to::<u64>();
@@ -2195,11 +2586,29 @@ where
                 serial_fallback = blockstm_stats.serial_fallback_total,
                 max_in_flight = blockstm_stats.max_in_flight_real_evm_executions,
                 semantic_actions = blockstm_stats.semantic_actions_total,
+                ?blockstm_batch_setup_elapsed,
+                ?blockstm_prefix_cache_clone_elapsed,
                 ?blockstm_worker_elapsed,
+                ?blockstm_attempt_wall_elapsed_sum,
+                ?blockstm_evm_execution_elapsed_sum,
+                ?blockstm_publish_elapsed_sum,
+                ?blockstm_validation_elapsed_sum,
+                blockstm_validation_tasks,
+                blockstm_publish_tasks,
+                blockstm_read_keys,
+                blockstm_write_keys,
+                blockstm_account_write_keys,
+                blockstm_semantic_plans,
+                blockstm_direct_semantic_executions,
                 ?blockstm_fast_semantic_elapsed,
                 ?blockstm_fast_commit_elapsed,
+                ?blockstm_semantic_lane_build_elapsed,
+                ?blockstm_semantic_lane_reduce_elapsed,
                 ?blockstm_semantic_materialize_elapsed,
                 ?blockstm_semantic_commit_elapsed,
+                blockstm_semantic_lanes_reduced,
+                blockstm_semantic_fixpoint_iterations,
+                blockstm_semantic_invalid_txs,
                 "Block-STM production execution stats"
             );
             BlockStmMetrics.emit_block(blockstm_stats);

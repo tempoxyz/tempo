@@ -12,7 +12,11 @@ use reth_revm::{
     db::CacheState,
     state::{AccountInfo, EvmState},
 };
-use std::{error::Error, fmt, sync::Arc};
+use std::{
+    error::Error,
+    fmt,
+    sync::{Arc, RwLock},
+};
 
 /// Error returned by the MV tracking database when a read observes an estimate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -97,6 +101,15 @@ pub struct BlockStmMvTrackingDb<'a, DB> {
 pub struct BlockStmPrefixDb<DB> {
     inner: DB,
     prefix: Arc<CacheState>,
+    parent_reads: Arc<BlockStmParentReadCache>,
+}
+
+/// Shared read-through cache for immutable parent-state reads used by production BlockSTM attempts.
+#[derive(Debug, Default)]
+pub struct BlockStmParentReadCache {
+    accounts: RwLock<HashMap<Address, Option<AccountInfo>>>,
+    codes: RwLock<HashMap<B256, Bytecode>>,
+    storage: RwLock<HashMap<BlockStmAccessKey, U256>>,
 }
 
 impl<DB> BlockStmTrackingDb<DB> {
@@ -152,8 +165,97 @@ impl<'a, DB> BlockStmMvTrackingDb<'a, DB> {
 
 impl<DB> BlockStmPrefixDb<DB> {
     /// Creates a database backed by a shared committed block prefix.
-    pub const fn new(inner: DB, prefix: Arc<CacheState>) -> Self {
-        Self { inner, prefix }
+    pub fn new(inner: DB, prefix: Arc<CacheState>) -> Self {
+        Self {
+            inner,
+            prefix,
+            parent_reads: Arc::new(BlockStmParentReadCache::default()),
+        }
+    }
+
+    /// Creates a database backed by a shared committed block prefix and immutable parent cache.
+    pub const fn with_parent_read_cache(
+        inner: DB,
+        prefix: Arc<CacheState>,
+        parent_reads: Arc<BlockStmParentReadCache>,
+    ) -> Self {
+        Self {
+            inner,
+            prefix,
+            parent_reads,
+        }
+    }
+}
+
+impl BlockStmParentReadCache {
+    fn basic<DB>(&self, inner: &mut DB, address: Address) -> Result<Option<AccountInfo>, DB::Error>
+    where
+        DB: Database,
+    {
+        if let Some(info) = self
+            .accounts
+            .read()
+            .expect("Block-STM parent account cache poisoned")
+            .get(&address)
+            .cloned()
+        {
+            return Ok(info);
+        }
+
+        let info = inner.basic(address)?;
+        self.accounts
+            .write()
+            .expect("Block-STM parent account cache poisoned")
+            .entry(address)
+            .or_insert_with(|| info.clone());
+        Ok(info)
+    }
+
+    fn code_by_hash<DB>(&self, inner: &mut DB, code_hash: B256) -> Result<Bytecode, DB::Error>
+    where
+        DB: Database,
+    {
+        if let Some(code) = self
+            .codes
+            .read()
+            .expect("Block-STM parent code cache poisoned")
+            .get(&code_hash)
+            .cloned()
+        {
+            return Ok(code);
+        }
+
+        let code = inner.code_by_hash(code_hash)?;
+        self.codes
+            .write()
+            .expect("Block-STM parent code cache poisoned")
+            .entry(code_hash)
+            .or_insert_with(|| code.clone());
+        Ok(code)
+    }
+
+    fn storage<DB>(&self, inner: &mut DB, address: Address, slot: U256) -> Result<U256, DB::Error>
+    where
+        DB: Database,
+    {
+        let key = BlockStmAccessKey::Storage { address, slot };
+        if let Some(value) = self
+            .storage
+            .read()
+            .expect("Block-STM parent storage cache poisoned")
+            .get(&key)
+            .copied()
+        {
+            return Ok(value);
+        }
+
+        let value = inner.storage(address, slot)?;
+        self.storage
+            .write()
+            .expect("Block-STM parent storage cache poisoned")
+            .entry(key)
+            .or_insert(value);
+        Ok(value)
     }
 }
 
@@ -267,7 +369,7 @@ impl<DB: Database> Database for BlockStmPrefixDb<DB> {
             return Ok(account.account_info());
         }
 
-        self.inner.basic(address)
+        self.parent_reads.basic(&mut self.inner, address)
     }
 
     fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
@@ -275,7 +377,7 @@ impl<DB: Database> Database for BlockStmPrefixDb<DB> {
             return Ok(code.clone());
         }
 
-        self.inner.code_by_hash(code_hash)
+        self.parent_reads.code_by_hash(&mut self.inner, code_hash)
     }
 
     fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
@@ -293,7 +395,7 @@ impl<DB: Database> Database for BlockStmPrefixDb<DB> {
             }
         }
 
-        self.inner.storage(address, index)
+        self.parent_reads.storage(&mut self.inner, address, index)
     }
 
     fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {

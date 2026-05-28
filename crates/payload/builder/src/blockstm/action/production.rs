@@ -16,26 +16,42 @@ use crate::blockstm::{
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{
-    Address, B256, TxKind, U256,
+    Address, B256, IntoLogData, Log, TxKind, U256,
     map::{HashMap, HashSet},
 };
 use alloy_sol_types::SolInterface;
+use rayon::prelude::*;
 use reth_evm::{Database, block::TxResult};
-use reth_revm::state::{EvmState, EvmStorageSlot, TransactionId};
+use reth_revm::{
+    revm::context::Transaction as RevmTransaction,
+    state::{EvmState, EvmStorageSlot, TransactionId},
+};
 use reth_transaction_pool::PoolTransaction;
-use std::fmt;
-use tempo_evm::TempoTxResult;
+use std::{
+    fmt,
+    time::{Duration, Instant},
+};
+use tempo_chainspec::{
+    constants::gas::tempo_t6_discounted_payment_effective_gas_price, hardfork::TempoHardfork,
+};
+use tempo_evm::{TempoStrippedTxCommit, TempoTxResult};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY},
-    tip20::ITIP20,
+    tip20::{ITIP20, TIP20Event},
 };
-use tempo_primitives::{TempoAddressExt, transaction::calc_gas_balance_spending};
+use tempo_primitives::{TempoAddressExt, TempoTxType, transaction::calc_gas_balance_spending};
+use tempo_revm::{
+    calculate_aa_batch_intrinsic_gas,
+    gas_params::{SSTORE_SET_COST, tempo_gas_params_with_amsterdam},
+    handler::EXPIRING_NONCE_GAS,
+};
 use tempo_transaction_pool::transaction::TempoPooledTransaction;
 
 /// Semantic plan captured from a successful real execution attempt.
 #[derive(Debug, Clone)]
 pub struct BlockStmSemanticPlan {
+    tx_index: usize,
     action_log: BlockStmActionLog,
     covered_keys: HashSet<BlockStmAccessKey>,
     prefix_originals: HashMap<BlockStmAccessKey, U256>,
@@ -44,6 +60,11 @@ pub struct BlockStmSemanticPlan {
 }
 
 impl BlockStmSemanticPlan {
+    /// Transaction index this semantic plan was captured for.
+    pub const fn tx_index(&self) -> usize {
+        self.tx_index
+    }
+
     /// Keys whose speculative reads and writes are resolved by ordered semantic replay.
     pub fn covered_keys(&self) -> &HashSet<BlockStmAccessKey> {
         &self.covered_keys
@@ -54,9 +75,25 @@ impl BlockStmSemanticPlan {
         self.action_log.actions().len() + self.semantic_prefix_reads
     }
 
-    /// Original storage values observed by the successful EVM attempt for semantic keys.
-    pub(crate) fn prefix_originals(&self) -> &HashMap<BlockStmAccessKey, U256> {
-        &self.prefix_originals
+    /// Converts this captured plan into an immutable semantic reduction record.
+    pub fn to_record(&self, incarnation: usize) -> Option<BlockStmSemanticRecord> {
+        let tip20 = self.tip20_prefix.clone()?;
+        if tip20
+            .fee
+            .actual_spending
+            .checked_add(tip20.fee.refund_amount)
+            .map_or(true, |value| value != tip20.fee.max_fee_precharge)
+        {
+            return None;
+        }
+
+        Some(BlockStmSemanticRecord {
+            tx_index: self.tx_index,
+            incarnation,
+            covered_keys: self.covered_keys.clone(),
+            original_values: self.prefix_originals.clone(),
+            tip20,
+        })
     }
 }
 
@@ -66,6 +103,138 @@ struct BlockStmTip20PrefixPlan {
     fee: Tip20FeeEscrowDelta,
     transfers: Vec<Tip20TransferDelta>,
     collected: CollectedFeesDelta,
+}
+
+/// Template proven by one real EVM execution and reused for identical simple TIP20 payments.
+#[derive(Debug, Clone)]
+pub struct BlockStmDirectTip20Template {
+    shape: BlockStmDirectTip20Shape,
+    state_gas_used: u64,
+    blob_gas_used: u64,
+    execution_gas_delta: u64,
+    discounted_fee_price: bool,
+}
+
+/// Direct semantic execution output for a simple TIP20 payment.
+#[derive(Debug)]
+pub struct BlockStmDirectTip20Execution {
+    pub semantic_plan: BlockStmSemanticPlan,
+    pub commit: TempoStrippedTxCommit,
+    pub validator_fee: U256,
+    pub block_gas_used: u64,
+    pub state_gas_used: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct BlockStmDirectTip20Shape {
+    tx_type: TempoTxType,
+    call_kinds: Vec<BlockStmDirectTip20CallKind>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockStmDirectTip20CallKind {
+    Transfer,
+    TransferWithMemo,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SimpleTip20TransferCall {
+    transfer: Tip20TransferDelta,
+    memo: Option<B256>,
+}
+
+/// Immutable semantic record produced by one accepted speculative attempt.
+#[derive(Debug, Clone)]
+pub struct BlockStmSemanticRecord {
+    tx_index: usize,
+    incarnation: usize,
+    covered_keys: HashSet<BlockStmAccessKey>,
+    original_values: HashMap<BlockStmAccessKey, U256>,
+    tip20: BlockStmTip20PrefixPlan,
+}
+
+impl BlockStmSemanticRecord {
+    /// Transaction index for deterministic ordering.
+    pub const fn tx_index(&self) -> usize {
+        self.tx_index
+    }
+
+    /// Incarnation this record came from.
+    pub const fn incarnation(&self) -> usize {
+        self.incarnation
+    }
+
+    /// Covered semantic keys.
+    pub fn covered_keys(&self) -> &HashSet<BlockStmAccessKey> {
+        &self.covered_keys
+    }
+}
+
+/// Timings collected while reducing semantic records.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct BlockStmSemanticReductionTimings {
+    pub lane_build_elapsed: Duration,
+    pub lane_reduce_elapsed: Duration,
+}
+
+/// Final deterministic semantic reduction for a batch of records.
+#[derive(Debug, Clone, Default)]
+pub struct BlockStmSemanticReduction {
+    values: HashMap<BlockStmAccessKey, U256>,
+    touched_keys: HashSet<BlockStmAccessKey>,
+    original_values: HashMap<BlockStmAccessKey, U256>,
+    invalid_tx_indexes: HashSet<usize>,
+    pub lane_count: usize,
+    pub fixpoint_iterations: usize,
+    pub timings: BlockStmSemanticReductionTimings,
+}
+
+impl BlockStmSemanticReduction {
+    /// Returns all touched semantic keys.
+    pub fn touched_keys(&self) -> &HashSet<BlockStmAccessKey> {
+        &self.touched_keys
+    }
+
+    /// Returns original storage values for touched semantic keys.
+    pub fn original_values(&self) -> &HashMap<BlockStmAccessKey, U256> {
+        &self.original_values
+    }
+
+    /// Returns semantically invalid transaction indexes removed by the reducer.
+    pub fn invalid_tx_indexes(&self) -> &HashSet<usize> {
+        &self.invalid_tx_indexes
+    }
+
+    /// Returns a reduced storage value.
+    pub fn storage_value(&self, key: &BlockStmAccessKey) -> Option<U256> {
+        self.values.get(key).copied()
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct SemanticBalanceOp {
+    tx_index: usize,
+    record_index: usize,
+    order: u32,
+    kind: SemanticBalanceOpKind,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum SemanticBalanceOpKind {
+    Debit(U256),
+    Credit(U256),
+}
+
+#[derive(Debug, Clone)]
+struct SemanticBalanceLane {
+    key: BlockStmAccessKey,
+    ops: Vec<SemanticBalanceOp>,
+}
+
+#[derive(Debug, Clone)]
+struct SemanticLaneOutput {
+    key: BlockStmAccessKey,
+    value: U256,
 }
 
 /// Online ordered semantic state for the block prefix already committed.
@@ -146,6 +315,146 @@ pub fn capture_tip20_semantic_plan(
         return None;
     }
 
+    let actual_spending = result.validator_fee();
+    let mut plan = build_tip20_semantic_plan(
+        tx_index,
+        tx,
+        beneficiary,
+        actual_spending,
+        HashMap::default(),
+        Some(write_set),
+    )?;
+    plan.prefix_originals = semantic_original_values(result, &plan.covered_keys);
+
+    if has_uncovered_hot_storage_write(write_set, tx.effective_fee_token(), &plan.covered_keys) {
+        return None;
+    }
+
+    Some(plan)
+}
+
+impl BlockStmDirectTip20Template {
+    /// Creates a direct semantic template from one successful EVM execution.
+    pub fn from_evm_result(
+        tx: &TempoPooledTransaction,
+        result: &TempoTxResult,
+        base_fee: u64,
+        spec: TempoHardfork,
+        amsterdam_eip8037_enabled: bool,
+    ) -> Option<Self> {
+        if !result.result().result.is_success() || result.state_gas_used() != 0 {
+            return None;
+        }
+
+        let sender = tx.sender();
+        let calls = simple_tip20_transfer_calls(tx, sender)?;
+        let shape = direct_tip20_shape(tx, sender, None)?;
+        let tx_gas_used = result.result().result.tx_gas_used();
+        let regular_gas_used = result.result().result.gas().block_regular_gas_used();
+        let state_gas_used = result.result().result.gas().block_state_gas_used();
+        let block_gas_used = result.block_gas_used();
+        if tx_gas_used != regular_gas_used
+            || regular_gas_used != block_gas_used
+            || state_gas_used != 0
+        {
+            return None;
+        }
+        let initial_regular_gas =
+            direct_tip20_initial_regular_gas(tx, spec, amsterdam_eip8037_enabled)?;
+        let execution_gas_delta = tx_gas_used.checked_sub(initial_regular_gas)?;
+
+        let normal_effective_price = tx.effective_gas_price(Some(base_fee));
+        let normal_fee = calc_gas_balance_spending(tx_gas_used, normal_effective_price);
+        let discounted_effective_price =
+            tempo_t6_discounted_payment_effective_gas_price(normal_effective_price);
+        let discounted_fee = calc_gas_balance_spending(tx_gas_used, discounted_effective_price);
+        let validator_fee = result.validator_fee();
+        let discounted_fee_price = if normal_fee == validator_fee {
+            false
+        } else if tx_gas_used <= SSTORE_SET_COST && discounted_fee == validator_fee {
+            true
+        } else {
+            return None;
+        };
+
+        let expected_logs =
+            tip20_semantic_logs(&calls, tx.inner().fee_payer(sender).ok()?, validator_fee);
+        if result.result().result.logs() != expected_logs.as_slice() {
+            return None;
+        }
+
+        Some(Self {
+            shape,
+            state_gas_used,
+            blob_gas_used: 0,
+            execution_gas_delta,
+            discounted_fee_price,
+        })
+    }
+
+    /// Executes an identical simple TIP20 payment directly through semantic actions.
+    pub fn execute(
+        &self,
+        tx_index: usize,
+        tx: &TempoPooledTransaction,
+        beneficiary: Address,
+        base_fee: u64,
+        block_timestamp: u64,
+        spec: TempoHardfork,
+        amsterdam_eip8037_enabled: bool,
+    ) -> Option<BlockStmDirectTip20Execution> {
+        let sender = tx.sender();
+        if direct_tip20_shape(tx, sender, Some(block_timestamp))? != self.shape {
+            return None;
+        }
+        let calls = simple_tip20_transfer_calls(tx, sender)?;
+        let fee_payer = tx.inner().fee_payer(sender).ok()?;
+        let initial_regular_gas =
+            direct_tip20_initial_regular_gas(tx, spec, amsterdam_eip8037_enabled)?;
+        let tx_gas_used = initial_regular_gas.checked_add(self.execution_gas_delta)?;
+
+        let mut effective_price = tx.effective_gas_price(Some(base_fee));
+        if self.discounted_fee_price {
+            effective_price = tempo_t6_discounted_payment_effective_gas_price(effective_price);
+        }
+        let actual_spending = calc_gas_balance_spending(tx_gas_used, effective_price);
+        let semantic_plan = build_tip20_semantic_plan(
+            tx_index,
+            tx,
+            beneficiary,
+            actual_spending,
+            HashMap::default(),
+            None,
+        )?;
+        let logs = tip20_semantic_logs(&calls, fee_payer, actual_spending);
+        let commit = TempoStrippedTxCommit::successful_non_shared_payment(
+            tx.inner().tx_type(),
+            tx_gas_used,
+            tx_gas_used,
+            self.state_gas_used,
+            self.blob_gas_used,
+            tx_gas_used,
+            logs,
+        );
+
+        Some(BlockStmDirectTip20Execution {
+            semantic_plan,
+            commit,
+            validator_fee: actual_spending,
+            block_gas_used: tx_gas_used,
+            state_gas_used: self.state_gas_used,
+        })
+    }
+}
+
+fn build_tip20_semantic_plan(
+    tx_index: usize,
+    tx: &TempoPooledTransaction,
+    beneficiary: Address,
+    actual_spending: U256,
+    prefix_originals: HashMap<BlockStmAccessKey, U256>,
+    write_set: Option<&BlockStmWriteSet>,
+) -> Option<BlockStmSemanticPlan> {
     let sender = tx.sender();
     let fee_payer = tx.inner().fee_payer(sender).ok()?;
     let fee_token = tx.effective_fee_token();
@@ -165,7 +474,6 @@ pub fn capture_tip20_semantic_plan(
     }
 
     let max_fee_precharge = calc_gas_balance_spending(tx.gas_limit(), tx.max_fee_per_gas());
-    let actual_spending = result.validator_fee();
     let refund_amount = max_fee_precharge.checked_sub(actual_spending)?;
 
     let mut action_log = BlockStmActionLog::default();
@@ -179,15 +487,17 @@ pub fn capture_tip20_semantic_plan(
         prefix_nonce = Some((nonce_hash, valid_before));
         let nonce = ExpiringNonceUse::new(nonce_hash, valid_before, 0, 0);
         let mut covered = nonce.covered_storage_slots();
-        for (key, _) in write_set.iter() {
-            if matches!(
-                key,
-                BlockStmAccessKey::Storage {
-                    address: NONCE_PRECOMPILE_ADDRESS,
-                    ..
+        if let Some(write_set) = write_set {
+            for (key, _) in write_set.iter() {
+                if matches!(
+                    key,
+                    BlockStmAccessKey::Storage {
+                        address: NONCE_PRECOMPILE_ADDRESS,
+                        ..
+                    }
+                ) {
+                    covered.push(*key);
                 }
-            ) {
-                covered.push(*key);
             }
         }
         covered_keys.extend(covered.iter().copied());
@@ -245,12 +555,6 @@ pub fn capture_tip20_semantic_plan(
         BlockStmActionKind::CollectedFeesDelta(collected),
         covered,
     ));
-
-    if has_uncovered_hot_storage_write(write_set, fee_token, &covered_keys) {
-        return None;
-    }
-
-    let prefix_originals = semantic_original_values(result, &covered_keys);
     let tip20_prefix = Some(BlockStmTip20PrefixPlan {
         nonce: prefix_nonce,
         fee,
@@ -259,6 +563,7 @@ pub fn capture_tip20_semantic_plan(
     });
 
     Some(BlockStmSemanticPlan {
+        tx_index,
         action_log,
         covered_keys,
         prefix_originals,
@@ -267,10 +572,432 @@ pub fn capture_tip20_semantic_plan(
     })
 }
 
+/// Reduces TIP20 semantic records through deterministic key lanes.
+///
+/// This keeps each semantic record immutable after worker execution, groups effects by touched
+/// storage key, and serializes only the operations within a single key lane. Different lanes are
+/// reduced concurrently by named semantic worker threads. Invalid records are removed
+/// monotonically and the affected lanes are recomputed until a fixed point is reached.
+pub fn reduce_tip20_semantic_records<DB>(
+    db: &mut DB,
+    records: &[BlockStmSemanticRecord],
+    block_timestamp: u64,
+    worker_count: usize,
+) -> Result<BlockStmSemanticReduction, BlockStmSemanticError>
+where
+    DB: Database,
+    DB::Error: fmt::Display,
+{
+    if records.is_empty() {
+        return Ok(BlockStmSemanticReduction::default());
+    }
+
+    let lane_build_started = Instant::now();
+    let mut original_values = collect_semantic_original_values(db, records)?;
+    let lanes = build_semantic_balance_lanes(records, worker_count);
+    hydrate_balance_lane_base_values(db, &lanes, &mut original_values)?;
+    let lane_build_elapsed = lane_build_started.elapsed();
+
+    let mut active = vec![true; records.len()];
+    let mut invalid_tx_indexes = HashSet::default();
+    let mut fixpoint_iterations = 0usize;
+    let mut lane_reduce_elapsed = Duration::ZERO;
+
+    loop {
+        fixpoint_iterations += 1;
+        let reduce_started = Instant::now();
+        let (balance_outputs, mut invalid_record_indexes) =
+            reduce_balance_lanes(&lanes, &original_values, &active, worker_count)?;
+        let nonce_outputs = reduce_nonce_lane(
+            db,
+            records,
+            &active,
+            block_timestamp,
+            &mut original_values,
+            &mut invalid_record_indexes,
+        )?;
+        lane_reduce_elapsed += reduce_started.elapsed();
+
+        if invalid_record_indexes.is_empty() {
+            let mut values = HashMap::default();
+            let mut touched_keys = HashSet::default();
+            for output in balance_outputs.into_iter().chain(nonce_outputs.into_iter()) {
+                touched_keys.insert(output.key);
+                values.insert(output.key, output.value);
+            }
+            return Ok(BlockStmSemanticReduction {
+                values,
+                touched_keys,
+                original_values,
+                invalid_tx_indexes,
+                lane_count: lanes.len() + 1,
+                fixpoint_iterations,
+                timings: BlockStmSemanticReductionTimings {
+                    lane_build_elapsed,
+                    lane_reduce_elapsed,
+                },
+            });
+        }
+
+        let mut removed_any = false;
+        for record_index in invalid_record_indexes {
+            if active[record_index] {
+                active[record_index] = false;
+                invalid_tx_indexes.insert(records[record_index].tx_index);
+                removed_any = true;
+            }
+        }
+
+        if !removed_any {
+            let mut values = HashMap::default();
+            let mut touched_keys = HashSet::default();
+            for output in balance_outputs.into_iter().chain(nonce_outputs.into_iter()) {
+                touched_keys.insert(output.key);
+                values.insert(output.key, output.value);
+            }
+            return Ok(BlockStmSemanticReduction {
+                values,
+                touched_keys,
+                original_values,
+                invalid_tx_indexes,
+                lane_count: lanes.len() + 1,
+                fixpoint_iterations,
+                timings: BlockStmSemanticReductionTimings {
+                    lane_build_elapsed,
+                    lane_reduce_elapsed,
+                },
+            });
+        }
+    }
+}
+
+fn collect_semantic_original_values<DB>(
+    _db: &mut DB,
+    records: &[BlockStmSemanticRecord],
+) -> Result<HashMap<BlockStmAccessKey, U256>, BlockStmSemanticError>
+where
+    DB: Database,
+    DB::Error: fmt::Display,
+{
+    let mut original_values = HashMap::default();
+    for record in records {
+        original_values.reserve(record.original_values.len());
+        for (key, value) in &record.original_values {
+            original_values.entry(*key).or_insert(*value);
+        }
+    }
+    Ok(original_values)
+}
+
+fn hydrate_balance_lane_base_values<DB>(
+    db: &mut DB,
+    lanes: &[SemanticBalanceLane],
+    original_values: &mut HashMap<BlockStmAccessKey, U256>,
+) -> Result<(), BlockStmSemanticError>
+where
+    DB: Database,
+    DB::Error: fmt::Display,
+{
+    for lane in lanes {
+        read_semantic_base_value(db, lane.key, original_values)?;
+    }
+    Ok(())
+}
+
+fn read_semantic_base_value<DB>(
+    db: &mut DB,
+    key: BlockStmAccessKey,
+    original_values: &mut HashMap<BlockStmAccessKey, U256>,
+) -> Result<U256, BlockStmSemanticError>
+where
+    DB: Database,
+    DB::Error: fmt::Display,
+{
+    if let Some(value) = original_values.get(&key).copied() {
+        return Ok(value);
+    }
+
+    let value = match key {
+        BlockStmAccessKey::Storage { address, slot } => db
+            .storage(address, slot)
+            .map_err(|err| BlockStmSemanticError::Database(err.to_string()))?,
+        _ => U256::ZERO,
+    };
+    original_values.insert(key, value);
+    Ok(value)
+}
+
+fn build_semantic_balance_lanes(
+    records: &[BlockStmSemanticRecord],
+    worker_count: usize,
+) -> Vec<SemanticBalanceLane> {
+    let worker_count = worker_count.max(1).min(records.len().max(1));
+    let chunk_len = records.len().div_ceil(worker_count).max(1);
+    let local_maps = records
+        .par_chunks(chunk_len)
+        .enumerate()
+        .map(|(worker, chunk)| {
+            let mut lanes = HashMap::<BlockStmAccessKey, Vec<SemanticBalanceOp>>::default();
+            for (chunk_index, record) in chunk.iter().enumerate() {
+                let record_index = worker * chunk_len + chunk_index;
+                record_balance_ops(record_index, record, &mut lanes);
+            }
+            lanes
+        })
+        .collect::<Vec<_>>();
+
+    let mut merged = HashMap::<BlockStmAccessKey, Vec<SemanticBalanceOp>>::default();
+    for local in local_maps {
+        for (key, ops) in local {
+            merged.entry(key).or_default().extend(ops);
+        }
+    }
+
+    let mut lanes = merged
+        .into_iter()
+        .map(|(key, mut ops)| {
+            ops.sort_unstable_by_key(|op| (op.tx_index, op.order));
+            SemanticBalanceLane { key, ops }
+        })
+        .collect::<Vec<_>>();
+    lanes.sort_unstable_by_key(|lane| lane.key);
+    lanes
+}
+
+fn record_balance_ops(
+    record_index: usize,
+    record: &BlockStmSemanticRecord,
+    lanes: &mut HashMap<BlockStmAccessKey, Vec<SemanticBalanceOp>>,
+) {
+    let plan = &record.tip20;
+    let mut order = 0u32;
+    let mut push_op = |key: BlockStmAccessKey, kind: SemanticBalanceOpKind, order: u32| {
+        lanes.entry(key).or_default().push(SemanticBalanceOp {
+            tx_index: record.tx_index,
+            record_index,
+            order,
+            kind,
+        });
+    };
+
+    let payer_key = tip20_balance_key(plan.fee.token, plan.fee.fee_payer);
+    let fee_manager_key = tip20_balance_key(plan.fee.token, plan.fee.fee_manager);
+    push_op(
+        payer_key,
+        SemanticBalanceOpKind::Debit(plan.fee.max_fee_precharge),
+        order,
+    );
+    order += 1;
+    push_op(
+        fee_manager_key,
+        SemanticBalanceOpKind::Credit(plan.fee.max_fee_precharge),
+        order,
+    );
+    order += 1;
+    push_op(
+        fee_manager_key,
+        SemanticBalanceOpKind::Debit(plan.fee.refund_amount),
+        order,
+    );
+    order += 1;
+    push_op(
+        payer_key,
+        SemanticBalanceOpKind::Credit(plan.fee.refund_amount),
+        order,
+    );
+    order += 1;
+
+    for transfer in plan.transfers.iter().copied() {
+        push_op(
+            tip20_balance_key(transfer.token, transfer.sender),
+            SemanticBalanceOpKind::Debit(transfer.amount),
+            order,
+        );
+        order += 1;
+        push_op(
+            tip20_balance_key(transfer.token, transfer.recipient),
+            SemanticBalanceOpKind::Credit(transfer.amount),
+            order,
+        );
+        order += 1;
+    }
+
+    push_op(
+        fee_manager_collected_fees_key(plan.collected.beneficiary, plan.collected.validator_token),
+        SemanticBalanceOpKind::Credit(plan.collected.amount),
+        order,
+    );
+}
+
+fn reduce_balance_lanes(
+    lanes: &[SemanticBalanceLane],
+    original_values: &HashMap<BlockStmAccessKey, U256>,
+    active: &[bool],
+    worker_count: usize,
+) -> Result<(Vec<SemanticLaneOutput>, HashSet<usize>), BlockStmSemanticError> {
+    if lanes.is_empty() {
+        return Ok((Vec::new(), HashSet::default()));
+    }
+
+    let worker_count = worker_count.max(1).min(lanes.len());
+    let chunk_len = lanes.len().div_ceil(worker_count).max(1);
+    let partials = lanes
+        .par_chunks(chunk_len)
+        .map(|chunk| {
+            let mut outputs = Vec::with_capacity(chunk.len());
+            let mut invalid = HashSet::<usize>::default();
+            for lane in chunk {
+                let (value, lane_invalid) = reduce_balance_lane(lane, original_values, active)?;
+                outputs.push(SemanticLaneOutput {
+                    key: lane.key,
+                    value,
+                });
+                invalid.extend(lane_invalid);
+            }
+            Ok::<_, BlockStmSemanticError>((outputs, invalid))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+
+    let mut outputs = Vec::with_capacity(lanes.len());
+    let mut invalid = HashSet::default();
+    for (mut partial_outputs, partial_invalid) in partials {
+        outputs.append(&mut partial_outputs);
+        invalid.extend(partial_invalid);
+    }
+    outputs.sort_unstable_by_key(|output| output.key);
+    Ok((outputs, invalid))
+}
+
+fn reduce_balance_lane(
+    lane: &SemanticBalanceLane,
+    original_values: &HashMap<BlockStmAccessKey, U256>,
+    active: &[bool],
+) -> Result<(U256, HashSet<usize>), BlockStmSemanticError> {
+    let mut value = original_values.get(&lane.key).copied().unwrap_or_default();
+    let mut invalid = HashSet::default();
+
+    for op in &lane.ops {
+        if !active[op.record_index] || invalid.contains(&op.record_index) {
+            continue;
+        }
+        match op.kind {
+            SemanticBalanceOpKind::Debit(amount) => {
+                if value < amount {
+                    invalid.insert(op.record_index);
+                    continue;
+                }
+                value = value
+                    .checked_sub(amount)
+                    .expect("semantic balance debit checked above");
+            }
+            SemanticBalanceOpKind::Credit(amount) => {
+                let Some(next) = value.checked_add(amount) else {
+                    invalid.insert(op.record_index);
+                    continue;
+                };
+                value = next;
+            }
+        }
+    }
+
+    Ok((value, invalid))
+}
+
+fn reduce_nonce_lane<DB>(
+    db: &mut DB,
+    records: &[BlockStmSemanticRecord],
+    active: &[bool],
+    block_timestamp: u64,
+    original_values: &mut HashMap<BlockStmAccessKey, U256>,
+    invalid_record_indexes: &mut HashSet<usize>,
+) -> Result<Vec<SemanticLaneOutput>, BlockStmSemanticError>
+where
+    DB: Database,
+    DB::Error: fmt::Display,
+{
+    let ptr_key = expiring_nonce_ring_ptr_key();
+    let mut ptr = read_semantic_base_value(db, ptr_key, original_values)?.to::<u32>();
+    let mut values = HashMap::<BlockStmAccessKey, U256>::default();
+    values.insert(ptr_key, U256::from(ptr));
+
+    for (record_index, record) in records.iter().enumerate() {
+        if !active[record_index] {
+            continue;
+        }
+        let Some((nonce_hash, valid_before)) = record.tip20.nonce else {
+            continue;
+        };
+
+        if valid_before <= block_timestamp
+            || valid_before > block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
+        {
+            invalid_record_indexes.insert(record_index);
+            continue;
+        }
+
+        let seen_key = expiring_nonce_seen_key(nonce_hash);
+        let seen_expiry = values
+            .get(&seen_key)
+            .copied()
+            .unwrap_or(read_semantic_base_value(db, seen_key, original_values)?);
+        if !seen_expiry.is_zero() && seen_expiry > U256::from(block_timestamp) {
+            invalid_record_indexes.insert(record_index);
+            continue;
+        }
+
+        let ring_slot = ptr % EXPIRING_NONCE_SET_CAPACITY;
+        let ring_key = expiring_nonce_ring_key(ring_slot);
+        let old_hash = B256::from(
+            values
+                .get(&ring_key)
+                .copied()
+                .unwrap_or(read_semantic_base_value(db, ring_key, original_values)?),
+        );
+        if old_hash != B256::ZERO {
+            let old_seen_key = expiring_nonce_seen_key(old_hash);
+            let old_expiry = values
+                .get(&old_seen_key)
+                .copied()
+                .unwrap_or(read_semantic_base_value(db, old_seen_key, original_values)?);
+            if !old_expiry.is_zero() && old_expiry > U256::from(block_timestamp) {
+                invalid_record_indexes.insert(record_index);
+                continue;
+            }
+            values.insert(old_seen_key, U256::ZERO);
+        }
+
+        values.insert(ring_key, U256::from_be_bytes(nonce_hash.0));
+        values.insert(seen_key, U256::from(valid_before));
+        ptr = if ring_slot + 1 >= EXPIRING_NONCE_SET_CAPACITY {
+            0
+        } else {
+            ring_slot + 1
+        };
+        values.insert(ptr_key, U256::from(ptr));
+    }
+
+    let mut outputs = values
+        .into_iter()
+        .map(|(key, value)| SemanticLaneOutput { key, value })
+        .collect::<Vec<_>>();
+    outputs.sort_unstable_by_key(|output| output.key);
+    Ok(outputs)
+}
+
 impl BlockStmSemanticState {
     /// Reserves space for additional ordered-prefix values.
     pub fn reserve(&mut self, additional: usize) {
         self.values.reserve(additional);
+    }
+
+    /// Merges a completed semantic reduction into the ordered prefix overlay.
+    pub fn apply_reduction(&mut self, reduction: &BlockStmSemanticReduction) {
+        self.values.reserve(reduction.touched_keys().len());
+        for key in reduction.touched_keys() {
+            if let Some(value) = reduction.storage_value(key) {
+                self.values.insert(*key, value);
+            }
+        }
     }
 
     /// Applies a captured plan to the ordered prefix without rewriting a transaction result.
@@ -1326,10 +2053,86 @@ fn semantic_original_values(
     originals
 }
 
-fn simple_tip20_transfers(
+fn direct_tip20_shape(
     tx: &TempoPooledTransaction,
     sender: Address,
-) -> Option<Vec<Tip20TransferDelta>> {
+    block_timestamp: Option<u64>,
+) -> Option<BlockStmDirectTip20Shape> {
+    if tx.effective_fee_token() != DEFAULT_FEE_TOKEN || tx.inner().fee_payer(sender).ok()? != sender
+    {
+        return None;
+    }
+    if !tx.is_expiring_nonce() {
+        return None;
+    }
+
+    let aa = tx.inner().as_aa()?.tx();
+    if aa.key_authorization.is_some()
+        || !aa.tempo_authorization_list.is_empty()
+        || !aa.access_list.is_empty()
+        || aa.calls.iter().any(|call| !call.value.is_zero())
+    {
+        return None;
+    }
+    if let Some(block_timestamp) = block_timestamp
+        && aa
+            .valid_after
+            .is_some_and(|valid_after| valid_after.get() > block_timestamp)
+    {
+        return None;
+    }
+
+    let calls = simple_tip20_transfer_calls(tx, sender)?;
+    if calls.is_empty()
+        || calls.iter().any(|call| {
+            call.transfer.token != DEFAULT_FEE_TOKEN
+                || call.transfer.sender.is_zero()
+                || call.transfer.sender.is_virtual()
+                || call.transfer.recipient.is_zero()
+                || call.transfer.recipient.is_virtual()
+                || call.transfer.recipient == call.transfer.sender
+        })
+    {
+        return None;
+    }
+
+    Some(BlockStmDirectTip20Shape {
+        tx_type: tx.inner().tx_type(),
+        call_kinds: calls
+            .iter()
+            .map(|call| {
+                if call.memo.is_some() {
+                    BlockStmDirectTip20CallKind::TransferWithMemo
+                } else {
+                    BlockStmDirectTip20CallKind::Transfer
+                }
+            })
+            .collect(),
+    })
+}
+
+fn direct_tip20_initial_regular_gas(
+    tx: &TempoPooledTransaction,
+    spec: TempoHardfork,
+    amsterdam_eip8037_enabled: bool,
+) -> Option<u64> {
+    let tx_env = tx.tx_env();
+    let aa_env = tx_env.tempo_tx_env.as_ref()?;
+    if aa_env.nonce_key != tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY {
+        return None;
+    }
+
+    let gas_params = tempo_gas_params_with_amsterdam(spec, amsterdam_eip8037_enabled);
+    let gas =
+        calculate_aa_batch_intrinsic_gas(aa_env, &gas_params, tx_env.access_list(), spec).ok()?;
+
+    gas.initial_regular_gas.checked_add(EXPIRING_NONCE_GAS)
+}
+
+fn simple_tip20_transfer_calls(
+    tx: &TempoPooledTransaction,
+    sender: Address,
+) -> Option<Vec<SimpleTip20TransferCall>> {
     if !tx.is_payment() {
         return None;
     }
@@ -1341,17 +2144,23 @@ fn simple_tip20_transfers(
             return None;
         }
         let transfer = match ITIP20::ITIP20Calls::abi_decode(input).ok()? {
-            ITIP20::ITIP20Calls::transfer(call) => Tip20TransferDelta {
-                token,
-                sender,
-                recipient: call.to,
-                amount: call.amount,
+            ITIP20::ITIP20Calls::transfer(call) => SimpleTip20TransferCall {
+                transfer: Tip20TransferDelta {
+                    token,
+                    sender,
+                    recipient: call.to,
+                    amount: call.amount,
+                },
+                memo: None,
             },
-            ITIP20::ITIP20Calls::transferWithMemo(call) => Tip20TransferDelta {
-                token,
-                sender,
-                recipient: call.to,
-                amount: call.amount,
+            ITIP20::ITIP20Calls::transferWithMemo(call) => SimpleTip20TransferCall {
+                transfer: Tip20TransferDelta {
+                    token,
+                    sender,
+                    recipient: call.to,
+                    amount: call.amount,
+                },
+                memo: Some(call.memo),
             },
             _ => return None,
         };
@@ -1359,6 +2168,54 @@ fn simple_tip20_transfers(
     }
 
     Some(transfers)
+}
+
+fn simple_tip20_transfers(
+    tx: &TempoPooledTransaction,
+    sender: Address,
+) -> Option<Vec<Tip20TransferDelta>> {
+    Some(
+        simple_tip20_transfer_calls(tx, sender)?
+            .into_iter()
+            .map(|call| call.transfer)
+            .collect(),
+    )
+}
+
+fn tip20_semantic_logs(
+    calls: &[SimpleTip20TransferCall],
+    fee_payer: Address,
+    actual_spending: U256,
+) -> Vec<Log> {
+    let mut logs = Vec::with_capacity(calls.len().saturating_mul(2).saturating_add(1));
+    for call in calls {
+        let transfer = call.transfer;
+        logs.push(tip20_log(
+            transfer.token,
+            TIP20Event::transfer(transfer.sender, transfer.recipient, transfer.amount),
+        ));
+        if let Some(memo) = call.memo {
+            logs.push(tip20_log(
+                transfer.token,
+                TIP20Event::transfer_with_memo(
+                    transfer.sender,
+                    transfer.recipient,
+                    transfer.amount,
+                    memo,
+                ),
+            ));
+        }
+    }
+    logs.push(tip20_log(
+        DEFAULT_FEE_TOKEN,
+        TIP20Event::transfer(fee_payer, TIP_FEE_MANAGER_ADDRESS, actual_spending),
+    ));
+    logs
+}
+
+fn tip20_log(address: Address, event: impl IntoLogData) -> Log {
+    let data = event.into_log_data();
+    Log::new_unchecked(address, data.topics().to_vec(), data.data.clone())
 }
 
 fn has_uncovered_hot_storage_write(
@@ -1660,6 +2517,7 @@ mod tests {
         let mut touched_keys = HashSet::default();
         let mut rollback = HashMap::default();
         let plan = tip20_prefix_plan(
+            0,
             token,
             payer,
             payer,
@@ -1713,6 +2571,7 @@ mod tests {
         let mut touched_keys = HashSet::default();
         let mut rollback = HashMap::default();
         let plan = tip20_prefix_plan(
+            0,
             token,
             payer,
             payer,
@@ -1742,6 +2601,444 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn blockstm_actions_tip20_semantic_record_is_deterministic() {
+        let token = DEFAULT_FEE_TOKEN;
+        let payer = address!("0x00000000000000000000000000000000000000a1");
+        let recipient = address!("0x00000000000000000000000000000000000000b2");
+        let beneficiary = address!("0x00000000000000000000000000000000000000c3");
+        let plan = tip20_prefix_plan(
+            7,
+            token,
+            payer,
+            payer,
+            recipient,
+            beneficiary,
+            U256::from(10),
+            U256::from(2),
+            U256::from(8),
+            U256::from(5),
+        );
+
+        let first = plan.to_record(3).expect("TIP20 plan must become record");
+        let second = plan.to_record(3).expect("TIP20 plan must become record");
+
+        assert_eq!(first.tx_index(), 7);
+        assert_eq!(first.incarnation(), 3);
+        assert_eq!(first.covered_keys(), second.covered_keys());
+        assert_eq!(first.original_values, second.original_values);
+        assert_eq!(first.tip20.transfers.len(), 1);
+        assert_eq!(first.tip20.fee.max_fee_precharge, U256::from(10));
+        assert_eq!(first.tip20.collected.amount, U256::from(2));
+    }
+
+    #[test]
+    fn blockstm_actions_semantic_reduce_parallel_independent_spenders() {
+        let token = DEFAULT_FEE_TOKEN;
+        let recipient = address!("0x00000000000000000000000000000000000000b2");
+        let beneficiary = address!("0x00000000000000000000000000000000000000c3");
+        let mut db = CacheDB::new(EmptyDB::default());
+        let mut records = Vec::new();
+
+        for tx_index in 0..10 {
+            let sender = Address::from([tx_index as u8 + 1; 20]);
+            insert_storage(&mut db, tip20_balance_key(token, sender), U256::from(5));
+            records.push(
+                tip20_prefix_plan(
+                    tx_index,
+                    token,
+                    sender,
+                    sender,
+                    recipient,
+                    beneficiary,
+                    U256::ZERO,
+                    U256::ZERO,
+                    U256::ZERO,
+                    U256::from(1),
+                )
+                .to_record(0)
+                .expect("TIP20 plan must become record"),
+            );
+        }
+
+        let reduction = reduce_tip20_semantic_records(&mut db, &records, 100, 4).unwrap();
+
+        assert!(reduction.lane_count > 1);
+        assert!(reduction.invalid_tx_indexes().is_empty());
+        assert_eq!(
+            reduction.storage_value(&tip20_balance_key(token, recipient)),
+            Some(U256::from(10))
+        );
+        for tx_index in 0..10 {
+            let sender = Address::from([tx_index as u8 + 1; 20]);
+            assert_eq!(
+                reduction.storage_value(&tip20_balance_key(token, sender)),
+                Some(U256::from(4))
+            );
+        }
+    }
+
+    #[test]
+    fn blockstm_actions_semantic_reduce_rejects_first_ordered_overspend() {
+        let token = DEFAULT_FEE_TOKEN;
+        let sender = address!("0x00000000000000000000000000000000000000a1");
+        let recipient = address!("0x00000000000000000000000000000000000000b2");
+        let beneficiary = address!("0x00000000000000000000000000000000000000c3");
+        let mut db = CacheDB::new(EmptyDB::default());
+        insert_storage(&mut db, tip20_balance_key(token, sender), U256::from(9));
+        let records = (0..10)
+            .map(|tx_index| {
+                tip20_prefix_plan(
+                    tx_index,
+                    token,
+                    sender,
+                    sender,
+                    recipient,
+                    beneficiary,
+                    U256::ZERO,
+                    U256::ZERO,
+                    U256::ZERO,
+                    U256::from(1),
+                )
+                .to_record(0)
+                .expect("TIP20 plan must become record")
+            })
+            .collect::<Vec<_>>();
+
+        let reduction = reduce_tip20_semantic_records(&mut db, &records, 100, 4).unwrap();
+
+        assert_eq!(reduction.invalid_tx_indexes(), &HashSet::from_iter([9]));
+        assert_eq!(
+            reduction.storage_value(&tip20_balance_key(token, sender)),
+            Some(U256::ZERO)
+        );
+        assert_eq!(
+            reduction.storage_value(&tip20_balance_key(token, recipient)),
+            Some(U256::from(9))
+        );
+        assert_eq!(reduction.fixpoint_iterations, 2);
+    }
+
+    #[test]
+    fn blockstm_actions_semantic_reduce_checks_fee_precharge_before_refund() {
+        let token = DEFAULT_FEE_TOKEN;
+        let payer = address!("0x00000000000000000000000000000000000000a1");
+        let recipient = address!("0x00000000000000000000000000000000000000b2");
+        let beneficiary = address!("0x00000000000000000000000000000000000000c3");
+        let mut db = CacheDB::new(EmptyDB::default());
+        insert_storage(&mut db, tip20_balance_key(token, payer), U256::from(9));
+        let record = tip20_prefix_plan(
+            0,
+            token,
+            payer,
+            payer,
+            recipient,
+            beneficiary,
+            U256::from(10),
+            U256::from(1),
+            U256::from(9),
+            U256::from(1),
+        )
+        .to_record(0)
+        .expect("TIP20 plan must become record");
+
+        let reduction = reduce_tip20_semantic_records(&mut db, &[record], 100, 4).unwrap();
+
+        assert_eq!(reduction.invalid_tx_indexes(), &HashSet::from_iter([0]));
+        assert_eq!(
+            reduction.storage_value(&tip20_balance_key(token, payer)),
+            Some(U256::from(9))
+        );
+        assert_eq!(
+            reduction.storage_value(&tip20_balance_key(token, recipient)),
+            Some(U256::ZERO)
+        );
+    }
+
+    #[test]
+    fn blockstm_actions_semantic_reduce_rejects_duplicate_nonce() {
+        let token = DEFAULT_FEE_TOKEN;
+        let sender = address!("0x00000000000000000000000000000000000000a1");
+        let recipient = address!("0x00000000000000000000000000000000000000b2");
+        let beneficiary = address!("0x00000000000000000000000000000000000000c3");
+        let nonce_hash = B256::repeat_byte(0x42);
+        let mut db = CacheDB::new(EmptyDB::default());
+        insert_storage(&mut db, tip20_balance_key(token, sender), U256::from(10));
+        let records = (0..2)
+            .map(|tx_index| {
+                tip20_prefix_plan_with_nonce(
+                    tx_index,
+                    token,
+                    sender,
+                    sender,
+                    recipient,
+                    beneficiary,
+                    U256::ZERO,
+                    U256::ZERO,
+                    U256::ZERO,
+                    U256::from(1),
+                    nonce_hash,
+                    110,
+                )
+                .to_record(0)
+                .expect("TIP20 plan must become record")
+            })
+            .collect::<Vec<_>>();
+
+        let reduction = reduce_tip20_semantic_records(&mut db, &records, 100, 4).unwrap();
+
+        assert_eq!(reduction.invalid_tx_indexes(), &HashSet::from_iter([1]));
+        assert_eq!(
+            reduction.storage_value(&expiring_nonce_ring_key(0)),
+            Some(U256::from_be_bytes(nonce_hash.0))
+        );
+        assert_eq!(
+            reduction.storage_value(&expiring_nonce_ring_ptr_key()),
+            Some(U256::from(1))
+        );
+        assert_eq!(
+            reduction.storage_value(&tip20_balance_key(token, sender)),
+            Some(U256::from(9))
+        );
+    }
+
+    #[test]
+    fn blockstm_actions_semantic_reduce_handles_shared_recipient_and_fee_payer() {
+        let token = DEFAULT_FEE_TOKEN;
+        let fee_payer = address!("0x00000000000000000000000000000000000000a1");
+        let recipient = address!("0x00000000000000000000000000000000000000b2");
+        let beneficiary = address!("0x00000000000000000000000000000000000000c3");
+        let mut db = CacheDB::new(EmptyDB::default());
+        insert_storage(
+            &mut db,
+            tip20_balance_key(token, fee_payer),
+            U256::from(100),
+        );
+        let records = (0..10)
+            .map(|tx_index| {
+                let sender = Address::from([tx_index as u8 + 10; 20]);
+                insert_storage(&mut db, tip20_balance_key(token, sender), U256::from(10));
+                tip20_prefix_plan(
+                    tx_index,
+                    token,
+                    fee_payer,
+                    sender,
+                    recipient,
+                    beneficiary,
+                    U256::from(1),
+                    U256::from(1),
+                    U256::ZERO,
+                    U256::from(1),
+                )
+                .to_record(0)
+                .expect("TIP20 plan must become record")
+            })
+            .collect::<Vec<_>>();
+
+        let reduction = reduce_tip20_semantic_records(&mut db, &records, 100, 4).unwrap();
+
+        assert!(reduction.invalid_tx_indexes().is_empty());
+        assert_eq!(
+            reduction.storage_value(&tip20_balance_key(token, fee_payer)),
+            Some(U256::from(90))
+        );
+        assert_eq!(
+            reduction.storage_value(&tip20_balance_key(token, recipient)),
+            Some(U256::from(10))
+        );
+        assert_eq!(
+            reduction.storage_value(&tip20_balance_key(token, TIP_FEE_MANAGER_ADDRESS)),
+            Some(U256::from(10))
+        );
+        assert_eq!(
+            reduction.storage_value(&fee_manager_collected_fees_key(beneficiary, token)),
+            Some(U256::from(10))
+        );
+    }
+
+    #[test]
+    fn blockstm_actions_semantic_reduce_wraps_nonce_ring() {
+        let token = DEFAULT_FEE_TOKEN;
+        let sender = address!("0x00000000000000000000000000000000000000a1");
+        let recipient = address!("0x00000000000000000000000000000000000000b2");
+        let beneficiary = address!("0x00000000000000000000000000000000000000c3");
+        let hash1 = B256::repeat_byte(0x41);
+        let hash2 = B256::repeat_byte(0x42);
+        let mut db = CacheDB::new(EmptyDB::default());
+        insert_storage(&mut db, tip20_balance_key(token, sender), U256::from(10));
+        insert_storage(
+            &mut db,
+            expiring_nonce_ring_ptr_key(),
+            U256::from(EXPIRING_NONCE_SET_CAPACITY - 1),
+        );
+        let records = [
+            tip20_prefix_plan_with_nonce(
+                0,
+                token,
+                sender,
+                sender,
+                recipient,
+                beneficiary,
+                U256::ZERO,
+                U256::ZERO,
+                U256::ZERO,
+                U256::from(1),
+                hash1,
+                110,
+            )
+            .to_record(0)
+            .expect("TIP20 plan must become record"),
+            tip20_prefix_plan_with_nonce(
+                1,
+                token,
+                sender,
+                sender,
+                recipient,
+                beneficiary,
+                U256::ZERO,
+                U256::ZERO,
+                U256::ZERO,
+                U256::from(1),
+                hash2,
+                111,
+            )
+            .to_record(0)
+            .expect("TIP20 plan must become record"),
+        ];
+
+        let reduction = reduce_tip20_semantic_records(&mut db, &records, 100, 4).unwrap();
+
+        assert!(reduction.invalid_tx_indexes().is_empty());
+        assert_eq!(
+            reduction.storage_value(&expiring_nonce_ring_key(EXPIRING_NONCE_SET_CAPACITY - 1)),
+            Some(U256::from_be_bytes(hash1.0))
+        );
+        assert_eq!(
+            reduction.storage_value(&expiring_nonce_ring_key(0)),
+            Some(U256::from_be_bytes(hash2.0))
+        );
+        assert_eq!(
+            reduction.storage_value(&expiring_nonce_ring_ptr_key()),
+            Some(U256::from(1))
+        );
+    }
+
+    #[test]
+    fn blockstm_actions_semantic_reduce_rejects_unexpired_nonce_ring_eviction() {
+        let token = DEFAULT_FEE_TOKEN;
+        let sender = address!("0x00000000000000000000000000000000000000a1");
+        let recipient = address!("0x00000000000000000000000000000000000000b2");
+        let beneficiary = address!("0x00000000000000000000000000000000000000c3");
+        let old_hash = B256::repeat_byte(0x31);
+        let new_hash = B256::repeat_byte(0x41);
+        let mut db = CacheDB::new(EmptyDB::default());
+        insert_storage(&mut db, tip20_balance_key(token, sender), U256::from(10));
+        insert_storage(
+            &mut db,
+            expiring_nonce_ring_key(0),
+            U256::from_be_bytes(old_hash.0),
+        );
+        insert_storage(&mut db, expiring_nonce_seen_key(old_hash), U256::from(110));
+        let record = tip20_prefix_plan_with_nonce(
+            0,
+            token,
+            sender,
+            sender,
+            recipient,
+            beneficiary,
+            U256::ZERO,
+            U256::ZERO,
+            U256::ZERO,
+            U256::from(1),
+            new_hash,
+            111,
+        )
+        .to_record(0)
+        .expect("TIP20 plan must become record");
+
+        let reduction = reduce_tip20_semantic_records(&mut db, &[record], 100, 4).unwrap();
+
+        assert_eq!(reduction.invalid_tx_indexes(), &HashSet::from_iter([0]));
+        assert_eq!(
+            reduction.storage_value(&expiring_nonce_ring_ptr_key()),
+            Some(U256::ZERO)
+        );
+    }
+
+    #[test]
+    fn blockstm_actions_semantic_reduce_matches_serial_prefix_for_mixed_tip20_block() {
+        let token = DEFAULT_FEE_TOKEN;
+        let beneficiary = address!("0x00000000000000000000000000000000000000c3");
+        let mut reduce_db = CacheDB::new(EmptyDB::default());
+        let mut serial_db = CacheDB::new(EmptyDB::default());
+        let accounts = (0..12)
+            .map(|index| Address::from([index as u8 + 1; 20]))
+            .collect::<Vec<_>>();
+        for account in &accounts {
+            insert_storage(
+                &mut reduce_db,
+                tip20_balance_key(token, *account),
+                U256::from(1_000),
+            );
+            insert_storage(
+                &mut serial_db,
+                tip20_balance_key(token, *account),
+                U256::from(1_000),
+            );
+        }
+
+        let plans = (0..64)
+            .map(|tx_index| {
+                let sender = accounts[tx_index % accounts.len()];
+                let recipient = accounts[(tx_index * 7 + 3) % accounts.len()];
+                let actual_fee = U256::from((tx_index % 3) as u64);
+                let transfer_amount = U256::from((tx_index % 5 + 1) as u64);
+                tip20_prefix_plan(
+                    tx_index,
+                    token,
+                    sender,
+                    sender,
+                    recipient,
+                    beneficiary,
+                    actual_fee,
+                    actual_fee,
+                    U256::ZERO,
+                    transfer_amount,
+                )
+            })
+            .collect::<Vec<_>>();
+        let records = plans
+            .iter()
+            .map(|plan| plan.to_record(0).expect("TIP20 plan must become record"))
+            .collect::<Vec<_>>();
+        let plan_refs = plans.iter().collect::<Vec<_>>();
+
+        let reduction = reduce_tip20_semantic_records(&mut reduce_db, &records, 100, 6).unwrap();
+        let mut serial_state = BlockStmSemanticState::default();
+        let mut touched_keys = HashSet::default();
+        let mut rollback = HashMap::default();
+        serial_state
+            .apply_plans_to_prefix_recording(
+                &mut serial_db,
+                &plan_refs,
+                100,
+                &mut touched_keys,
+                &mut rollback,
+            )
+            .unwrap();
+
+        assert!(reduction.invalid_tx_indexes().is_empty());
+        for (key, value) in serial_state.storage_values() {
+            assert_eq!(reduction.storage_value(key), Some(*value));
+        }
+        for key in reduction.touched_keys() {
+            assert_eq!(
+                Some(serial_state.storage_value(key).unwrap_or_default()),
+                reduction.storage_value(key)
+            );
+        }
+    }
+
     fn transfer_plan(
         tx_index: usize,
         token: Address,
@@ -1766,6 +3063,7 @@ mod tests {
             covered,
         ));
         BlockStmSemanticPlan {
+            tx_index,
             action_log,
             covered_keys,
             prefix_originals: HashMap::default(),
@@ -1776,6 +3074,7 @@ mod tests {
 
     #[allow(clippy::too_many_arguments)]
     fn tip20_prefix_plan(
+        tx_index: usize,
         token: Address,
         fee_payer: Address,
         sender: Address,
@@ -1786,34 +3085,115 @@ mod tests {
         refund_amount: U256,
         transfer_amount: U256,
     ) -> BlockStmSemanticPlan {
+        tip20_prefix_plan_inner(
+            tx_index,
+            token,
+            fee_payer,
+            sender,
+            recipient,
+            beneficiary,
+            max_fee_precharge,
+            actual_spending,
+            refund_amount,
+            transfer_amount,
+            None,
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn tip20_prefix_plan_with_nonce(
+        tx_index: usize,
+        token: Address,
+        fee_payer: Address,
+        sender: Address,
+        recipient: Address,
+        beneficiary: Address,
+        max_fee_precharge: U256,
+        actual_spending: U256,
+        refund_amount: U256,
+        transfer_amount: U256,
+        nonce_hash: B256,
+        valid_before: u64,
+    ) -> BlockStmSemanticPlan {
+        tip20_prefix_plan_inner(
+            tx_index,
+            token,
+            fee_payer,
+            sender,
+            recipient,
+            beneficiary,
+            max_fee_precharge,
+            actual_spending,
+            refund_amount,
+            transfer_amount,
+            Some((nonce_hash, valid_before)),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn tip20_prefix_plan_inner(
+        tx_index: usize,
+        token: Address,
+        fee_payer: Address,
+        sender: Address,
+        recipient: Address,
+        beneficiary: Address,
+        max_fee_precharge: U256,
+        actual_spending: U256,
+        refund_amount: U256,
+        transfer_amount: U256,
+        nonce: Option<(B256, u64)>,
+    ) -> BlockStmSemanticPlan {
+        let fee = Tip20FeeEscrowDelta {
+            token,
+            fee_payer,
+            fee_manager: TIP_FEE_MANAGER_ADDRESS,
+            max_fee_precharge,
+            actual_spending,
+            refund_amount,
+        };
+        let transfer = Tip20TransferDelta {
+            token,
+            sender,
+            recipient,
+            amount: transfer_amount,
+        };
+        let collected = CollectedFeesDelta {
+            beneficiary,
+            validator_token: token,
+            amount: actual_spending,
+        };
+        let mut covered_keys = HashSet::default();
+        covered_keys.extend(fee.covered_storage_slots());
+        covered_keys.extend(transfer.covered_storage_slots());
+        covered_keys.extend(collected.covered_storage_slots());
+        if let Some((nonce_hash, _)) = nonce {
+            covered_keys.insert(expiring_nonce_seen_key(nonce_hash));
+            covered_keys.insert(expiring_nonce_ring_ptr_key());
+            covered_keys.insert(expiring_nonce_ring_key(0));
+        }
+
         BlockStmSemanticPlan {
+            tx_index,
             action_log: BlockStmActionLog::default(),
-            covered_keys: HashSet::default(),
+            covered_keys,
             prefix_originals: HashMap::default(),
             semantic_prefix_reads: 1,
             tip20_prefix: Some(BlockStmTip20PrefixPlan {
-                nonce: None,
-                fee: Tip20FeeEscrowDelta {
-                    token,
-                    fee_payer,
-                    fee_manager: TIP_FEE_MANAGER_ADDRESS,
-                    max_fee_precharge,
-                    actual_spending,
-                    refund_amount,
-                },
-                transfers: vec![Tip20TransferDelta {
-                    token,
-                    sender,
-                    recipient,
-                    amount: transfer_amount,
-                }],
-                collected: CollectedFeesDelta {
-                    beneficiary,
-                    validator_token: token,
-                    amount: actual_spending,
-                },
+                nonce,
+                fee,
+                transfers: vec![transfer],
+                collected,
             }),
         }
+    }
+
+    fn insert_storage(db: &mut CacheDB<EmptyDB>, key: BlockStmAccessKey, value: U256) {
+        let BlockStmAccessKey::Storage { address, slot } = key else {
+            unreachable!("test storage key must be storage");
+        };
+        db.insert_account_storage(address, slot, value)
+            .expect("storage insert should succeed");
     }
 
     fn storage_present_value(state: &EvmState, key: BlockStmAccessKey) -> U256 {
