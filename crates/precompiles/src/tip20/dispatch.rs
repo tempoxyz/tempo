@@ -61,6 +61,12 @@ impl Precompile for TIP20Token {
             return self.storage.error_result(TIP20Error::uninitialized());
         }
 
+        if calldata == ITIP20::claimRewardsCall::SELECTOR {
+            return mutate(ITIP20::claimRewardsCall {}, msg_sender, |sender, _| {
+                self.claim_rewards(sender)
+            });
+        }
+
         dispatch_call(
             calldata,
             &[
