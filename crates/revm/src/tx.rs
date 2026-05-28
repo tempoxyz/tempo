@@ -278,8 +278,14 @@ impl Transaction for TempoTxEnv {
     }
 
     fn max_balance_spending(&self) -> Result<U256, InvalidTransaction> {
-        calc_gas_balance_spending(self.gas_limit(), self.max_fee_per_gas())
-            .checked_add(self.value())
+        let gas_spending = calc_gas_balance_spending(self.gas_limit(), self.max_fee_per_gas());
+        let value = self.value();
+        if value.is_zero() {
+            return Ok(gas_spending);
+        }
+
+        gas_spending
+            .checked_add(value)
             .ok_or(InvalidTransaction::OverflowPaymentInTransaction)
     }
 
@@ -288,8 +294,15 @@ impl Transaction for TempoTxEnv {
         base_fee: u128,
         _blob_price: u128,
     ) -> Result<U256, InvalidTransaction> {
-        calc_gas_balance_spending(self.gas_limit(), self.effective_gas_price(base_fee))
-            .checked_add(self.value())
+        let gas_spending =
+            calc_gas_balance_spending(self.gas_limit(), self.effective_gas_price(base_fee));
+        let value = self.value();
+        if value.is_zero() {
+            return Ok(gas_spending);
+        }
+
+        gas_spending
+            .checked_add(value)
             .ok_or(InvalidTransaction::OverflowPaymentInTransaction)
     }
 }
