@@ -18,7 +18,7 @@ use crate::{
     prewarming::BestTransactionsPrewarming,
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, Bytes, U256};
 use alloy_rlp::{Decodable, Encodable};
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -104,6 +104,8 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     enable_prewarming: bool,
+    /// Whether to include block access lists in built execution payloads.
+    enable_bal: bool,
     /// Conservative estimate of total replayable build work divided by work at tx cutoff.
     build_time_multiplier: Arc<AtomicU64>,
 }
@@ -119,6 +121,8 @@ pub struct TempoPayloadBuilderConfig {
     pub enable_prewarming: bool,
     /// Initial estimate of total replayable build work divided by work at tx cutoff.
     pub build_time_multiplier: f64,
+    /// Whether to include block access lists in built execution payloads.
+    pub enable_bal: bool,
 }
 
 impl Default for TempoPayloadBuilderConfig {
@@ -127,6 +131,7 @@ impl Default for TempoPayloadBuilderConfig {
             is_dev: false,
             state_provider_metrics: false,
             enable_prewarming: false,
+            enable_bal: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -151,6 +156,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             is_dev: config.is_dev,
             state_provider_metrics: config.state_provider_metrics,
             enable_prewarming: config.enable_prewarming,
+            enable_bal: config.enable_bal,
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
@@ -348,6 +354,7 @@ where
         let mut db = State::builder()
             .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
             .with_bundle_update()
+            .with_bal_builder_if(self.enable_bal)
             .build();
         drop(_state_setup_span);
         self.metrics
@@ -858,7 +865,7 @@ where
             block,
             hashed_state,
             trie_updates,
-            ..
+            block_access_list,
         } = if let Some(outcome) = state_root_outcome {
             builder.finish(
                 finish_provider(),
@@ -1000,6 +1007,8 @@ where
         );
 
         let block = Arc::new(block);
+        let block_access_list: Option<Bytes> =
+            block_access_list.map(|block_access_list| alloy_rlp::encode(&block_access_list).into());
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
 
         let execution_output = BlockExecutionOutput {
@@ -1016,6 +1025,7 @@ where
 
         let payload = TempoBuiltPayload::new(
             eth_payload,
+            block_access_list,
             Some(executed_block),
             validation_work_duration,
             rlp_length,
@@ -1198,7 +1208,7 @@ mod tests {
         .unwrap();
         let rlp_length = block.rlp_length();
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None, Duration::ZERO, rlp_length)
+        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, rlp_length)
     }
 
     #[test]

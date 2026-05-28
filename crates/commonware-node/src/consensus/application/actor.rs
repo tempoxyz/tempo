@@ -40,7 +40,7 @@ use futures::{
     future::try_join,
 };
 use rand_08::{CryptoRng, Rng};
-use reth_node_builder::{Block as _, BuiltPayload, ConsensusEngineHandle, PayloadKind};
+use reth_node_builder::{Block as _, ConsensusEngineHandle, PayloadKind};
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
@@ -567,6 +567,23 @@ impl Inner<Init> {
         // next epoch.
         if parent_epoch_info.last() == parent.height() && parent_epoch_info.epoch() == round.epoch()
         {
+            // If the header has a block access list hash but the block itself doesn't
+            // it likely means that the block was fetched from reth database and we need to
+            // additionally fetch the BAL from commonware.
+            let parent = if parent.block().header().block_access_list_hash().is_some()
+                && parent.block_access_list().is_none()
+            {
+                self.marshal
+                    .subscribe_by_digest(
+                        Some(Round::new(round.epoch(), parent_view)),
+                        parent_digest,
+                    )
+                    .await
+                    .await
+                    .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))?
+            } else {
+                parent
+            };
             if !self.marshal.verified(round, parent.clone()).await {
                 bail!("marshal rejected re-proposed boundary block");
             }
@@ -757,7 +774,8 @@ impl Inner<Init> {
         );
         let proposal_return_time = context.current() + return_delay;
 
-        let proposal = Block::from_execution_block(payload.block().clone());
+        let (block, block_access_list) = payload.into_execution_payload();
+        let proposal = Block::from_execution_payload(block, block_access_list);
 
         Ok((
             proposal,
@@ -985,9 +1003,10 @@ async fn verify_block<TContext: Pacer>(
             .map(|p| B256::from_slice(p))
             .collect(),
     );
-    let block = block.clone().into_inner();
+    let (block, block_access_list) = block.clone().into_parts();
     let execution_data = TempoExecutionData {
         block: Arc::new(block),
+        block_access_list,
         validator_set,
     };
     let payload_status = engine
@@ -1120,7 +1139,8 @@ async fn get_parent(
             format!("failed querying execution layer for parent block `{parent_digest}`")
         })?
     {
-        Ok(Block::from_execution_block(parent.seal()))
+        // It is fine to omit BAL for blocks loaded from the EL database.
+        Ok(Block::from_execution_payload(parent.seal(), None))
     } else {
         marshal
             .subscribe_by_digest(Some(Round::new(round.epoch(), parent_view)), parent_digest)

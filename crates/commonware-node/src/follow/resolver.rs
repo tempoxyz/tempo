@@ -218,7 +218,9 @@ fn resolve_block(execution_node: &TempoFullNode, block_digest: Digest) -> Result
     else {
         return Err(false);
     };
-    let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(block));
+    // Follow-mode recovery reads from the EL database, which persists only the block.
+    // BAL is p2p side data, so it is unavailable here.
+    let consensus_block = Block::from_execution_payload(SealedBlock::seal_slow(block), None);
     Ok(consensus_block.encode())
 }
 
@@ -243,8 +245,10 @@ async fn resolve_finalized_new(
         return Err(false);
     };
 
+    // Upstream finalization responses carry persisted EL blocks only; no p2p BAL
+    // is available when reconstructing this consensus payload.
     let consensus_block =
-        Block::from_execution_block(SealedBlock::seal_slow(certified_block.block));
+        Block::from_execution_payload(SealedBlock::seal_slow(certified_block.block), None);
     Ok((finalization, consensus_block).encode())
 }
 

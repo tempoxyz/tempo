@@ -313,7 +313,8 @@ where
             .wrap_err("event contained a malformed finalization certificate")?;
 
         let height = Height::new(certified.block.number());
-        let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(certified.block));
+        let consensus_block =
+            Block::from_execution_payload(SealedBlock::seal_slow(certified.block), None);
         ensure!(
             finalization.proposal.payload == consensus_block.digest(),
             "mismatch in finalization and block digest"

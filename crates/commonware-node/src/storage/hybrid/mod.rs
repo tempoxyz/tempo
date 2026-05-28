@@ -159,7 +159,7 @@ where
         }
         Ok(self
             .block_by_number(height)?
-            .map(|block| Block::from_execution_block(SealedBlock::seal_slow(block))))
+            .map(|block| Block::from_execution_payload(SealedBlock::seal_slow(block), None)))
     }
 
     fn block_by_hash(&self, hash: B256) -> ProviderResult<Option<Block>> {
@@ -168,7 +168,7 @@ where
         // [`Blocks::get`] on [`Hybrid`].
         Ok(self
             .find_block_by_hash(hash, BlockSource::Canonical)?
-            .map(|block| Block::from_execution_block(SealedBlock::seal_slow(block))))
+            .map(|block| Block::from_execution_payload(SealedBlock::seal_slow(block), None)))
     }
 }
 

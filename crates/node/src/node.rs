@@ -71,6 +71,10 @@ pub struct TempoNodeArgs {
     #[arg(long = "builder.enable-prewarming", default_value_t = true)]
     pub builder_enable_prewarming: bool,
 
+    /// Include an RLP-encoded block access list in built execution payloads. (EXPERIMENTAL)
+    #[arg(long = "builder.enable-bal", default_value_t = false, hide = true)]
+    pub builder_enable_bal: bool,
+
     /// Initial multiplier for predicting replayable payload build work.
     #[arg(
         long = "builder.build-time-multiplier",
@@ -86,6 +90,7 @@ impl Default for TempoNodeArgs {
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             builder_state_provider_metrics: false,
             builder_enable_prewarming: false,
+            builder_enable_bal: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -105,6 +110,7 @@ impl TempoNodeArgs {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
             enable_prewarming: self.builder_enable_prewarming,
+            enable_bal: self.builder_enable_bal,
             build_time_multiplier: self.builder_build_time_multiplier,
         }
     }
@@ -153,7 +159,7 @@ impl TempoNode {
             .executor(TempoExecutorBuilder::default())
             .payload(BasicPayloadServiceBuilder::new(payload_builder_builder))
             .network(EthereumNetworkBuilder::default())
-            .consensus(TempoConsensusBuilder::default())
+            .consensus(TempoConsensusBuilder)
     }
 
     pub fn provider_factory_builder() -> ProviderFactoryBuilder<Self> {
@@ -514,6 +520,8 @@ pub struct TempoPayloadBuilderBuilder {
     pub state_provider_metrics: bool,
     /// Enable prewarming for the payload builder.
     pub enable_prewarming: bool,
+    /// Include an RLP-encoded block access list in built execution payloads.
+    pub enable_bal: bool,
     /// Initial multiplier for predicting replayable payload build work.
     pub build_time_multiplier: f64,
 }
@@ -523,6 +531,7 @@ impl Default for TempoPayloadBuilderBuilder {
         Self {
             state_provider_metrics: false,
             enable_prewarming: false,
+            enable_bal: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -550,6 +559,7 @@ where
                 is_dev: ctx.is_dev(),
                 state_provider_metrics: self.state_provider_metrics,
                 enable_prewarming: self.enable_prewarming,
+                enable_bal: self.enable_bal,
                 build_time_multiplier: self.build_time_multiplier,
             },
         ))
