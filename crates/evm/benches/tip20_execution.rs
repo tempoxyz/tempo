@@ -19,9 +19,7 @@ use alloy_signer::SignerSync;
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
 use alloy_sol_types::SolCall;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
-use reth_execution_cache::{
-    CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider, ExecutionCache,
-};
+use reth_execution_cache::{CachedStateProvider, ExecutionCache};
 use reth_primitives_traits::{Account as RethAccount, Bytecode as RethBytecode};
 use reth_revm::{State, database::StateProviderDatabase};
 use reth_storage_api::{
@@ -140,7 +138,6 @@ struct InMemoryStateProvider {
 struct ExecutionFixture {
     provider: InMemoryStateProvider,
     cache: ExecutionCache,
-    metrics: CachedStateMetrics,
 }
 
 type FixedCacheDb = State<StateProviderDatabase<CachedStateProvider<InMemoryStateProvider>>>;
@@ -150,7 +147,7 @@ impl ExecutionFixture {
         let provider = CachedStateProvider::new(
             self.provider.clone(),
             self.cache.clone(),
-            Some(self.metrics.clone()),
+            None,
         );
         State::builder()
             .with_database(StateProviderDatabase::new(provider))
@@ -452,7 +449,6 @@ fn setup_fixed_cache_state(
             block_hashes: Arc::new(block_hashes),
         },
         cache: execution_cache,
-        metrics: CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
     }
 }
 
