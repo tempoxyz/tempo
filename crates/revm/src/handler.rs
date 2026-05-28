@@ -40,7 +40,7 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     ECRECOVER_GAS,
     account_keychain::{
-        AccountKeychain, CallScope as PrecompileCallScope, KeyRestrictions,
+        AccountKeychain, AuthorizedKey, CallScope as PrecompileCallScope, KeyRestrictions,
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
@@ -84,8 +84,8 @@ const KEY_AUTH_BASE_GAS: u64 = 27_000;
 /// Gas per spending limit in KeyAuthorization
 const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
 
-/// Extra buffer for the second LOG3 emitted by T5 witness-bearing key authorizations.
-const KEY_AUTH_T5_WITNESS_EVENT_BUFFER: u64 = 1_500;
+/// Rounded buffer for each extra LOG3/no-data event emitted by key authorizations.
+const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 
 /// Gas cost for expiring nonce transactions (replay check + insert).
 ///
@@ -141,6 +141,12 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
             primitive_signature_verification_gas(&keychain_sig.signature) + KEYCHAIN_VALIDATION_GAS
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct LoadedTxAccessKey {
+    key_id: Address,
+    key: AuthorizedKey,
 }
 
 /// Counts the scope storage rows that pay the dynamic SSTORE-set path for the active spec.
@@ -342,7 +348,7 @@ fn calculate_key_authorization_gas(
         // T1B+: Accurate gas matching actual precompile storage operations.
         // authorize_key does: 1 SLOAD (read existing key) + 1 SSTORE (write key)
         //   + N SSTOREs (one per spending limit) + 2k buffer (TSTORE + keccak + event)
-        // T5 witness authorizations emit one additional LOG3 event with no data.
+        // T5 witness and T6 admin authorizations emit additional LOG3 events with no data.
         const BUFFER: u64 = 2_000;
         let sload_cost =
             gas_params.warm_storage_read_cost() + gas_params.cold_storage_additional_cost();
@@ -366,7 +372,11 @@ fn calculate_key_authorization_gas(
         let mut regular_gas = sig_gas + sload_cost + sstore_cost * num_sstores + BUFFER;
 
         if has_t5_witness {
-            regular_gas += sload_cost + KEY_AUTH_T5_WITNESS_EVENT_BUFFER;
+            regular_gas += sload_cost + KEY_AUTH_EXTRA_EVENT_BUFFER;
+        }
+
+        if spec.is_t6() && key_auth.is_admin() {
+            regular_gas += KEY_AUTH_EXTRA_EVENT_BUFFER;
         }
 
         // T4+: include extra gas for call scopes configuration
@@ -1128,8 +1138,11 @@ where
         // Note: Signature verification happens during recover_signer() before entering the pool
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
 
-        // For Keychain signatures, validate that the keychain is authorized in the precompile
-        // before fee collection so existing-key fee charges can consume spending limits.
+        // For Keychain signatures, validate the acting access key before fee collection when it
+        // already exists. Same-tx auth+use is the exception: that key is registered only after fees
+        // are collected, so fee-limit validation uses the inline authorization payload instead.
+        let mut loaded_tx_access_key = None;
+        let mut same_tx_key_authorization_use = false;
         if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(keychain_sig) = tempo_tx_env.signature.as_keychain()
         {
@@ -1146,10 +1159,27 @@ where
                 .into());
             }
 
-            if let Some(key_auth) = tempo_tx_env.key_authorization.as_ref() {
-                // If this is a same tx auth+use, validate that spending limit is enough to cover the fee.
-                //
-                // `collectFeePreTx` would not validate the spending limit because the key is not authorized yet and we are not setting the transient key_id.
+            // Use override_key_id if provided (for gas estimation), otherwise recover from signature.
+            let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
+                override_key_id
+            } else {
+                keychain_sig
+                    .key_id(&tempo_tx_env.signature_hash)
+                    .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+            };
+
+            let key_auth = tempo_tx_env.key_authorization.as_ref();
+            // Classify whether this keychain-signed tx is using the same access key that the
+            // inline authorization registers.
+            same_tx_key_authorization_use =
+                key_auth.is_some_and(|key_auth| access_key_addr == key_auth.key_id);
+
+            if same_tx_key_authorization_use {
+                let key_auth = key_auth.expect("same-tx auth/use requires inline authorization");
+
+                // Same-tx auth+use path: the access key does not exist in storage yet, so the fee
+                // check must use the inline limits directly. `collectFeePreTx` cannot enforce this
+                // because `transaction_key` is intentionally not set until after authorization.
                 if !gas_balance_spending.is_zero()
                     && fee_payer == tx.caller
                     && let Some(limits) = key_auth.limits.as_ref()
@@ -1168,18 +1198,11 @@ where
                     }
                 }
             } else {
-                // Use override_key_id if provided (for gas estimation), otherwise recover from signature.
-                let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
-                    override_key_id
-                } else {
-                    // Get the access key address (recovered during pool validation and cached)
-                    keychain_sig
-                        .key_id(&tempo_tx_env.signature_hash)
-                        .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
-                };
-
-                // If this transaction is using an already-authorized key, validate the signature against stored key and set the transient key_id.
-                let stored_key_expiry = StorageCtx::enter_precompile(
+                // Existing-key path:
+                // - ordinary keychain txs must validate the acting access key before fees are paid
+                // - T6 delegated key authorizations also validate the acting key here, then reuse
+                //   the loaded admin/signature-type facts below when the sidecar signer is the same key
+                let loaded_key = StorageCtx::enter_precompile(
                     journal,
                     block,
                     cfg,
@@ -1190,9 +1213,8 @@ where
                         // type to authenticate as a key registered with a different type.
                         // Only validate signature type on T1+ to maintain backward compatibility
                         // with historical blocks during re-execution.
-                        let sig_type = spec
-                            .is_t1()
-                            .then_some(keychain_sig.signature.signature_type().into());
+                        let tx_sig_type = keychain_sig.signature.signature_type().into();
+                        let sig_type = (key_auth.is_some() || spec.is_t1()).then_some(tx_sig_type);
 
                         let key = keychain
                             .validate_keychain_authorization(
@@ -1205,6 +1227,14 @@ where
                                 reason: format!("{e:?}"),
                             })?;
 
+                        // T6 adds admin delegation: a keychain signer may authorize a different
+                        // child key only if the acting transaction key is itself an active admin key.
+                        if key_auth.is_some() && !key.is_admin {
+                            return Err(
+                                TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into()
+                            );
+                        }
+
                         // Set the transaction key in the keychain precompile.
                         // The TIP20 precompile will read this during fee collection and
                         // execution to enforce spending limits for existing keys.
@@ -1212,11 +1242,54 @@ where
                             .set_transaction_key(access_key_addr)
                             .map_err(|e| EVMError::Custom(e.to_string()))?;
 
-                        Ok::<_, EVMError<_, TempoInvalidTransaction>>(key.expiry)
+                        Ok::<_, EVMError<_, TempoInvalidTransaction>>(LoadedTxAccessKey {
+                            key_id: access_key_addr,
+                            key,
+                        })
                     },
                 )?;
 
-                evm.key_expiry = Some(stored_key_expiry);
+                evm.key_expiry = Some(loaded_key.key.expiry);
+                loaded_tx_access_key = Some(loaded_key);
+            }
+        }
+
+        // T6 stateless signer/account checks run in `validate_env`. This state-aware phase only
+        // proves that a non-root sidecar signer is an active admin key for the caller account.
+        if cfg.spec.is_t6()
+            && let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
+            && let Some(key_auth) = tempo_tx_env.key_authorization.as_ref()
+        {
+            let auth_signer = key_auth
+                .recover_signer()
+                .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
+
+            if auth_signer != tx.caller {
+                let key_auth_sig_type: u8 = key_auth.signature.signature_type().into();
+                let signer_is_admin = match loaded_tx_access_key {
+                    Some(loaded_key)
+                        if loaded_key.key_id == auth_signer
+                            && (loaded_key.key.signature_type as u8) == key_auth_sig_type =>
+                    {
+                        loaded_key.key.is_admin
+                    }
+                    Some(_) | None => {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                            reason:
+                                "admin-signed key authorization must be signed by transaction key"
+                                    .to_string(),
+                        }
+                        .into());
+                    }
+                };
+
+                if !signer_is_admin {
+                    return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
+                        expected: tx.caller,
+                        actual: auth_signer,
+                    }
+                    .into());
+                }
             }
         }
 
@@ -1375,14 +1448,23 @@ where
                     allowedCalls: precompile_allowed_calls,
                 };
 
-                // Call precompile to authorize the key (same phase as nonce increment)
-                let result = keychain.authorize_key(
-                    tx.caller,
-                    access_key_addr,
-                    signature_type,
-                    config,
-                    key_auth.witness(),
-                );
+                // Call precompile to authorize the key (same phase as nonce increment).
+                let result = if key_auth.is_admin() {
+                    keychain.authorize_admin_key(
+                        tx.caller,
+                        access_key_addr,
+                        signature_type,
+                        key_auth.witness(),
+                    )
+                } else {
+                    keychain.authorize_key(
+                        tx.caller,
+                        access_key_addr,
+                        signature_type,
+                        config,
+                        key_auth.witness(),
+                    )
+                };
 
                 match result {
                     // all is good, we can do execution.
@@ -1421,8 +1503,10 @@ where
                 };
             }
 
-            // If this is a same tx auth+use, we need to set the transient key_id and decrement the fee from the spending limit.
-            if tempo_tx_env.signature.is_keychain() {
+            // If this is a same tx auth+use, set the transient key_id to the newly authorized
+            // key and decrement the fee from its spending limit. Admin delegation must keep the
+            // actual signer as the transaction key.
+            if same_tx_key_authorization_use {
                 StorageCtx::enter_precompile(
                     journal,
                     block,
@@ -1612,8 +1696,9 @@ where
             }
 
             if let Some(key_auth) = &aa_env.key_authorization {
-                // Check if this TX is using a Keychain signature (access key)
-                // Access keys cannot authorize new keys UNLESS it's the same key being authorized (same-tx auth+use)
+                // Check if this TX is using a Keychain signature (access key). Non-admin access
+                // keys cannot authorize other keys; T6 admin keys can.
+                let mut same_tx_auth_use = false;
                 if let Some(keychain_sig) = aa_env.signature.as_keychain() {
                     // Use override_key_id if provided (for gas estimation), otherwise recover from signature
                     let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id {
@@ -1625,14 +1710,15 @@ where
                             .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
                     };
 
-                    // Only allow if authorizing the same key that's being used (same-tx auth+use)
-                    if access_key_addr != key_auth.key_id {
+                    same_tx_auth_use = access_key_addr == key_auth.key_id;
+                    if !same_tx_auth_use && !cfg.spec.is_t6() {
                         return Err(
                             TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into()
                         );
                     }
 
-                    if cfg.spec.is_t3()
+                    if same_tx_auth_use
+                        && cfg.spec.is_t3()
                         && key_auth.key_type != keychain_sig.signature.signature_type()
                     {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
@@ -1643,21 +1729,56 @@ where
                     }
                 }
 
-                // Validate that the KeyAuthorization is signed by the root account
-                let root_account = &tx.caller;
-
-                // Recover the signer of the KeyAuthorization
-                let auth_signer = key_auth.recover_signer().map_err(|_| {
-                    TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
-                })?;
-
-                // Verify the KeyAuthorization is signed by the root account
-                if auth_signer != *root_account {
-                    return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
-                        expected: *root_account,
-                        actual: auth_signer,
+                if (key_auth.is_admin || key_auth.account.is_some()) && !cfg.spec.is_t6() {
+                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                        reason: "T6 key authorization fields are not active before T6".to_string(),
                     }
                     .into());
+                }
+
+                if cfg.spec.is_t6() && key_auth.account.is_some_and(|account| account != tx.caller)
+                {
+                    // T6 allows existing admin keys to sign `KeyAuthorization`s for an
+                    // account. Any named account must match the transaction caller so the
+                    // signed payload cannot be replayed against another account where the
+                    // same admin key is also authorized.
+                    let reason = if key_auth.is_admin() {
+                        "admin key authorization account mismatch"
+                    } else {
+                        "key authorization account mismatch"
+                    };
+
+                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                        reason: reason.to_string(),
+                    }
+                    .into());
+                }
+
+                if key_auth.is_admin()
+                    && (key_auth.expiry.is_some()
+                        || key_auth.limits.is_some()
+                        || key_auth.allowed_calls.is_some())
+                {
+                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                        reason:
+                            "admin key authorizations cannot carry expiry, limits, or call scopes"
+                                .to_string(),
+                    }
+                    .into());
+                }
+
+                if !cfg.spec.is_t6() {
+                    let auth_signer = key_auth.recover_signer().map_err(|_| {
+                        TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
+                    })?;
+
+                    if auth_signer != tx.caller {
+                        return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
+                            expected: tx.caller,
+                            actual: auth_signer,
+                        }
+                        .into());
+                    }
                 }
 
                 // Validate KeyAuthorization chain_id.
@@ -1689,6 +1810,70 @@ where
                             reason: "call scopes are not active before T3".to_string(),
                         }
                         .into());
+                    }
+                }
+
+                if cfg.spec.is_t6() {
+                    let auth_signer = key_auth.recover_signer().map_err(|_| {
+                        TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
+                    })?;
+                    if auth_signer != tx.caller && key_auth.account.is_none() {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                            reason: "admin-signed key authorization account mismatch".to_string(),
+                        }
+                        .into());
+                    }
+
+                    if auth_signer == tx.caller
+                        && aa_env.signature.is_keychain()
+                        && !same_tx_auth_use
+                    {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                            reason:
+                                "root-signed key authorization must use root transaction signature"
+                                    .to_string(),
+                        }
+                        .into());
+                    }
+
+                    if auth_signer != tx.caller {
+                        let Some(keychain_sig) = aa_env.signature.as_keychain() else {
+                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                                reason:
+                                    "admin-signed key authorization must be signed by transaction key"
+                                        .to_string(),
+                            }
+                            .into());
+                        };
+
+                        let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id
+                        {
+                            override_key_id
+                        } else {
+                            keychain_sig
+                                .key_id(&aa_env.signature_hash)
+                                .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+                        };
+
+                        if access_key_addr != auth_signer {
+                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                                reason:
+                                    "admin-signed key authorization must be signed by transaction key"
+                                        .to_string(),
+                            }
+                            .into());
+                        }
+
+                        if key_auth.signature.signature_type()
+                            != keychain_sig.signature.signature_type()
+                        {
+                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                                reason:
+                                    "admin-signed key authorization signature type does not match transaction key signature type"
+                                        .to_string(),
+                            }
+                            .into());
+                        }
                     }
                 }
 
@@ -3014,12 +3199,9 @@ mod tests {
                         .collect(),
                 );
             }
-            SignedKeyAuthorization {
-                authorization: auth,
-                signature: PrimitiveSignature::Secp256k1(
-                    alloy_primitives::Signature::test_signature(),
-                ),
-            }
+            auth.into_signed(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            ))
         };
 
         // Test 0 limits: base (27k) + ecrecover (3k) = 30,000
@@ -3158,7 +3340,7 @@ mod tests {
 
         assert_eq!(
             witness_t5_gas - base_t5_gas,
-            t5_sload + KEY_AUTH_T5_WITNESS_EVENT_BUFFER,
+            t5_sload + KEY_AUTH_EXTRA_EVENT_BUFFER,
             "T5 witness adds one burned-witness SLOAD and one event"
         );
         assert_eq!(
@@ -3167,21 +3349,78 @@ mod tests {
             "T5 witness authorization does not add state gas"
         );
 
-        let scoped = SignedKeyAuthorization {
-            authorization: KeyAuthorization::unrestricted(
-                1,
-                SignatureType::Secp256k1,
-                Address::random(),
-            )
+        let t6_gas_params = crate::gas_params::tempo_gas_params(TempoHardfork::T6);
+        let base_t6_key_auth = create_key_auth(0);
+        let mut account_bound_t6_key_auth = create_key_auth(0);
+        account_bound_t6_key_auth.authorization = account_bound_t6_key_auth
+            .authorization
+            .with_account(Address::random());
+        let mut admin_t6_key_auth = create_key_auth(0);
+        admin_t6_key_auth.authorization = admin_t6_key_auth
+            .authorization
+            .into_admin(Address::random());
+        let mut unbound_admin_t6_key_auth = create_key_auth(0);
+        unbound_admin_t6_key_auth.authorization.is_admin = true;
+
+        let (base_t6_gas, base_t6_state_gas) =
+            calculate_key_authorization_gas(&base_t6_key_auth, &t6_gas_params, TempoHardfork::T6);
+        let (account_bound_t6_gas, account_bound_t6_state_gas) = calculate_key_authorization_gas(
+            &account_bound_t6_key_auth,
+            &t6_gas_params,
+            TempoHardfork::T6,
+        );
+        let (admin_t6_gas, admin_t6_state_gas) =
+            calculate_key_authorization_gas(&admin_t6_key_auth, &t6_gas_params, TempoHardfork::T6);
+        let (unbound_admin_t6_gas, unbound_admin_t6_state_gas) = calculate_key_authorization_gas(
+            &unbound_admin_t6_key_auth,
+            &t6_gas_params,
+            TempoHardfork::T6,
+        );
+
+        assert_eq!(
+            account_bound_t6_gas - base_t6_gas,
+            0,
+            "T6 account-bound authorization does not add key authorization gas"
+        );
+        assert_eq!(
+            admin_t6_gas - base_t6_gas,
+            KEY_AUTH_EXTRA_EVENT_BUFFER,
+            "T6 account-bound admin authorization charges one extra event buffer"
+        );
+        assert_eq!(
+            admin_t6_gas - account_bound_t6_gas,
+            KEY_AUTH_EXTRA_EVENT_BUFFER,
+            "T6 admin authorization pays one extra event buffer over non-admin account-bound authorization"
+        );
+        assert_eq!(
+            unbound_admin_t6_gas - base_t6_gas,
+            KEY_AUTH_EXTRA_EVENT_BUFFER,
+            "T6 root-signed admin authorization without account charges only the extra event buffer"
+        );
+        assert_eq!(
+            account_bound_t6_state_gas, base_t6_state_gas,
+            "T6 account binding does not add state gas"
+        );
+        assert_eq!(
+            admin_t6_state_gas, base_t6_state_gas,
+            "T6 admin authorization event buffer does not add state gas"
+        );
+        assert_eq!(
+            unbound_admin_t6_state_gas, base_t6_state_gas,
+            "T6 unbound admin authorization does not add state gas"
+        );
+
+        let scoped = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random())
             .with_allowed_calls(vec![tempo_primitives::transaction::CallScope {
                 target: Address::random(),
                 selector_rules: vec![tempo_primitives::transaction::SelectorRule {
                     selector: [0xa9, 0x05, 0x9c, 0xbb],
                     recipients: vec![Address::random(), Address::random()],
                 }],
-            }]),
-            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-        };
+            }])
+            .into_signed(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            ));
 
         let (gas, state_gas) =
             calculate_key_authorization_gas(&scoped, &t3_gas_params, TempoHardfork::T3);
@@ -3205,33 +3444,30 @@ mod tests {
             ECRECOVER_GAS + t4_sload + t4_sstore * num_sstores + BUFFER + 29_000 + expected_state;
         assert_eq!(gas, expected, "T4 scope writes should be fully charged");
         assert_eq!(state_gas, expected_state, "T4 scope state gas");
-        let multi_scope = SignedKeyAuthorization {
-            authorization: KeyAuthorization::unrestricted(
-                1,
-                SignatureType::Secp256k1,
-                Address::random(),
-            )
-            .with_allowed_calls(vec![
-                tempo_primitives::transaction::CallScope {
-                    target: Address::random(),
-                    selector_rules: vec![
-                        tempo_primitives::transaction::SelectorRule {
-                            selector: [0xa9, 0x05, 0x9c, 0xbb],
-                            recipients: vec![],
-                        },
-                        tempo_primitives::transaction::SelectorRule {
-                            selector: [0x09, 0x5e, 0xa7, 0xb3],
-                            recipients: vec![],
-                        },
-                    ],
-                },
-                tempo_primitives::transaction::CallScope {
-                    target: Address::random(),
-                    selector_rules: vec![],
-                },
-            ]),
-            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-        };
+        let multi_scope =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random())
+                .with_allowed_calls(vec![
+                    tempo_primitives::transaction::CallScope {
+                        target: Address::random(),
+                        selector_rules: vec![
+                            tempo_primitives::transaction::SelectorRule {
+                                selector: [0xa9, 0x05, 0x9c, 0xbb],
+                                recipients: vec![],
+                            },
+                            tempo_primitives::transaction::SelectorRule {
+                                selector: [0x09, 0x5e, 0xa7, 0xb3],
+                                recipients: vec![],
+                            },
+                        ],
+                    },
+                    tempo_primitives::transaction::CallScope {
+                        target: Address::random(),
+                        selector_rules: vec![],
+                    },
+                ])
+                .into_signed(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ));
 
         let (gas, state_gas) =
             calculate_key_authorization_gas(&multi_scope, &t3_gas_params, TempoHardfork::T3);
@@ -3255,18 +3491,13 @@ mod tests {
 
     #[test]
     fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
-        use tempo_primitives::transaction::{
-            KeyAuthorization, SignatureType, SignedKeyAuthorization,
-        };
+        use tempo_primitives::transaction::{KeyAuthorization, SignatureType};
 
-        let key_auth = SignedKeyAuthorization {
-            authorization: KeyAuthorization::unrestricted(
-                1,
-                SignatureType::Secp256k1,
-                Address::random(),
-            ),
-            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-        };
+        let key_auth =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random())
+                .into_signed(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ));
 
         // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
         let gas_params =
@@ -3286,41 +3517,35 @@ mod tests {
     #[test]
     fn test_translate_allowed_calls_for_precompile_preserves_empty_nested_allow_all_lists() {
         use tempo_primitives::transaction::{
-            CallScope, KeyAuthorization, SelectorRule, SignatureType, SignedKeyAuthorization,
+            CallScope, KeyAuthorization, SelectorRule, SignatureType,
         };
 
-        let empty_selector_rules = SignedKeyAuthorization {
-            authorization: KeyAuthorization::unrestricted(
-                1,
-                SignatureType::Secp256k1,
-                Address::random(),
-            )
-            .with_allowed_calls(vec![CallScope {
-                target: Address::random(),
-                selector_rules: vec![],
-            }]),
-            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-        };
+        let empty_selector_rules =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random())
+                .with_allowed_calls(vec![CallScope {
+                    target: Address::random(),
+                    selector_rules: vec![],
+                }])
+                .into_signed(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ));
 
         let translated = translate_allowed_calls_for_precompile(&empty_selector_rules);
         assert_eq!(translated.len(), 1);
         assert!(translated[0].selectorRules.is_empty());
 
-        let empty_recipients = SignedKeyAuthorization {
-            authorization: KeyAuthorization::unrestricted(
-                1,
-                SignatureType::Secp256k1,
-                Address::random(),
-            )
-            .with_allowed_calls(vec![CallScope {
-                target: Address::random(),
-                selector_rules: vec![SelectorRule {
-                    selector: [0xa9, 0x05, 0x9c, 0xbb],
-                    recipients: vec![],
-                }],
-            }]),
-            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-        };
+        let empty_recipients =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random())
+                .with_allowed_calls(vec![CallScope {
+                    target: Address::random(),
+                    selector_rules: vec![SelectorRule {
+                        selector: [0xa9, 0x05, 0x9c, 0xbb],
+                        recipients: vec![],
+                    }],
+                }])
+                .into_signed(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ));
 
         let translated = translate_allowed_calls_for_precompile(&empty_recipients);
         assert_eq!(translated.len(), 1);
@@ -3347,26 +3572,23 @@ mod tests {
         };
 
         // Create key authorization with 2 limits
-        let key_auth: SignedKeyAuthorization = SignedKeyAuthorization {
-            authorization: KeyAuthorization::unrestricted(
-                1,
-                SignatureType::Secp256k1,
-                Address::random(),
-            )
-            .with_limits(vec![
-                TokenLimit {
-                    token: Address::random(),
-                    limit: U256::from(1000),
-                    period: 0,
-                },
-                TokenLimit {
-                    token: Address::random(),
-                    limit: U256::from(2000),
-                    period: 0,
-                },
-            ]),
-            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-        };
+        let key_auth: SignedKeyAuthorization =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random())
+                .with_limits(vec![
+                    TokenLimit {
+                        token: Address::random(),
+                        limit: U256::from(1000),
+                        period: 0,
+                    },
+                    TokenLimit {
+                        token: Address::random(),
+                        limit: U256::from(2000),
+                        period: 0,
+                    },
+                ])
+                .into_signed(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ));
 
         let aa_env_with_key_auth = TempoBatchCallEnv {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
@@ -4342,10 +4564,9 @@ mod tests {
                         period: 0,
                     }).collect());
                 }
-                SignedKeyAuthorization {
-                    authorization: auth,
-                    signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-                }
+                auth.into_signed(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ))
             };
 
             // Test both pre-T1B and T1B branches
@@ -4375,9 +4596,7 @@ mod tests {
             num_limits in 0usize..5,
         ) {
             use tempo_primitives::transaction::{
-                SignatureType, SignedKeyAuthorization,
-                key_authorization::KeyAuthorization,
-                TokenLimit as PrimTokenLimit,
+                SignatureType, TokenLimit as PrimTokenLimit, key_authorization::KeyAuthorization,
             };
 
             let signature = match sig_type {
@@ -4400,10 +4619,7 @@ mod tests {
                     period: 0,
                 }).collect());
             }
-            let key_auth = SignedKeyAuthorization {
-                authorization: auth,
-                signature,
-            };
+            let key_auth = auth.into_signed(signature);
 
             // Pre-T1B: minimum is KEY_AUTH_BASE_GAS + ECRECOVER_GAS
             let (gas, _) = calculate_key_authorization_gas(&key_auth, &GasParams::default(), tempo_chainspec::hardfork::TempoHardfork::default());
@@ -4898,6 +5114,497 @@ mod tests {
                         })
                         .expect("witness read succeeds"),
                     "T5 key authorization must not burn its witness"
+                );
+            });
+        }
+
+        #[test]
+        fn test_t6_admin_key_authorization_fields_rejected_before_t6() {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key).into_admin(user),
+            );
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T5, None, false);
+
+            let result = h.validate_env(&mut evm);
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("not active before T6")
+                ),
+                "admin key authorization fields should be rejected before T6, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t6_admin_key_authorization_rejects_account_mismatch() {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let wrong_account = Address::random();
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
+                    .into_admin(wrong_account),
+            );
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T6, None, false);
+
+            let result = h.validate_env(&mut evm);
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("account mismatch")
+                ),
+                "admin key authorization should be bound to tx.caller, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t6_root_admin_key_authorization_allows_omitted_account() {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let mut key_auth = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key);
+            key_auth.is_admin = true;
+            assert_eq!(key_auth.account, None);
+
+            let signed = sign_key_auth(&signer, key_auth);
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T6, None, false);
+
+            let env_result = h.validate_env(&mut evm);
+            assert!(
+                env_result.is_ok(),
+                "root-signed admin key authorization should pass stateless validation, got: {env_result:?}"
+            );
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                result.is_ok(),
+                "root-signed admin key authorization should not require account, got: {result:?}"
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let keychain = AccountKeychain::new();
+                assert!(
+                    keychain
+                        .is_admin_key(user, key)
+                        .expect("admin key status read succeeds"),
+                    "root-signed admin key should be registered as admin"
+                );
+            });
+        }
+
+        #[test]
+        fn test_t6_root_signed_key_authorization_rejects_admin_keychain_submission() {
+            let (root_signer, user) = generate_keypair();
+            let (_, admin_key) = generate_keypair();
+            let child_key = Address::random();
+            let signed = sign_key_auth(
+                &root_signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key),
+            );
+            let (mut evm, h) = make_evm(
+                user,
+                admin_key,
+                Some(signed),
+                TempoHardfork::T6,
+                None,
+                false,
+            );
+
+            let env_result = h.validate_env(&mut evm);
+            assert!(
+                matches!(
+                    &env_result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("root transaction signature")
+                ),
+                "root-signed key authorization should require a root transaction signature, got: {env_result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t6_root_key_authorization_rejects_account_mismatch() {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let wrong_account = Address::random();
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
+                    .with_account(wrong_account),
+            );
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T6, None, false);
+
+            let result = h.validate_env(&mut evm);
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("key authorization account mismatch")
+                ),
+                "root-signed key authorization should be bound to tx.caller, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t6_admin_key_authorization_rejects_restrictions() {
+            let (signer, user) = generate_keypair();
+            let key = Address::random();
+            let signed = sign_key_auth(
+                &signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, key)
+                    .with_expiry(u64::MAX)
+                    .into_admin(user),
+            );
+            let (mut evm, h) = make_evm(user, key, Some(signed), TempoHardfork::T6, None, false);
+
+            let result = h.validate_env(&mut evm);
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("cannot carry expiry")
+                ),
+                "admin key authorization should reject restrictions, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t6_admin_access_key_can_authorize_different_admin_key() {
+            let (admin_signer, admin_key) = generate_keypair();
+            let user = Address::random();
+            let child_key = Address::random();
+            let signed = sign_key_auth(
+                &admin_signer,
+                KeyAuthorization::unrestricted(1, SignatureType::WebAuthn, child_key)
+                    .into_admin(user),
+            );
+            let (mut evm, h) = make_evm(
+                user,
+                admin_key,
+                Some(signed),
+                TempoHardfork::T6,
+                None,
+                false,
+            );
+
+            let env_result = h.validate_env(&mut evm);
+            assert!(
+                env_result.is_ok(),
+                "admin access key authorization should pass stateless validation, got: {env_result:?}"
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let mut keychain = AccountKeychain::new();
+                keychain
+                    .authorize_admin_key(user, admin_key, PrecompileSignatureType::Secp256k1, None)
+                    .expect("root authorizes admin key");
+            });
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                result.is_ok(),
+                "admin access key should authorize a different admin key, got: {result:?}"
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let keychain = AccountKeychain::new();
+                assert!(
+                    keychain
+                        .is_admin_key(user, child_key)
+                        .expect("admin key status read succeeds"),
+                    "child key should be registered as admin"
+                );
+            });
+        }
+
+        #[test]
+        fn test_t6_admin_key_authorization_rejects_different_transaction_admin_key() {
+            let (authorization_signer, authorization_admin_key) = generate_keypair();
+            let (_, tx_admin_key) = generate_keypair();
+            let user = Address::random();
+            let child_key = Address::random();
+            let signed = sign_key_auth(
+                &authorization_signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key)
+                    .with_account(user),
+            );
+            let (mut evm, h) = make_evm(
+                user,
+                tx_admin_key,
+                Some(signed),
+                TempoHardfork::T6,
+                None,
+                false,
+            );
+
+            let result = h.validate_env(&mut evm);
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("must be signed by transaction key")
+                ),
+                "admin-signed key authorization must use the transaction admin key; auth signer {authorization_admin_key}, tx signer {tx_admin_key}, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t6_admin_access_key_non_admin_authorization_requires_account_binding() {
+            let (admin_signer, admin_key) = generate_keypair();
+            let user = Address::random();
+            let child_key = Address::random();
+            let signed = sign_key_auth(
+                &admin_signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key),
+            );
+            let (mut evm, h) = make_evm(
+                user,
+                admin_key,
+                Some(signed),
+                TempoHardfork::T6,
+                None,
+                false,
+            );
+
+            let result = h.validate_env(&mut evm);
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("admin-signed key authorization account mismatch")
+                ),
+                "admin-signed non-admin authorization without account binding should fail in validate_env, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t6_admin_key_authorization_rejects_admin_signature_type_mismatch() {
+            let (admin_signer, admin_key) = generate_keypair();
+            let user = Address::random();
+            let child_key = Address::random();
+            let signed = sign_key_auth(
+                &admin_signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key)
+                    .with_account(user),
+            );
+            let (mut evm, h) = make_evm(
+                user,
+                admin_key,
+                Some(signed),
+                TempoHardfork::T6,
+                None,
+                false,
+            );
+
+            let env_result = h.validate_env(&mut evm);
+            assert!(
+                env_result.is_ok(),
+                "admin-signed key authorization should pass stateless validation, got: {env_result:?}"
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let mut keychain = AccountKeychain::new();
+                keychain
+                    .authorize_admin_key(user, admin_key, PrecompileSignatureType::WebAuthn, None)
+                    .expect("root authorizes WebAuthn admin key");
+            });
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                matches!(
+                    &result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("SignatureTypeMismatch")
+                ),
+                "admin-signed key authorization should reject sidecar signature type mismatch, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t6_admin_access_key_non_admin_authorization_rejects_account_replay() {
+            use tempo_precompiles::account_keychain::getKeyCall;
+
+            let (admin_signer, admin_key) = generate_keypair();
+            let alice = Address::random();
+            let bob = Address::random();
+            let child_key = Address::random();
+            let signed = sign_key_auth(
+                &admin_signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key)
+                    .with_account(alice),
+            );
+
+            let (mut alice_evm, alice_handler) = make_evm(
+                alice,
+                admin_key,
+                Some(signed.clone()),
+                TempoHardfork::T6,
+                None,
+                false,
+            );
+            let alice_env_result = alice_handler.validate_env(&mut alice_evm);
+            assert!(
+                alice_env_result.is_ok(),
+                "account-bound authorization should pass Alice stateless validation, got: {alice_env_result:?}"
+            );
+
+            StorageCtx::enter_ctx(&mut alice_evm.inner.ctx, || {
+                let mut keychain = AccountKeychain::new();
+                keychain
+                    .authorize_admin_key(alice, admin_key, PrecompileSignatureType::Secp256k1, None)
+                    .expect("root authorizes Alice admin key");
+            });
+
+            let alice_result = alice_handler
+                .validate_against_state_and_deduct_caller(&mut alice_evm, &mut Default::default());
+            assert!(
+                alice_result.is_ok(),
+                "account-bound admin-signed non-admin authorization should pass for Alice, got: {alice_result:?}"
+            );
+            StorageCtx::enter_ctx(&mut alice_evm.inner.ctx, || {
+                let keychain = AccountKeychain::new();
+                let key = keychain
+                    .get_key(getKeyCall {
+                        account: alice,
+                        keyId: child_key,
+                    })
+                    .expect("child key read succeeds");
+                assert_eq!(key.keyId, child_key, "child key should be registered");
+                assert!(
+                    !keychain
+                        .is_admin_key(alice, child_key)
+                        .expect("admin key status read succeeds"),
+                    "child key should not be admin"
+                );
+            });
+
+            let (mut bob_evm, bob_handler) =
+                make_evm(bob, admin_key, Some(signed), TempoHardfork::T6, None, false);
+
+            let bob_result = bob_handler.validate_env(&mut bob_evm);
+            assert!(
+                matches!(
+                    &bob_result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("key authorization account mismatch")
+                ),
+                "Alice-bound authorization should not replay for Bob, got: {bob_result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t6_admin_delegation_does_not_apply_child_fee_limit() {
+            let (admin_signer, admin_key) = generate_keypair();
+            let user = Address::random();
+            let child_key = Address::random();
+            let gas_limit = 100_000;
+            let fee = U256::from(gas_limit);
+            let child_spending_limit = fee - U256::ONE;
+
+            let signed = sign_key_auth(
+                &admin_signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key)
+                    .with_limits(vec![PrimTokenLimit {
+                        token: DEFAULT_FEE_TOKEN,
+                        limit: child_spending_limit,
+                        period: 60,
+                    }])
+                    .with_account(user),
+            );
+            let (mut evm, h) = make_evm(
+                user,
+                admin_key,
+                Some(signed),
+                TempoHardfork::T6,
+                None,
+                false,
+            );
+            evm.inner.ctx.tx.inner.gas_limit = gas_limit;
+            evm.inner.ctx.tx.inner.gas_price = 1_000_000_000_000;
+            evm.inner.ctx.tx.inner.gas_priority_fee = Some(1_000_000_000_000);
+
+            let env_result = h.validate_env(&mut evm);
+            assert!(
+                env_result.is_ok(),
+                "admin delegation should pass stateless validation, got: {env_result:?}"
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                TIP20Setup::path_usd(user)
+                    .with_issuer(user)
+                    .with_mint(user, fee * U256::from(2))
+                    .apply()
+                    .expect("pathUSD setup succeeds");
+
+                let mut keychain = AccountKeychain::new();
+                keychain
+                    .authorize_admin_key(user, admin_key, PrecompileSignatureType::Secp256k1, None)
+                    .expect("root authorizes admin key");
+            });
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                result.is_ok(),
+                "admin delegation should not precharge fees against child key limits, got: {result:?}"
+            );
+        }
+
+        #[test]
+        fn test_t6_admin_delegation_preserves_admin_transaction_key() {
+            use tempo_precompiles::account_keychain::getTransactionKeyCall;
+
+            let (admin_signer, admin_key) = generate_keypair();
+            let user = Address::random();
+            let child_key = Address::random();
+            let signed = sign_key_auth(
+                &admin_signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key)
+                    .with_account(user),
+            );
+            let (mut evm, h) = make_evm(
+                user,
+                admin_key,
+                Some(signed),
+                TempoHardfork::T6,
+                None,
+                false,
+            );
+
+            let env_result = h.validate_env(&mut evm);
+            assert!(
+                env_result.is_ok(),
+                "admin delegation should pass stateless validation, got: {env_result:?}"
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let mut keychain = AccountKeychain::new();
+                keychain
+                    .authorize_admin_key(user, admin_key, PrecompileSignatureType::Secp256k1, None)
+                    .expect("root authorizes admin key");
+            });
+
+            let result =
+                h.validate_against_state_and_deduct_caller(&mut evm, &mut Default::default());
+            assert!(
+                result.is_ok(),
+                "admin delegation should pass, got: {result:?}"
+            );
+
+            StorageCtx::enter_ctx(&mut evm.inner.ctx, || {
+                let keychain = AccountKeychain::new();
+                let transaction_key = keychain
+                    .get_transaction_key(getTransactionKeyCall {}, user)
+                    .expect("transaction key read succeeds");
+                assert_eq!(
+                    transaction_key, admin_key,
+                    "admin delegation must preserve the signer key as transaction key"
                 );
             });
         }
