@@ -8,6 +8,7 @@ pub const TIP20_TOKEN_PREFIX: [u8; 12] = hex!("20C000000000000000000000");
 ///
 /// NOTE: This only checks the prefix, not whether the token was actually created.
 /// Use `TIP20Factory::is_tip20()` for full validation.
+#[inline]
 pub fn is_tip20_prefix(addr: Address) -> bool {
     addr.as_slice().starts_with(&TIP20_TOKEN_PREFIX)
 }
@@ -62,18 +63,23 @@ impl TempoAddressExt for Address {
     const TIP20_PREFIX: [u8; 12] = TIP20_TOKEN_PREFIX;
     const VIRTUAL_MAGIC: [u8; 10] = [0xFD; 10];
 
+    #[inline]
     fn is_tip20(&self) -> bool {
         is_tip20_prefix(*self)
     }
 
+    #[inline]
     fn is_virtual(&self) -> bool {
-        self.as_slice()[4..14] == Self::VIRTUAL_MAGIC
+        let bytes = self.as_slice();
+        bytes[4] == Self::VIRTUAL_MAGIC[0] && bytes[5..14] == Self::VIRTUAL_MAGIC[1..]
     }
 
+    #[inline]
     fn is_valid_master(&self) -> bool {
         !self.is_zero() && !self.is_virtual() && !self.is_tip20()
     }
 
+    #[inline]
     fn decode_virtual(&self) -> Option<(MasterId, UserTag)> {
         if !self.is_virtual() {
             return None;
@@ -85,6 +91,7 @@ impl TempoAddressExt for Address {
         ))
     }
 
+    #[inline]
     fn new_virtual(master_id: MasterId, user_tag: UserTag) -> Self {
         let mut bytes = [0u8; 20];
         bytes[0..4].copy_from_slice(master_id.as_slice());
