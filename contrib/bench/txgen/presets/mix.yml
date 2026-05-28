@@ -13,22 +13,11 @@ accounts:
 
 artifacts:
   ERC20: ../erc20.abi.json
-  MPPChannel:
-    abi: ../mpp-channel.json
-    bytecode: ../mpp-channel.json
+  MPPChannel: ../mpp-channel.abi.json
   StablecoinDEX: ../stablecoin-dex.abi.json
 
 setup:
   steps:
-    - id: channel
-      deploy:
-        type: eip1559
-        from:
-          pool: users
-          select: { index: 0 }
-        artifact: MPPChannel
-        gas_limit: 20000000
-        constructor_args: []
     - id: dex_approve_quote
       tx:
         type: eip1559
@@ -164,6 +153,9 @@ sequences:
       authorized_signer:
         address:
           const: "0x0000000000000000000000000000000000000000"
+      channel:
+        address:
+          const: "0x4D50500000000000000000000000000000000000"
       salt:
         bytes32:
           random_bytes: 32
@@ -176,7 +168,7 @@ sequences:
             - { var: token }
             - { var: salt }
             - { var: authorized_signer }
-            - { var: setup.channel.address }
+            - { var: channel }
             - { var: chain_id }
       channel_key:
         abi_encode_packed:
@@ -196,9 +188,9 @@ sequences:
               abi: ERC20
               function: approve
               args:
-                - { var: setup.channel.address }
+                - { var: channel }
                 - 1
-            - to: { var: setup.channel.address }
+            - to: { var: channel }
               abi: MPPChannel
               function: open
               args:
@@ -207,7 +199,7 @@ sequences:
                 - 1
                 - { var: salt }
                 - { var: authorized_signer }
-            - to: { var: setup.channel.address }
+            - to: { var: channel }
               abi: MPPChannel
               function: close
               args:
