@@ -2116,12 +2116,13 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     // 2. Signature verification gas
     gas.initial_regular_gas += tempo_signature_verification_gas(signature);
 
-    let cold_account_cost =
-        gas_params.warm_storage_read_cost() + gas_params.cold_account_additional_cost();
-
     // 3. Per-call overhead: cold account access
     // if the `to` address has not appeared in the call batch before.
-    gas.initial_regular_gas += cold_account_cost * calls.len().saturating_sub(1) as u64;
+    if calls.len() > 1 {
+        let cold_account_cost =
+            gas_params.warm_storage_read_cost() + gas_params.cold_account_additional_cost();
+        gas.initial_regular_gas += cold_account_cost * (calls.len() - 1) as u64;
+    }
 
     // 4. Authorization list costs (EIP-7702)
     let num_auths = authorization_list.len() as u64;
