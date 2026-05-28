@@ -17,6 +17,7 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use reth_node_core::primitives::SealedBlock;
+use tracing::warn;
 
 use crate::consensus::Digest;
 
@@ -153,11 +154,15 @@ impl commonware_consensus::CertifiableBlock for Block {
             None => {
                 // Returns a deterministic sentinel `Context`.
                 //
-                // Pre-T4: Unused; consensus does not consult this context.
-                // Post-T4: All blocks must carry a `consensus_context`, so reaching
-                // this branch indicates a malformed block. The sentinel intentionally
-                // does not match any real consensus values, so it will fail
-                // verification rather than panic.
+                // All consensus-produced blocks must carry a `consensus_context`, so
+                // reaching this branch indicates a malformed block. The sentinel
+                // intentionally does not match any real consensus values, so it will
+                // fail verification rather than panic.
+                warn!(
+                    "context request for block `{}` with no consensus context",
+                    self.digest()
+                );
+
                 let leader = PublicKey::from(PrivateKey::from_seed(0));
                 Context {
                     leader,

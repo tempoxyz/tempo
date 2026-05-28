@@ -27,7 +27,6 @@ use reth_evm::{
         DatabaseCommit,
         context_interface::JournalTr as _,
         database::{CacheDB, EmptyDB},
-        inspector::JournalExt,
         state::{AccountInfo, Bytecode},
     },
 };

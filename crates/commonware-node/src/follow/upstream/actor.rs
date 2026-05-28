@@ -12,6 +12,7 @@ use jsonrpsee::{
     core::{client, client::Subscription},
     ws_client::{WsClient, WsClientBuilder},
 };
+use rand_08::Rng as _;
 use tempo_node::rpc::consensus::{CertifiedBlock, Event, Query, TempoConsensusApiClient};
 use tempo_telemetry_util::display_duration;
 use tokio::{
@@ -23,6 +24,10 @@ use tracing::{debug, debug_span, instrument, warn, warn_span};
 use crate::utils::OptionFuture;
 
 type EventStream = Fuse<BoxStream<'static, Result<Event, serde_json::Error>>>;
+
+const RECONNECT_BACKOFF_FACTOR: u64 = 2;
+const RECONNECT_MAX_BACKOFF: Duration = Duration::from_secs(20);
+const RECONNECT_JITTER: Duration = Duration::from_secs(1);
 
 /// Manages the connection to the upstream node.
 ///
@@ -97,7 +102,7 @@ where
                             }.boxed());
                         }
                         Err(reason) => {
-                            let reconnect_in = Duration::from_secs(attempts.saturating_mul(1).min(20));
+                            let reconnect_in = reconnect_delay(attempts);
                             warn_span!("reconnect").in_scope(|| warn!(
                                 %reason,
                                 attempts,
@@ -110,7 +115,10 @@ where
                                 let url = self.url;
                                 async move {
                                     context.sleep(reconnect_in).await;
-                                    (1, WsClientBuilder::default().build(&url).await.map_err(Report::new))
+                                    (
+                                        attempts.saturating_add(1),
+                                        WsClientBuilder::default().build(&url).await.map_err(Report::new),
+                                    )
                                 }.boxed()
                             });
                         }
@@ -172,6 +180,22 @@ where
     }
 }
 
+fn reconnect_delay(attempts: u64) -> Duration {
+    reconnect_backoff(attempts) + random_jitter()
+}
+
+fn reconnect_backoff(attempts: u64) -> Duration {
+    let backoff_secs = attempts.saturating_mul(RECONNECT_BACKOFF_FACTOR);
+    let backoff = Duration::from_secs(backoff_secs);
+
+    backoff.min(RECONNECT_MAX_BACKOFF)
+}
+
+fn random_jitter() -> Duration {
+    let max_jitter_millis = RECONNECT_JITTER.as_millis() as u64;
+    Duration::from_millis(rand_08::thread_rng().gen_range(0..=max_jitter_millis))
+}
+
 #[instrument(skip_all, fields(%height), err)]
 async fn get_finalization(
     client: Arc<WsClient>,
@@ -187,4 +211,21 @@ async fn get_finalization(
     response
         .send(Some(finalization))
         .map_err(|_| eyre::eyre!("receiver went away"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reconnect_backoff_linearly_increases_and_caps() {
+        assert_eq!(reconnect_backoff(0), Duration::from_secs(0));
+        assert_eq!(reconnect_backoff(1), Duration::from_secs(2));
+        assert_eq!(reconnect_backoff(2), Duration::from_secs(4));
+        assert_eq!(reconnect_backoff(3), Duration::from_secs(6));
+        assert_eq!(reconnect_backoff(4), Duration::from_secs(8));
+        assert_eq!(reconnect_backoff(5), Duration::from_secs(10));
+        assert_eq!(reconnect_backoff(10), RECONNECT_MAX_BACKOFF);
+        assert_eq!(reconnect_backoff(u64::MAX), RECONNECT_MAX_BACKOFF);
+    }
 }
