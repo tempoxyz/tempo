@@ -2,7 +2,7 @@ use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use revm::{
     context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
-    context_interface::cfg::{GasParams, gas},
+    context_interface::cfg::{GasId, GasParams, gas},
     interpreter::gas::GasTracker,
     state::{AccountInfo, Bytecode},
 };
@@ -222,12 +222,14 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
-        self.deduct_gas(
-            gas::LOG
-                + self
-                    .gas_params
-                    .log_cost(event.topics().len() as u8, event.data.len() as u64),
-        )?;
+        let log_cost = self
+            .gas_params
+            .get(GasId::logdata())
+            .saturating_mul(event.data.len() as u64)
+            .saturating_add(
+                self.gas_params.get(GasId::logtopic()) * event.topics().len() as u64,
+            );
+        self.deduct_gas(gas::LOG + log_cost)?;
 
         self.internals.log(Log {
             address,
