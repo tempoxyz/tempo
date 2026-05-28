@@ -940,13 +940,19 @@ impl TIP20Token {
 
 // Utility functions
 impl TIP20Token {
+    #[cold]
+    #[inline(never)]
+    fn invalid_token_error() -> TempoPrecompileError {
+        TIP20Error::invalid_token().into()
+    }
+
     /// Creates a `TIP20Token` handle from a raw address.
     ///
     /// # Errors
     /// - `InvalidToken` — address does not carry the `0x20C0` TIP-20 prefix
     pub fn from_address(address: Address) -> Result<Self> {
         if !address.is_tip20() {
-            return Err(TIP20Error::invalid_token().into());
+            return Err(Self::invalid_token_error());
         }
         Ok(Self::__new(address))
     }
