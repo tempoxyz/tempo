@@ -16,7 +16,7 @@ use alloy_primitives::{
     map::{AddressMap, B256Map, HashMap},
 };
 use alloy_signer::SignerSync;
-use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
+use alloy_signer_local::{MnemonicBuilder, Secp256k1Signer};
 use alloy_sol_types::SolCall;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use reth_execution_cache::{
@@ -558,7 +558,7 @@ fn apply_seed_reward_mode(
     Ok(())
 }
 
-fn txgen_signers(account_count: usize) -> Vec<PrivateKeySigner> {
+fn txgen_signers(account_count: usize) -> Vec<Secp256k1Signer> {
     (0..account_count)
         .map(|idx| {
             MnemonicBuilder::from_phrase(TXGEN_MNEMONIC)
@@ -566,12 +566,13 @@ fn txgen_signers(account_count: usize) -> Vec<PrivateKeySigner> {
                 .expect("valid txgen account index")
                 .build()
                 .expect("valid txgen mnemonic")
+                .to_secp256k1()
         })
         .collect()
 }
 
 fn sign_tip20_transfer(
-    signer: &PrivateKeySigner,
+    signer: &Secp256k1Signer,
     recipient: Address,
     amount: U256,
 ) -> Recovered<TempoTxEnvelope> {
@@ -587,7 +588,7 @@ fn sign_tip20_transfer(
     )
 }
 
-fn sign_tip20_call(signer: &PrivateKeySigner, input: Bytes) -> Recovered<TempoTxEnvelope> {
+fn sign_tip20_call(signer: &Secp256k1Signer, input: Bytes) -> Recovered<TempoTxEnvelope> {
     let tx = TempoTransaction {
         chain_id: CHAIN_ID,
         fee_token: Some(PATH_USD_ADDRESS),
@@ -739,7 +740,7 @@ fn reward_bench_workloads() -> Vec<RewardBenchWorkload> {
 
 fn transfer_reward_workload(
     name: &'static str,
-    signers: &[PrivateKeySigner],
+    signers: &[Secp256k1Signer],
     sender: RewardSeedMode,
     recipient: RewardSeedMode,
     reward_delta: bool,

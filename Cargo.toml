@@ -203,9 +203,12 @@ reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "aec6ba0", feat
   "std",
   "optional-checks",
 ] }
-revm = { version = "40.0.3", features = ["optional_fee_charge"], default-features = false }
+revm = { version = "40.0.3", features = [
+  "optional_fee_charge",
+  "secp256k1",
+], default-features = false }
 
-alloy = { version = "2.0.5", default-features = false }
+alloy = { version = "2.0.5", default-features = false, features = ["secp256k1"] }
 alloy-consensus = { version = "2.0.5", default-features = false }
 alloy-contract = { version = "2.0.5", default-features = false }
 alloy-eips = { version = "2.0.5", default-features = false }
@@ -227,7 +230,7 @@ alloy-signer = "2.0.5"
 alloy-signer-aws = "2.0.5"
 alloy-signer-gcp = "2.0.5"
 alloy-signer-ledger = "2.0.5"
-alloy-signer-local = "2.0.5"
+alloy-signer-local = { version = "2.0.5", features = ["secp256k1"] }
 alloy-signer-trezor = "2.0.5"
 
 alloy-sol-types = { version = "1.6.0", default-features = false }

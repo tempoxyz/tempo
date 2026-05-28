@@ -3,7 +3,7 @@ use alloy::{
     primitives::{Address, U256},
     providers::{Provider, ProviderBuilder},
     rpc::types::Filter,
-    signers::local::PrivateKeySigner,
+    signers::local::Secp256k1Signer,
     sol_types::SolEvent,
 };
 use clap::Parser;
@@ -108,7 +108,7 @@ impl SimpleArbArgs {
                 .context("failed to run poem server")
         });
 
-        let signer = PrivateKeySigner::from_slice(
+        let signer = Secp256k1Signer::from_slice(
             &hex::decode(&self.private_key).context("failed to decode private key")?,
         )
         .context("failed to parse private key")?;

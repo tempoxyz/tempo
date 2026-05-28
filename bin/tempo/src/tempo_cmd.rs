@@ -15,7 +15,7 @@ use alloy_rpc_types_eth::TransactionRequest;
 use alloy_signer_aws::{AwsSigner, aws_config, aws_sdk_kms};
 use alloy_signer_gcp::{GcpKeyRingRef, GcpSigner, KeySpecifier, gcloud_sdk};
 use alloy_signer_ledger::{HDPath as LedgerHDPath, LedgerSigner};
-use alloy_signer_local::PrivateKeySigner;
+use alloy_signer_local::Secp256k1Signer;
 use alloy_signer_trezor::{HDPath as TrezorHDPath, TrezorSigner};
 use alloy_sol_types::SolCall;
 use clap::Subcommand;
@@ -1359,10 +1359,10 @@ impl Info {
     }
 }
 
-fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<PrivateKeySigner> {
+fn key_from_file<P: AsRef<Path>>(p: P) -> eyre::Result<Secp256k1Signer> {
     let raw = std::fs::read(p).wrap_err("failed reading key from file")?;
     let bytes = alloy::hex::decode(&raw).wrap_err("failed decoding file contents from hex")?;
-    PrivateKeySigner::from_slice(&bytes)
+    Secp256k1Signer::from_slice(&bytes)
         .wrap_err("failed converting file decoded hex bytes to private key")
 }
 

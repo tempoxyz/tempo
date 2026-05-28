@@ -2,7 +2,7 @@ use alloy::{
     network::EthereumWallet,
     primitives::{Address, B256, U256},
     providers::{DynProvider, Provider, ProviderBuilder},
-    signers::local::PrivateKeySigner,
+    signers::local::Secp256k1Signer,
 };
 use clap::Args;
 use tempo_alloy::{TempoNetwork, provider::ext::TempoProviderBuilderExt};
@@ -50,10 +50,9 @@ pub struct FaucetArgs {
 
 impl FaucetArgs {
     pub fn wallet(&self) -> EthereumWallet {
-        let signer: PrivateKeySigner = PrivateKeySigner::from_bytes(
-            &self.private_key.expect("No faucet private key provided"),
-        )
-        .expect("Failed to decode private key");
+        let signer: Secp256k1Signer =
+            Secp256k1Signer::from_bytes(&self.private_key.expect("No faucet private key provided"))
+                .expect("Failed to decode private key");
         EthereumWallet::new(signer)
     }
 

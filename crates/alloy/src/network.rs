@@ -12,7 +12,7 @@ use alloy_provider::fillers::{
     ChainIdFiller, GasFiller, JoinFill, NonceFiller, RecommendedFillers,
 };
 use alloy_rpc_types_eth::{AccessList, Block, Transaction};
-use alloy_signer_local::PrivateKeySigner;
+use alloy_signer_local::{PrivateKeySigner, Secp256k1Signer};
 use tempo_primitives::{
     TempoHeader, TempoReceipt, TempoTxEnvelope, TempoTxType, transaction::TempoTypedTransaction,
 };
@@ -299,6 +299,14 @@ impl RecommendedFillers for TempoNetwork {
 }
 
 impl IntoWallet<TempoNetwork> for PrivateKeySigner {
+    type NetworkWallet = EthereumWallet;
+
+    fn into_wallet(self) -> Self::NetworkWallet {
+        self.into()
+    }
+}
+
+impl IntoWallet<TempoNetwork> for Secp256k1Signer {
     type NetworkWallet = EthereumWallet;
 
     fn into_wallet(self) -> Self::NetworkWallet {
