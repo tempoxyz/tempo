@@ -294,6 +294,7 @@ serde = { version = "1.0.228", features = ["derive"], default-features = false }
 serde_json = { version = "1.0.149", features = ["alloc"], default-features = false }
 schnellru = "0.2"
 sha2 = { version = "0.10", default-features = false }
+smallvec = "1.15.1"
 tempfile = "3.24.0"
 thiserror = "2.0.18"
 # TODO: restrict this to only the required features
