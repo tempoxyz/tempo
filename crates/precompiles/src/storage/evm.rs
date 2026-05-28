@@ -82,7 +82,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
         if !self.gas_tracker.record_state_cost(gas) {
-            return Err(TempoPrecompileError::OutOfGas);
+            return Err(out_of_gas_error());
         }
         Ok(())
     }
@@ -379,6 +379,13 @@ impl EvmPrecompileStorageProvider<'_> {
     }
 }
 
+/// Builds the out-of-gas error on the uncommon failure path.
+#[cold]
+#[inline(never)]
+fn out_of_gas_error() -> TempoPrecompileError {
+    TempoPrecompileError::OutOfGas
+}
+
 /// Deducts gas from the remaining gas and returns an error if insufficient.
 #[inline]
 pub fn deduct_gas(
@@ -386,7 +393,7 @@ pub fn deduct_gas(
     additional_cost: u64,
 ) -> Result<(), TempoPrecompileError> {
     if !gas_tracker.record_regular_cost(additional_cost) {
-        return Err(TempoPrecompileError::OutOfGas);
+        return Err(out_of_gas_error());
     }
     Ok(())
 }
