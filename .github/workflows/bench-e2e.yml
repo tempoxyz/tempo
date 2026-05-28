@@ -438,17 +438,6 @@ jobs:
         if: env.VICTORIALOGS_URL
         run: echo "::add-mask::$VICTORIALOGS_URL"
 
-      - name: Validate ValScope datasource URLs
-        run: |
-          if [ -z "$VICTORIAMETRICS_URL" ]; then
-            echo "::error::VICTORIAMETRICS_URL is required to generate ValScope static reports"
-            exit 1
-          fi
-          if [ -z "$VICTORIALOGS_URL" ]; then
-            echo "::error::VICTORIALOGS_URL is required to generate ValScope static reports"
-            exit 1
-          fi
-
       - name: Clean up previous results
         run: sudo rm -rf bench-results/ 2>/dev/null || true
 
@@ -792,14 +781,11 @@ jobs:
           [ -n "$CLICKHOUSE_URL" ] && cmd+=(--clickhouse-url "$CLICKHOUSE_URL")
           [ -n "$BENCH_RUN_TYPE" ] && cmd+=(--run-type "$BENCH_RUN_TYPE")
           [ -n "$BENCH_CLICKHOUSE_RUN" ] && cmd+=(--clickhouse-run "$BENCH_CLICKHOUSE_RUN")
-          if [ -f "valscope/apps/api/Cargo.toml" ]; then
-            cmd+=(--valscope-static-report --valscope-dir "valscope")
-          elif [ -f "../valscope/apps/api/Cargo.toml" ]; then
-            cmd+=(--valscope-static-report --valscope-dir "../valscope")
-          else
+          if [ ! -f "valscope/apps/api/Cargo.toml" ]; then
             echo "::error::ValScope static report builder not found"
             exit 1
           fi
+          cmd+=(--valscope-static-report --valscope-dir "valscope")
 
           quote_arg() {
             local value="$1"
@@ -879,29 +865,33 @@ jobs:
           echo "path=$RESULTS_DIR" >> "$GITHUB_OUTPUT"
           echo "Results directory: $RESULTS_DIR"
 
+      - name: Publish ValScope static reports
+        id: publish-valscope-static
+        if: success() && steps.results-dir.outputs.path != '' && hashFiles('bench-results/*/valscope-static/index.html') != ''
+        env:
+          BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
+        run: |
+          rm -rf tempo-bench-valscope-static
+          cp -a "$BENCH_RESULTS_DIR/valscope-static" tempo-bench-valscope-static
+          destination="valscope-bench/valscope-bench-reports-dev/${BENCHMARK_ID}"
+          mc cp --recursive tempo-bench-valscope-static/ "$destination"
+          if [ -n "${VALSCOPE_REPORTS_BASE_URL:-}" ]; then
+            echo "url=${VALSCOPE_REPORTS_BASE_URL%/}/${BENCHMARK_ID}/" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Upload results
-        id: upload-results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: tempo-bench-results
           path: bench-results/
 
-      - name: Upload ValScope static reports
-        id: upload-valscope-static
-        if: success() && hashFiles('bench-results/*/valscope-static/index.html') != ''
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: tempo-bench-valscope-static
-          path: ${{ steps.results-dir.outputs.path }}/valscope-static/
-
       - name: Post results to PR
         if: success()
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
-          BENCH_RESULTS_ARTIFACT_URL: ${{ steps.upload-results.outputs.artifact-url }}
-          BENCH_VALSCOPE_ARTIFACT_URL: ${{ steps.upload-valscope-static.outputs.artifact-url }}
+          BENCH_VALSCOPE_PUBLISHED_URL: ${{ steps.publish-valscope-static.outputs.url }}
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
@@ -1023,15 +1013,16 @@ jobs:
 
             let valscopeSection = '';
             try {
-              const manifestPath = `${resultsDir}/valscope-static/reports.json`;
-              const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
-              const artifactUrl = process.env.BENCH_VALSCOPE_ARTIFACT_URL || process.env.BENCH_RESULTS_ARTIFACT_URL || '';
-              const links = (manifest.runs || []).map(run => {
-                if (artifactUrl) return `- **${run.run}**: [ValScope static report](${artifactUrl}) (\`${run.path}\`)`;
-                return `- **${run.run}**: \`${run.path}\` in the uploaded benchmark artifact`;
-              });
-              if (links.length > 0) {
-                valscopeSection = `\n\n### ValScope Static Reports\n\n${links.join('\n')}\n`;
+              const publishedUrl = process.env.BENCH_VALSCOPE_PUBLISHED_URL || '';
+              const publishedBase = publishedUrl ? (publishedUrl.endsWith('/') ? publishedUrl : `${publishedUrl}/`) : '';
+              if (publishedBase) {
+                const manifest = JSON.parse(fs.readFileSync(`${resultsDir}/valscope-static/reports.json`, 'utf8'));
+                const links = (manifest.runs || []).map(run => {
+                  return `- **${run.run}**: [ValScope static report](${new URL(run.path, publishedBase).toString()})`;
+                });
+                if (links.length > 0) {
+                  valscopeSection = `\n\n### ValScope Static Reports\n\n${links.join('\n')}\n`;
+                }
               }
             } catch (e) {}
 
