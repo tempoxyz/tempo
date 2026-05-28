@@ -31,6 +31,7 @@ reth-rpc-eth-api = { workspace = true, optional = true }
 
 rayon = { workspace = true, optional = true }
 alloy-rlp.workspace = true
+alloy-eips.workspace = true
 alloy-evm.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
@@ -40,7 +41,6 @@ thiserror.workspace = true
 tracing.workspace = true
 
 [dev-dependencies]
-alloy-eips.workspace = true
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
 alloy-signer.workspace = true
 alloy-signer-local = { workspace = true, features = ["mnemonic"] }

@@ -1,5 +1,6 @@
 use crate::{TempoBlockExecutionCtx, evm::TempoEvm};
 use alloy_consensus::{Transaction, transaction::TxHashRef};
+use alloy_eips::eip2718::Encodable2718;
 use alloy_evm::{
     Database, Evm, RecoveredTx,
     block::{
@@ -25,6 +26,7 @@ use reth_revm::{
     context::result::ResultAndState,
     state::{Account, Bytecode, EvmState},
 };
+use core::cmp::min;
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
@@ -528,13 +530,38 @@ where
 
             self.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
         }
-        let result = self
-            .inner
-            .execute_transaction_without_commit((tx_env, &recovered));
+        let block_gas_used_for_limit = if self.evm().cfg.enable_amsterdam_eip8037 {
+            self.inner.block_regular_gas_used
+        } else {
+            self.inner.cumulative_tx_gas_used
+        };
+        let block_available_gas = self.evm().block().gas_limit - block_gas_used_for_limit;
+
+        let mut max_tx_gas_usage = recovered.tx().gas_limit();
+        if let Some(tx_gas_limit_cap) = self.evm().cfg.tx_gas_limit_cap {
+            max_tx_gas_usage = min(max_tx_gas_usage, tx_gas_limit_cap);
+        }
+
+        let result = if max_tx_gas_usage > block_available_gas {
+            Err(BlockValidationError::TransactionGasLimitMoreThanAvailableBlockGas {
+                transaction_gas_limit: recovered.tx().gas_limit(),
+                block_available_gas,
+            }
+            .into())
+        } else {
+            self.inner.evm.transact(tx_env).map_err(|err| {
+                let hash = recovered.tx().trie_hash();
+                BlockExecutionError::evm(err, hash)
+            })
+        };
 
         self.evm_mut().ctx_mut().block.beneficiary = beneficiary;
 
-        let inner = result?;
+        let inner = EthTxResult {
+            result: result?,
+            blob_gas_used: 0,
+            tx_type: recovered.tx().tx_type(),
+        };
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
