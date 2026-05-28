@@ -65,6 +65,7 @@ macro_rules! tempo_hardfork {
             paste::paste! {
                 $(
                     #[doc = concat!("Returns true if this hardfork is ", stringify!($variant), " or later.")]
+                    #[inline]
                     pub const fn [<is_ $variant:lower>](&self) -> bool {
                         *self as u64 >= Self::$variant as u64
                     }
