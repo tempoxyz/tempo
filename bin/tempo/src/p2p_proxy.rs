@@ -229,9 +229,7 @@ impl BlockCache {
 
     fn evict(&mut self) {
         while self.by_number.len() as u64 > self.capacity {
-            if let Some((&oldest_num, _)) = self.by_number.iter().next()
-                && let Some(block) = self.by_number.remove(&oldest_num)
-            {
+            if let Some((_, block)) = self.by_number.pop_first() {
                 self.by_hash.remove(&block.hash);
             }
         }
