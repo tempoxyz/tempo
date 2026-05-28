@@ -575,18 +575,22 @@ where
 
         let gas_output = self.inner.commit_transaction(inner);
 
+        if matches!(next_section, BlockSection::NonShared) {
+            self.section = BlockSection::NonShared;
+            self.non_shared_gas_left -= block_gas_used;
+            if !is_payment {
+                self.non_payment_gas_left -= block_gas_used;
+            }
+            return gas_output;
+        }
+
         self.section = next_section;
 
         match self.section {
             BlockSection::StartOfBlock => {
                 // no gas spending for start-of-block system transactions
             }
-            BlockSection::NonShared => {
-                self.non_shared_gas_left -= block_gas_used;
-                if !is_payment {
-                    self.non_payment_gas_left -= block_gas_used;
-                }
-            }
+            BlockSection::NonShared => unreachable!("non-shared transactions are handled above"),
             BlockSection::SubBlock { proposer } => {
                 let last_subblock = if let Some(last) = self
                     .seen_subblocks
