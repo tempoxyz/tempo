@@ -64,6 +64,7 @@ impl StorageCtx {
     ///
     /// # Panics
     /// Panics if no storage context is set.
+    #[inline(always)]
     fn with_storage<F, R>(f: F) -> R
     where
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> R,
@@ -81,6 +82,7 @@ impl StorageCtx {
     }
 
     /// Execute a (fallible) function with access to the current thread-local storage provider.
+    #[inline(always)]
     fn try_with_storage<F, R>(f: F) -> Result<R>
     where
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> Result<R>,
@@ -103,6 +105,7 @@ impl StorageCtx {
     /// Executes a closure with access to the account info, returning the closure's result.
     ///
     /// This is an ergonomic wrapper that flattens the Result, avoiding double `?`.
+    #[inline(always)]
     pub fn with_account_info<T>(
         &self,
         address: Address,
@@ -118,97 +121,116 @@ impl StorageCtx {
     }
 
     /// Returns the chain ID.
+    #[inline(always)]
     pub fn chain_id(&self) -> u64 {
         Self::with_storage(|s| s.chain_id())
     }
 
     /// Returns the current block timestamp.
+    #[inline(always)]
     pub fn timestamp(&self) -> U256 {
         Self::with_storage(|s| s.timestamp())
     }
 
     /// Returns the current block beneficiary (coinbase).
+    #[inline(always)]
     pub fn beneficiary(&self) -> Address {
         Self::with_storage(|s| s.beneficiary())
     }
 
     /// Returns the current block number.
+    #[inline(always)]
     pub fn block_number(&self) -> u64 {
         Self::with_storage(|s| s.block_number())
     }
 
     /// Sets the bytecode at the given address.
+    #[inline(always)]
     pub fn set_code(&mut self, address: Address, code: Bytecode) -> Result<()> {
         Self::try_with_storage(|s| s.set_code(address, code))
     }
 
     /// Performs an SLOAD operation (persistent storage read).
+    #[inline(always)]
     pub fn sload(&self, address: Address, key: U256) -> Result<U256> {
         Self::try_with_storage(|s| s.sload(address, key))
     }
 
     /// Performs a TLOAD operation (transient storage read).
+    #[inline(always)]
     pub fn tload(&self, address: Address, key: U256) -> Result<U256> {
         Self::try_with_storage(|s| s.tload(address, key))
     }
 
     /// Performs an SSTORE operation (persistent storage write).
+    #[inline(always)]
     pub fn sstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.sstore(address, key, value))
     }
 
     /// Performs a TSTORE operation (transient storage write).
+    #[inline(always)]
     pub fn tstore(&mut self, address: Address, key: U256, value: U256) -> Result<()> {
         Self::try_with_storage(|s| s.tstore(address, key, value))
     }
 
     /// Emits an event from the given contract address.
+    #[inline(always)]
     pub fn emit_event(&mut self, address: Address, event: LogData) -> Result<()> {
         Self::try_with_storage(|s| s.emit_event(address, event))
     }
 
     /// Adds refund to the gas refund counter.
+    #[inline(always)]
     pub fn refund_gas(&mut self, gas: i64) {
         Self::with_storage(|s| s.refund_gas(gas))
     }
 
     /// Returns the gas limit for this precompile call.
+    #[inline(always)]
     pub fn gas_limit(&self) -> u64 {
         Self::with_storage(|s| s.gas_limit())
     }
 
     /// Returns the gas used so far.
+    #[inline(always)]
     pub fn gas_used(&self) -> u64 {
         Self::with_storage(|s| s.gas_used())
     }
 
     /// Returns the state-creating gas used so far (cold SSTORE zero->non-zero, code deposit).
+    #[inline(always)]
     pub fn state_gas_used(&self) -> u64 {
         Self::with_storage(|s| s.state_gas_used())
     }
 
     /// Returns the gas refunded so far.
+    #[inline(always)]
     pub fn gas_refunded(&self) -> i64 {
         Self::with_storage(|s| s.gas_refunded())
     }
 
     /// Returns the reservoir gas.
+    #[inline(always)]
     pub fn reservoir(&self) -> u64 {
         Self::with_storage(|s| s.reservoir())
     }
 
     /// Returns the currently active hardfork.
+    #[inline(always)]
     pub fn spec(&self) -> TempoHardfork {
         Self::with_storage(|s| s.spec())
     }
 
     /// Mirrors `CfgEnv::enable_amsterdam_eip8037`. Used by precompiles to gate the TIP-1016
     /// regular/state gas split independently of the active hardfork.
+    #[inline(always)]
     pub fn amsterdam_eip8037_enabled(&self) -> bool {
         Self::with_storage(|s| s.amsterdam_eip8037_enabled())
     }
 
     /// Returns whether the current call context is static.
+    #[inline(always)]
     pub fn is_static(&self) -> bool {
         Self::with_storage(|s| s.is_static())
     }
@@ -236,6 +258,7 @@ impl StorageCtx {
     }
 
     /// Deducts gas from the remaining gas and returns an error if insufficient.
+    #[inline(always)]
     pub fn deduct_gas(&mut self, gas: u64) -> Result<()> {
         Self::try_with_storage(|s| s.deduct_gas(gas))
     }
@@ -243,6 +266,7 @@ impl StorageCtx {
     /// Computes keccak256 and charges the appropriate gas.
     ///
     /// Prefer this over naked `keccak256` to ensure gas is accounted for.
+    #[inline(always)]
     pub fn keccak256(&self, data: &[u8]) -> Result<B256> {
         Self::try_with_storage(|s| s.keccak256(data))
     }
@@ -253,6 +277,7 @@ impl StorageCtx {
     /// Returns `Ok(None)` on invalid signatures; callers map to domain-specific errors.
     ///
     /// [TIP-1004]: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1004.md#signature-validation>
+    #[inline(always)]
     pub fn recover_signer(&self, digest: B256, v: u8, r: B256, s: B256) -> Result<Option<Address>> {
         Self::try_with_storage(|storage| storage.recover_signer(digest, v, r, s))
     }
