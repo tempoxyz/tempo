@@ -1365,9 +1365,7 @@ mod tests {
     };
     use tempo_primitives::{
         Block, TempoHeader, TempoPrimitives, TempoTxEnvelope,
-        transaction::{
-            KeyAuthorization, PrimitiveSignature, SignatureType, SignedKeyAuthorization,
-        },
+        transaction::{KeyAuthorization, PrimitiveSignature, SignatureType},
     };
 
     fn provider_with_spending_limit(

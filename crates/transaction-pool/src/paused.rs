@@ -307,9 +307,7 @@ mod tests {
     use reth_transaction_pool::TransactionOrigin;
     use tempo_primitives::{
         SignatureType, TempoTxEnvelope,
-        transaction::{
-            KeyAuthorization, PrimitiveSignature, SignedKeyAuthorization, tt_signed::AASigned,
-        },
+        transaction::{KeyAuthorization, PrimitiveSignature, tt_signed::AASigned},
     };
 
     fn create_valid_tx(sender: Address) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
