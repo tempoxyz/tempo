@@ -883,6 +883,15 @@ impl AuthRole {
         }
     }
 
+    #[inline]
+    fn transfer_or_for(hardfork: TempoHardfork, t2_variant: Self) -> Self {
+        if hardfork.is_t2() {
+            t2_variant
+        } else {
+            Self::Transfer
+        }
+    }
+
     /// Hardfork-aware: always returns `Transfer`.
     pub fn transfer() -> Self {
         Self::Transfer
@@ -893,9 +902,21 @@ impl AuthRole {
         Self::transfer_or(Self::Sender)
     }
 
+    /// Hardfork-aware: returns `Sender` for T2+, `Transfer` for pre-T2.
+    #[inline]
+    pub(crate) fn sender_for(hardfork: TempoHardfork) -> Self {
+        Self::transfer_or_for(hardfork, Self::Sender)
+    }
+
     /// Hardfork-aware: returns `Recipient` for T2+, `Transfer` for pre-T2.
     pub fn recipient() -> Self {
         Self::transfer_or(Self::Recipient)
+    }
+
+    /// Hardfork-aware: returns `Recipient` for T2+, `Transfer` for pre-T2.
+    #[inline]
+    pub(crate) fn recipient_for(hardfork: TempoHardfork) -> Self {
+        Self::transfer_or_for(hardfork, Self::Recipient)
     }
 
     /// Hardfork-aware: returns `MintRecipient` for T2+, `Transfer` for pre-T2.
