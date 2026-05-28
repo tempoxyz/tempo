@@ -168,6 +168,9 @@ pub mod mainnet {
 
     /// T4 activation timestamp (May 18th 2026 14:00 UTC).
     pub const MAINNET_T4_TIMESTAMP: u64 = 1_779_112_800;
+
+    /// T5 activation timestamp (Jun 9th 2026 14:00 UTC).
+    pub const MAINNET_T5_TIMESTAMP: u64 = 1_781_013_600;
 }
 
 pub mod moderato {
@@ -214,4 +217,7 @@ pub mod moderato {
 
     /// T4 activation timestamp (May 14th 2026 14:00 UTC).
     pub const MODERATO_T4_TIMESTAMP: u64 = 1_778_767_200;
+
+    /// T5 activation timestamp (Jun 3rd 2026 14:00 UTC).
+    pub const MODERATO_T5_TIMESTAMP: u64 = 1_780_495_200;
 }

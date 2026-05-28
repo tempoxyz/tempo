@@ -46,7 +46,9 @@ use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
-use tempo_payload_types::TempoPayloadAttributes;
+use tempo_payload_types::{
+    TempoPayloadAttributes, marshal_persist_estimate, observe_marshal_persist,
+};
 use tempo_primitives::TempoConsensusContext;
 use tracing::{Level, debug, info, info_span, instrument, warn};
 
@@ -66,6 +68,20 @@ pub(in crate::consensus) struct Actor<TContext, TState = Uninit> {
     mailbox: mpsc::Receiver<Message>,
 
     inner: Inner<TState>,
+}
+
+struct BuildProposalArgs<'a> {
+    propose_start: Instant,
+    parent_view: View,
+    parent_digest: Digest,
+    round: Round,
+    payload_id_rx: &'a mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>,
+    leader: PublicKey,
+}
+
+struct ProposalReturn {
+    time: SystemTime,
+    block_size_bytes: usize,
 }
 
 impl<TContext, TState> Actor<TContext, TState> {
@@ -98,8 +114,7 @@ where
                 public_key: config.public_key,
                 epoch_strategy: config.epoch_strategy,
 
-                payload_resolve_time: config.payload_resolve_time,
-                payload_return_time: config.payload_return_time,
+                proposal_return_budget: config.proposal_return_budget,
 
                 my_mailbox,
                 marshal: config.marshal,
@@ -199,8 +214,7 @@ where
 struct Inner<TState> {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
-    payload_resolve_time: Duration,
-    payload_return_time: Duration,
+    proposal_return_budget: Duration,
 
     my_mailbox: Mailbox,
 
@@ -308,6 +322,7 @@ impl Inner<Init> {
             mut response,
             round,
             leader,
+            started_at: propose_start,
         } = request;
 
         let proposal_digest = {
@@ -339,14 +354,17 @@ impl Inner<Init> {
 
                 let mut proposal = Box::pin(self.clone().build_proposal(
                     context.clone(),
-                    parent_view,
-                    parent_digest,
-                    round,
-                    &mut payload_id_rx,
-                    leader,
+                    BuildProposalArgs {
+                        propose_start,
+                        parent_view,
+                        parent_digest,
+                        round,
+                        payload_id_rx: &mut payload_id_rx,
+                        leader,
+                    },
                 ));
 
-                let (block, payload_return_time) = tokio::select! {
+                let (block, proposal_return) = tokio::select! {
                     biased;
 
                     Some(block) = &mut already_verified => {
@@ -374,13 +392,18 @@ impl Inner<Init> {
                 };
 
                 let digest = block.digest();
-                if let Some(payload_return_time) = payload_return_time {
+                if let Some(proposal_return) = proposal_return {
+                    let persist_start = Instant::now();
                     if !self.marshal.proposed(round, block).await {
                         bail!("marshal actor rejected persisting proposal");
                     }
+                    observe_marshal_persist(
+                        proposal_return.block_size_bytes,
+                        persist_start.elapsed(),
+                    );
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
-                    context.sleep_until(payload_return_time).await;
+                    context.sleep_until(proposal_return.time).await;
                 }
 
                 eyre::Ok(digest)
@@ -510,13 +533,16 @@ impl Inner<Init> {
     async fn build_proposal<TContext: Pacer>(
         self,
         context: TContext,
-        parent_view: View,
-        parent_digest: Digest,
-        round: Round,
-        payload_id_rx: &mut Option<oneshot::Receiver<eyre::Result<PayloadId>>>,
-        leader: PublicKey,
-    ) -> eyre::Result<(Block, Option<SystemTime>)> {
-        let propose_start = Instant::now();
+        args: BuildProposalArgs<'_>,
+    ) -> eyre::Result<(Block, Option<ProposalReturn>)> {
+        let BuildProposalArgs {
+            propose_start,
+            parent_view,
+            parent_digest,
+            round,
+            payload_id_rx,
+            leader,
+        } = args;
 
         let parent = get_parent(
             &self.execution_node,
@@ -648,6 +674,10 @@ impl Inner<Init> {
 
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
+        let marshal_persist = marshal_persist_estimate();
+        let build_budget = self
+            .proposal_return_budget
+            .saturating_sub(propose_start.elapsed());
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -660,13 +690,13 @@ impl Inner<Init> {
                     .and_then(|s| s.get_subblocks(parent_hash).ok())
                     .unwrap_or_default()
             },
-        );
-
-        let interrupt_handle = attrs.interrupt_handle().clone();
+        )
+        .with_payload_build_budget(build_budget);
 
         // Share the dispatch receiver with the cancel branch so that, if cancellation
         // hits between dispatch send and receiving `payload_id`, the cancel branch can
         // still drain the rx, learn `payload_id`, and cancel the now-registered job.
+        let payload_build_start = Instant::now();
         *payload_id_rx = Some(self.state.executor.canonicalize_and_build(
             parent.height(),
             parent.digest(),
@@ -686,32 +716,6 @@ impl Inner<Init> {
         let _ = tx.send(Ok(payload_id));
         *payload_id_rx = Some(rx);
 
-        let elapsed = propose_start.elapsed();
-        let remaining_resolve = self.payload_resolve_time.saturating_sub(elapsed);
-        let remaining_return = self.payload_return_time.saturating_sub(elapsed);
-        debug!(
-            elapsed = %display_duration(elapsed),
-            resolve_time = %display_duration(remaining_resolve),
-            return_time = %display_duration(remaining_return),
-            "sleeping before payload builder resolving"
-        );
-
-        // Start the timer for `remaining_return`
-        //
-        // This guarantees that we will not propose the block too early, and waits for at least
-        // `remaining_return` (`payload_return_time` minus time already spent in propose),
-        // plus whatever time is needed to finish building the block.
-        let payload_return_time = context.current() + remaining_return;
-
-        // Give payload builder at least `remaining_resolve` until we interrupt it.
-        //
-        // The interrupt doesn't mean we'll immediately get the payload back,
-        // but only signals the builder to stop executing transactions,
-        // and start calculating the state root and sealing the block.
-        context.sleep(remaining_resolve).await;
-
-        interrupt_handle.interrupt();
-
         let payload = self
             .execution_node
             .payload_builder_handle
@@ -725,9 +729,38 @@ impl Inner<Init> {
             .and_then(|rsp| rsp.map_err(Into::<eyre::Report>::into))
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
 
+        let payload_build_elapsed = payload_build_start.elapsed();
+        let payload_validation_elapsed = payload.validation_work_duration();
+        let block_size_bytes = payload.rlp_block_size_bytes();
+        let validator_marshal_persist = marshal_persist.estimate(block_size_bytes);
+        let proposal_elapsed = propose_start.elapsed();
+        // Pace proposal return from the original propose start, leaving enough
+        // budget for validators to replay the payload and persist the block.
+        let return_delay = self
+            .proposal_return_budget
+            .saturating_sub(proposal_elapsed)
+            .saturating_sub(payload_validation_elapsed)
+            .saturating_sub(validator_marshal_persist);
+        debug!(
+            proposal_elapsed = %display_duration(proposal_elapsed),
+            build_time = %display_duration(payload_build_elapsed),
+            validation_time = %display_duration(payload_validation_elapsed),
+            validator_marshal_persist = %display_duration(validator_marshal_persist),
+            return_time = %display_duration(return_delay),
+            block_size_bytes,
+            "sleeping before returning proposal"
+        );
+        let proposal_return_time = context.current() + return_delay;
+
         let proposal = Block::from_execution_block(payload.block().clone());
 
-        Ok((proposal, Some(payload_return_time)))
+        Ok((
+            proposal,
+            Some(ProposalReturn {
+                time: proposal_return_time,
+                block_size_bytes,
+            }),
+        ))
     }
 
     async fn verify<TContext: Pacer>(
@@ -858,8 +891,7 @@ impl Inner<Uninit> {
         let initialized = Inner {
             public_key: self.public_key,
             epoch_strategy: self.epoch_strategy,
-            payload_resolve_time: self.payload_resolve_time,
-            payload_return_time: self.payload_return_time,
+            proposal_return_budget: self.proposal_return_budget,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
             execution_node: self.execution_node,

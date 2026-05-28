@@ -14,21 +14,24 @@ use commonware_consensus::{
         scheme::bls12381_threshold::vrf::Scheme,
         types::{Activity, Finalization},
     },
-    types::{Epoch, Epocher as _, FixedEpocher, Height, Round, View},
+    types::{Epoch, Epocher as _, FixedEpocher, Height},
 };
 use commonware_cryptography::{
     Signer as _,
     bls12381::primitives::variant::MinSig,
+    certificate::Provider,
     ed25519::{self, PublicKey},
 };
 use commonware_math::algebra::Random as _;
+use commonware_parallel::Sequential;
 use commonware_runtime::{Clock, ContextCell, Spawner, spawn_cell};
 use commonware_utils::{Acknowledgement, vec::NonEmptyVec};
 use rand_08::{CryptoRng, Rng};
 
-use eyre::{OptionExt as _, Report, WrapErr as _};
+use eyre::{OptionExt as _, Report, WrapErr as _, bail, ensure};
 use reth_node_core::primitives::SealedBlock;
 use reth_provider::HeaderProvider as _;
+use tempo_chainspec::NetworkIdentity;
 use tempo_node::{TempoFullNode, rpc::consensus::Event};
 use tokio::{select, sync::mpsc};
 use tracing::{debug, instrument, warn, warn_span};
@@ -102,12 +105,18 @@ pub(super) fn try_init<TContext>(
         ),
     );
 
+    let network_scheme = Arc::new(Scheme::certificate_verifier(
+        crate::config::NAMESPACE,
+        config.network_identity.identity,
+    ));
+
     let actor = Driver {
         context: ContextCell::new(context),
         config,
         mailbox: rx,
         current_epoch: epoch_info.epoch(),
         last_boundary,
+        network_scheme,
     };
     Ok((actor, mailbox))
 }
@@ -115,6 +124,7 @@ pub(super) fn try_init<TContext>(
 pub(super) struct Config {
     pub(super) execution_node: Arc<TempoFullNode>,
     pub(super) scheme_provider: SchemeProvider,
+    pub(super) network_identity: NetworkIdentity,
 
     // TODO: What to do with this information?
     pub(super) last_finalized_height: Height,
@@ -188,6 +198,7 @@ pub(super) struct Driver<TContext> {
 
     last_boundary: Height,
     current_epoch: Epoch,
+    network_scheme: Arc<Scheme<PublicKey, MinSig>>,
 }
 
 impl<C: Clock + Rng + CryptoRng> Driver<C>
@@ -292,8 +303,7 @@ where
             return Ok(());
         };
 
-        // TODO: ensure well-formedness at the type level so we don't need extra
-        // decoding here.
+        // TODO: ensure well-formedness at the type level so we don't need extra decoding here.
         let finalization = alloy_primitives::hex::decode(&certified.certificate)
             .map_err(Report::new)
             .and_then(|bytes| {
@@ -302,44 +312,81 @@ where
             })
             .wrap_err("event contained a malformed finalization certificate")?;
 
-        if finalization.epoch() > self.current_epoch {
+        let height = Height::new(certified.block.number());
+        let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(certified.block));
+        ensure!(
+            finalization.proposal.payload == consensus_block.digest(),
+            "mismatch in finalization and block digest"
+        );
+
+        let finalization_epoch = finalization.epoch();
+        if finalization_epoch > self.current_epoch {
+            let stub_peers =
+                NonEmptyVec::new(ed25519::PrivateKey::random(&mut self.context).public_key());
+
             let boundary_height = self
                 .config
                 .epoch_strategy
                 .last(self.current_epoch)
                 .expect("strategy is valid for all epochs and heights");
 
+            debug!(
+                %self.current_epoch,
+                %boundary_height,
+                "hinting to sync system that a finalization certificate might be \
+                available for our current epoch",
+            );
+
+            // In the event our network identity cannot verify this finalization,
+            // hint the boundary of the current epoch to progress.
             self.config
                 .marshal
-                .hint_finalized(
-                    boundary_height,
-                    // XXX: we know for a fact that the resolver used by the marshal
-                    // actor ignores the target, so we just give it a dummy key.
-                    NonEmptyVec::new(ed25519::PrivateKey::random(&mut self.context).public_key()),
-                )
+                .hint_finalized(boundary_height, stub_peers.clone())
                 .await;
 
             if let Some(one_before_boundary) = boundary_height.previous() {
                 self.config.marshal.set_floor(one_before_boundary).await;
             }
 
-            return Ok(());
+            let network_identity = self.config.network_identity.clone();
+            if finalization_epoch.get() < network_identity.from_epoch {
+                return Ok(());
+            }
         }
 
-        let height = certified.block.number();
-        let consensus_block = Block::from_execution_block(SealedBlock::seal_slow(certified.block));
+        let can_use_network_identity_fallback = finalization_epoch > self.current_epoch
+            && finalization_epoch.get() >= self.config.network_identity.from_epoch;
 
-        // Store the Finalized Block
-        let round = Round::new(Epoch::new(certified.epoch), View::new(certified.view));
-        let activity = Activity::Finalization(finalization);
-        if !self.config.marshal.verified(round, consensus_block).await {
-            warn_span!("follow_driver").in_scope(
-                || warn!(?round, %height, "marshal refused to persist the verified block"),
-            )
+        let scheme = match self.config.scheme_provider.scoped(finalization_epoch) {
+            Some(scheme) => scheme,
+            None if can_use_network_identity_fallback => self.network_scheme.clone(),
+            None => bail!(
+                "finalization epoch `{finalization_epoch}` behind network identity epoch {}",
+                self.config.network_identity.from_epoch
+            ),
+        };
+
+        // If we can accept this cert, jump to it and set the floor as the
+        // upstream may have pruned any intermediatery blocks.
+        if finalization.verify(&mut self.context, &scheme, &Sequential) {
+            let round = finalization.round();
+            let activity = Activity::Finalization(finalization);
+            if !self.config.marshal.verified(round, consensus_block).await {
+                warn_span!("follow_driver").in_scope(
+                    || warn!(?round, %height, "marshal refused to persist the verified block"),
+                )
+            }
+
+            if let Some(one_before_block) = height.previous() {
+                self.config.marshal.set_floor(one_before_block).await;
+            }
+
+            self.config.marshal.report(activity.clone()).await;
+            self.config.feed.report(activity).await;
+        } else {
+            debug!(%finalization_epoch, %height, "failed finalization certificate verification")
         }
 
-        self.config.marshal.report(activity.clone()).await;
-        self.config.feed.report(activity).await;
         Ok(())
     }
 
@@ -348,16 +395,32 @@ where
         let marshal::Update::Block(block, ack) = update else {
             return;
         };
+
         let epoch_info = self
             .config
             .epoch_strategy
             .containing(block.height())
             .expect("strategy valid for all heights");
+
         if epoch_info.last() == block.height() {
             let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
                 &mut block.header().extra_data().as_ref(),
             )
             .expect("boundary blocks must contain DKG outcomes");
+
+            let network_identity = &self.config.network_identity;
+            if onchain_outcome.epoch.get() >= network_identity.from_epoch
+                && network_identity.identity != *onchain_outcome.network_identity()
+            {
+                warn!(
+                    compiled_from_epoch = network_identity.from_epoch,
+                    onchain_epoch = %onchain_outcome.epoch,
+                    compiled_network_identity = %network_identity.identity,
+                    onchain_network_identity = %onchain_outcome.network_identity(),
+                    "Network identity differs from the onchain DKG outcome!!! Update the binary with the latest network identity"
+                );
+            }
+
             self.config.scheme_provider.register(
                 onchain_outcome.epoch,
                 Scheme::certificate_verifier(
@@ -365,8 +428,13 @@ where
                     *onchain_outcome.network_identity(),
                 ),
             );
+
             self.current_epoch = onchain_outcome.epoch;
+        } else {
+            // If not a boundary block, we may have fast forwarded
+            self.current_epoch = epoch_info.epoch();
         }
+
         ack.acknowledge();
     }
 }
