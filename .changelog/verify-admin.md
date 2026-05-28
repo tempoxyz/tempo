@@ -2,4 +2,4 @@
 tempo-contracts: minor
 ---
 
-Added the T6 `SignatureVerifier.verifyAdmin` selector for checking root and admin access-key signatures.
+Added the T6 `SignatureVerifier.verifyKeychain` and `SignatureVerifier.verifyKeychainAdmin` selectors for checking account-bound active and admin keychain signatures.

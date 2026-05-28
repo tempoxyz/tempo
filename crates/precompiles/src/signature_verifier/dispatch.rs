@@ -18,7 +18,10 @@ use tempo_primitives::MAX_WEBAUTHN_SIGNATURE_LENGTH;
 const MAX_CALLDATA_LEN: usize =
     4 + 32 * 4 + (MAX_WEBAUTHN_SIGNATURE_LENGTH + 1).next_multiple_of(32);
 
-const T6_ADDED: &[[u8; 4]] = &[ISignatureVerifier::verifyAdminCall::SELECTOR];
+const T6_ADDED: &[[u8; 4]] = &[
+    ISignatureVerifier::verifyKeychainCall::SELECTOR,
+    ISignatureVerifier::verifyKeychainAdminCall::SELECTOR,
+];
 
 impl Precompile for SignatureVerifier {
     fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
@@ -41,9 +44,12 @@ impl Precompile for SignatureVerifier {
                 ISVCalls::verify(call) => view(call, |c| {
                     self.recover(c.hash, c.signature).map(|sig| sig == c.signer)
                 }),
-                ISVCalls::verifyAdmin(call) => {
-                    view(call, |c| self.verify_admin(c.account, c.hash, c.signature))
-                }
+                ISVCalls::verifyKeychain(call) => view(call, |c| {
+                    self.verify_keychain(c.account, c.hash, c.signature)
+                }),
+                ISVCalls::verifyKeychainAdmin(call) => view(call, |c| {
+                    self.verify_keychain_admin(c.account, c.hash, c.signature)
+                }),
             },
         )
     }
@@ -67,9 +73,16 @@ mod tests {
     use alloy_signer_local::PrivateKeySigner;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{ISignatureVerifier, UnknownFunctionSelector};
+    use tempo_primitives::transaction::tt_signature::{
+        KeychainSignature, PrimitiveSignature, TempoSignature,
+    };
 
-    fn call_verify_admin(account: Address, hash: B256, signature: Vec<u8>) -> eyre::Result<bool> {
-        let calldata = ISignatureVerifier::verifyAdminCall {
+    fn call_verify_keychain(
+        account: Address,
+        hash: B256,
+        signature: Vec<u8>,
+    ) -> eyre::Result<bool> {
+        let calldata = ISignatureVerifier::verifyKeychainCall {
             account,
             hash,
             signature: signature.into(),
@@ -77,8 +90,40 @@ mod tests {
         .abi_encode();
 
         let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-        let ret = ISignatureVerifier::verifyAdminCall::abi_decode_returns(&output.bytes)?;
+        let ret = ISignatureVerifier::verifyKeychainCall::abi_decode_returns(&output.bytes)?;
         Ok(ret)
+    }
+
+    fn call_verify_keychain_admin(
+        account: Address,
+        hash: B256,
+        signature: Vec<u8>,
+    ) -> eyre::Result<bool> {
+        let calldata = ISignatureVerifier::verifyKeychainAdminCall {
+            account,
+            hash,
+            signature: signature.into(),
+        }
+        .abi_encode();
+
+        let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+        let ret = ISignatureVerifier::verifyKeychainAdminCall::abi_decode_returns(&output.bytes)?;
+        Ok(ret)
+    }
+
+    fn keychain_signature(
+        account: Address,
+        key: &PrivateKeySigner,
+        hash: B256,
+    ) -> eyre::Result<Vec<u8>> {
+        let signing_hash = KeychainSignature::signing_hash(hash, account);
+        let inner = key.sign_hash_sync(&signing_hash)?;
+        Ok(TempoSignature::Keychain(KeychainSignature::new(
+            account,
+            PrimitiveSignature::Secp256k1(inner),
+        ))
+        .to_bytes()
+        .to_vec())
     }
 
     #[test]
@@ -100,10 +145,10 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_admin_selector_rejected_before_t6() -> eyre::Result<()> {
+    fn test_verify_keychain_selector_rejected_before_t6() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
         StorageCtx::enter(&mut storage, || {
-            let calldata = ISignatureVerifier::verifyAdminCall {
+            let calldata = ISignatureVerifier::verifyKeychainCall {
                 account: Address::random(),
                 hash: B256::ZERO,
                 signature: vec![0u8; 65].into(),
@@ -114,7 +159,28 @@ mod tests {
             assert!(result.is_revert());
             assert!(
                 UnknownFunctionSelector::abi_decode(&result.bytes).is_ok(),
-                "verifyAdmin should be selector-gated before T6"
+                "verifyKeychain should be selector-gated before T6"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_keychain_admin_selector_rejected_before_t6() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let calldata = ISignatureVerifier::verifyKeychainAdminCall {
+                account: Address::random(),
+                hash: B256::ZERO,
+                signature: vec![0u8; 65].into(),
+            }
+            .abi_encode();
+
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+            assert!(result.is_revert());
+            assert!(
+                UnknownFunctionSelector::abi_decode(&result.bytes).is_ok(),
+                "verifyKeychainAdmin should be selector-gated before T6"
             );
             Ok(())
         })
@@ -165,47 +231,7 @@ mod tests {
     }
 
     #[test]
-    fn test_verify_admin_returns_true_for_root_key() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-        StorageCtx::enter(&mut storage, || {
-            let signer = PrivateKeySigner::random();
-            let hash = B256::from([0xCC; 32]);
-            let sig = signer.sign_hash_sync(&hash)?;
-
-            let ret = call_verify_admin(signer.address(), hash, sig.as_bytes().to_vec())?;
-            assert!(ret, "root key should verify as admin");
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_verify_admin_returns_true_for_admin_key() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-        StorageCtx::enter(&mut storage, || {
-            let account = Address::random();
-            let admin = PrivateKeySigner::random();
-
-            let mut keychain = AccountKeychain::new();
-            keychain.initialize()?;
-            keychain.set_tx_origin(account)?;
-            keychain.authorize_admin_key(
-                account,
-                admin.address(),
-                SignatureType::Secp256k1,
-                None,
-            )?;
-
-            let hash = B256::from([0xDD; 32]);
-            let sig = admin.sign_hash_sync(&hash)?;
-
-            let ret = call_verify_admin(account, hash, sig.as_bytes().to_vec())?;
-            assert!(ret, "admin access key should verify as admin");
-            Ok(())
-        })
-    }
-
-    #[test]
-    fn test_verify_admin_returns_false_for_non_admin_key() -> eyre::Result<()> {
+    fn test_verify_keychain_returns_true_for_active_key() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let account = Address::random();
@@ -228,36 +254,204 @@ mod tests {
                 None,
             )?;
 
-            let hash = B256::from([0xEE; 32]);
-            let sig = access_key.sign_hash_sync(&hash)?;
+            let hash = B256::from([0x44; 32]);
+            let signature = keychain_signature(account, &access_key, hash)?;
 
-            let ret = call_verify_admin(account, hash, sig.as_bytes().to_vec())?;
-            assert!(!ret, "non-admin access key should not verify as admin");
+            let ret = call_verify_keychain(account, hash, signature)?;
+            assert!(ret, "active keychain key should verify");
             Ok(())
         })
     }
 
     #[test]
-    fn test_verify_admin_returns_false_for_invalid_signature() -> eyre::Result<()> {
+    fn test_verify_keychain_returns_false_for_missing_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let account = Address::random();
+            let access_key = PrivateKeySigner::random();
+            let hash = B256::from([0x55; 32]);
+            let signature = keychain_signature(account, &access_key, hash)?;
+
+            let ret = call_verify_keychain(account, hash, signature)?;
+            assert!(!ret, "unknown keychain key should not verify");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_keychain_returns_false_for_root_key_without_access_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let root = PrivateKeySigner::random();
+            let account = root.address();
+            let hash = B256::from([0x56; 32]);
+            let signature = keychain_signature(account, &root, hash)?;
+
+            let ret = call_verify_keychain(account, hash, signature)?;
+            assert!(
+                !ret,
+                "root key should not verify as an active access key unless explicitly stored"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_keychain_returns_false_for_account_mismatch() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let account = Address::random();
+            let access_key = PrivateKeySigner::random();
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            keychain.authorize_key(
+                account,
+                access_key.address(),
+                SignatureType::Secp256k1,
+                KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    limits: vec![],
+                    allowAnyCalls: true,
+                    allowedCalls: vec![],
+                },
+                None,
+            )?;
+
+            let hash = B256::from([0x57; 32]);
+            let signature = keychain_signature(account, &access_key, hash)?;
+
+            let ret = call_verify_keychain(Address::random(), hash, signature)?;
+            assert!(
+                !ret,
+                "keychain signature should not verify for a different account"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_keychain_admin_returns_true_for_admin_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let account = Address::random();
+            let admin = PrivateKeySigner::random();
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            keychain.authorize_admin_key(
+                account,
+                admin.address(),
+                SignatureType::Secp256k1,
+                None,
+            )?;
+
+            let hash = B256::from([0x66; 32]);
+            let signature = keychain_signature(account, &admin, hash)?;
+
+            let ret = call_verify_keychain_admin(account, hash, signature)?;
+            assert!(ret, "active admin keychain key should verify as admin");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_keychain_admin_returns_true_for_root_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let root = PrivateKeySigner::random();
+            let account = root.address();
+            let hash = B256::from([0x67; 32]);
+            let signature = keychain_signature(account, &root, hash)?;
+
+            let ret = call_verify_keychain_admin(account, hash, signature)?;
+            assert!(ret, "root keychain key should verify as admin");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_keychain_admin_returns_false_for_account_mismatch() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let account = Address::random();
+            let admin = PrivateKeySigner::random();
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            keychain.authorize_admin_key(
+                account,
+                admin.address(),
+                SignatureType::Secp256k1,
+                None,
+            )?;
+
+            let hash = B256::from([0x68; 32]);
+            let signature = keychain_signature(account, &admin, hash)?;
+
+            let ret = call_verify_keychain_admin(Address::random(), hash, signature)?;
+            assert!(
+                !ret,
+                "admin keychain signature should not verify for a different account"
+            );
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_keychain_admin_returns_false_for_non_admin_key() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let account = Address::random();
+            let access_key = PrivateKeySigner::random();
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            keychain.authorize_key(
+                account,
+                access_key.address(),
+                SignatureType::Secp256k1,
+                KeyRestrictions {
+                    expiry: u64::MAX,
+                    enforceLimits: false,
+                    limits: vec![],
+                    allowAnyCalls: true,
+                    allowedCalls: vec![],
+                },
+                None,
+            )?;
+
+            let hash = B256::from([0x77; 32]);
+            let signature = keychain_signature(account, &access_key, hash)?;
+
+            let ret = call_verify_keychain_admin(account, hash, signature)?;
+            assert!(!ret, "non-admin keychain key should not verify as admin");
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_verify_keychain_reverts_for_non_keychain_signature() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let signer = PrivateKeySigner::random();
-            let signed_hash = B256::from([0x11; 32]);
-            let checked_hash = B256::from([0x22; 32]);
-            let sig = signer.sign_hash_sync(&signed_hash)?;
+            let hash = B256::from([0x88; 32]);
+            let sig = signer.sign_hash_sync(&hash)?;
 
-            let ret = call_verify_admin(signer.address(), checked_hash, sig.as_bytes().to_vec())?;
-            assert!(!ret, "wrong digest should not verify as admin");
-            Ok(())
-        })
-    }
+            let calldata = ISignatureVerifier::verifyKeychainCall {
+                account: signer.address(),
+                hash,
+                signature: sig.as_bytes().to_vec().into(),
+            }
+            .abi_encode();
 
-    #[test]
-    fn test_verify_admin_returns_false_for_malformed_signature() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
-        StorageCtx::enter(&mut storage, || {
-            let ret = call_verify_admin(Address::random(), B256::ZERO, vec![0u8; 64])?;
-            assert!(!ret, "malformed signature should not verify as admin");
+            let result = SignatureVerifier::new().call(&calldata, Address::ZERO);
+            expect_precompile_revert(&result, SignatureVerifierError::invalid_format());
             Ok(())
         })
     }
