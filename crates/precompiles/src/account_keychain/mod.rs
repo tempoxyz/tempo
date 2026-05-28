@@ -28,7 +28,7 @@ use tempo_primitives::TempoAddressExt;
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
-    storage::{Handler, Mapping, Set},
+    storage::{Handler, LayoutCtx, Mapping, Set, Slot},
     tip20_factory::TIP20Factory,
 };
 use alloy::primitives::{Address, B256, FixedBytes, TxKind, U256, keccak256};
@@ -165,6 +165,74 @@ impl SpendingLimitState {
 }
 
 impl AccountKeychain {
+    #[inline]
+    fn transaction_key_slot() -> Slot<Address> {
+        Slot::new_with_ctx(
+            slots::TRANSACTION_KEY,
+            LayoutCtx::packed(slots::TRANSACTION_KEY_OFFSET),
+            ACCOUNT_KEYCHAIN_ADDRESS,
+        )
+    }
+
+    #[inline]
+    fn tx_origin_slot() -> Slot<Address> {
+        Slot::new_with_ctx(
+            slots::TX_ORIGIN,
+            LayoutCtx::packed(slots::TX_ORIGIN_OFFSET),
+            ACCOUNT_KEYCHAIN_ADDRESS,
+        )
+    }
+
+    #[inline]
+    fn current_transaction_key() -> Result<Address> {
+        Self::transaction_key_slot().t_read()
+    }
+
+    #[inline]
+    fn current_tx_origin() -> Result<Address> {
+        Self::tx_origin_slot().t_read()
+    }
+
+    /// Authorize a token transfer against the current transaction key without constructing the
+    /// full keychain handle for the main-key fast path.
+    pub fn authorize_transfer_current_tx(
+        account: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
+        let transaction_key = Self::current_transaction_key()?;
+        if transaction_key == Address::ZERO {
+            return Ok(());
+        }
+
+        let tx_origin = Self::current_tx_origin()?;
+        if account != tx_origin {
+            return Ok(());
+        }
+
+        Self::new().verify_and_update_spending(account, transaction_key, token, amount)
+    }
+
+    /// Restore spending limit for the current transaction key without constructing the full
+    /// keychain handle when no access key is active.
+    pub fn refund_spending_limit_current_tx(
+        account: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
+        let transaction_key = Self::current_transaction_key()?;
+        if transaction_key == Address::ZERO {
+            return Ok(());
+        }
+
+        let tx_origin = Self::current_tx_origin()?;
+        if account != tx_origin {
+            return Ok(());
+        }
+
+        Self::new().refund_spending_limit_for_key(account, token, amount, transaction_key)
+    }
+
     /// Create a hash key for account+key scoped storage rows.
     ///
     /// This is used to access account-key rows like `spending_limits[key][token]` and
@@ -1276,6 +1344,16 @@ impl AccountKeychain {
             return Ok(());
         }
 
+        self.refund_spending_limit_for_key(account, token, amount, transaction_key)
+    }
+
+    fn refund_spending_limit_for_key(
+        &mut self,
+        account: Address,
+        token: Address,
+        amount: U256,
+        transaction_key: Address,
+    ) -> Result<()> {
         // Silently skip refund if the key was revoked or expired — the fee was already
         // collected and the key is no longer active, so there is nothing to restore.
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();

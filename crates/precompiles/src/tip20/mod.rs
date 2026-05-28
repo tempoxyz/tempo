@@ -1140,7 +1140,7 @@ impl TIP20Token {
     /// # Errors
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
-        AccountKeychain::new().authorize_transfer(from, self.address, amount)
+        AccountKeychain::authorize_transfer_current_tx(from, self.address, amount)
     }
 
     /// Core transfer: debits `from`, credits `to.target`, emits `Transfer(from, event_addr, amount)`.
@@ -1335,7 +1335,7 @@ impl TIP20Token {
         }
 
         if self.storage.spec().is_t1c() {
-            AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
+            AccountKeychain::refund_spending_limit_current_tx(to, self.address, refund)?;
         }
 
         // Update rewards for the recipient and get their reward recipient
