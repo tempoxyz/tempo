@@ -19,7 +19,7 @@ use crate::{
     storage::{
         Handler, Layout, LayoutCtx, Storable, StorableType, StorageCtx, StorageOps,
         packing::{PackedSlot, calc_element_loc, calc_packed_slot_count},
-        types::{HandlerCache, Slot},
+        types::{HandlerArena, Slot},
     },
 };
 
@@ -143,7 +143,7 @@ where
 pub struct VecHandler<T: Storable> {
     len_slot: U256,
     address: Address,
-    cache: HandlerCache<usize, T::Handler>,
+    handlers: HandlerArena<T::Handler>,
 }
 
 impl<T> Handler<Vec<T>> for VecHandler<T>
@@ -197,7 +197,7 @@ where
         Self {
             len_slot,
             address,
-            cache: HandlerCache::new(),
+            handlers: HandlerArena::new(),
         }
     }
 
@@ -263,7 +263,7 @@ where
 
     /// Returns a `Handler` for the element at the given index with bounds checking.
     ///
-    /// The handler is computed on first access and cached for subsequent accesses.
+    /// The handler is computed on every access.
     ///
     /// # Returns
     /// - If the SLOAD to read the length fails, returns an error.
@@ -275,9 +275,10 @@ where
         }
 
         let (data_start, address) = (self.data_slot(), self.address);
-        Ok(Some(self.cache.get_or_insert(&index, || {
-            Self::compute_handler(data_start, address, index)
-        })))
+        Ok(Some(
+            self.handlers
+                .insert(Self::compute_handler(data_start, address, index)),
+        ))
     }
 
     /// Pushes a new element to the end of the vector.
@@ -352,14 +353,14 @@ where
 {
     type Output = T::Handler;
 
-    /// Returns a reference to the cached handler for the given index (unchecked).
+    /// Returns a reference to a computed handler for the given index (unchecked).
     ///
     /// **WARNING:** Does not check bounds. Caller must ensure that the index is valid.
     /// For checked access use `.at(index)` instead.
     fn index(&self, index: usize) -> &Self::Output {
         let (data_start, address) = (self.data_slot(), self.address);
-        self.cache
-            .get_or_insert(&index, || Self::compute_handler(data_start, address, index))
+        self.handlers
+            .insert(Self::compute_handler(data_start, address, index))
     }
 }
 
@@ -367,14 +368,14 @@ impl<T> IndexMut<usize> for VecHandler<T>
 where
     T: Storable,
 {
-    /// Returns a mutable reference to the cached handler for the given index (unchecked).
+    /// Returns a mutable reference to a computed handler for the given index (unchecked).
     ///
     /// **WARNING:** Does not check bounds. Caller must ensure that the index is valid.
     /// For checked access use `.at(index)` instead.
     fn index_mut(&mut self, index: usize) -> &mut Self::Output {
         let (data_start, address) = (self.data_slot(), self.address);
-        self.cache
-            .get_or_insert_mut(&index, || Self::compute_handler(data_start, address, index))
+        self.handlers
+            .insert_mut(Self::compute_handler(data_start, address, index))
     }
 }
 

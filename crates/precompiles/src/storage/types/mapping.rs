@@ -3,10 +3,11 @@
 use alloy::primitives::{Address, U256};
 use std::{
     hash::Hash,
+    marker::PhantomData,
     ops::{Index, IndexMut},
 };
 
-use crate::storage::{Layout, LayoutCtx, StorableType, StorageKey, types::HandlerCache};
+use crate::storage::{Layout, LayoutCtx, StorableType, StorageKey, types::HandlerArena};
 
 /// Type-safe access wrapper for EVM storage mappings (hash-based key-value storage).
 ///
@@ -44,7 +45,8 @@ use crate::storage::{Layout, LayoutCtx, StorableType, StorageKey, types::Handler
 pub struct Mapping<K, V: StorableType> {
     base_slot: U256,
     address: Address,
-    cache: HandlerCache<K, V::Handler>,
+    handlers: HandlerArena<V::Handler>,
+    _key: PhantomData<K>,
 }
 
 impl<K, V: StorableType> Mapping<K, V> {
@@ -56,7 +58,8 @@ impl<K, V: StorableType> Mapping<K, V> {
         Self {
             base_slot,
             address,
-            cache: HandlerCache::new(),
+            handlers: HandlerArena::new(),
+            _key: PhantomData,
         }
     }
 
@@ -72,32 +75,34 @@ impl<K, V: StorableType> Mapping<K, V> {
     /// where the mapping slot computation happens once, and the resulting slot
     /// can be used for multiple operations.
     ///
-    /// The handler is computed on first access and cached for subsequent accesses.
-    /// Takes a reference to avoid cloning on cache hits.
+    /// The handler is computed on every access.
     pub fn at(&self, key: &K) -> &V::Handler
     where
         K: StorageKey + Hash + Eq + Clone,
     {
         let (base_slot, address) = (self.base_slot, self.address);
-        self.cache.get_or_insert(key, || {
-            V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
-        })
+        self.handlers.insert(V::handle(
+            key.mapping_slot(base_slot),
+            LayoutCtx::FULL,
+            address,
+        ))
     }
 
     /// Returns a mutable `Handler` for the given key.
     ///
     /// Use this when you need to call mutable methods like `write()` or `delete()`.
     ///
-    /// The handler is computed on first access and cached for subsequent accesses.
-    /// Takes a reference to avoid cloning on cache hits.
+    /// The handler is computed on every access.
     pub fn at_mut(&mut self, key: &K) -> &mut V::Handler
     where
         K: StorageKey + Hash + Eq + Clone,
     {
         let (base_slot, address) = (self.base_slot, self.address);
-        self.cache.get_or_insert_mut(key, || {
-            V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
-        })
+        self.handlers.insert_mut(V::handle(
+            key.mapping_slot(base_slot),
+            LayoutCtx::FULL,
+            address,
+        ))
     }
 }
 
@@ -113,14 +118,16 @@ where
 {
     type Output = V::Handler;
 
-    /// Returns a reference to the cached handler for the given key.
+    /// Returns a reference to a computed handler for the given key.
     ///
-    /// The handler is computed on first access and cached for subsequent accesses.
+    /// The handler is computed on every access.
     fn index(&self, key: K) -> &Self::Output {
         let (base_slot, address) = (self.base_slot, self.address);
-        self.cache.get_or_insert(&key, || {
-            V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
-        })
+        self.handlers.insert(V::handle(
+            key.mapping_slot(base_slot),
+            LayoutCtx::FULL,
+            address,
+        ))
     }
 }
 
@@ -128,12 +135,14 @@ impl<K, V: StorableType> IndexMut<K> for Mapping<K, V>
 where
     K: StorageKey + Hash + Eq + Clone,
 {
-    /// Returns a mutable reference to the cached handler for the given key.
+    /// Returns a mutable reference to a computed handler for the given key.
     fn index_mut(&mut self, key: K) -> &mut Self::Output {
         let (base_slot, address) = (self.base_slot, self.address);
-        self.cache.get_or_insert_mut(&key, || {
-            V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
-        })
+        self.handlers.insert_mut(V::handle(
+            key.mapping_slot(base_slot),
+            LayoutCtx::FULL,
+            address,
+        ))
     }
 }
 

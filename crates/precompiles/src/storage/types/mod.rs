@@ -23,7 +23,7 @@ use crate::{
     storage::{StorageOps, packing},
 };
 use alloy::primitives::{Address, U256, keccak256};
-use std::{cell::RefCell, collections::HashMap, hash::Hash};
+use std::cell::RefCell;
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -369,61 +369,54 @@ pub trait StorageKey: sealed::OnlyPrimitives {
     }
 }
 
-/// Cache for computed handlers with stable references.
+/// Arena for computed handlers with stable references.
 ///
-/// Enables `Index` implementations on handlers by storing child handlers and
-/// returning references that remain valid across insertions.
+/// Enables `Index` implementations on handlers by storing returned handlers and
+/// returning references that remain valid across insertions. It does not perform
+/// key-based reuse; every access inserts a freshly computed handler.
 ///
 /// Uses `RefCell` for interior mutability with runtime borrow checking.
 /// Re-entrant access will panic rather than cause undefined behavior.
 #[derive(Debug, Default)]
-pub(super) struct HandlerCache<K, H> {
-    inner: RefCell<HashMap<K, Box<H>>>,
+pub(super) struct HandlerArena<H> {
+    inner: RefCell<Vec<Box<H>>>,
 }
 
-impl<K, H> HandlerCache<K, H> {
-    /// Creates a new empty handler cache.
+impl<H> HandlerArena<H> {
+    /// Creates a new empty handler arena.
     #[inline]
     pub(super) fn new() -> Self {
         Self {
-            inner: RefCell::new(HashMap::new()),
+            inner: RefCell::new(Vec::new()),
         }
     }
 }
 
-impl<K, H> Clone for HandlerCache<K, H> {
-    /// Creates a new empty cache (cached handlers are not cloned).
+impl<H> Clone for HandlerArena<H> {
+    /// Creates a new empty arena (stored handlers are not cloned).
     fn clone(&self) -> Self {
         Self::new()
     }
 }
 
-impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
-    /// Returns a reference to a lazily initialized handler for the given key.
+impl<H> HandlerArena<H> {
+    /// Stores a computed handler and returns a stable reference to it.
     #[inline]
-    pub(super) fn get_or_insert(&self, key: &K, f: impl FnOnce() -> H) -> &H {
-        let mut cache = self.inner.borrow_mut();
-        // Lookup first to avoid cloning on cache hit
-        if let Some(boxed) = cache.get(key) {
-            // SAFETY: Box provides stable heap address. Cache is append-only.
-            return unsafe { &*(boxed.as_ref() as *const H) };
-        }
-        let boxed = cache.entry(key.clone()).or_insert_with(|| Box::new(f()));
-        // SAFETY: Box provides stable heap address. Cache is append-only.
+    pub(super) fn insert(&self, handler: H) -> &H {
+        let mut handlers = self.inner.borrow_mut();
+        handlers.push(Box::new(handler));
+        let boxed = handlers.last().expect("just inserted");
+        // SAFETY: Box provides stable heap address. Arena is append-only.
         unsafe { &*(boxed.as_ref() as *const H) }
     }
 
-    /// Returns a mutable reference to a lazily initialized handler for the given key.
+    /// Stores a computed handler and returns a stable mutable reference to it.
     #[inline]
-    pub(super) fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> &mut H {
-        let mut cache = self.inner.borrow_mut();
-        // Lookup first to avoid cloning on cache hit
-        if let Some(boxed) = cache.get_mut(key) {
-            // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
-            return unsafe { &mut *(boxed.as_mut() as *mut H) };
-        }
-        let boxed = cache.entry(key.clone()).or_insert_with(|| Box::new(f()));
-        // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
+    pub(super) fn insert_mut(&mut self, handler: H) -> &mut H {
+        let mut handlers = self.inner.borrow_mut();
+        handlers.push(Box::new(handler));
+        let boxed = handlers.last_mut().expect("just inserted");
+        // SAFETY: Box provides stable heap address. Arena is append-only. `&mut self` ensures exclusive access.
         unsafe { &mut *(boxed.as_mut() as *mut H) }
     }
 }
