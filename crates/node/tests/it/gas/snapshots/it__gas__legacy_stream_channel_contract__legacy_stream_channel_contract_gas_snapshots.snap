@@ -1,6 +1,5 @@
 ---
 source: crates/node/tests/it/gas/legacy_stream_channel_contract.rs
-assertion_line: 408
 expression: gas
 ---
 close_existing_channel_after_settlement: 85118
