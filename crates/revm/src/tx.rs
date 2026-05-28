@@ -366,6 +366,8 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 chain_id: Some(*chain_id),
                 gas_priority_fee: Some(*max_priority_fee_per_gas),
                 access_list: access_list.clone(),
+                blob_hashes: Vec::new(),
+                max_fee_per_blob_gas: 0,
                 // Convert Tempo authorization list to RecoveredAuthorization upfront
                 authorization_list: tempo_authorization_list
                     .iter()
@@ -379,7 +381,6 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                         ))
                     })
                     .collect(),
-                ..Default::default()
             },
             fee_token: *fee_token,
             is_system_tx: false,
