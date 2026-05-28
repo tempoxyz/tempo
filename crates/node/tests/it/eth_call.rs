@@ -166,13 +166,13 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
     assert!(token_diff.nonce.is_unchanged());
 
     let token_storage_diff = token_diff.storage.clone();
-    // Assert sender token balance has changed
-    let slot = TIP20Token::from_address(token_address)
-        .expect("valid TIP20 address")
-        .balances[caller]
-        .slot();
     let sender_balance = token_storage_diff
-        .get(&B256::from(slot))
+        .get(&B256::from(
+            TIP20Token::from_address(token_address)
+                .expect("valid TIP20 address")
+                .balances[caller]
+                .slot(),
+        ))
         .expect("Could not get recipient balance delta");
 
     assert!(sender_balance.is_changed());
@@ -184,12 +184,13 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
     assert_eq!(to.into_u256(), U256::ZERO);
 
     // Assert recipient token balance is changed
-    let slot = TIP20Token::from_address(token_address)
-        .expect("valid TIP20 address")
-        .balances[recipient]
-        .slot();
     let recipient_balance = token_storage_diff
-        .get(&B256::from(slot))
+        .get(&B256::from(
+            TIP20Token::from_address(token_address)
+                .expect("valid TIP20 address")
+                .balances[recipient]
+                .slot(),
+        ))
         .expect("Could not get recipient balance delta");
     assert!(recipient_balance.is_changed());
 

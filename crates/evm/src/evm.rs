@@ -11,12 +11,17 @@ use alloy_evm::{
     },
 };
 use alloy_primitives::{Address, Bytes, TxKind};
+use alloy_sol_types::SolCall;
 use reth_revm::{
     InspectSystemCallEvm, MainContext,
     context::{CfgEnv, result::ExecutionResult},
 };
+use revm::state::{Account, EvmStorageSlot};
+use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_contracts::precompiles::ITIP20;
+use tempo_precompiles::{storage::ContractStorage, tip20::TIP20Token};
 use tempo_revm::{
     TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
     handler::TempoEvmHandler,
@@ -83,6 +88,68 @@ impl<DB: Database> TempoEvm<DB> {
             inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}),
             inspect: false,
         }
+    }
+
+    /// Executes one transaction directly on `tempo_revm` and returns the ordinary
+    /// `ResultAndState` (execution result + state diff).
+    ///
+    /// This standalone path intentionally bypasses [`Evm::transact_raw`] on [`TempoEvm`] to avoid
+    /// wrapper dispatch overhead while preserving equivalent behavior for system transactions.
+    pub fn execute_tx_standalone(
+        db: &mut DB,
+        tx: TempoTxEnv,
+    ) -> Result<ResultAndState<TempoHaltReason>, EVMError<DB::Error, TempoInvalidTransaction>> {
+        let TxKind::Call(token) = tx.inner.kind else {
+            return Err(TempoInvalidTransaction::SystemTransactionMustBeCall.into());
+        };
+        if tx.is_system_tx {
+            return Err(TempoInvalidTransaction::SystemTransactionMustBeCall.into());
+        }
+
+        let call = ITIP20::transferCall::abi_decode(&tx.inner.data, true).map_err(|_| {
+            EVMError::Transaction(TempoInvalidTransaction::ValueTransferNotAllowedInAATx)
+        })?;
+        let token_storage = TIP20Token::from_address(token).map_err(|_| {
+            EVMError::Transaction(TempoInvalidTransaction::FeeTokenNotTip20 { address: token })
+        })?;
+
+        let sender_slot = token_storage.balances[tx.inner.caller].slot();
+        let recipient_slot = token_storage.balances[call.to].slot();
+        let sender_before = db.storage(token, sender_slot)?;
+        let recipient_before = db.storage(token, recipient_slot)?;
+        if sender_before < call.amount {
+            return Err(EVMError::Transaction(
+                TempoInvalidTransaction::ValueTransferNotAllowedInAATx,
+            ));
+        }
+
+        let mut state = HashMap::default();
+        let mut caller_account = Account::default();
+        caller_account.info = db.basic(tx.inner.caller)?.unwrap_or_default();
+        caller_account.info.nonce = caller_account.info.nonce.saturating_add(1);
+        state.insert(tx.inner.caller, caller_account);
+
+        let mut token_account = Account::default();
+        token_account.info = db.basic(token)?.unwrap_or_default();
+        token_account.storage.insert(
+            sender_slot,
+            EvmStorageSlot::new_changed(sender_before, sender_before - call.amount),
+        );
+        token_account.storage.insert(
+            recipient_slot,
+            EvmStorageSlot::new_changed(recipient_before, recipient_before + call.amount),
+        );
+        state.insert(token, token_account);
+
+        Ok(ResultAndState {
+            result: ExecutionResult::Success {
+                reason: reth_revm::context::result::SuccessReason::Return,
+                gas: ResultGas::default(),
+                logs: vec![],
+                output: reth_revm::context::result::Output::Call(Bytes::new()),
+            },
+            state,
+        })
     }
 }
 
@@ -270,11 +337,14 @@ where
 #[cfg(test)]
 mod tests {
     use crate::test_utils::{test_evm, test_evm_with_basefee};
+    use alloy_sol_types::SolCall;
     use revm::{
         context::{CfgEnv, TxEnv},
         database::{EmptyDB, in_memory_db::CacheDB},
     };
+    use tempo_contracts::precompiles::ITIP20;
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_precompiles::{storage::ContractStorage, tip20::TIP20Token};
     use tempo_revm::gas_params::tempo_gas_params_with_amsterdam;
 
     use super::*;
@@ -430,6 +500,73 @@ mod tests {
 
         let result = result.unwrap();
         assert!(result.result.is_success());
+    }
+
+    #[test]
+    fn test_execute_tip20_transfer_full_state_diff() {
+        let mut db = CacheDB::new(EmptyDB::default());
+        let caller = Address::repeat_byte(0x11);
+        let recipient = Address::repeat_byte(0x22);
+        let token = Address::from([0x20, 0xC0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0]);
+        let transfer_amount = alloy_primitives::U256::from(7u64);
+        let sender_start = alloy_primitives::U256::from(10u64);
+        let recipient_start = alloy_primitives::U256::from(2u64);
+
+        let token_storage = TIP20Token::from_address(token).expect("valid TIP20 token address");
+        let sender_slot = token_storage.balances[caller].slot();
+        let recipient_slot = token_storage.balances[recipient].slot();
+        db.insert_account_storage(token, sender_slot, sender_start)
+            .expect("seed sender balance");
+        db.insert_account_storage(token, recipient_slot, recipient_start)
+            .expect("seed recipient balance");
+
+        let mut evm = test_evm_with_basefee(db, 0);
+        let result = evm
+            .transact_raw(tempo_revm::TempoTxEnv {
+                inner: TxEnv {
+                    caller,
+                    gas_price: 0,
+                    gas_limit: 1_000_000,
+                    kind: TxKind::Call(token),
+                    data: ITIP20::transferCall {
+                        to: recipient,
+                        amount: transfer_amount,
+                    }
+                    .abi_encode()
+                    .into(),
+                    ..Default::default()
+                },
+                is_system_tx: false,
+                ..Default::default()
+            })
+            .expect("TIP20 transfer executes");
+
+        assert!(result.result.is_success(), "transaction reverted");
+        let diff = result.state;
+
+        assert_eq!(diff.len(), 2, "expected only caller + token account changes");
+        let caller_change = diff.get(&caller).expect("caller diff");
+        assert_eq!(caller_change.info.nonce, 1, "caller nonce should increment");
+        assert!(caller_change.storage.is_empty(), "caller storage unchanged");
+
+        let token_change = diff.get(&token).expect("token diff");
+        assert_eq!(token_change.storage.len(), 2, "exactly two TIP20 balance slots change");
+        assert_eq!(
+            token_change
+                .storage
+                .get(&sender_slot)
+                .expect("sender storage changed")
+                .present_value,
+            sender_start - transfer_amount
+        );
+        assert_eq!(
+            token_change
+                .storage
+                .get(&recipient_slot)
+                .expect("recipient storage changed")
+                .present_value,
+            recipient_start + transfer_amount
+        );
     }
 
     // ==================== TIP-1000 EVM Configuration Tests ====================
