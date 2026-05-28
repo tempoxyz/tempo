@@ -390,6 +390,13 @@ impl commonware_consensus::CertifiableBlock for Block {
 
 #[cfg(test)]
 mod tests {
+    use alloy_consensus::{BlockBody, Header};
+    use alloy_primitives::{B256, hex};
+    use commonware_codec::Read as _;
+    use reth_node_core::primitives::SealedBlock;
+
+    use super::Block;
+
     // required unit tests:
     //
     // 1. roundtrip block write -> read -> equality
@@ -407,21 +414,33 @@ mod tests {
     // 3. notarized write -> stable hex (necessary? good to guard against commonware xyz changes?)
     // 4. finalized write -> stable hex (necessary? good to guard against commonware xyz changes?)
 
-    // TODO: Bring back this unit test; preferably with some flavour of tempo reth block.
-    //
-    // use commonware_codec::{Read as _, Write as _};
-    // use reth_chainspec::ChainSpec;
+    #[test]
+    fn reads_block_without_block_access_list_bytes() {
+        let block = tempo_primitives::Block {
+            header: tempo_primitives::TempoHeader {
+                general_gas_limit: 30_000_000,
+                shared_gas_limit: 5_000_000,
+                timestamp_millis_part: 123,
+                inner: Header {
+                    parent_hash: B256::repeat_byte(0x01),
+                    number: 10,
+                    timestamp: 1_714_433_000,
+                    ..Default::default()
+                },
+                consensus_context: None,
+            },
+            body: BlockBody::default(),
+        };
+        let expected = SealedBlock::seal_slow(block.clone());
 
-    // use crate::consensus::block::Block;
+        let block_bytes = hex::decode(
+            "f90203f901fe8401c9c380834c4b407bf901f1a00101010101010101010101010101010101010101010101010101010101010101a01dcc4de8dec75d7aab85b567b6ccd41ad312451b948a7413f0a142fd40d49347940000000000000000000000000000000000000000a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421a056e81f171bcc55a6ff8345e692c0f86e5b48e01b996cadc001622fb5e363b421b9010000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000800a80808466302be880a00000000000000000000000000000000000000000000000000000000000000000880000000000000000c0c0",
+        )
+        .expect("valid fixed block fixture");
 
-    // #[test]
-    // fn commonware_write_read_roundtrip() {
-    //     // TODO: should use a non-default chainspec to make the test more interesting.
-    //     let chainspec = ChainSpec::default();
-    //     let expected = Block::genesis_from_chainspec(&chainspec);
-    //     let mut buf = Vec::new();
-    //     expected.write(&mut buf);
-    //     let actual = Block::read_cfg(&mut buf.as_slice(), &()).unwrap();
-    //     assert_eq!(expected, actual);
-    // }
+        let mut block_bytes = block_bytes.as_slice();
+        let actual = Block::read_cfg(&mut block_bytes, &()).unwrap();
+        assert_eq!(actual.block(), &expected);
+        assert!(actual.block_access_list().is_none());
+    }
 }
