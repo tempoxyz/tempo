@@ -1714,7 +1714,11 @@ where
 
             // Validate time window for AA transactions
             let block_timestamp = evm.ctx_ref().block().timestamp().saturating_to();
-            let valid_after = aa_env.valid_after.filter(|_| !evm.skip_valid_after_check);
+            let valid_after = if evm.skip_valid_after_check {
+                None
+            } else {
+                aa_env.valid_after
+            };
             validate_time_window(valid_after, aa_env.valid_before, block_timestamp)?;
         }
 
@@ -2201,6 +2205,7 @@ fn check_gas_limit(
 /// - validBefore: Transaction can only be included before this timestamp
 ///
 /// This ensures transactions are only valid within a specific time window.
+#[inline]
 pub fn validate_time_window(
     valid_after: Option<u64>,
     valid_before: Option<u64>,
