@@ -527,6 +527,9 @@ where
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        // Consensus builds carry a remaining proposal budget. When present, the
+        // builder stops pool tx execution before projected proposer and validator
+        // work would consume that window.
         let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();

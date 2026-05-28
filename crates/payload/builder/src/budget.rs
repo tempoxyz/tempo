@@ -54,6 +54,10 @@ fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
 /// replayed by validators and therefore counts once.
 /// `budget` is the remaining consensus payload build budget. `block_size_bytes`
 /// is the current encoded-size estimate used for marshal persistence.
+///
+/// The budget is not split into fixed leader/validator buckets. Instead, we
+/// charge proposer idle once, projected replayable work once for the proposer
+/// and once for validators, and marshal persistence once for each side.
 pub(crate) fn payload_budget_exhausted(
     elapsed: Duration,
     idle_elapsed: Duration,
