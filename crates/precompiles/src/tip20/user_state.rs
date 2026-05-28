@@ -31,18 +31,22 @@ pub enum RewardFlag {
 }
 
 impl RewardFlag {
-    pub fn is_opted_out(&self) -> bool {
+    #[inline]
+    pub fn is_opted_out(self) -> bool {
         matches!(self, Self::OptedOut)
     }
 
-    pub fn is_opted_in(&self) -> bool {
+    #[inline]
+    pub fn is_opted_in(self) -> bool {
         matches!(self, Self::OptedIn)
     }
 
-    pub fn is_uninitialized(&self) -> bool {
+    #[inline]
+    pub fn is_uninitialized(self) -> bool {
         matches!(self, Self::Uninitialized)
     }
 
+    #[inline]
     pub fn from_delegate(delegate: Address) -> Self {
         if delegate.is_zero() {
             Self::OptedOut
@@ -86,27 +90,32 @@ impl From<UserState> for PackedUserState {
 }
 
 impl UserState {
+    #[inline]
     pub(super) fn new(amount: U256, flag: RewardFlag) -> Result<Self> {
         let amount = u128::try_from(amount).map_err(|_| TempoPrecompileError::under_overflow())?;
         Ok(Self { amount, flag })
     }
 
+    #[inline]
     pub fn amount(&self) -> U256 {
         U256::from(self.amount)
     }
 
+    #[inline]
     pub(super) fn checked_add(&self, amount: U256) -> Result<U256> {
         self.amount()
             .checked_add(amount)
             .ok_or(TempoPrecompileError::under_overflow())
     }
 
+    #[inline]
     pub(super) fn checked_sub(&self, amount: U256) -> Result<U256> {
         self.amount()
             .checked_sub(amount)
             .ok_or(TempoPrecompileError::under_overflow())
     }
 
+    #[inline]
     pub(super) fn checked_mul(&self, amount: U256) -> Result<U256> {
         self.amount()
             .checked_mul(amount)
