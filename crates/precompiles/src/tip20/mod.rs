@@ -1265,6 +1265,7 @@ impl TIP20Token {
     /// - `Paused` — token transfers are currently paused
     /// - `InsufficientBalance` — sender balance lower than fee amount
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
+    #[inline(always)]
     pub fn transfer_fee_pre_tx(&mut self, from: Address, amount: U256) -> Result<()> {
         // This function respects the token's pause state and will revert if the token is paused.
         // transfer_fee_post_tx is intentionally allowed to execute even when the token is paused.
@@ -1317,6 +1318,7 @@ impl TIP20Token {
     /// the actual gas spent. Intentionally allowed when paused so that a pause transaction can
     /// still receive its fee refund. On T1C+, also restores the [`AccountKeychain`] spending limit
     /// by the refund amount.
+    #[inline(always)]
     pub fn transfer_fee_post_tx(
         &mut self,
         to: Address,
