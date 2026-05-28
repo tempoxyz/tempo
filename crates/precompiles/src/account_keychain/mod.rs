@@ -396,12 +396,9 @@ impl AccountKeychain {
             witness,
             true,
         )?;
-        self.emit_event(AccountKeychainEvent::AdminKeyAuthorized(
-            IAccountKeychain::AdminKeyAuthorized {
-                account: msg_sender,
-                publicKey: key_id,
-            },
-        ))
+        self.emit_event(
+            AccountKeychainEvent::admin_key_authorized(msg_sender, key_id)
+        )
     }
 
     /// Burns a TIP-1053 witness without authorizing a key.
