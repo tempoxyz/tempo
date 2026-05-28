@@ -24,9 +24,15 @@ const SPONSOR_URL: &str = "https://sponsor.moderato.tempo.xyz";
 const TEST_PRIVATE_KEY: &str = "0x2a871d0798f97d79848a013d4936a73bf4cc922c825d33c1cf7073dff6d409c6";
 
 fn rpc_and_sponsor_urls() -> Option<(String, String)> {
-    let rpc = std::env::var("TEMPO_TESTNET_RPC_URL").ok()?;
-    let sponsor = std::env::var("TEMPO_SPONSOR_URL").unwrap_or_else(|_| SPONSOR_URL.to_string());
+    let rpc = non_empty_env_var("TEMPO_TESTNET_RPC_URL")?;
+    let sponsor = non_empty_env_var("TEMPO_SPONSOR_URL").unwrap_or_else(|| SPONSOR_URL.to_string());
     Some((rpc, sponsor))
+}
+
+fn non_empty_env_var(name: &str) -> Option<String> {
+    std::env::var(name)
+        .ok()
+        .filter(|value| !value.trim().is_empty())
 }
 
 /// Test that the RelayTransport correctly routes reads to the default transport
