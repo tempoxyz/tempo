@@ -118,7 +118,9 @@ sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
 # already pinned in foundry's lockfile (e.g. reth bumps `alloy-eip7928` to ^0.3.6
 # while foundry's lock has 0.3.5), cargo cannot resolve it without an update.
 # On such failures, parse the conflicting package out of the error and run a
-# targeted `cargo update -p <pkg>` for it, then retry. Loop while there are
+# targeted `cargo update -p <pkg>` for it, then retry. If Cargo reports the
+# previously selected version, include it to avoid ambiguity when Foundry's
+# lockfile contains multiple versions of the same package. Loop while there are
 # pending conflicts so several distinct crates can be resolved in one run
 # without falling back to a blanket `cargo update`. Bail out if the same crate
 # conflicts twice in a row (i.e. `cargo update` made no progress).
@@ -126,13 +128,19 @@ pushd "$FOUNDRY_ROOT" >/dev/null
 prev_conflict_pkg=""
 while true; do
   err="$(cargo metadata --format-version=1 --no-default-features 2>&1 >/dev/null)" && break
-  conflict_pkg="$(printf '%s\n' "$err" | sed -nE "s/^error: failed to select a version for \`([^']+)\`.*/\1/p" | head -n1)"
+  clean_err="$(printf '%s\n' "$err" | sed -E 's/\x1b\[[0-9;]*[[:alpha:]]//g')"
+  conflict_pkg="$(printf '%s\n' "$clean_err" | sed -nE 's/^error: failed to select a version for `([^`]+)`.*/\1/p' | head -n1)"
+  selected_version="$(printf '%s\n' "$clean_err" | sed -nE 's/^[[:space:]]*previously selected package `[^ ]+ v([^`]+)`.*/\1/p' | head -n1)"
   if [[ -z "$conflict_pkg" || "$conflict_pkg" == "$prev_conflict_pkg" ]]; then
-    printf '%s\n' "$err" >&2
+    printf '%s\n' "$clean_err" >&2
     exit 1
   fi
-  echo "cargo metadata failed on '$conflict_pkg' constraint; running 'cargo update -p $conflict_pkg' and retrying"
-  cargo update -p "$conflict_pkg" >/dev/null
+  update_pkg="$conflict_pkg"
+  if [[ -n "$selected_version" ]]; then
+    update_pkg="${conflict_pkg}@${selected_version}"
+  fi
+  echo "cargo metadata failed on '$conflict_pkg' constraint; running 'cargo update -p $update_pkg' and retrying"
+  cargo update -p "$update_pkg" >/dev/null
   prev_conflict_pkg="$conflict_pkg"
 done
 

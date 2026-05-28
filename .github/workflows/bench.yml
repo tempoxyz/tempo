@@ -246,8 +246,8 @@ jobs:
             runPairs = defaults['run-pairs'];
             var chain = defaults.chain;
             if (mode === 'e2e') {
-              if (!explicitDuration) duration = '40';
-              if (!explicitRunPairs) runPairs = '9';
+              if (!explicitDuration) duration = '90';
+              if (!explicitRunPairs) runPairs = '3';
             }
             if (!explicitWarmup) {
               warmup = defaultWarmup(blocks);
