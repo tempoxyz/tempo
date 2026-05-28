@@ -18,6 +18,21 @@ use tempo_primitives::TempoAddressExt;
 
 /// Precision multiplier for reward-per-token accumulator (1e18).
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
+const ACC_PRECISION_U128: u128 = 1_000_000_000_000_000_000;
+
+fn reward_per_token_delta(amount: U256, opted_in_supply: u128) -> Result<U256> {
+    if opted_in_supply != 0
+        && let Ok(amount) = u128::try_from(amount)
+        && let Some(scaled) = amount.checked_mul(ACC_PRECISION_U128)
+    {
+        return Ok(U256::from(scaled / opted_in_supply));
+    }
+
+    amount
+        .checked_mul(ACC_PRECISION)
+        .and_then(|v| v.checked_div(U256::from(opted_in_supply)))
+        .ok_or(TempoPrecompileError::under_overflow())
+}
 
 impl TIP20Token {
     /// Distributes `amount` of reward tokens from the caller into the opted-in reward pool.
@@ -48,16 +63,12 @@ impl TIP20Token {
 
         self._transfer(msg_sender, &Recipient::direct(token_address), call.amount)?;
 
-        let opted_in_supply = U256::from(self.get_opted_in_supply()?);
-        if opted_in_supply.is_zero() {
+        let opted_in_supply = self.get_opted_in_supply()?;
+        if opted_in_supply == 0 {
             return Err(TIP20Error::no_opted_in_supply().into());
         }
 
-        let delta_rpt = call
-            .amount
-            .checked_mul(ACC_PRECISION)
-            .and_then(|v| v.checked_div(opted_in_supply))
-            .ok_or(TempoPrecompileError::under_overflow())?;
+        let delta_rpt = reward_per_token_delta(call.amount, opted_in_supply)?;
         let current_rpt = self.get_global_reward_per_token()?;
         let new_rpt = current_rpt
             .checked_add(delta_rpt)
