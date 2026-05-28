@@ -4,7 +4,8 @@ use crate::blockstm::{
     overlay::{BlockStmOverlayStatus, BlockStmOverlayValue, BlockStmVersion},
     rw_set::{BlockStmAccessKey, BlockStmReadSet, BlockStmValue, BlockStmWriteSet},
 };
-use alloy_primitives::map::HashMap;
+use alloy_primitives::{Address, map::HashMap};
+use reth_revm::state::AccountInfo;
 use std::{
     hash::{Hash, Hasher},
     sync::{Mutex, RwLock},
@@ -17,7 +18,19 @@ const DEFAULT_SHARDS: usize = 64;
 pub struct BlockStmMvMemory {
     base: HashMap<BlockStmAccessKey, BlockStmValue>,
     shards: Vec<RwLock<HashMap<BlockStmAccessKey, Vec<BlockStmOverlayValue>>>>,
+    account_shards: Vec<RwLock<HashMap<Address, Vec<BlockStmAccountOverlayValue>>>>,
     commit_order: Mutex<Vec<(usize, BlockStmAccessKey, BlockStmValue)>>,
+}
+
+/// An account-info version used by the production MV state view.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockStmAccountOverlayValue {
+    /// Version that produced this account value.
+    pub version: BlockStmVersion,
+    /// Full account metadata needed by subsequent EVM executions.
+    pub info: AccountInfo,
+    /// Whether this account value is concrete or only an estimate.
+    pub status: BlockStmOverlayStatus,
 }
 
 impl Default for BlockStmMvMemory {
@@ -41,6 +54,9 @@ impl BlockStmMvMemory {
         Self {
             base: base.into_iter().collect(),
             shards: (0..shard_count)
+                .map(|_| RwLock::new(HashMap::default()))
+                .collect(),
+            account_shards: (0..shard_count)
                 .map(|_| RwLock::new(HashMap::default()))
                 .collect(),
             commit_order: Mutex::new(Vec::new()),
@@ -122,9 +138,45 @@ impl BlockStmMvMemory {
         self.publish_version(version, writes, BlockStmOverlayStatus::Value);
     }
 
+    /// Publishes full account values for one concrete transaction incarnation.
+    pub fn publish_account_values(
+        &self,
+        version: BlockStmVersion,
+        accounts: &HashMap<Address, AccountInfo>,
+    ) {
+        self.publish_account_versions(version, accounts, BlockStmOverlayStatus::Value);
+    }
+
     /// Keeps an aborted incarnation write-set as estimates for dependency tracking.
     pub fn mark_estimate(&self, version: BlockStmVersion, writes: &BlockStmWriteSet) {
         self.publish_version(version, writes, BlockStmOverlayStatus::Estimate);
+    }
+
+    /// Keeps aborted account writes as estimates for dependency tracking.
+    pub fn mark_account_estimates(
+        &self,
+        version: BlockStmVersion,
+        accounts: &HashMap<Address, AccountInfo>,
+    ) {
+        self.publish_account_versions(version, accounts, BlockStmOverlayStatus::Estimate);
+    }
+
+    /// Reads the nearest prior account version visible to `tx_index`, including estimates.
+    pub fn account_entry(
+        &self,
+        address: Address,
+        tx_index: usize,
+    ) -> Option<BlockStmAccountOverlayValue> {
+        let shard = self
+            .account_shard_for(&address)
+            .read()
+            .expect("Block-STM MV account shard poisoned");
+        shard
+            .get(&address)?
+            .iter()
+            .filter(|entry| entry.version.tx_index < tx_index)
+            .max_by_key(|entry| entry.version)
+            .cloned()
     }
 
     /// Returns the latest concrete version for a key.
@@ -170,6 +222,27 @@ impl BlockStmMvMemory {
         }
     }
 
+    fn publish_account_versions(
+        &self,
+        version: BlockStmVersion,
+        accounts: &HashMap<Address, AccountInfo>,
+        status: BlockStmOverlayStatus,
+    ) {
+        for (address, info) in accounts {
+            let mut shard = self
+                .account_shard_for(address)
+                .write()
+                .expect("Block-STM MV account shard poisoned");
+            let versions = shard.entry(*address).or_default();
+            versions.retain(|entry| entry.version.tx_index != version.tx_index);
+            versions.push(BlockStmAccountOverlayValue {
+                version,
+                info: info.clone(),
+                status,
+            });
+        }
+    }
+
     fn shard_for(
         &self,
         key: &BlockStmAccessKey,
@@ -177,10 +250,23 @@ impl BlockStmMvMemory {
         &self.shards[self.shard_index(key)]
     }
 
+    fn account_shard_for(
+        &self,
+        address: &Address,
+    ) -> &RwLock<HashMap<Address, Vec<BlockStmAccountOverlayValue>>> {
+        &self.account_shards[self.account_shard_index(address)]
+    }
+
     fn shard_index(&self, key: &BlockStmAccessKey) -> usize {
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         key.hash(&mut hasher);
         (hasher.finish() as usize) % self.shards.len()
+    }
+
+    fn account_shard_index(&self, address: &Address) -> usize {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        address.hash(&mut hasher);
+        (hasher.finish() as usize) % self.account_shards.len()
     }
 }
 
@@ -243,6 +329,40 @@ mod tests {
         reads.record(key, 0u64);
 
         assert_eq!(memory.validate_reads(2, &reads), Err(key));
+    }
+
+    #[test]
+    fn blockstm_mv_memory_tracks_account_estimates_and_values() {
+        let address = addr(9);
+        let memory = BlockStmMvMemory::default();
+        let mut accounts = HashMap::default();
+        accounts.insert(
+            address,
+            AccountInfo {
+                nonce: 1,
+                balance: U256::from(100),
+                ..Default::default()
+            },
+        );
+
+        memory.mark_account_estimates(BlockStmVersion::new(1, 0), &accounts);
+        let estimate = memory.account_entry(address, 2).unwrap();
+        assert_eq!(estimate.version, BlockStmVersion::new(1, 0));
+        assert_eq!(estimate.status, BlockStmOverlayStatus::Estimate);
+
+        accounts.insert(
+            address,
+            AccountInfo {
+                nonce: 2,
+                balance: U256::from(90),
+                ..Default::default()
+            },
+        );
+        memory.publish_account_values(BlockStmVersion::new(1, 1), &accounts);
+        let value = memory.account_entry(address, 2).unwrap();
+        assert_eq!(value.version, BlockStmVersion::new(1, 1));
+        assert_eq!(value.status, BlockStmOverlayStatus::Value);
+        assert_eq!(value.info.nonce, 2);
     }
 
     #[test]

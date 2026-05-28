@@ -15,10 +15,12 @@ use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
     blockstm::{
-        BlockStmExecutionStats, BlockStmMetrics, BlockStmMvMemory, BlockStmVersion,
+        BlockStmExecutionStats, BlockStmMetrics, BlockStmMvMemory,
         action::production::{BlockStmSemanticState, capture_tip20_semantic_plan},
         executor::BlockStmAttempt,
-        state_view::{BlockStmTrackingDb, write_set_from_evm_state},
+        state_view::{
+            BlockStmMvTrackingDb, account_write_set_from_evm_state, write_set_from_evm_state,
+        },
     },
     budget::{
         BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
@@ -67,7 +69,7 @@ use reth_transaction_pool::{
 use std::{
     collections::VecDeque,
     sync::{
-        Arc, Mutex,
+        Arc, Condvar, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -119,6 +121,141 @@ struct BlockStmPoolCandidate {
 struct BlockStmAttemptOutput {
     execution_result: Result<tempo_evm::TempoTxResult, BlockExecutionError>,
     elapsed: Duration,
+    semantic_plan: Option<crate::blockstm::action::production::BlockStmSemanticPlan>,
+    blocking_dependency: Option<usize>,
+    account_write_set: alloy_primitives::map::HashMap<Address, reth_revm::state::AccountInfo>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockStmProductionTaskKind {
+    Execution,
+    Validation,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockStmProductionTask {
+    tx_index: usize,
+    incarnation: usize,
+    kind: BlockStmProductionTaskKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BlockStmProductionStatus {
+    Ready,
+    Executing,
+    Waiting,
+    Executed,
+    Validated,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct BlockStmProductionTxState {
+    incarnation: usize,
+    status: BlockStmProductionStatus,
+}
+
+#[derive(Debug)]
+struct BlockStmProductionScheduler {
+    inner: Mutex<BlockStmProductionSchedulerInner>,
+    available: Condvar,
+}
+
+#[derive(Debug, Default)]
+struct BlockStmProductionSchedulerInner {
+    queue: VecDeque<BlockStmProductionTask>,
+    active: usize,
+    done: bool,
+}
+
+impl BlockStmProductionScheduler {
+    fn new(tx_count: usize) -> Self {
+        Self {
+            inner: Mutex::new(BlockStmProductionSchedulerInner {
+                queue: (0..tx_count)
+                    .map(|tx_index| BlockStmProductionTask {
+                        tx_index,
+                        incarnation: 0,
+                        kind: BlockStmProductionTaskKind::Execution,
+                    })
+                    .collect(),
+                active: 0,
+                done: false,
+            }),
+            available: Condvar::new(),
+        }
+    }
+
+    fn next_task(&self) -> Option<BlockStmProductionTask> {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("Block-STM production scheduler poisoned");
+        loop {
+            if inner.done {
+                return None;
+            }
+            if !inner.queue.is_empty() {
+                let task_index = inner
+                    .queue
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, task)| {
+                        (
+                            task.tx_index,
+                            match task.kind {
+                                BlockStmProductionTaskKind::Validation => 0u8,
+                                BlockStmProductionTaskKind::Execution => 1u8,
+                            },
+                        )
+                    })
+                    .map(|(index, _)| index)
+                    .expect("queue is not empty");
+                let task = inner
+                    .queue
+                    .remove(task_index)
+                    .expect("task index selected from queue");
+                inner.active += 1;
+                return Some(task);
+            }
+            if inner.active == 0 {
+                inner.done = true;
+                self.available.notify_all();
+                return None;
+            }
+            inner = self
+                .available
+                .wait(inner)
+                .expect("Block-STM production scheduler poisoned");
+        }
+    }
+
+    fn push_task(&self, task: BlockStmProductionTask) {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("Block-STM production scheduler poisoned");
+        if !inner.done {
+            inner.queue.push_back(task);
+            self.available.notify_one();
+        }
+    }
+
+    fn finish_task(&self) {
+        let mut inner = self
+            .inner
+            .lock()
+            .expect("Block-STM production scheduler poisoned");
+        inner.active = inner
+            .active
+            .checked_sub(1)
+            .expect("active Block-STM task underflow");
+        if inner.queue.is_empty() && inner.active == 0 {
+            inner.done = true;
+            self.available.notify_all();
+        } else {
+            self.available.notify_one();
+        }
+    }
 }
 
 fn execute_blockstm_attempt<Provider>(
@@ -128,9 +265,13 @@ fn execute_blockstm_attempt<Provider>(
     evm_env: EvmEnvFor<TempoEvmConfig>,
     execution_ctx: TempoBlockExecutionCtx<'_>,
     prefix_cache: reth_revm::db::CacheState,
+    memory: &BlockStmMvMemory,
     tx_index: usize,
     attempt: usize,
     tx: WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>>,
+    pool_tx: &TempoPooledTransaction,
+    capture_semantic_actions: bool,
+    beneficiary: Address,
 ) -> Result<BlockStmAttempt<BlockStmAttemptOutput>, BlockExecutionError>
 where
     Provider: StateProviderFactory,
@@ -144,18 +285,34 @@ where
         .with_cached_prestate(prefix_cache)
         .with_bundle_update()
         .build();
-    let tracking_db = BlockStmTrackingDb::new(db);
+    let tracking_db = BlockStmMvTrackingDb::new(db, memory, tx_index);
     let evm = evm_config.evm_with_env(tracking_db, evm_env);
     let mut executor = BlockExecutorFactory::create_executor(evm_config, evm, execution_ctx);
 
     let started = Instant::now();
     let execution_result = executor.execute_transaction_without_commit(tx);
     let elapsed = started.elapsed();
-    let read_set = executor.evm().db().read_set();
-    let write_set = execution_result
+    let blocking_dependency = executor.evm().db().blocking_dependency();
+    let mut read_set = executor.evm().db().read_set();
+    let account_write_set = execution_result
+        .as_ref()
+        .map(|result| account_write_set_from_evm_state(&result.result().state))
+        .unwrap_or_default();
+    let mut write_set = execution_result
         .as_ref()
         .map(|result| write_set_from_evm_state(&result.result().state))
         .unwrap_or_default();
+    let semantic_plan = if capture_semantic_actions {
+        execution_result.as_ref().ok().and_then(|result| {
+            capture_tip20_semantic_plan(tx_index, pool_tx, result, &write_set, beneficiary)
+        })
+    } else {
+        None
+    };
+    if let Some(semantic_plan) = semantic_plan.as_ref() {
+        read_set = read_set.without_keys(semantic_plan.covered_keys().iter());
+        write_set = write_set.without_keys(semantic_plan.covered_keys().iter());
+    }
 
     Ok(BlockStmAttempt {
         tx_index,
@@ -165,6 +322,9 @@ where
         output: BlockStmAttemptOutput {
             execution_result,
             elapsed,
+            semantic_plan,
+            blocking_dependency,
+            account_write_set,
         },
     })
 }
@@ -184,37 +344,109 @@ fn record_blockstm_max_in_flight(max_in_flight: &AtomicU64, active: u64) {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum BlockStmSerialFallbackReason {
-    RetryBudget,
-    AdaptiveConflictThreshold,
-}
-
-impl BlockStmSerialFallbackReason {
-    const fn as_str(self) -> &'static str {
-        match self {
-            Self::RetryBudget => "retry_budget",
-            Self::AdaptiveConflictThreshold => "adaptive_conflict_threshold",
+fn schedule_blockstm_validation_for_ready_suffix(
+    scheduler: &BlockStmProductionScheduler,
+    states: &[Mutex<BlockStmProductionTxState>],
+    start: usize,
+) {
+    for (tx_index, state) in states.iter().enumerate().skip(start) {
+        let state = state
+            .lock()
+            .expect("Block-STM production transaction state poisoned");
+        if matches!(
+            state.status,
+            BlockStmProductionStatus::Executed | BlockStmProductionStatus::Validated
+        ) {
+            scheduler.push_task(BlockStmProductionTask {
+                tx_index,
+                incarnation: state.incarnation,
+                kind: BlockStmProductionTaskKind::Validation,
+            });
         }
     }
 }
 
-fn blockstm_serial_fallback_reason(
-    config: BlockStmConfig,
-    conflicts_total: u64,
-    attempt_count: usize,
-) -> Option<BlockStmSerialFallbackReason> {
-    if attempt_count >= config.max_retries_per_tx {
-        return Some(BlockStmSerialFallbackReason::RetryBudget);
+fn blockstm_dependency_resolved(
+    states: &[Mutex<BlockStmProductionTxState>],
+    tx_index: usize,
+) -> bool {
+    let state = states[tx_index]
+        .lock()
+        .expect("Block-STM production transaction state poisoned");
+    matches!(
+        state.status,
+        BlockStmProductionStatus::Executed | BlockStmProductionStatus::Validated
+    )
+}
+
+fn schedule_blockstm_execution(
+    scheduler: &BlockStmProductionScheduler,
+    states: &[Mutex<BlockStmProductionTxState>],
+    tx_index: usize,
+) {
+    let mut state = states[tx_index]
+        .lock()
+        .expect("Block-STM production transaction state poisoned");
+    if matches!(
+        state.status,
+        BlockStmProductionStatus::Ready | BlockStmProductionStatus::Executing
+    ) {
+        return;
+    }
+    state.incarnation += 1;
+    state.status = BlockStmProductionStatus::Ready;
+    scheduler.push_task(BlockStmProductionTask {
+        tx_index,
+        incarnation: state.incarnation,
+        kind: BlockStmProductionTaskKind::Execution,
+    });
+}
+
+fn schedule_blockstm_dependency_waiters(
+    scheduler: &BlockStmProductionScheduler,
+    states: &[Mutex<BlockStmProductionTxState>],
+    dependencies: &[Mutex<Vec<usize>>],
+    tx_index: usize,
+) {
+    let waiters = dependencies[tx_index]
+        .lock()
+        .expect("Block-STM dependency list poisoned")
+        .drain(..)
+        .collect::<Vec<_>>();
+    for waiter in waiters {
+        schedule_blockstm_execution(scheduler, states, waiter);
+    }
+}
+
+fn register_blockstm_dependency_waiter(
+    scheduler: &BlockStmProductionScheduler,
+    states: &[Mutex<BlockStmProductionTxState>],
+    dependencies: &[Mutex<Vec<usize>>],
+    waiter_tx_index: usize,
+    blocking_tx_index: Option<usize>,
+) {
+    let Some(blocking_tx_index) = blocking_tx_index else {
+        schedule_blockstm_execution(scheduler, states, waiter_tx_index);
+        return;
+    };
+
+    if blockstm_dependency_resolved(states, blocking_tx_index) {
+        schedule_blockstm_execution(scheduler, states, waiter_tx_index);
+        return;
     }
 
-    if config.adaptive_conflict_threshold > 0
-        && conflicts_total as usize >= config.adaptive_conflict_threshold
     {
-        return Some(BlockStmSerialFallbackReason::AdaptiveConflictThreshold);
+        let mut waiters = dependencies[blocking_tx_index]
+            .lock()
+            .expect("Block-STM dependency list poisoned");
+        if !waiters.contains(&waiter_tx_index) {
+            waiters.push(waiter_tx_index);
+        }
     }
 
-    None
+    if blockstm_dependency_resolved(states, blocking_tx_index) {
+        schedule_blockstm_dependency_waiters(scheduler, states, dependencies, blocking_tx_index);
+    }
 }
 
 fn is_blockstm_invalidated_buffered_transaction(
@@ -734,9 +966,8 @@ where
             let mut pending_candidates = VecDeque::<BlockStmPoolCandidate>::new();
             let mut next_blockstm_tx_index = 0usize;
             let mut semantic_state = BlockStmSemanticState::default();
-            let mut blockstm_serial_fallback_active = false;
 
-            'blockstm_pool_fill: loop {
+            loop {
                 check_cancel!();
 
                 if let Some(build_budget) = payload_build_budget {
@@ -763,178 +994,6 @@ where
                         );
                         break BlockBuildStopReason::BuildBudget;
                     }
-                }
-
-                if blockstm_serial_fallback_active {
-                    let candidate = if let Some(candidate) = pending_candidates.pop_front() {
-                        candidate
-                    } else {
-                        let Some(pool_tx) = best_txs.next() else {
-                            if build_once_with_shared_trie
-                                && payload_build_budget.is_some()
-                                && cumulative_gas_used < non_shared_gas_limit
-                            {
-                                std::thread::sleep(Duration::from_millis(1));
-                                normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
-                                continue;
-                            }
-
-                            let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
-                                BlockBuildStopReason::GasLimit
-                            } else if skipped_oversized_block {
-                                BlockBuildStopReason::RlpBlockSizeLimit
-                            } else {
-                                BlockBuildStopReason::TxPoolEmpty
-                            };
-                            break stop_reason;
-                        };
-                        pool_transactions_yielded += 1;
-
-                        let max_regular_gas_used = core::cmp::min(
-                            pool_tx.gas_limit(),
-                            builder.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
-                        );
-                        let is_payment = if hardfork.is_t5() {
-                            pool_tx.transaction.is_payment()
-                        } else {
-                            pool_tx.transaction.inner().is_payment_v1()
-                        };
-                        let tx_rlp_length = pool_tx.transaction.encoded_length();
-                        let tx_debug_repr = tracing::enabled!(Level::TRACE)
-                            .then(|| format!("{:?}", pool_tx.transaction))
-                            .unwrap_or_default();
-                        let tx_with_env = pool_tx.transaction.clone_into_with_tx_env();
-                        let tx_index = next_blockstm_tx_index;
-                        next_blockstm_tx_index += 1;
-
-                        BlockStmPoolCandidate {
-                            tx_index,
-                            pool_tx,
-                            tx_with_env,
-                            max_regular_gas_used,
-                            is_payment,
-                            tx_rlp_length,
-                            tx_debug_repr,
-                        }
-                    };
-
-                    if cumulative_gas_used + candidate.max_regular_gas_used > non_shared_gas_limit {
-                        best_txs.mark_invalid(
-                            &candidate.pool_tx,
-                            InvalidPoolTransactionError::ExceedsGasLimit(
-                                candidate.pool_tx.gas_limit(),
-                                non_shared_gas_limit - cumulative_gas_used,
-                            ),
-                        );
-                        self.metrics
-                            .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
-                        pending_candidates.retain(|pending| {
-                            !is_blockstm_invalidated_buffered_transaction(
-                                &candidate.pool_tx,
-                                &pending.pool_tx,
-                            )
-                        });
-                        continue;
-                    }
-
-                    if !candidate.is_payment
-                        && non_payment_gas_used + candidate.max_regular_gas_used > general_gas_limit
-                    {
-                        best_txs.mark_invalid(
-                            &candidate.pool_tx,
-                            InvalidPoolTransactionError::Other(Box::new(
-                                TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                            )),
-                        );
-                        self.metrics
-                            .inc_pool_tx_skipped("exceeds_general_gas_limit");
-                        pending_candidates.retain(|pending| {
-                            !is_blockstm_invalidated_buffered_transaction(
-                                &candidate.pool_tx,
-                                &pending.pool_tx,
-                            )
-                        });
-                        continue;
-                    }
-
-                    check_cancel!();
-
-                    if candidate.is_payment {
-                        payment_transactions += 1;
-                    }
-
-                    let estimated_block_size_with_tx = block_size_used + candidate.tx_rlp_length;
-                    if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                        best_txs.mark_invalid(
-                            &candidate.pool_tx,
-                            InvalidPoolTransactionError::OversizedData {
-                                size: estimated_block_size_with_tx,
-                                limit: MAX_RLP_BLOCK_SIZE,
-                            },
-                        );
-                        self.metrics.inc_pool_tx_skipped("oversized_block");
-                        skipped_oversized_block = true;
-                        pending_candidates.retain(|pending| {
-                            !is_blockstm_invalidated_buffered_transaction(
-                                &candidate.pool_tx,
-                                &pending.pool_tx,
-                            )
-                        });
-                        continue;
-                    }
-
-                    let execution_result = builder.execute_transaction_with_result_closure(
-                        candidate.tx_with_env.clone(),
-                        |result| {
-                            cumulative_gas_used += result.block_gas_used();
-                            cumulative_state_gas_used += result.state_gas_used();
-                            if !candidate.is_payment {
-                                non_payment_gas_used += result.block_gas_used();
-                            }
-                            total_fees += result.validator_fee();
-                            best_txs.on_new_result(result);
-                        },
-                    );
-
-                    if let Err(err) = execution_result {
-                        if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                            error,
-                            ..
-                        }) = &err
-                        {
-                            invalid_pool_transaction_execution_attempts += 1;
-
-                            if error.is_nonce_too_low() {
-                                trace!(%error, tx = %candidate.tx_debug_repr, "skipping nonce too low transaction");
-                                self.metrics.inc_pool_tx_skipped("nonce_too_low");
-                            } else {
-                                trace!(%error, tx = %candidate.tx_debug_repr, "skipping invalid transaction and its descendants");
-                                best_txs.mark_invalid(
-                                    &candidate.pool_tx,
-                                    InvalidPoolTransactionError::Consensus(
-                                        InvalidTransactionError::TxTypeNotSupported,
-                                    ),
-                                );
-                                self.metrics.inc_pool_tx_skipped("invalid_tx");
-                                pending_candidates.retain(|pending| {
-                                    !is_blockstm_invalidated_buffered_transaction(
-                                        &candidate.pool_tx,
-                                        &pending.pool_tx,
-                                    )
-                                });
-                            }
-                            continue;
-                        } else {
-                            return Err(PayloadBuilderError::evm(err));
-                        }
-                    }
-
-                    trace!("Transaction executed through Block-STM serial fallback");
-                    blockstm_stats.serial_fallback_total += 1;
-                    blockstm_stats.committed_txs_total += 1;
-                    pool_transactions_included += 1;
-                    block_size_used += candidate.tx_rlp_length;
-                    continue;
                 }
 
                 let mut batch = Vec::with_capacity(max_batch_len);
@@ -1077,66 +1136,306 @@ where
                 let prefix_cache = builder.executor_mut().evm_mut().db_mut().cache.clone();
                 let evm_env = builder.evm().evm_env();
                 let execution_ctx = builder.ctx.clone();
+                let beneficiary = builder.evm().block().beneficiary;
+                let batch_first_tx_index = batch[0].tx_index;
+                let worker_count = self.blockstm_config.workers.max(1);
+                let tip20_actions = self.blockstm_config.tip20_actions;
                 let attempt_slots = (0..batch.len())
                     .map(|_| Mutex::new(None))
                     .collect::<Vec<_>>();
                 let memory = BlockStmMvMemory::default();
-                let in_flight = Arc::new(AtomicU64::new(0));
-                let max_in_flight = Arc::new(AtomicU64::new(0));
+                let states = (0..batch.len())
+                    .map(|_| {
+                        Mutex::new(BlockStmProductionTxState {
+                            incarnation: 0,
+                            status: BlockStmProductionStatus::Ready,
+                        })
+                    })
+                    .collect::<Vec<_>>();
+                let dependencies = (0..batch.len())
+                    .map(|_| Mutex::new(Vec::<usize>::new()))
+                    .collect::<Vec<_>>();
+                let scheduler = BlockStmProductionScheduler::new(batch.len());
+                let worker_error = Mutex::new(None);
+                let in_flight = AtomicU64::new(0);
+                let max_in_flight = AtomicU64::new(0);
+                let speculative_executions = AtomicU64::new(0);
+                let conflicts = AtomicU64::new(0);
+                let reexecutions = AtomicU64::new(0);
 
                 self.executor.prewarming_pool().in_place_scope(|scope| {
-                    for (batch_index, candidate) in batch.iter().enumerate() {
+                    let batch_ref = &batch;
+                    for _ in 0..worker_count {
+                        let batch = batch_ref;
                         let provider = self.provider.clone();
                         let evm_config = &self.evm_config;
                         let evm_env = evm_env.clone();
                         let execution_ctx = execution_ctx.clone();
                         let prefix_cache = prefix_cache.clone();
-                        let tx = candidate.tx_with_env.clone();
-                        let slot = &attempt_slots[batch_index];
-                        let tx_index = candidate.tx_index;
-                        let in_flight = Arc::clone(&in_flight);
-                        let max_in_flight = Arc::clone(&max_in_flight);
+                        let attempt_slots = &attempt_slots;
+                        let states = &states;
+                        let dependencies = &dependencies;
+                        let scheduler = &scheduler;
                         let memory = &memory;
+                        let worker_error = &worker_error;
+                        let in_flight = &in_flight;
+                        let max_in_flight = &max_in_flight;
+                        let speculative_executions = &speculative_executions;
+                        let conflicts = &conflicts;
+                        let reexecutions = &reexecutions;
 
                         scope.spawn(move |_| {
-                            let active = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
-                            record_blockstm_max_in_flight(&max_in_flight, active);
-                            let attempt = execute_blockstm_attempt(
-                                provider,
-                                parent_hash,
-                                evm_config,
-                                evm_env,
-                                execution_ctx,
-                                prefix_cache,
-                                tx_index,
-                                0,
-                                tx,
-                            );
-                            in_flight.fetch_sub(1, Ordering::AcqRel);
-                            if let Ok(attempt) = &attempt {
-                                memory.publish_value(
-                                    BlockStmVersion::new(tx_index, 0),
-                                    &attempt.write_set,
-                                );
+                            while let Some(task) = scheduler.next_task() {
+                                if worker_error
+                                    .lock()
+                                    .expect("Block-STM worker error poisoned")
+                                    .is_some()
+                                {
+                                    scheduler.finish_task();
+                                    break;
+                                }
+
+                                match task.kind {
+                                    BlockStmProductionTaskKind::Execution => {
+                                        let stale_task = {
+                                            let mut state = states[task.tx_index]
+                                                .lock()
+                                                .expect("Block-STM production transaction state poisoned");
+                                            if state.incarnation != task.incarnation
+                                                || state.status != BlockStmProductionStatus::Ready
+                                            {
+                                                true
+                                            } else {
+                                                state.status = BlockStmProductionStatus::Executing;
+                                                false
+                                            }
+                                        };
+                                        if stale_task {
+                                            scheduler.finish_task();
+                                            continue;
+                                        }
+
+                                        let candidate = &batch[task.tx_index];
+                                        let active = in_flight.fetch_add(1, Ordering::AcqRel) + 1;
+                                        record_blockstm_max_in_flight(max_in_flight, active);
+                                        let attempt = execute_blockstm_attempt(
+                                            provider.clone(),
+                                            parent_hash,
+                                            evm_config,
+                                            evm_env.clone(),
+                                            execution_ctx.clone(),
+                                            prefix_cache.clone(),
+                                            memory,
+                                            candidate.tx_index,
+                                            task.incarnation,
+                                            candidate.tx_with_env.clone(),
+                                            &candidate.pool_tx.transaction,
+                                            tip20_actions,
+                                            beneficiary,
+                                        );
+                                        in_flight.fetch_sub(1, Ordering::AcqRel);
+                                        speculative_executions.fetch_add(1, Ordering::AcqRel);
+
+                                        match attempt {
+                                            Ok(attempt) => {
+                                                if let Some(blocking_tx_index) =
+                                                    attempt.output.blocking_dependency
+                                                {
+                                                    let blocking_batch_index = blocking_tx_index
+                                                        .checked_sub(batch_first_tx_index)
+                                                        .filter(|index| *index < batch.len());
+                                                    {
+                                                        let mut state = states[task.tx_index]
+                                                            .lock()
+                                                            .expect("Block-STM production transaction state poisoned");
+                                                        if state.incarnation == task.incarnation {
+                                                            state.status =
+                                                                BlockStmProductionStatus::Waiting;
+                                                        }
+                                                    }
+                                                    register_blockstm_dependency_waiter(
+                                                        scheduler,
+                                                        states,
+                                                        dependencies,
+                                                        task.tx_index,
+                                                        blocking_batch_index,
+                                                    );
+                                                } else {
+                                                    let version =
+                                                        crate::blockstm::BlockStmVersion::new(
+                                                            candidate.tx_index,
+                                                            task.incarnation,
+                                                        );
+                                                    memory.publish_value(
+                                                        version,
+                                                        &attempt.write_set,
+                                                    );
+                                                    memory.publish_account_values(
+                                                        version,
+                                                        &attempt.output.account_write_set,
+                                                    );
+                                                    let should_revalidate_suffix = {
+                                                        let mut slot = attempt_slots[task.tx_index]
+                                                            .lock()
+                                                            .expect("Block-STM attempt slot poisoned");
+                                                        let should_revalidate = slot.as_ref().map_or(
+                                                            true,
+                                                            |previous: &BlockStmAttempt<
+                                                                BlockStmAttemptOutput,
+                                                            >| {
+                                                                previous.write_set != attempt.write_set
+                                                                    || previous
+                                                                        .output
+                                                                        .account_write_set
+                                                                        != attempt
+                                                                            .output
+                                                                            .account_write_set
+                                                            },
+                                                        );
+                                                        *slot = Some(attempt);
+                                                        should_revalidate
+                                                    };
+                                                    {
+                                                        let mut state = states[task.tx_index]
+                                                            .lock()
+                                                            .expect("Block-STM production transaction state poisoned");
+                                                        if state.incarnation == task.incarnation {
+                                                            state.status =
+                                                                BlockStmProductionStatus::Executed;
+                                                        }
+                                                    }
+                                                    schedule_blockstm_dependency_waiters(
+                                                        scheduler,
+                                                        states,
+                                                        dependencies,
+                                                        task.tx_index,
+                                                    );
+                                                    scheduler.push_task(BlockStmProductionTask {
+                                                        tx_index: task.tx_index,
+                                                        incarnation: task.incarnation,
+                                                        kind: BlockStmProductionTaskKind::Validation,
+                                                    });
+                                                    if should_revalidate_suffix {
+                                                        schedule_blockstm_validation_for_ready_suffix(
+                                                            scheduler,
+                                                            states,
+                                                            task.tx_index + 1,
+                                                        );
+                                                    }
+                                                }
+                                            }
+                                            Err(err) => {
+                                                let mut worker_error = worker_error
+                                                    .lock()
+                                                    .expect("Block-STM worker error poisoned");
+                                                if worker_error.is_none() {
+                                                    *worker_error = Some(err);
+                                                }
+                                            }
+                                        }
+                                    }
+                                    BlockStmProductionTaskKind::Validation => {
+                                        let stale_task = {
+                                            let state = states[task.tx_index]
+                                                .lock()
+                                                .expect("Block-STM production transaction state poisoned");
+                                            state.incarnation != task.incarnation
+                                                || !matches!(
+                                                    state.status,
+                                                    BlockStmProductionStatus::Executed
+                                                        | BlockStmProductionStatus::Validated
+                                                )
+                                        };
+                                        if stale_task {
+                                            scheduler.finish_task();
+                                            continue;
+                                        }
+
+                                        let validation_result = {
+                                            let slot = attempt_slots[task.tx_index]
+                                                .lock()
+                                                .expect("Block-STM attempt slot poisoned");
+                                            let Some(attempt) = slot.as_ref() else {
+                                                scheduler.finish_task();
+                                                continue;
+                                            };
+                                            if attempt.attempt != task.incarnation {
+                                                Ok(())
+                                            } else {
+                                                memory.validate_reads(
+                                                    batch[task.tx_index].tx_index,
+                                                    &attempt.read_set,
+                                                )
+                                            }
+                                        };
+                                        match validation_result {
+                                            Ok(()) => {
+                                                let mut state = states[task.tx_index]
+                                                    .lock()
+                                                    .expect("Block-STM production transaction state poisoned");
+                                                if state.incarnation == task.incarnation {
+                                                    state.status = BlockStmProductionStatus::Validated;
+                                                }
+                                            }
+                                            Err(_) => {
+                                                conflicts.fetch_add(1, Ordering::AcqRel);
+                                                reexecutions.fetch_add(1, Ordering::AcqRel);
+                                                {
+                                                    let slot = attempt_slots[task.tx_index]
+                                                        .lock()
+                                                        .expect("Block-STM attempt slot poisoned");
+                                                    if let Some(attempt) = slot.as_ref()
+                                                        && attempt.attempt == task.incarnation
+                                                    {
+                                                        let version =
+                                                            crate::blockstm::BlockStmVersion::new(
+                                                                batch[task.tx_index].tx_index,
+                                                                task.incarnation,
+                                                            );
+                                                        memory.mark_estimate(
+                                                            version,
+                                                            &attempt.write_set,
+                                                        );
+                                                        memory.mark_account_estimates(
+                                                            version,
+                                                            &attempt.output.account_write_set,
+                                                        );
+                                                    }
+                                                }
+                                                schedule_blockstm_execution(
+                                                    scheduler,
+                                                    states,
+                                                    task.tx_index,
+                                                );
+                                                schedule_blockstm_validation_for_ready_suffix(
+                                                    scheduler,
+                                                    states,
+                                                    task.tx_index + 1,
+                                                );
+                                            }
+                                        }
+                                    }
+                                }
+
+                                scheduler.finish_task();
                             }
-                            *slot.lock().expect("Block-STM attempt slot poisoned") = Some(attempt);
                         });
                     }
                 });
+                if let Some(err) = worker_error
+                    .into_inner()
+                    .expect("Block-STM worker error poisoned")
+                {
+                    return Err(PayloadBuilderError::evm(err));
+                }
+
                 blockstm_stats.max_in_flight_real_evm_executions = blockstm_stats
                     .max_in_flight_real_evm_executions
                     .max(max_in_flight.load(Ordering::Relaxed));
-
-                let mut attempts = Vec::with_capacity(batch.len());
-                for slot in attempt_slots {
-                    let attempt = slot
-                        .into_inner()
-                        .expect("Block-STM attempt slot poisoned")
-                        .expect("Block-STM worker must write an attempt")
-                        .map_err(PayloadBuilderError::evm)?;
-                    blockstm_stats.speculative_executions_total += 1;
-                    attempts.push(Some(attempt));
-                }
+                blockstm_stats.speculative_executions_total +=
+                    speculative_executions.load(Ordering::Relaxed);
+                blockstm_stats.conflicts_total += conflicts.load(Ordering::Relaxed);
+                blockstm_stats.reexecutions_total += reexecutions.load(Ordering::Relaxed);
 
                 let mut invalidated = Vec::<BestTransaction>::new();
 
@@ -1214,157 +1513,18 @@ where
                         continue;
                     }
 
-                    let mut attempt = attempts[batch_index]
+                    let attempt = attempt_slots[batch_index]
+                        .lock()
+                        .expect("Block-STM attempt slot poisoned")
                         .take()
                         .expect("Block-STM attempt must be available");
-                    let mut attempt_count = 1usize;
-                    let semantic_plan = loop {
-                        let semantic_plan = if self.blockstm_config.tip20_actions
-                            && let Ok(result) = &attempt.output.execution_result
-                        {
-                            capture_tip20_semantic_plan(
-                                candidate.tx_index,
-                                &candidate.pool_tx.transaction,
-                                result,
-                                &attempt.write_set,
-                                builder.evm().block().beneficiary,
-                            )
-                        } else {
-                            None
-                        };
-                        let validation_reads = if let Some(semantic_plan) = semantic_plan.as_ref() {
-                            attempt
-                                .read_set
-                                .without_keys(semantic_plan.covered_keys().iter())
-                        } else {
-                            attempt.read_set.clone()
-                        };
 
-                        if memory
-                            .validate_reads(candidate.tx_index, &validation_reads)
-                            .is_ok()
-                        {
-                            break semantic_plan;
-                        }
-
-                        blockstm_stats.conflicts_total += 1;
-                        blockstm_stats.reexecutions_total += 1;
-                        memory.mark_estimate(
-                            BlockStmVersion::new(candidate.tx_index, attempt.attempt),
-                            &attempt.write_set,
-                        );
-                        if let Some(fallback_reason) = blockstm_serial_fallback_reason(
-                            self.blockstm_config,
-                            blockstm_stats.conflicts_total,
-                            attempt_count,
-                        ) {
-                            blockstm_serial_fallback_active = true;
-                            for pending in batch.iter().skip(batch_index + 1).rev() {
-                                if invalidated.iter().all(|invalid| {
-                                    !is_blockstm_invalidated_buffered_transaction(
-                                        invalid,
-                                        &pending.pool_tx,
-                                    )
-                                }) {
-                                    pending_candidates.push_front(pending.clone());
-                                }
-                            }
-                            blockstm_stats.serial_fallback_total += 1;
-                            debug!(
-                                target: "payload_builder",
-                                tx_index = candidate.tx_index,
-                                attempts = attempt_count,
-                                reason = fallback_reason.as_str(),
-                                "Block-STM falling back to serial transaction execution"
-                            );
-
-                            let mut serial_write_set = None;
-                            let execution_result = builder.execute_transaction_with_result_closure(
-                                candidate.tx_with_env.clone(),
-                                |result| {
-                                    cumulative_gas_used += result.block_gas_used();
-                                    cumulative_state_gas_used += result.state_gas_used();
-                                    if !candidate.is_payment {
-                                        non_payment_gas_used += result.block_gas_used();
-                                    }
-                                    total_fees += result.validator_fee();
-                                    best_txs.on_new_result(result);
-                                    serial_write_set =
-                                        Some(write_set_from_evm_state(&result.result().state));
-                                },
-                            );
-
-                            if let Err(err) = execution_result {
-                                if let BlockExecutionError::Validation(
-                                    BlockValidationError::InvalidTx { error, .. },
-                                ) = &err
-                                {
-                                    invalid_pool_transaction_execution_attempts += 1;
-
-                                    if error.is_nonce_too_low() {
-                                        trace!(%error, tx = %candidate.tx_debug_repr, "skipping nonce too low transaction");
-                                        self.metrics.inc_pool_tx_skipped("nonce_too_low");
-                                    } else {
-                                        trace!(%error, tx = %candidate.tx_debug_repr, "skipping invalid transaction and its descendants");
-                                        best_txs.mark_invalid(
-                                            &candidate.pool_tx,
-                                            InvalidPoolTransactionError::Consensus(
-                                                InvalidTransactionError::TxTypeNotSupported,
-                                            ),
-                                        );
-                                        self.metrics.inc_pool_tx_skipped("invalid_tx");
-                                        invalidated.push(candidate.pool_tx.clone());
-                                        pending_candidates.retain(|pending| {
-                                            !is_blockstm_invalidated_buffered_transaction(
-                                                &candidate.pool_tx,
-                                                &pending.pool_tx,
-                                            )
-                                        });
-                                    }
-                                    continue 'blockstm_pool_fill;
-                                } else {
-                                    return Err(PayloadBuilderError::evm(err));
-                                }
-                            }
-
-                            if let Some(write_set) = serial_write_set {
-                                // Later speculative candidates in this batch must validate
-                                // against the exact serial prefix we just committed.
-                                memory.commit(candidate.tx_index, &write_set);
-                            }
-                            blockstm_stats.committed_txs_total += 1;
-                            pool_transactions_included += 1;
-                            block_size_used += candidate.tx_rlp_length;
-                            continue 'blockstm_pool_fill;
-                        }
-
-                        let prefix_cache = builder.executor_mut().evm_mut().db_mut().cache.clone();
-                        let evm_env = builder.evm().evm_env();
-                        let execution_ctx = builder.ctx.clone();
-                        attempt = execute_blockstm_attempt(
-                            self.provider.clone(),
-                            parent_hash,
-                            &self.evm_config,
-                            evm_env,
-                            execution_ctx,
-                            prefix_cache,
-                            candidate.tx_index,
-                            attempt_count,
-                            candidate.tx_with_env.clone(),
-                        )
-                        .map_err(PayloadBuilderError::evm)?;
-                        attempt_count += 1;
-                        blockstm_stats.speculative_executions_total += 1;
-                    };
-
-                    let BlockStmAttempt {
-                        mut write_set,
-                        output,
-                        ..
-                    } = attempt;
+                    let BlockStmAttempt { output, .. } = attempt;
                     let BlockStmAttemptOutput {
                         execution_result,
                         elapsed,
+                        semantic_plan,
+                        ..
                     } = output;
 
                     let mut result = match execution_result {
@@ -1411,8 +1571,7 @@ where
                             &mut result,
                             block_timestamp,
                         ) {
-                            Ok(resolved_write_set) => {
-                                write_set = resolved_write_set;
+                            Ok(_resolved_write_set) => {
                                 blockstm_stats.semantic_actions_total +=
                                     semantic_plan.action_count() as u64;
                             }
@@ -1437,9 +1596,8 @@ where
                         }
                     }
 
-                    memory.commit(candidate.tx_index, &write_set);
                     blockstm_stats.committed_txs_total += 1;
-                    if attempt_count == 1 {
+                    if attempt.attempt == 0 {
                         blockstm_stats.reused_speculative_results_total += 1;
                     }
                     trace!(?elapsed, "Transaction executed through Block-STM");
@@ -2162,50 +2320,6 @@ impl BuilderTx {
             Self::Pooled(tx) => tx.transaction.inner().clone().into_parts(),
             Self::Owned(tx) => tx.into_parts(),
         }
-    }
-}
-
-#[cfg(test)]
-mod blockstm_fallback_tests {
-    use super::*;
-
-    #[test]
-    fn blockstm_retry_budget_selects_serial_fallback() {
-        let config = BlockStmConfig {
-            max_retries_per_tx: 2,
-            adaptive_conflict_threshold: 0,
-            ..BlockStmConfig::test()
-        };
-
-        assert_eq!(
-            blockstm_serial_fallback_reason(config, 1, 2),
-            Some(BlockStmSerialFallbackReason::RetryBudget)
-        );
-    }
-
-    #[test]
-    fn blockstm_adaptive_conflicts_select_serial_fallback() {
-        let config = BlockStmConfig {
-            max_retries_per_tx: 16,
-            adaptive_conflict_threshold: 4,
-            ..BlockStmConfig::test()
-        };
-
-        assert_eq!(
-            blockstm_serial_fallback_reason(config, 4, 1),
-            Some(BlockStmSerialFallbackReason::AdaptiveConflictThreshold)
-        );
-    }
-
-    #[test]
-    fn blockstm_retries_before_fallback_limits() {
-        let config = BlockStmConfig {
-            max_retries_per_tx: 16,
-            adaptive_conflict_threshold: 4,
-            ..BlockStmConfig::test()
-        };
-
-        assert_eq!(blockstm_serial_fallback_reason(config, 3, 1), None);
     }
 }
 

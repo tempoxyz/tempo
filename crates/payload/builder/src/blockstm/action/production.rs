@@ -971,6 +971,68 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn blockstm_actions_semantic_prefix_rejects_overspend_after_ordered_conflicts() {
+        let token = DEFAULT_FEE_TOKEN;
+        let sender = address!("0x00000000000000000000000000000000000000a1");
+        let recipient = address!("0x00000000000000000000000000000000000000b2");
+        let balance_key = tip20_balance_key(token, sender);
+        let BlockStmAccessKey::Storage { address, slot } = balance_key else {
+            unreachable!("TIP20 balance key must be storage");
+        };
+        let mut db = CacheDB::new(EmptyDB::default());
+        db.insert_account_storage(address, slot, U256::from(9))
+            .expect("storage insert should succeed");
+        let mut state = BlockStmSemanticState::default();
+
+        for tx_index in 0..9 {
+            let plan = transfer_plan(tx_index, token, sender, recipient, U256::from(1));
+            state.apply_plan_to_prefix(&mut db, &plan, 100).unwrap();
+        }
+
+        let plan = transfer_plan(9, token, sender, recipient, U256::from(1));
+        assert!(matches!(
+            state
+                .apply_plan_to_prefix(&mut db, &plan, 100)
+                .unwrap_err(),
+            BlockStmSemanticError::InsufficientBalance {
+                available,
+                required,
+                ..
+            } if available == U256::ZERO && required == U256::from(1)
+        ));
+    }
+
+    fn transfer_plan(
+        tx_index: usize,
+        token: Address,
+        sender: Address,
+        recipient: Address,
+        amount: U256,
+    ) -> BlockStmSemanticPlan {
+        let transfer = Tip20TransferDelta {
+            token,
+            sender,
+            recipient,
+            amount,
+        };
+        let covered = transfer.covered_storage_slots();
+        let mut covered_keys = HashSet::default();
+        covered_keys.extend(covered.iter().copied());
+        let mut action_log = BlockStmActionLog::default();
+        action_log.push(BlockStmAction::new(
+            tx_index,
+            0,
+            BlockStmActionKind::Tip20TransferDelta(transfer),
+            covered,
+        ));
+        BlockStmSemanticPlan {
+            action_log,
+            covered_keys,
+            semantic_prefix_reads: 1,
+        }
+    }
+
     fn storage_present_value(state: &EvmState, key: BlockStmAccessKey) -> U256 {
         let BlockStmAccessKey::Storage { address, slot } = key else {
             return U256::ZERO;

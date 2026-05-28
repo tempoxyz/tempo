@@ -9,9 +9,9 @@ pub struct BlockStmConfig {
     pub workers: usize,
     /// Enables semantic action replay for the pure TIP20 fast path.
     pub tip20_actions: bool,
-    /// Maximum re-execution attempts for one transaction before returning an error.
+    /// Standalone executor guard; the production builder scheduler has no retry budget.
     pub max_retries_per_tx: usize,
-    /// Per-domain conflict threshold before adaptive serial fallback is selected.
+    /// Standalone executor fallback marker. Disabled in production by default.
     pub adaptive_conflict_threshold: usize,
 }
 
@@ -22,7 +22,7 @@ impl Default for BlockStmConfig {
             workers: std::thread::available_parallelism().map_or(1, usize::from),
             tip20_actions: false,
             max_retries_per_tx: 16,
-            adaptive_conflict_threshold: 64,
+            adaptive_conflict_threshold: 0,
         }
     }
 }

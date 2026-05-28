@@ -19,7 +19,7 @@ pub struct BlockStmExecutionStats {
     pub built_blocks_total: u64,
     /// Maximum concurrent real EVM executions observed.
     pub max_in_flight_real_evm_executions: u64,
-    /// Number of serial-domain fallback executions.
+    /// Legacy standalone executor fallback counter; production builder should keep this zero.
     pub serial_fallback_total: u64,
     /// Number of ordered semantic actions replayed into committed results.
     pub semantic_actions_total: u64,
