@@ -403,6 +403,12 @@ impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
     #[inline]
     pub(super) fn get_or_insert(&self, key: &K, f: impl FnOnce() -> H) -> &H {
         let mut cache = self.inner.borrow_mut();
+        if cache.is_empty() {
+            let boxed = cache.entry(key.clone()).or_insert_with(|| Box::new(f()));
+            // SAFETY: Box provides stable heap address. Cache is append-only.
+            return unsafe { &*(boxed.as_ref() as *const H) };
+        }
+
         // Lookup first to avoid cloning on cache hit
         if let Some(boxed) = cache.get(key) {
             // SAFETY: Box provides stable heap address. Cache is append-only.
@@ -417,6 +423,12 @@ impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
     #[inline]
     pub(super) fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> &mut H {
         let mut cache = self.inner.borrow_mut();
+        if cache.is_empty() {
+            let boxed = cache.entry(key.clone()).or_insert_with(|| Box::new(f()));
+            // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
+            return unsafe { &mut *(boxed.as_mut() as *mut H) };
+        }
+
         // Lookup first to avoid cloning on cache hit
         if let Some(boxed) = cache.get_mut(key) {
             // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
