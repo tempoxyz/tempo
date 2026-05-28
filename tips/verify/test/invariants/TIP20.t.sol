@@ -1496,9 +1496,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
         (address rewardRecipient,,) = token.userRewardInfo(account);
 
         assertEq(
-            decodedBalance,
-            exposedBalance,
-            "TIP-1065: low 128 bits must equal balanceOf(account)"
+            decodedBalance, exposedBalance, "TIP-1065: low 128 bits must equal balanceOf(account)"
         );
         assertLe(
             exposedBalance,
@@ -1508,9 +1506,8 @@ contract TIP20InvariantTest is InvariantBaseTest {
         assertEq(reservedBits, 0, "TIP-1065: reserved user-state bits must remain zero");
 
         if (rewardFlag != RewardFlag.Uninitialized) {
-            RewardFlag expectedFlag = rewardRecipient == address(0)
-                ? RewardFlag.OptedOut
-                : RewardFlag.OptedIn;
+            RewardFlag expectedFlag =
+                rewardRecipient == address(0) ? RewardFlag.OptedOut : RewardFlag.OptedIn;
             assertEq(
                 uint256(rewardFlag),
                 uint256(expectedFlag),
@@ -1528,9 +1525,8 @@ contract TIP20InvariantTest is InvariantBaseTest {
         view
     {
         (, RewardFlag rewardFlag,) = _userState(address(token), account);
-        RewardFlag expectedFlag = rewardRecipient == address(0)
-            ? RewardFlag.OptedOut
-            : RewardFlag.OptedIn;
+        RewardFlag expectedFlag =
+            rewardRecipient == address(0) ? RewardFlag.OptedOut : RewardFlag.OptedIn;
         assertEq(
             uint256(rewardFlag),
             uint256(expectedFlag),
