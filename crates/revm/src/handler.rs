@@ -58,8 +58,8 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoAddressExt,
     transaction::{
-        PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
-        calc_gas_balance_spending, validate_calls,
+        PrimitiveSignature, SignatureType, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY,
+        TempoSignature, calc_gas_balance_spending, validate_calls,
     },
 };
 
@@ -147,6 +147,22 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
 struct LoadedTxAccessKey {
     key_id: Address,
     key: AuthorizedKey,
+}
+
+fn recover_key_authorization_signer(
+    cache: &OnceLock<Address>,
+    key_auth: &SignedKeyAuthorization,
+) -> Result<Address, TempoInvalidTransaction> {
+    if let Some(signer) = cache.get() {
+        return Ok(*signer);
+    }
+
+    let signer = key_auth
+        .recover_signer()
+        .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
+    let _ = cache.set(signer);
+
+    Ok(signer)
 }
 
 /// Counts the scope storage rows that pay the dynamic SSTORE-set path for the active spec.
@@ -1652,7 +1668,7 @@ where
         // AA-specific validations
         let cfg = &evm.inner.cfg;
         let tx = &evm.inner.tx;
-        let mut key_authorization_signer = None;
+        let key_authorization_signer = OnceLock::new();
 
         if let Some(aa_env) = tx.tempo_tx_env.as_ref() {
             // Validate AA transaction structure (calls list, CREATE rules)
@@ -1769,9 +1785,8 @@ where
                 }
 
                 if !cfg.spec.is_t6() {
-                    let auth_signer = key_auth.recover_signer().map_err(|_| {
-                        TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
-                    })?;
+                    let auth_signer =
+                        recover_key_authorization_signer(&key_authorization_signer, key_auth)?;
 
                     if auth_signer != tx.caller {
                         return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
@@ -1815,9 +1830,8 @@ where
                 }
 
                 if cfg.spec.is_t6() {
-                    let auth_signer = key_auth.recover_signer().map_err(|_| {
-                        TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
-                    })?;
+                    let auth_signer =
+                        recover_key_authorization_signer(&key_authorization_signer, key_auth)?;
                     if auth_signer != tx.caller && key_auth.account.is_none() {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
                             reason: "admin-signed key authorization account mismatch".to_string(),
@@ -1864,8 +1878,6 @@ where
                             .into());
                         }
                     }
-
-                    key_authorization_signer = Some(auth_signer);
                 }
 
                 // Cache inline key authorization expiry.
@@ -1894,7 +1906,7 @@ where
             validate_time_window(valid_after, aa_env.valid_before, block_timestamp)?;
         }
 
-        evm.key_authorization_signer = key_authorization_signer;
+        evm.key_authorization_signer = key_authorization_signer.get().copied();
 
         Ok(())
     }
