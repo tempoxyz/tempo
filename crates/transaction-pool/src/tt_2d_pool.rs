@@ -971,13 +971,13 @@ impl AA2dPool {
         // Evict queued transactions if over queued limit (lowest priority first)
         if queued_count > self.config.queued_limit.max_txs {
             let queued_excess = queued_count - self.config.queued_limit.max_txs;
-            removed.extend(self.evict_lowest_priority(queued_excess, false));
+            self.evict_lowest_priority(queued_excess, false, &mut removed);
         }
 
         // Evict pending transactions if over pending limit (lowest priority first)
         if pending_count > self.config.pending_limit.max_txs {
             let pending_excess = pending_count - self.config.pending_limit.max_txs;
-            removed.extend(self.evict_lowest_priority(pending_excess, true));
+            self.evict_lowest_priority(pending_excess, true, &mut removed);
         }
 
         if !removed.is_empty() {
@@ -996,12 +996,13 @@ impl AA2dPool {
         &mut self,
         count: usize,
         evict_pending: bool,
-    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        removed: &mut Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    ) {
         if count == 0 {
-            return vec![];
+            return;
         }
 
-        let mut removed = Vec::with_capacity(count);
+        removed.reserve(count);
 
         if evict_pending {
             // For pending eviction, consider both regular 2D txs and expiring nonce txs
@@ -1028,8 +1029,6 @@ impl AA2dPool {
                 }
             }
         }
-
-        removed
     }
 
     /// Evicts one pending transaction, considering both regular 2D and expiring nonce txs.
