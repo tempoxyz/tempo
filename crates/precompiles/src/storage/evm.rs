@@ -183,11 +183,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             false
         };
 
-        let result = self.internals.load_account_mut(address)?.sstore(
-            key,
-            value,
-            insufficient_gas_for_cold_load,
-        )?;
+        let result = self
+            .internals
+            .load_account_mut_skip_cold_load(address, insufficient_gas_for_cold_load)?
+            .sstore(key, value, insufficient_gas_for_cold_load)?;
 
         if !self.spec.is_t4() {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
