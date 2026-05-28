@@ -148,6 +148,7 @@ where
     const LAYOUT: Layout = Layout::Slots(1);
     type Handler = Self;
 
+    #[inline(always)]
     fn handle(slot: U256, _ctx: LayoutCtx, address: Address) -> Self::Handler {
         Self::new(slot, address)
     }

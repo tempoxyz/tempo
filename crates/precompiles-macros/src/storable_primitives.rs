@@ -45,6 +45,7 @@ fn gen_storable_layout_impl(type_path: &TokenStream, byte_count: usize) -> Token
             const LAYOUT: Layout = Layout::Bytes(#byte_count);
             type Handler = crate::storage::Slot<Self>;
 
+            #[inline(always)]
             fn handle(slot: U256, ctx: LayoutCtx, address: ::alloy::primitives::Address) -> Self::Handler {
                 crate::storage::Slot::new_with_ctx(slot, ctx, address)
             }
@@ -374,6 +375,7 @@ fn gen_array_impl(config: &ArrayConfig) -> TokenStream {
 
             type Handler = crate::storage::types::array::ArrayHandler<#elem_type, #array_size>;
 
+            #[inline(always)]
             fn handle(slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx, address: ::alloy::primitives::Address) -> Self::Handler {
                 debug_assert!(ctx.is_full(), "Arrays can only use full-slot LayoutCtx (FULL or INIT)");
                 Self::Handler::new(slot, address)
@@ -665,6 +667,7 @@ fn gen_struct_array_impl(struct_type: &TokenStream, array_size: usize) -> TokenS
 
             type Handler = crate::storage::Slot<Self>;
 
+            #[inline(always)]
             fn handle(slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx, address: ::alloy::primitives::Address) -> Self::Handler {
                 crate::storage::Slot::new_with_ctx(slot, ctx, address)
             }

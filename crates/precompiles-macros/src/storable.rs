@@ -114,6 +114,7 @@ fn derive_struct_impl(input: &DeriveInput, data_struct: &DataStruct) -> syn::Res
 
             type Handler = #handler_name;
 
+            #[inline(always)]
             fn handle(slot: ::alloy::primitives::U256, _ctx: crate::storage::LayoutCtx, address: ::alloy::primitives::Address) -> Self::Handler {
                 #handler_name::new(slot, address)
             }
@@ -231,6 +232,7 @@ fn derive_unit_enum_impl(input: &DeriveInput, data_enum: &DataEnum) -> syn::Resu
 
             type Handler = crate::storage::Slot<Self>;
 
+            #[inline(always)]
             fn handle(slot: ::alloy::primitives::U256, ctx: crate::storage::LayoutCtx, address: ::alloy::primitives::Address) -> Self::Handler {
                 crate::storage::Slot::new_with_ctx(slot, ctx, address)
             }

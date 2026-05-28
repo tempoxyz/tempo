@@ -200,6 +200,7 @@ where
     const IS_DYNAMIC: bool = true;
     type Handler = SetHandler<T>;
 
+    #[inline(always)]
     fn handle(slot: U256, _ctx: LayoutCtx, address: Address) -> Self::Handler {
         SetHandler::new(slot, address)
     }

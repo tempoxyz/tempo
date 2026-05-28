@@ -22,6 +22,7 @@ impl StorableType for bool {
 
     type Handler = Slot<Self>;
 
+    #[inline(always)]
     fn handle(slot: U256, ctx: LayoutCtx, address: Address) -> Self::Handler {
         Slot::new_with_ctx(slot, ctx, address)
     }
@@ -52,6 +53,7 @@ impl StorableType for Address {
     const LAYOUT: Layout = Layout::Bytes(20);
     type Handler = Slot<Self>;
 
+    #[inline(always)]
     fn handle(slot: U256, ctx: LayoutCtx, address: Address) -> Self::Handler {
         Slot::new_with_ctx(slot, ctx, address)
     }

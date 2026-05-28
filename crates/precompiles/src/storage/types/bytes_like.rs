@@ -23,6 +23,7 @@ impl StorableType for Bytes {
     const IS_DYNAMIC: bool = true;
     type Handler = BytesLikeHandler<Self>;
 
+    #[inline(always)]
     fn handle(slot: U256, _ctx: LayoutCtx, address: Address) -> Self::Handler {
         BytesLikeHandler::new(slot, address)
     }
@@ -33,6 +34,7 @@ impl StorableType for String {
     const IS_DYNAMIC: bool = true;
     type Handler = BytesLikeHandler<Self>;
 
+    #[inline(always)]
     fn handle(slot: U256, _ctx: LayoutCtx, address: Address) -> Self::Handler {
         BytesLikeHandler::new(slot, address)
     }
