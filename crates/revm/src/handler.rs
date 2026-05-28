@@ -449,11 +449,6 @@ where
         remaining_gas: &mut u64,
         reservoir: u64,
     ) -> Result<Option<FrameResult>, EVMError<DB::Error, TempoInvalidTransaction>> {
-        let spec = *evm.ctx().cfg().spec();
-        if !spec.is_t3() {
-            return Ok(None);
-        }
-
         // Call-scope matching scales with batch size, so it runs under a metered storage provider.
         // This keeps unpaid transaction validation bounded while still failing before the first
         // user call executes.
@@ -467,6 +462,10 @@ where
             let Some(keychain_sig) = tempo_tx_env.signature.as_keychain() else {
                 return Ok(None);
             };
+            let spec = *ctx.cfg().spec();
+            if !spec.is_t3() {
+                return Ok(None);
+            }
 
             let access_key_addr = if let Some(override_key_id) = tempo_tx_env.override_key_id {
                 override_key_id
