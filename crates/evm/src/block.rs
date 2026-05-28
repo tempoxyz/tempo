@@ -573,7 +573,38 @@ where
             validator_fee: _,
         } = output;
 
-        let gas_output = self.inner.commit_transaction(inner);
+        let EthTxResult {
+            result: ResultAndState { result, state },
+            blob_gas_used: _,
+            tx_type,
+        } = inner;
+
+        self.inner.system_caller.on_state(
+            StateChangeSource::Transaction(self.inner.receipts.len()),
+            &state,
+        );
+
+        let tx_gas_used = result.gas().tx_gas_used();
+        let regular_gas_used = result.gas().block_regular_gas_used();
+        let state_gas_used = result.gas().block_state_gas_used();
+
+        self.inner.block_regular_gas_used += regular_gas_used;
+        self.inner.block_state_gas_used += state_gas_used;
+        self.inner.cumulative_tx_gas_used += tx_gas_used;
+
+        self.inner
+            .receipts
+            .push(self.inner.receipt_builder.build_receipt(ReceiptBuilderCtx {
+                tx_type,
+                evm: &self.inner.evm,
+                result,
+                state: &state,
+                cumulative_gas_used: self.inner.cumulative_tx_gas_used,
+            }));
+
+        self.inner.evm.db_mut().commit(state);
+
+        let gas_output = GasOutput::with_state_gas(tx_gas_used, state_gas_used);
 
         self.section = next_section;
 
