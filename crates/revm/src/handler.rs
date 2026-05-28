@@ -2232,9 +2232,13 @@ where
         }
     }
 
-    // Calculate batch intrinsic gas using helper
-    let mut batch_gas =
-        calculate_aa_batch_intrinsic_gas(aa_env, gas_params, tx.access_list(), spec)?;
+    // Calculate batch intrinsic gas using helper.
+    let access_list = if tx.inner.access_list.is_empty() {
+        None
+    } else {
+        tx.access_list()
+    };
+    let mut batch_gas = calculate_aa_batch_intrinsic_gas(aa_env, gas_params, access_list, spec)?;
 
     let mut nonce_2d_gas = 0;
 
