@@ -30,6 +30,7 @@ use commonware_utils::NZU64;
 use eyre::{OptionExt, WrapErr as _, eyre};
 use tempo_commonware_node_config::SigningShare;
 use tempo_node::TempoFullNode;
+use tracing::info;
 
 pub use crate::config::{
     BROADCASTER_CHANNEL_IDENT, BROADCASTER_LIMIT, CERTIFICATES_CHANNEL_IDENT, CERTIFICATES_LIMIT,
@@ -171,11 +172,23 @@ pub async fn run_follow_stack(
     execution_node: Arc<TempoFullNode>,
     feed_state: feed::FeedStateHandle,
 ) -> eyre::Result<()> {
-    let epoch_length = execution_node
-        .chain_spec()
+    let chain_spec = execution_node.chain_spec();
+
+    let epoch_length = chain_spec
         .info
         .epoch_length()
         .ok_or_eyre("chainspec did not contain epochLength")?;
+
+    let chain_spec_network_identity = chain_spec
+        .network_identity
+        .clone()
+        .ok_or_eyre("chainspec has no dkg outcome in genesis header")?;
+
+    let network_identity = config
+        .network_identity()
+        .unwrap_or(chain_spec_network_identity);
+
+    info!(%network_identity.from_epoch, %network_identity.identity, "registered network identity");
 
     let (upstream, upstream_mailbox) = crate::follow::upstream::init(
         context.with_label("upstream"),
@@ -187,6 +200,7 @@ pub async fn run_follow_stack(
         feed_state,
         upstream,
         upstream_mailbox,
+        network_identity,
         partition_prefix: PARTITION_PREFIX.into(),
         epoch_strategy: FixedEpocher::new(NZU64!(epoch_length)),
         mailbox_size: config.mailbox_size,

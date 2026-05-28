@@ -877,12 +877,12 @@ def generate-summary [
     mut feature_blocks = []
     mut baseline_intervals = []
     mut feature_intervals = []
-    mut baseline_tps_samples = []
-    mut feature_tps_samples = []
     mut baseline_builder_latency_values = []
     mut feature_builder_latency_values = []
     mut baseline_builder_finish_samples = []
     mut feature_builder_finish_samples = []
+    mut baseline_builder_pool_fetch_samples = []
+    mut feature_builder_pool_fetch_samples = []
     mut baseline_builder_invalid_tx_execution_attempts_samples = []
     mut feature_builder_invalid_tx_execution_attempts_samples = []
     mut baseline_builder_invalid_tx_skips = []
@@ -897,15 +897,6 @@ def generate-summary [
     mut feature_builder_gas_values = []
     mut baseline_validation_gas_values = []
     mut feature_validation_gas_values = []
-
-    let compute_tps_stats = { |samples: list<any>|
-        let sorted_samples = ($samples | sort)
-        {
-            p50: (percentile $sorted_samples 50 | math round --precision 1)
-            p90: (percentile $sorted_samples 90 | math round --precision 1)
-            p99: (percentile $sorted_samples 99 | math round --precision 1)
-        }
-    }
 
     let compute_block_time_stats = { |intervals: list<any>|
         let sorted_intervals = ($intervals | sort)
@@ -1013,6 +1004,8 @@ def generate-summary [
     let metric_sample_names = [
         "reth_tempo_payload_builder_payload_finalization_duration_seconds_sum"
         "reth_tempo_payload_builder_payload_finalization_duration_seconds_count"
+        "reth_tempo_payload_builder_pool_fetch_duration_seconds_sum"
+        "reth_tempo_payload_builder_pool_fetch_duration_seconds_count"
         "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_sum"
         "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts_count"
         "reth_tempo_payload_builder_pool_transactions_skipped_total"
@@ -1079,6 +1072,7 @@ def generate-summary [
         }
         let builder_latency_values = (do $optional_counter_metric_values "reth_tempo_payload_builder_payload_build_duration_seconds" 1000.0)
         let builder_finish_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_payload_finalization_duration_seconds" 1000.0)
+        let builder_pool_fetch_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_pool_fetch_duration_seconds" 1000.0)
         let builder_invalid_tx_execution_attempts_samples = (do $optional_counter_metric_values "reth_tempo_payload_builder_invalid_pool_transaction_execution_attempts" 1.0)
         let builder_pool_tx_skip_samples = ($metric_samples | where name == "reth_tempo_payload_builder_pool_transactions_skipped_total")
         let builder_pool_tx_skips_for_reason = { |reason: string|
@@ -1120,26 +1114,15 @@ def generate-summary [
         let timestamps = ($sorted_blocks | get timestamp)
         let block_intervals = ($sorted_blocks | where block_time_ms != null | get block_time_ms)
 
-        # Attribute each interval's throughput to the later block so TPS quantiles stay
-        # within a single run and avoid the inter-run gaps that skew merged samples.
-        let block_tps_samples = if ($sorted_blocks | length) > 1 {
-            $sorted_blocks | window 2 | each { |pair|
-                let earlier = ($pair | first)
-                let later = ($pair | last)
-                let interval_ms = [((($later | get timestamp) - ($earlier | get timestamp))) 1] | math max
-                (($later | get tx_count) / ($interval_ms / 1000.0))
-            }
-        } else { [] }
-        let run_tps = do $compute_tps_stats $block_tps_samples
         let run_bt = do $compute_block_time_stats $block_intervals
 
         # Collect blocks into baseline/feature groups
         if ($label | str starts-with "baseline") {
             $baseline_blocks = ($baseline_blocks | append $blocks)
             $baseline_intervals = ($baseline_intervals | append $block_intervals)
-            $baseline_tps_samples = ($baseline_tps_samples | append $block_tps_samples)
             $baseline_builder_latency_values = ($baseline_builder_latency_values | append $builder_latency_values)
             $baseline_builder_finish_samples = ($baseline_builder_finish_samples | append $builder_finish_samples)
+            $baseline_builder_pool_fetch_samples = ($baseline_builder_pool_fetch_samples | append $builder_pool_fetch_samples)
             $baseline_builder_invalid_tx_execution_attempts_samples = ($baseline_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
             $baseline_builder_invalid_tx_skips = ($baseline_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
             $baseline_builder_nonce_too_low_skips = ($baseline_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
@@ -1150,9 +1133,9 @@ def generate-summary [
         } else {
             $feature_blocks = ($feature_blocks | append $blocks)
             $feature_intervals = ($feature_intervals | append $block_intervals)
-            $feature_tps_samples = ($feature_tps_samples | append $block_tps_samples)
             $feature_builder_latency_values = ($feature_builder_latency_values | append $builder_latency_values)
             $feature_builder_finish_samples = ($feature_builder_finish_samples | append $builder_finish_samples)
+            $feature_builder_pool_fetch_samples = ($feature_builder_pool_fetch_samples | append $builder_pool_fetch_samples)
             $feature_builder_invalid_tx_execution_attempts_samples = ($feature_builder_invalid_tx_execution_attempts_samples | append $builder_invalid_tx_execution_attempts_samples)
             $feature_builder_invalid_tx_skips = ($feature_builder_invalid_tx_skips | append $builder_invalid_tx_skips)
             $feature_builder_nonce_too_low_skips = ($feature_builder_nonce_too_low_skips | append $builder_nonce_too_low_skips)
@@ -1202,9 +1185,6 @@ def generate-summary [
             builder_latency_p99: $run_builder.p99
             builder_gas_s: $run_builder_gas
             tps: $actual_tps
-            tps_p50: $run_tps.p50
-            tps_p90: $run_tps.p90
-            tps_p99: $run_tps.p99
             mgas_s: $mgas_per_sec
             block_time_p50: $run_bt.p50
             block_time_p90: $run_bt.p90
@@ -1241,6 +1221,8 @@ def generate-summary [
     let f_builder = do $compute_value_stats $feature_builder_latency_values
     let b_builder_finish = do $compute_value_stats $baseline_builder_finish_samples
     let f_builder_finish = do $compute_value_stats $feature_builder_finish_samples
+    let b_builder_pool_fetch = do $compute_value_stats $baseline_builder_pool_fetch_samples
+    let f_builder_pool_fetch = do $compute_value_stats $feature_builder_pool_fetch_samples
     let b_builder_invalid_tx_execution_attempts = do $compute_value_stats $baseline_builder_invalid_tx_execution_attempts_samples
     let f_builder_invalid_tx_execution_attempts = do $compute_value_stats $feature_builder_invalid_tx_execution_attempts_samples
     let b_builder_invalid_tx_skips = if ($baseline_builder_invalid_tx_skips | length) > 0 { $baseline_builder_invalid_tx_skips | math sum | math round --precision 0 } else { 0.0 }
@@ -1258,9 +1240,6 @@ def generate-summary [
 
     let b_bt = do $compute_block_time_stats $baseline_intervals
     let f_bt = do $compute_block_time_stats $feature_intervals
-    let b_tps_stats = do $compute_tps_stats $baseline_tps_samples
-    let f_tps_stats = do $compute_tps_stats $feature_tps_samples
-
     # Aggregate TPS and Mgas/s from per-run totals (total_tx / total_time)
     let baseline_runs = ($run_data | where { |r| $r.label | str starts-with "baseline" })
     let feature_runs = ($run_data | where { |r| $r.label | str starts-with "feature" })
@@ -1383,9 +1362,6 @@ def generate-summary [
         "| Metric | Baseline | Feature | Delta |"
         "|--------|----------|---------|-------|"
         $"| TPS Mean | ($b_tps) | ($f_tps) | (do $delta $b_tps $f_tps)% |"
-        $"| TPS P50 | ($b_tps_stats.p50) | ($f_tps_stats.p50) | (do $delta $b_tps_stats.p50 $f_tps_stats.p50)% |"
-        $"| TPS P90 | ($b_tps_stats.p90) | ($f_tps_stats.p90) | (do $delta $b_tps_stats.p90 $f_tps_stats.p90)% |"
-        $"| TPS P99 | ($b_tps_stats.p99) | ($f_tps_stats.p99) | (do $delta $b_tps_stats.p99 $f_tps_stats.p99)% |"
         $"| Gas Throughput [Mgas/s] | ($b_mgas) | ($f_mgas) | (do $delta $b_mgas $f_mgas)% |"
         $"| Block Time Mean [ms] | ($b_block_time.mean) | ($f_block_time.mean) | (do $delta $b_block_time.mean $f_block_time.mean)% |"
         $"| Block Time P50 [ms] | ($b_bt.p50) | ($f_bt.p50) | (do $delta $b_bt.p50 $f_bt.p50)% |"
@@ -1402,6 +1378,9 @@ def generate-summary [
         $"| Latency P99 [ms] | ($b_builder.p99) | ($f_builder.p99) | (do $delta $b_builder.p99 $f_builder.p99)% |"
         (do $stat_row "Finish P50 [ms]" $b_builder_finish $f_builder_finish p50)
         (do $stat_row "Finish P99 [ms]" $b_builder_finish $f_builder_finish p99)
+        $"| Pool Fetch P50 [ms] | (do $fmt_stat $b_builder_pool_fetch p50) | (do $fmt_stat $f_builder_pool_fetch p50) | (do $fmt_stat_delta $b_builder_pool_fetch $f_builder_pool_fetch p50) |"
+        $"| Pool Fetch P90 [ms] | (do $fmt_stat $b_builder_pool_fetch p90) | (do $fmt_stat $f_builder_pool_fetch p90) | (do $fmt_stat_delta $b_builder_pool_fetch $f_builder_pool_fetch p90) |"
+        $"| Pool Fetch P99 [ms] | (do $fmt_stat $b_builder_pool_fetch p99) | (do $fmt_stat $f_builder_pool_fetch p99) | (do $fmt_stat_delta $b_builder_pool_fetch $f_builder_pool_fetch p99) |"
         (do $nonzero_stat_row "Invalid Tx Attempts P50" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p50)
         (do $nonzero_stat_row "Invalid Tx Attempts P99" $b_builder_invalid_tx_execution_attempts $f_builder_invalid_tx_execution_attempts p99)
         (do $nonzero_count_row "Invalid Tx Skips" $b_builder_invalid_tx_skips $f_builder_invalid_tx_skips)
@@ -1464,6 +1443,9 @@ def generate-summary [
                 builder_finish_p50: $b_builder_finish.p50
                 builder_finish_p90: $b_builder_finish.p90
                 builder_finish_p99: $b_builder_finish.p99
+                builder_pool_fetch_p50: $b_builder_pool_fetch.p50
+                builder_pool_fetch_p90: $b_builder_pool_fetch.p90
+                builder_pool_fetch_p99: $b_builder_pool_fetch.p99
                 builder_invalid_tx_execution_attempts_p50: $b_builder_invalid_tx_execution_attempts.p50
                 builder_invalid_tx_execution_attempts_p90: $b_builder_invalid_tx_execution_attempts.p90
                 builder_invalid_tx_execution_attempts_p99: $b_builder_invalid_tx_execution_attempts.p99
@@ -1474,9 +1456,6 @@ def generate-summary [
                 builder_fill_idle_p99: $b_builder_fill_idle.p99
                 builder_gas_s: $b_builder_gas
                 tps: $b_tps
-                tps_p50: $b_tps_stats.p50
-                tps_p90: $b_tps_stats.p90
-                tps_p99: $b_tps_stats.p99
                 mgas_s: $b_mgas
                 block_time_p50: $b_bt.p50
                 block_time_p90: $b_bt.p90
@@ -1495,6 +1474,9 @@ def generate-summary [
                 builder_finish_p50: $f_builder_finish.p50
                 builder_finish_p90: $f_builder_finish.p90
                 builder_finish_p99: $f_builder_finish.p99
+                builder_pool_fetch_p50: $f_builder_pool_fetch.p50
+                builder_pool_fetch_p90: $f_builder_pool_fetch.p90
+                builder_pool_fetch_p99: $f_builder_pool_fetch.p99
                 builder_invalid_tx_execution_attempts_p50: $f_builder_invalid_tx_execution_attempts.p50
                 builder_invalid_tx_execution_attempts_p90: $f_builder_invalid_tx_execution_attempts.p90
                 builder_invalid_tx_execution_attempts_p99: $f_builder_invalid_tx_execution_attempts.p99
@@ -1505,9 +1487,6 @@ def generate-summary [
                 builder_fill_idle_p99: $f_builder_fill_idle.p99
                 builder_gas_s: $f_builder_gas
                 tps: $f_tps
-                tps_p50: $f_tps_stats.p50
-                tps_p90: $f_tps_stats.p90
-                tps_p99: $f_tps_stats.p99
                 mgas_s: $f_mgas
                 block_time_p50: $f_bt.p50
                 block_time_p90: $f_bt.p90
@@ -1526,6 +1505,9 @@ def generate-summary [
                 builder_finish_p50: (do $delta $b_builder_finish.p50 $f_builder_finish.p50)
                 builder_finish_p90: (do $delta $b_builder_finish.p90 $f_builder_finish.p90)
                 builder_finish_p99: (do $delta $b_builder_finish.p99 $f_builder_finish.p99)
+                builder_pool_fetch_p50: (do $delta $b_builder_pool_fetch.p50 $f_builder_pool_fetch.p50)
+                builder_pool_fetch_p90: (do $delta $b_builder_pool_fetch.p90 $f_builder_pool_fetch.p90)
+                builder_pool_fetch_p99: (do $delta $b_builder_pool_fetch.p99 $f_builder_pool_fetch.p99)
                 builder_invalid_tx_execution_attempts_p50: (do $delta $b_builder_invalid_tx_execution_attempts.p50 $f_builder_invalid_tx_execution_attempts.p50)
                 builder_invalid_tx_execution_attempts_p90: (do $delta $b_builder_invalid_tx_execution_attempts.p90 $f_builder_invalid_tx_execution_attempts.p90)
                 builder_invalid_tx_execution_attempts_p99: (do $delta $b_builder_invalid_tx_execution_attempts.p99 $f_builder_invalid_tx_execution_attempts.p99)
@@ -1536,9 +1518,6 @@ def generate-summary [
                 builder_fill_idle_p99: (do $delta $b_builder_fill_idle.p99 $f_builder_fill_idle.p99)
                 builder_gas_s: (do $delta $b_builder_gas $f_builder_gas)
                 tps: (do $delta $b_tps $f_tps)
-                tps_p50: (do $delta $b_tps_stats.p50 $f_tps_stats.p50)
-                tps_p90: (do $delta $b_tps_stats.p90 $f_tps_stats.p90)
-                tps_p99: (do $delta $b_tps_stats.p99 $f_tps_stats.p99)
                 mgas_s: (do $delta $b_mgas $f_mgas)
                 block_time_p50: (do $delta $b_bt.p50 $f_bt.p50)
                 block_time_p90: (do $delta $b_bt.p90 $f_bt.p90)
