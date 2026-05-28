@@ -1030,6 +1030,7 @@ impl TIP20Token {
     ///
     /// Returns `Some(to)` when the caller should perform the normal transfer.
     /// Returns `None` when funds were blocked, and the caller should return immediately.
+    #[inline(always)]
     fn validate_transfer(
         &mut self,
         spender: Option<Address>,
@@ -1098,6 +1099,7 @@ impl TIP20Token {
     /// [TIP-1015]: For T2+, uses directional sender/recipient checks.
     ///
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
+    #[inline(always)]
     pub fn is_transfer_authorized(&self, from: Address, to: Address) -> Result<bool> {
         let policy_id = self.transfer_policy_id()?;
         let registry = TIP403Registry::new();
@@ -1115,6 +1117,7 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `PolicyForbids` — sender or recipient is not authorized by the active transfer policy
+    #[inline(always)]
     pub fn ensure_transfer_authorized(&self, from: Address, to: Address) -> Result<()> {
         if !self.is_transfer_authorized(from, to)? {
             return Err(TIP20Error::policy_forbids().into());
@@ -1139,6 +1142,7 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
+    #[inline(always)]
     pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
@@ -1401,6 +1405,7 @@ impl Recipient {
     ///
     /// If `addr` is a virtual address its registered master is looked up and stored in `target`,
     /// with the original virtual address preserved in `virtual_addr`.
+    #[inline(always)]
     pub(crate) fn resolve(addr: Address) -> Result<Self> {
         let effective = AddressRegistry::new().resolve_recipient(addr)?;
         Ok(if effective == addr {

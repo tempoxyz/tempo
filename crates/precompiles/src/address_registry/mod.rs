@@ -151,6 +151,7 @@ impl AddressRegistry {
     ///
     /// # Errors
     /// - `VirtualAddressUnregistered` — `to` is a virtual address whose `masterId` is not registered
+    #[inline(always)]
     pub fn resolve_recipient(&self, to: Address) -> Result<Address> {
         // Explicit check because it isn't exclusively a view function.
         // It is also used by `tip20::Recipient`.
