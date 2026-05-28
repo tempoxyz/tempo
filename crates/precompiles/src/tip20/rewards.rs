@@ -156,7 +156,7 @@ impl TIP20Token {
             None
         };
 
-        if matches!(delegate, Some(Address::ZERO)) || holder_balance.flag.is_opted_out() {
+        if holder_balance.flag.is_opted_out() || matches!(delegate, Some(Address::ZERO)) {
             if checkpoint_opted_out_rewards {
                 let global_reward_per_token = self.get_global_reward_per_token()?;
                 self.user_reward_info[holder]
