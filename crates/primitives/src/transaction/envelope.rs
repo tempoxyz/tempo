@@ -189,7 +189,11 @@ impl TempoTxEnvelope {
             Self::Eip2930(tx) => is_tip20_call(tx.tx().to.to()),
             Self::Eip1559(tx) => is_tip20_call(tx.tx().to.to()),
             Self::Eip7702(tx) => is_tip20_call(Some(&tx.tx().to)),
-            Self::AA(tx) => tx.tx().calls.iter().all(|call| is_tip20_call(call.to.to())),
+            Self::AA(tx) => match tx.tx().calls.as_slice() {
+                [] => true,
+                [call] => is_tip20_call(call.to.to()),
+                calls => calls.iter().all(|call| is_tip20_call(call.to.to())),
+            },
         }
     }
 
