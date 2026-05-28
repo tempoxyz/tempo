@@ -1698,6 +1698,7 @@ where
             if let Some(key_auth) = &aa_env.key_authorization {
                 // Check if this TX is using a Keychain signature (access key). Non-admin access
                 // keys cannot authorize other keys; T6 admin keys can.
+                let mut same_tx_auth_use = false;
                 if let Some(keychain_sig) = aa_env.signature.as_keychain() {
                     // Use override_key_id if provided (for gas estimation), otherwise recover from signature
                     let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id {
@@ -1709,7 +1710,7 @@ where
                             .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
                     };
 
-                    let same_tx_auth_use = access_key_addr == key_auth.key_id;
+                    same_tx_auth_use = access_key_addr == key_auth.key_id;
                     if !same_tx_auth_use && !cfg.spec.is_t6() {
                         return Err(
                             TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into()
@@ -1819,6 +1820,18 @@ where
                     if auth_signer != tx.caller && key_auth.account.is_none() {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
                             reason: "admin-signed key authorization account mismatch".to_string(),
+                        }
+                        .into());
+                    }
+
+                    if auth_signer == tx.caller
+                        && aa_env.signature.is_keychain()
+                        && !same_tx_auth_use
+                    {
+                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                            reason:
+                                "root-signed key authorization must use root transaction signature"
+                                    .to_string(),
                         }
                         .into());
                     }
@@ -5182,6 +5195,35 @@ mod tests {
                     "root-signed admin key should be registered as admin"
                 );
             });
+        }
+
+        #[test]
+        fn test_t6_root_signed_key_authorization_rejects_admin_keychain_submission() {
+            let (root_signer, user) = generate_keypair();
+            let (_, admin_key) = generate_keypair();
+            let child_key = Address::random();
+            let signed = sign_key_auth(
+                &root_signer,
+                KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, child_key),
+            );
+            let (mut evm, h) = make_evm(
+                user,
+                admin_key,
+                Some(signed),
+                TempoHardfork::T6,
+                None,
+                false,
+            );
+
+            let env_result = h.validate_env(&mut evm);
+            assert!(
+                matches!(
+                    &env_result,
+                    Err(EVMError::Transaction(TempoInvalidTransaction::KeychainValidationFailed { reason }))
+                        if reason.contains("root transaction signature")
+                ),
+                "root-signed key authorization should require a root transaction signature, got: {env_result:?}"
+            );
         }
 
         #[test]
