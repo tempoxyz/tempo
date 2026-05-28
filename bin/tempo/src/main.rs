@@ -140,6 +140,16 @@ struct TempoArgs {
     )]
     pub bootnodes_endpoint: String,
 
+    /// Number of entries in the process-global keccak cache.
+    #[cfg(feature = "keccak-cache-global")]
+    #[arg(
+        long = "tempo.keccak-cache-size",
+        value_name = "ENTRIES",
+        default_value_t = 1 << 22,
+        env = "TEMPO_KECCAK_CACHE_SIZE"
+    )]
+    pub keccak_cache_size: usize,
+
     #[command(flatten)]
     pub telemetry: defaults::TelemetryArgs,
 
@@ -156,6 +166,16 @@ struct TempoArgs {
     #[cfg(feature = "pyroscope")]
     pub pyroscope_args: PyroscopeArgs,
 }
+
+#[cfg(feature = "keccak-cache-global")]
+fn init_keccak_cache(entries: usize) {
+    if !alloy_primitives::init_keccak_cache(entries) {
+        warn!("global keccak cache was already initialized before Tempo configured it");
+    }
+}
+
+#[cfg(not(feature = "keccak-cache-global"))]
+fn init_keccak_cache(_: usize) {}
 
 impl TempoArgs {
     fn is_following_uncertified(&self) -> bool {
@@ -356,6 +376,12 @@ fn main() -> eyre::Result<()> {
             err.exit();
         }
     };
+
+    #[cfg(feature = "keccak-cache-global")]
+    init_keccak_cache(match &cli.command {
+        Commands::Node(node_cmd) => node_cmd.ext.keccak_cache_size,
+        _ => 1 << 22,
+    });
 
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
