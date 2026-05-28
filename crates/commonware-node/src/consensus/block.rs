@@ -96,11 +96,13 @@ impl std::ops::Deref for Block {
 impl Write for Block {
     fn write(&self, buf: &mut impl BufMut) {
         self.execution_block.encode(buf);
-        if self.execution_block.block_access_list_hash().is_some() {
+        if self.execution_block.block_access_list_hash().is_some()
+            || self.block_access_list.is_some()
+        {
             let block_access_list = self
                 .block_access_list
                 .as_ref()
-                .expect("BAL bytes must be present when header contains a BAL hash");
+                .expect("BAL bytes must be present when encoding a BAL sidecar");
             block_access_list.write(buf);
         }
     }
@@ -136,7 +138,7 @@ impl Read for Block {
                 commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
             })?;
 
-        let block_access_list = if inner.block_access_list_hash().is_some() {
+        let block_access_list = if inner.block_access_list_hash().is_some() || buf.has_remaining() {
             Some(WireBytes::read_cfg(buf, &RangeCfg::from(..))?)
         } else {
             None
@@ -152,10 +154,12 @@ impl Read for Block {
 impl EncodeSize for Block {
     fn encode_size(&self) -> usize {
         self.execution_block.length()
-            + if self.execution_block.block_access_list_hash().is_some() {
+            + if self.execution_block.block_access_list_hash().is_some()
+                || self.block_access_list.is_some()
+            {
                 self.block_access_list
                     .as_ref()
-                    .expect("BAL bytes must be present when header contains a BAL hash")
+                    .expect("BAL bytes must be present when encoding a BAL sidecar")
                     .encode_size()
             } else {
                 0
@@ -390,8 +394,11 @@ impl commonware_consensus::CertifiableBlock for Block {
 
 #[cfg(test)]
 mod tests {
+    use alloy_consensus::BlockHeader as _;
     use alloy_primitives::bytes;
-    use commonware_codec::{Encode, Read as _};
+    use commonware_codec::{Encode, EncodeSize as _, Read as _};
+    use reth_node_core::primitives::SealedBlock;
+    use tempo_primitives::{Block as TempoBlock, TempoHeader};
 
     use super::Block;
 
@@ -425,5 +432,29 @@ mod tests {
         let encoded = decoded.encode();
 
         assert_eq!(encoded.as_ref(), block_bytes.as_ref());
+    }
+
+    #[test]
+    fn roundtrips_block_access_list_without_header_hash() {
+        let execution_block = SealedBlock::seal_slow(TempoBlock {
+            header: TempoHeader::default(),
+            body: Default::default(),
+        });
+        assert!(execution_block.block_access_list_hash().is_none());
+
+        let block_access_list = bytes!("0xc0");
+        let block = Block::from_execution_payload(execution_block, Some(block_access_list.clone()));
+
+        let encoded = block.encode();
+        assert_eq!(encoded.len(), block.encode_size());
+
+        let decoded = Block::read_cfg(&mut encoded.as_ref(), &()).unwrap();
+
+        assert_eq!(decoded, block);
+        assert_eq!(
+            decoded.block_access_list().map(|bytes| bytes.as_ref()),
+            Some(block_access_list.as_ref())
+        );
+        assert!(decoded.block().block_access_list_hash().is_none());
     }
 }

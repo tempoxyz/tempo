@@ -46,15 +46,9 @@ pub struct TempoConsensus {
 impl TempoConsensus {
     /// Creates a new [`TempoConsensus`] with the given chain spec.
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
-        Self::new_with_bal_hashes(chain_spec, false)
-    }
-
-    /// Creates a new [`TempoConsensus`] with optional pre-Amsterdam BAL hash support.
-    pub fn new_with_bal_hashes(chain_spec: Arc<TempoChainSpec>, allow_bal_hashes: bool) -> Self {
         Self {
             inner: EthBeaconConsensus::new(chain_spec)
-                .with_max_extra_data_size(TEMPO_MAXIMUM_EXTRA_DATA_SIZE)
-                .with_allow_bal_hashes(allow_bal_hashes),
+                .with_max_extra_data_size(TEMPO_MAXIMUM_EXTRA_DATA_SIZE),
         }
     }
 
