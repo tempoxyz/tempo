@@ -168,24 +168,28 @@ impl ExecutionFixture {
 }
 
 impl AccountReader for InMemoryStateProvider {
+    #[inline]
     fn basic_account(&self, address: &Address) -> ProviderResult<Option<RethAccount>> {
         Ok(self.accounts.get(address).copied())
     }
 }
 
 impl StateProvider for InMemoryStateProvider {
+    #[inline]
     fn storage(&self, account: Address, storage_key: B256) -> ProviderResult<Option<U256>> {
         Ok(self.storage.get(&(account, storage_key)).copied())
     }
 }
 
 impl BytecodeReader for InMemoryStateProvider {
+    #[inline]
     fn bytecode_by_hash(&self, code_hash: &B256) -> ProviderResult<Option<RethBytecode>> {
         Ok(self.contracts.get(code_hash).cloned())
     }
 }
 
 impl BlockHashReader for InMemoryStateProvider {
+    #[inline]
     fn block_hash(&self, number: u64) -> ProviderResult<Option<B256>> {
         Ok(self.block_hashes.get(&number).copied())
     }
