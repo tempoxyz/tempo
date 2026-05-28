@@ -1,0 +1,14 @@
+---
+source: crates/node/tests/it/gas/legacy_stream_channel_contract.rs
+assertion_line: 408
+expression: gas
+---
+close_existing_channel_after_settlement: 85118
+close_existing_channel_no_prior_settlement: 85118
+open_new_channel_existing_reserve_balance: 1055229
+open_new_channel_first_reserve_balance: 1302429
+request_close_existing_channel: 31752
+settle_existing_channel_existing_payee_balance: 312037
+settle_existing_channel_new_payee_balance: 312037
+top_up_existing_channel: 53724
+top_up_existing_channel_cancel_close_request: 58785
