@@ -68,6 +68,19 @@ mod tests {
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{ISignatureVerifier, UnknownFunctionSelector};
 
+    fn call_verify_admin(account: Address, hash: B256, signature: Vec<u8>) -> eyre::Result<bool> {
+        let calldata = ISignatureVerifier::verifyAdminCall {
+            account,
+            hash,
+            signature: signature.into(),
+        }
+        .abi_encode();
+
+        let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
+        let ret = ISignatureVerifier::verifyAdminCall::abi_decode_returns(&output.bytes)?;
+        Ok(ret)
+    }
+
     #[test]
     fn test_signature_verifier_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
@@ -159,15 +172,7 @@ mod tests {
             let hash = B256::from([0xCC; 32]);
             let sig = signer.sign_hash_sync(&hash)?;
 
-            let calldata = ISignatureVerifier::verifyAdminCall {
-                account: signer.address(),
-                hash,
-                signature: sig.as_bytes().to_vec().into(),
-            }
-            .abi_encode();
-
-            let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            let ret = ISignatureVerifier::verifyAdminCall::abi_decode_returns(&output.bytes)?;
+            let ret = call_verify_admin(signer.address(), hash, sig.as_bytes().to_vec())?;
             assert!(ret, "root key should verify as admin");
             Ok(())
         })
@@ -192,15 +197,8 @@ mod tests {
 
             let hash = B256::from([0xDD; 32]);
             let sig = admin.sign_hash_sync(&hash)?;
-            let calldata = ISignatureVerifier::verifyAdminCall {
-                account,
-                hash,
-                signature: sig.as_bytes().to_vec().into(),
-            }
-            .abi_encode();
 
-            let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            let ret = ISignatureVerifier::verifyAdminCall::abi_decode_returns(&output.bytes)?;
+            let ret = call_verify_admin(account, hash, sig.as_bytes().to_vec())?;
             assert!(ret, "admin access key should verify as admin");
             Ok(())
         })
@@ -232,15 +230,8 @@ mod tests {
 
             let hash = B256::from([0xEE; 32]);
             let sig = access_key.sign_hash_sync(&hash)?;
-            let calldata = ISignatureVerifier::verifyAdminCall {
-                account,
-                hash,
-                signature: sig.as_bytes().to_vec().into(),
-            }
-            .abi_encode();
 
-            let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            let ret = ISignatureVerifier::verifyAdminCall::abi_decode_returns(&output.bytes)?;
+            let ret = call_verify_admin(account, hash, sig.as_bytes().to_vec())?;
             assert!(!ret, "non-admin access key should not verify as admin");
             Ok(())
         })
@@ -255,15 +246,7 @@ mod tests {
             let checked_hash = B256::from([0x22; 32]);
             let sig = signer.sign_hash_sync(&signed_hash)?;
 
-            let calldata = ISignatureVerifier::verifyAdminCall {
-                account: signer.address(),
-                hash: checked_hash,
-                signature: sig.as_bytes().to_vec().into(),
-            }
-            .abi_encode();
-
-            let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            let ret = ISignatureVerifier::verifyAdminCall::abi_decode_returns(&output.bytes)?;
+            let ret = call_verify_admin(signer.address(), checked_hash, sig.as_bytes().to_vec())?;
             assert!(!ret, "wrong digest should not verify as admin");
             Ok(())
         })
@@ -273,15 +256,7 @@ mod tests {
     fn test_verify_admin_returns_false_for_malformed_signature() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
-            let calldata = ISignatureVerifier::verifyAdminCall {
-                account: Address::random(),
-                hash: B256::ZERO,
-                signature: vec![0u8; 64].into(),
-            }
-            .abi_encode();
-
-            let output = SignatureVerifier::new().call(&calldata, Address::ZERO)?;
-            let ret = ISignatureVerifier::verifyAdminCall::abi_decode_returns(&output.bytes)?;
+            let ret = call_verify_admin(Address::random(), B256::ZERO, vec![0u8; 64])?;
             assert!(!ret, "malformed signature should not verify as admin");
             Ok(())
         })
