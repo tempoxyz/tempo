@@ -41,8 +41,8 @@ pub struct TempoBuiltPayload {
     /// This excludes proposer-only idle waiting, but includes replayable work
     /// such as transaction execution and non-interruptible `builder_finish`.
     validation_work_duration: Duration,
-    /// RLP-encoded block size used to estimate marshal persistence duration in
-    /// the builder and proposal return budgets.
+    /// RLP-encoded block size used for proposal return marshal estimates and
+    /// learning the rate used by future builder budgets.
     rlp_block_size_bytes: usize,
 }
 
