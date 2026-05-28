@@ -4,10 +4,12 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod attrs;
+mod budget;
 
 use alloy_primitives::{B256, Bytes};
-pub use attrs::{InterruptHandle, TempoPayloadAttributes};
-use std::sync::Arc;
+pub use attrs::TempoPayloadAttributes;
+pub use budget::{MarshalPersistEstimator, marshal_persist_estimate, observe_marshal_persist};
+use std::{sync::Arc, time::Duration};
 
 use alloy_eips::eip7685::Requests;
 use alloy_primitives::U256;
@@ -36,6 +38,10 @@ pub struct TempoBuiltPayload {
     block_access_list: Option<Bytes>,
     /// The executed block data, used to skip re-execution in the engine tree.
     executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
+    /// Estimated time validators spend reproducing the build work.
+    validation_work_duration: Duration,
+    /// RLP-encoded block size in bytes.
+    rlp_block_size_bytes: usize,
 }
 
 impl TempoBuiltPayload {
@@ -44,20 +50,34 @@ impl TempoBuiltPayload {
         inner: EthBuiltPayload<TempoPrimitives>,
         block_access_list: Option<Bytes>,
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
+        validation_work_duration: Duration,
+        rlp_block_size_bytes: usize,
     ) -> Self {
         Self {
             inner,
             block_access_list,
             executed_block,
+            validation_work_duration,
+            rlp_block_size_bytes,
         }
     }
 
     /// Converts the built payload into owned execution payload parts.
     pub fn into_execution_payload(self) -> (SealedBlock<Block>, Option<Bytes>) {
         (
-            Arc::unwrap_or_clone(self.inner.block_arc().clone()),
+            Arc::unwrap_or_clone(self.inner.block_arc().clone()).into_sealed_block(),
             self.block_access_list,
         )
+    }
+
+    /// Returns the estimated validation work duration for this payload.
+    pub fn validation_work_duration(&self) -> Duration {
+        self.validation_work_duration
+    }
+
+    /// Returns the RLP-encoded block size in bytes.
+    pub fn rlp_block_size_bytes(&self) -> usize {
+        self.rlp_block_size_bytes
     }
 
     /// Converts the built payload into [`TempoExecutionData`].

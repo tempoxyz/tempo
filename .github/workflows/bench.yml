@@ -108,6 +108,8 @@ jobs:
           script: |
             let pr, actor, mode, preset, duration, bloat, tps, accounts, maxConcurrentRequests, baseline, feature, baselineHardfork, featureHardfork, txgenRef, samply, tracy, tracySeconds, tracyOffset, otlp, baselineArgs, featureArgs, gasLimit, runType, forceBloat, noCache, noSlack, benchArgs, benchEnv, baselineEnv, featureEnv, blocks, warmup, runPairs;
             let explicitWarmup = false;
+            let explicitDuration = false;
+            let explicitRunPairs = false;
 
             pr = String(context.issue.number);
             actor = context.payload.comment.user.login;
@@ -123,6 +125,14 @@ jobs:
             const unknown = [];
             const invalid = [];
             const defaultWarmup = (blockCount) => String(Math.floor(Number(blockCount) / 4));
+            const parseGasLimit = (value) => {
+              const match = value.match(/^(\d+)([MGT])?$/i);
+              if (!match) return null;
+              const multipliers = { M: 1_000_000n, G: 1_000_000_000n, T: 1_000_000_000_000n };
+              const suffix = match[2]?.toUpperCase();
+              const gasLimit = BigInt(match[1]) * (suffix ? multipliers[suffix] : 1n);
+              return gasLimit.toString();
+            };
             const args = body.replace(/^(?:@decofe|derek) bench\s*/, '');
             // Parse args, handling quoted values like key="value with spaces"
             const parts = [];
@@ -151,12 +161,21 @@ jobs:
                 } else {
                   defaults[key] = value;
                 }
+              } else if (key === 'gas-limit') {
+                const parsedGasLimit = parseGasLimit(value);
+                if (parsedGasLimit === null) {
+                  invalid.push(`\`${key}=${value}\` (must be a positive integer, optionally using M/G/T suffix)`);
+                } else {
+                  defaults[key] = parsedGasLimit;
+                }
               } else if (intArgs.has(key)) {
                 if (!/^\d+$/.test(value)) {
                   invalid.push(`\`${key}=${value}\` (must be a positive integer)`);
                 } else {
                   defaults[key] = value;
                   if (key === 'warmup') explicitWarmup = true;
+                  if (key === 'duration') explicitDuration = true;
+                  if (key === 'run-pairs') explicitRunPairs = true;
                 }
               } else if (refArgs.has(key)) {
                 if (!value) {
@@ -184,7 +203,7 @@ jobs:
             if (unknown.length) errors.push(`Unknown argument(s): \`${unknown.join('`, `')}\``);
             if (invalid.length) errors.push(`Invalid value(s): ${invalid.join(', ')}`);
             if (errors.length) {
-              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [txgen-ref=REF] [samply] [otlp] [force-bloat] [no-cache] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
+              const msg = `❌ **Invalid bench command**\n\n${errors.join('\n')}\n\n**Usage:** \`@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [txgen-ref=REF] [samply] [otlp] [force-bloat] [no-cache] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]\``;
               await github.rest.issues.createComment({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -226,11 +245,15 @@ jobs:
             warmup = defaults.warmup;
             runPairs = defaults['run-pairs'];
             var chain = defaults.chain;
+            if (mode === 'e2e') {
+              if (!explicitDuration) duration = '90';
+              if (!explicitRunPairs) runPairs = '3';
+            }
             if (!explicitWarmup) {
               warmup = defaultWarmup(blocks);
             }
 
-            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [txgen-ref=REF] [samply] [otlp] [force-bloat] [no-cache] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
+            const usageStr = '**Usage:** `@decofe bench [mode=MODE] [chain=mainnet|testnet] [blocks=N] [warmup=N] [run-pairs=N] [preset=NAME] [duration=N] [bloat=1|10|100] [tps=N] [accounts=N] [max-concurrent-requests=N] [gas-limit=N|NM|NG|NT] [baseline=REF] [feature=REF] [baseline-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [feature-hardfork=T0|T1|T1A|T1B|T1C|T2|T3|T4|T5|T6] [txgen-ref=REF] [samply] [otlp] [force-bloat] [no-cache] [no-slack] [tracy=MODE] [tracy-seconds=N] [tracy-offset=N] [baseline-args="ARGS"] [feature-args="ARGS"] [bench-args="ARGS"] [bench-env="VARS"] [baseline-env="VARS"] [feature-env="VARS"]`';
 
             // Validate chain value
             if (!['mainnet', 'testnet'].includes(chain)) {

@@ -257,6 +257,11 @@ impl AccountKeychain {
             }
 
             if config.allowAnyCalls {
+                // T5+: prevent footguns where callers accidentally pass scopes with allow-all.
+                if self.storage.spec().is_t5() && !config.allowedCalls.is_empty() {
+                    return Err(AccountKeychainError::invalid_call_scope().into());
+                }
+
                 None
             } else {
                 Some(config.allowedCalls.as_slice())
@@ -3750,6 +3755,97 @@ mod tests {
             assert_eq!(
                 stored_key.expiry, 0,
                 "duplicate rejection must not persist the key"
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_pre_t5_authorize_key_ignores_scopes_when_allowing_any_call() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T4);
+        let account = Address::random();
+        let key_id = Address::random();
+        let target = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            authorize_key(
+                &mut keychain,
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        allowAnyCalls: true,
+                        allowedCalls: vec![CallScope {
+                            target,
+                            selectorRules: vec![],
+                        }],
+                    },
+                },
+            )?;
+
+            let stored_key = keychain.keys[account][key_id].read()?;
+            assert_eq!(stored_key.expiry, u64::MAX);
+
+            let scopes = keychain.get_allowed_calls(getAllowedCallsCall {
+                account,
+                keyId: key_id,
+            })?;
+            assert!(!scopes.isScoped);
+            assert!(scopes.scopes.is_empty());
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t5_authorize_key_rejects_scopes_when_allowing_any_call() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let account = Address::random();
+        let key_id = Address::random();
+        let target = Address::random();
+
+        StorageCtx::enter(&mut storage, || {
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_transaction_key(Address::ZERO)?;
+            keychain.set_tx_origin(account)?;
+
+            let err = authorize_key(
+                &mut keychain,
+                account,
+                authorizeKeyCall {
+                    keyId: key_id,
+                    signatureType: SignatureType::Secp256k1,
+                    config: KeyRestrictions {
+                        expiry: u64::MAX,
+                        enforceLimits: false,
+                        limits: vec![],
+                        allowAnyCalls: true,
+                        allowedCalls: vec![CallScope {
+                            target,
+                            selectorRules: vec![],
+                        }],
+                    },
+                },
+            )
+            .expect_err("allowAnyCalls=true must reject non-empty allowedCalls");
+
+            assert_invalid_call_scope(err);
+
+            let stored_key = keychain.keys[account][key_id].read()?;
+            assert_eq!(
+                stored_key.expiry, 0,
+                "invalid call scope rejection must not persist the key"
             );
 
             Ok(())

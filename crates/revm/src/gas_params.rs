@@ -1,36 +1,14 @@
-use auto_impl::auto_impl;
 use revm::{
     context_interface::cfg::{GasId, GasParams},
     primitives::OnceLock,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
-/// Extending [`GasParams`] for Tempo use case.
-#[auto_impl(&, Arc, Box, &mut)]
-pub trait TempoGasParams {
-    fn gas_params(&self) -> &GasParams;
-
-    fn tx_tip1000_auth_account_creation_cost(&self) -> u64 {
-        self.gas_params().get(GasId::new(255))
-    }
-
-    fn tx_tip1000_auth_account_creation_state_gas(&self) -> u64 {
-        self.gas_params().get(GasId::new(254))
-    }
-}
-
-impl TempoGasParams for GasParams {
-    fn gas_params(&self) -> &GasParams {
-        self
-    }
-}
-
 // TIP-1000 total gas costs (used by T1)
 pub const SSTORE_SET_COST: u64 = 250_000;
 const CREATE_COST: u64 = 500_000;
 const NEW_ACCOUNT_COST: u64 = 250_000;
 const CODE_DEPOSIT_COST_T1: u64 = 1_000;
-const AUTH_ACCOUNT_CREATION_COST: u64 = 250_000;
 const EIP7702_PER_EMPTY_ACCOUNT_COST_T1: u64 = 12_500;
 
 // TIP-1016 regular gas (computational overhead) — matches pre-TIP-1000 EVM costs.
@@ -42,7 +20,6 @@ const T4_SSTORE_SET_REGULAR: u64 = 20_000;
 const T4_NEW_ACCOUNT_REGULAR: u64 = 25_000;
 const T4_CREATE_REGULAR: u64 = 32_000;
 const T4_CODE_DEPOSIT_REGULAR: u64 = 200;
-const T4_EIP7702_PER_AUTH_TOTAL: u64 = 250_000; // 25k regular + 225k state
 
 // TIP-1016 state gas (permanent storage burden)
 const T4_SSTORE_SET_STATE: u64 = SSTORE_SET_COST - T4_SSTORE_SET_REGULAR; // 230,000
@@ -106,19 +83,15 @@ fn amsterdam_gas_params() -> GasParams {
         // EIP-7702 delegation: 25k regular + 225k state = 250k per auth
         (
             GasId::tx_eip7702_per_empty_account_cost(),
-            T4_EIP7702_PER_AUTH_TOTAL,
+            T4_NEW_ACCOUNT_REGULAR,
         ),
-        (
-            GasId::tx_eip7702_per_auth_state_gas(),
-            T4_NEW_ACCOUNT_STATE, // 225,000
-        ),
-        // Auth refund is zeroed by apply_eip7702_auth_list override (TIP-1000:
-        // "no refund if the account already exists"), but set the value for
-        // upstream split_eip7702_refund correctness if the override is bypassed.
+        // Auth refund is disabled post-T1.
         (GasId::tx_eip7702_auth_refund(), 0),
-        // Auth account creation (keychain): same split as account creation
-        (GasId::new(255), T4_NEW_ACCOUNT_REGULAR),
-        (GasId::new(254), T4_NEW_ACCOUNT_STATE),
+        // For each auth revm charges new_account_state_gas + tx_eip7702_state_gas_bytecode state gas
+        //
+        // Per TIP-1016, we only need 225k unconditional state gas charge (another 250k is charged only
+        // if nonce is zero). Thus, we are zeroing the bytecode cost so that only new_account_state_gas (225k) is charged.
+        (GasId::tx_eip7702_state_gas_bytecode(), 0),
     ]);
     gas_params
 }
@@ -138,7 +111,8 @@ fn t1_gas_params() -> GasParams {
             GasId::tx_eip7702_per_empty_account_cost(),
             EIP7702_PER_EMPTY_ACCOUNT_COST_T1,
         ),
-        (GasId::new(255), AUTH_ACCOUNT_CREATION_COST),
+        // Auth refund is disabled post-T1.
+        (GasId::tx_eip7702_auth_refund(), 0),
     ]);
     gas_params
 }
@@ -268,37 +242,29 @@ mod tests {
         );
         assert_eq!(gas_params.get(GasId::code_deposit_state_gas()), 2_300);
 
-        // Auth account creation: same split as account creation
-        assert_eq!(
-            gas_params.get(GasId::new(255)),
-            25_000,
-            "Auth account creation regular gas per spec"
-        );
-        assert_eq!(
-            gas_params.get(GasId::new(254)),
-            225_000,
-            "Auth account creation state gas per spec"
-        );
-
         // EIP-7702 delegation: 25,000 regular + 225,000 state per auth
         assert_eq!(
             gas_params.get(GasId::tx_eip7702_per_empty_account_cost()),
-            250_000,
+            25_000,
             "EIP-7702 per auth total = 25k regular + 225k state per spec"
         );
         assert_eq!(
-            gas_params.tx_eip7702_per_auth_state_gas(),
+            gas_params.tx_eip7702_per_empty_account_cost(),
+            250_000,
+            "EIP-7702 per auth state gas per spec"
+        );
+        assert_eq!(
+            gas_params.new_account_state_gas(),
             225_000,
             "EIP-7702 per auth state gas per spec"
         );
         assert_eq!(
-            gas_params.tx_eip7702_per_empty_account_cost()
-                - gas_params.tx_eip7702_per_auth_state_gas(),
+            gas_params.tx_eip7702_per_empty_account_cost() - gas_params.new_account_state_gas(),
             25_000,
             "EIP-7702 per auth regular gas = total - state = 25k"
         );
         assert_eq!(
-            gas_params.tx_eip7702_auth_refund(),
+            gas_params.tx_eip7702_auth_refund_regular(),
             0,
             "TIP-1000: no refund for existing accounts on T1+"
         );
@@ -360,17 +326,9 @@ mod tests {
             "code_deposit total must be 2,500/byte"
         );
 
-        // Auth account creation: 25,000 + 225,000 = 250,000
-        assert_eq!(
-            t4.get(GasId::new(255)) + t4.get(GasId::new(254)),
-            250_000,
-            "auth_account_creation total must be 250,000"
-        );
-
         // EIP-7702: 25,000 regular + 225,000 state = 250,000 per auth
         assert_eq!(
-            (t4.tx_eip7702_per_empty_account_cost() - t4.tx_eip7702_per_auth_state_gas())
-                + t4.tx_eip7702_per_auth_state_gas(),
+            t4.tx_eip7702_per_empty_account_cost(),
             250_000,
             "EIP-7702 per auth total must be 250,000"
         );

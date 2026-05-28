@@ -1090,8 +1090,7 @@ impl AA2dPool {
             pending_tx.submission_id,
         );
         self.expiring_nonce_eviction_order.remove(&eviction_key);
-        let tx_hash = *pending_tx.transaction.hash();
-        self.by_hash.remove(&tx_hash);
+        self.by_hash.remove(pending_tx.transaction.hash());
         if let Some(slot) = pending_tx.transaction.transaction.expiring_nonce_slot() {
             self.slot_to_expiring_nonce_hash.remove(&slot);
         }
@@ -1464,8 +1463,10 @@ impl AA2dInternalTransaction {
 /// Order:
 /// 1. Priority ascending (lowest priority evicted first)
 /// 2. Submission ID descending (newer transactions evicted first among equal priority)
-/// 3. Expiring nonce hash ascending (stable total order)
-#[derive(Debug, Clone, PartialEq, Eq)]
+///
+/// `submission_id` is unique for live entries, so `expiring_hash` is carried
+/// only as removal payload and is not part of the ordering.
+#[derive(Debug, Clone)]
 struct ExpiringNonceEvictionKey {
     expiring_hash: B256,
     priority: Priority<u128>,
@@ -1482,12 +1483,19 @@ impl ExpiringNonceEvictionKey {
     }
 }
 
+impl PartialEq for ExpiringNonceEvictionKey {
+    fn eq(&self, other: &Self) -> bool {
+        self.submission_id == other.submission_id
+    }
+}
+
+impl Eq for ExpiringNonceEvictionKey {}
+
 impl Ord for ExpiringNonceEvictionKey {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
         self.priority
             .cmp(&other.priority)
             .then_with(|| other.submission_id.cmp(&self.submission_id))
-            .then_with(|| self.expiring_hash.cmp(&other.expiring_hash))
     }
 }
 
