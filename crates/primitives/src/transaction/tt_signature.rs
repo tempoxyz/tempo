@@ -672,6 +672,7 @@ impl TempoSignature {
     }
 
     /// Check if this is a Keychain signature
+    #[inline(always)]
     pub fn is_keychain(&self) -> bool {
         matches!(self, Self::Keychain(_))
     }
@@ -707,6 +708,7 @@ impl TempoSignature {
     }
 
     /// Get the Keychain signature if this is a Keychain signature
+    #[inline(always)]
     pub fn as_keychain(&self) -> Option<&KeychainSignature> {
         match self {
             Self::Keychain(keychain_sig) => Some(keychain_sig),
