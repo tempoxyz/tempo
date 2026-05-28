@@ -507,6 +507,7 @@ where
         self.inner.receipts()
     }
 
+    #[inline(always)]
     fn execute_transaction_without_commit(
         &mut self,
         tx: impl ExecutableTx<Self>,
