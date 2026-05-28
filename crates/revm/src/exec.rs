@@ -35,6 +35,7 @@ where
         self.inner.ctx.set_block(block);
     }
 
+    #[inline(always)]
     fn transact_one(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
         self.inner.ctx.set_tx(tx);
         let mut h = TempoEvmHandler::new();
