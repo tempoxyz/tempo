@@ -548,14 +548,12 @@ mod tests {
         let burned_witness = B256::random();
         let other_witness = B256::random();
 
-        let key_authorization = |witness| SignedKeyAuthorization {
-            authorization: KeyAuthorization::unrestricted(
-                42431,
-                SignatureType::Secp256k1,
-                Address::random(),
-            )
-            .with_witness(witness),
-            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
+        let key_authorization = |witness| {
+            KeyAuthorization::unrestricted(42431, SignatureType::Secp256k1, Address::random())
+                .with_witness(witness)
+                .into_signed(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ))
         };
 
         let matching = Arc::new(wrap_valid_tx(

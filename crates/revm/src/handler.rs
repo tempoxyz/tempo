@@ -58,8 +58,8 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoAddressExt,
     transaction::{
-        PrimitiveSignature, SignatureType, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY,
-        TempoSignature, calc_gas_balance_spending, validate_calls,
+        PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
+        calc_gas_balance_spending, validate_calls,
     },
 };
 
@@ -147,22 +147,6 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
 struct LoadedTxAccessKey {
     key_id: Address,
     key: AuthorizedKey,
-}
-
-fn recover_key_authorization_signer(
-    cache: &OnceLock<Address>,
-    key_auth: &SignedKeyAuthorization,
-) -> Result<Address, TempoInvalidTransaction> {
-    if let Some(signer) = cache.get() {
-        return Ok(*signer);
-    }
-
-    let signer = key_auth
-        .recover_signer()
-        .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
-    let _ = cache.set(signer);
-
-    Ok(signer)
 }
 
 /// Counts the scope storage rows that pay the dynamic SSTORE-set path for the active spec.
@@ -921,7 +905,6 @@ where
         init_gas: &mut InitialAndFloorGas,
     ) -> Result<(), Self::Error> {
         self.seed_precompile_tx_context(evm)?;
-        let key_authorization_signer = evm.key_authorization_signer;
 
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
@@ -1277,8 +1260,9 @@ where
             && let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(key_auth) = tempo_tx_env.key_authorization.as_ref()
         {
-            let auth_signer = key_authorization_signer
-                .expect("T6 key authorization signer is set during validate_env");
+            let auth_signer = key_auth
+                .recover_signer()
+                .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
 
             if auth_signer != tx.caller {
                 let key_auth_sig_type: u8 = key_auth.signature.signature_type().into();
@@ -1643,7 +1627,6 @@ where
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
         // Reset per-tx validator fee.
         evm.validator_fee = U256::ZERO;
-        evm.key_authorization_signer = None;
 
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;
@@ -1668,7 +1651,6 @@ where
         // AA-specific validations
         let cfg = &evm.inner.cfg;
         let tx = &evm.inner.tx;
-        let key_authorization_signer = OnceLock::new();
 
         if let Some(aa_env) = tx.tempo_tx_env.as_ref() {
             // Validate AA transaction structure (calls list, CREATE rules)
@@ -1785,8 +1767,9 @@ where
                 }
 
                 if !cfg.spec.is_t6() {
-                    let auth_signer =
-                        recover_key_authorization_signer(&key_authorization_signer, key_auth)?;
+                    let auth_signer = key_auth.recover_signer().map_err(|_| {
+                        TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
+                    })?;
 
                     if auth_signer != tx.caller {
                         return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
@@ -1830,8 +1813,9 @@ where
                 }
 
                 if cfg.spec.is_t6() {
-                    let auth_signer =
-                        recover_key_authorization_signer(&key_authorization_signer, key_auth)?;
+                    let auth_signer = key_auth.recover_signer().map_err(|_| {
+                        TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
+                    })?;
                     if auth_signer != tx.caller && key_auth.account.is_none() {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
                             reason: "admin-signed key authorization account mismatch".to_string(),
@@ -1905,8 +1889,6 @@ where
             let valid_after = aa_env.valid_after.filter(|_| !evm.skip_valid_after_check);
             validate_time_window(valid_after, aa_env.valid_before, block_timestamp)?;
         }
-
-        evm.key_authorization_signer = key_authorization_signer.get().copied();
 
         Ok(())
     }
@@ -3204,12 +3186,9 @@ mod tests {
                         .collect(),
                 );
             }
-            SignedKeyAuthorization {
-                authorization: auth,
-                signature: PrimitiveSignature::Secp256k1(
-                    alloy_primitives::Signature::test_signature(),
-                ),
-            }
+            auth.into_signed(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            ))
         };
 
         // Test 0 limits: base (27k) + ecrecover (3k) = 30,000
@@ -3418,21 +3397,17 @@ mod tests {
             "T6 unbound admin authorization does not add state gas"
         );
 
-        let scoped = SignedKeyAuthorization {
-            authorization: KeyAuthorization::unrestricted(
-                1,
-                SignatureType::Secp256k1,
-                Address::random(),
-            )
+        let scoped = KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random())
             .with_allowed_calls(vec![tempo_primitives::transaction::CallScope {
                 target: Address::random(),
                 selector_rules: vec![tempo_primitives::transaction::SelectorRule {
                     selector: [0xa9, 0x05, 0x9c, 0xbb],
                     recipients: vec![Address::random(), Address::random()],
                 }],
-            }]),
-            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-        };
+            }])
+            .into_signed(PrimitiveSignature::Secp256k1(
+                alloy_primitives::Signature::test_signature(),
+            ));
 
         let (gas, state_gas) =
             calculate_key_authorization_gas(&scoped, &t3_gas_params, TempoHardfork::T3);
@@ -3456,33 +3431,30 @@ mod tests {
             ECRECOVER_GAS + t4_sload + t4_sstore * num_sstores + BUFFER + 29_000 + expected_state;
         assert_eq!(gas, expected, "T4 scope writes should be fully charged");
         assert_eq!(state_gas, expected_state, "T4 scope state gas");
-        let multi_scope = SignedKeyAuthorization {
-            authorization: KeyAuthorization::unrestricted(
-                1,
-                SignatureType::Secp256k1,
-                Address::random(),
-            )
-            .with_allowed_calls(vec![
-                tempo_primitives::transaction::CallScope {
-                    target: Address::random(),
-                    selector_rules: vec![
-                        tempo_primitives::transaction::SelectorRule {
-                            selector: [0xa9, 0x05, 0x9c, 0xbb],
-                            recipients: vec![],
-                        },
-                        tempo_primitives::transaction::SelectorRule {
-                            selector: [0x09, 0x5e, 0xa7, 0xb3],
-                            recipients: vec![],
-                        },
-                    ],
-                },
-                tempo_primitives::transaction::CallScope {
-                    target: Address::random(),
-                    selector_rules: vec![],
-                },
-            ]),
-            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-        };
+        let multi_scope =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random())
+                .with_allowed_calls(vec![
+                    tempo_primitives::transaction::CallScope {
+                        target: Address::random(),
+                        selector_rules: vec![
+                            tempo_primitives::transaction::SelectorRule {
+                                selector: [0xa9, 0x05, 0x9c, 0xbb],
+                                recipients: vec![],
+                            },
+                            tempo_primitives::transaction::SelectorRule {
+                                selector: [0x09, 0x5e, 0xa7, 0xb3],
+                                recipients: vec![],
+                            },
+                        ],
+                    },
+                    tempo_primitives::transaction::CallScope {
+                        target: Address::random(),
+                        selector_rules: vec![],
+                    },
+                ])
+                .into_signed(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ));
 
         let (gas, state_gas) =
             calculate_key_authorization_gas(&multi_scope, &t3_gas_params, TempoHardfork::T3);
@@ -3506,18 +3478,13 @@ mod tests {
 
     #[test]
     fn test_t4_key_authorization_matches_tip1016_sstore_regular_cost() {
-        use tempo_primitives::transaction::{
-            KeyAuthorization, SignatureType, SignedKeyAuthorization,
-        };
+        use tempo_primitives::transaction::{KeyAuthorization, SignatureType};
 
-        let key_auth = SignedKeyAuthorization {
-            authorization: KeyAuthorization::unrestricted(
-                1,
-                SignatureType::Secp256k1,
-                Address::random(),
-            ),
-            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-        };
+        let key_auth =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random())
+                .into_signed(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ));
 
         // TIP-1016 is opt-in via amsterdam_eip8037; manually enable for this test.
         let gas_params =
@@ -3537,41 +3504,35 @@ mod tests {
     #[test]
     fn test_translate_allowed_calls_for_precompile_preserves_empty_nested_allow_all_lists() {
         use tempo_primitives::transaction::{
-            CallScope, KeyAuthorization, SelectorRule, SignatureType, SignedKeyAuthorization,
+            CallScope, KeyAuthorization, SelectorRule, SignatureType,
         };
 
-        let empty_selector_rules = SignedKeyAuthorization {
-            authorization: KeyAuthorization::unrestricted(
-                1,
-                SignatureType::Secp256k1,
-                Address::random(),
-            )
-            .with_allowed_calls(vec![CallScope {
-                target: Address::random(),
-                selector_rules: vec![],
-            }]),
-            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-        };
+        let empty_selector_rules =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random())
+                .with_allowed_calls(vec![CallScope {
+                    target: Address::random(),
+                    selector_rules: vec![],
+                }])
+                .into_signed(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ));
 
         let translated = translate_allowed_calls_for_precompile(&empty_selector_rules);
         assert_eq!(translated.len(), 1);
         assert!(translated[0].selectorRules.is_empty());
 
-        let empty_recipients = SignedKeyAuthorization {
-            authorization: KeyAuthorization::unrestricted(
-                1,
-                SignatureType::Secp256k1,
-                Address::random(),
-            )
-            .with_allowed_calls(vec![CallScope {
-                target: Address::random(),
-                selector_rules: vec![SelectorRule {
-                    selector: [0xa9, 0x05, 0x9c, 0xbb],
-                    recipients: vec![],
-                }],
-            }]),
-            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-        };
+        let empty_recipients =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random())
+                .with_allowed_calls(vec![CallScope {
+                    target: Address::random(),
+                    selector_rules: vec![SelectorRule {
+                        selector: [0xa9, 0x05, 0x9c, 0xbb],
+                        recipients: vec![],
+                    }],
+                }])
+                .into_signed(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ));
 
         let translated = translate_allowed_calls_for_precompile(&empty_recipients);
         assert_eq!(translated.len(), 1);
@@ -3598,26 +3559,23 @@ mod tests {
         };
 
         // Create key authorization with 2 limits
-        let key_auth: SignedKeyAuthorization = SignedKeyAuthorization {
-            authorization: KeyAuthorization::unrestricted(
-                1,
-                SignatureType::Secp256k1,
-                Address::random(),
-            )
-            .with_limits(vec![
-                TokenLimit {
-                    token: Address::random(),
-                    limit: U256::from(1000),
-                    period: 0,
-                },
-                TokenLimit {
-                    token: Address::random(),
-                    limit: U256::from(2000),
-                    period: 0,
-                },
-            ]),
-            signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-        };
+        let key_auth: SignedKeyAuthorization =
+            KeyAuthorization::unrestricted(1, SignatureType::Secp256k1, Address::random())
+                .with_limits(vec![
+                    TokenLimit {
+                        token: Address::random(),
+                        limit: U256::from(1000),
+                        period: 0,
+                    },
+                    TokenLimit {
+                        token: Address::random(),
+                        limit: U256::from(2000),
+                        period: 0,
+                    },
+                ])
+                .into_signed(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ));
 
         let aa_env_with_key_auth = TempoBatchCallEnv {
             signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
@@ -4593,10 +4551,9 @@ mod tests {
                         period: 0,
                     }).collect());
                 }
-                SignedKeyAuthorization {
-                    authorization: auth,
-                    signature: PrimitiveSignature::Secp256k1(alloy_primitives::Signature::test_signature()),
-                }
+                auth.into_signed(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                ))
             };
 
             // Test both pre-T1B and T1B branches
@@ -4626,9 +4583,7 @@ mod tests {
             num_limits in 0usize..5,
         ) {
             use tempo_primitives::transaction::{
-                SignatureType, SignedKeyAuthorization,
-                key_authorization::KeyAuthorization,
-                TokenLimit as PrimTokenLimit,
+                SignatureType, TokenLimit as PrimTokenLimit, key_authorization::KeyAuthorization,
             };
 
             let signature = match sig_type {
@@ -4651,10 +4606,7 @@ mod tests {
                     period: 0,
                 }).collect());
             }
-            let key_auth = SignedKeyAuthorization {
-                authorization: auth,
-                signature,
-            };
+            let key_auth = auth.into_signed(signature);
 
             // Pre-T1B: minimum is KEY_AUTH_BASE_GAS + ECRECOVER_GAS
             let (gas, _) = calculate_key_authorization_gas(&key_auth, &GasParams::default(), tempo_chainspec::hardfork::TempoHardfork::default());

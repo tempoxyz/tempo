@@ -4,7 +4,15 @@ use alloc::vec::Vec;
 use alloy_consensus::crypto::RecoveryError;
 use alloy_primitives::{Address, B256, U256, keccak256};
 use alloy_rlp::Encodable;
-use core::num::NonZeroU64;
+use core::{
+    hash::{Hash, Hasher},
+    num::NonZeroU64,
+};
+
+#[cfg(not(feature = "std"))]
+use once_cell::race::OnceBox as OnceLock;
+#[cfg(feature = "std")]
+use std::sync::OnceLock;
 
 /// Token spending limit for access keys
 ///
@@ -349,10 +357,7 @@ impl KeyAuthorization {
 
     /// Convert the key authorization into a [`SignedKeyAuthorization`] with a signature.
     pub fn into_signed(self, signature: PrimitiveSignature) -> SignedKeyAuthorization {
-        SignedKeyAuthorization {
-            authorization: self,
-            signature,
-        }
+        SignedKeyAuthorization::new(self, signature)
     }
 
     /// Validates that this key authorization's `chain_id` is compatible with `expected_chain_id`.
@@ -404,16 +409,7 @@ pub struct KeyAuthorizationChainIdError {
 }
 
 /// Signed key authorization that can be attached to a transaction.
-#[derive(
-    Clone,
-    Debug,
-    PartialEq,
-    Eq,
-    Hash,
-    alloy_rlp::RlpEncodable,
-    alloy_rlp::RlpDecodable,
-    derive_more::Deref,
-)]
+#[derive(Clone, Debug, alloy_rlp::RlpEncodable, alloy_rlp::RlpDecodable, derive_more::Deref)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 #[cfg_attr(feature = "serde", serde(rename_all = "camelCase"))]
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
@@ -426,18 +422,68 @@ pub struct SignedKeyAuthorization {
 
     /// Signature authorizing this key (signed by root key)
     pub signature: PrimitiveSignature,
+
+    /// Cached signer recovered from `signature`.
+    ///
+    /// Excluded from encoding, equality, hashing, and arbitrary generation.
+    #[cfg_attr(feature = "serde", serde(skip))]
+    #[cfg_attr(any(test, feature = "arbitrary"), arbitrary(default))]
+    #[rlp(skip, default)]
+    signer: OnceLock<Address>,
 }
 
 impl SignedKeyAuthorization {
+    /// Create a signed key authorization with an empty signer cache.
+    pub fn new(authorization: KeyAuthorization, signature: PrimitiveSignature) -> Self {
+        Self {
+            authorization,
+            signature,
+            signer: OnceLock::new(),
+        }
+    }
+
     /// Recover the signer of the [`KeyAuthorization`].
     pub fn recover_signer(&self) -> Result<Address, RecoveryError> {
-        self.signature
-            .recover_signer(&self.authorization.signature_hash())
+        if let Some(signer) = self.signer.get() {
+            return Ok(*signer);
+        }
+
+        let signer = self
+            .signature
+            .recover_signer(&self.authorization.signature_hash())?;
+        self.cache_signer(signer);
+
+        Ok(signer)
+    }
+
+    #[cfg(feature = "std")]
+    fn cache_signer(&self, signer: Address) {
+        let _ = self.signer.set(signer);
+    }
+
+    #[cfg(not(feature = "std"))]
+    fn cache_signer(&self, signer: Address) {
+        let _ = self.signer.set(alloc::boxed::Box::new(signer));
     }
 
     /// Calculates a heuristic for the in-memory size of the signed key authorization
     pub fn size(&self) -> usize {
         self.authorization.size() + self.signature.size()
+    }
+}
+
+impl PartialEq for SignedKeyAuthorization {
+    fn eq(&self, other: &Self) -> bool {
+        self.authorization == other.authorization && self.signature == other.signature
+    }
+}
+
+impl Eq for SignedKeyAuthorization {}
+
+impl Hash for SignedKeyAuthorization {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        self.authorization.hash(state);
+        self.signature.hash(state);
     }
 }
 

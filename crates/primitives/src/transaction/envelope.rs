@@ -545,7 +545,7 @@ mod tests {
     use super::*;
     use crate::transaction::{
         Call, TempoSignedAuthorization, TempoTransaction, TokenLimit,
-        key_authorization::{KeyAuthorization, SignedKeyAuthorization},
+        key_authorization::KeyAuthorization,
         tt_signature::{KeychainSignature, PrimitiveSignature, TempoSignature},
     };
     use alloy_consensus::{TxEip1559, TxEip2930, TxEip7702};
@@ -1050,8 +1050,8 @@ mod tests {
                 value: U256::ZERO,
                 input: Bytes::from(calldata),
             }],
-            key_authorization: Some(SignedKeyAuthorization {
-                authorization: KeyAuthorization {
+            key_authorization: Some(
+                KeyAuthorization {
                     chain_id: 1,
                     key_type: crate::SignatureType::Secp256k1,
                     key_id: Address::random(),
@@ -1061,9 +1061,9 @@ mod tests {
                     witness: None,
                     is_admin: false,
                     account: None,
-                },
-                signature: PrimitiveSignature::Secp256k1(Signature::test_signature()),
-            }),
+                }
+                .into_signed(PrimitiveSignature::Secp256k1(Signature::test_signature())),
+            ),
             ..Default::default()
         };
         TempoTxEnvelope::AA(tx.into_signed(Signature::test_signature().into()))
