@@ -77,22 +77,22 @@ impl TIP20Token {
     /// reward per token difference since their last update. Rewards are accumulated in the
     /// delegated recipient's rewardBalance. Returns the holder's delegated recipient address.
     pub fn update_rewards(&mut self, holder: Address) -> Result<RewardFlag> {
-        let flag = if self.storage.spec().is_t6() {
-            self.update_rewards_t6(holder, false)?
-        } else {
-            self.update_rewards_legacy(holder)?
-        };
-        // RewardFlag output of reward updates MUST be binary (opted-in/out).
-        // UserState has built-in logic to ensure pre-T6 we always store RewardFlag::Uninitialized.
-        debug_assert!(matches!(flag, RewardFlag::OptedIn | RewardFlag::OptedOut));
-
-        Ok(flag)
+        self.update_rewards_for_spec(holder, self.storage.spec().is_t6(), false)
     }
 
     /// Updates rewards and ensures the holder is checkpointed before cold-path state transitions.
     fn update_rewards_with_checkpoint(&mut self, holder: Address) -> Result<RewardFlag> {
-        let flag = if self.storage.spec().is_t6() {
-            self.update_rewards_t6(holder, true)?
+        self.update_rewards_for_spec(holder, self.storage.spec().is_t6(), true)
+    }
+
+    fn update_rewards_for_spec(
+        &mut self,
+        holder: Address,
+        is_t6: bool,
+        checkpoint_opted_out_rewards: bool,
+    ) -> Result<RewardFlag> {
+        let flag = if is_t6 {
+            self.update_rewards_t6(holder, checkpoint_opted_out_rewards)?
         } else {
             self.update_rewards_legacy(holder)?
         };
@@ -354,8 +354,9 @@ impl TIP20Token {
         to: Address,
         amount: U256,
     ) -> Result<(RewardFlag, RewardFlag)> {
-        let from_flag = self.update_rewards(from)?;
-        let to_flag = self.update_rewards(to)?;
+        let is_t6 = self.storage.spec().is_t6();
+        let from_flag = self.update_rewards_for_spec(from, is_t6, false)?;
+        let to_flag = self.update_rewards_for_spec(to, is_t6, false)?;
 
         match (from_flag, to_flag) {
             // Increase supply: from opted-out, to opted-in.
