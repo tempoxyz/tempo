@@ -1,7 +1,6 @@
 use super::{
     tempo_transaction::{TEMPO_TX_TYPE_ID, TempoTransaction},
     tt_signature::TempoSignature,
-    unique_tx_identifier_from_signable,
 };
 use alloc::vec::Vec;
 use alloy_consensus::{Transaction, transaction::TxHashRef};
@@ -117,7 +116,7 @@ impl AASigned {
     /// - **Unique per sender**: different signers produce different recovered addresses, so the
     ///   hash differs even for identical transaction payloads.
     pub fn expiring_nonce_hash(&self, sender: Address) -> B256 {
-        unique_tx_identifier_from_signable(&self.tx, sender)
+        self.tx.unique_tx_identifier(sender)
     }
 
     /// Returns the RLP header for the transaction and signature, encapsulating both

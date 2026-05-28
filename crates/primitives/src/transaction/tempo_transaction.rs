@@ -376,6 +376,33 @@ impl TempoTransaction {
         keccak256(&buf)
     }
 
+    /// Calculate the expiring nonce dedup hash for replay protection.
+    pub fn unique_tx_identifier(&self, sender: Address) -> B256 {
+        let skip_fee_token = self.fee_payer_signature.is_some();
+        let payload_length = self.rlp_encoded_fields_length(|_| 1, skip_fee_token);
+
+        let mut buf = Vec::with_capacity(
+            1 + rlp_header(payload_length).length_with_payload() + sender.as_slice().len(),
+        );
+
+        buf.put_u8(Self::tx_type());
+        rlp_header(payload_length).encode(&mut buf);
+        self.rlp_encode_fields(
+            &mut buf,
+            |signature, out| {
+                if signature.is_some() {
+                    out.put_u8(0);
+                } else {
+                    out.put_u8(EMPTY_STRING_CODE);
+                }
+            },
+            skip_fee_token,
+        );
+        buf.extend_from_slice(sender.as_slice());
+
+        keccak256(&buf)
+    }
+
     /// Calculate the fee payer signature hash.
     ///
     /// This hash is signed by the fee payer to sponsor the transaction
