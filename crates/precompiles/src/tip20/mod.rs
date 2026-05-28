@@ -1160,7 +1160,7 @@ impl TIP20Token {
         // Adjust balances
         let new_from_balance = from_balance
             .checked_sub(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
+            .ok_or_else(tip20_under_overflow)?;
 
         self.set_balance(from, new_from_balance)?;
 
@@ -1168,7 +1168,7 @@ impl TIP20Token {
             let to_balance = self.get_balance(to.target)?;
             let new_to_balance = to_balance
                 .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
+                .ok_or_else(tip20_under_overflow)?;
 
             self.set_balance(to.target, new_to_balance)?;
         }
@@ -1295,21 +1295,16 @@ impl TIP20Token {
             )?;
         }
 
-        let new_from_balance =
-            from_balance
-                .checked_sub(amount)
-                .ok_or(TIP20Error::insufficient_balance(
-                    from_balance,
-                    amount,
-                    self.address,
-                ))?;
+        let new_from_balance = from_balance
+            .checked_sub(amount)
+            .ok_or_else(|| tip20_insufficient_balance(from_balance, amount, self.address))?;
 
         self.set_balance(from, new_from_balance)?;
 
         let to_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
         let new_to_balance = to_balance
             .checked_add(amount)
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
+            .ok_or_else(tip20_supply_cap_exceeded)?;
         self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_to_balance)
     }
 
@@ -1354,23 +1349,40 @@ impl TIP20Token {
         }
 
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_from_balance =
-            from_balance
-                .checked_sub(refund)
-                .ok_or(TIP20Error::insufficient_balance(
-                    from_balance,
-                    refund,
-                    self.address,
-                ))?;
+        let new_from_balance = from_balance
+            .checked_sub(refund)
+            .ok_or_else(|| tip20_insufficient_balance(from_balance, refund, self.address))?;
 
         self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_from_balance)?;
 
         let to_balance = self.get_balance(to)?;
         let new_to_balance = to_balance
             .checked_add(refund)
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
+            .ok_or_else(tip20_supply_cap_exceeded)?;
         self.set_balance(to, new_to_balance)
     }
+}
+
+#[cold]
+#[inline(never)]
+fn tip20_under_overflow() -> TempoPrecompileError {
+    TempoPrecompileError::under_overflow()
+}
+
+#[cold]
+#[inline(never)]
+fn tip20_insufficient_balance(
+    available: U256,
+    required: U256,
+    token: Address,
+) -> TempoPrecompileError {
+    TIP20Error::insufficient_balance(available, required, token).into()
+}
+
+#[cold]
+#[inline(never)]
+fn tip20_supply_cap_exceeded() -> TempoPrecompileError {
+    TIP20Error::supply_cap_exceeded().into()
 }
 
 /// Resolved transfer recipient for [TIP-1022] virtual address support.
