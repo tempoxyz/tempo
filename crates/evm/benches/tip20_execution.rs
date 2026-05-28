@@ -23,7 +23,7 @@ use reth_execution_cache::{
     CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider, ExecutionCache,
 };
 use reth_primitives_traits::{Account as RethAccount, Bytecode as RethBytecode};
-use reth_revm::{State, database::StateProviderDatabase};
+use reth_revm::{State, database::StateProviderDatabase, state::Bytecode as RevmBytecode};
 use reth_storage_api::{
     AccountReader, BlockHashReader, BytecodeReader, HashedPostStateProvider, StateProofProvider,
     StateProvider, StateRootProvider, StorageRootProvider,
@@ -58,8 +58,8 @@ use tempo_evm::{
 };
 use tempo_precompiles::{
     ADDRESS_REGISTRY_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
-    error::TempoPrecompileError,
+    RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    VALIDATOR_CONFIG_V2_ADDRESS, error::TempoPrecompileError,
     nonce::NonceManager,
     storage::StorageCtx,
     tip_fee_manager::TipFeeManager,
@@ -432,9 +432,17 @@ fn setup_fixed_cache_state(
         block_hashes.insert(number.to::<u64>(), hash);
     }
 
+    insert_active_boundary_precompile_markers(
+        &execution_cache,
+        &mut accounts,
+        &mut contracts,
+        hardfork,
+    );
+
     for address in [
         ADDRESS_REGISTRY_ADDRESS,
         NONCE_PRECOMPILE_ADDRESS,
+        RECEIVE_POLICY_GUARD_ADDRESS,
         SIGNATURE_VERIFIER_ADDRESS,
         TIP20_CHANNEL_RESERVE_ADDRESS,
         VALIDATOR_CONFIG_V2_ADDRESS,
@@ -469,6 +477,48 @@ fn insert_account(
 
     let account = RethAccount::from(&info);
     cache.insert_account(address, Some(account));
+    accounts.insert(address, account);
+}
+
+fn insert_active_boundary_precompile_markers(
+    cache: &ExecutionCache,
+    accounts: &mut AddressMap<RethAccount>,
+    contracts: &mut B256Map<RethBytecode>,
+    hardfork: TempoHardfork,
+) {
+    if hardfork.is_t2() {
+        insert_precompile_marker_account(cache, accounts, contracts, VALIDATOR_CONFIG_V2_ADDRESS);
+    }
+    if hardfork.is_t3() {
+        insert_precompile_marker_account(cache, accounts, contracts, SIGNATURE_VERIFIER_ADDRESS);
+        insert_precompile_marker_account(cache, accounts, contracts, ADDRESS_REGISTRY_ADDRESS);
+    }
+    if hardfork.is_t5() {
+        insert_precompile_marker_account(cache, accounts, contracts, TIP20_CHANNEL_RESERVE_ADDRESS);
+    }
+    if hardfork.is_t6() {
+        insert_precompile_marker_account(cache, accounts, contracts, RECEIVE_POLICY_GUARD_ADDRESS);
+    }
+}
+
+fn insert_precompile_marker_account(
+    cache: &ExecutionCache,
+    accounts: &mut AddressMap<RethAccount>,
+    contracts: &mut B256Map<RethBytecode>,
+    address: Address,
+) {
+    let bytecode = RevmBytecode::new_legacy(Bytes::from_static(&[0xef]));
+    let code_hash = bytecode.hash_slow();
+    let bytecode = RethBytecode(bytecode);
+    let account = RethAccount {
+        nonce: 0,
+        balance: U256::ZERO,
+        bytecode_hash: Some(code_hash),
+    };
+
+    cache.insert_code(code_hash, Some(bytecode.clone()));
+    cache.insert_account(address, Some(account));
+    contracts.insert(code_hash, bytecode);
     accounts.insert(address, account);
 }
 
