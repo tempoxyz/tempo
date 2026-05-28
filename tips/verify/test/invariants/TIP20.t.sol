@@ -38,7 +38,7 @@ contract TIP20InvariantTest is InvariantBaseTest {
     uint256 internal constant USER_STATE_BALANCE_MASK = type(uint128).max;
     uint256 internal constant USER_STATE_REWARD_FLAG_MASK = uint256(3) << 128;
     uint256 internal constant USER_STATE_RESERVED_MASK = type(uint256).max << 130;
-    uint256 internal constant USER_STATE_BALANCES_SLOT = 10;
+    uint256 internal constant USER_STATE_BALANCES_SLOT = 9;
 
     enum RewardFlag {
         Uninitialized,
