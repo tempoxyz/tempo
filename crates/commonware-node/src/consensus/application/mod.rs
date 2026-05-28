@@ -60,6 +60,9 @@ pub(super) struct Config<TContext> {
     /// Local proposal return budget, excluding the network propagation allowance.
     pub(super) proposal_return_budget: Duration,
 
+    /// Multiplier applied to the builder's local validation work for proposal pacing.
+    pub(super) builder_validation_time_multiplier: f64,
+
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(super) epoch_strategy: FixedEpocher,
 

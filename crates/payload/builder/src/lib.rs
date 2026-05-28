@@ -12,7 +12,7 @@ pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crate::{
     budget::{
         BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
-        payload_budget_exhausted, scaled_build_time_multiplier,
+        payload_budget_exhausted, scaled_build_time_multiplier, scaled_validator_work_multiplier,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
@@ -522,6 +522,8 @@ where
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
+        let validator_work_multiplier =
+            scaled_validator_work_multiplier(attributes.validator_work_multiplier());
         let marshal_persist = marshal_persist_estimate();
         let block_build_stop_reason = loop {
             check_cancel!();
@@ -532,6 +534,7 @@ where
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
                     build_time_multiplier,
+                    validator_work_multiplier,
                     build_budget,
                     marshal_persist,
                     block_size_used,
@@ -545,6 +548,8 @@ where
                         ?estimated_marshal_persist,
                         block_size_used,
                         build_time_multiplier = build_time_multiplier as f64
+                            / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                        validator_work_multiplier = validator_work_multiplier as f64
                             / BUILD_TIME_MULTIPLIER_SCALE as f64,
                         "stopping pool transaction execution before payload build budget is exhausted"
                     );

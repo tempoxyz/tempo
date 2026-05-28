@@ -31,6 +31,16 @@ pub(crate) fn scaled_build_time_multiplier(multiplier: f64) -> u64 {
     (multiplier * BUILD_TIME_MULTIPLIER_SCALE as f64).round() as u64
 }
 
+/// Converts a human-readable validator-work multiplier into the fixed-point representation.
+pub(crate) fn scaled_validator_work_multiplier(multiplier: f64) -> u64 {
+    assert!(
+        multiplier.is_finite() && multiplier >= 0.0,
+        "validator work multiplier must be finite and >= 0"
+    );
+
+    (multiplier * BUILD_TIME_MULTIPLIER_SCALE as f64).round() as u64
+}
+
 fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
     Duration::from_nanos(
         (elapsed.as_nanos().saturating_mul(u128::from(multiplier))
@@ -43,17 +53,20 @@ fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
 pub(crate) fn payload_budget_exhausted(
     elapsed: Duration,
     idle_elapsed: Duration,
-    multiplier: u64,
+    build_time_multiplier: u64,
+    validator_work_multiplier: u64,
     budget: Duration,
     marshal_persist: MarshalPersistEstimator,
     block_size_bytes: usize,
 ) -> bool {
     let work_elapsed = elapsed.saturating_sub(idle_elapsed);
-    let predicted_work = scaled_duration(work_elapsed, multiplier);
+    let predicted_builder_work = scaled_duration(work_elapsed, build_time_multiplier);
+    let predicted_validator_work =
+        scaled_duration(predicted_builder_work, validator_work_multiplier);
     let marshal_persist = marshal_persist.estimate(block_size_bytes);
     idle_elapsed
-        .saturating_add(predicted_work)
-        .saturating_add(predicted_work)
+        .saturating_add(predicted_builder_work)
+        .saturating_add(predicted_validator_work)
         .saturating_add(marshal_persist)
         .saturating_add(marshal_persist)
         >= budget
@@ -112,6 +125,7 @@ mod tests {
             Duration::from_millis(100),
             Duration::ZERO,
             1_350_000,
+            1_000_000,
             Duration::from_millis(270),
             MarshalPersistEstimator::default(),
             0
@@ -120,6 +134,7 @@ mod tests {
             Duration::from_millis(100),
             Duration::ZERO,
             1_350_000,
+            1_000_000,
             Duration::from_millis(271),
             MarshalPersistEstimator::default(),
             0
@@ -128,6 +143,7 @@ mod tests {
             Duration::from_millis(350),
             Duration::from_millis(250),
             1_350_000,
+            1_000_000,
             Duration::from_millis(520),
             MarshalPersistEstimator::default(),
             0
@@ -136,6 +152,7 @@ mod tests {
             Duration::from_millis(350),
             Duration::from_millis(250),
             1_350_000,
+            1_000_000,
             Duration::from_millis(521),
             MarshalPersistEstimator::default(),
             0
@@ -150,6 +167,7 @@ mod tests {
             Duration::from_millis(100),
             Duration::ZERO,
             1_350_000,
+            1_000_000,
             Duration::from_millis(300),
             marshal_persist,
             15_000
@@ -158,9 +176,32 @@ mod tests {
             Duration::from_millis(100),
             Duration::ZERO,
             1_350_000,
+            1_000_000,
             Duration::from_millis(300),
             marshal_persist,
             14_999
+        ));
+    }
+
+    #[test]
+    fn validator_multiplier_expands_builder_tx_execution_budget() {
+        assert!(payload_budget_exhausted(
+            Duration::from_millis(100),
+            Duration::ZERO,
+            1_350_000,
+            1_000_000,
+            Duration::from_millis(270),
+            MarshalPersistEstimator::default(),
+            0
+        ));
+        assert!(!payload_budget_exhausted(
+            Duration::from_millis(100),
+            Duration::ZERO,
+            1_350_000,
+            350_000,
+            Duration::from_millis(270),
+            MarshalPersistEstimator::default(),
+            0
         ));
     }
 
@@ -170,5 +211,6 @@ mod tests {
             scaled_build_time_multiplier(DEFAULT_BUILD_TIME_MULTIPLIER),
             DEFAULT_BUILD_TIME_MULTIPLIER_SCALED
         );
+        assert_eq!(scaled_validator_work_multiplier(0.35), 350_000);
     }
 }

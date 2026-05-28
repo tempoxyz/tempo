@@ -121,6 +121,7 @@ pub async fn run_consensus_stack(
         views_to_track: config.views_to_track,
         views_until_leader_skip: config.inactive_views_until_leader_skip,
         proposal_return_budget,
+        builder_validation_time_multiplier: config.builder_validation_time_multiplier,
         time_to_build_subblock: config.time_to_build_subblock.into_duration(),
         subblock_broadcast_interval: config.subblock_broadcast_interval.into_duration(),
         fcu_heartbeat_interval: config.fcu_heartbeat_interval.into_duration(),

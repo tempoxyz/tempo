@@ -115,6 +115,7 @@ where
                 epoch_strategy: config.epoch_strategy,
 
                 proposal_return_budget: config.proposal_return_budget,
+                builder_validation_time_multiplier: config.builder_validation_time_multiplier,
 
                 my_mailbox,
                 marshal: config.marshal,
@@ -215,6 +216,7 @@ struct Inner<TState> {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
     proposal_return_budget: Duration,
+    builder_validation_time_multiplier: f64,
 
     my_mailbox: Mailbox,
 
@@ -691,7 +693,8 @@ impl Inner<Init> {
                     .unwrap_or_default()
             },
         )
-        .with_payload_build_budget(build_budget);
+        .with_payload_build_budget(build_budget)
+        .with_validator_work_multiplier(self.builder_validation_time_multiplier);
 
         // Share the dispatch receiver with the cancel branch so that, if cancellation
         // hits between dispatch send and receiving `payload_id`, the cancel branch can
@@ -736,11 +739,13 @@ impl Inner<Init> {
         let proposal_elapsed = propose_start.elapsed();
         // Pace proposal return from the original propose start, leaving enough
         // budget for validators to replay the payload and persist the block.
-        let return_delay = self
-            .proposal_return_budget
-            .saturating_sub(proposal_elapsed)
-            .saturating_sub(payload_validation_elapsed)
-            .saturating_sub(validator_marshal_persist);
+        let return_delay = proposal_return_delay(
+            self.proposal_return_budget,
+            proposal_elapsed,
+            payload_validation_elapsed,
+            validator_marshal_persist,
+            self.builder_validation_time_multiplier,
+        );
         debug!(
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
@@ -892,6 +897,7 @@ impl Inner<Uninit> {
             public_key: self.public_key,
             epoch_strategy: self.epoch_strategy,
             proposal_return_budget: self.proposal_return_budget,
+            builder_validation_time_multiplier: self.builder_validation_time_multiplier,
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
             execution_node: self.execution_node,
@@ -1124,6 +1130,24 @@ async fn get_parent(
     }
 }
 
+fn proposal_return_delay(
+    proposal_return_budget: Duration,
+    proposal_elapsed: Duration,
+    payload_validation_elapsed: Duration,
+    validator_marshal_persist: Duration,
+    builder_validation_time_multiplier: f64,
+) -> Duration {
+    assert!(
+        builder_validation_time_multiplier.is_finite() && builder_validation_time_multiplier >= 0.0,
+        "builder validation time multiplier must be finite and >= 0"
+    );
+
+    let delay = proposal_return_budget.saturating_sub(proposal_elapsed);
+    let delay = delay
+        .saturating_sub(payload_validation_elapsed.mul_f64(builder_validation_time_multiplier));
+    delay.saturating_sub(validator_marshal_persist)
+}
+
 #[derive(Clone)]
 struct Metrics {
     parent_ahead_of_local_time: Counter,
@@ -1144,5 +1168,40 @@ impl Metrics {
         Self {
             parent_ahead_of_local_time,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::time::Duration;
+
+    use super::proposal_return_delay;
+
+    #[test]
+    fn proposal_return_delay_subtracts_builder_validation_at_recommended_multiplier() {
+        assert_eq!(
+            proposal_return_delay(
+                Duration::from_millis(100),
+                Duration::from_millis(10),
+                Duration::from_millis(20),
+                Duration::from_millis(5),
+                0.35,
+            ),
+            Duration::from_millis(78)
+        );
+    }
+
+    #[test]
+    fn proposal_return_delay_scales_builder_validation_time() {
+        assert_eq!(
+            proposal_return_delay(
+                Duration::from_millis(100),
+                Duration::from_millis(10),
+                Duration::from_millis(20),
+                Duration::from_millis(5),
+                1.5,
+            ),
+            Duration::from_millis(55)
+        );
     }
 }

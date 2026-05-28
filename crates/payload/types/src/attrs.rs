@@ -23,6 +23,9 @@ pub struct TempoPayloadAttributes {
     /// Local payload build budget.
     #[serde(skip)]
     payload_build_budget: Option<Duration>,
+    /// Multiplier for estimating validator replay work from builder work.
+    #[serde(skip, default = "default_validator_work_multiplier")]
+    validator_work_multiplier: f64,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -72,6 +75,7 @@ impl TempoPayloadAttributes {
                 slot_number: None,
             },
             payload_build_budget: None,
+            validator_work_multiplier: 1.0,
             timestamp_millis_part,
             extra_data,
             proposer_public_key,
@@ -97,6 +101,19 @@ impl TempoPayloadAttributes {
 
     pub fn payload_build_budget(&self) -> Option<Duration> {
         self.payload_build_budget
+    }
+
+    pub fn with_validator_work_multiplier(mut self, multiplier: f64) -> Self {
+        assert!(
+            multiplier.is_finite() && multiplier >= 0.0,
+            "validator work multiplier must be finite and >= 0"
+        );
+        self.validator_work_multiplier = multiplier;
+        self
+    }
+
+    pub fn validator_work_multiplier(&self) -> f64 {
+        self.validator_work_multiplier
     }
 
     /// Returns the milliseconds portion of the timestamp.
@@ -131,6 +148,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
         Self {
             inner,
             payload_build_budget: None,
+            validator_work_multiplier: 1.0,
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
             proposer_public_key: None,
@@ -211,6 +229,10 @@ fn payload_id_from_parent_and_context(
 
 fn default_subblocks() -> Arc<dyn Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static> {
     Arc::new(Vec::new)
+}
+
+fn default_validator_work_multiplier() -> f64 {
+    1.0
 }
 
 #[cfg(test)]

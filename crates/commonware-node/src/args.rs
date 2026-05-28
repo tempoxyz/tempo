@@ -138,6 +138,14 @@ pub struct Args {
     #[arg(long = "consensus.network-budget", default_value = "50ms")]
     pub network_budget: PositiveDuration,
 
+    /// Multiplier for local builder validation time when reserving validator replay budget.
+    #[arg(
+        long = "consensus.builder-validation-time-multiplier",
+        default_value_t = 0.35,
+        value_parser = parse_nonnegative_f64,
+    )]
+    pub builder_validation_time_multiplier: f64,
+
     /// Deprecated compatibility flag. Ignored by the elastic proposal budget.
     #[arg(
         long = "consensus.time-to-prepare-proposal-transactions",
@@ -334,6 +342,17 @@ impl FromStr for PositiveDuration {
     }
 }
 
+fn parse_nonnegative_f64(s: &str) -> Result<f64, String> {
+    let value = s
+        .parse::<f64>()
+        .map_err(|error| format!("failed to parse float: {error}"))?;
+    if value.is_finite() && value >= 0.0 {
+        Ok(value)
+    } else {
+        Err("value must be finite and >= 0".to_string())
+    }
+}
+
 impl Args {
     /// Returns the signing key loaded from the configured file.
     ///
@@ -503,6 +522,22 @@ mod tests {
         ] {
             parse(&["--dev", flag, "1ms"]);
         }
+    }
+
+    #[test]
+    fn payload_budget_validation_time_multiplier_parses() {
+        let cli = parse(&[
+            "--dev",
+            "--consensus.builder-validation-time-multiplier",
+            "1.25",
+        ]);
+        assert_eq!(cli.consensus.builder_validation_time_multiplier, 1.25);
+    }
+
+    #[test]
+    fn payload_budget_validation_time_multiplier_defaults_to_bench_ratio() {
+        let cli = parse(&["--dev"]);
+        assert_eq!(cli.consensus.builder_validation_time_multiplier, 0.35);
     }
 
     fn encrypt(plaintext: &[u8], passphrase: &str) -> Vec<u8> {
