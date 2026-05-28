@@ -138,6 +138,7 @@ pub(crate) fn gen_constructor(
             /// Creates an instance of the precompile.
             ///
             /// Caution: This does not initialize the account, see [`Self::initialize`].
+            #[inline(always)]
             pub fn new() -> Self {
                 Self::__new(#addr)
             }
