@@ -11,7 +11,7 @@ use alloy_eips::{
     eip2930::AccessList,
     eip7702::SignedAuthorization,
 };
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, keccak256_uncached};
 use alloy_rlp::{BufMut, Decodable, Encodable};
 use core::{
     fmt::Debug,
@@ -100,9 +100,9 @@ impl AASigned {
 
     /// Calculate the transaction hash
     fn compute_hash(&self) -> B256 {
-        let mut buf = Vec::new();
+        let mut buf = Vec::with_capacity(self.eip2718_encoded_length());
         self.eip2718_encode(&mut buf);
-        alloy_primitives::keccak256(&buf)
+        keccak256_uncached(&buf)
     }
 
     /// Calculate the signing hash for the transaction.
@@ -591,6 +591,7 @@ mod tests {
         let decoded = AASigned::rlp_decode(&mut buf.as_slice()).unwrap();
         assert_eq!(decoded.tx(), signed.tx());
         assert_eq!(decoded.signature(), signed.signature());
+        assert_eq!(decoded.hash(), signed.hash());
 
         // EIP-2718 encode/decode
         let mut eip_buf = Vec::new();
@@ -600,6 +601,7 @@ mod tests {
         let decoded_2718 =
             AASigned::typed_decode(TEMPO_TX_TYPE_ID, &mut eip_buf[1..].as_ref()).unwrap();
         assert_eq!(decoded_2718.tx(), signed.tx());
+        assert_eq!(decoded_2718.hash(), signed.hash());
 
         // trie_hash equals hash
         assert_eq!(signed.trie_hash(), *signed.hash());
