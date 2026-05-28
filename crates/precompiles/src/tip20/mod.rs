@@ -1153,7 +1153,7 @@ impl TIP20Token {
     /// targets `to.target` (the resolved master).
     pub(crate) fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
         let from_balance = self.get_balance(from)?;
-        if amount > from_balance.amount() {
+        if from_balance.is_less_than(amount) {
             return Err(TIP20Error::insufficient_balance(
                 from_balance.amount(),
                 amount,
@@ -1277,7 +1277,7 @@ impl TIP20Token {
         // Apart from this specific refund transfer, no other token transfers can occur after a pause event.
         self.check_not_paused()?;
         let from_balance = self.get_balance(from)?;
-        if amount > from_balance.amount() {
+        if from_balance.is_less_than(amount) {
             return Err(TIP20Error::insufficient_balance(
                 from_balance.amount(),
                 amount,

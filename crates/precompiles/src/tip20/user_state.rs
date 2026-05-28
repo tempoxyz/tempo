@@ -95,6 +95,14 @@ impl UserState {
         U256::from(self.amount)
     }
 
+    #[inline]
+    pub(super) fn is_less_than(&self, amount: U256) -> bool {
+        match u128::try_from(amount) {
+            Ok(amount) => self.amount < amount,
+            Err(_) => true,
+        }
+    }
+
     pub(super) fn checked_add(&self, amount: U256) -> Result<U256> {
         self.amount()
             .checked_add(amount)
