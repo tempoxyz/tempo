@@ -235,7 +235,6 @@ impl AccountKeychain {
     /// - `ExpiryInPast` — expiry must be in the future (enforced since T0)
     /// - `KeyAlreadyExists` — a key with this ID is already registered
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
-    /// - `InvalidKeyId` — on T6+, `keyId` cannot be the account root key
     /// - `InvalidSignatureType` — must be Secp256k1, P256, or WebAuthn
     pub fn authorize_key(
         &mut self,
@@ -265,9 +264,8 @@ impl AccountKeychain {
         if key_id == Address::ZERO {
             return Err(AccountKeychainError::zero_public_key().into());
         }
-        // T6+ keeps the account root key implicit. Do not create a stored access-key row
-        // using the root key id.
-        if (is_admin || self.storage.spec().is_t6()) && key_id == msg_sender {
+        // Admin keys are explicit access-key rows; the root key remains implicit.
+        if is_admin && key_id == msg_sender {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
 
@@ -1799,7 +1797,7 @@ mod tests {
     }
 
     #[test]
-    fn test_t6_admin_key_restrictions_and_root_authorization_rejected() -> eyre::Result<()> {
+    fn test_t6_admin_key_restrictions_and_root_admin_authorization_rejected() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         let account = Address::random();
         let admin_key = Address::random();
@@ -1822,19 +1820,6 @@ mod tests {
                         },
                     )
                     .expect_err("admin keys cannot receive spending limits"),
-            );
-
-            assert_invalid_key_id(
-                authorize_key(
-                    &mut keychain,
-                    account,
-                    authorizeKeyCall {
-                        keyId: account,
-                        signatureType: SignatureType::Secp256k1,
-                        config: unrestricted_restrictions(),
-                    },
-                )
-                .expect_err("root key cannot be registered as an access key"),
             );
 
             assert_invalid_key_id(

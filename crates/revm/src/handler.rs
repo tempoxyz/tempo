@@ -1768,13 +1768,6 @@ where
                     .into());
                 }
 
-                if cfg.spec.is_t6() && key_auth.key_id == tx.caller {
-                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: "key authorization key_id cannot equal account".to_string(),
-                    }
-                    .into());
-                }
-
                 if !cfg.spec.is_t6() {
                     let auth_signer = key_auth.recover_signer().map_err(|_| {
                         TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
