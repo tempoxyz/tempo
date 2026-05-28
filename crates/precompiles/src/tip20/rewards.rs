@@ -77,13 +77,13 @@ impl TIP20Token {
     /// Rewards are accumulated in the delegated recipient's rewardBalance.
     /// Returns the holder's delegated recipient address.
     pub fn update_rewards(&mut self, holder: Address) -> Result<Address> {
-        let mut info = self.user_reward_info[holder].read()?;
-
-        let cached_delegate = info.reward_recipient;
+        let holder_info = self.user_reward_info.at(&holder);
+        let cached_delegate = holder_info.reward_recipient.read()?;
+        let holder_reward_per_token = holder_info.reward_per_token.read()?;
 
         let global_reward_per_token = self.get_global_reward_per_token()?;
         let reward_per_token_delta = global_reward_per_token
-            .checked_sub(info.reward_per_token)
+            .checked_sub(holder_reward_per_token)
             .ok_or(TempoPrecompileError::under_overflow())?;
 
         if reward_per_token_delta != U256::ZERO {
@@ -96,10 +96,15 @@ impl TIP20Token {
 
                 // Add reward to delegate's balance (or holder's own balance if self-delegated)
                 if cached_delegate == holder {
-                    info.reward_balance = info
-                        .reward_balance
+                    let holder_info = self.user_reward_info.at_mut(&holder);
+                    let reward_balance = holder_info.reward_balance.read()?;
+                    let reward_balance = reward_balance
                         .checked_add(reward)
                         .ok_or(TempoPrecompileError::under_overflow())?;
+                    holder_info.reward_balance.write(reward_balance)?;
+                    holder_info
+                        .reward_per_token
+                        .write(global_reward_per_token)?;
                 } else {
                     let mut delegate_info = self.user_reward_info[cached_delegate].read()?;
                     delegate_info.reward_balance = delegate_info
@@ -107,10 +112,17 @@ impl TIP20Token {
                         .checked_add(reward)
                         .ok_or(TempoPrecompileError::under_overflow())?;
                     self.user_reward_info[cached_delegate].write(delegate_info)?;
+                    self.user_reward_info
+                        .at_mut(&holder)
+                        .reward_per_token
+                        .write(global_reward_per_token)?;
                 }
+            } else {
+                self.user_reward_info
+                    .at_mut(&holder)
+                    .reward_per_token
+                    .write(global_reward_per_token)?;
             }
-            info.reward_per_token = global_reward_per_token;
-            self.user_reward_info[holder].write(info)?;
         }
 
         Ok(cached_delegate)
