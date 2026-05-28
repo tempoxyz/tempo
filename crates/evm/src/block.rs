@@ -114,7 +114,7 @@ impl TempoTxResult {
 
     /// Returns the state gas consumed by this transaction.
     pub fn state_gas_used(&self) -> u64 {
-        self.inner.result.result.gas().state_gas_spent()
+        self.inner.result.result.gas().state_gas_spent_final()
     }
 
     /// Returns the validator-credited fee amount (post-feeAMM haircut) for this transaction.
@@ -191,20 +191,18 @@ where
         &mut self,
         address: Address,
     ) -> Result<(), BlockExecutionError> {
-        let original_info = self
+        let info = self
             .inner
             .evm
             .db_mut()
             .basic(address)
             .map_err(BlockExecutionError::other)?
             .unwrap_or_default();
-        if original_info.is_empty_code_hash() {
+        if info.is_empty_code_hash() {
+            let mut account = Account::from(info);
             let code = Bytecode::new_legacy([0xef].into());
-            let mut new_info = original_info.clone();
-            new_info.code_hash = code.hash_slow();
-            new_info.code = Some(code);
-            let mut account: Account = new_info.into();
-            account.original_info = Box::new(original_info);
+            account.info.code_hash = code.hash_slow();
+            account.info.code = Some(code);
             account.mark_touch();
             let state = EvmState::from_iter([(address, account)]);
             self.inner.system_caller.on_state(
@@ -1746,7 +1744,7 @@ mod tests {
             "state hook should contain the deployed address"
         );
         assert_eq!(
-            *calls[0].1[&addr].original_info,
+            calls[0].1[&addr].original_info(),
             Default::default(),
             "state hook account should preserve original_info"
         );
@@ -1787,7 +1785,8 @@ mod tests {
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert_eq!(
-            *calls[0].1[&addr].original_info, original_info,
+            calls[0].1[&addr].original_info(),
+            original_info,
             "state hook account should preserve existing original_info"
         );
     }

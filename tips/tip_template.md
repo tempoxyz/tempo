@@ -22,6 +22,10 @@ Explain what problem this solves/functionality this introduces, and any alternat
 
 List the explicit assumptions this spec depends on (for example: upstream invariants, trust boundaries, deployment ordering, and backward compatibility expectations). Call out what happens if an assumption is violated.
 
+## Threat Model
+
+List the actors this spec relies on and, for each, describe the trust assumptions in one or two lines. Include any trust boundaries, permissions, or adversarial behaviors that are in or out of scope.
+
 ---
 
 # Specification
