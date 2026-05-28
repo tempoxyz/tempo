@@ -32,12 +32,25 @@ enum TIP20Call {
     RolesAuth(IRolesAuthCalls),
 }
 
+#[inline]
+fn is_roles_auth_selector(selector: [u8; 4]) -> bool {
+    matches!(
+        selector,
+        tempo_contracts::precompiles::IRolesAuth::hasRoleCall::SELECTOR
+            | tempo_contracts::precompiles::IRolesAuth::getRoleAdminCall::SELECTOR
+            | tempo_contracts::precompiles::IRolesAuth::grantRoleCall::SELECTOR
+            | tempo_contracts::precompiles::IRolesAuth::revokeRoleCall::SELECTOR
+            | tempo_contracts::precompiles::IRolesAuth::renounceRoleCall::SELECTOR
+            | tempo_contracts::precompiles::IRolesAuth::setRoleAdminCall::SELECTOR
+    )
+}
+
 impl TIP20Call {
     fn decode(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
         // safe to expect as `dispatch_call` pre-validates calldata len
         let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
 
-        if IRolesAuthCalls::valid_selector(selector) {
+        if is_roles_auth_selector(selector) {
             IRolesAuthCalls::abi_decode(calldata).map(Self::RolesAuth)
         } else {
             ITIP20Calls::abi_decode(calldata).map(Self::TIP20)
