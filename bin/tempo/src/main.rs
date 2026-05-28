@@ -52,11 +52,13 @@ use futures::{
     FutureExt as _,
     future::{Either, FusedFuture as _},
 };
+use metrics_exporter_prometheus::PrometheusBuilder;
 use reth_ethereum::{chainspec::EthChainSpec as _, cli::Commands, evm::revm::primitives::B256};
 use reth_ethereum_cli::Cli;
 use reth_network_api::Peers;
 use reth_network_peers::pk2id;
 use reth_node_builder::{NodeHandle, WithLaunchContext};
+use reth_node_metrics::recorder::try_install_prometheus_recorder_with_builder;
 use reth_rpc_server_types::{RethRpcModule, RpcModuleSelection, RpcModuleValidator};
 use std::{sync::Arc, thread, time::Duration};
 use tempo_chainspec::spec::{TempoChainSpec, TempoChainSpecParser};
@@ -80,6 +82,8 @@ type TempoCli =
     Cli<TempoChainSpecParser, TempoArgs, TempoRpcModuleValidator, tempo_cmd::TempoSubcommand>;
 
 const TEMPO_CUSTOM_RPC_MODULES: &[&str] = &["consensus", "operator", "tempo", "token"];
+const TEMPO_METRICS_HISTOGRAM_BUCKET_DURATION: Duration = Duration::from_secs(1);
+const TEMPO_METRICS_HISTOGRAM_BUCKET_COUNT: u32 = 10;
 
 #[derive(Debug, Clone, Copy)]
 struct TempoRpcModuleValidator;
@@ -158,6 +162,22 @@ struct TempoArgs {
 }
 
 impl TempoArgs {
+    fn install_prometheus_recorder(&self) -> eyre::Result<()> {
+        let builder = PrometheusBuilder::new()
+            .set_bucket_duration(TEMPO_METRICS_HISTOGRAM_BUCKET_DURATION)
+            .wrap_err("invalid Tempo metrics histogram bucket duration")?
+            .set_bucket_count(
+                TEMPO_METRICS_HISTOGRAM_BUCKET_COUNT
+                    .try_into()
+                    .expect("non-zero bucket count"),
+            );
+
+        try_install_prometheus_recorder_with_builder(builder)
+            .wrap_err("failed to install Prometheus recorder")?;
+
+        Ok(())
+    }
+
     fn is_following_uncertified(&self) -> bool {
         self.follow.is_some() && !self.follow_certify
     }
@@ -365,6 +385,13 @@ fn main() -> eyre::Result<()> {
             "--engine.share-sparse-trie-with-payload-builder requires --builder.max-tasks to be 1 (got {})",
             node_cmd.builder.max_payload_tasks
         );
+    }
+
+    if let Commands::Node(node_cmd) = &cli.command {
+        node_cmd
+            .ext
+            .install_prometheus_recorder()
+            .wrap_err("failed to configure Prometheus recorder")?;
     }
 
     // If telemetry is enabled, set logs OTLP (conflicts_with in TelemetryArgs prevents both being set)
