@@ -160,7 +160,7 @@ impl TempoNode {
             .payload(BasicPayloadServiceBuilder::new(payload_builder_builder))
             .network(EthereumNetworkBuilder::default())
             .consensus(TempoConsensusBuilder {
-                allow_experimental_bal: payload_builder_builder.enable_bal,
+                allow_bal_hashes: payload_builder_builder.enable_bal,
             })
     }
 
@@ -380,8 +380,8 @@ where
 #[derive(Debug, Default, Clone, Copy)]
 #[non_exhaustive]
 pub struct TempoConsensusBuilder {
-    /// Whether to accept and validate BAL hashes before Amsterdam activation.
-    pub allow_experimental_bal: bool,
+    /// Whether to allow BAL hashes before Amsterdam activation.
+    pub allow_bal_hashes: bool,
 }
 
 impl<Node> ConsensusBuilder<Node> for TempoConsensusBuilder
@@ -391,9 +391,9 @@ where
     type Consensus = TempoConsensus;
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
-        Ok(TempoConsensus::new_with_experimental_bal(
+        Ok(TempoConsensus::new_with_bal_hashes(
             ctx.chain_spec(),
-            self.allow_experimental_bal,
+            self.allow_bal_hashes,
         ))
     }
 }
