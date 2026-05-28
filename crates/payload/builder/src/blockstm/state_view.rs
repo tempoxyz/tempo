@@ -9,9 +9,10 @@ use alloy_primitives::{Address, B256, U256, keccak256, map::HashMap};
 use reth_revm::{
     Database, DatabaseCommit,
     bytecode::Bytecode,
+    db::CacheState,
     state::{AccountInfo, EvmState},
 };
-use std::{error::Error, fmt};
+use std::{error::Error, fmt, sync::Arc};
 
 /// Error returned by the MV tracking database when a read observes an estimate.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -90,6 +91,14 @@ pub struct BlockStmMvTrackingDb<'a, DB> {
     blocking_dependency: Option<usize>,
 }
 
+/// Database adapter that reads through a shared committed block prefix before
+/// falling back to the parent state provider.
+#[derive(Debug, Clone)]
+pub struct BlockStmPrefixDb<DB> {
+    inner: DB,
+    prefix: Arc<CacheState>,
+}
+
 impl<DB> BlockStmTrackingDb<DB> {
     /// Creates a tracking database around `inner`.
     pub fn new(inner: DB) -> Self {
@@ -138,6 +147,13 @@ impl<'a, DB> BlockStmMvTrackingDb<'a, DB> {
     /// Returns the lower transaction that blocked this execution on an estimate, if any.
     pub const fn blocking_dependency(&self) -> Option<usize> {
         self.blocking_dependency
+    }
+}
+
+impl<DB> BlockStmPrefixDb<DB> {
+    /// Creates a database backed by a shared committed block prefix.
+    pub const fn new(inner: DB, prefix: Arc<CacheState>) -> Self {
+        Self { inner, prefix }
     }
 }
 
@@ -236,6 +252,48 @@ where
         };
         self.record_read(key, value);
         Ok(value)
+    }
+
+    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+        self.inner.block_hash(number)
+    }
+}
+
+impl<DB: Database> Database for BlockStmPrefixDb<DB> {
+    type Error = DB::Error;
+
+    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        if let Some(account) = self.prefix.accounts.get(&address) {
+            return Ok(account.account_info());
+        }
+
+        self.inner.basic(address)
+    }
+
+    fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        if let Some(code) = self.prefix.contracts.get(&code_hash) {
+            return Ok(code.clone());
+        }
+
+        self.inner.code_by_hash(code_hash)
+    }
+
+    fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
+        if let Some(account) = self.prefix.accounts.get(&address) {
+            let Some(plain_account) = account.account.as_ref() else {
+                return Ok(U256::ZERO);
+            };
+
+            if let Some(value) = plain_account.storage.get(&index) {
+                return Ok(*value);
+            }
+
+            if account.status.is_storage_known() {
+                return Ok(U256::ZERO);
+            }
+        }
+
+        self.inner.storage(address, index)
     }
 
     fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
@@ -442,6 +500,34 @@ mod tests {
             address: contract,
             slot: U256::ZERO,
         }));
+    }
+
+    #[test]
+    fn blockstm_prefix_db_reads_shared_prefix_state() {
+        let address = Address::repeat_byte(0x33);
+        let slot = U256::from(7u64);
+        let value = U256::from(99u64);
+        let bytecode = Bytecode::new_raw(Bytes::from_static(&[0x00]));
+        let code_hash = bytecode.hash_slow();
+        let info = AccountInfo {
+            balance: U256::from(1_000u64),
+            code_hash,
+            code: Some(bytecode.clone()),
+            ..Default::default()
+        };
+
+        let mut storage = HashMap::default();
+        storage.insert(slot, value);
+
+        let mut prefix = CacheState::default();
+        prefix.contracts.insert(code_hash, bytecode.clone());
+        prefix.insert_account_with_storage(address, info.clone(), storage);
+
+        let mut db = BlockStmPrefixDb::new(CacheDB::new(EmptyDB::default()), Arc::new(prefix));
+
+        assert_eq!(db.basic(address).unwrap(), Some(info));
+        assert_eq!(db.storage(address, slot).unwrap(), value);
+        assert_eq!(db.code_by_hash(code_hash).unwrap(), bytecode);
     }
 
     #[test]

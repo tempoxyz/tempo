@@ -19,7 +19,8 @@ use crate::{
         action::production::{BlockStmSemanticState, capture_tip20_semantic_plan},
         executor::BlockStmAttempt,
         state_view::{
-            BlockStmMvTrackingDb, account_write_set_from_evm_state, write_set_from_evm_state,
+            BlockStmMvTrackingDb, BlockStmPrefixDb, account_write_set_from_evm_state,
+            write_set_from_evm_state,
         },
     },
     budget::{
@@ -264,7 +265,7 @@ fn execute_blockstm_attempt<Provider>(
     evm_config: &TempoEvmConfig,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     execution_ctx: TempoBlockExecutionCtx<'_>,
-    prefix_cache: reth_revm::db::CacheState,
+    prefix_cache: Arc<reth_revm::db::CacheState>,
     memory: &BlockStmMvMemory,
     tx_index: usize,
     attempt: usize,
@@ -279,10 +280,9 @@ where
     let state_provider = provider
         .state_by_block_hash(parent_hash)
         .map_err(BlockExecutionError::other)?;
-    let state = StateProviderDatabase::new(state_provider);
+    let state = BlockStmPrefixDb::new(StateProviderDatabase::new(state_provider), prefix_cache);
     let db = State::builder()
         .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError> + Send>)
-        .with_cached_prestate(prefix_cache)
         .with_bundle_update()
         .build();
     let tracking_db = BlockStmMvTrackingDb::new(db, memory, tx_index);
@@ -967,7 +967,7 @@ where
             let mut next_blockstm_tx_index = 0usize;
             let mut semantic_state = BlockStmSemanticState::default();
 
-            loop {
+            'blockstm_pool_fill: loop {
                 check_cancel!();
 
                 if let Some(build_budget) = payload_build_budget {
@@ -1042,6 +1042,9 @@ where
 
                     if reserved_gas_used + candidate.max_regular_gas_used > non_shared_gas_limit {
                         if batch.is_empty() {
+                            if cumulative_gas_used > 0 {
+                                break 'blockstm_pool_fill BlockBuildStopReason::GasLimit;
+                            }
                             best_txs.mark_invalid(
                                 &candidate.pool_tx,
                                 InvalidPoolTransactionError::ExceedsGasLimit(
@@ -1082,6 +1085,9 @@ where
                         reserved_block_size_used + candidate.tx_rlp_length;
                     if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
                         if batch.is_empty() {
+                            if block_size_used > 0 {
+                                break 'blockstm_pool_fill BlockBuildStopReason::RlpBlockSizeLimit;
+                            }
                             if candidate.is_payment {
                                 payment_transactions += 1;
                             }
@@ -1133,7 +1139,8 @@ where
                     continue;
                 }
 
-                let prefix_cache = builder.executor_mut().evm_mut().db_mut().cache.clone();
+                let prefix_cache =
+                    Arc::new(builder.executor_mut().evm_mut().db_mut().cache.clone());
                 let evm_env = builder.evm().evm_env();
                 let execution_ctx = builder.ctx.clone();
                 let beneficiary = builder.evm().block().beneficiary;
