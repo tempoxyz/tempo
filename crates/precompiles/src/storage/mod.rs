@@ -185,6 +185,7 @@ pub trait ContractStorage {
     fn storage_mut(&mut self) -> &mut StorageCtx;
 
     /// Returns true if the contract has been initialized (has bytecode deployed).
+    #[inline(always)]
     fn is_initialized(&self) -> Result<bool> {
         self.storage()
             .with_account_info(self.address(), |info| Ok(!info.is_empty_code_hash()))
