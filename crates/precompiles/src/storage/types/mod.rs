@@ -293,7 +293,7 @@ pub trait FromWord: sealed::OnlyPrimitives {
 /// This provides a unified load/store implementation for all primitive types,
 /// handling both full-slot and packed contexts automatically.
 impl<T: Packable> Storable for T {
-    #[inline]
+    #[inline(always)]
     fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
         const { assert!(T::IS_PACKABLE, "Packable requires IS_PACKABLE to be true") };
 
@@ -306,7 +306,7 @@ impl<T: Packable> Storable for T {
         }
     }
 
-    #[inline]
+    #[inline(always)]
     fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
         const { assert!(T::IS_PACKABLE, "Packable requires IS_PACKABLE to be true") };
 
