@@ -1004,7 +1004,7 @@ def generate-summary [
             if ($deltas | length) > 0 { $deltas | math sum | math round --precision 0 } else { 0.0 }
         }
     }
-    let counter_delta_tps_values = { |samples: list<any>, tx_metric: string, duration_metric: string|
+    let counter_delta_tps_observations = { |samples: list<any>, tx_metric: string, duration_metric: string|
         let tx_sum_name = $"($tx_metric)_sum"
         let tx_count_name = $"($tx_metric)_count"
         let duration_sum_name = $"($duration_metric)_sum"
@@ -1058,7 +1058,7 @@ def generate-summary [
                         let tx_value = ($tx_values | get $idx)
                         let duration_value = ($duration_values | get $idx)
                         if $tx_value > 0.0 and $duration_value >= 0.01 {
-                            ($tx_value / $duration_value)
+                            { tx: $tx_value, duration: $duration_value }
                         } else { null }
                     } | where { |value| $value != null }
                 } else { [] }
@@ -1157,10 +1157,17 @@ def generate-summary [
         let validation_latency_values = (do $optional_counter_metric_values "reth_consensus_engine_beacon_new_payload_latency" 1000.0)
         let builder_gas_values = (do $optional_counter_metric_values "reth_tempo_payload_builder_gas_per_second" 1.0)
         let validation_gas_values = (do $optional_counter_metric_values "reth_consensus_engine_beacon_new_payload_gas_per_second" 1.0)
-        let builder_tps_values = (do $counter_delta_tps_values $metric_samples "reth_tempo_payload_builder_payment_transactions" "reth_tempo_payload_builder_payload_build_duration_seconds")
-        let builder_avg_tps = if ($builder_tps_values | length) > 0 { $builder_tps_values | math avg | math round --precision 0 } else { 0.0 }
-        let validation_tps_values = (do $counter_delta_tps_values $metric_samples "reth_tempo_payload_builder_total_transactions" "reth_consensus_engine_beacon_new_payload_latency")
-        let validation_avg_tps = if ($validation_tps_values | length) > 0 { $validation_tps_values | math avg | math round --precision 0 } else { 0.0 }
+        let compute_weighted_tps = { |observations: list<any>|
+            if ($observations | length) > 0 {
+                let total_tx = ($observations | get tx | math sum)
+                let total_duration = ($observations | get duration | math sum)
+                if $total_duration > 0.0 { ($total_tx / $total_duration) | math round --precision 0 } else { 0.0 }
+            } else { 0.0 }
+        }
+        let builder_tps_observations = (do $counter_delta_tps_observations $metric_samples "reth_tempo_payload_builder_payment_transactions" "reth_tempo_payload_builder_payload_build_duration_seconds")
+        let builder_avg_tps = do $compute_weighted_tps $builder_tps_observations
+        let validation_tps_observations = (do $counter_delta_tps_observations $metric_samples "reth_tempo_payload_builder_total_transactions" "reth_consensus_engine_beacon_new_payload_latency")
+        let validation_avg_tps = do $compute_weighted_tps $validation_tps_observations
         let blocks = ($report | get blocks | each { |b|
             let tx_count = ($b | get tx_count)
             let timestamp = if (($b | get -o timestamp | default null) != null) {
