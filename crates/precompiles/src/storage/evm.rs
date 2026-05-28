@@ -81,6 +81,9 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
+        if gas == 0 {
+            return Ok(());
+        }
         if !self.gas_tracker.record_state_cost(gas) {
             return Err(TempoPrecompileError::OutOfGas);
         }
