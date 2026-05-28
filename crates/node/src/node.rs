@@ -35,11 +35,12 @@ use reth_rpc_eth_api::{
 use reth_storage_api::EmptyBodyStorage;
 use reth_tracing::tracing::{debug, info};
 use reth_transaction_pool::{TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore};
-use std::default::Default;
 use tempo_chainspec::spec::TempoChainSpec;
 use tempo_consensus::TempoConsensus;
 use tempo_evm::TempoEvmConfig;
-use tempo_payload_builder::TempoPayloadBuilder;
+use tempo_payload_builder::{
+    DEFAULT_BUILD_TIME_MULTIPLIER, TempoPayloadBuilder, TempoPayloadBuilderConfig,
+};
 use tempo_payload_types::TempoPayloadAttributes;
 use tempo_primitives::{TempoHeader, TempoPrimitives, TempoTxEnvelope, TempoTxType};
 use tempo_transaction_pool::{
@@ -52,7 +53,7 @@ use tempo_transaction_pool::{
 };
 
 /// Tempo node CLI arguments.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, clap::Args)]
+#[derive(Debug, Clone, Copy, PartialEq, clap::Args)]
 pub struct TempoNodeArgs {
     /// Maximum allowed `valid_after` offset for AA txs.
     #[arg(long = "txpool.aa-valid-after-max-secs", default_value_t = DEFAULT_AA_VALID_AFTER_MAX_SECS)]
@@ -67,8 +68,27 @@ pub struct TempoNodeArgs {
     pub builder_state_provider_metrics: bool,
 
     /// Enable prewarming for the payload builder.
-    #[arg(long = "builder.enable-prewarming", default_value_t = false)]
+    #[arg(long = "builder.enable-prewarming", default_value_t = true)]
     pub builder_enable_prewarming: bool,
+
+    /// Initial multiplier for predicting replayable payload build work.
+    #[arg(
+        long = "builder.build-time-multiplier",
+        default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
+    )]
+    pub builder_build_time_multiplier: f64,
+}
+
+impl Default for TempoNodeArgs {
+    fn default() -> Self {
+        Self {
+            aa_valid_after_max_secs: DEFAULT_AA_VALID_AFTER_MAX_SECS,
+            max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
+            builder_state_provider_metrics: false,
+            builder_enable_prewarming: false,
+            builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+        }
+    }
 }
 
 impl TempoNodeArgs {
@@ -85,6 +105,7 @@ impl TempoNodeArgs {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
             enable_prewarming: self.builder_enable_prewarming,
+            build_time_multiplier: self.builder_build_time_multiplier,
         }
     }
 }
@@ -486,13 +507,25 @@ where
     }
 }
 
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
 pub struct TempoPayloadBuilderBuilder {
     /// Enable state provider metrics for the payload builder.
     pub state_provider_metrics: bool,
     /// Enable prewarming for the payload builder.
     pub enable_prewarming: bool,
+    /// Initial multiplier for predicting replayable payload build work.
+    pub build_time_multiplier: f64,
+}
+
+impl Default for TempoPayloadBuilderBuilder {
+    fn default() -> Self {
+        Self {
+            state_provider_metrics: false,
+            enable_prewarming: false,
+            build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+        }
+    }
 }
 
 impl<Node> PayloadBuilderBuilder<Node, TempoTransactionPool<Node::Provider>, TempoEvmConfig>
@@ -513,9 +546,12 @@ where
             ctx.provider().clone(),
             ctx.task_executor().clone(),
             evm_config,
-            ctx.is_dev(),
-            self.state_provider_metrics,
-            self.enable_prewarming,
+            TempoPayloadBuilderConfig {
+                is_dev: ctx.is_dev(),
+                state_provider_metrics: self.state_provider_metrics,
+                enable_prewarming: self.enable_prewarming,
+                build_time_multiplier: self.build_time_multiplier,
+            },
         ))
     }
 }
