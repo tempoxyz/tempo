@@ -245,6 +245,18 @@ impl AccountKeychain {
         config: KeyRestrictions,
         witness: Option<B256>,
     ) -> Result<()> {
+        self.authorize_key_internal(msg_sender, key_id, signature_type, config, witness, false)
+    }
+
+    fn authorize_key_internal(
+        &mut self,
+        msg_sender: Address,
+        key_id: Address,
+        signature_type: SignatureType,
+        config: KeyRestrictions,
+        witness: Option<B256>,
+        is_admin: bool,
+    ) -> Result<()> {
         let config = &config;
         self.ensure_admin_caller(msg_sender)?;
         let is_t3 = self.storage.spec().is_t3();
@@ -255,7 +267,7 @@ impl AccountKeychain {
         }
         // T6+ keeps the account root key implicit. Do not create a stored access-key row
         // using the root key id.
-        if self.storage.spec().is_t6() && key_id == msg_sender {
+        if (is_admin || self.storage.spec().is_t6()) && key_id == msg_sender {
             return Err(AccountKeychainError::invalid_key_id().into());
         }
 
@@ -323,23 +335,25 @@ impl AccountKeychain {
             expiry: config.expiry,
             enforce_limits: config.enforceLimits,
             is_revoked: false,
-            is_admin: false,
+            is_admin,
         };
 
         self.keys[msg_sender][key_id].write(new_key)?;
 
-        let limits = config
-            .enforceLimits
-            .then_some(config.limits.iter())
-            .into_iter()
-            .flatten();
+        if !is_admin {
+            let limits = config
+                .enforceLimits
+                .then_some(config.limits.iter())
+                .into_iter()
+                .flatten();
 
-        self.apply_key_authorization_restrictions(
-            msg_sender,
-            key_id,
-            limits,
-            allowed_call_configs,
-        )?;
+            self.apply_key_authorization_restrictions(
+                msg_sender,
+                key_id,
+                limits,
+                allowed_call_configs,
+            )?;
+        }
 
         if let Some(witness) = witness {
             self.emit_event(AccountKeychainEvent::KeyAuthorizationWitness(
@@ -370,54 +384,20 @@ impl AccountKeychain {
         signature_type: SignatureType,
         witness: Option<B256>,
     ) -> Result<()> {
-        self.ensure_admin_caller(msg_sender)?;
-
-        if key_id == Address::ZERO {
-            return Err(AccountKeychainError::zero_public_key().into());
-        }
-        // Admin keys are explicit access-key rows; the root key remains implicit.
-        if key_id == msg_sender {
-            return Err(AccountKeychainError::invalid_key_id().into());
-        }
-
-        let existing_key = self.keys[msg_sender][key_id].read()?;
-        if existing_key.expiry > 0 {
-            return Err(AccountKeychainError::key_already_exists().into());
-        }
-        if existing_key.is_revoked {
-            return Err(AccountKeychainError::key_already_revoked().into());
-        }
-
-        if let Some(witness) = witness {
-            self.ensure_key_authorization_witness_not_burned(msg_sender, witness)?;
-        }
-
-        let signature_type = StoredSignatureType::try_from(signature_type)?;
-
-        self.keys[msg_sender][key_id].write(AuthorizedKey {
-            signature_type,
-            expiry: u64::MAX,
-            enforce_limits: false,
-            is_revoked: false,
-            is_admin: true,
-        })?;
-
-        if let Some(witness) = witness {
-            self.emit_event(AccountKeychainEvent::KeyAuthorizationWitness(
-                IAccountKeychain::KeyAuthorizationWitness {
-                    account: msg_sender,
-                    witness,
-                },
-            ))?;
-        }
-
-        self.emit_event(AccountKeychainEvent::key_authorized(
+        self.authorize_key_internal(
             msg_sender,
             key_id,
-            signature_type as u8,
-            // Admin keys never expire; they must be revoked explicitly.
-            u64::MAX,
-        ))?;
+            signature_type,
+            KeyRestrictions {
+                expiry: u64::MAX,
+                enforceLimits: false,
+                limits: Vec::new(),
+                allowAnyCalls: true,
+                allowedCalls: Vec::new(),
+            },
+            witness,
+            true,
+        )?;
         self.emit_event(AccountKeychainEvent::AdminKeyAuthorized(
             IAccountKeychain::AdminKeyAuthorized {
                 account: msg_sender,
