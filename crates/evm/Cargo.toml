@@ -43,7 +43,7 @@ tracing.workspace = true
 alloy-eips.workspace = true
 alloy-primitives = { workspace = true, features = ["asm-keccak"] }
 alloy-signer.workspace = true
-alloy-signer-local = { workspace = true, features = ["mnemonic"] }
+alloy-signer-local = { workspace = true, features = ["mnemonic", "secp256k1"] }
 alloy-sol-types.workspace = true
 criterion.workspace = true
 revm.workspace = true
