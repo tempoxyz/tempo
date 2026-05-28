@@ -1,5 +1,7 @@
 use crate::tt_2d_pool::{AA2dTransactionId, AASequenceId};
-use alloy_consensus::{BlobTransactionValidationError, Transaction, transaction::TxHashRef};
+use alloy_consensus::{
+    BlobTransactionValidationError, Transaction, crypto::RecoveryError, transaction::TxHashRef,
+};
 use alloy_eips::{
     eip2718::{Encodable2718, Typed2718},
     eip2930::AccessList,
@@ -33,7 +35,7 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached cost of the transaction in the fee token.
     fee_token_cost: U256,
-    /// Cached payment classification for efficient block building
+    /// Cached T5+ payment classification for efficient block building.
     is_payment: bool,
     /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
     expiring_nonce_hash: Option<B256>,
@@ -105,6 +107,11 @@ impl TempoPooledTransaction {
         &self.inner.transaction
     }
 
+    /// Resolves the transaction fee payer.
+    pub fn fee_payer(&self) -> Result<Address, RecoveryError> {
+        self.inner().fee_payer(self.inner().signer())
+    }
+
     /// Returns true if this is an AA transaction
     pub fn is_aa(&self) -> bool {
         self.inner().is_aa()
@@ -125,7 +132,7 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns whether this is a payment transaction according to the builder criteria.
+    /// Returns whether this is a payment transaction according to the T5+ builder criteria.
     pub fn is_payment(&self) -> bool {
         self.is_payment
     }
@@ -293,10 +300,20 @@ impl TempoPooledTransaction {
             let fee_token = self
                 .resolved_fee_token()
                 .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
-            let fee_payer = self.inner().fee_payer(self.sender()).ok()?;
+            let fee_payer = self.fee_payer().ok()?;
             let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
             Some((fee_token, slot))
         })
+    }
+
+    /// Returns true when the transaction fee is paid by the transaction sender.
+    ///
+    /// Invalid fee payer recovery is treated as sender-paid so maintenance never skips a
+    /// conservative sender-scoped invalidation for malformed pooled state.
+    pub(crate) fn is_sender_paid_fee(&self) -> bool {
+        let sender = self.sender();
+        self.fee_payer()
+            .map_or(true, |fee_payer| fee_payer == sender)
     }
 
     /// Returns the sender-scoped expiring nonce hash for AA transactions.

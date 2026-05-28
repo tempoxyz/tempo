@@ -224,6 +224,7 @@ where
                 if !updates.spending_limit_changes.is_empty()
                     && let Some(ref subject) = keychain_subject
                     && subject.matches_spending_limit_update(&updates.spending_limit_changes)
+                    && tx.transaction.is_sender_paid_fee()
                 {
                     to_remove.push(*tx.hash());
                     spending_limit_count += 1;
@@ -238,6 +239,7 @@ where
                 if !updates.spending_limit_spends.is_empty()
                     && let Some(ref subject) = keychain_subject
                     && subject.matches_spending_limit_update(&updates.spending_limit_spends)
+                    && tx.transaction.is_sender_paid_fee()
                     && let Some(ref mut provider) = state_provider
                     && exceeds_spending_limit(
                         provider,
@@ -292,8 +294,7 @@ where
                 && let Some(ref mut provider) = state_provider
             {
                 let fee_token = tx.transaction.effective_fee_token();
-                let Ok(fee_payer) = tx.transaction.inner().fee_payer(tx.transaction.sender())
-                else {
+                let Ok(fee_payer) = tx.transaction.fee_payer() else {
                     continue;
                 };
 
@@ -330,9 +331,8 @@ where
                 let fee_token = tx.transaction.effective_fee_token();
                 let fee_payer = tx
                     .transaction
-                    .inner()
-                    .fee_payer(tx.transaction.sender())
-                    .unwrap_or(tx.transaction.sender());
+                    .fee_payer()
+                    .unwrap_or_else(|_| tx.transaction.sender());
 
                 // Check if any blacklist addition applies to this transaction's fee payer
                 let mut sender_evicted = false;
@@ -376,9 +376,8 @@ where
                 let fee_token = tx.transaction.effective_fee_token();
                 let fee_payer = tx
                     .transaction
-                    .inner()
-                    .fee_payer(tx.transaction.sender())
-                    .unwrap_or(tx.transaction.sender());
+                    .fee_payer()
+                    .unwrap_or_else(|_| tx.transaction.sender());
 
                 let mut sender_evicted = false;
                 for &(whitelist_policy_id, unwhitelisted_account) in &updates.whitelist_removals {
@@ -413,15 +412,16 @@ where
             }
 
             // Check 6: User fee token preference changes
-            // When a user changes their fee token preference via setUserToken(), transactions
-            // from that user that don't have an explicit fee_token set may now resolve to a
-            // different token at execution time, causing fee payment failures.
+            // When a fee payer changes their fee token preference via setUserToken(),
+            // transactions paid by that account that don't have an explicit fee_token set may
+            // now resolve to a different token at execution time, causing fee payment failures.
             // Only evict transactions WITHOUT an explicit fee_token (those that rely on storage).
             if !updates.user_token_changes.is_empty()
                 && tx.transaction.inner().fee_token().is_none()
-                && updates
-                    .user_token_changes
-                    .contains(&tx.transaction.sender())
+                && tx
+                    .transaction
+                    .fee_payer()
+                    .is_ok_and(|fee_payer| updates.user_token_changes.contains(&fee_payer))
             {
                 to_remove.push(*tx.hash());
                 user_token_count += 1;
@@ -935,6 +935,16 @@ where
         announcement.retain_by_hash(|tx| !aa_pool.contains(tx))
     }
 
+    fn retain_contains<A>(&self, announcement: &mut A)
+    where
+        A: HandleMempoolData,
+    {
+        if announcement.is_empty() {
+            return;
+        }
+        announcement.retain_by_hash(|tx| self.contains(tx))
+    }
+
     fn contains(&self, tx_hash: &B256) -> bool {
         self.protocol_pool.contains(tx_hash) || self.aa_2d_pool.read().contains(tx_hash)
     }
@@ -1147,6 +1157,10 @@ where
     > {
         self.protocol_pool
             .get_blobs_for_versioned_hashes_v4(versioned_hashes, indices_bitarray)
+    }
+
+    fn blob_store(&self) -> Box<dyn reth_transaction_pool::BlobStore> {
+        TransactionPool::blob_store(&self.protocol_pool)
     }
 }
 
@@ -1420,6 +1434,32 @@ mod tests {
         );
     }
 
+    fn set_keychain_spending_limit(
+        provider: &MockEthProvider<TempoPrimitives, TempoChainSpec>,
+        account: Address,
+        key_id: Address,
+        fee_token: Address,
+        remaining: U256,
+    ) {
+        provider
+            .setup_storage(TempoHardfork::default(), || {
+                let mut keychain = AccountKeychain::new();
+                keychain.keys[account][key_id].write(AuthorizedKey {
+                    signature_type: 0,
+                    expiry: u64::MAX,
+                    enforce_limits: true,
+                    is_revoked: false,
+                })?;
+                let limit_key = AccountKeychain::spending_limit_key(account, key_id);
+                keychain.spending_limits[limit_key][fee_token].write(SpendingLimitState {
+                    remaining,
+                    ..Default::default()
+                })?;
+                Ok::<(), tempo_precompiles::error::TempoPrecompileError>(())
+            })
+            .unwrap();
+    }
+
     fn create_test_pool(
         provider: MockEthProvider<TempoPrimitives, TempoChainSpec>,
     ) -> TempoTransactionPool<MockEthProvider<TempoPrimitives, TempoChainSpec>> {
@@ -1460,6 +1500,187 @@ mod tests {
         };
         pool.add_validated_transaction(TransactionOrigin::External, validated)
             .expect("transaction should be admitted");
+    }
+
+    fn create_provider_with_tip() -> MockEthProvider<TempoPrimitives, TempoChainSpec> {
+        let provider = MockEthProvider::<TempoPrimitives>::new()
+            .with_chain_spec(std::sync::Arc::unwrap_or_clone(MODERATO.clone()));
+        provider.add_block(
+            B256::random(),
+            Block {
+                header: TempoHeader {
+                    inner: Header {
+                        gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        );
+        provider
+    }
+
+    fn sponsored_keychain_transaction(
+        sender: Address,
+        fee_token: Address,
+    ) -> (TempoPooledTransaction, Address) {
+        let access_key_signer = PrivateKeySigner::random();
+        let key_id = access_key_signer.address();
+        let envelope = crate::test_utils::TxBuilder::aa(sender)
+            .fee_token(fee_token)
+            .build_keychain(sender, &access_key_signer)
+            .inner()
+            .clone()
+            .into_inner();
+        let TempoTxEnvelope::AA(mut signed) = envelope else {
+            panic!("expected AA transaction");
+        };
+
+        let sponsor = PrivateKeySigner::random();
+        signed.tx_mut().fee_payer_signature = Some(Signature::new(U256::ZERO, U256::ZERO, false));
+        let fee_payer_hash = signed.tx().fee_payer_signature_hash(sender);
+        signed.tx_mut().fee_payer_signature = Some(
+            sponsor
+                .sign_hash_sync(&fee_payer_hash)
+                .expect("fee payer signing should succeed"),
+        );
+
+        (
+            TempoPooledTransaction::new(Recovered::new_unchecked(
+                TempoTxEnvelope::AA(signed),
+                sender,
+            )),
+            key_id,
+        )
+    }
+
+    fn sponsored_implicit_fee_transaction(sender: Address) -> (TempoPooledTransaction, Address) {
+        let fee_payer_signer = loop {
+            let signer = PrivateKeySigner::random();
+            if signer.address() != sender {
+                break signer;
+            }
+        };
+        let fee_payer = fee_payer_signer.address();
+        let envelope = crate::test_utils::TxBuilder::aa(sender)
+            .build()
+            .inner()
+            .clone()
+            .into_inner();
+        let TempoTxEnvelope::AA(mut signed) = envelope else {
+            panic!("expected AA transaction");
+        };
+        let fee_payer_hash = signed.tx().fee_payer_signature_hash(sender);
+        signed.tx_mut().fee_payer_signature = Some(
+            fee_payer_signer
+                .sign_hash_sync(&fee_payer_hash)
+                .expect("fee payer signing should succeed"),
+        );
+
+        (
+            TempoPooledTransaction::new(Recovered::new_unchecked(
+                TempoTxEnvelope::AA(signed),
+                sender,
+            )),
+            fee_payer,
+        )
+    }
+
+    #[tokio::test]
+    async fn evicts_sponsored_implicit_fee_transaction_when_fee_payer_user_token_changes() {
+        let sender = Address::random();
+        let (pooled, fee_payer) = sponsored_implicit_fee_transaction(sender);
+        assert_eq!(pooled.inner().fee_token(), None);
+        assert_ne!(fee_payer, sender);
+
+        let provider = create_provider_with_tip();
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        let pool = create_test_pool(provider);
+        add_validated(&pool, pooled.clone());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.user_token_changes.insert(fee_payer);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(evicted, vec![*pooled.hash()]);
+        assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn keeps_sponsored_implicit_fee_transaction_when_sender_user_token_changes() {
+        let sender = Address::random();
+        let (pooled, fee_payer) = sponsored_implicit_fee_transaction(sender);
+        assert_eq!(pooled.inner().fee_token(), None);
+        assert_ne!(fee_payer, sender);
+
+        let provider = create_provider_with_tip();
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        let pool = create_test_pool(provider);
+        add_validated(&pool, pooled.clone());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.user_token_changes.insert(sender);
+
+        assert!(pool.evict_invalidated_transactions(&updates).is_empty());
+        assert!(pool.get(pooled.hash()).is_some());
+    }
+
+    #[tokio::test]
+    async fn evicts_sender_paid_implicit_fee_transaction_when_sender_user_token_changes() {
+        let sender = Address::random();
+        let pooled = crate::test_utils::TxBuilder::aa(sender).build();
+        assert_eq!(pooled.inner().fee_token(), None);
+
+        let provider = create_provider_with_tip();
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        let pool = create_test_pool(provider);
+        add_validated(&pool, pooled.clone());
+
+        let mut updates = crate::maintain::TempoPoolUpdates::new();
+        updates.user_token_changes.insert(sender);
+
+        let evicted = pool.evict_invalidated_transactions(&updates);
+        assert_eq!(evicted, vec![*pooled.hash()]);
+        assert!(pool.get(pooled.hash()).is_none());
+    }
+
+    #[tokio::test]
+    async fn keeps_sponsored_keychain_transaction_on_spending_limit_invalidations() {
+        let sender = Address::random();
+        let fee_token = PATH_USD_ADDRESS;
+        let (pooled, key_id) = sponsored_keychain_transaction(sender, fee_token);
+
+        let provider = create_provider_with_tip();
+        provider.add_account(sender, ExtendedAccount::new(pooled.nonce(), *pooled.cost()));
+        set_keychain_spending_limit(
+            &provider,
+            sender,
+            key_id,
+            fee_token,
+            pooled.fee_token_cost() - U256::from(1_u64),
+        );
+        let pool = create_test_pool(provider);
+        add_validated(&pool, pooled.clone());
+
+        let mut limit_change = crate::maintain::TempoPoolUpdates::new();
+        limit_change
+            .spending_limit_changes
+            .insert(sender, key_id, Some(fee_token));
+
+        assert!(
+            pool.evict_invalidated_transactions(&limit_change)
+                .is_empty()
+        );
+        assert!(pool.get(pooled.hash()).is_some());
+
+        let mut limit_spend = crate::maintain::TempoPoolUpdates::new();
+        limit_spend
+            .spending_limit_spends
+            .insert(sender, key_id, Some(fee_token));
+
+        assert!(pool.evict_invalidated_transactions(&limit_spend).is_empty());
+        assert!(pool.get(pooled.hash()).is_some());
     }
 
     #[tokio::test]
