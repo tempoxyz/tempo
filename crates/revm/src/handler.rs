@@ -128,6 +128,30 @@ fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
     }
 }
 
+#[inline]
+fn calldata_tokens_istanbul(input: &[u8]) -> u64 {
+    let mut zero_bytes = 0u64;
+    let mut chunks = input.chunks_exact(8);
+    for chunk in &mut chunks {
+        zero_bytes += (chunk[0] == 0) as u64
+            + (chunk[1] == 0) as u64
+            + (chunk[2] == 0) as u64
+            + (chunk[3] == 0) as u64
+            + (chunk[4] == 0) as u64
+            + (chunk[5] == 0) as u64
+            + (chunk[6] == 0) as u64
+            + (chunk[7] == 0) as u64;
+    }
+    zero_bytes += chunks
+        .remainder()
+        .iter()
+        .filter(|&&byte| byte == 0)
+        .count() as u64;
+
+    let len = input.len() as u64;
+    len + (len - zero_bytes) * 3
+}
+
 /// Calculates the gas cost for verifying an AA signature.
 ///
 /// For Keychain signatures, adds key validation overhead to the inner signature cost
@@ -2154,8 +2178,8 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     let mut total_tokens = 0u64;
 
     for call in calls {
-        // 4a. Calldata gas using revm helper
-        let tokens = get_tokens_in_calldata_istanbul(&call.input);
+        // 4a. Calldata gas tokens
+        let tokens = calldata_tokens_istanbul(&call.input);
         total_tokens += tokens;
 
         // 4b. CREATE-specific costs
@@ -4279,6 +4303,26 @@ mod tests {
             tempo_chainspec::hardfork::TempoHardfork::default(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn test_calldata_tokens_istanbul_matches_revm_helper() {
+        let cases: Vec<Vec<u8>> = vec![
+            Vec::new(),
+            vec![0],
+            vec![1],
+            vec![0; 8],
+            vec![0xff; 8],
+            vec![0, 1, 0, 2, 3, 0, 4, 5, 0],
+            (0..257).map(|i| (i % 251) as u8).collect(),
+        ];
+
+        for input in cases {
+            assert_eq!(
+                calldata_tokens_istanbul(&input),
+                get_tokens_in_calldata_istanbul(&input)
+            );
+        }
     }
 
     proptest! {
