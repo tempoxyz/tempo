@@ -406,3 +406,7 @@ commonware-resolver = { git = "https://github.com/commonwarexyz/monorepo", rev =
 commonware-runtime = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
 commonware-storage = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
 commonware-utils = { git = "https://github.com/commonwarexyz/monorepo", rev = "2a7dd423f0a241276a5a38db8cc3d05f11de0c03" }
+
+revm-state = { git = "https://github.com/bluealloy/revm", rev = "4ac164a" }
+revm-bytecode = { git = "https://github.com/bluealloy/revm", rev = "4ac164a" }
+revm-primitives = { git = "https://github.com/bluealloy/revm", rev = "4ac164a" }
