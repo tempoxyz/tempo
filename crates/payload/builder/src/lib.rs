@@ -182,14 +182,14 @@ impl<Provider: ChainSpecProvider<ChainSpec = TempoChainSpec>> TempoPayloadBuilde
         &self,
         evm: &TempoEvm<impl Database>,
         subblocks: &[RecoveredSubBlock],
+        chain_id: u64,
     ) -> Vec<Recovered<TempoTxEnvelope>> {
         if subblocks.is_empty() && evm.cfg.spec.is_t4() {
             // Post-T4, omit the subblocks metadata transaction if there are no subblocks
             return vec![];
         }
 
-        let chain_spec = self.provider.chain_spec();
-        let chain_id = Some(chain_spec.chain().id());
+        let chain_id = Some(chain_id);
 
         // Build subblocks signatures system transaction
         let subblocks_metadata = subblocks
@@ -357,10 +357,8 @@ where
         check_cancel!();
 
         let chain_spec = self.provider.chain_spec();
-        let is_osaka = self
-            .provider
-            .chain_spec()
-            .is_osaka_active_at_timestamp(attributes.timestamp);
+        let chain_id = chain_spec.chain().id();
+        let is_osaka = chain_spec.is_osaka_active_at_timestamp(attributes.timestamp);
 
         let block_gas_limit: u64 = parent_header.gas_limit();
         let shared_gas_limit =
@@ -478,7 +476,7 @@ where
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
-        let system_txs = self.build_seal_block_txs(builder.evm(), &subblocks);
+        let system_txs = self.build_seal_block_txs(builder.evm(), &subblocks, chain_id);
         for tx in &system_txs {
             block_size_used += tx.inner().length();
         }
