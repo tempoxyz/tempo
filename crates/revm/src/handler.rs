@@ -2165,7 +2165,8 @@ where
 /// Helper function to create a frame result for an out of gas error.
 ///
 /// Use native fn when new revm version is released.
-#[inline]
+#[cold]
+#[inline(never)]
 fn oog_frame_result(kind: TxKind, gas_limit: u64) -> FrameResult {
     if kind.is_call() {
         FrameResult::new_call_oog(gas_limit, 0..0, 0)
