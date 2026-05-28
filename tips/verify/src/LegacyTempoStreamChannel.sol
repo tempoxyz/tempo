@@ -1,24 +1,34 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-import {ITempoStreamChannel} from "tempo-std/interfaces/ITempoStreamChannel.sol";
-import {ITIP20} from "tempo-std/interfaces/ITIP20.sol";
+import { ITIP20 } from "tempo-std/interfaces/ITIP20.sol";
+import { ITempoStreamChannel } from "tempo-std/interfaces/ITempoStreamChannel.sol";
 
 /// @title LegacyTempoStreamChannel
 /// @notice Legacy stream channel contract from the PaymentAuth session draft Appendix B.
 contract LegacyTempoStreamChannel is ITempoStreamChannel {
-    uint64 public constant CLOSE_GRACE_PERIOD = 15 minutes;
-    bytes32 public constant VOUCHER_TYPEHASH = keccak256("Voucher(bytes32 channelId,uint128 cumulativeAmount)");
-    bytes32 public constant CLOSE_REQUEST_TYPEHASH = keccak256("CloseRequest(bytes32 channelId,uint64 requestedAt)");
 
-    bytes32 internal constant _EIP712_DOMAIN_TYPEHASH =
-        keccak256("EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)");
+    uint64 public constant CLOSE_GRACE_PERIOD = 15 minutes;
+    bytes32 public constant VOUCHER_TYPEHASH =
+        keccak256("Voucher(bytes32 channelId,uint128 cumulativeAmount)");
+    bytes32 public constant CLOSE_REQUEST_TYPEHASH =
+        keccak256("CloseRequest(bytes32 channelId,uint64 requestedAt)");
+
+    bytes32 internal constant _EIP712_DOMAIN_TYPEHASH = keccak256(
+        "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+    );
     bytes32 internal constant _NAME_HASH = keccak256("TempoStreamChannel");
     bytes32 internal constant _VERSION_HASH = keccak256("1");
 
     mapping(bytes32 => Channel) public channels;
 
-    function open(address payee, address token, uint128 deposit, bytes32 salt, address authorizedSigner)
+    function open(
+        address payee,
+        address token,
+        uint128 deposit,
+        bytes32 salt,
+        address authorizedSigner
+    )
         external
         returns (bytes32 channelId)
     {
@@ -42,7 +52,13 @@ contract LegacyTempoStreamChannel is ITempoStreamChannel {
         emit ChannelOpened(channelId, msg.sender, payee, token, authorizedSigner, salt, deposit);
     }
 
-    function settle(bytes32 channelId, uint128 cumulativeAmount, bytes calldata signature) external {
+    function settle(
+        bytes32 channelId,
+        uint128 cumulativeAmount,
+        bytes calldata signature
+    )
+        external
+    {
         Channel storage channel = _activeChannel(channelId);
         if (msg.sender != channel.payee) revert NotPayee();
         _settle(channelId, channel, cumulativeAmount, signature);
@@ -75,14 +91,19 @@ contract LegacyTempoStreamChannel is ITempoStreamChannel {
         if (msg.sender != channel.payer) revert NotPayer();
         if (channel.closeRequestedAt == 0) {
             channel.closeRequestedAt = uint64(block.timestamp);
-            emit CloseRequested(channelId, channel.payer, channel.payee, block.timestamp + CLOSE_GRACE_PERIOD);
+            emit CloseRequested(
+                channelId, channel.payer, channel.payee, block.timestamp + CLOSE_GRACE_PERIOD
+            );
         }
     }
 
     function withdraw(bytes32 channelId) external {
         Channel storage channel = _activeChannel(channelId);
         if (msg.sender != channel.payer) revert NotPayer();
-        if (channel.closeRequestedAt == 0 || block.timestamp < uint256(channel.closeRequestedAt) + CLOSE_GRACE_PERIOD) {
+        if (
+            channel.closeRequestedAt == 0
+                || block.timestamp < uint256(channel.closeRequestedAt) + CLOSE_GRACE_PERIOD
+        ) {
             revert CloseNotReady();
         }
         _finalize(channelId, channel);
@@ -92,22 +113,41 @@ contract LegacyTempoStreamChannel is ITempoStreamChannel {
         return channels[channelId];
     }
 
-    function getChannelsBatch(bytes32[] calldata channelIds) external view returns (Channel[] memory channelStates) {
+    function getChannelsBatch(bytes32[] calldata channelIds)
+        external
+        view
+        returns (Channel[] memory channelStates)
+    {
         channelStates = new Channel[](channelIds.length);
         for (uint256 i; i < channelIds.length; ++i) {
             channelStates[i] = channels[channelIds[i]];
         }
     }
 
-    function computeChannelId(address payer, address payee, address token, bytes32 salt, address authorizedSigner)
+    function computeChannelId(
+        address payer,
+        address payee,
+        address token,
+        bytes32 salt,
+        address authorizedSigner
+    )
         public
         view
         returns (bytes32)
     {
-        return keccak256(abi.encode(payer, payee, token, salt, authorizedSigner, address(this), block.chainid));
+        return keccak256(
+            abi.encode(payer, payee, token, salt, authorizedSigner, address(this), block.chainid)
+        );
     }
 
-    function getVoucherDigest(bytes32 channelId, uint128 cumulativeAmount) external view returns (bytes32) {
+    function getVoucherDigest(
+        bytes32 channelId,
+        uint128 cumulativeAmount
+    )
+        external
+        view
+        returns (bytes32)
+    {
         return _hashTypedData(keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount)));
     }
 
@@ -115,7 +155,12 @@ contract LegacyTempoStreamChannel is ITempoStreamChannel {
         return _domainSeparator();
     }
 
-    function _settle(bytes32 channelId, Channel storage channel, uint128 cumulativeAmount, bytes calldata signature)
+    function _settle(
+        bytes32 channelId,
+        Channel storage channel,
+        uint128 cumulativeAmount,
+        bytes calldata signature
+    )
         internal
     {
         if (cumulativeAmount > channel.deposit) revert AmountExceedsDeposit();
@@ -125,7 +170,9 @@ contract LegacyTempoStreamChannel is ITempoStreamChannel {
         uint128 delta = cumulativeAmount - channel.settled;
         channel.settled = cumulativeAmount;
         if (!ITIP20(channel.token).transfer(channel.payee, delta)) revert TransferFailed();
-        emit Settled(channelId, channel.payer, channel.payee, cumulativeAmount, delta, channel.settled);
+        emit Settled(
+            channelId, channel.payer, channel.payee, cumulativeAmount, delta, channel.settled
+        );
     }
 
     function _finalize(bytes32 channelId, Channel storage channel) internal {
@@ -142,9 +189,14 @@ contract LegacyTempoStreamChannel is ITempoStreamChannel {
         bytes32 channelId,
         uint128 cumulativeAmount,
         bytes calldata signature
-    ) internal view {
-        bytes32 digest = _hashTypedData(keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount)));
-        address expectedSigner = channel.authorizedSigner != address(0) ? channel.authorizedSigner : channel.payer;
+    )
+        internal
+        view
+    {
+        bytes32 digest =
+            _hashTypedData(keccak256(abi.encode(VOUCHER_TYPEHASH, channelId, cumulativeAmount)));
+        address expectedSigner =
+            channel.authorizedSigner != address(0) ? channel.authorizedSigner : channel.payer;
         (bytes32 r, bytes32 s, uint8 v) = _splitSignature(signature);
         address signer = ecrecover(digest, v, r, s);
         if (signer != expectedSigner) revert InvalidSignature();
@@ -157,14 +209,22 @@ contract LegacyTempoStreamChannel is ITempoStreamChannel {
     }
 
     function _domainSeparator() internal view returns (bytes32) {
-        return keccak256(abi.encode(_EIP712_DOMAIN_TYPEHASH, _NAME_HASH, _VERSION_HASH, block.chainid, address(this)));
+        return keccak256(
+            abi.encode(
+                _EIP712_DOMAIN_TYPEHASH, _NAME_HASH, _VERSION_HASH, block.chainid, address(this)
+            )
+        );
     }
 
     function _hashTypedData(bytes32 structHash) internal view returns (bytes32) {
         return keccak256(abi.encodePacked("\x19\x01", _domainSeparator(), structHash));
     }
 
-    function _splitSignature(bytes calldata signature) internal pure returns (bytes32 r, bytes32 s, uint8 v) {
+    function _splitSignature(bytes calldata signature)
+        internal
+        pure
+        returns (bytes32 r, bytes32 s, uint8 v)
+    {
         if (signature.length != 65) revert InvalidSignature();
         assembly {
             r := calldataload(signature.offset)
@@ -173,4 +233,5 @@ contract LegacyTempoStreamChannel is ITempoStreamChannel {
         }
         if (v < 27) v += 27;
     }
+
 }
