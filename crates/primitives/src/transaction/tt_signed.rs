@@ -123,7 +123,8 @@ impl AASigned {
     pub fn expiring_nonce_hash(&self, sender: Address) -> B256 {
         let cached = self.expiring_nonce_hash.get_or_init(|| {
             let hash = unique_tx_identifier_from_signable(&self.tx, sender);
-            (sender, hash)
+            #[allow(clippy::useless_conversion)]
+            (sender, hash).into()
         });
         if cached.0 == sender {
             cached.1
