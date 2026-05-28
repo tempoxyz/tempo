@@ -65,7 +65,7 @@ impl TipFeeManager {
 
     /// Returns the validator's preferred fee token, falling back to [`DEFAULT_FEE_TOKEN`].
     pub fn get_validator_token(&self, beneficiary: Address) -> Result<Address> {
-        let token = self.validator_tokens[beneficiary].read()?;
+        let token = self.validator_tokens.at(&beneficiary).read()?;
 
         if token.is_zero() {
             Ok(DEFAULT_FEE_TOKEN)
@@ -103,7 +103,7 @@ impl TipFeeManager {
         // Validate that the fee token is USD
         validate_usd_currency(call.token)?;
 
-        self.validator_tokens[sender].write(call.token)?;
+        self.validator_tokens.at_mut(&sender).write(call.token)?;
 
         // Emit ValidatorTokenSet event
         self.emit_event(FeeManagerEvent::validator_token_set(sender, call.token))
@@ -131,13 +131,13 @@ impl TipFeeManager {
         // T3+: skip write and event if the token is already set to the requested value.
         // Prevents permissionless callers from forcing redundant pool invalidation scans.
         if self.storage.spec().is_t3() {
-            let current = self.user_tokens[sender].read()?;
+            let current = self.user_tokens.at(&sender).read()?;
             if current == call.token {
                 return Ok(());
             }
         }
 
-        self.user_tokens[sender].write(call.token)?;
+        self.user_tokens.at_mut(&sender).write(call.token)?;
 
         // Emit UserTokenSet event
         self.emit_event(FeeManagerEvent::user_token_set(sender, call.token))
@@ -275,12 +275,15 @@ impl TipFeeManager {
             return Ok(());
         }
 
-        let collected_fees = self.collected_fees[validator][token].read()?;
-        self.collected_fees[validator][token].write(
-            collected_fees
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
+        let collected_fees = self.collected_fees.at(&validator).at(&token).read()?;
+        self.collected_fees
+            .at_mut(&validator)
+            .at_mut(&token)
+            .write(
+                collected_fees
+                    .checked_add(amount)
+                    .ok_or(TempoPrecompileError::under_overflow())?,
+            )?;
 
         Ok(())
     }
@@ -291,11 +294,14 @@ impl TipFeeManager {
     /// # Errors
     /// - `InvalidToken` — `token` does not have a valid TIP-20 prefix
     pub fn distribute_fees(&mut self, validator: Address, token: Address) -> Result<()> {
-        let amount = self.collected_fees[validator][token].read()?;
+        let amount = self.collected_fees.at(&validator).at(&token).read()?;
         if amount.is_zero() {
             return Ok(());
         }
-        self.collected_fees[validator][token].write(U256::ZERO)?;
+        self.collected_fees
+            .at_mut(&validator)
+            .at_mut(&token)
+            .write(U256::ZERO)?;
 
         // Transfer fees to validator
         let mut tip20_token = TIP20Token::from_address(token)?;
@@ -315,7 +321,7 @@ impl TipFeeManager {
 
     /// Reads the stored fee token preference for a user.
     pub fn user_tokens(&self, call: IFeeManager::userTokensCall) -> Result<Address> {
-        self.user_tokens[call.user].read()
+        self.user_tokens.at(&call.user).read()
     }
 }
 

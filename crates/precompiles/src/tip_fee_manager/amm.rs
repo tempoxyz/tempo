@@ -111,13 +111,15 @@ impl TipFeeManager {
     /// Returns the [`Pool`] reserves for the given user/validator token pair.
     pub fn get_pool(&self, call: ITIPFeeAMM::getPoolCall) -> Result<Pool> {
         let pool_id = self.pool_id(call.userToken, call.validatorToken);
-        self.pools[pool_id].read()
+        self.pools.at(&pool_id).read()
     }
 
     /// Reserves pool liquidity in transient storage for a pending fee swap.
     #[inline]
     pub fn reserve_pool_liquidity(&mut self, pool_id: B256, amount: u128) -> Result<()> {
-        self.pending_fee_swap_reservation[pool_id].t_write(amount)
+        self.pending_fee_swap_reservation
+            .at_mut(&pool_id)
+            .t_write(amount)
     }
 
     /// Executes a rebalance swap: sells `amount_out` of user-token from the pool in exchange for
@@ -141,7 +143,7 @@ impl TipFeeManager {
         }
 
         let pool_id = self.pool_id(user_token, validator_token);
-        let mut pool = self.pools[pool_id].read()?;
+        let mut pool = self.pools.at(&pool_id).read()?;
 
         // Rebalancing swaps are always from validatorToken to userToken
         // Calculate input and update reserves
@@ -169,13 +171,13 @@ impl TipFeeManager {
             .ok_or(TIPFeeAMMError::invalid_amount())?;
 
         if self.storage.spec().is_t1c() {
-            let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
+            let reserved = self.pending_fee_swap_reservation.at(&pool_id).t_read()?;
             if pool.reserve_validator_token < reserved {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
         }
 
-        self.pools[pool_id].write(pool)?;
+        self.pools.at_mut(&pool_id).write(pool)?;
 
         let amount_in = U256::from(amount_in);
         let amount_out = U256::from(amount_out);
@@ -243,7 +245,7 @@ impl TipFeeManager {
         validate_usd_currency(validator_token)?;
 
         let pool_id = self.pool_id(user_token, validator_token);
-        let mut pool = self.pools[pool_id].read()?;
+        let mut pool = self.pools.at(&pool_id).read()?;
         let mut total_supply = self.get_total_supply(pool_id)?;
 
         let liquidity = if pool.reserve_user_token == 0 && pool.reserve_validator_token == 0 {
@@ -306,7 +308,7 @@ impl TipFeeManager {
             .checked_add(validator_amount)
             .ok_or(TIPFeeAMMError::invalid_amount())?;
 
-        self.pools[pool_id].write(pool)?;
+        self.pools.at_mut(&pool_id).write(pool)?;
 
         // Mint LP tokens
         self.set_total_supply(
@@ -378,7 +380,7 @@ impl TipFeeManager {
             return Err(TIPFeeAMMError::insufficient_liquidity().into());
         }
 
-        let mut pool = self.pools[pool_id].read()?;
+        let mut pool = self.pools.at(&pool_id).read()?;
         // Calculate amounts to return
         let (amount_user_token, amount_validator_token) =
             self.calculate_burn_amounts(&pool, pool_id, liquidity)?;
@@ -393,7 +395,7 @@ impl TipFeeManager {
             .checked_sub(validator_amount)
             .ok_or(TIPFeeAMMError::insufficient_reserves())?;
         if self.storage.spec().is_t1c() {
-            let reserved = self.pending_fee_swap_reservation[pool_id].t_read()?;
+            let reserved = self.pending_fee_swap_reservation.at(&pool_id).t_read()?;
             if available_after_burn < reserved {
                 return Err(TIPFeeAMMError::insufficient_liquidity().into());
             }
@@ -431,7 +433,7 @@ impl TipFeeManager {
             .reserve_validator_token
             .checked_sub(validator_amount)
             .ok_or(TIPFeeAMMError::insufficient_reserves())?;
-        self.pools[pool_id].write(pool)?;
+        self.pools.at_mut(&pool_id).write(pool)?;
 
         // Transfer tokens to user
         let _ = TIP20Token::from_address(user_token)?.transfer(
@@ -513,7 +515,8 @@ impl TipFeeManager {
         }
 
         // Direct (single-hop) path — always checked.
-        let direct = self.pools[self.pool_id(user_token, validator_token)].read()?;
+        let direct_pool_id = self.pool_id(user_token, validator_token);
+        let direct = self.pools.at(&direct_pool_id).read()?;
         data.push((
             (user_token, validator_token),
             direct.reserve_validator_token,
@@ -535,7 +538,8 @@ impl TipFeeManager {
         }
 
         // First leg: user_token -> intermediate.
-        let leg1 = self.pools[self.pool_id(user_token, mid_token)].read()?;
+        let leg1_pool_id = self.pool_id(user_token, mid_token);
+        let leg1 = self.pools.at(&leg1_pool_id).read()?;
         data.push(((user_token, mid_token), leg1.reserve_validator_token));
         if amount_out > U256::from(leg1.reserve_validator_token) {
             return Ok((None, Some(mid_token), data));
@@ -543,7 +547,8 @@ impl TipFeeManager {
 
         // Second leg: intermediate -> validator_token.
         let amount_out2 = compute_amount_out(amount_out)?;
-        let leg2 = self.pools[self.pool_id(mid_token, validator_token)].read()?;
+        let leg2_pool_id = self.pool_id(mid_token, validator_token);
+        let leg2 = self.pools.at(&leg2_pool_id).read()?;
         data.push(((mid_token, validator_token), leg2.reserve_validator_token));
         if amount_out2 > U256::from(leg2.reserve_validator_token) {
             return Ok((None, Some(mid_token), data));
@@ -565,7 +570,7 @@ impl TipFeeManager {
         amount_in: U256,
     ) -> Result<U256> {
         let pool_id = self.pool_id(user_token, validator_token);
-        let mut pool = self.pools[pool_id].read()?;
+        let mut pool = self.pools.at(&pool_id).read()?;
 
         // Calculate output at fixed price m = 0.9970
         let amount_out = compute_amount_out(amount_in)?;
@@ -592,24 +597,24 @@ impl TipFeeManager {
             .checked_sub(amount_out_u128)
             .ok_or(TempoPrecompileError::under_overflow())?;
 
-        self.pools[pool_id].write(pool)?;
+        self.pools.at_mut(&pool_id).write(pool)?;
 
         Ok(amount_out)
     }
 
     /// Returns the total supply of LP tokens for the given pool.
     pub fn get_total_supply(&self, pool_id: B256) -> Result<U256> {
-        self.total_supply[pool_id].read()
+        self.total_supply.at(&pool_id).read()
     }
 
     /// Set total supply of LP tokens for a pool
     fn set_total_supply(&mut self, pool_id: B256, total_supply: U256) -> Result<()> {
-        self.total_supply[pool_id].write(total_supply)
+        self.total_supply.at_mut(&pool_id).write(total_supply)
     }
 
     /// Returns the LP token balance for `user` in the given pool.
     pub fn get_liquidity_balances(&self, pool_id: B256, user: Address) -> Result<U256> {
-        self.liquidity_balances[pool_id][user].read()
+        self.liquidity_balances.at(&pool_id).at(&user).read()
     }
 
     /// Set user's LP token balance
@@ -619,7 +624,10 @@ impl TipFeeManager {
         user: Address,
         balance: U256,
     ) -> Result<()> {
-        self.liquidity_balances[pool_id][user].write(balance)
+        self.liquidity_balances
+            .at_mut(&pool_id)
+            .at_mut(&user)
+            .write(balance)
     }
 }
 
