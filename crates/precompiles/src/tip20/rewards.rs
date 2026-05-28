@@ -11,7 +11,10 @@ use crate::{
     storage::Handler,
     tip20::{Recipient, RewardFlag, TIP20Token, UserState},
 };
-use alloy::primitives::{Address, U256, uint};
+use alloy::{
+    primitives::{Address, B256, Bytes, LogData, U256, uint},
+    sol_types::SolEvent,
+};
 use core::ops::Div;
 use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
 use tempo_precompiles_macros::Storable;
@@ -21,6 +24,27 @@ use tempo_primitives::TempoAddressExt;
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
 
 impl TIP20Token {
+    fn reward_event_address_topic(address: Address) -> B256 {
+        B256::left_padding_from(address.as_slice())
+    }
+
+    fn reward_distributed_log_data(funder: Address, amount: U256) -> LogData {
+        LogData::new_unchecked(
+            vec![
+                ITIP20::RewardDistributed::SIGNATURE_HASH,
+                Self::reward_event_address_topic(funder),
+            ],
+            Bytes::copy_from_slice(&amount.to_be_bytes::<32>()),
+        )
+    }
+
+    fn emit_reward_distributed_event(&mut self, funder: Address, amount: U256) -> Result<()> {
+        self.storage.emit_event(
+            self.address,
+            Self::reward_distributed_log_data(funder, amount),
+        )
+    }
+
     /// Distributes `amount` of reward tokens from the caller into the opted-in reward pool.
     /// Transfers tokens to the contract and increases the global reward-per-token accumulator
     /// proportionally to the opted-in supply.
@@ -66,7 +90,7 @@ impl TIP20Token {
         self.set_global_reward_per_token(new_rpt)?;
 
         // Emit distributed reward event (recipients claim accrued rewards separately)
-        self.emit_event(TIP20Event::reward_distributed(msg_sender, call.amount))?;
+        self.emit_reward_distributed_event(msg_sender, call.amount)?;
 
         Ok(())
     }
