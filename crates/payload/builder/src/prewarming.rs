@@ -6,7 +6,7 @@ use std::sync::{
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_sol_types::SolInterface;
-use reth_engine_tree::tree::{CachedStateMetrics, CachedStateProvider, SavedCache};
+use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Database, Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
@@ -316,8 +316,6 @@ where
             state_provider = Box::new(CachedStateProvider::new_prewarm(
                 state_provider,
                 cache.cache().clone(),
-                // Use unlabeled default metrics to avoid polluting the builder metrics.
-                CachedStateMetrics::default(),
             ));
         }
 
