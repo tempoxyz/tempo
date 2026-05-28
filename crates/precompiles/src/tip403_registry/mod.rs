@@ -274,7 +274,7 @@ impl TIP403Registry {
             return Err(err.into());
         }
 
-        let compound = self.policy_records[call.policyId].compound.read()?;
+        let compound = self.policy_records.at(&call.policyId).compound.read()?;
         Ok(ITIP403Registry::compoundPolicyDataReturn {
             senderPolicyId: compound.sender_policy_id,
             recipientPolicyId: compound.recipient_policy_id,
@@ -284,7 +284,7 @@ impl TIP403Registry {
 
     /// Returns `account`'s receive-policy configuration.
     pub fn receive_policy(&self, account: Address) -> Result<ITIP403Registry::receivePolicyReturn> {
-        let config = self.receive_policies[account].config.read()?;
+        let config = self.receive_policies.at(&account).config.read()?;
         Ok(ITIP403Registry::receivePolicyReturn {
             hasReceivePolicy: config.has_receive_policy,
             senderPolicyId: config.sender_policy_id,
@@ -316,7 +316,7 @@ impl TIP403Registry {
         sender: Address,
         receiver: Address,
     ) -> Result<Option<(ITIP403Registry::BlockedReason, Address)>> {
-        let config = self.receive_policies[receiver].config.read()?;
+        let config = self.receive_policies.at(&receiver).config.read()?;
         if !config.has_receive_policy {
             return Ok(None);
         }
@@ -348,7 +348,7 @@ impl TIP403Registry {
         match mode {
             RecoveryMode::Originator => Ok(RECOVERY_ORIGINATOR),
             RecoveryMode::Receiver => Ok(account),
-            RecoveryMode::ThirdParty => self.receive_policies[account].recovery_address.read(),
+            RecoveryMode::ThirdParty => self.receive_policies.at(&account).recovery_address.read(),
         }
     }
 
@@ -374,10 +374,13 @@ impl TIP403Registry {
         )?;
 
         // Store policy data
-        self.policy_records[new_policy_id].base.write(PolicyData {
-            policy_type,
-            admin: call.admin,
-        })?;
+        self.policy_records
+            .at_mut(&new_policy_id)
+            .base
+            .write(PolicyData {
+                policy_type,
+                admin: call.admin,
+            })?;
 
         self.emit_event(TIP403RegistryEvent::policy_created(
             new_policy_id,
@@ -428,8 +431,9 @@ impl TIP403Registry {
             token_filter_type,
             recovery_mode,
         };
-        self.receive_policies[msg_sender].config.write(config)?;
-        self.receive_policies[msg_sender]
+        self.receive_policies.at_mut(&msg_sender).config.write(config)?;
+        self.receive_policies
+            .at_mut(&msg_sender)
             .recovery_address
             .write(recovery_write)?;
 
@@ -663,17 +667,19 @@ impl TIP403Registry {
         )?;
 
         // Store policy record with COMPOUND type and compound data
-        self.policy_records[new_policy_id].write(PolicyRecord {
-            base: PolicyData {
-                policy_type: PolicyType::COMPOUND as u8,
-                admin: Address::ZERO,
-            },
-            compound: CompoundPolicyData {
-                sender_policy_id: call.senderPolicyId,
-                recipient_policy_id: call.recipientPolicyId,
-                mint_recipient_policy_id: call.mintRecipientPolicyId,
-            },
-        })?;
+        self.policy_records
+            .at_mut(&new_policy_id)
+            .write(PolicyRecord {
+                base: PolicyData {
+                    policy_type: PolicyType::COMPOUND as u8,
+                    admin: Address::ZERO,
+                },
+                compound: CompoundPolicyData {
+                    sender_policy_id: call.senderPolicyId,
+                    recipient_policy_id: call.recipientPolicyId,
+                    mint_recipient_policy_id: call.mintRecipientPolicyId,
+                },
+            })?;
 
         // Emit event
         self.emit_event(TIP403RegistryEvent::compound_policy_created(
@@ -716,7 +722,7 @@ impl TIP403Registry {
         let data = self.get_policy_data(policy_id)?;
 
         if data.is_compound() {
-            let compound = self.policy_records[policy_id].compound.read()?;
+            let compound = self.policy_records.at(&policy_id).compound.read()?;
             return match role {
                 AuthRole::Sender => {
                     self.is_authorized_simple(compound.sender_policy_id, user, None)
@@ -779,7 +785,7 @@ impl TIP403Registry {
         // NOTE: read `policy_set` BEFORE checking policy type to match original gas consumption.
         // Pre-T1: the old code read policy_set first, then failed on invalid policy types.
         // This order must be preserved for block re-execution compatibility.
-        let is_in_set = self.policy_set[policy_id][user].read()?;
+        let is_in_set = self.policy_set.at(&policy_id).at(&user).read()?;
 
         match data.policy_type()? {
             PolicyType::WHITELIST => Ok(is_in_set),
@@ -846,7 +852,7 @@ impl TIP403Registry {
     /// Returns policy data for the given policy ID.
     /// Errors with `PolicyNotFound` for invalid policy ids.
     fn get_policy_data(&self, policy_id: u64) -> Result<PolicyData> {
-        let data = self.policy_records[policy_id].base.read()?;
+        let data = self.policy_records.at(&policy_id).base.read()?;
 
         // Verify that the policy id exists (spec: +T2).
         // Skip the counter read (extra SLOAD) when policy data is non-default.
@@ -865,11 +871,14 @@ impl TIP403Registry {
     /// IMPORTANT: callers must not change `policy_type` for an existing policy. TIP-1028 receive
     /// policies cache `policy_type` and rely on it being immutable after creation.
     fn set_policy_data(&mut self, policy_id: u64, data: PolicyData) -> Result<()> {
-        self.policy_records[policy_id].base.write(data)
+        self.policy_records.at_mut(&policy_id).base.write(data)
     }
 
     fn set_policy_set(&mut self, policy_id: u64, account: Address, value: bool) -> Result<()> {
-        self.policy_set[policy_id][account].write(value)
+        self.policy_set
+            .at_mut(&policy_id)
+            .at_mut(&account)
+            .write(value)
     }
 }
 
