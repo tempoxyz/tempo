@@ -202,8 +202,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         // Track state gas (cold SSTORE zero->non-zero only)
         self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
 
-        // refund gas.
-        self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
+        let refund = self.gas_params.sstore_refund(true, &result.data);
+        if refund != 0 {
+            self.refund_gas(refund);
+        }
 
         Ok(())
     }
