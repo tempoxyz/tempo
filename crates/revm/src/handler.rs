@@ -135,6 +135,7 @@ fn primitive_signature_verification_gas(signature: &PrimitiveSignature) -> u64 {
 #[inline]
 fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
     match signature {
+        TempoSignature::Primitive(PrimitiveSignature::Secp256k1(_)) => 0,
         TempoSignature::Primitive(prim_sig) => primitive_signature_verification_gas(prim_sig),
         TempoSignature::Keychain(keychain_sig) => {
             // Keychain = inner signature + key validation overhead (SLOAD + processing)
