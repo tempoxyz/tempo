@@ -11,6 +11,7 @@ use reth_transaction_pool::{
     BestTransactions, Priority, ValidPoolTransaction, error::InvalidPoolTransactionError,
     pool::BestTransactions as BestProtocolTransactions,
 };
+use revm::state::EvmState;
 use std::sync::Arc;
 use tempo_evm::TempoTxResult;
 use tempo_precompiles::tip20::{decode_tip20_balance, is_tip20_prefix};
@@ -138,21 +139,50 @@ where
     /// state changes that might affect other transactions validity.
     pub fn on_new_result(&mut self, result: &TempoTxResult) {
         for (&address, account) in &result.result().state {
-            if !is_tip20_prefix(address) {
-                continue;
-            }
-
             for (&slot, storage_slot) in &account.storage {
-                // Decode packed TIP-20 balances so metadata changes cannot hide balance decreases.
-                let present_balance = decode_tip20_balance(storage_slot.present_value);
-                let original_balance = decode_tip20_balance(storage_slot.original_value);
-                if present_balance < original_balance {
-                    self.decreased_balances
-                        .insert((address, slot), present_balance);
-                } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
-                    *balance = present_balance;
-                }
+                self.on_storage_change(
+                    address,
+                    slot,
+                    storage_slot.original_value,
+                    storage_slot.present_value,
+                );
             }
+        }
+    }
+
+    /// Processes a materialized state transition and records final TIP20 balance changes.
+    pub fn on_state_changes(&mut self, state: &EvmState) {
+        for (&address, account) in state {
+            for (&slot, storage_slot) in &account.storage {
+                self.on_storage_change(
+                    address,
+                    slot,
+                    storage_slot.original_value,
+                    storage_slot.present_value,
+                );
+            }
+        }
+    }
+
+    fn on_storage_change(
+        &mut self,
+        address: Address,
+        slot: U256,
+        original_value: U256,
+        present_value: U256,
+    ) {
+        if !is_tip20_prefix(address) {
+            return;
+        }
+
+        let key = (address, slot);
+        // Decode packed TIP20 balances so metadata changes cannot hide balance decreases.
+        let original_value = decode_tip20_balance(original_value);
+        let present_value = decode_tip20_balance(present_value);
+        if present_value < original_value {
+            self.decreased_balances.insert(key, present_value);
+        } else if let Some(balance) = self.decreased_balances.get_mut(&key) {
+            *balance = present_value;
         }
     }
 }

@@ -156,6 +156,14 @@ impl TempoTxResult {
             return Err(self);
         }
 
+        Ok(self.into_stripped_commit_unchecked())
+    }
+
+    /// Converts a transaction result into stripped commit data while discarding state writes.
+    ///
+    /// This is for callers that have already proven the writes are covered by a separately
+    /// materialized semantic state transition.
+    pub fn into_stripped_commit_unchecked(self) -> TempoStrippedTxCommit {
         let TempoTxResult {
             inner,
             next_section,
@@ -176,7 +184,7 @@ impl TempoTxResult {
         let success = result.is_success();
         let logs = result.into_logs();
 
-        Ok(TempoStrippedTxCommit {
+        TempoStrippedTxCommit {
             receipt: TempoReceipt {
                 tx_type,
                 success,
@@ -191,7 +199,7 @@ impl TempoTxResult {
             is_payment,
             tx,
             block_gas_used,
-        })
+        }
     }
 }
 
@@ -332,6 +340,15 @@ where
         }
 
         GasOutput::with_state_gas(commit.tx_gas_used, commit.state_gas_used)
+    }
+
+    /// Commits synthesized semantic state changes for stripped transactions.
+    pub fn commit_semantic_state_changes(&mut self, state: EvmState) {
+        self.inner.system_caller.on_state(
+            StateChangeSource::Transaction(self.inner.receipts.len()),
+            &state,
+        );
+        self.inner.evm.db_mut().commit(state);
     }
 
     /// Deploys `0xEF` marker bytecode to a precompile address if it doesn't already have code.
