@@ -161,10 +161,12 @@ where
         self.inner.all_mut()
     }
 
+    #[inline(always)]
     fn frame_stack(&mut self) -> &mut FrameStack<Self::Frame> {
         &mut self.inner.frame_stack
     }
 
+    #[inline(always)]
     fn frame_init(
         &mut self,
         frame_input: <Self::Frame as FrameTr>::FrameInit,
@@ -175,6 +177,7 @@ where
         self.inner.frame_init(frame_input)
     }
 
+    #[inline(always)]
     fn frame_run(&mut self) -> Result<FrameInitOrResult<Self::Frame>, ContextError<DB::Error>> {
         self.inner.frame_run()
     }
