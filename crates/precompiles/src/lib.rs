@@ -420,6 +420,32 @@ impl<'a> SelectorSchedule<'a> {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn dispatch_missing_selector(storage: &StorageCtx) -> PrecompileResult {
+    if storage.spec().is_t1() {
+        Ok(storage.revert_output(Bytes::new()))
+    } else {
+        Ok(storage.halt_output(PrecompileHalt::Other(
+            "Invalid input: missing function selector".into(),
+        )))
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn dispatch_unknown_selector(storage: &StorageCtx, selector: [u8; 4]) -> PrecompileResult {
+    storage.error_result(error::TempoPrecompileError::UnknownFunctionSelector(
+        selector,
+    ))
+}
+
+#[cold]
+#[inline(never)]
+fn dispatch_malformed_calldata(storage: &StorageCtx) -> PrecompileResult {
+    Ok(storage.revert_output(Bytes::new()))
+}
+
 /// Applies hardfork selector schedules, decodes calldata via `decode`, then dispatches to `f`.
 ///
 /// Handles missing selectors (revert on T1+, error on earlier forks), hardfork-gated selectors,
@@ -435,13 +461,7 @@ pub(crate) fn dispatch_call<T>(
     let storage = StorageCtx::default();
 
     if calldata.len() < 4 {
-        if storage.spec().is_t1() {
-            return Ok(storage.revert_output(Bytes::new()));
-        } else {
-            return Ok(storage.halt_output(PrecompileHalt::Other(
-                "Invalid input: missing function selector".into(),
-            )));
-        }
+        return dispatch_missing_selector(&storage);
     }
 
     let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
@@ -449,9 +469,7 @@ pub(crate) fn dispatch_call<T>(
         .iter()
         .any(|schedule| schedule.rejects(selector, storage.spec()))
     {
-        return storage.error_result(error::TempoPrecompileError::UnknownFunctionSelector(
-            selector,
-        ));
+        return dispatch_unknown_selector(&storage, selector);
     }
 
     let result = decode(calldata);
@@ -463,10 +481,10 @@ pub(crate) fn dispatch_call<T>(
             fill_state_gas(&mut res, &storage);
             res
         }),
-        Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => storage.error_result(
-            error::TempoPrecompileError::UnknownFunctionSelector(*selector),
-        ),
-        Err(_) => Ok(storage.revert_output(Bytes::new())),
+        Err(alloy::sol_types::Error::UnknownSelector { selector, .. }) => {
+            dispatch_unknown_selector(&storage, *selector)
+        }
+        Err(_) => dispatch_malformed_calldata(&storage),
     }
 }
 
