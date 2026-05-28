@@ -73,8 +73,8 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub views_until_leader_skip: u64,
     /// Local proposal return budget after reserving network propagation time.
     ///
-    /// The leader uses this window for payload building, local persistence, and
-    /// any final wait before returning the proposal.
+    /// The leader uses this window for payload building, local marshal
+    /// persistence, and any final wait before returning the proposal.
     pub proposal_return_budget: Duration,
     pub time_to_build_subblock: Duration,
     pub subblock_broadcast_interval: Duration,

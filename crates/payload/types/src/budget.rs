@@ -56,10 +56,6 @@ pub fn observe_marshal_persist(block_size_bytes: usize, elapsed: Duration) {
 }
 
 /// Point-in-time marshal persistence cost per encoded block byte.
-///
-/// The estimator is deliberately small and copyable so consensus can capture a
-/// stable rate at the start of a budget decision and pass it through without
-/// re-reading the global atomic mid-decision.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MarshalPersistEstimator {
     ns_per_byte: u64,

@@ -106,8 +106,8 @@ pub struct TempoPayloadBuilder<Provider> {
     enable_prewarming: bool,
     /// Learned estimate of total replayable build work divided by work at tx cutoff.
     ///
-    /// This lets the builder reserve time for non-interruptible finish work
-    /// without a fixed builder-finish duration.
+    /// This lets the builder reserve time for non-interruptible
+    /// `builder_finish` without a fixed duration.
     build_time_multiplier: Arc<AtomicU64>,
 }
 
@@ -123,8 +123,8 @@ pub struct TempoPayloadBuilderConfig {
     /// Initial estimate of total replayable build work divided by work at tx cutoff.
     ///
     /// `1.0` means no finish-work headroom beyond observed work so far. Values
-    /// above `1.0` stop transaction execution earlier to leave room for builder
-    /// finish work that validators also repeat.
+    /// above `1.0` stop transaction execution earlier to leave room for
+    /// `builder_finish`, which validators also repeat.
     pub build_time_multiplier: f64,
 }
 

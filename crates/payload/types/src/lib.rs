@@ -39,9 +39,10 @@ pub struct TempoBuiltPayload {
     /// Time validators are expected to spend reproducing this payload's build work.
     ///
     /// This excludes proposer-only idle waiting, but includes replayable work
-    /// such as transaction execution and non-interruptible builder finish work.
+    /// such as transaction execution and non-interruptible `builder_finish`.
     validation_work_duration: Duration,
-    /// RLP-encoded block size in bytes, cached for marshal persistence estimates.
+    /// RLP-encoded block size used to estimate marshal persistence duration in
+    /// the builder and proposal return budgets.
     rlp_block_size_bytes: usize,
 }
 

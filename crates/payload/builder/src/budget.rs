@@ -75,7 +75,7 @@ pub(crate) fn payload_budget_exhausted(
 ///
 /// `work_at_tx_cutoff` is measured when pool transaction execution stops.
 /// `total_work` is measured after finalization finishes. Their ratio captures
-/// builder finish work without needing a separate fixed reserve.
+/// `builder_finish` without needing a separate fixed reserve.
 pub(crate) fn observed_build_time_multiplier(
     total_work: Duration,
     work_at_tx_cutoff: Duration,
