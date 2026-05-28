@@ -115,11 +115,13 @@ impl<T> Slot<T> {
 }
 
 impl<T> StorageOps for Slot<T> {
+    #[inline(always)]
     fn load(&self, slot: U256) -> Result<U256> {
         let storage = StorageCtx;
         storage.sload(self.address, slot)
     }
 
+    #[inline(always)]
     fn store(&mut self, slot: U256, value: U256) -> Result<()> {
         let mut storage = StorageCtx;
         storage.sstore(self.address, slot, value)
@@ -134,11 +136,13 @@ struct TransientOps {
 }
 
 impl StorageOps for TransientOps {
+    #[inline(always)]
     fn load(&self, slot: U256) -> Result<U256> {
         let storage = StorageCtx;
         storage.tload(self.address, slot)
     }
 
+    #[inline(always)]
     fn store(&mut self, slot: U256, value: U256) -> Result<()> {
         let mut storage = StorageCtx;
         storage.tstore(self.address, slot, value)
@@ -147,6 +151,7 @@ impl StorageOps for TransientOps {
 
 impl<T: Storable> Slot<T> {
     /// Returns a transient storage operations wrapper for this slot's address.
+    #[inline(always)]
     fn transient(&self) -> TransientOps {
         TransientOps {
             address: self.address,
@@ -168,7 +173,7 @@ impl<T: Storable> Handler<T> for Slot<T> {
     /// let name_slot = Slot::<String>::new(slots::NAME, address_rc);
     /// let name = name_slot.read().unwrap();
     /// ```
-    #[inline]
+    #[inline(always)]
     fn read(&self) -> Result<T> {
         T::load(self, self.slot, self.ctx)
     }
@@ -186,7 +191,7 @@ impl<T: Storable> Handler<T> for Slot<T> {
     /// let mut name_slot = Slot::<String>::new(slots::NAME, address_rc);
     /// name_slot.write("MyToken".to_string()).unwrap();
     /// ```
-    #[inline]
+    #[inline(always)]
     fn write(&mut self, value: T) -> Result<()> {
         value.store(self, self.slot, self.ctx)
     }
@@ -204,25 +209,25 @@ impl<T: Storable> Handler<T> for Slot<T> {
     /// let mut name_slot = Slot::<String>::new(slots::NAME, address_rc);
     /// name_slot.delete().unwrap();
     /// ```
-    #[inline]
+    #[inline(always)]
     fn delete(&mut self) -> Result<()> {
         T::delete(self, self.slot, self.ctx)
     }
 
     /// Reads a value from transient storage at this slot.
-    #[inline]
+    #[inline(always)]
     fn t_read(&self) -> Result<T> {
         T::load(&self.transient(), self.slot, self.ctx)
     }
 
     /// Writes a value to transient storage at this slot.
-    #[inline]
+    #[inline(always)]
     fn t_write(&mut self, value: T) -> Result<()> {
         value.store(&mut self.transient(), self.slot, self.ctx)
     }
 
     /// Deletes the value at this slot in transient storage (sets to zero).
-    #[inline]
+    #[inline(always)]
     fn t_delete(&mut self) -> Result<()> {
         T::delete(&mut self.transient(), self.slot, self.ctx)
     }
