@@ -4,7 +4,7 @@ use revm::{
     context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
     interpreter::gas::GasTracker,
-    state::{AccountInfo, Bytecode},
+    state::{AccountInfo, BalStorageReadMode, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -20,9 +20,17 @@ pub struct EvmPrecompileStorageProvider<'a> {
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
     gas_params: GasParams,
+    config: EvmPrecompileStorageProviderConfig,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
+}
+
+/// Runtime configuration for [`EvmPrecompileStorageProvider`].
+#[derive(Debug, Clone, Copy, Default)]
+pub struct EvmPrecompileStorageProviderConfig {
+    /// Controls whether unchanged storage reads should be recorded in the BAL.
+    pub bal_storage_read_mode: BalStorageReadMode,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
@@ -36,6 +44,30 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         is_static: bool,
         gas_params: GasParams,
     ) -> Self {
+        Self::new_with_config(
+            internals,
+            gas_limit,
+            reservoir,
+            spec,
+            amsterdam_eip8037_enabled,
+            is_static,
+            gas_params,
+            EvmPrecompileStorageProviderConfig::default(),
+        )
+    }
+
+    /// Creates a new storage provider with additional runtime configuration.
+    #[allow(clippy::too_many_arguments)]
+    pub fn new_with_config(
+        internals: EvmInternals<'a>,
+        gas_limit: u64,
+        reservoir: u64,
+        spec: TempoHardfork,
+        amsterdam_eip8037_enabled: bool,
+        is_static: bool,
+        gas_params: GasParams,
+        config: EvmPrecompileStorageProviderConfig,
+    ) -> Self {
         Self {
             internals,
             gas_tracker: GasTracker::new(gas_limit, gas_limit, reservoir),
@@ -43,6 +75,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             amsterdam_eip8037_enabled,
             is_static,
             gas_params,
+            config,
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
         }
@@ -253,7 +286,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         let is_cold;
         {
             let mut account = self.internals.load_account_mut(address)?;
-            let val = account.sload(key, insufficient_gas_for_cold_load)?;
+            let mut val = account.sload(key, insufficient_gas_for_cold_load)?;
+            if self.config.bal_storage_read_mode == BalStorageReadMode::OmitIfUnchanged {
+                val.bal_storage_read_mode = BalStorageReadMode::OmitIfUnchanged;
+            }
 
             value = val.present_value;
             is_cold = val.is_cold;

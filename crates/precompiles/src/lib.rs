@@ -40,16 +40,17 @@ use tempo_primitives::TempoAddressExt;
 #[cfg(test)]
 use alloy::sol_types::SolInterface;
 use alloy::{
-    primitives::{Address, Bytes},
+    primitives::{Address, Bytes, TxKind},
     sol,
     sol_types::{SolCall, SolError},
 };
-use alloy_evm::precompiles::{DynPrecompile, PrecompilesMap};
+use alloy_evm::precompiles::{DynPrecompile, PrecompileInput, PrecompilesMap};
 use revm::{
     context::CfgEnv,
     handler::EthPrecompiles,
     precompile::{PrecompileHalt, PrecompileId, PrecompileOutput, PrecompileResult},
     primitives::hardfork::SpecId,
+    state::BalStorageReadMode,
 };
 
 pub use tempo_contracts::precompiles::{
@@ -159,6 +160,11 @@ sol! {
 
 macro_rules! tempo_precompile {
     ($id:expr, $cfg:expr, |$input:ident| $impl:expr) => {{
+        tempo_precompile!($id, $cfg, |$input| $impl, |_input| {
+            crate::storage::evm::EvmPrecompileStorageProviderConfig::default()
+        })
+    }};
+    ($id:expr, $cfg:expr, |$input:ident| $impl:expr, |$storage_input:ident| $storage_config:expr) => {{
         let spec = $cfg.spec;
         let amsterdam_eip8037_enabled = $cfg.enable_amsterdam_eip8037;
         let gas_params = $cfg.gas_params.clone();
@@ -170,7 +176,11 @@ macro_rules! tempo_precompile {
                     $input.reservoir,
                 ));
             }
-            let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new(
+            let storage_config = {
+                let $storage_input = &$input;
+                $storage_config
+            };
+            let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new_with_config(
                 $input.internals,
                 $input.gas,
                 $input.reservoir,
@@ -178,12 +188,43 @@ macro_rules! tempo_precompile {
                 amsterdam_eip8037_enabled,
                 $input.is_static,
                 gas_params.clone(),
+                storage_config,
             );
             crate::storage::StorageCtx::enter(&mut storage, || {
                 $impl.call($input.data, $input.caller)
             })
         })
     }};
+}
+
+fn tip20_bal_storage_read_mode(
+    input: &PrecompileInput<'_>,
+    token_address: Address,
+) -> BalStorageReadMode {
+    if is_top_level_tip20_transfer(input, token_address) {
+        BalStorageReadMode::OmitIfUnchanged
+    } else {
+        BalStorageReadMode::Required
+    }
+}
+
+fn is_top_level_tip20_transfer(input: &PrecompileInput<'_>, token_address: Address) -> bool {
+    let selector = match input.data.get(..4) {
+        Some(selector) => selector,
+        None => return false,
+    };
+
+    let is_transfer = selector == tip20::ITIP20::transferCall::SELECTOR
+        || selector == tip20::ITIP20::transferWithMemoCall::SELECTOR;
+    if !is_transfer {
+        return false;
+    }
+
+    input.is_direct_call()
+        && input.target_address == token_address
+        && input.bytecode_address == token_address
+        && input.caller == input.internals.tx_origin()
+        && input.internals.tx_env().kind() == TxKind::Call(token_address)
 }
 
 impl TipFeeManager {
@@ -217,9 +258,16 @@ impl TIP20Factory {
 impl TIP20Token {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(address: Address, cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TIP20Token", cfg, |input| {
-            Self::from_address(address).expect("TIP20 prefix already verified")
-        })
+        tempo_precompile!(
+            "TIP20Token",
+            cfg,
+            |input| { Self::from_address(address).expect("TIP20 prefix already verified") },
+            |input| {
+                crate::storage::evm::EvmPrecompileStorageProviderConfig {
+                    bal_storage_read_mode: tip20_bal_storage_read_mode(input, address),
+                }
+            }
+        )
     }
 }
 
@@ -503,7 +551,7 @@ mod tests {
     use revm::{
         context::{ContextTr, TxEnv},
         database::{CacheDB, EmptyDB},
-        state::{AccountInfo, Bytecode},
+        state::{AccountInfo, BalStorageReadMode, Bytecode},
     };
     use tempo_contracts::precompiles::{ITIP20, UnknownFunctionSelector};
 
@@ -620,6 +668,121 @@ mod tests {
             !output.is_revert(),
             "view function should not revert in static context"
         );
+    }
+
+    fn tip20_mode_for_input(
+        calldata: Bytes,
+        tx_to: Address,
+        caller: Address,
+        target_address: Address,
+        bytecode_address: Address,
+    ) -> BalStorageReadMode {
+        let cfg = CfgEnv::<TempoHardfork>::default();
+        let mut evm =
+            EthEvmFactory::default().create_evm(CacheDB::new(EmptyDB::new()), EvmEnv::default());
+        let block = evm.block.clone();
+        let tx = TxEnv {
+            caller,
+            kind: TxKind::Call(tx_to),
+            data: calldata.clone(),
+            ..Default::default()
+        };
+        let evm_internals = EvmInternals::new(evm.journal_mut(), &block, &cfg, &tx);
+        let input = PrecompileInput {
+            data: &calldata,
+            caller,
+            internals: evm_internals,
+            gas: 1_000_000,
+            value: U256::ZERO,
+            is_static: false,
+            target_address,
+            bytecode_address,
+            reservoir: 0,
+        };
+
+        tip20_bal_storage_read_mode(&input, PATH_USD_ADDRESS)
+    }
+
+    #[test]
+    fn test_tip20_top_level_transfer_uses_omit_if_unchanged() {
+        let caller = Address::random();
+        let mode = tip20_mode_for_input(
+            Bytes::from(
+                ITIP20::transferCall {
+                    to: Address::random(),
+                    amount: U256::from(1),
+                }
+                .abi_encode(),
+            ),
+            PATH_USD_ADDRESS,
+            caller,
+            PATH_USD_ADDRESS,
+            PATH_USD_ADDRESS,
+        );
+
+        assert_eq!(mode, BalStorageReadMode::OmitIfUnchanged);
+    }
+
+    #[test]
+    fn test_tip20_top_level_transfer_with_memo_uses_omit_if_unchanged() {
+        let caller = Address::random();
+        let mode = tip20_mode_for_input(
+            Bytes::from(
+                ITIP20::transferWithMemoCall {
+                    to: Address::random(),
+                    amount: U256::from(1),
+                    memo: Default::default(),
+                }
+                .abi_encode(),
+            ),
+            PATH_USD_ADDRESS,
+            caller,
+            PATH_USD_ADDRESS,
+            PATH_USD_ADDRESS,
+        );
+
+        assert_eq!(mode, BalStorageReadMode::OmitIfUnchanged);
+    }
+
+    #[test]
+    fn test_tip20_transfer_from_keeps_required_bal_reads() {
+        let caller = Address::random();
+        let mode = tip20_mode_for_input(
+            Bytes::from(
+                ITIP20::transferFromCall {
+                    from: caller,
+                    to: Address::random(),
+                    amount: U256::from(1),
+                }
+                .abi_encode(),
+            ),
+            PATH_USD_ADDRESS,
+            caller,
+            PATH_USD_ADDRESS,
+            PATH_USD_ADDRESS,
+        );
+
+        assert_eq!(mode, BalStorageReadMode::Required);
+    }
+
+    #[test]
+    fn test_tip20_internal_transfer_keeps_required_bal_reads() {
+        let caller = Address::random();
+        let mode = tip20_mode_for_input(
+            Bytes::from(
+                ITIP20::transferCall {
+                    to: Address::random(),
+                    amount: U256::from(1),
+                }
+                .abi_encode(),
+            ),
+            Address::random(),
+            caller,
+            PATH_USD_ADDRESS,
+            PATH_USD_ADDRESS,
+        );
+
+        assert_eq!(mode, BalStorageReadMode::Required);
     }
 
     /// Verifies that early-return revert paths in precompile `call()` methods correctly
