@@ -165,11 +165,13 @@ impl TipFeeManager {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
 
-        let mut tip20_token = TIP20Token::from_address(user_token)?;
+        {
+            let mut tip20_token = TIP20Token::from_address(user_token)?;
 
-        // Ensure that user and FeeManager are authorized to interact with the token
-        tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
-        tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
+            // Ensure that user and FeeManager are authorized to interact with the token
+            tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
+            tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
+        }
 
         if !skip_liquidity_check {
             let (route, ..) = self.plan_fee_route(user_token, validator_token, max_amount)?;
@@ -235,8 +237,10 @@ impl TipFeeManager {
         beneficiary: Address,
     ) -> Result<U256> {
         // Refund unused tokens to user
-        let mut tip20_token = TIP20Token::from_address(fee_token)?;
-        tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
+        {
+            let mut tip20_token = TIP20Token::from_address(fee_token)?;
+            tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
+        }
 
         // Execute fee swap and track collected fees
         let hop_token = self.two_hop_intermediate.t_read()?;
