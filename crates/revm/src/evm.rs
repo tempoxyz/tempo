@@ -124,6 +124,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     /// Clears all intermediate state from the EVM.
+    #[inline]
     pub fn clear(&mut self) {
         self.fee_token = None;
         self.key_expiry = None;
