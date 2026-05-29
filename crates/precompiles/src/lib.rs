@@ -353,12 +353,14 @@ pub(crate) fn charge_input_cost(
 /// accounting.
 #[inline]
 fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
-    if storage.spec().is_t4() && output.is_success() {
+    let success = output.is_success();
+
+    if storage.spec().is_t4() && success {
         output.gas_refunded = storage.gas_refunded();
     }
 
     if storage.amsterdam_eip8037_enabled() {
-        if output.is_success() {
+        if success {
             // On success: parent takes the child's final reservoir.
             output.reservoir = storage.reservoir();
             output.state_gas_used = storage.state_gas_used();
