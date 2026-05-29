@@ -419,7 +419,7 @@ fn storage_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
 ) -> Vec<StorageTouch> {
-    let mut unique_touches = UniqueTouches::new();
+    let mut touches = UniqueTouches::new();
     let sender = tx.transaction.sender();
     let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
     let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
@@ -429,37 +429,33 @@ fn storage_touches_for_transaction(
             .unwrap_or(DEFAULT_FEE_TOKEN)
     });
 
-    add_tip20_fee_touches(&mut unique_touches, fee_token, fee_payer);
-    add_fee_manager_touches(&mut unique_touches, fee_recipient, fee_token);
+    add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
+    add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
 
     if tx.transaction.is_payment() {
         for (kind, input) in tx.transaction.inner().calls() {
-            add_tip20_call_touches(&mut unique_touches, sender, kind, input);
+            add_tip20_call_touches(&mut touches, sender, kind, input);
         }
     }
 
-    add_expiring_nonce_touches(&mut unique_touches, tx);
+    add_expiring_nonce_touches(&mut touches, tx);
 
-    unique_touches.into_vec()
+    touches.into_vec()
 }
 
-fn add_tip20_fee_touches(
-    unique_touches: &mut UniqueTouches,
-    fee_token: Address,
-    fee_payer: Address,
-) {
+fn add_tip20_fee_touches(touches: &mut UniqueTouches, fee_token: Address, fee_payer: Address) {
     if !fee_token.is_tip20() {
         return;
     }
 
-    add_tip20_common_touches(unique_touches, fee_token);
-    add_tip20_balance_touch(unique_touches, fee_token, fee_payer);
-    add_tip20_balance_touch(unique_touches, fee_token, TIP_FEE_MANAGER_ADDRESS);
-    add_tip20_reward_touches(unique_touches, fee_token, fee_payer);
+    add_tip20_common_touches(touches, fee_token);
+    add_tip20_balance_touch(touches, fee_token, fee_payer);
+    add_tip20_balance_touch(touches, fee_token, TIP_FEE_MANAGER_ADDRESS);
+    add_tip20_reward_touches(touches, fee_token, fee_payer);
 }
 
 fn add_tip20_call_touches(
-    unique_touches: &mut UniqueTouches,
+    touches: &mut UniqueTouches,
     sender: Address,
     kind: TxKind,
     input: &[u8],
@@ -471,137 +467,129 @@ fn add_tip20_call_touches(
         return;
     }
 
-    add_tip20_common_touches(unique_touches, token);
+    add_tip20_common_touches(touches, token);
     let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) else {
         return;
     };
 
     match call {
         ITIP20::ITIP20Calls::transfer(call) => {
-            add_tip20_balance_touch(unique_touches, token, sender);
-            add_tip20_balance_touch(unique_touches, token, call.to);
-            add_tip20_reward_touches(unique_touches, token, sender);
-            add_tip20_reward_touches(unique_touches, token, call.to);
+            add_tip20_balance_touch(touches, token, sender);
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_reward_touches(touches, token, sender);
+            add_tip20_reward_touches(touches, token, call.to);
         }
         ITIP20::ITIP20Calls::transferWithMemo(call) => {
-            add_tip20_balance_touch(unique_touches, token, sender);
-            add_tip20_balance_touch(unique_touches, token, call.to);
-            add_tip20_reward_touches(unique_touches, token, sender);
-            add_tip20_reward_touches(unique_touches, token, call.to);
+            add_tip20_balance_touch(touches, token, sender);
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_reward_touches(touches, token, sender);
+            add_tip20_reward_touches(touches, token, call.to);
         }
         ITIP20::ITIP20Calls::transferFrom(call) => {
-            add_tip20_balance_touch(unique_touches, token, call.from);
-            add_tip20_balance_touch(unique_touches, token, call.to);
-            add_tip20_allowance_touch(unique_touches, token, call.from, sender);
-            add_tip20_reward_touches(unique_touches, token, call.from);
-            add_tip20_reward_touches(unique_touches, token, call.to);
+            add_tip20_balance_touch(touches, token, call.from);
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_allowance_touch(touches, token, call.from, sender);
+            add_tip20_reward_touches(touches, token, call.from);
+            add_tip20_reward_touches(touches, token, call.to);
         }
         ITIP20::ITIP20Calls::transferFromWithMemo(call) => {
-            add_tip20_balance_touch(unique_touches, token, call.from);
-            add_tip20_balance_touch(unique_touches, token, call.to);
-            add_tip20_allowance_touch(unique_touches, token, call.from, sender);
-            add_tip20_reward_touches(unique_touches, token, call.from);
-            add_tip20_reward_touches(unique_touches, token, call.to);
+            add_tip20_balance_touch(touches, token, call.from);
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_allowance_touch(touches, token, call.from, sender);
+            add_tip20_reward_touches(touches, token, call.from);
+            add_tip20_reward_touches(touches, token, call.to);
         }
         ITIP20::ITIP20Calls::approve(call) => {
-            add_tip20_allowance_touch(unique_touches, token, sender, call.spender);
+            add_tip20_allowance_touch(touches, token, sender, call.spender);
         }
         ITIP20::ITIP20Calls::mint(call) => {
-            add_tip20_balance_touch(unique_touches, token, call.to);
-            add_tip20_reward_touches(unique_touches, token, call.to);
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_reward_touches(touches, token, call.to);
         }
         ITIP20::ITIP20Calls::mintWithMemo(call) => {
-            add_tip20_balance_touch(unique_touches, token, call.to);
-            add_tip20_reward_touches(unique_touches, token, call.to);
+            add_tip20_balance_touch(touches, token, call.to);
+            add_tip20_reward_touches(touches, token, call.to);
         }
         ITIP20::ITIP20Calls::burn(_) | ITIP20::ITIP20Calls::burnWithMemo(_) => {
-            add_tip20_balance_touch(unique_touches, token, sender);
-            add_tip20_reward_touches(unique_touches, token, sender);
+            add_tip20_balance_touch(touches, token, sender);
+            add_tip20_reward_touches(touches, token, sender);
         }
         _ => {}
     }
 }
 
-fn add_tip20_common_touches(unique_touches: &mut UniqueTouches, token: Address) {
-    add_account_touch(unique_touches, token);
-    add_storage_touch(unique_touches, token, tip20_slots::CURRENCY);
-    add_storage_touch(unique_touches, token, tip20_slots::PAUSED);
-    add_storage_touch(unique_touches, token, tip20_slots::TRANSFER_POLICY_ID);
-    add_storage_touch(unique_touches, token, tip20_slots::GLOBAL_REWARD_PER_TOKEN);
-    add_storage_touch(unique_touches, token, tip20_slots::OPTED_IN_SUPPLY);
+fn add_tip20_common_touches(touches: &mut UniqueTouches, token: Address) {
+    add_account_touch(touches, token);
+    add_storage_touch(touches, token, tip20_slots::CURRENCY);
+    add_storage_touch(touches, token, tip20_slots::PAUSED);
+    add_storage_touch(touches, token, tip20_slots::TRANSFER_POLICY_ID);
+    add_storage_touch(touches, token, tip20_slots::GLOBAL_REWARD_PER_TOKEN);
+    add_storage_touch(touches, token, tip20_slots::OPTED_IN_SUPPLY);
 }
 
-fn add_tip20_balance_touch(unique_touches: &mut UniqueTouches, token: Address, account: Address) {
-    add_storage_touch(
-        unique_touches,
-        token,
-        account.mapping_slot(tip20_slots::BALANCES),
-    );
+fn add_tip20_balance_touch(touches: &mut UniqueTouches, token: Address, account: Address) {
+    add_storage_touch(touches, token, account.mapping_slot(tip20_slots::BALANCES));
 }
 
 fn add_tip20_allowance_touch(
-    unique_touches: &mut UniqueTouches,
+    touches: &mut UniqueTouches,
     token: Address,
     owner: Address,
     spender: Address,
 ) {
     add_storage_touch(
-        unique_touches,
+        touches,
         token,
         spender.mapping_slot(owner.mapping_slot(tip20_slots::ALLOWANCES)),
     );
 }
 
-fn add_tip20_reward_touches(unique_touches: &mut UniqueTouches, token: Address, account: Address) {
+fn add_tip20_reward_touches(touches: &mut UniqueTouches, token: Address, account: Address) {
     let base_slot = account.mapping_slot(tip20_slots::USER_REWARD_INFO);
-    add_storage_touch(unique_touches, token, base_slot);
-    add_storage_touch(unique_touches, token, base_slot + U256::from(1));
-    add_storage_touch(unique_touches, token, base_slot + U256::from(2));
+    add_storage_touch(touches, token, base_slot);
+    add_storage_touch(touches, token, base_slot + U256::from(1));
+    add_storage_touch(touches, token, base_slot + U256::from(2));
 }
 
 fn add_fee_manager_touches(
-    unique_touches: &mut UniqueTouches,
+    touches: &mut UniqueTouches,
     fee_recipient: Address,
     fee_token: Address,
 ) {
-    add_account_touch(unique_touches, TIP_FEE_MANAGER_ADDRESS);
+    add_account_touch(touches, TIP_FEE_MANAGER_ADDRESS);
     add_storage_touch(
-        unique_touches,
+        touches,
         TIP_FEE_MANAGER_ADDRESS,
         fee_recipient.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS),
     );
     add_storage_touch(
-        unique_touches,
+        touches,
         TIP_FEE_MANAGER_ADDRESS,
         fee_token.mapping_slot(fee_recipient.mapping_slot(fee_manager_slots::COLLECTED_FEES)),
     );
 }
 
-fn add_expiring_nonce_touches(unique_touches: &mut UniqueTouches, tx: &BestTransaction) {
+fn add_expiring_nonce_touches(touches: &mut UniqueTouches, tx: &BestTransaction) {
     let Some(expiring_nonce_slot) = tx.transaction.expiring_nonce_slot() else {
         return;
     };
 
-    add_account_touch(unique_touches, NONCE_PRECOMPILE_ADDRESS);
+    add_account_touch(touches, NONCE_PRECOMPILE_ADDRESS);
+    add_storage_touch(touches, NONCE_PRECOMPILE_ADDRESS, expiring_nonce_slot);
     add_storage_touch(
-        unique_touches,
-        NONCE_PRECOMPILE_ADDRESS,
-        expiring_nonce_slot,
-    );
-    add_storage_touch(
-        unique_touches,
+        touches,
         NONCE_PRECOMPILE_ADDRESS,
         nonce_slots::EXPIRING_NONCE_RING_PTR,
     );
 }
 
-fn add_account_touch(unique_touches: &mut UniqueTouches, address: Address) {
-    unique_touches.push(StorageTouch::Account(address));
+fn add_account_touch(touches: &mut UniqueTouches, address: Address) {
+    touches.push(StorageTouch::Account(address));
 }
 
-fn add_storage_touch(unique_touches: &mut UniqueTouches, address: Address, slot: U256) {
-    add_account_touch(unique_touches, address);
-    unique_touches.push(StorageTouch::Storage { address, slot });
+fn add_storage_touch(touches: &mut UniqueTouches, address: Address, slot: U256) {
+    add_account_touch(touches, address);
+    touches.push(StorageTouch::Storage { address, slot });
 }
 
 /// Command sent by [`BestTransactionsPrewarming`] consumer.
