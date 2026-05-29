@@ -416,11 +416,11 @@ impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
     /// Returns a mutable reference to a lazily initialized handler for the given key.
     #[inline]
     pub(super) fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> &mut H {
-        let mut cache = self.inner.borrow_mut();
+        let cache = self.inner.get_mut();
         // Lookup first to avoid cloning on cache hit
-        if let Some(boxed) = cache.get_mut(key) {
+        if let Some(boxed) = cache.get_mut(key).map(|boxed| boxed.as_mut() as *mut H) {
             // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
-            return unsafe { &mut *(boxed.as_mut() as *mut H) };
+            return unsafe { &mut *boxed };
         }
         let boxed = cache.entry(key.clone()).or_insert_with(|| Box::new(f()));
         // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
