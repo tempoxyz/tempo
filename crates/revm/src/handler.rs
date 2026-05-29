@@ -1968,11 +1968,10 @@ where
 
             // Validate gas limit is sufficient for initial gas
             if gas_limit < init_gas.initial_total_gas() {
-                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+                return Err(call_gas_cost_more_than_gas_limit(
                     gas_limit,
-                    initial_gas: init_gas.initial_total_gas(),
-                }
-                .into());
+                    init_gas.initial_total_gas(),
+                ));
             }
 
             init_gas
@@ -1984,11 +1983,10 @@ where
 
         // Validate floor gas (Prague+)
         if gas_limit < init_gas.floor_gas {
-            return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
+            return Err(gas_floor_more_than_gas_limit(
                 gas_limit,
-                gas_floor: init_gas.floor_gas,
-            }
-            .into());
+                init_gas.floor_gas,
+            ));
         }
 
         // Validate that regular gas does not exceed the cap.
@@ -1996,11 +1994,10 @@ where
             && init_gas.initial_regular_gas().max(init_gas.floor_gas)
                 > evm.ctx.cfg.tx_gas_limit_cap()
         {
-            return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
-                gas_floor: init_gas.initial_regular_gas(),
-                gas_limit: evm.ctx.cfg.tx_gas_limit_cap(),
-            }
-            .into());
+            return Err(gas_floor_more_than_gas_limit(
+                evm.ctx.cfg.tx_gas_limit_cap(),
+                init_gas.initial_regular_gas(),
+            ));
         }
 
         Ok(init_gas)
@@ -2279,11 +2276,10 @@ where
     // initial_total_gas already includes initial_state_gas as a subset,
     // so no need to add state gas separately.
     if gas_limit < batch_gas.initial_total_gas() {
-        return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+        return Err(call_gas_cost_more_than_gas_limit(
             gas_limit,
-            initial_gas: batch_gas.initial_total_gas(),
-        }
-        .into());
+            batch_gas.initial_total_gas(),
+        ));
     }
 
     // For pre-T0 (Genesis), add 2D nonce gas after validation
@@ -2293,6 +2289,32 @@ where
     }
 
     Ok(batch_gas)
+}
+
+#[cold]
+#[inline(never)]
+fn call_gas_cost_more_than_gas_limit<E>(
+    gas_limit: u64,
+    initial_gas: u64,
+) -> EVMError<E, TempoInvalidTransaction> {
+    InvalidTransaction::CallGasCostMoreThanGasLimit {
+        gas_limit,
+        initial_gas,
+    }
+    .into()
+}
+
+#[cold]
+#[inline(never)]
+fn gas_floor_more_than_gas_limit<E>(
+    gas_limit: u64,
+    gas_floor: u64,
+) -> EVMError<E, TempoInvalidTransaction> {
+    InvalidTransaction::GasFloorMoreThanGasLimit {
+        gas_limit,
+        gas_floor,
+    }
+    .into()
 }
 
 /// IMPORTANT: the caller must ensure `token` is a valid TIP20Token address.
