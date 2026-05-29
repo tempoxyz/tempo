@@ -10,7 +10,6 @@
 use crate::{
     error::{Result, TempoPrecompileError},
     storage::{Layout, LayoutCtx, Slot, Storable, StorableType, StorageCtx, StorageOps},
-    tip20::U128_MAX,
 };
 use alloy::{
     primitives::{Address, U256},
@@ -172,7 +171,8 @@ impl Storable for UserState {
 /// APIs instead of typed storage handlers.
 #[inline]
 pub fn decode_tip20_balance(slot_value: U256) -> U256 {
-    slot_value & U128_MAX
+    let limbs = slot_value.as_limbs();
+    U256::from_limbs([limbs[0], limbs[1], 0, 0])
 }
 
 #[cfg(test)]
@@ -200,7 +200,7 @@ mod tests {
         assert_eq!(decode_tip20_balance(packed), balance);
 
         let packed = U256::MAX;
-        assert_eq!(decode_tip20_balance(packed), U128_MAX);
+        assert_eq!(decode_tip20_balance(packed), U256::from(u128::MAX));
     }
 
     #[test]
