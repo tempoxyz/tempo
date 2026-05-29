@@ -6,8 +6,8 @@
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{B256, Bytes};
 use alloy_rlp::Encodable as _;
-use bytes::{Buf, BufMut, Bytes as WireBytes};
-use commonware_codec::{EncodeSize, RangeCfg, Read, Write};
+use bytes::{Buf, BufMut};
+use commonware_codec::{EncodeSize, Read, Write};
 use commonware_consensus::{
     Heightable,
     simplex::types::Context,
@@ -28,19 +28,21 @@ use crate::consensus::Digest;
 /// that is not persisted as part of the block in reth's database.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Block {
+    /// The execution-layer block.
     execution_block: SealedBlock<tempo_primitives::Block>,
-    block_access_list: Option<WireBytes>,
+    /// Optional block access list. Only provided if the network supports BALs.
+    block_access_list: Option<Bytes>,
 }
 
 impl Block {
     /// Creates a consensus payload from an execution-layer block and optional BAL.
     pub(crate) fn from_execution_payload(
-        block: SealedBlock<tempo_primitives::Block>,
+        execution_block: SealedBlock<tempo_primitives::Block>,
         block_access_list: Option<Bytes>,
     ) -> Self {
         Self {
-            execution_block: block,
-            block_access_list: block_access_list.map(Into::into),
+            execution_block,
+            block_access_list,
         }
     }
 
@@ -51,7 +53,7 @@ impl Block {
 
     /// Consumes the payload and returns the execution-layer block plus optional BAL.
     pub(crate) fn into_parts(self) -> (SealedBlock<tempo_primitives::Block>, Option<Bytes>) {
-        (self.execution_block, self.block_access_list.map(Into::into))
+        (self.execution_block, self.block_access_list)
     }
 
     /// Returns the (eth) hash of the wrapped block.
@@ -80,7 +82,7 @@ impl Block {
     }
 
     /// Returns the block access list of the wrapped block.
-    pub(crate) fn block_access_list(&self) -> Option<&WireBytes> {
+    pub(crate) fn block_access_list(&self) -> Option<&Bytes> {
         self.block_access_list.as_ref()
     }
 }
@@ -139,7 +141,11 @@ impl Read for Block {
             })?;
 
         let block_access_list = if inner.block_access_list_hash().is_some() || buf.has_remaining() {
-            Some(WireBytes::read_cfg(buf, &RangeCfg::from(..))?)
+            Some(
+                alloy_rlp::Decodable::decode(&mut bytes.as_ref()).map_err(|rlp_err| {
+                    commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
+                })?,
+            )
         } else {
             None
         };
@@ -154,16 +160,10 @@ impl Read for Block {
 impl EncodeSize for Block {
     fn encode_size(&self) -> usize {
         self.execution_block.length()
-            + if self.execution_block.block_access_list_hash().is_some()
-                || self.block_access_list.is_some()
-            {
-                self.block_access_list
-                    .as_ref()
-                    .expect("BAL bytes must be present when encoding a BAL sidecar")
-                    .encode_size()
-            } else {
-                0
-            }
+            + self
+                .block_access_list
+                .as_ref()
+                .map_or(0, |bal| bal.length())
     }
 }
 
