@@ -7,7 +7,7 @@ use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{B256, Bytes};
 use alloy_rlp::Encodable as _;
 use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, Read, Write};
+use commonware_codec::{EncodeSize, RangeCfg, Read, Write};
 use commonware_consensus::{
     Heightable,
     simplex::types::Context,
@@ -141,11 +141,7 @@ impl Read for Block {
             })?;
 
         let block_access_list = if inner.block_access_list_hash().is_some() || buf.has_remaining() {
-            Some(
-                alloy_rlp::Decodable::decode(&mut bytes.as_ref()).map_err(|rlp_err| {
-                    commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
-                })?,
-            )
+            Some(bytes::Bytes::read_cfg(buf, &RangeCfg::from(..))?.into())
         } else {
             None
         };
@@ -160,10 +156,10 @@ impl Read for Block {
 impl EncodeSize for Block {
     fn encode_size(&self) -> usize {
         self.execution_block.length()
-            + self
-                .block_access_list
-                .as_ref()
-                .map_or(0, |bal| bal.length())
+            + self.block_access_list.as_ref().map_or(0, |bal| {
+                let bal: &bytes::Bytes = bal;
+                bal.encode_size()
+            })
     }
 }
 
