@@ -12,10 +12,7 @@ use crate::{
     storage::{Layout, LayoutCtx, Slot, Storable, StorableType, StorageCtx, StorageOps},
     tip20::U128_MAX,
 };
-use alloy::{
-    primitives::{Address, U256},
-    sol_types::PanicKind,
-};
+use alloy::primitives::{Address, U256};
 use tempo_precompiles_macros::Storable;
 
 // NOTE: `RewardFlag` derives `Storable`, so the cached flag occupies 1 byte in storage despite
@@ -31,6 +28,17 @@ pub enum RewardFlag {
 }
 
 impl RewardFlag {
+    fn from_storage_byte(value: u8) -> Result<Self> {
+        match value {
+            value if value == Self::Uninitialized as u8 => Ok(Self::Uninitialized),
+            value if value == Self::OptedOut as u8 => Ok(Self::OptedOut),
+            value if value == Self::OptedIn as u8 => Ok(Self::OptedIn),
+            _ => Err(TempoPrecompileError::Fatal(
+                "invalid T6 TIP-20 packed user state: reward flag discriminant".into(),
+            )),
+        }
+    }
+
     pub fn is_opted_out(&self) -> bool {
         matches!(self, Self::OptedOut)
     }
@@ -143,15 +151,13 @@ impl Storable for UserState {
             });
         }
 
-        match PackedUserState::load(storage, slot, ctx) {
-            Ok(value) => Ok(value.into()),
-            Err(TempoPrecompileError::Panic(PanicKind::EnumConversionError)) => {
-                Err(TempoPrecompileError::Fatal(
-                    "invalid T6 TIP-20 packed user state: reward flag discriminant".into(),
-                ))
-            }
-            Err(err) => Err(err),
-        }
+        let value = storage.load(slot)?;
+        let flag = ((value >> 128usize) & U256::from(u8::MAX)).to::<u8>();
+
+        Ok(Self {
+            amount: (value & U128_MAX).to::<u128>(),
+            flag: RewardFlag::from_storage_byte(flag)?,
+        })
     }
 
     fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
