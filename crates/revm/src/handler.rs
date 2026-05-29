@@ -1658,7 +1658,7 @@ where
                 &aa_env.aa_calls,
                 !aa_env.tempo_authorization_list.is_empty(),
             )
-            .map_err(TempoInvalidTransaction::from)?;
+            .map_err(aa_calls_validation_error)?;
 
             // Access-key CREATE is a cheap structural rejection that does not depend on any
             // per-call scope walk or state mutation. Rejecting it here keeps validation work
@@ -1671,10 +1671,7 @@ where
                     .first()
                     .is_some_and(|call| call.to.is_create())
             {
-                return Err(TempoInvalidTransaction::CallsValidation(
-                    "access-key transactions cannot use CREATE as the first call",
-                )
-                .into());
+                return Err(access_key_create_call_error());
             }
 
             // Validate keychain signature version (outer + authorization list).
@@ -2293,6 +2290,21 @@ where
     }
 
     Ok(batch_gas)
+}
+
+#[cold]
+#[inline(never)]
+fn aa_calls_validation_error<E>(err: &'static str) -> EVMError<E, TempoInvalidTransaction> {
+    TempoInvalidTransaction::CallsValidation(err).into()
+}
+
+#[cold]
+#[inline(never)]
+fn access_key_create_call_error<E>() -> EVMError<E, TempoInvalidTransaction> {
+    TempoInvalidTransaction::CallsValidation(
+        "access-key transactions cannot use CREATE as the first call",
+    )
+    .into()
 }
 
 /// IMPORTANT: the caller must ensure `token` is a valid TIP20Token address.
