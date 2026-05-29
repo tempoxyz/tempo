@@ -215,6 +215,8 @@ where
     }
 
     /// Validates a system transaction.
+    #[cold]
+    #[inline(never)]
     pub(crate) fn validate_system_tx(
         &self,
         tx: &TempoTxEnvelope,
@@ -398,6 +400,35 @@ where
         }
     }
 
+    #[cold]
+    #[inline(never)]
+    fn validate_subblock_tx(
+        &self,
+        tx_proposer: PartialValidatorKey,
+    ) -> Result<BlockSection, BlockValidationError> {
+        match self.section {
+            BlockSection::GasIncentive | BlockSection::System { .. } => {
+                Err(BlockValidationError::msg("subblock section already passed"))
+            }
+            BlockSection::StartOfBlock | BlockSection::NonShared => Ok(BlockSection::SubBlock {
+                proposer: tx_proposer,
+            }),
+            BlockSection::SubBlock { proposer } => {
+                if proposer == tx_proposer
+                    || !self.seen_subblocks.iter().any(|(p, _)| *p == tx_proposer)
+                {
+                    Ok(BlockSection::SubBlock {
+                        proposer: tx_proposer,
+                    })
+                } else {
+                    Err(BlockValidationError::msg(
+                        "proposer's subblock already processed",
+                    ))
+                }
+            }
+        }
+    }
+
     pub(crate) fn validate_tx(
         &self,
         tx: &TempoTxEnvelope,
@@ -407,29 +438,7 @@ where
         if tx.is_system_tx() {
             self.validate_system_tx(tx)
         } else if let Some(tx_proposer) = tx.subblock_proposer() {
-            match self.section {
-                BlockSection::GasIncentive | BlockSection::System { .. } => {
-                    Err(BlockValidationError::msg("subblock section already passed"))
-                }
-                BlockSection::StartOfBlock | BlockSection::NonShared => {
-                    Ok(BlockSection::SubBlock {
-                        proposer: tx_proposer,
-                    })
-                }
-                BlockSection::SubBlock { proposer } => {
-                    if proposer == tx_proposer
-                        || !self.seen_subblocks.iter().any(|(p, _)| *p == tx_proposer)
-                    {
-                        Ok(BlockSection::SubBlock {
-                            proposer: tx_proposer,
-                        })
-                    } else {
-                        Err(BlockValidationError::msg(
-                            "proposer's subblock already processed",
-                        ))
-                    }
-                }
-            }
+            self.validate_subblock_tx(tx_proposer)
         } else {
             match self.section {
                 BlockSection::StartOfBlock | BlockSection::NonShared => {
