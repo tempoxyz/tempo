@@ -4,7 +4,7 @@
 //! consensus-layer validation data that is transmitted over commonware p2p.
 
 use alloy_consensus::BlockHeader as _;
-use alloy_primitives::{B256, Bytes};
+use alloy_primitives::{B256, Bytes, keccak256};
 use alloy_rlp::Encodable as _;
 use bytes::{Buf, BufMut};
 use commonware_codec::{EncodeSize, RangeCfg, Read, Write};
@@ -22,10 +22,37 @@ use tracing::warn;
 
 use crate::consensus::Digest;
 
-/// A Tempo consensus payload.
-///
-/// This wraps the execution-layer block with consensus-layer validation data
-/// that is not persisted as part of the block in reth's database.
+/// Error returned when a BAL sidecar does not match the execution block header.
+#[derive(Debug, thiserror::Error, PartialEq, Eq)]
+pub(crate) enum BlockAccessListError {
+    /// The header commits to a BAL, but no BAL bytes were provided.
+    #[error("block access list hash {expected} is present but block access list is missing")]
+    Missing { expected: B256 },
+    /// BAL bytes were provided for a block that does not commit to a BAL.
+    #[error("block access list is present but block access list hash is missing")]
+    Unexpected,
+    /// The BAL bytes do not hash to the value committed in the header.
+    #[error("block access list hash mismatch: expected {expected}, got {actual}")]
+    HashMismatch { expected: B256, actual: B256 },
+}
+
+impl BlockAccessListError {
+    fn codec_error(self) -> commonware_codec::Error {
+        match self {
+            Self::Missing { .. } => {
+                commonware_codec::Error::Invalid("block access list", "missing for header hash")
+            }
+            Self::Unexpected => {
+                commonware_codec::Error::Invalid("block access list", "present without header hash")
+            }
+            Self::HashMismatch { .. } => {
+                commonware_codec::Error::Invalid("block access list", "hash does not match header")
+            }
+        }
+    }
+}
+
+/// A Tempo block.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Block {
     /// The execution-layer block.
@@ -35,8 +62,28 @@ pub(crate) struct Block {
 }
 
 impl Block {
-    /// Creates a consensus payload from an execution-layer block and optional BAL.
-    pub(crate) fn from_execution_payload(
+    /// Creates a block from an execution-layer block and optional BAL.
+    pub(crate) fn from_execution_block(
+        execution_block: SealedBlock<tempo_primitives::Block>,
+        block_access_list: Option<Bytes>,
+    ) -> Result<Self, BlockAccessListError> {
+        validate_block_access_list_hash(
+            execution_block.block_access_list_hash(),
+            block_access_list.as_ref(),
+        )?;
+
+        Ok(Self::from_execution_block_unchecked(
+            execution_block,
+            block_access_list,
+        ))
+    }
+
+    /// Creates a block without checking that BAL bytes match the header.
+    ///
+    /// This is for reconstructing blocks from persisted EL data that does not include
+    /// commonware sidecars. Callers must not encode or broadcast a block whose header
+    /// commits to a BAL unless the corresponding BAL bytes have been restored.
+    pub(crate) fn from_execution_block_unchecked(
         execution_block: SealedBlock<tempo_primitives::Block>,
         block_access_list: Option<Bytes>,
     ) -> Self {
@@ -46,12 +93,12 @@ impl Block {
         }
     }
 
-    /// Consumes the payload and returns only the execution-layer block.
+    /// Consumes the block and returns only the execution-layer block.
     pub(crate) fn into_inner(self) -> SealedBlock<tempo_primitives::Block> {
         self.execution_block
     }
 
-    /// Consumes the payload and returns the execution-layer block plus optional BAL.
+    /// Consumes the block and returns the execution-layer block plus optional BAL.
     pub(crate) fn into_parts(self) -> (SealedBlock<tempo_primitives::Block>, Option<Bytes>) {
         (self.execution_block, self.block_access_list)
     }
@@ -98,13 +145,11 @@ impl std::ops::Deref for Block {
 impl Write for Block {
     fn write(&self, buf: &mut impl BufMut) {
         self.execution_block.encode(buf);
-        if self.execution_block.block_access_list_hash().is_some()
-            || self.block_access_list.is_some()
-        {
+        if self.execution_block.block_access_list_hash().is_some() {
             let block_access_list = self
                 .block_access_list
                 .as_ref()
-                .expect("BAL bytes must be present when encoding a BAL sidecar");
+                .expect("BAL bytes must be present when header contains a BAL hash");
             block_access_list.write(buf);
         }
     }
@@ -140,26 +185,32 @@ impl Read for Block {
                 commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
             })?;
 
-        let block_access_list = if inner.block_access_list_hash().is_some() || buf.has_remaining() {
-            Some(bytes::Bytes::read_cfg(buf, &RangeCfg::from(..))?.into())
+        let block_access_list = if inner.block_access_list_hash().is_some() {
+            let block_access_list: Bytes = bytes::Bytes::read_cfg(buf, &RangeCfg::from(..))
+                .map_err(|err| {
+                    commonware_codec::Error::Wrapped("reading block access list", err.into())
+                })?
+                .into();
+            Some(block_access_list)
         } else {
             None
         };
 
-        Ok(Self {
-            execution_block: inner,
-            block_access_list,
-        })
+        Self::from_execution_block(inner, block_access_list).map_err(|err| err.codec_error())
     }
 }
 
 impl EncodeSize for Block {
     fn encode_size(&self) -> usize {
         self.execution_block.length()
-            + self.block_access_list.as_ref().map_or(0, |bal| {
-                let bal: &bytes::Bytes = bal;
-                bal.encode_size()
-            })
+            + if self.execution_block.block_access_list_hash().is_some() {
+                self.block_access_list
+                    .as_ref()
+                    .expect("BAL bytes must be present when header contains a BAL hash")
+                    .encode_size()
+            } else {
+                0
+            }
     }
 }
 
@@ -188,6 +239,25 @@ impl Heightable for Block {
 impl commonware_consensus::Block for Block {
     fn parent(&self) -> Digest {
         self.parent_digest()
+    }
+}
+
+fn validate_block_access_list_hash(
+    expected: Option<B256>,
+    block_access_list: Option<&Bytes>,
+) -> Result<(), BlockAccessListError> {
+    match (expected, block_access_list) {
+        (Some(expected), Some(block_access_list)) => {
+            let actual = keccak256(block_access_list.as_ref());
+            if actual == expected {
+                Ok(())
+            } else {
+                Err(BlockAccessListError::HashMismatch { expected, actual })
+            }
+        }
+        (Some(expected), None) => Err(BlockAccessListError::Missing { expected }),
+        (None, Some(_)) => Err(BlockAccessListError::Unexpected),
+        (None, None) => Ok(()),
     }
 }
 
@@ -391,18 +461,32 @@ impl commonware_consensus::CertifiableBlock for Block {
 #[cfg(test)]
 mod tests {
     use alloy_consensus::BlockHeader as _;
-    use alloy_primitives::{bytes, hex};
-    use commonware_codec::{Encode, EncodeSize as _, Read as _};
+    use alloy_primitives::{B256, bytes, keccak256};
+    use commonware_codec::{Encode, Read as _};
     use reth_node_core::primitives::SealedBlock;
     use tempo_primitives::{Block as TempoBlock, TempoHeader};
 
-    use super::Block;
+    use super::{Block, BlockAccessListError};
 
-    fn raw_block_19666674() -> Vec<u8> {
-        let hex = include_str!("../../testdata/raw_block_19666674.hex").trim();
-        let hex = hex.strip_prefix("0x").unwrap_or(hex);
-
-        hex::decode(hex).expect("raw block fixture is valid hex")
+    fn execution_block_with_block_access_list_hash(
+        block_access_list_hash: B256,
+    ) -> SealedBlock<TempoBlock> {
+        SealedBlock::seal_slow(TempoBlock {
+            header: TempoHeader {
+                inner: alloy_consensus::Header {
+                    base_fee_per_gas: Some(0),
+                    withdrawals_root: Some(B256::ZERO),
+                    blob_gas_used: Some(0),
+                    excess_blob_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    requests_hash: Some(B256::ZERO),
+                    block_access_list_hash: Some(block_access_list_hash),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: Default::default(),
+        })
     }
 
     // required unit tests:
@@ -424,10 +508,31 @@ mod tests {
 
     #[test]
     fn reads_block_without_block_access_list_bytes() {
-        // cast rpc debug_getRawBlock $(cast to-hex 19666674) -r https://rpc.testnet.tempo.xyz
-        let block_bytes = raw_block_19666674();
+        let execution_block = SealedBlock::seal_slow(TempoBlock {
+            header: TempoHeader {
+                inner: alloy_consensus::Header {
+                    number: 42,
+                    gas_limit: 30_000_000,
+                    timestamp: 1_700_000_000,
+                    base_fee_per_gas: Some(1_000_000_000),
+                    withdrawals_root: Some(B256::ZERO),
+                    blob_gas_used: Some(0),
+                    excess_blob_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    requests_hash: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: Default::default(),
+        });
+        let expected = Block::from_execution_block(execution_block.clone(), None)
+            .expect("block has no BAL side data");
+        let mut block_bytes = Vec::new();
+        alloy_rlp::Encodable::encode(&execution_block, &mut block_bytes);
 
         let decoded = Block::read_cfg(&mut block_bytes.as_ref(), &()).unwrap();
+        assert_eq!(decoded, expected);
         assert!(decoded.block_access_list().is_none());
 
         let encoded = decoded.encode();
@@ -436,7 +541,7 @@ mod tests {
     }
 
     #[test]
-    fn roundtrips_block_access_list_without_header_hash() {
+    fn rejects_block_access_list_without_header_hash() {
         let execution_block = SealedBlock::seal_slow(TempoBlock {
             header: TempoHeader::default(),
             body: Default::default(),
@@ -444,11 +549,48 @@ mod tests {
         assert!(execution_block.block_access_list_hash().is_none());
 
         let block_access_list = bytes!("0xc0");
-        let block = Block::from_execution_payload(execution_block, Some(block_access_list.clone()));
+        let err =
+            Block::from_execution_block(execution_block, Some(block_access_list)).unwrap_err();
+
+        assert_eq!(err, BlockAccessListError::Unexpected);
+    }
+
+    #[test]
+    fn rejects_missing_block_access_list_with_header_hash() {
+        let execution_block = execution_block_with_block_access_list_hash(B256::ZERO);
+        let err = Block::from_execution_block(execution_block, None).unwrap_err();
+
+        assert_eq!(
+            err,
+            BlockAccessListError::Missing {
+                expected: B256::ZERO
+            }
+        );
+    }
+
+    #[test]
+    fn reads_wraps_missing_block_access_list_error() {
+        let execution_block = execution_block_with_block_access_list_hash(B256::ZERO);
+        let mut encoded = Vec::new();
+        alloy_rlp::Encodable::encode(&execution_block, &mut encoded);
+
+        let err = Block::read_cfg(&mut encoded.as_ref(), &()).unwrap_err();
+
+        assert!(matches!(
+            err,
+            commonware_codec::Error::Wrapped("reading block access list", _)
+        ));
+    }
+
+    #[test]
+    fn roundtrips_block_access_list_with_matching_header_hash() {
+        let block_access_list = bytes!("0xc0");
+        let execution_block =
+            execution_block_with_block_access_list_hash(keccak256(block_access_list.as_ref()));
+        let block =
+            Block::from_execution_block(execution_block, Some(block_access_list.clone())).unwrap();
 
         let encoded = block.encode();
-        assert_eq!(encoded.len(), block.encode_size());
-
         let decoded = Block::read_cfg(&mut encoded.as_ref(), &()).unwrap();
 
         assert_eq!(decoded, block);
@@ -456,6 +598,35 @@ mod tests {
             decoded.block_access_list().map(|bytes| bytes.as_ref()),
             Some(block_access_list.as_ref())
         );
-        assert!(decoded.block().block_access_list_hash().is_none());
+    }
+
+    #[test]
+    fn rejects_block_access_list_with_mismatched_header_hash() {
+        let block_access_list = bytes!("0xc0");
+        let execution_block = execution_block_with_block_access_list_hash(B256::ZERO);
+        let err =
+            Block::from_execution_block(execution_block, Some(block_access_list)).unwrap_err();
+
+        assert_eq!(
+            err,
+            BlockAccessListError::HashMismatch {
+                expected: B256::ZERO,
+                actual: keccak256(bytes!("0xc0").as_ref())
+            }
+        );
+    }
+
+    #[test]
+    fn reads_reject_block_access_list_with_mismatched_header_hash() {
+        let block_access_list = bytes!("0xc0");
+        let execution_block = execution_block_with_block_access_list_hash(B256::ZERO);
+        let block = Block::from_execution_block_unchecked(execution_block, Some(block_access_list));
+        let encoded = block.encode();
+        let err = Block::read_cfg(&mut encoded.as_ref(), &()).unwrap_err();
+
+        assert!(matches!(
+            err,
+            commonware_codec::Error::Invalid("block access list", "hash does not match header")
+        ));
     }
 }

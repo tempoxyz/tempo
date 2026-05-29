@@ -770,7 +770,8 @@ impl Inner<Init> {
         let proposal_return_time = context.current() + return_delay;
 
         let (block, block_access_list) = payload.into_execution_payload();
-        let proposal = Block::from_execution_payload(block, block_access_list);
+        let proposal = Block::from_execution_block(block, block_access_list)
+            .wrap_err("payload builder produced an invalid block access list")?;
 
         Ok((
             proposal,
@@ -1133,8 +1134,8 @@ async fn get_parent(
             format!("failed querying execution layer for parent block `{parent_digest}`")
         })?
     {
-        // It is fine to omit BAL for blocks loaded from the EL database.
-        Ok(Block::from_execution_payload(parent.seal(), None))
+        // EL database reads do not include commonware sidecars.
+        Ok(Block::from_execution_block_unchecked(parent.seal(), None))
     } else {
         marshal
             .subscribe_by_digest(Some(Round::new(round.epoch(), parent_view)), parent_digest)
