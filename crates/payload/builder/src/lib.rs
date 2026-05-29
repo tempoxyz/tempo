@@ -690,6 +690,10 @@ where
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
         };
+
+        // cancel pre-warming, if any, by dropping the iter
+        drop(best_txs);
+
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =
             elapsed_at_tx_cutoff.saturating_sub(normal_transaction_fill_idle_elapsed);
