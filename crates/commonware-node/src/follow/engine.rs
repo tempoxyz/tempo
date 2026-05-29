@@ -23,6 +23,7 @@ use commonware_utils::{NZUsize, channel::mpsc};
 use eyre::{WrapErr as _, eyre};
 use futures::{StreamExt as _, stream::FuturesUnordered};
 use rand_08::{CryptoRng, Rng};
+use tempo_chainspec::NetworkIdentity;
 use tempo_node::TempoFullNode;
 use tracing::{info, info_span};
 
@@ -51,6 +52,9 @@ pub struct Config<TUpstream> {
 
     /// Epoch strategy.
     pub epoch_strategy: FixedEpocher,
+
+    /// Latest network Identity of the chain.
+    pub network_identity: NetworkIdentity,
 
     /// Mailbox size for async channels.
     pub mailbox_size: usize,
@@ -170,6 +174,7 @@ impl<TUpstream> Config<TUpstream> {
             driver::Config {
                 execution_node: self.execution_node.clone(),
                 scheme_provider: scheme_provider.clone(),
+                network_identity: self.network_identity,
                 last_finalized_height,
                 marshal: marshal_mailbox,
                 feed: feed_mailbox,

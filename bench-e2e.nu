@@ -776,6 +776,58 @@ def bench-update-pr-status [status: string] {
     }
 }
 
+def build-valscope-static-reports [
+    results_dir: string,
+    benchmark_id: string,
+    valscope_dir: string,
+] {
+    let manifest = $"($valscope_dir)/apps/api/Cargo.toml"
+    if not ($manifest | path exists) {
+        print $"Error: ValScope API Cargo manifest not found at ($manifest)"
+        exit 1
+    }
+
+    let vm_url = ($env | get -o VICTORIAMETRICS_URL | default "")
+    let vlogs_url = ($env | get -o VICTORIALOGS_URL | default "")
+    if $vm_url == "" {
+        print "Error: VICTORIAMETRICS_URL is required to generate ValScope static reports"
+        exit 1
+    }
+    if $vlogs_url == "" {
+        print "Error: VICTORIALOGS_URL is required to generate ValScope static reports"
+        exit 1
+    }
+
+    print "Generating ValScope static reports with configured VM/VLogs datasources"
+    let out_dir = $"($results_dir)/valscope-static"
+    let web_dir = $"($valscope_dir)/apps/web"
+    let web_dist = $"($web_dir)/dist"
+    let npm_ci = (run-external "npm" "--prefix" $web_dir "ci" | complete)
+    if $npm_ci.stdout != "" { print $npm_ci.stdout }
+    if $npm_ci.stderr != "" { print $npm_ci.stderr }
+    if $npm_ci.exit_code != 0 {
+        print $"Error: ValScope web dependency install failed with exit code ($npm_ci.exit_code)"
+        exit $npm_ci.exit_code
+    }
+    let web_build = (run-external "npm" "--prefix" $web_dir "run" "build:static-report-app" | complete)
+    if $web_build.stdout != "" { print $web_build.stdout }
+    if $web_build.stderr != "" { print $web_build.stderr }
+    if $web_build.exit_code != 0 {
+        print $"Error: ValScope static web build failed with exit code ($web_build.exit_code)"
+        exit $web_build.exit_code
+    }
+    let result = (with-env { VICTORIAMETRICS_URL: $vm_url, VICTORIALOGS_URL: $vlogs_url } {
+        run-external "cargo" "run" "--manifest-path" $manifest "--bin" "valscope-bench-report" "--" "--results-dir" $results_dir "--out-dir" $out_dir "--web-dist" $web_dist "--benchmark-id" $benchmark_id | complete
+    })
+    if $result.stdout != "" { print $result.stdout }
+    if $result.stderr != "" { print $result.stderr }
+    if $result.exit_code != 0 {
+        if ($out_dir | path exists) { rm -rf $out_dir }
+        print $"Error: ValScope static report generation failed with exit code ($result.exit_code)"
+        exit $result.exit_code
+    }
+}
+
 def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
     print $"=== Starting local e2e phase: ($phase) ==="
@@ -1077,7 +1129,7 @@ def "main e2e" [
     --feature: string                                   # Feature git SHA/ref
     --preset: string = ""                               # Txgen preset name
     --tps: int = 20000                                  # Target TPS
-    --duration: int = 300                               # Duration in seconds
+    --duration: int = 90                                # Duration in seconds
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 100                # Max concurrent requests
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 1, 10, or 100
@@ -1097,7 +1149,7 @@ def "main e2e" [
     --victoriametrics-url: string = ""                  # VictoriaMetrics base URL for txgen metric sample import
     --clickhouse-url: string = ""                       # ClickHouse HTTP endpoint for txgen result upload
     --clickhouse-run: string = "feature-1"              # Run label allowed to use the ClickHouse reporter; empty = every run
-    --run-pairs: int = 2                                # Number of baseline/feature run pairs
+    --run-pairs: int = 3                                # Number of baseline/feature run pairs
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
@@ -1112,9 +1164,12 @@ def "main e2e" [
     --tune                                              # Apply system tuning
     --loud                                              # Show node debug logs
     --no-cache                                           # Skip binary cache
+    --valscope-static-report                             # Generate static ValScope reports under the results directory
+    --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
     let preset_path = (txgen-preset-path $preset)
+    txgen-validate-bench-args $bench_args
     if $tracy not-in ["off" "on" "full"] {
         print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
         exit 1
@@ -1479,8 +1534,13 @@ def "main e2e" [
         }
     }
 
-    if $e2e_exit == 0 and not $skip_summary {
-        e2e-generate-summary $results_dir
+    if $e2e_exit == 0 {
+        if not $skip_summary {
+            e2e-generate-summary $results_dir
+        }
+        if $valscope_static_report {
+            build-valscope-static-reports $results_dir $benchmark_id $valscope_dir
+        }
     }
 
     try { git worktree remove --force $baseline_wt } catch { }

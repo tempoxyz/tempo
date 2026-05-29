@@ -7,6 +7,7 @@ use commonware_consensus::{
 use commonware_cryptography::ed25519::PublicKey;
 use commonware_utils::channel::oneshot;
 use futures::{SinkExt as _, channel::mpsc};
+use std::time::Instant;
 
 use crate::consensus::Digest;
 
@@ -46,6 +47,7 @@ pub(super) struct Propose {
     pub(super) response: oneshot::Sender<Digest>,
     pub(super) round: Round,
     pub(super) leader: PublicKey,
+    pub(super) started_at: Instant,
 }
 
 impl From<Propose> for Message {
@@ -113,6 +115,7 @@ impl Automaton for Mailbox {
                     response: tx,
                     round: context.round,
                     leader: context.leader,
+                    started_at: Instant::now(),
                 }
                 .into(),
             )

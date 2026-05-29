@@ -5,6 +5,7 @@
 
 use std::time::Duration;
 
+use super::dkg::common::assert_no_dkg_failures;
 use crate::{
     CONSENSUS_NODE_PREFIX, Setup, TestingNode, connect_execution_peers,
     execution_runtime::{ExecutionNode, ExecutionRuntimeHandle, test_db_args},
@@ -23,7 +24,6 @@ use futures::future::join_all;
 use rand_core::CryptoRngCore;
 use tempo_commonware_node::{feed::FeedStateHandle, follow};
 use tempo_node::rpc::consensus::{ConsensusFeed as _, Query, types::Response};
-use tracing::info;
 
 static EPOCH_LENGTH: u64 = 10;
 
@@ -136,8 +136,8 @@ impl FollowerBuilder {
                 PrivateKey::random(&mut *context).public_key()
             )
         });
-        let partition_prefix = partition_prefix.unwrap_or_else(|| name.clone());
 
+        let partition_prefix = partition_prefix.unwrap_or_else(|| name.clone());
         let feed_state = FeedStateHandle::new();
 
         let config = crate::ExecutionNodeConfig {
@@ -176,15 +176,23 @@ impl FollowerBuilder {
             },
         );
 
+        let network_identity = node
+            .node
+            .chain_spec()
+            .network_identity
+            .clone()
+            .expect("no genesis network identity");
+
         let config = follow::Config {
+            network_identity,
+            upstream,
+            upstream_mailbox,
             execution_node: node.node.clone().into(),
             feed_state: feed_state.clone(),
             partition_prefix,
             epoch_strategy: FixedEpocher::new(NZU64!(EPOCH_LENGTH)),
             mailbox_size: 16_384,
             fcu_heartbeat_interval: Duration::from_secs(300),
-            upstream,
-            upstream_mailbox,
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
             finalized_blocks_retention: 1024,
@@ -266,6 +274,104 @@ fn follower_bootstraps_from_validator() {
 }
 
 #[test_traced]
+fn follower_fast_sync_skips_historical_boundaries() {
+    let _ = tempo_eyre::install();
+
+    let start_height = 2 * EPOCH_LENGTH + 1;
+    let follower_target_height = start_height + 1;
+
+    let setup = Setup::new().how_many_signers(1).epoch_length(EPOCH_LENGTH);
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+
+    let executor = Runner::from(cfg);
+    executor.start(|mut context| async move {
+        let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+
+        wait_for_height(&context, CONSENSUS_NODE_PREFIX, start_height).await;
+
+        let follower = Follower::builder()
+            .runtime(execution_runtime.handle())
+            .follow(&mut context, &validators[0])
+            .await;
+
+        follower.connect_peers(&validators).await;
+
+        wait_for_height(&context, &follower.name, follower_target_height).await;
+        follower.feed.get_finalization(Query::Latest).await.unwrap();
+
+        let epoch_0_boundary = EPOCH_LENGTH - 1;
+        let epoch_1_boundary = 2 * EPOCH_LENGTH - 1;
+        for boundary in [epoch_0_boundary, epoch_1_boundary] {
+            let historical_boundary = follower
+                .feed
+                .get_finalization(Query::Height(boundary))
+                .await;
+
+            let Response::Missing(..) = historical_boundary else {
+                panic!("boundary block at height {boundary} should be missing after fast sync");
+            };
+        }
+    });
+}
+
+#[test_traced]
+fn follower_reads_boundaries_after_full_dkg() {
+    let _ = tempo_eyre::install();
+
+    let full_dkg_epoch = 1;
+    let start_height = 2 * EPOCH_LENGTH + 1;
+    let follower_target_height = start_height + 1;
+
+    let setup = Setup::new().how_many_signers(1).epoch_length(EPOCH_LENGTH);
+    let cfg = deterministic::Config::default().with_seed(setup.seed);
+
+    let executor = Runner::from(cfg);
+    executor.start(|mut context| async move {
+        let (mut validators, execution_runtime) = setup_validators(&mut context, setup).await;
+        join_all(validators.iter_mut().map(|v| v.start(&context))).await;
+
+        let http_url = validators[0]
+            .execution()
+            .rpc_server_handle()
+            .http_url()
+            .unwrap()
+            .parse()
+            .unwrap();
+
+        execution_runtime
+            .set_next_full_dkg_ceremony_v2(http_url, full_dkg_epoch)
+            .await
+            .unwrap();
+
+        wait_for_height(&context, CONSENSUS_NODE_PREFIX, start_height).await;
+        assert_no_dkg_failures(&context);
+
+        let follower = Follower::builder()
+            .runtime(execution_runtime.handle())
+            .follow(&mut context, &validators[0])
+            .await;
+        follower.connect_peers(&validators).await;
+
+        wait_for_height(&context, &follower.name, follower_target_height).await;
+        follower.feed.get_finalization(Query::Latest).await.unwrap();
+
+        let epoch_0_boundary = EPOCH_LENGTH - 1;
+        let epoch_1_boundary = 2 * EPOCH_LENGTH - 1;
+        for boundary in [epoch_0_boundary, epoch_1_boundary] {
+            let historical_boundary = follower
+                .feed
+                .get_finalization(Query::Height(boundary))
+                .await;
+
+            let Response::Success(..) = historical_boundary else {
+                panic!("boundary block at height {boundary} should be present after full DKG");
+            };
+        }
+    });
+}
+
+#[test_traced]
 fn follower_bootstraps_from_follower() {
     let _ = tempo_eyre::install();
 
@@ -288,11 +394,6 @@ fn follower_bootstraps_from_follower() {
             .await;
         validator_follower.connect_peers(&validators).await;
 
-        info!(
-            new_follower_name = validator_follower.name(),
-            "started following validator",
-        );
-
         // Some finalization state needs to be present.
         wait_for_height(&context, validator_follower.name(), target_height).await;
 
@@ -301,11 +402,6 @@ fn follower_bootstraps_from_follower() {
             .follow(&mut context, &validator_follower) // <-- needs feed of follower
             .await;
         follower_follower.connect_peers(&validators).await;
-
-        info!(
-            new_follower_name = follower_follower.name(),
-            "started following follower",
-        );
 
         // Wait on the *primary*, but query the *secondary* follower. This
         // should address all race conditions between a) the secondary follower

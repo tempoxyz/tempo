@@ -1,5 +1,15 @@
 # Changelog
 
+## `tempo-primitives@1.8.0`
+
+### Minor Changes
+
+- Added T6 admin access key support for account keychain authorization and SDK transaction builders. (by @DerekCofausper, [#4650](https://github.com/tempoxyz/tempo/pull/4650))
+
+### Patch Changes
+
+- Reject channel reserve payment-lane calls with malformed Tempo signature encodings. (by @DerekCofausper, [#4650](https://github.com/tempoxyz/tempo/pull/4650))
+
 ## `tempo-primitives@1.7.3`
 
 
