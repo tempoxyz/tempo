@@ -174,7 +174,9 @@ impl TipFeeManager {
         if !skip_liquidity_check {
             let (route, ..) = self.plan_fee_route(user_token, validator_token, max_amount)?;
             let route = route.ok_or_else(TIPFeeAMMError::insufficient_liquidity)?;
-            self.reserve_fee_liquidity(user_token, validator_token, max_amount, route)?;
+            if !matches!(route, FeeRoute::SameToken) {
+                self.reserve_fee_liquidity(user_token, validator_token, max_amount, route)?;
+            }
         }
 
         // Return the user's token preference
