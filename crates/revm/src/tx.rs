@@ -1,7 +1,7 @@
 use crate::TempoInvalidTransaction;
 use alloy_consensus::{Typed2718, crypto::secp256k1};
 use alloy_evm::{FromRecoveredTx, FromTxWithEncoded, IntoTxEnv, TransactionEnvMut};
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, Signature, TxKind, U256};
 use alloy_rlp::Encodable;
 use core::num::NonZeroU64;
 use revm::context::{
@@ -314,6 +314,16 @@ impl IntoTxEnv<Self> for TempoTxEnv {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn recover_fee_payer_signature(
+    tx: &TempoTransaction,
+    caller: Address,
+    signature: &Signature,
+) -> Option<Address> {
+    secp256k1::recover_signer(signature, tx.fee_payer_signature_hash(caller)).ok()
+}
+
 impl FromRecoveredTx<AASigned> for TempoTxEnv {
     fn from_recovered_tx(aa_signed: &AASigned, caller: Address) -> Self {
         let tx = aa_signed.tx();
@@ -384,9 +394,10 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             fee_token: *fee_token,
             is_system_tx: false,
             unique_tx_identifier: Some(aa_signed.expiring_nonce_hash(caller)),
-            fee_payer: fee_payer_signature.map(|sig| {
-                secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
-            }),
+            fee_payer: match fee_payer_signature {
+                Some(sig) => Some(recover_fee_payer_signature(tx, caller, sig)),
+                None => None,
+            },
             // Bundle AA-specific fields into TempoBatchCallEnv
             tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
                 signature: signature.clone(),
