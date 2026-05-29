@@ -28,7 +28,7 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorageCtx},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
@@ -196,7 +196,15 @@ impl TIP20Token {
 
     /// Returns the TIP-403 transfer policy ID governing this token's transfers.
     pub fn transfer_policy_id(&self) -> Result<u64> {
-        self.transfer_policy_id.read()
+        let word = StorageCtx.sload(self.address, self.transfer_policy_id.slot())?;
+        match self.transfer_policy_id.offset() {
+            Some(offset) => {
+                Ok(((word >> (offset * 8)) & U256::from(u64::MAX)).to::<u64>())
+            }
+            None => {
+                u64::try_from(word).map_err(|_| TempoPrecompileError::under_overflow())
+            }
+        }
     }
 
     /// Returns the PAUSE_ROLE constant
