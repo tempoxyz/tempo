@@ -155,13 +155,7 @@ impl NonceManager {
         // Safety check: buffer is sized so entries should always be expired, but verify
         // in case TPS exceeds expectations.
         if old_hash != B256::ZERO {
-            let old_expiry = self.expiring_nonce_seen[old_hash].read()?;
-            if old_expiry != 0 && old_expiry > now {
-                // Entry is still valid, cannot evict - buffer is full
-                return Err(NonceError::expiring_nonce_set_full().into());
-            }
-            // Clear the old entry from seen set
-            self.expiring_nonce_seen[old_hash].write(0)?;
+            self.evict_expired_nonce_hash(old_hash, now)?;
         }
 
         // 5. Insert new entry
@@ -177,6 +171,18 @@ impl NonceManager {
         self.expiring_nonce_ring_ptr.write(next)?;
 
         Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn evict_expired_nonce_hash(&mut self, old_hash: B256, now: u64) -> Result<()> {
+        let old_expiry = self.expiring_nonce_seen[old_hash].read()?;
+        if old_expiry != 0 && old_expiry > now {
+            // Entry is still valid, cannot evict - buffer is full
+            return Err(NonceError::expiring_nonce_set_full().into());
+        }
+        // Clear the old entry from seen set
+        self.expiring_nonce_seen[old_hash].write(0)
     }
 }
 
