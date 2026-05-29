@@ -335,6 +335,25 @@ fn bench_env(
     }
 }
 
+fn bench_block_ctx(tx_count: usize) -> TempoBlockExecutionCtx<'static> {
+    TempoBlockExecutionCtx {
+        inner: EthBlockExecutionCtx {
+            parent_hash: B256::ZERO,
+            parent_beacon_block_root: Some(B256::ZERO),
+            ommers: &[],
+            withdrawals: None,
+            extra_data: Bytes::new(),
+            tx_count_hint: Some(tx_count),
+            slot_number: None,
+        },
+        general_gas_limit: 10_000_000_000,
+        shared_gas_limit: 0,
+        validator_set: None,
+        consensus_context: None,
+        subblock_fee_recipients: Default::default(),
+    }
+}
+
 fn seed_in_memory_cache_db(
     participants: &[Address],
     block_timestamp: u64,
@@ -844,30 +863,15 @@ fn execute_txs<DB>(
     txs: &[Recovered<TempoTxEnvelope>],
     block_timestamp: u64,
     hardfork: TempoHardfork,
+    block_ctx: &TempoBlockExecutionCtx<'static>,
 ) -> ExecutionStats
 where
     DB: StateDB,
 {
     let evm: TempoEvm<_, _> =
         TempoEvmFactory::default().create_evm(db, bench_env(hardfork, block_timestamp));
-    let ctx = TempoBlockExecutionCtx {
-        inner: EthBlockExecutionCtx {
-            parent_hash: B256::ZERO,
-            parent_beacon_block_root: Some(B256::ZERO),
-            ommers: &[],
-            withdrawals: None,
-            extra_data: Bytes::new(),
-            tx_count_hint: Some(txs.len()),
-            slot_number: None,
-        },
-        general_gas_limit: 10_000_000_000,
-        shared_gas_limit: 0,
-        validator_set: None,
-        consensus_context: None,
-        subblock_fee_recipients: Default::default(),
-    };
 
-    let mut executor = config.create_executor(evm, ctx);
+    let mut executor = config.create_executor(evm, block_ctx.clone());
     executor
         .apply_pre_execution_changes()
         .expect("failed to apply pre-execution changes");
@@ -900,6 +904,7 @@ fn tip20_execution(c: &mut Criterion) {
     let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
 
     for &(label, hardfork) in &hardfork_cases {
+        let block_ctx = bench_block_ctx(workload.transactions.len());
         let fixture = setup_fixed_cache_state(
             &workload.participants,
             workload.block_timestamp,
@@ -912,6 +917,7 @@ fn tip20_execution(c: &mut Criterion) {
             &workload.transactions,
             workload.block_timestamp,
             hardfork,
+            &block_ctx,
         );
 
         let mut group = c.benchmark_group(format!("{label}/tip20_execution"));
@@ -926,6 +932,7 @@ fn tip20_execution(c: &mut Criterion) {
                         &workload.transactions,
                         workload.block_timestamp,
                         hardfork,
+                        &block_ctx,
                     );
                     black_box(stats.gas_used);
                 },
@@ -938,6 +945,7 @@ fn tip20_execution(c: &mut Criterion) {
     let reward_workloads = reward_bench_workloads();
     for &(label, hardfork) in &hardfork_cases {
         for reward_workload in &reward_workloads {
+            let block_ctx = bench_block_ctx(reward_workload.transactions.len());
             let fixture = setup_fixed_cache_state(
                 &reward_workload.participants,
                 DEFAULT_BLOCK_TIMESTAMP,
@@ -950,6 +958,7 @@ fn tip20_execution(c: &mut Criterion) {
                 &reward_workload.transactions,
                 DEFAULT_BLOCK_TIMESTAMP,
                 hardfork,
+                &block_ctx,
             );
 
             let mut group = c.benchmark_group(format!("{label}/tip20_rewards"));
@@ -966,6 +975,7 @@ fn tip20_execution(c: &mut Criterion) {
                             &reward_workload.transactions,
                             DEFAULT_BLOCK_TIMESTAMP,
                             hardfork,
+                            &block_ctx,
                         );
                         black_box(stats.gas_used);
                     },
