@@ -127,6 +127,7 @@ impl NonceManager {
     /// - `InvalidExpiringNonceExpiry` — `valid_before` not in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
     /// - `ExpiringNonceReplay` — transaction hash is already recorded and has not yet expired
     /// - `ExpiringNonceSetFull` — the circular buffer slot holds an unexpired entry that can't be evicted
+    #[inline]
     pub fn check_and_mark_expiring_nonce(
         &mut self,
         expiring_nonce_hash: B256,
