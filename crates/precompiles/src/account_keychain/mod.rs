@@ -1381,6 +1381,18 @@ impl AccountKeychain {
             return Ok(());
         }
 
+        self.refund_spending_limit_for_access_key(account, transaction_key, token, amount)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn refund_spending_limit_for_access_key(
+        &mut self,
+        account: Address,
+        transaction_key: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
         let tx_origin = self.tx_origin.t_read()?;
         if account != tx_origin {
             return Ok(());
@@ -1446,6 +1458,18 @@ impl AccountKeychain {
             return Ok(());
         }
 
+        self.authorize_transfer_for_access_key(account, transaction_key, token, amount)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn authorize_transfer_for_access_key(
+        &mut self,
+        account: Address,
+        transaction_key: Address,
+        token: Address,
+        amount: U256,
+    ) -> Result<()> {
         // Only apply spending limits if the caller is the tx origin.
         let tx_origin = self.tx_origin.t_read()?;
         if account != tx_origin {
