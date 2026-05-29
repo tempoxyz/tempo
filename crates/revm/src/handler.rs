@@ -820,10 +820,13 @@ where
             return Ok(oog);
         }
 
+        let calls = tx
+            .tempo_tx_env
+            .as_ref()
+            .map(|tempo_tx_env| tempo_tx_env.aa_calls.clone());
         let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
-        if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
-            let calls = tempo_tx_env.aa_calls.clone();
+        if let Some(calls) = calls {
             self.execute_multi_call(evm, gas_limit, reservoir, calls)
         } else {
             self.execute_single_call(evm, gas_limit, reservoir)
@@ -2337,10 +2340,13 @@ where
             return Ok(oog);
         }
 
+        let calls = tx
+            .tempo_tx_env
+            .as_ref()
+            .map(|tempo_tx_env| tempo_tx_env.aa_calls.clone());
         let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
-        if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
-            let calls = tempo_tx_env.aa_calls.clone();
+        if let Some(calls) = calls {
             self.inspect_execute_multi_call(evm, gas_limit, reservoir, calls)
         } else {
             self.inspect_execute_single_call(evm, gas_limit, reservoir)
