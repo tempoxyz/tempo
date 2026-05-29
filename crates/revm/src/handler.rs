@@ -2173,7 +2173,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
         // Note: Transaction value is not allowed in AA transactions as there is no balances in accounts yet.
         // Check added in https://github.com/tempoxyz/tempo/pull/759
         if !call.value.is_zero() {
-            return Err(TempoInvalidTransaction::ValueTransferNotAllowedInAATx);
+            return Err(aa_value_transfer_not_allowed());
         }
 
         // 4c. Value transfer cost using revm constant
@@ -2198,6 +2198,12 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     gas.floor_gas = gas_params.tx_floor_cost_with_tokens(total_tokens); // tokens * 10 + 21000
 
     Ok(gas)
+}
+
+#[cold]
+#[inline(never)]
+fn aa_value_transfer_not_allowed() -> TempoInvalidTransaction {
+    TempoInvalidTransaction::ValueTransferNotAllowedInAATx
 }
 
 /// Validates and calculates initial transaction gas for AA transactions.
