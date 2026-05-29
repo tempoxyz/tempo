@@ -906,12 +906,12 @@ where
     ) -> Result<(), Self::Error> {
         self.seed_precompile_tx_context(evm)?;
 
+        let fee_payer = evm.fee_payer.expect("set in `validate_env`");
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
 
-        let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
         let fee_token = journal
             .get_fee_token(tx, fee_payer, cfg.spec)
             .map_err(|err| EVMError::Custom(err.to_string()))?;
@@ -1575,6 +1575,10 @@ where
         }
 
         // Create storage provider and fee manager
+        let fee_payer = evm.fee_payer.expect("set in `validate_env`");
+        let fee_token = evm
+            .fee_token
+            .expect("set in `validate_against_state_and_deduct_caller`");
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
 
@@ -1582,10 +1586,6 @@ where
             let mut fee_manager = TipFeeManager::new();
 
             if !actual_spending.is_zero() || !refund_amount.is_zero() {
-                let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-                let fee_token = evm
-                    .fee_token
-                    .expect("set in `validate_against_state_and_deduct_caller`");
                 // Call collectFeePostTx (handles both refund and fee queuing)
                 fee_manager
                     .collect_fee_post_tx(
@@ -1627,9 +1627,11 @@ where
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
         // Reset per-tx validator fee.
         evm.validator_fee = U256::ZERO;
+        evm.fee_payer = None;
 
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;
+        evm.fee_payer = Some(fee_payer);
 
         if evm.ctx.cfg.spec.is_t2()
             && evm.ctx.tx.has_fee_payer_signature()

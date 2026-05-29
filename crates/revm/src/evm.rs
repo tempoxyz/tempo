@@ -38,6 +38,8 @@ pub struct TempoEvm<DB: Database, I> {
     pub validator_fee: U256,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
+    /// The resolved fee payer for the current transaction.
+    pub(crate) fee_payer: Option<Address>,
     /// The expiry timestamp of the access key used by the current transaction.
     /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub(crate) key_expiry: Option<u64>,
@@ -84,6 +86,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             collected_fee: U256::ZERO,
             validator_fee: U256::ZERO,
             fee_token: None,
+            fee_payer: None,
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
@@ -126,6 +129,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Clears all intermediate state from the EVM.
     pub fn clear(&mut self) {
         self.fee_token = None;
+        self.fee_payer = None;
         self.key_expiry = None;
     }
 }
