@@ -410,6 +410,7 @@ pub struct TempoEvmHandler<DB, I> {
 
 impl<DB, I> TempoEvmHandler<DB, I> {
     /// Create a new [`TempoEvmHandler`] handler instance
+    #[inline(always)]
     pub fn new() -> Self {
         Self {
             _phantom: core::marker::PhantomData,
