@@ -48,6 +48,7 @@ use reth_transaction_pool::{
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::{
+    collections::HashMap,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -427,15 +428,18 @@ where
             true
         });
 
-        let subblock_fee_recipients = subblocks
-            .iter()
-            .map(|subblock| {
-                (
+        let subblock_fee_recipients = if subblocks.is_empty() {
+            HashMap::new()
+        } else {
+            let mut recipients = HashMap::with_capacity(subblocks.len());
+            for subblock in &subblocks {
+                recipients.insert(
                     PartialValidatorKey::from_slice(&subblock.validator()[..15]),
                     subblock.fee_recipient,
-                )
-            })
-            .collect();
+                );
+            }
+            recipients
+        };
 
         let mut builder = self
             .evm_config
@@ -736,48 +740,54 @@ where
             });
         }
 
-        let subblocks_start = Instant::now();
-        let _subblock_txs_span =
-            debug_span!(target: "payload_builder", "execute_subblock_txs").entered();
         let subblocks_count = subblocks.len() as f64;
-        let mut subblock_transactions = 0f64;
-        // Apply subblock transactions
-        for subblock in &subblocks {
-            let subblock_start = Instant::now();
-            let mut subblock_tx_count = 0f64;
+        let (subblock_transactions, total_subblock_transaction_execution_elapsed) = if subblocks
+            .is_empty()
+        {
+            (0.0, Duration::ZERO)
+        } else {
+            let subblocks_start = Instant::now();
+            let _subblock_txs_span =
+                debug_span!(target: "payload_builder", "execute_subblock_txs").entered();
+            let mut subblock_transactions = 0f64;
+            // Apply subblock transactions
+            for subblock in &subblocks {
+                let subblock_start = Instant::now();
+                let mut subblock_tx_count = 0f64;
 
-            for tx in subblock.transactions_recovered() {
-                if let Err(err) = builder.execute_transaction(tx.cloned()) {
-                    if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                        ..
-                    }) = &err
-                    {
-                        error!(
-                            ?err,
-                            "subblock transaction failed execution, aborting payload building"
-                        );
-                        self.highest_invalid_subblock
-                            .store(builder.evm().block().number.to(), Ordering::Relaxed);
-                        self.metrics.inc_build_failure("subblock_invalid_tx");
-                        return Err(PayloadBuilderError::evm(err));
-                    } else {
-                        return Err(PayloadBuilderError::evm(err));
+                for tx in subblock.transactions_recovered() {
+                    if let Err(err) = builder.execute_transaction(tx.cloned()) {
+                        if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                            ..
+                        }) = &err
+                        {
+                            error!(
+                                ?err,
+                                "subblock transaction failed execution, aborting payload building"
+                            );
+                            self.highest_invalid_subblock
+                                .store(builder.evm().block().number.to(), Ordering::Relaxed);
+                            self.metrics.inc_build_failure("subblock_invalid_tx");
+                            return Err(PayloadBuilderError::evm(err));
+                        } else {
+                            return Err(PayloadBuilderError::evm(err));
+                        }
                     }
+
+                    subblock_tx_count += 1.0;
                 }
 
-                subblock_tx_count += 1.0;
+                self.metrics
+                    .subblock_execution_duration_seconds
+                    .record(subblock_start.elapsed());
+                self.metrics
+                    .subblock_transaction_count
+                    .record(subblock_tx_count);
+                subblock_transactions += subblock_tx_count;
             }
-
-            self.metrics
-                .subblock_execution_duration_seconds
-                .record(subblock_start.elapsed());
-            self.metrics
-                .subblock_transaction_count
-                .record(subblock_tx_count);
-            subblock_transactions += subblock_tx_count;
-        }
-        drop(_subblock_txs_span);
-        let total_subblock_transaction_execution_elapsed = subblocks_start.elapsed();
+            drop(_subblock_txs_span);
+            (subblock_transactions, subblocks_start.elapsed())
+        };
         self.metrics
             .total_subblock_transaction_execution_duration_seconds
             .record(total_subblock_transaction_execution_elapsed);
