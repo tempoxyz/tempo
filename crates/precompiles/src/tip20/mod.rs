@@ -1288,8 +1288,8 @@ impl TIP20Token {
 
         self.check_and_update_spending_limit(from, amount)?;
 
-        // Update rewards for the sender and get their reward recipient
-        let from_flag = self.update_rewards(from)?;
+        // Update rewards for the sender and get their reward recipient.
+        let from_flag = self.update_rewards_with_balance(from, from_balance)?;
 
         // If user is opted into rewards, decrease opted-in supply
         if from_flag.is_opted_in() {
