@@ -53,6 +53,10 @@ impl BlockAccessListError {
 }
 
 /// A Tempo block.
+///
+// XXX: This is a refinement type around a reth [`SealedBlock`]
+// to hold the trait implementations required by commonwarexyz. Uses
+// Sealed because of the frequent accesses to the hash.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct Block {
     /// The execution-layer block.
