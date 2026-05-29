@@ -23,7 +23,7 @@ use crate::{
     storage::{StorageOps, packing},
 };
 use alloy::primitives::{Address, U256, keccak256};
-use std::{cell::RefCell, hash::Hash};
+use std::cell::RefCell;
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -382,7 +382,7 @@ pub(super) struct HandlerCache<K, H> {
 }
 
 impl<K, H> HandlerCache<K, H> {
-    const INITIAL_CAPACITY: usize = 2;
+    const INITIAL_CAPACITY: usize = 4;
 
     /// Creates a new empty handler cache.
     #[inline]
@@ -395,16 +395,7 @@ impl<K, H> HandlerCache<K, H> {
     /// Lazily allocate enough room for the common case of a couple cached handlers.
     #[inline]
     fn reserve_initial_capacity(cache: &mut Vec<(K, Box<H>)>) {
-        if cache.capacity() == 0 {
-            cache.reserve_exact(Self::INITIAL_CAPACITY);
-        }
-    }
-}
-
-impl<K, H> Clone for HandlerCache<K, H> {
-    /// Creates a new empty cache (cached handlers are not cloned).
-    fn clone(&self) -> Self {
-        Self::new()
+        if cache.capacity() == 0 {}
     }
 }
 
@@ -416,7 +407,7 @@ impl<K: Eq + Clone, H> HandlerCache<K, H> {
         // Mapping handlers are short-lived per precompile call and usually cache only a few keys.
         // A linear scan avoids hashing and table maintenance on the hot storage path.
         if cache.is_empty() {
-            Self::reserve_initial_capacity(&mut cache);
+            cache.reserve_exact(Self::INITIAL_CAPACITY)
         } else if let Some((_, boxed)) = cache.iter().find(|(candidate, _)| candidate == key) {
             // SAFETY: Box provides stable heap address. Cache is append-only.
             return unsafe { &*(boxed.as_ref() as *const H) };
@@ -432,7 +423,7 @@ impl<K: Eq + Clone, H> HandlerCache<K, H> {
     pub(super) fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> &mut H {
         let mut cache = self.inner.borrow_mut();
         if cache.is_empty() {
-            Self::reserve_initial_capacity(&mut cache);
+            cache.reserve_exact(Self::INITIAL_CAPACITY)
         } else if let Some((_, boxed)) = cache.iter_mut().find(|(candidate, _)| candidate == key) {
             // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
             return unsafe { &mut *(boxed.as_mut() as *mut H) };
