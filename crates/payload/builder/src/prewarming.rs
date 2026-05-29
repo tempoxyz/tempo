@@ -1,6 +1,7 @@
+use std::cell::RefCell;
 use std::sync::{
     Arc,
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     mpsc::{self, Receiver, Sender},
 };
 
@@ -10,7 +11,7 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Database, Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerPool};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -27,6 +28,18 @@ use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+
+static NEXT_PREWARMING_CONTEXT_ID: AtomicU64 = AtomicU64::new(1);
+
+thread_local! {
+    /// Prewarming-owned per-thread EVM cache.
+    static PREWARM_EVM: RefCell<Option<PrewarmWorkerState>> = const { RefCell::new(None) };
+}
+
+struct PrewarmWorkerState {
+    context_id: u64,
+    evm: PrewarmEvmState,
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -56,6 +69,7 @@ impl BestTransactionsPrewarming {
         let (commands_tx, commands_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
         let prewarm = PrewarmingExecutionContext {
+            context_id: NEXT_PREWARMING_CONTEXT_ID.fetch_add(1, Ordering::Relaxed),
             provider,
             parent_hash,
             cache,
@@ -97,13 +111,9 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        let context_id = ctx.prewarm.context_id;
 
         pool.in_place_scope(|scope| {
-            let prewarm = ctx.prewarm.clone();
-            scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-            });
-
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
@@ -161,7 +171,10 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        clear_prewarm_context(context_id);
+        pool.broadcast(pool.current_num_threads(), |_| {
+            clear_prewarm_context(context_id);
+        });
     }
 
     fn prewarm_transaction<Provider>(
@@ -174,20 +187,15 @@ impl BestTransactionsPrewarming {
             return;
         }
 
-        WorkerPool::with_worker_mut(|worker| {
-            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
-                return;
-            };
-
-            let tx_hash = *tx.hash();
-
-            let touched = if is_tip20_transfer_transaction(&tx) {
+        let tx_hash = *tx.hash();
+        let Some(Ok(touched)) = with_prewarm_evm(&prewarm, |evm| -> Result<Option<usize>, ()> {
+            if is_tip20_transfer_transaction(&tx) {
                 let touches =
                     storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary);
 
                 for touch in &touches {
                     if prewarm.is_stopped() {
-                        return;
+                        return Err(());
                     }
                     if let Err(err) = touch.warm(evm) {
                         trace!(
@@ -196,14 +204,14 @@ impl BestTransactionsPrewarming {
                             ?tx_hash,
                             "Failed to prewarm transaction storage"
                         );
-                        return;
+                        return Err(());
                     }
                 }
 
-                Some(touches.len())
+                Ok(Some(touches.len()))
             } else {
                 if prewarm.is_stopped() {
-                    return;
+                    return Err(());
                 }
 
                 if let Err(err) = evm.transact_raw(tx.transaction.clone_tx_env()) {
@@ -213,20 +221,56 @@ impl BestTransactionsPrewarming {
                         ?tx_hash,
                         "Failed to prewarm transaction by execution"
                     );
-                    return;
+                    return Err(());
                 }
 
-                None
-            };
+                Ok(None)
+            }
+        }) else {
+            return;
+        };
 
-            trace!(
-                target: "payload_builder",
-                touched,
-                ?tx_hash,
-                "Prewarmed transaction"
-            );
-        });
+        trace!(
+            target: "payload_builder",
+            touched,
+            ?tx_hash,
+            "Prewarmed transaction"
+        );
     }
+}
+
+fn with_prewarm_evm<Provider, R>(
+    prewarm: &PrewarmingExecutionContext<Provider>,
+    f: impl FnOnce(&mut TempoEvm<StateProviderDatabase<StateProviderBox>>) -> R,
+) -> Option<R>
+where
+    Provider: StateProviderFactory + Clone + 'static,
+{
+    PREWARM_EVM.with_borrow_mut(|state| {
+        let needs_init = match state.as_ref() {
+            Some(state) => state.context_id != prewarm.context_id,
+            None => true,
+        };
+        if needs_init {
+            *state = Some(PrewarmWorkerState {
+                context_id: prewarm.context_id,
+                evm: prewarm.evm_for_ctx(),
+            });
+        }
+
+        let state = state.as_mut()?;
+        let evm = state.evm.as_mut()?;
+        Some(f(evm))
+    })
+}
+
+fn clear_prewarm_context(context_id: u64) {
+    PREWARM_EVM.with_borrow_mut(|state| {
+        let should_clear = matches!(state.as_ref(), Some(state) if state.context_id == context_id);
+        if should_clear {
+            *state = None;
+        }
+    });
 }
 
 impl Drop for BestTransactionsPrewarming {
@@ -287,6 +331,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
 /// Context needed to prewarm transaction storage independently of the real builder.
 #[derive(Clone)]
 struct PrewarmingExecutionContext<Provider> {
+    context_id: u64,
     provider: Provider,
     parent_hash: B256,
     cache: Option<SavedCache>,
