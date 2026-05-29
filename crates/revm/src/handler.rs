@@ -417,6 +417,14 @@ impl<DB, I> TempoEvmHandler<DB, I> {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn seed_precompile_tx_context_error<DBError>(
+    err: TempoPrecompileError,
+) -> EVMError<DBError, TempoInvalidTransaction> {
+    EVMError::Custom(err.to_string())
+}
+
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     fn seed_precompile_tx_context(
         &self,
@@ -444,7 +452,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                 Ok::<(), TempoPrecompileError>(())
             },
         )
-        .map_err(|e| EVMError::Custom(e.to_string()))
+        .map_err(seed_precompile_tx_context_error::<DB::Error>)
     }
 }
 
