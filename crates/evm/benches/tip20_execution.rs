@@ -838,6 +838,7 @@ fn workload() -> Workload {
     }
 }
 
+#[inline(always)]
 fn execute_txs<DB>(
     config: &TempoEvmConfig,
     db: DB,
