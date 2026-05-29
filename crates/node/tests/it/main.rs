@@ -16,7 +16,6 @@ mod payment_lane;
 mod pool;
 mod simulate;
 mod stablecoin_dex;
-mod stablecoin_dex_gas;
 mod tempo_transaction;
 mod tip20;
 mod tip20_factory;
