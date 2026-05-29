@@ -33,6 +33,7 @@ use revm::{
     },
     precompile::PrecompileError,
 };
+use smallvec::SmallVec;
 use tempo_chainspec::constants::gas::tempo_t6_discounted_payment_effective_gas_price;
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
@@ -603,7 +604,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         mut remaining_gas: u64,
         mut reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: SmallVec<[tempo_primitives::transaction::Call; 1]>,
         mut execute_single: F,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
@@ -743,7 +744,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: SmallVec<[tempo_primitives::transaction::Call; 1]>,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
         self.execute_multi_call_with(evm, gas_limit, reservoir, calls, Self::execute_single_call)
     }
@@ -773,7 +774,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: SmallVec<[tempo_primitives::transaction::Call; 1]>,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
         I: Inspector<TempoContext<DB>, EthInterpreter>,
@@ -823,7 +824,7 @@ where
         let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
-            let calls = tempo_tx_env.aa_calls.clone();
+            let calls = tempo_tx_env.aa_calls.iter().cloned().collect();
             self.execute_multi_call(evm, gas_limit, reservoir, calls)
         } else {
             self.execute_single_call(evm, gas_limit, reservoir)
@@ -2340,7 +2341,7 @@ where
         let (gas_limit, reservoir) = evm.initial_gas_and_reservoir(init_and_floor_gas);
 
         if let Some(tempo_tx_env) = evm.ctx().tx().tempo_tx_env.as_ref() {
-            let calls = tempo_tx_env.aa_calls.clone();
+            let calls = tempo_tx_env.aa_calls.iter().cloned().collect();
             self.inspect_execute_multi_call(evm, gas_limit, reservoir, calls)
         } else {
             self.inspect_execute_single_call(evm, gas_limit, reservoir)
