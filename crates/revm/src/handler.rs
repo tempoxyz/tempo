@@ -2211,7 +2211,8 @@ fn validate_aa_initial_tx_gas<DB, I>(
 where
     DB: alloy_evm::Database,
 {
-    let (_, tx, cfg, _, _, _, _) = evm.ctx_ref().all();
+    let ctx = evm.ctx_ref();
+    let (_, tx, cfg, _, _, _, _) = ctx.all();
     let gas_limit = tx.gas_limit();
     let gas_params = cfg.gas_params();
     let spec = *cfg.spec();
@@ -2225,7 +2226,7 @@ where
     let calls = &aa_env.aa_calls;
 
     // Validate all CREATE calls' initcode size upfront (EIP-3860)
-    let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
+    let max_initcode_size = cfg.max_initcode_size();
     for call in calls {
         if call.to.is_create() && call.input.len() > max_initcode_size {
             return Err(InvalidTransaction::CreateInitCodeSizeLimit.into());
@@ -2257,9 +2258,7 @@ where
             // TIP-1000 Invariant 3: existing state updates must charge +5,000 gas
             batch_gas.initial_regular_gas += spec.gas_existing_nonce_key();
         }
-    } else if let Some(aa_env) = &tx.tempo_tx_env
-        && !aa_env.nonce_key.is_zero()
-    {
+    } else if !aa_env.nonce_key.is_zero() {
         nonce_2d_gas = if tx.nonce() == 0 {
             spec.gas_new_nonce_key()
         } else {
