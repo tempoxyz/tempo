@@ -32,6 +32,7 @@ use revm::{
         interpreter::EthInterpreter,
     },
     precompile::PrecompileError,
+    primitives::KECCAK_EMPTY,
 };
 use tempo_chainspec::constants::gas::tempo_t6_discounted_payment_effective_gas_price;
 use tempo_contracts::precompiles::{
@@ -933,8 +934,13 @@ where
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, fee_token, fee_payer)?;
 
-        // Load caller's account
-        let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
+        // Most AA callers are EOAs. Avoid materializing empty bytecode, but still load code for
+        // non-empty accounts so EIP-3607 can reject contract callers and allow EIP-7702 delegates.
+        let mut caller_account = journal.load_account_mut(tx.caller())?.data;
+        if !cfg.is_eip3607_disabled() && *caller_account.code_hash() != KECCAK_EMPTY {
+            drop(caller_account);
+            caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
+        }
 
         let nonce_key = tx
             .tempo_tx_env
