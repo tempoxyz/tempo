@@ -346,11 +346,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
         let (to, value, input) = if let Some(first_call) = calls.first() {
             (first_call.to, first_call.value, first_call.input.clone())
         } else {
-            (
-                alloy_primitives::TxKind::Create,
-                alloy_primitives::U256::ZERO,
-                alloy_primitives::Bytes::new(),
-            )
+            empty_aa_call_tx_env_fields()
         };
 
         Self {
@@ -410,6 +406,12 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             })),
         }
     }
+}
+
+#[cold]
+#[inline(never)]
+fn empty_aa_call_tx_env_fields() -> (TxKind, U256, Bytes) {
+    (TxKind::Create, U256::ZERO, Bytes::new())
 }
 
 impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
