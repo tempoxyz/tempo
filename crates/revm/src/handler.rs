@@ -1678,14 +1678,17 @@ where
             }
 
             // Validate keychain signature version (outer + authorization list).
+            let is_t1c = cfg.spec().is_t1c();
             aa_env
                 .signature
-                .validate_version(cfg.spec().is_t1c())
+                .validate_version(is_t1c)
                 .map_err(TempoInvalidTransaction::from)?;
-            for auth in &aa_env.tempo_authorization_list {
-                auth.signature()
-                    .validate_version(cfg.spec().is_t1c())
-                    .map_err(TempoInvalidTransaction::from)?;
+            if !aa_env.tempo_authorization_list.is_empty() {
+                for auth in &aa_env.tempo_authorization_list {
+                    auth.signature()
+                        .validate_version(is_t1c)
+                        .map_err(TempoInvalidTransaction::from)?;
+                }
             }
 
             let has_keychain_fields =
