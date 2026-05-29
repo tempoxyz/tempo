@@ -465,6 +465,7 @@ impl TempoPooledTransaction {
                 }
             }
         }
+    }
 }
 
 /// Tempo-specific transaction pool rejection reasons.
