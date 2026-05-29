@@ -27,6 +27,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
     /// Creates a new storage provider with the given gas limit, hardfork, and static flag.
+    #[inline]
     pub fn new(
         internals: EvmInternals<'a>,
         gas_limit: u64,
