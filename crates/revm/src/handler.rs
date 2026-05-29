@@ -87,6 +87,14 @@ const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
 /// Rounded buffer for each extra LOG3/no-data event emitted by key authorizations.
 const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 
+#[cold]
+#[inline(never)]
+fn fee_token_resolution_error<DBError>(
+    err: TempoPrecompileError,
+) -> EVMError<DBError, TempoInvalidTransaction> {
+    EVMError::Custom(err.to_string())
+}
+
 /// Gas cost for expiring nonce transactions (replay check + insert).
 ///
 /// See [TIP-1009] for full specification.
@@ -914,7 +922,7 @@ where
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
         let fee_token = journal
             .get_fee_token(tx, fee_payer, cfg.spec)
-            .map_err(|err| EVMError::Custom(err.to_string()))?;
+            .map_err(fee_token_resolution_error::<DB::Error>)?;
 
         evm.fee_token = Some(fee_token);
 
