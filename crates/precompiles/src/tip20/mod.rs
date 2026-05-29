@@ -1206,6 +1206,32 @@ impl TIP20Token {
             return Ok(false);
         };
 
+        self.block_inbound_transfer(
+            token,
+            originator,
+            to,
+            amount,
+            mint_total_supply,
+            memo,
+            reason,
+            recovery,
+        )?;
+        Ok(true)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn block_inbound_transfer(
+        &mut self,
+        token: Address,
+        originator: Address,
+        to: &Recipient,
+        amount: U256,
+        mint_total_supply: Option<U256>,
+        memo: B256,
+        reason: ITIP403Registry::BlockedReason,
+        recovery: Address,
+    ) -> Result<()> {
         let guard = Recipient::direct(RECEIVE_POLICY_GUARD_ADDRESS);
         let kind = if let Some(total_supply) = mint_total_supply {
             self._mint(&guard, total_supply, amount)?;
@@ -1217,8 +1243,7 @@ impl TIP20Token {
         };
         ReceivePolicyGuard::new()
             .store_blocked(token, originator, to, recovery, amount, reason, kind, memo)?;
-
-        Ok(true)
+        Ok(())
     }
 
     /// Releases guarded funds to `to`. Resumes skip policy checks. Reroutes
