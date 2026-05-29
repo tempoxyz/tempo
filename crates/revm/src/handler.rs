@@ -418,6 +418,7 @@ impl<DB, I> TempoEvmHandler<DB, I> {
 }
 
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
+    #[inline]
     fn seed_precompile_tx_context(
         &self,
         evm: &mut TempoEvm<DB, I>,
