@@ -1170,14 +1170,27 @@ impl TIP20Token {
             UserState::new(from_balance.checked_sub(amount)?, from_flag)?,
         )?;
 
-        if to.target != Address::ZERO {
-            let to_balance = self.get_balance(to.target)?;
-            self.set_balance(
-                to.target,
-                UserState::new(to_balance.checked_add(amount)?, to_flag)?,
-            )?;
+        if to.target == Address::ZERO {
+            return self.emit_zero_recipient_transfer(from, to, amount);
         }
 
+        let to_balance = self.get_balance(to.target)?;
+        self.set_balance(
+            to.target,
+            UserState::new(to_balance.checked_add(amount)?, to_flag)?,
+        )?;
+
+        self.emit_event(to.build_transfer_event(from, amount))
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn emit_zero_recipient_transfer(
+        &mut self,
+        from: Address,
+        to: &Recipient,
+        amount: U256,
+    ) -> Result<()> {
         self.emit_event(to.build_transfer_event(from, amount))
     }
 
