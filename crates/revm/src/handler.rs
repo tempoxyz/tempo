@@ -2228,7 +2228,7 @@ where
     let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
     for call in calls {
         if call.to.is_create() && call.input.len() > max_initcode_size {
-            return Err(InvalidTransaction::CreateInitCodeSizeLimit.into());
+            return Err(create_initcode_size_limit::<DB>());
         }
     }
 
@@ -2293,6 +2293,15 @@ where
     }
 
     Ok(batch_gas)
+}
+
+#[cold]
+#[inline(never)]
+fn create_initcode_size_limit<DB>() -> EVMError<DB::Error, TempoInvalidTransaction>
+where
+    DB: alloy_evm::Database,
+{
+    InvalidTransaction::CreateInitCodeSizeLimit.into()
 }
 
 /// IMPORTANT: the caller must ensure `token` is a valid TIP20Token address.
