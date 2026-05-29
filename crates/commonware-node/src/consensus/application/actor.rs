@@ -214,6 +214,7 @@ where
 struct Inner<TState> {
     public_key: PublicKey,
     epoch_strategy: FixedEpocher,
+    // Local proposal window after reserving network propagation time.
     proposal_return_budget: Duration,
 
     my_mailbox: Mailbox,
@@ -675,6 +676,9 @@ impl Inner<Init> {
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let marshal_persist = marshal_persist_estimate();
+        // Give the builder only the proposal window that remains when payload
+        // construction is requested. This accounts for a late `handle_propose`
+        // start instead of resetting the budget at builder entry.
         let build_budget = self
             .proposal_return_budget
             .saturating_sub(propose_start.elapsed());
@@ -734,8 +738,9 @@ impl Inner<Init> {
         let block_size_bytes = payload.rlp_block_size_bytes();
         let validator_marshal_persist = marshal_persist.estimate(block_size_bytes);
         let proposal_elapsed = propose_start.elapsed();
-        // Pace proposal return from the original propose start, leaving enough
-        // budget for validators to replay the payload and persist the block.
+        // Pace proposal return from the original propose start. Validators still
+        // need to repeat replayable build work and marshal persistence, so leave
+        // room for those costs before returning the proposal.
         let return_delay = self
             .proposal_return_budget
             .saturating_sub(proposal_elapsed)

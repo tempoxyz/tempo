@@ -43,6 +43,14 @@ on:
         description: "Feature git ref (default: branch head)"
         type: string
         default: ""
+      baseline-features:
+        description: "Cargo features for the baseline build. Empty = default replay features."
+        type: string
+        default: ""
+      feature-features:
+        description: "Cargo features for the feature build. Empty = default replay features."
+        type: string
+        default: ""
       baseline-args:
         description: "Extra node args for baseline"
         type: string
@@ -98,6 +106,14 @@ on:
       feature-args:
         type: string
         required: false
+      baseline-features:
+        type: string
+        required: false
+        default: ""
+      feature-features:
+        type: string
+        required: false
+        default: ""
       blocks:
         type: string
         required: true
@@ -173,6 +189,8 @@ jobs:
       BENCH_SAMPLY: ${{ inputs.samply }}
       BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' }}
       BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
+      BENCH_BASELINE_FEATURES: ${{ inputs.baseline-features }}
+      BENCH_FEATURE_FEATURES: ${{ inputs.feature-features }}
       BENCH_BASELINE_ARGS: "--dev.block-time 999999s ${{ inputs.baseline-args }}"
       BENCH_FEATURE_ARGS: "--dev.block-time 999999s ${{ inputs.feature-args }}"
       BENCH_BLOCKS: ${{ inputs.blocks || '5000' }}
@@ -232,12 +250,19 @@ jobs:
       - name: Resolve checkout ref
         id: checkout-ref
         uses: actions/github-script@v8
+        env:
+          INPUT_ACTOR: ${{ github.actor }}
+          INPUT_BASELINE_FEATURES: ${{ inputs.baseline-features }}
+          INPUT_BRANCH: ${{ github.ref_name }}
+          INPUT_CHAIN: ${{ inputs.chain || 'mainnet' }}
+          INPUT_FEATURE_FEATURES: ${{ inputs.feature-features }}
+          INPUT_REF: ${{ github.ref }}
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN || secrets.GITHUB_TOKEN }}
           script: |
             if (context.eventName === 'workflow_dispatch') {
               // Auto-discover PR for the current branch
-              const branch = '${{ github.ref_name }}';
+              const branch = process.env.INPUT_BRANCH;
               const { data: prs } = await github.rest.pulls.list({
                 owner: context.repo.owner,
                 repo: context.repo.repo,
@@ -248,14 +273,17 @@ jobs:
               if (prs.length) {
                 const pr = prs[0];
                 core.exportVariable('BENCH_PR', String(pr.number));
-                core.exportVariable('BENCH_ACTOR', '${{ github.actor }}');
+                core.exportVariable('BENCH_ACTOR', process.env.INPUT_ACTOR);
                 core.info(`Found PR #${pr.number} for branch '${branch}'`);
                 const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+                const baselineFeatureFlags = process.env.INPUT_BASELINE_FEATURES || '';
+                const featureFeatureFlags = process.env.INPUT_FEATURE_FEATURES || '';
+                const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
                 const { data: comment } = await github.rest.issues.createComment({
                   owner: context.repo.owner,
                   repo: context.repo.repo,
                   issue_number: pr.number,
-                  body: `cc @${'${{ github.actor }}'}\n\n🚀 Replay benchmark started! [View run](${runUrl})\n\n⏳ **Status:** Running...\n\n**Config:** chain: \`${'${{ inputs.chain || 'mainnet' }}'}\`, blocks: \`${process.env.BENCH_BLOCKS}\`, warmup: \`${process.env.BENCH_WARMUP_BLOCKS}\`, run-pairs: \`${process.env.BENCH_RUN_PAIRS || '2'}\``,
+                  body: `cc @${process.env.INPUT_ACTOR}\n\n🚀 Replay benchmark started! [View run](${runUrl})\n\n⏳ **Status:** Running...\n\n**Config:** chain: \`${process.env.INPUT_CHAIN}\`, blocks: \`${process.env.BENCH_BLOCKS}\`, warmup: \`${process.env.BENCH_WARMUP_BLOCKS}\`, run-pairs: \`${process.env.BENCH_RUN_PAIRS || '2'}\`${featureFlagsNote}`,
                 });
                 core.exportVariable('BENCH_COMMENT_ID', String(comment.id));
                 if (pr.mergeable) {
@@ -265,12 +293,12 @@ jobs:
                 }
               } else {
                 core.info(`No open PR found for branch '${branch}', results will be in job summary`);
-                core.setOutput('ref', '${{ github.ref }}');
+                core.setOutput('ref', process.env.INPUT_REF);
               }
               return;
             }
             if (!process.env.BENCH_PR) {
-              core.setOutput('ref', '${{ github.ref }}');
+              core.setOutput('ref', process.env.INPUT_REF);
               return;
             }
             const sha = process.env.BENCH_PR_HEAD_SHA;
@@ -314,8 +342,11 @@ jobs:
             const samplyNote = samply ? ', samply: `enabled`' : '';
             const otlp = process.env.BENCH_OTLP === 'true';
             const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
+            const baselineFeatureFlags = process.env.BENCH_BASELINE_FEATURES || '';
+            const featureFeatureFlags = process.env.BENCH_FEATURE_FEATURES || '';
+            const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
             const chain = process.env.BENCH_CHAIN || 'mainnet';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${samplyNote}${otlpNote}`);
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`replay\`, chain: \`${chain}\`, blocks: \`${blocks}\`, warmup: \`${warmup}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`${featureFlagsNote}${samplyNote}${otlpNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
