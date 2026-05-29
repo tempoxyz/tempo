@@ -143,6 +143,12 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn value_transfer_not_allowed() -> TempoInvalidTransaction {
+    TempoInvalidTransaction::ValueTransferNotAllowed
+}
+
 #[derive(Debug, Clone)]
 struct LoadedTxAccessKey {
     key_id: Address,
@@ -1641,7 +1647,7 @@ where
         // All accounts have zero balance so transfer of value is not possible.
         // Check added in https://github.com/tempoxyz/tempo/pull/759
         if !evm.ctx.tx.value().is_zero() {
-            return Err(TempoInvalidTransaction::ValueTransferNotAllowed.into());
+            return Err(value_transfer_not_allowed().into());
         }
 
         // First perform standard validation (header + transaction environment)
