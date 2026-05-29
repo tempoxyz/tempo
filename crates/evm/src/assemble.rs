@@ -56,19 +56,22 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
         let timestamp_millis_part = evm_env.block_env.timestamp_millis_part;
 
         // Delegate block building to the inner assembler
-        let block = self.inner.assemble_block(BlockAssemblerInput::<
+        let block = BlockAssembler::<
             EthBlockExecutorFactory<TempoReceiptBuilder, TempoChainSpec, TempoEvmFactory>,
-        >::new(
-            evm_env,
-            inner,
-            &parent,
-            transactions,
-            output,
-            bundle_state,
-            state_provider,
-            state_root,
-            block_access_list_hash,
-        ))?;
+        >::assemble_block(
+            &self.inner,
+            BlockAssemblerInput::new(
+                evm_env,
+                inner,
+                &parent,
+                transactions,
+                output,
+                bundle_state,
+                state_provider,
+                state_root,
+                block_access_list_hash,
+            ),
+        )?;
 
         Ok(block.map_header(|inner| TempoHeader {
             inner,

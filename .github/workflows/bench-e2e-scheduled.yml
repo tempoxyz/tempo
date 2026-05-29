@@ -154,6 +154,7 @@ jobs:
       baseline-name: ${{ matrix.baseline_name }}
       feature-name: ${{ matrix.feature_name }}
       preset: ${{ matrix.preset }}
+      duration: "600"
       tps: "20000"
       run-type: ${{ matrix.run_type }}
       run-pairs: "1"
@@ -166,6 +167,8 @@ jobs:
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
       BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+      VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
+      VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
 
