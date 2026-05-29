@@ -160,6 +160,7 @@ where
     DB: StateDB,
     I: Inspector<TempoContext<DB>>,
 {
+    #[inline(always)]
     pub(crate) fn new(
         evm: TempoEvm<DB, I>,
         ctx: TempoBlockExecutionCtx<'a>,
