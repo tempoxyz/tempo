@@ -9,7 +9,6 @@ use alloy_eips::{
     eip7594::BlobTransactionSidecarVariant,
     eip7702::SignedAuthorization,
 };
-use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{
     Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
 };
@@ -258,8 +257,12 @@ impl TempoPooledTransaction {
     }
 
     /// Computes the [`TempoTxEnv`] for this transaction.
-    fn tx_env_slow(&self) -> TempoTxEnv {
-        TempoTxEnv::from_recovered_tx(self.inner().inner(), self.sender())
+    fn tx_env_slow_with_legacy_aa_hash(&self, include_legacy_aa_hash: bool) -> TempoTxEnv {
+        TempoTxEnv::from_recovered_tx_with_legacy_aa_hash(
+            self.inner().inner(),
+            self.sender(),
+            include_legacy_aa_hash,
+        )
     }
 
     /// Pre-computes and caches the [`TempoTxEnv`].
@@ -267,7 +270,13 @@ impl TempoPooledTransaction {
     /// This should be called during validation to prepare the transaction environment
     /// ahead of time, avoiding it during payload building.
     pub fn tx_env(&self) -> &TempoTxEnv {
-        self.tx_env.get_or_init(|| self.tx_env_slow())
+        self.tx_env_with_legacy_aa_hash(true)
+    }
+
+    /// Pre-computes and caches the [`TempoTxEnv`] while optionally omitting legacy AA hashes.
+    pub fn tx_env_with_legacy_aa_hash(&self, include_legacy_aa_hash: bool) -> &TempoTxEnv {
+        self.tx_env
+            .get_or_init(|| self.tx_env_slow_with_legacy_aa_hash(include_legacy_aa_hash))
     }
 
     /// Returns a cloned [`TempoTxEnv`] for this transaction.
@@ -295,7 +304,10 @@ impl TempoPooledTransaction {
     /// If the [`TempoTxEnv`] was pre-computed via [`Self::tx_env`], the cached
     /// value is used. Otherwise, it is computed on-demand.
     pub fn into_with_tx_env(mut self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
-        let tx_env = self.tx_env.take().unwrap_or_else(|| self.tx_env_slow());
+        let tx_env = self
+            .tx_env
+            .take()
+            .unwrap_or_else(|| self.tx_env_slow_with_legacy_aa_hash(true));
         WithTxEnv {
             tx_env,
             tx: Arc::new(self.inner.transaction),

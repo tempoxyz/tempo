@@ -1,12 +1,13 @@
 use crate::TempoEvmConfig;
-use alloy_consensus::crypto::RecoveryError;
+use alloy_consensus::{BlockHeader, crypto::RecoveryError};
 use alloy_primitives::Address;
 use reth_evm::{
     ConfigureEngineEvm, ConfigureEvm, EvmEnvFor, ExecutableTxIterator, ExecutionCtxFor,
-    FromRecoveredTx, RecoveredTx, ToTxEnv, block::ExecutableTxParts,
+    RecoveredTx, ToTxEnv, block::ExecutableTxParts,
 };
 use reth_primitives_traits::{SealedBlock, SignedTransaction};
 use std::sync::Arc;
+use tempo_chainspec::hardfork::TempoHardforks;
 use tempo_payload_types::TempoExecutionData;
 use tempo_primitives::{Block, TempoTxEnvelope};
 use tempo_revm::TempoTxEnv;
@@ -41,13 +42,22 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
         let block = payload.block.clone();
         let mut transactions = Vec::with_capacity(payload.block.body().transactions.len());
         let mut expiring_nonce_idx = 0;
+        let include_legacy_aa_hash = !self
+            .chain_spec()
+            .tempo_hardfork_at(payload.block.timestamp())
+            .is_t1b();
 
         for (idx, tx) in payload.block.body().transactions.iter().enumerate() {
             if tx.is_expiring_nonce() {
-                transactions.push((block.clone(), idx, Some(expiring_nonce_idx)));
+                transactions.push((
+                    block.clone(),
+                    idx,
+                    Some(expiring_nonce_idx),
+                    include_legacy_aa_hash,
+                ));
                 expiring_nonce_idx += 1;
             } else {
-                transactions.push((block.clone(), idx, None));
+                transactions.push((block.clone(), idx, None, include_legacy_aa_hash));
             }
         }
 
@@ -64,11 +74,17 @@ struct RecoveredInBlock {
     index: usize,
     sender: Address,
     expiring_nonce_idx: Option<usize>,
+    include_legacy_aa_hash: bool,
 }
 
 impl RecoveredInBlock {
     fn new(
-        (block, index, expiring_nonce_idx): (Arc<SealedBlock<Block>>, usize, Option<usize>),
+        (block, index, expiring_nonce_idx, include_legacy_aa_hash): (
+            Arc<SealedBlock<Block>>,
+            usize,
+            Option<usize>,
+            bool,
+        ),
     ) -> Result<Self, RecoveryError> {
         let sender = block.body().transactions[index].try_recover()?;
         Ok(Self {
@@ -76,6 +92,7 @@ impl RecoveredInBlock {
             index,
             sender,
             expiring_nonce_idx,
+            include_legacy_aa_hash,
         })
     }
 }
@@ -92,7 +109,11 @@ impl RecoveredTx<TempoTxEnvelope> for RecoveredInBlock {
 
 impl ToTxEnv<TempoTxEnv> for RecoveredInBlock {
     fn to_tx_env(&self) -> TempoTxEnv {
-        let mut tx_env = TempoTxEnv::from_recovered_tx(self.tx(), *self.signer());
+        let mut tx_env = TempoTxEnv::from_recovered_tx_with_legacy_aa_hash(
+            self.tx(),
+            *self.signer(),
+            self.include_legacy_aa_hash,
+        );
         if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
             tempo_tx_env.expiring_nonce_idx = self.expiring_nonce_idx;
         }

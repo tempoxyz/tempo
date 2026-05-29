@@ -1010,7 +1010,9 @@ where
                 tx.unique_tx_identifier()
                     .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?
             } else {
-                tempo_tx_env.tx_hash
+                tempo_tx_env
+                    .tx_hash
+                    .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?
             };
             let valid_before = tempo_tx_env
                 .valid_before

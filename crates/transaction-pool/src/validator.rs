@@ -309,6 +309,7 @@ where
         state_provider: impl StateProvider,
     ) -> Result<ValidationContext, EVMError<ProviderError, TempoInvalidTransaction>> {
         let evm_env = self.cached_evm_env.read().clone();
+        let include_legacy_aa_hash = !evm_env.cfg_env.spec.is_t1b();
 
         // Create a throwaway EVM and run validation.
         // - Skip `valid_after` check: the pool intentionally accepts transactions with a
@@ -320,7 +321,11 @@ where
         evm.inner_mut().skip_valid_after_check = true;
         evm.inner_mut().skip_liquidity_check = true;
         evm.ctx_mut().cfg.disable_nonce_check = true;
-        evm.validate_transaction(transaction.tx_env().clone())
+        evm.validate_transaction(
+            transaction
+                .tx_env_with_legacy_aa_hash(include_legacy_aa_hash)
+                .clone(),
+        )
     }
 
     fn validate_one(
