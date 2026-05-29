@@ -336,9 +336,15 @@ pub(crate) fn charge_input_cost(
     calldata: &[u8],
 ) -> Option<PrecompileResult> {
     if storage.deduct_gas(input_cost(calldata.len())).is_err() {
-        return Some(Ok(storage.halt_output(PrecompileHalt::OutOfGas)));
+        return Some(input_out_of_gas(storage));
     }
     None
+}
+
+#[cold]
+#[inline(never)]
+fn input_out_of_gas(storage: &mut StorageCtx) -> PrecompileResult {
+    Ok(storage.halt_output(PrecompileHalt::OutOfGas))
 }
 
 /// Fills state gas accounting on a [`PrecompileOutput`] from the storage context.
