@@ -432,6 +432,18 @@ pub(crate) fn dispatch_call<T>(
     decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
     f: impl FnOnce(T) -> PrecompileResult,
 ) -> PrecompileResult {
+    dispatch_call_with_selector(calldata, hardforks, |_, calldata| decode(calldata), f)
+}
+
+/// Applies hardfork selector schedules, passes the decoded selector to `decode`, then dispatches to
+/// `f`.
+#[inline]
+pub(crate) fn dispatch_call_with_selector<T>(
+    calldata: &[u8],
+    hardforks: &[SelectorSchedule<'_>],
+    decode: impl FnOnce([u8; 4], &[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
+    f: impl FnOnce(T) -> PrecompileResult,
+) -> PrecompileResult {
     let storage = StorageCtx::default();
 
     if calldata.len() < 4 {
@@ -444,7 +456,7 @@ pub(crate) fn dispatch_call<T>(
         }
     }
 
-    let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
+    let selector = [calldata[0], calldata[1], calldata[2], calldata[3]];
     if hardforks
         .iter()
         .any(|schedule| schedule.rejects(selector, storage.spec()))
@@ -454,7 +466,7 @@ pub(crate) fn dispatch_call<T>(
         ));
     }
 
-    let result = decode(calldata);
+    let result = decode(selector, calldata);
 
     match result {
         Ok(call) => f(call).map(|mut res| {

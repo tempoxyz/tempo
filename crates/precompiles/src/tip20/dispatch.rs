@@ -1,8 +1,8 @@
 //! ABI dispatch for the [`TIP20Token`] precompile.
 
 use crate::{
-    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
-    storage::ContractStorage,
+    Precompile, SelectorSchedule, charge_input_cost, dispatch_call_with_selector, metadata, mutate,
+    mutate_void, storage::ContractStorage,
     tip20::{ITIP20, TIP20Token},
     view,
 };
@@ -33,10 +33,7 @@ enum TIP20Call {
 }
 
 impl TIP20Call {
-    fn decode(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
-        // safe to expect as `dispatch_call` pre-validates calldata len
-        let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
-
+    fn decode(selector: [u8; 4], calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
         if IRolesAuthCalls::valid_selector(selector) {
             IRolesAuthCalls::abi_decode(calldata).map(Self::RolesAuth)
         } else {
@@ -61,7 +58,7 @@ impl Precompile for TIP20Token {
             return self.storage.error_result(TIP20Error::uninitialized());
         }
 
-        dispatch_call(
+        dispatch_call_with_selector(
             calldata,
             &[
                 SelectorSchedule::new(TempoHardfork::T2).with_added(T2_ADDED),
