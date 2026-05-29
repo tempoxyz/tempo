@@ -161,7 +161,10 @@ impl Storable for UserState {
             return storage.store(slot, U256::from(self.amount));
         }
 
-        PackedUserState::from(*self).store(storage, slot, ctx)
+        storage.store(
+            slot,
+            U256::from(self.amount) | (U256::from(self.flag as u8) << 128usize),
+        )
     }
 }
 
