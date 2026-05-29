@@ -1399,7 +1399,7 @@ impl Recipient {
     /// - an address with the TIP-20 prefix (preventing transfers to token contracts)
     pub(crate) fn validate(&self) -> Result<()> {
         if self.target.is_zero() || self.target.is_tip20() {
-            return Err(TIP20Error::invalid_recipient().into());
+            return Err(invalid_recipient_error());
         }
         Ok(())
     }
@@ -1418,6 +1418,12 @@ impl Recipient {
         self.virtual_addr
             .map(|virtual_addr| TIP20Event::transfer(virtual_addr, self.target, amount))
     }
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_recipient_error() -> TempoPrecompileError {
+    TIP20Error::invalid_recipient().into()
 }
 
 #[cfg(test)]
