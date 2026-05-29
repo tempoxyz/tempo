@@ -23,7 +23,7 @@ use crate::{
     storage::{StorageOps, packing},
 };
 use alloy::primitives::{Address, U256, keccak256};
-use std::{cell::RefCell, hash::Hash};
+use std::cell::RefCell;
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -398,7 +398,7 @@ impl<K, H> Clone for HandlerCache<K, H> {
     }
 }
 
-impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
+impl<K: Eq + Clone, H> HandlerCache<K, H> {
     /// Returns a reference to a lazily initialized handler for the given key.
     #[inline]
     pub(super) fn get_or_insert(&self, key: &K, f: impl FnOnce() -> H) -> &H {
@@ -410,10 +410,7 @@ impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
             return unsafe { &*(boxed.as_ref() as *const H) };
         }
         cache.push((key.clone(), Box::new(f())));
-        let boxed = &cache
-            .last()
-            .expect("just pushed handler cache entry")
-            .1;
+        let boxed = &cache.last().expect("just pushed handler cache entry").1;
         // SAFETY: Box provides stable heap address. Cache is append-only.
         unsafe { &*(boxed.as_ref() as *const H) }
     }
@@ -427,10 +424,7 @@ impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
             return unsafe { &mut *(boxed.as_mut() as *mut H) };
         }
         cache.push((key.clone(), Box::new(f())));
-        let boxed = &mut cache
-            .last_mut()
-            .expect("just pushed handler cache entry")
-            .1;
+        let boxed = &mut cache.last_mut().expect("just pushed handler cache entry").1;
         // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
         unsafe { &mut *(boxed.as_mut() as *mut H) }
     }
