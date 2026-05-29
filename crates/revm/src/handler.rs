@@ -38,6 +38,7 @@ use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
 use tempo_precompiles::{
+    ACCOUNT_KEYCHAIN_ADDRESS,
     ECRECOVER_GAS,
     account_keychain::{
         AccountKeychain, AuthorizedKey, CallScope as PrecompileCallScope, KeyRestrictions,
@@ -417,12 +418,24 @@ impl<DB, I> TempoEvmHandler<DB, I> {
     }
 }
 
+#[inline]
+fn needs_keychain_tx_origin(tx: &TempoTxEnv) -> bool {
+    tx.tempo_tx_env.as_ref().is_some_and(|aa| {
+        aa.signature.is_keychain()
+            || aa.key_authorization.is_some()
+            || !aa.tempo_authorization_list.is_empty()
+    }) || tx
+        .calls()
+        .any(|(kind, _)| matches!(kind, TxKind::Call(to) if *to == ACCOUNT_KEYCHAIN_ADDRESS))
+}
+
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     fn seed_precompile_tx_context(
         &self,
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         let ctx = evm.ctx_mut();
+        let seed_tx_origin = needs_keychain_tx_origin(&ctx.tx);
         let channel_open_context_hash = ctx.tx.channel_open_context_hash();
 
         // Seed transient precompile transaction context for both regular execution and RPC
@@ -433,8 +446,10 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             &ctx.cfg,
             &ctx.tx,
             || {
-                let mut keychain = AccountKeychain::new();
-                keychain.set_tx_origin(ctx.tx.caller())?;
+                if seed_tx_origin {
+                    let mut keychain = AccountKeychain::new();
+                    keychain.set_tx_origin(ctx.tx.caller())?;
+                }
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
                     let mut channel_reserve = TIP20ChannelReserve::new();
