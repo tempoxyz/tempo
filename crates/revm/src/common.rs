@@ -107,6 +107,7 @@ pub trait TempoStateAccess<M = ()> {
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error>;
 
     /// Returns a read-only storage provider for the given spec.
+    #[inline(always)]
     fn with_read_only_storage_ctx<R>(&mut self, spec: TempoHardfork, f: impl FnOnce() -> R) -> R
     where
         Self: Sized,
@@ -369,6 +370,7 @@ where
     S: TempoStateAccess<M>,
 {
     /// Creates a new read-only storage provider.
+    #[inline(always)]
     fn new(state: &'a mut S, spec: TempoHardfork) -> Self {
         Self {
             state,
@@ -382,25 +384,30 @@ impl<S, M> PrecompileStorageProvider for ReadOnlyStorageProvider<'_, S, M>
 where
     S: TempoStateAccess<M>,
 {
+    #[inline(always)]
     fn spec(&self) -> TempoHardfork {
         self.spec
     }
 
+    #[inline(always)]
     fn amsterdam_eip8037_enabled(&self) -> bool {
         // Read-only context never executes TIP-1016 state gas paths (set_code, fill_state_gas);
         // the flag is not propagated through `with_read_only_storage_ctx`, so default to `false`.
         false
     }
 
+    #[inline(always)]
     fn gas_limit(&self) -> u64 {
         0
     }
 
+    #[inline(always)]
     fn is_static(&self) -> bool {
         // read-only operations should always be static
         true
     }
 
+    #[inline(always)]
     fn sload(&mut self, address: Address, key: U256) -> TempoResult<U256> {
         let _ = self
             .state
@@ -411,6 +418,7 @@ where
             .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))
     }
 
+    #[inline(always)]
     fn with_account_info(
         &mut self,
         address: Address,
