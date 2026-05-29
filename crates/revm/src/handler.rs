@@ -87,6 +87,14 @@ const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
 /// Rounded buffer for each extra LOG3/no-data event emitted by key authorizations.
 const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 
+#[cold]
+#[inline(never)]
+fn map_fee_postcharge_error<DBError>(
+    err: TempoPrecompileError,
+) -> EVMError<DBError, TempoInvalidTransaction> {
+    EVMError::Custom(format!("{err:?}"))
+}
+
 /// Gas cost for expiring nonce transactions (replay check + insert).
 ///
 /// See [TIP-1009] for full specification.
@@ -1595,7 +1603,7 @@ where
                         fee_token,
                         beneficiary,
                     )
-                    .map_err(|e| EVMError::Custom(format!("{e:?}")))
+                    .map_err(map_fee_postcharge_error::<DB::Error>)
             } else {
                 Ok(U256::ZERO)
             }
