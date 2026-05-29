@@ -87,6 +87,14 @@ const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
 /// Rounded buffer for each extra LOG3/no-data event emitted by key authorizations.
 const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 
+#[cold]
+#[inline(never)]
+fn keychain_transaction_key_error<DBError>(
+    err: TempoPrecompileError,
+) -> EVMError<DBError, TempoInvalidTransaction> {
+    EVMError::Custom(err.to_string())
+}
+
 /// Gas cost for expiring nonce transactions (replay check + insert).
 ///
 /// See [TIP-1009] for full specification.
@@ -1240,7 +1248,7 @@ where
                         // execution to enforce spending limits for existing keys.
                         keychain
                             .set_transaction_key(access_key_addr)
-                            .map_err(|e| EVMError::Custom(e.to_string()))?;
+                            .map_err(keychain_transaction_key_error::<DB::Error>)?;
 
                         Ok::<_, EVMError<_, TempoInvalidTransaction>>(LoadedTxAccessKey {
                             key_id: access_key_addr,
@@ -1515,7 +1523,7 @@ where
                     |mut keychain: AccountKeychain| {
                         keychain
                             .set_transaction_key(key_auth.key_id)
-                            .map_err(|e| EVMError::Custom(e.to_string()))?;
+                            .map_err(keychain_transaction_key_error::<DB::Error>)?;
 
                         if evm.collected_fee.is_zero() {
                             return Ok(());
