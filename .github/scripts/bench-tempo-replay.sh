@@ -11,6 +11,8 @@
 #   BENCH_BLOCKS                  – number of blocks to benchmark
 #   BENCH_WARMUP_BLOCKS           – number of warmup blocks
 #   BENCH_RUN_PAIRS               – number of baseline/feature run pairs
+#   BENCH_BASELINE_FEATURES       – cargo features for baseline build (optional)
+#   BENCH_FEATURE_FEATURES        – cargo features for feature build (optional)
 #   BENCH_BASELINE_ARGS           – extra node args for baseline (optional)
 #   BENCH_FEATURE_ARGS            – extra node args for feature (optional)
 #   BENCH_SAMPLY                  – "true" to enable samply profiling (optional)
@@ -75,6 +77,8 @@ export PATH="$CARGO_BIN_DIR:$PATH"
 TXGEN_TEMPO_BIN="${TXGEN_TEMPO_BIN:-txgen-tempo}"
 TXGEN_BENCH_BIN="${TXGEN_BENCH_BIN:-bench}"
 BENCH_FEATURES="${BENCH_FEATURES:-jemalloc,asm-keccak,keccak-cache-global}"
+BENCH_BASELINE_FEATURES="${BENCH_BASELINE_FEATURES:-$BENCH_FEATURES}"
+BENCH_FEATURE_FEATURES="${BENCH_FEATURE_FEATURES:-$BENCH_FEATURES}"
 if [ -z "${BENCHMARK_ID:-}" ]; then
   if [ -z "${GITHUB_RUN_ID:-}" ]; then
     echo "Error: BENCHMARK_ID or GITHUB_RUN_ID must be set for replay benchmarks" >&2
@@ -127,6 +131,12 @@ command -v "$TXGEN_BENCH_BIN"
 
 build_tempo() {
   local label="$1" ref="$2" src_dir="$3"
+  local build_features="$BENCH_FEATURES"
+
+  case "$label" in
+    baseline*) build_features="$BENCH_BASELINE_FEATURES" ;;
+    feature*) build_features="$BENCH_FEATURE_FEATURES" ;;
+  esac
 
   if [ -d "$src_dir" ]; then
     git -C "$src_dir" fetch origin "$ref" --quiet 2>/dev/null || true
@@ -135,10 +145,10 @@ build_tempo() {
   fi
   git -C "$src_dir" checkout "$ref"
 
-  echo "Building $label tempo ($ref)..."
+  echo "Building $label tempo ($ref) with features: $build_features"
   cd "$src_dir"
   RUSTFLAGS="-C target-cpu=native" \
-    cargo build --profile profiling --bin tempo --no-default-features --features "$BENCH_FEATURES"
+    cargo build --profile profiling --bin tempo --no-default-features --features "$build_features"
   cd -
 }
 

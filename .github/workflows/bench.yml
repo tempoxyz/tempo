@@ -296,17 +296,6 @@ jobs:
               core.setFailed(msg);
               return;
             }
-            if ((baselineFeatures || featureFeatures) && mode !== 'e2e') {
-              const msg = `❌ **Invalid bench command**\n\n\`baseline-features\` and \`feature-features\` are only supported with \`mode=e2e\`.\n\n${usageStr}`;
-              await github.rest.issues.createComment({
-                owner: context.repo.owner,
-                repo: context.repo.repo,
-                issue_number: context.issue.number,
-                body: msg,
-              });
-              core.setFailed(msg);
-              return;
-            }
             if ((baselineHardfork || featureHardfork) && !(baselineHardfork && featureHardfork)) {
               const msg = `❌ **Invalid bench command**\n\n\`baseline-hardfork\` and \`feature-hardfork\` must be provided together.\n\n${usageStr}`;
               await github.rest.issues.createComment({
@@ -575,6 +564,8 @@ jobs:
       feature-name: ${{ needs.tempo-bench-ack.outputs.feature-name }}
       samply: ${{ needs.tempo-bench-ack.outputs.samply }}
       otlp: ${{ needs.tempo-bench-ack.outputs.otlp }}
+      baseline-features: ${{ needs.tempo-bench-ack.outputs.baseline-features }}
+      feature-features: ${{ needs.tempo-bench-ack.outputs.feature-features }}
       baseline-args: ${{ needs.tempo-bench-ack.outputs.baseline-args }}
       feature-args: ${{ needs.tempo-bench-ack.outputs.feature-args }}
       blocks: ${{ needs.tempo-bench-ack.outputs.blocks }}
