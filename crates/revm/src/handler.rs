@@ -912,9 +912,13 @@ where
         let journal = &mut evm.inner.ctx.journaled_state;
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-        let fee_token = journal
-            .get_fee_token(tx, fee_payer, cfg.spec)
-            .map_err(|err| EVMError::Custom(err.to_string()))?;
+        let fee_token = if let Some(fee_token) = tx.fee_token {
+            fee_token
+        } else {
+            journal
+                .get_fee_token(tx, fee_payer, cfg.spec)
+                .map_err(|err| EVMError::Custom(err.to_string()))?
+        };
 
         evm.fee_token = Some(fee_token);
 
