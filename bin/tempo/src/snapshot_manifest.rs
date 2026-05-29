@@ -128,7 +128,6 @@ impl Args {
 
         let consensus_dir = self
             .consensus_source_dir
-            .clone()
             .unwrap_or_else(|| source_datadir.join("consensus"));
 
         let finalization = read_finalization_at_height(manifest.block, &consensus_dir)?;
@@ -148,7 +147,7 @@ impl Args {
             .insert(
                 TEMPO_CONSENSUS_MANIFEST_KEY.to_string(),
                 serde_json::to_value(TempoConsensusManifest {
-                    finalization: hex::encode(finalization.encode().to_vec()),
+                    finalization: hex::encode(finalization.encode()),
                 })
                 .wrap_err("failed to serialize Tempo consensus manifest extension")?,
             );
