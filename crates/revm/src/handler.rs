@@ -936,11 +936,8 @@ where
         // Load caller's account
         let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
 
-        let nonce_key = tx
-            .tempo_tx_env
-            .as_ref()
-            .map(|aa| aa.nonce_key)
-            .unwrap_or_default();
+        let tempo_tx_env = tx.tempo_tx_env.as_ref();
+        let nonce_key = tempo_tx_env.map(|aa| aa.nonce_key).unwrap_or_default();
 
         let spec = cfg.spec();
 
@@ -996,10 +993,8 @@ where
             // - Pre-T1B: use tx_hash for backwards-compatible behavior.
             // - T1B+: use the sender-scoped tx identifier (keccak256(encode_for_signing || sender))
             //   to prevent replay via different fee payer signatures.
-            let tempo_tx_env = tx
-                .tempo_tx_env
-                .as_ref()
-                .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?;
+            let tempo_tx_env =
+                tempo_tx_env.ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?;
 
             // Expiring nonce txs must have nonce == 0
             if tx.nonce() != 0 {
