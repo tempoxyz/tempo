@@ -1688,10 +1688,9 @@ where
                     .map_err(TempoInvalidTransaction::from)?;
             }
 
-            let has_keychain_fields =
-                aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
-
-            if aa_env.subblock_transaction && has_keychain_fields {
+            if aa_env.subblock_transaction
+                && (aa_env.key_authorization.is_some() || aa_env.signature.is_keychain())
+            {
                 return Err(TempoInvalidTransaction::KeychainOpInSubblockTransaction.into());
             }
 
