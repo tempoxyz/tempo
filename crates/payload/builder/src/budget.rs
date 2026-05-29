@@ -5,6 +5,11 @@
 //! block assembly, and marshal persistence. These helpers learn the relation
 //! between tx execution cutoff time, total replayable build work, and the
 //! size-dependent cost of persisting large blocks through consensus.
+//!
+//! The decision model is:
+//! `leader_idle + 2 * predicted_replayable_work + 2 * marshal_persist >= budget`.
+//! Idle waiting only happens on the proposer, while replayable work and marshal
+//! persistence happen on both proposer and validators.
 
 use std::time::Duration;
 
@@ -19,6 +24,9 @@ const MAX_BUILD_TIME_MULTIPLIER: u64 = 1_700_000;
 const BUILD_TIME_MULTIPLIER_DECAY: u64 = 8;
 
 /// Initial estimate of total replayable build work divided by work at tx cutoff.
+///
+/// For example, `1.35` means "when cutoff work is 100 ms, expect the completed
+/// replayable build work to be about 135 ms".
 pub const DEFAULT_BUILD_TIME_MULTIPLIER: f64 = 1.35;
 
 /// Converts a human-readable build-work multiplier into the fixed-point representation.
@@ -39,7 +47,17 @@ fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
     )
 }
 
-/// Returns true when leader build plus validator work has exhausted `budget`.
+/// Returns true when the shared proposer/validator budget is exhausted.
+///
+/// `elapsed` is wall-clock time spent in the builder so far. `idle_elapsed` is
+/// the proposer-only time spent waiting for more transactions, which is not
+/// replayed by validators and therefore counts once.
+/// `budget` is the remaining consensus payload build budget. `block_size_bytes`
+/// is the current encoded-size estimate used for marshal persistence.
+///
+/// The budget is not split into fixed leader/validator buckets. Instead, we
+/// charge proposer idle once, projected replayable work once for the proposer
+/// and once for validators, and marshal persistence once for each side.
 pub(crate) fn payload_budget_exhausted(
     elapsed: Duration,
     idle_elapsed: Duration,
@@ -60,6 +78,10 @@ pub(crate) fn payload_budget_exhausted(
 }
 
 /// Computes the observed total-work to tx-cutoff-work multiplier.
+///
+/// `work_at_tx_cutoff` is measured when pool transaction execution stops.
+/// `total_work` is measured after finalization finishes. Their ratio captures
+/// `builder_finish` without needing a separate fixed reserve.
 pub(crate) fn observed_build_time_multiplier(
     total_work: Duration,
     work_at_tx_cutoff: Duration,
