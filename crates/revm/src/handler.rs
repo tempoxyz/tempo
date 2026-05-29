@@ -58,8 +58,8 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoAddressExt,
     transaction::{
-        PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
-        calc_gas_balance_spending, validate_calls,
+        PrimitiveSignature, SignatureType, SignedKeyAuthorization, TEMPO_EXPIRING_NONCE_KEY,
+        TempoSignature, calc_gas_balance_spending, validate_calls,
     },
 };
 
@@ -1695,192 +1695,19 @@ where
                 return Err(TempoInvalidTransaction::KeychainOpInSubblockTransaction.into());
             }
 
-            if let Some(key_auth) = &aa_env.key_authorization {
-                // Check if this TX is using a Keychain signature (access key). Non-admin access
-                // keys cannot authorize other keys; T6 admin keys can.
-                let mut same_tx_auth_use = false;
-                if let Some(keychain_sig) = aa_env.signature.as_keychain() {
-                    // Use override_key_id if provided (for gas estimation), otherwise recover from signature
-                    let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id {
-                        override_key_id
-                    } else {
-                        // Get the access key address (recovered during Tx->TxEnv conversion and cached)
-                        keychain_sig
-                            .key_id(&aa_env.signature_hash)
-                            .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
-                    };
-
-                    same_tx_auth_use = access_key_addr == key_auth.key_id;
-                    if !same_tx_auth_use && !cfg.spec.is_t6() {
-                        return Err(
-                            TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into()
-                        );
-                    }
-
-                    if same_tx_auth_use
-                        && cfg.spec.is_t3()
-                        && key_auth.key_type != keychain_sig.signature.signature_type()
-                    {
-                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                                reason: "key authorization key_type does not match the keychain signature type"
-                                    .to_string(),
-                            }
-                            .into());
-                    }
-                }
-
-                if (key_auth.is_admin || key_auth.account.is_some()) && !cfg.spec.is_t6() {
-                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: "T6 key authorization fields are not active before T6".to_string(),
-                    }
-                    .into());
-                }
-
-                if cfg.spec.is_t6() && key_auth.account.is_some_and(|account| account != tx.caller)
-                {
-                    // T6 allows existing admin keys to sign `KeyAuthorization`s for an
-                    // account. Any named account must match the transaction caller so the
-                    // signed payload cannot be replayed against another account where the
-                    // same admin key is also authorized.
-                    let reason = if key_auth.is_admin() {
-                        "admin key authorization account mismatch"
-                    } else {
-                        "key authorization account mismatch"
-                    };
-
-                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: reason.to_string(),
-                    }
-                    .into());
-                }
-
-                if key_auth.is_admin()
-                    && (key_auth.expiry.is_some()
-                        || key_auth.limits.is_some()
-                        || key_auth.allowed_calls.is_some())
-                {
-                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                        reason:
-                            "admin key authorizations cannot carry expiry, limits, or call scopes"
-                                .to_string(),
-                    }
-                    .into());
-                }
-
-                if !cfg.spec.is_t6() {
-                    let auth_signer = key_auth.recover_signer().map_err(|_| {
-                        TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
-                    })?;
-
-                    if auth_signer != tx.caller {
-                        return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
-                            expected: tx.caller,
-                            actual: auth_signer,
-                        }
-                        .into());
-                    }
-                }
-
-                // Validate KeyAuthorization chain_id.
-                // T1C+: chain_id must exactly match (wildcard 0 is no longer allowed).
-                // Pre-T1C: chain_id == 0 allows replay on any chain (wildcard).
-                key_auth
-                    .validate_chain_id(cfg.chain_id(), cfg.spec.is_t1c())
-                    .map_err(TempoInvalidTransaction::from)?;
-
-                if key_auth.has_witness() && !cfg.spec.is_t5() {
-                    return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                        reason: "key authorization witnesses are not active before T5".to_string(),
-                    }
-                    .into());
-                }
-
-                // T3 gates all TIP-1011 fields. Before activation, transaction semantics must stay
-                // unchanged, so periodic limits and call scopes are rejected.
-                if !cfg.spec.is_t3() {
-                    if key_auth.has_periodic_limits() {
-                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                            reason: "periodic token limits are not active before T3".to_string(),
-                        }
-                        .into());
-                    }
-
-                    if key_auth.has_call_scopes() {
-                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                            reason: "call scopes are not active before T3".to_string(),
-                        }
-                        .into());
-                    }
-                }
-
-                if cfg.spec.is_t6() {
-                    let auth_signer = key_auth.recover_signer().map_err(|_| {
-                        TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
-                    })?;
-                    if auth_signer != tx.caller && key_auth.account.is_none() {
-                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                            reason: "admin-signed key authorization account mismatch".to_string(),
-                        }
-                        .into());
-                    }
-
-                    if auth_signer == tx.caller
-                        && aa_env.signature.is_keychain()
-                        && !same_tx_auth_use
-                    {
-                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                            reason:
-                                "root-signed key authorization must use root transaction signature"
-                                    .to_string(),
-                        }
-                        .into());
-                    }
-
-                    if auth_signer != tx.caller {
-                        let Some(keychain_sig) = aa_env.signature.as_keychain() else {
-                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                                reason:
-                                    "admin-signed key authorization must be signed by transaction key"
-                                        .to_string(),
-                            }
-                            .into());
-                        };
-
-                        let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id
-                        {
-                            override_key_id
-                        } else {
-                            keychain_sig
-                                .key_id(&aa_env.signature_hash)
-                                .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
-                        };
-
-                        if access_key_addr != auth_signer {
-                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                                reason:
-                                    "admin-signed key authorization must be signed by transaction key"
-                                        .to_string(),
-                            }
-                            .into());
-                        }
-
-                        if key_auth.signature.signature_type()
-                            != keychain_sig.signature.signature_type()
-                        {
-                            return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                                reason:
-                                    "admin-signed key authorization signature type does not match transaction key signature type"
-                                        .to_string(),
-                            }
-                            .into());
-                        }
-                    }
-                }
-
-                // Cache inline key authorization expiry.
-                if let Some(expiry) = key_auth.expiry {
-                    evm.key_expiry = Some(expiry.get());
-                }
+            let inline_key_expiry = if let Some(key_auth) = &aa_env.key_authorization {
+                validate_key_authorization_env(
+                    cfg.chain_id(),
+                    cfg.spec,
+                    tx.caller,
+                    aa_env,
+                    key_auth,
+                )?
+            } else {
+                None
+            };
+            if let Some(expiry) = inline_key_expiry {
+                evm.key_expiry = Some(expiry);
             }
 
             // Validate priority fee for AA transactions using revm's validate_priority_fee_tx
@@ -2378,6 +2205,173 @@ fn check_gas_limit(
         return Some(oog_frame_result(kind, tx.gas_limit()));
     }
     None
+}
+
+#[cold]
+#[inline(never)]
+fn validate_key_authorization_env(
+    chain_id: u64,
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+    caller: Address,
+    aa_env: &TempoBatchCallEnv,
+    key_auth: &SignedKeyAuthorization,
+) -> Result<Option<u64>, TempoInvalidTransaction> {
+    // Check if this TX is using a Keychain signature (access key). Non-admin access
+    // keys cannot authorize other keys; T6 admin keys can.
+    let mut same_tx_auth_use = false;
+    if let Some(keychain_sig) = aa_env.signature.as_keychain() {
+        // Use override_key_id if provided (for gas estimation), otherwise recover from signature
+        let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id {
+            override_key_id
+        } else {
+            // Get the access key address (recovered during Tx->TxEnv conversion and cached)
+            keychain_sig
+                .key_id(&aa_env.signature_hash)
+                .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+        };
+
+        same_tx_auth_use = access_key_addr == key_auth.key_id;
+        if !same_tx_auth_use && !spec.is_t6() {
+            return Err(TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys);
+        }
+
+        if same_tx_auth_use
+            && spec.is_t3()
+            && key_auth.key_type != keychain_sig.signature.signature_type()
+        {
+            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                reason: "key authorization key_type does not match the keychain signature type"
+                    .to_string(),
+            });
+        }
+    }
+
+    if (key_auth.is_admin || key_auth.account.is_some()) && !spec.is_t6() {
+        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+            reason: "T6 key authorization fields are not active before T6".to_string(),
+        });
+    }
+
+    if spec.is_t6() && key_auth.account.is_some_and(|account| account != caller) {
+        // T6 allows existing admin keys to sign `KeyAuthorization`s for an
+        // account. Any named account must match the transaction caller so the
+        // signed payload cannot be replayed against another account where the
+        // same admin key is also authorized.
+        let reason = if key_auth.is_admin() {
+            "admin key authorization account mismatch"
+        } else {
+            "key authorization account mismatch"
+        };
+
+        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+            reason: reason.to_string(),
+        });
+    }
+
+    if key_auth.is_admin()
+        && (key_auth.expiry.is_some()
+            || key_auth.limits.is_some()
+            || key_auth.allowed_calls.is_some())
+    {
+        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+            reason: "admin key authorizations cannot carry expiry, limits, or call scopes"
+                .to_string(),
+        });
+    }
+
+    if !spec.is_t6() {
+        let auth_signer = key_auth
+            .recover_signer()
+            .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
+
+        if auth_signer != caller {
+            return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
+                expected: caller,
+                actual: auth_signer,
+            });
+        }
+    }
+
+    // Validate KeyAuthorization chain_id.
+    // T1C+: chain_id must exactly match (wildcard 0 is no longer allowed).
+    // Pre-T1C: chain_id == 0 allows replay on any chain (wildcard).
+    key_auth
+        .validate_chain_id(chain_id, spec.is_t1c())
+        .map_err(TempoInvalidTransaction::from)?;
+
+    if key_auth.has_witness() && !spec.is_t5() {
+        return Err(TempoInvalidTransaction::KeychainValidationFailed {
+            reason: "key authorization witnesses are not active before T5".to_string(),
+        });
+    }
+
+    // T3 gates all TIP-1011 fields. Before activation, transaction semantics must stay
+    // unchanged, so periodic limits and call scopes are rejected.
+    if !spec.is_t3() {
+        if key_auth.has_periodic_limits() {
+            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                reason: "periodic token limits are not active before T3".to_string(),
+            });
+        }
+
+        if key_auth.has_call_scopes() {
+            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                reason: "call scopes are not active before T3".to_string(),
+            });
+        }
+    }
+
+    if spec.is_t6() {
+        let auth_signer = key_auth
+            .recover_signer()
+            .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
+        if auth_signer != caller && key_auth.account.is_none() {
+            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                reason: "admin-signed key authorization account mismatch".to_string(),
+            });
+        }
+
+        if auth_signer == caller && aa_env.signature.is_keychain() && !same_tx_auth_use {
+            return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                reason: "root-signed key authorization must use root transaction signature"
+                    .to_string(),
+            });
+        }
+
+        if auth_signer != caller {
+            let Some(keychain_sig) = aa_env.signature.as_keychain() else {
+                return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                    reason: "admin-signed key authorization must be signed by transaction key"
+                        .to_string(),
+                });
+            };
+
+            let access_key_addr = if let Some(override_key_id) = aa_env.override_key_id {
+                override_key_id
+            } else {
+                keychain_sig
+                    .key_id(&aa_env.signature_hash)
+                    .map_err(|_| TempoInvalidTransaction::AccessKeyRecoveryFailed)?
+            };
+
+            if access_key_addr != auth_signer {
+                return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                    reason: "admin-signed key authorization must be signed by transaction key"
+                        .to_string(),
+                });
+            }
+
+            if key_auth.signature.signature_type() != keychain_sig.signature.signature_type() {
+                return Err(TempoInvalidTransaction::KeychainValidationFailed {
+                    reason:
+                        "admin-signed key authorization signature type does not match transaction key signature type"
+                            .to_string(),
+                });
+            }
+        }
+    }
+
+    Ok(key_auth.expiry.map(|expiry| expiry.get()))
 }
 
 /// Validates time window for AA transactions
