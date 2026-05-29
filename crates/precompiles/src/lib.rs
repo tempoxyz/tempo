@@ -164,11 +164,7 @@ macro_rules! tempo_precompile {
         let gas_params = $cfg.gas_params.clone();
         DynPrecompile::new_stateful(PrecompileId::Custom($id.into()), move |$input| {
             if !$input.is_direct_call() {
-                return Ok(PrecompileOutput::revert(
-                    0,
-                    DelegateCallNotAllowed {}.abi_encode().into(),
-                    $input.reservoir,
-                ));
+                return delegate_call_not_allowed($input.reservoir);
             }
             let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new(
                 $input.internals,
@@ -184,6 +180,16 @@ macro_rules! tempo_precompile {
             })
         })
     }};
+}
+
+#[cold]
+#[inline(never)]
+fn delegate_call_not_allowed(reservoir: u64) -> PrecompileResult {
+    Ok(PrecompileOutput::revert(
+        0,
+        DelegateCallNotAllowed {}.abi_encode().into(),
+        reservoir,
+    ))
 }
 
 impl TipFeeManager {
