@@ -315,10 +315,12 @@ pub trait TempoStateAccess<M = ()> {
 impl<DB: Database> TempoStateAccess<()> for DB {
     type Error = DB::Error;
 
+    #[inline(always)]
     fn basic(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
         self.basic(address).map(Option::unwrap_or_default)
     }
 
+    #[inline(always)]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
         self.storage(address, key)
     }
@@ -327,10 +329,12 @@ impl<DB: Database> TempoStateAccess<()> for DB {
 impl<T: JournalTr> TempoStateAccess<((), ())> for T {
     type Error = <T::Database as Database>::Error;
 
+    #[inline(always)]
     fn basic(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
         self.load_account(address).map(|s| s.data.info.clone())
     }
 
+    #[inline(always)]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
         JournalTr::sload(self, address, key).map(|s| s.data)
     }
@@ -340,12 +344,14 @@ impl<T: JournalTr> TempoStateAccess<((), ())> for T {
 impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
     type Error = reth_evm::execute::ProviderError;
 
+    #[inline(always)]
     fn basic(&mut self, address: Address) -> Result<AccountInfo, Self::Error> {
         self.basic_account(&address)
             .map(Option::unwrap_or_default)
             .map(Into::into)
     }
 
+    #[inline(always)]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, Self::Error> {
         self.storage(address, key.into())
             .map(Option::unwrap_or_default)
