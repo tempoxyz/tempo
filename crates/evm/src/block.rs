@@ -390,6 +390,7 @@ where
     ///
     /// [`is_payment_v1`]: TempoTxEnvelope::is_payment_v1
     /// [`is_payment_v2`]: TempoTxEnvelope::is_payment_v2
+    #[inline]
     pub(crate) fn is_payment(&self, tx: &TempoTxEnvelope) -> bool {
         if self.evm().cfg.spec.is_t5() {
             tx.is_payment_v2()
