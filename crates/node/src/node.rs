@@ -71,6 +71,18 @@ pub struct TempoNodeArgs {
     #[arg(long = "builder.enable-prewarming", default_value_t = true)]
     pub builder_enable_prewarming: bool,
 
+    /// Disable prewarming for the payload builder.
+    #[arg(long = "builder.disable-prewarming", default_value_t = false)]
+    pub builder_disable_prewarming: bool,
+
+    /// Disable sharing the execution cache with the payload builder.
+    #[arg(long = "builder.disable-execution-cache", default_value_t = false)]
+    pub builder_disable_execution_cache: bool,
+
+    /// Disable sharing the sparse trie with the payload builder.
+    #[arg(long = "builder.disable-sparse-trie", default_value_t = false)]
+    pub builder_disable_sparse_trie: bool,
+
     /// Initial multiplier for predicting replayable payload build work.
     #[arg(
         long = "builder.build-time-multiplier",
@@ -86,6 +98,9 @@ impl Default for TempoNodeArgs {
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             builder_state_provider_metrics: false,
             builder_enable_prewarming: false,
+            builder_disable_prewarming: false,
+            builder_disable_execution_cache: false,
+            builder_disable_sparse_trie: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -104,7 +119,7 @@ impl TempoNodeArgs {
     pub fn payload_builder_builder(&self) -> TempoPayloadBuilderBuilder {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
-            enable_prewarming: self.builder_enable_prewarming,
+            enable_prewarming: self.builder_enable_prewarming && !self.builder_disable_prewarming,
             build_time_multiplier: self.builder_build_time_multiplier,
         }
     }
