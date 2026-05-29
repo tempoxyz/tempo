@@ -6,7 +6,6 @@ use crate::{
     paused::{PausedEntry, PausedFeeTokenPool},
     transaction::TempoPooledTransaction,
 };
-use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
     Address, B256, Log, TxHash,
     map::{AddressMap, AddressSet, B256Map, B256Set},
@@ -46,6 +45,11 @@ pub struct TempoPoolUpdates {
     /// Revoked keychain keys.
     /// Indexed by account for efficient lookup.
     pub revoked_keys: RevokedKeys,
+    /// Inline key authorization target-key status changes.
+    ///
+    /// A pending inline authorization for `(account, key)` is stale once another transaction
+    /// authorizes, admin-authorizes, or revokes that same key.
+    pub key_authorization_target_changes: RevokedKeys,
     /// Spending limit changes.
     /// When a spending limit changes, transactions from that key paying with that token
     /// may become unexecutable if the new limit is below their value.
@@ -106,6 +110,7 @@ impl TempoPoolUpdates {
     pub fn is_empty(&self) -> bool {
         self.expired_txs.is_empty()
             && self.revoked_keys.is_empty()
+            && self.key_authorization_target_changes.is_empty()
             && self.spending_limit_changes.is_empty()
             && self.validator_token_changes.is_empty()
             && self.user_token_changes.is_empty()
@@ -139,6 +144,19 @@ impl TempoPoolUpdates {
                 match AccountKeychainPoolEvent::decode(log) {
                     Some(AccountKeychainPoolEvent::KeyRevoked(event)) => {
                         updates.revoked_keys.insert(event.account, event.publicKey);
+                        updates
+                            .key_authorization_target_changes
+                            .insert(event.account, event.publicKey);
+                    }
+                    Some(AccountKeychainPoolEvent::KeyAuthorized(event)) => {
+                        updates
+                            .key_authorization_target_changes
+                            .insert(event.account, event.publicKey);
+                    }
+                    Some(AccountKeychainPoolEvent::AdminKeyAuthorized(event)) => {
+                        updates
+                            .key_authorization_target_changes
+                            .insert(event.account, event.publicKey);
                     }
                     Some(AccountKeychainPoolEvent::SpendingLimitUpdated(event)) => {
                         updates.spending_limit_changes.insert(
@@ -224,6 +242,7 @@ impl TempoPoolUpdates {
     /// Returns true if there are any invalidation events that require scanning the pool.
     pub fn has_invalidation_events(&self) -> bool {
         self.has_keychain_subject_updates()
+            || !self.key_authorization_target_changes.is_empty()
             || !self.validator_token_changes.is_empty()
             || !self.user_token_changes.is_empty()
             || !self.blacklist_additions.is_empty()
@@ -242,6 +261,10 @@ impl TempoPoolUpdates {
 
 /// Transaction-pool relevant subset of `IAccountKeychain::IAccountKeychainEvents`.
 enum AccountKeychainPoolEvent {
+    /// [`IAccountKeychain::KeyAuthorized`] log.
+    KeyAuthorized(IAccountKeychain::KeyAuthorized),
+    /// [`IAccountKeychain::AdminKeyAuthorized`] log.
+    AdminKeyAuthorized(IAccountKeychain::AdminKeyAuthorized),
     /// [`IAccountKeychain::KeyRevoked`] log.
     KeyRevoked(IAccountKeychain::KeyRevoked),
     /// [`IAccountKeychain::SpendingLimitUpdated`] log.
@@ -256,6 +279,12 @@ impl AccountKeychainPoolEvent {
     /// Decodes only account-keychain events used by transaction-pool maintenance.
     fn decode(log: &Log) -> Option<Self> {
         match first_topic(log)? {
+            IAccountKeychain::KeyAuthorized::SIGNATURE_HASH => {
+                decode_event(log).map(Self::KeyAuthorized)
+            }
+            IAccountKeychain::AdminKeyAuthorized::SIGNATURE_HASH => {
+                decode_event(log).map(Self::AdminKeyAuthorized)
+            }
             IAccountKeychain::KeyRevoked::SIGNATURE_HASH => decode_event(log).map(Self::KeyRevoked),
             IAccountKeychain::SpendingLimitUpdated::SIGNATURE_HASH => {
                 decode_event(log).map(Self::SpendingLimitUpdated)
@@ -591,14 +620,28 @@ where
                 let bundle_state = tip.execution_outcome().state().state();
                 let tip_timestamp = tip.tip().header().timestamp();
 
-                // 1. Collect all block-level invalidation events
+                // 1. Update 2D nonce pool before scan-based maintenance.
+                // This removes mined 2D nonce transactions and promotes newly
+                // unblocked transactions before later pool scans.
+                let nonce_pool_start = Instant::now();
+                let _mined_aa_txs = pool.notify_aa_pool_on_state_updates(bundle_state);
+                metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
+
+                // 2. Update AMM liquidity cache before revalidation/invalidation scans.
+                let amm_start = Instant::now();
+                amm_cache.on_new_state(tip.execution_outcome());
+                if let Err(err) = amm_cache
+                    .on_new_blocks(tip.blocks_iter().map(|block| block.sealed_header()), pool.client())
+                {
+                    error!(target: "txpool", ?err, "AMM liquidity cache update failed");
+                }
+                metrics.amm_cache_update_duration_seconds.record(amm_start.elapsed());
+
+                // 3. Collect all block-level invalidation events
                 let mut updates = TempoPoolUpdates::from_chain(tip);
 
                 // Remove expiry tracking for mined transactions.
-                let mined_hashes = tip.blocks_iter()
-                    .flat_map(|block| block.body().transactions())
-                    .map(|tx| tx.tx_hash());
-                state.untrack_many(mined_hashes);
+                state.untrack_many(tip.transaction_hashes());
 
                 // Evict transactions slightly before they expire to prevent
                 // broadcasting near-expiry txs that peers would reject.
@@ -606,9 +649,15 @@ where
 
                 // Add expired transactions (from local tracking state)
                 let expired = state.drain_expired(max_expiry);
-                updates.expired_txs = expired.into_iter().filter(|h| pool.contains(h)).collect();
+                if !expired.is_empty() {
+                    let mined_hashes: B256Set = tip.transaction_hashes().copied().collect();
+                    updates.expired_txs = expired
+                        .into_iter()
+                        .filter(|hash| !mined_hashes.contains(hash) && pool.contains(hash))
+                        .collect();
+                }
 
-                // 2. Evict expired AA transactions
+                // 4. Evict expired AA transactions
                 let expired_start = Instant::now();
                 let expired_count = updates.expired_txs.len();
                 if expired_count > 0 {
@@ -623,7 +672,7 @@ where
                 }
                 metrics.expired_eviction_duration_seconds.record(expired_start.elapsed());
 
-                // 3. Handle fee token pause/unpause events
+                // 5. Handle fee token pause/unpause events
                 let pause_start = Instant::now();
 
                 // Collect pause tokens that need pool scanning.
@@ -736,7 +785,7 @@ where
                     }
                 }
 
-                // 4. Evict expired transactions from the paused pool
+                // 6. Evict expired transactions from the paused pool
                 let paused_expired = state.paused_pool.evict_expired(tip_timestamp);
                 let paused_timed_out = state.paused_pool.evict_timed_out();
                 let total_paused_evicted = paused_expired + paused_timed_out;
@@ -749,21 +798,23 @@ where
                     );
                 }
 
-                // 5. Evict hard keychain invalidations from paused pool
+                // 7. Evict hard keychain invalidations from paused pool
                 // Ignore spending_limit_spends here: AccessKeySpend only proves partial limit consumption, and paused txs are fully revalidated on unpause.
                 if !updates.revoked_keys.is_empty()
+                    || !updates.key_authorization_target_changes.is_empty()
                     || !updates.spending_limit_changes.is_empty()
                     || !updates.key_authorization_witness_burns.is_empty()
                 {
                     state.paused_pool.evict_invalidated(
                         &updates.revoked_keys,
+                        &updates.key_authorization_target_changes,
                         &updates.spending_limit_changes,
                         &updates.key_authorization_witness_burns,
                     );
                 }
                 metrics.pause_events_duration_seconds.record(pause_start.elapsed());
 
-                // 5b. Handle potentially invalidating updates
+                // 8. Handle potentially invalidating updates
                 // When a cached value changes of a token (transfer policy, or quote token) changes,
                 // pending transactions using that token may become invalid. We need to remove them
                 // and re-add so they go through full validation against the updated state.
@@ -825,21 +876,7 @@ where
                     }
                 }
 
-                // 6. Update 2D nonce pool (also removes included expiring nonce txs
-                // via slot changes on the nonce precompile)
-                let nonce_pool_start = Instant::now();
-                let _mined_aa_txs = pool.notify_aa_pool_on_state_updates(bundle_state);
-                metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
-
-                // 7. Update AMM liquidity cache (must happen before validator token eviction)
-                let amm_start = Instant::now();
-                amm_cache.on_new_state(tip.execution_outcome());
-                if let Err(err) = amm_cache.on_new_blocks(tip.blocks_iter().map(|block| block.sealed_header()), pool.client()) {
-                    error!(target: "txpool", ?err, "AMM liquidity cache update failed");
-                }
-                metrics.amm_cache_update_duration_seconds.record(amm_start.elapsed());
-
-                // 8. Evict invalidated transactions in a single pool scan
+                // 9. Evict invalidated transactions in a single pool scan
                 // This checks revoked keys, spending limit changes, validator token changes,
                 // blacklist additions, and whitelist removals together to avoid scanning
                 // all transactions multiple times per block.
@@ -848,6 +885,8 @@ where
                     debug!(
                         target: "txpool",
                         revoked_keys = updates.revoked_keys.len(),
+                        key_authorization_target_changes =
+                            updates.key_authorization_target_changes.len(),
                         spending_limit_changes = updates.spending_limit_changes.len(),
                         spending_limit_spends = updates.spending_limit_spends.len(),
                         validator_token_changes = updates.validator_token_changes.len(),
@@ -866,7 +905,7 @@ where
                         .record(invalidation_start.elapsed());
                 }
 
-                // 9. Evict stale pending transactions (must happen after AA pool promotions in step 6)
+                // 10. Evict stale pending transactions (must happen after AA pool promotions in step 1)
                 // Only runs once per interval (~30 min) to avoid overhead on every block.
                 // Transactions pending across two consecutive snapshots are considered stale.
                 if state.pending_staleness.should_check(tip_timestamp) {
@@ -1135,6 +1174,36 @@ mod tests {
 
         #[test]
         fn account_keychain_decode_matches_generated_event_decoders() {
+            let log = event_log(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                IAccountKeychain::KeyAuthorized {
+                    account: Address::random(),
+                    publicKey: Address::random(),
+                    signatureType: 0,
+                    expiry: u64::MAX,
+                },
+            );
+            assert_decodes_like_generated!(
+                AccountKeychainPoolEvent,
+                KeyAuthorized,
+                IAccountKeychain::KeyAuthorized,
+                log
+            );
+
+            let log = event_log(
+                ACCOUNT_KEYCHAIN_ADDRESS,
+                IAccountKeychain::AdminKeyAuthorized {
+                    account: Address::random(),
+                    publicKey: Address::random(),
+                },
+            );
+            assert_decodes_like_generated!(
+                AccountKeychainPoolEvent,
+                AdminKeyAuthorized,
+                IAccountKeychain::AdminKeyAuthorized,
+                log
+            );
+
             let log = event_log(
                 ACCOUNT_KEYCHAIN_ADDRESS,
                 IAccountKeychain::KeyRevoked {
