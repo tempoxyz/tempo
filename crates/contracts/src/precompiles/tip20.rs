@@ -205,23 +205,24 @@ impl ITIP20::ITIP20Calls {
     ///
     /// [TIP-20 payment]: <https://docs.tempo.xyz/protocol/tip20/overview#get-predictable-payment-fees>
     pub fn is_payment(input: &[u8]) -> bool {
-        fn is_call<C: SolCall>(input: &[u8]) -> bool {
-            let Some(encoded_size) = <C::Parameters<'_> as SolType>::ENCODED_SIZE else {
-                return false;
-            };
+        let Some(selector) = input.first_chunk::<4>() else {
+            return false;
+        };
 
-            input.first_chunk::<4>() == Some(&C::SELECTOR) && input.len() == 4 + encoded_size
-        }
+        let expected_len = match *selector {
+            ITIP20::transferCall::SELECTOR
+            | ITIP20::approveCall::SELECTOR
+            | ITIP20::mintCall::SELECTOR
+            | ITIP20::burnWithMemoCall::SELECTOR => 4 + 64,
+            ITIP20::transferWithMemoCall::SELECTOR
+            | ITIP20::transferFromCall::SELECTOR
+            | ITIP20::mintWithMemoCall::SELECTOR => 4 + 96,
+            ITIP20::transferFromWithMemoCall::SELECTOR => 4 + 128,
+            ITIP20::burnCall::SELECTOR => 4 + 32,
+            _ => return false,
+        };
 
-        is_call::<ITIP20::transferCall>(input)
-            || is_call::<ITIP20::transferWithMemoCall>(input)
-            || is_call::<ITIP20::transferFromCall>(input)
-            || is_call::<ITIP20::transferFromWithMemoCall>(input)
-            || is_call::<ITIP20::approveCall>(input)
-            || is_call::<ITIP20::mintCall>(input)
-            || is_call::<ITIP20::mintWithMemoCall>(input)
-            || is_call::<ITIP20::burnCall>(input)
-            || is_call::<ITIP20::burnWithMemoCall>(input)
+        input.len() == expected_len
     }
 
     /// Returns `true` if `input` matches one of the TIP-1059 discounted pure-payment call selectors.
