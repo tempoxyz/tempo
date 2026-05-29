@@ -106,6 +106,12 @@ pub struct TempoTxResult {
     validator_fee: U256,
 }
 
+#[cold]
+#[inline(never)]
+fn clone_subblock_transaction(tx: &TempoTxEnvelope) -> TempoTxEnvelope {
+    tx.clone()
+}
+
 impl TempoTxResult {
     /// Returns the block gas consumed by this transaction.
     pub fn block_gas_used(&self) -> u64 {
@@ -552,12 +558,16 @@ where
         };
         // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
         let validator_fee = self.evm().validator_fee();
+        let subblock_tx = if matches!(next_section, BlockSection::SubBlock { .. }) {
+            Some(clone_subblock_transaction(recovered.tx()))
+        } else {
+            None
+        };
         Ok(TempoTxResult {
             inner,
             next_section,
             is_payment: self.is_payment(recovered.tx()),
-            tx: matches!(next_section, BlockSection::SubBlock { .. })
-                .then(|| recovered.tx().clone()),
+            tx: subblock_tx,
             block_gas_used,
             validator_fee,
         })
