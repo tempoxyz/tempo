@@ -110,6 +110,39 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 /// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
 pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
 
+#[cold]
+#[inline(never)]
+fn advance_expiring_nonce_prewarm_ptr<DB: Database>(
+    nonce_manager: &mut NonceManager,
+    expiring_nonce_idx: usize,
+) -> Result<u32, EVMError<DB::Error, TempoInvalidTransaction>> {
+    let ptr = nonce_manager
+        .expiring_nonce_ring_ptr
+        .read()
+        .map_err(|err| EVMError::Custom(err.to_string()))?;
+
+    let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
+
+    nonce_manager
+        .expiring_nonce_ring_ptr
+        .write(next)
+        .map_err(|err| EVMError::Custom(err.to_string()))?;
+
+    Ok(ptr)
+}
+
+#[cold]
+#[inline(never)]
+fn restore_expiring_nonce_prewarm_ptr<DB: Database>(
+    nonce_manager: &mut NonceManager,
+    prev_ptr: u32,
+) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+    nonce_manager
+        .expiring_nonce_ring_ptr
+        .write(prev_ptr)
+        .map_err(|err| EVMError::Custom(err.to_string()))
+}
+
 /// Calculates the gas cost for verifying a primitive signature.
 ///
 /// Returns the additional gas required beyond the base transaction cost:
@@ -1021,19 +1054,10 @@ where
                 let mut nonce_manager = NonceManager::new();
 
                 let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
-                    let ptr = nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .read()
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
-
-                    let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
-
-                    nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(next)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
-
-                    Some(ptr)
+                    Some(advance_expiring_nonce_prewarm_ptr::<DB>(
+                        &mut nonce_manager,
+                        expiring_nonce_idx,
+                    )?)
                 } else {
                     None
                 };
@@ -1063,10 +1087,7 @@ where
                     })?;
 
                 if let Some(prev_ptr) = prev_ptr {
-                    nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(prev_ptr)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
+                    restore_expiring_nonce_prewarm_ptr::<DB>(&mut nonce_manager, prev_ptr)?;
                 }
 
                 Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
