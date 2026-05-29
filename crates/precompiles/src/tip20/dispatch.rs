@@ -45,6 +45,14 @@ impl TIP20Call {
     }
 }
 
+impl TIP20Token {
+    #[cold]
+    #[inline(never)]
+    fn uninitialized_result(&mut self) -> PrecompileResult {
+        self.storage.error_result(TIP20Error::uninitialized())
+    }
+}
+
 impl Precompile for TIP20Token {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
@@ -58,7 +66,7 @@ impl Precompile for TIP20Token {
             Err(e) => return self.storage.error_result(e),
         };
         if !initialized {
-            return self.storage.error_result(TIP20Error::uninitialized());
+            return self.uninitialized_result();
         }
 
         dispatch_call(
