@@ -94,6 +94,17 @@ pub trait Precompile {
     /// error data, while fatal failures (e.g. out-of-gas) are returned as
     /// [`PrecompileError`](revm::precompile::PrecompileError).
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult;
+
+    /// Dispatches an EVM call with the static-call bit already known by the precompile wrapper.
+    #[inline]
+    fn call_with_static_context(
+        &mut self,
+        calldata: &[u8],
+        msg_sender: Address,
+        _is_static: bool,
+    ) -> PrecompileResult {
+        self.call(calldata, msg_sender)
+    }
 }
 
 /// Returns the full Tempo precompiles for the given config.
@@ -180,7 +191,7 @@ macro_rules! tempo_precompile {
                 gas_params.clone(),
             );
             crate::storage::StorageCtx::enter(&mut storage, || {
-                $impl.call($input.data, $input.caller)
+                $impl.call_with_static_context($input.data, $input.caller, $input.is_static)
             })
         })
     }};
@@ -300,7 +311,18 @@ fn mutate<T: SolCall>(
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
-    if StorageCtx.is_static() {
+    mutate_with_static(call, sender, StorageCtx.is_static(), f)
+}
+
+/// Dispatches a state-mutating call with a caller-provided static-call flag.
+#[inline]
+fn mutate_with_static<T: SolCall>(
+    call: T,
+    sender: Address,
+    is_static: bool,
+    f: impl FnOnce(Address, T) -> Result<T::Return>,
+) -> PrecompileResult {
+    if is_static {
         return Ok(PrecompileOutput::revert(
             0,
             StaticCallNotAllowed {}.abi_encode().into(),
@@ -319,7 +341,18 @@ fn mutate_void<T: SolCall>(
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
-    if StorageCtx.is_static() {
+    mutate_void_with_static(call, sender, StorageCtx.is_static(), f)
+}
+
+/// Dispatches a state-mutating void call with a caller-provided static-call flag.
+#[inline]
+fn mutate_void_with_static<T: SolCall>(
+    call: T,
+    sender: Address,
+    is_static: bool,
+    f: impl FnOnce(Address, T) -> Result<()>,
+) -> PrecompileResult {
+    if is_static {
         return Ok(PrecompileOutput::revert(
             0,
             StaticCallNotAllowed {}.abi_encode().into(),

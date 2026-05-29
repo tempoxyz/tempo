@@ -1,8 +1,8 @@
 //! ABI dispatch for the [`TIP20Token`] precompile.
 
 use crate::{
-    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
-    storage::ContractStorage,
+    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, metadata, mutate_with_static,
+    mutate_void_with_static, storage::ContractStorage,
     tip20::{ITIP20, TIP20Token},
     view,
 };
@@ -47,6 +47,15 @@ impl TIP20Call {
 
 impl Precompile for TIP20Token {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
+        self.call_with_static_context(calldata, msg_sender, crate::storage::StorageCtx.is_static())
+    }
+
+    fn call_with_static_context(
+        &mut self,
+        calldata: &[u8],
+        msg_sender: Address,
+        is_static: bool,
+    ) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
         }
@@ -124,72 +133,94 @@ impl Precompile for TIP20Token {
 
                 // State changing functions
                 TIP20Call::TIP20(ITIP20Calls::transferFrom(call)) => {
-                    mutate(call, msg_sender, |s, c| self.transfer_from(s, c))
+                    mutate_with_static(call, msg_sender, is_static, |s, c| {
+                        self.transfer_from(s, c)
+                    })
                 }
                 TIP20Call::TIP20(ITIP20Calls::transfer(call)) => {
-                    mutate(call, msg_sender, |s, c| self.transfer(s, c))
+                    mutate_with_static(call, msg_sender, is_static, |s, c| self.transfer(s, c))
                 }
                 TIP20Call::TIP20(ITIP20Calls::approve(call)) => {
-                    mutate(call, msg_sender, |s, c| self.approve(s, c))
+                    mutate_with_static(call, msg_sender, is_static, |s, c| self.approve(s, c))
                 }
                 TIP20Call::TIP20(ITIP20Calls::changeTransferPolicyId(call)) => {
-                    mutate_void(call, msg_sender, |s, c| {
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| {
                         self.change_transfer_policy_id(s, c)
                     })
                 }
                 TIP20Call::TIP20(ITIP20Calls::setSupplyCap(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.set_supply_cap(s, c))
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| {
+                        self.set_supply_cap(s, c)
+                    })
                 }
                 TIP20Call::TIP20(ITIP20Calls::setLogoURI(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.set_logo_uri(s, c))
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| {
+                        self.set_logo_uri(s, c)
+                    })
                 }
                 TIP20Call::TIP20(ITIP20Calls::pause(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.pause(s, c))
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| self.pause(s, c))
                 }
                 TIP20Call::TIP20(ITIP20Calls::unpause(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.unpause(s, c))
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| {
+                        self.unpause(s, c)
+                    })
                 }
                 TIP20Call::TIP20(ITIP20Calls::setNextQuoteToken(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.set_next_quote_token(s, c))
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| {
+                        self.set_next_quote_token(s, c)
+                    })
                 }
                 TIP20Call::TIP20(ITIP20Calls::completeQuoteTokenUpdate(call)) => {
-                    mutate_void(call, msg_sender, |s, c| {
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| {
                         self.complete_quote_token_update(s, c)
                     })
                 }
                 TIP20Call::TIP20(ITIP20Calls::mint(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.mint(s, c))
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| self.mint(s, c))
                 }
                 TIP20Call::TIP20(ITIP20Calls::mintWithMemo(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.mint_with_memo(s, c))
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| {
+                        self.mint_with_memo(s, c)
+                    })
                 }
                 TIP20Call::TIP20(ITIP20Calls::burn(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.burn(s, c))
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| self.burn(s, c))
                 }
                 TIP20Call::TIP20(ITIP20Calls::burnWithMemo(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.burn_with_memo(s, c))
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| {
+                        self.burn_with_memo(s, c)
+                    })
                 }
                 TIP20Call::TIP20(ITIP20Calls::burnBlocked(call)) => {
-                    mutate_void(call, msg_sender, |s, c| {
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| {
                         self.burn_blocked(s, c.from, c.amount, true)
                     })
                 }
                 TIP20Call::TIP20(ITIP20Calls::transferWithMemo(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.transfer_with_memo(s, c))
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| {
+                        self.transfer_with_memo(s, c)
+                    })
                 }
                 TIP20Call::TIP20(ITIP20Calls::transferFromWithMemo(call)) => {
-                    mutate(call, msg_sender, |sender, c| {
+                    mutate_with_static(call, msg_sender, is_static, |sender, c| {
                         self.transfer_from_with_memo(sender, c)
                     })
                 }
                 TIP20Call::TIP20(ITIP20Calls::distributeReward(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.distribute_reward(s, c))
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| {
+                        self.distribute_reward(s, c)
+                    })
                 }
                 TIP20Call::TIP20(ITIP20Calls::setRewardRecipient(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.set_reward_recipient(s, c))
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| {
+                        self.set_reward_recipient(s, c)
+                    })
                 }
                 TIP20Call::TIP20(ITIP20Calls::claimRewards(call)) => {
-                    mutate(call, msg_sender, |_, _| self.claim_rewards(msg_sender))
+                    mutate_with_static(call, msg_sender, is_static, |_, _| {
+                        self.claim_rewards(msg_sender)
+                    })
                 }
                 TIP20Call::TIP20(ITIP20Calls::globalRewardPerToken(call)) => {
                     view(call, |_| self.get_global_reward_per_token())
@@ -205,7 +236,7 @@ impl Precompile for TIP20Token {
                 }
 
                 TIP20Call::TIP20(ITIP20Calls::permit(call)) => {
-                    mutate_void(call, msg_sender, |_s, c| self.permit(c))
+                    mutate_void_with_static(call, msg_sender, is_static, |_s, c| self.permit(c))
                 }
                 TIP20Call::TIP20(ITIP20Calls::nonces(call)) => view(call, |c| self.nonces(c)),
                 TIP20Call::TIP20(ITIP20Calls::DOMAIN_SEPARATOR(call)) => {
@@ -220,16 +251,24 @@ impl Precompile for TIP20Token {
                     view(call, |c| self.get_role_admin(c))
                 }
                 TIP20Call::RolesAuth(IRolesAuthCalls::grantRole(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.grant_role(s, c))
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| {
+                        self.grant_role(s, c)
+                    })
                 }
                 TIP20Call::RolesAuth(IRolesAuthCalls::revokeRole(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.revoke_role(s, c))
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| {
+                        self.revoke_role(s, c)
+                    })
                 }
                 TIP20Call::RolesAuth(IRolesAuthCalls::renounceRole(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.renounce_role(s, c))
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| {
+                        self.renounce_role(s, c)
+                    })
                 }
                 TIP20Call::RolesAuth(IRolesAuthCalls::setRoleAdmin(call)) => {
-                    mutate_void(call, msg_sender, |s, c| self.set_role_admin(s, c))
+                    mutate_void_with_static(call, msg_sender, is_static, |s, c| {
+                        self.set_role_admin(s, c)
+                    })
                 }
             },
         )
