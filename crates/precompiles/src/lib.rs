@@ -301,11 +301,7 @@ fn mutate<T: SolCall>(
     f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
     if StorageCtx.is_static() {
-        return Ok(PrecompileOutput::revert(
-            0,
-            StaticCallNotAllowed {}.abi_encode().into(),
-            StorageCtx.reservoir(),
-        ));
+        return static_call_not_allowed();
     }
     f(sender, call).into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
 }
@@ -320,13 +316,19 @@ fn mutate_void<T: SolCall>(
     f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
     if StorageCtx.is_static() {
-        return Ok(PrecompileOutput::revert(
-            0,
-            StaticCallNotAllowed {}.abi_encode().into(),
-            StorageCtx.reservoir(),
-        ));
+        return static_call_not_allowed();
     }
     f(sender, call).into_precompile_result(0, 0, |()| Bytes::new())
+}
+
+#[cold]
+#[inline(never)]
+fn static_call_not_allowed() -> PrecompileResult {
+    Ok(PrecompileOutput::revert(
+        0,
+        StaticCallNotAllowed {}.abi_encode().into(),
+        StorageCtx.reservoir(),
+    ))
 }
 
 /// Deducts the calldata input cost, returning an OOG halt result if insufficient gas.
