@@ -101,7 +101,7 @@ impl TempoTxEnv {
     /// Resolves fee payer from the signature.
     pub fn fee_payer(&self) -> Result<Address, TempoInvalidTransaction> {
         if let Some(fee_payer) = self.fee_payer {
-            fee_payer.ok_or(TempoInvalidTransaction::InvalidFeePayerSignature)
+            fee_payer.ok_or_else(invalid_fee_payer_signature)
         } else {
             Ok(self.caller())
         }
@@ -193,6 +193,12 @@ impl TempoTxEnv {
                 && is_discounted_tip20_call(&self.inner.kind, self.input())
         }
     }
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_fee_payer_signature() -> TempoInvalidTransaction {
+    TempoInvalidTransaction::InvalidFeePayerSignature
 }
 
 fn is_discounted_tip20_call(to: &TxKind, input: &[u8]) -> bool {
