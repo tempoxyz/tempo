@@ -505,6 +505,8 @@ impl TIP20Token {
     }
 
     /// Like [`Self::mint`], but attaches a 32-byte memo.
+    #[cold]
+    #[inline(never)]
     pub fn mint_with_memo(
         &mut self,
         msg_sender: Address,
@@ -565,6 +567,8 @@ impl TIP20Token {
     }
 
     /// Like [`Self::burn`], but attaches a 32-byte memo.
+    #[cold]
+    #[inline(never)]
     pub fn burn_with_memo(
         &mut self,
         msg_sender: Address,
@@ -834,6 +838,8 @@ impl TIP20Token {
     }
 
     /// Like [`Self::transfer_from`], but attaches a 32-byte memo.
+    #[cold]
+    #[inline(never)]
     pub fn transfer_from_with_memo(
         &mut self,
         msg_sender: Address,
@@ -918,6 +924,8 @@ impl TIP20Token {
     }
 
     /// Like [`Self::transfer`], but attaches a 32-byte memo.
+    #[cold]
+    #[inline(never)]
     pub fn transfer_with_memo(
         &mut self,
         msg_sender: Address,
