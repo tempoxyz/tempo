@@ -1628,14 +1628,14 @@ where
         // Reset per-tx validator fee.
         evm.validator_fee = U256::ZERO;
 
-        // Validate the fee payer signature
-        let fee_payer = evm.ctx.tx.fee_payer()?;
+        // Validate fee payer signatures only when one is present. Unsponsored transactions use the
+        // caller as the fee payer, so there is no signature recovery or self-sponsor case here.
+        if evm.ctx.tx.has_fee_payer_signature() {
+            let fee_payer = evm.ctx.tx.fee_payer()?;
 
-        if evm.ctx.cfg.spec.is_t2()
-            && evm.ctx.tx.has_fee_payer_signature()
-            && fee_payer == evm.ctx.tx.caller()
-        {
-            return Err(TempoInvalidTransaction::SelfSponsoredFeePayer.into());
+            if evm.ctx.cfg.spec.is_t2() && fee_payer == evm.ctx.tx.caller() {
+                return Err(TempoInvalidTransaction::SelfSponsoredFeePayer.into());
+            }
         }
 
         // All accounts have zero balance so transfer of value is not possible.
