@@ -2098,6 +2098,7 @@ pub struct ValidationContext {
 ///   - Pre-T1B: 27k base + 3k ecrecover + 22k per spending limit
 ///   - T1B+: ecrecover + SLOAD + SSTORE × (1 + N limits)
 /// - Floor gas calculation (EIP-7623, Prague+)
+#[inline(always)]
 pub fn calculate_aa_batch_intrinsic_gas<'a>(
     aa_env: &TempoBatchCallEnv,
     gas_params: &GasParams,
@@ -2205,6 +2206,7 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
 /// Calculates intrinsic gas based on:
 /// - Signature type (secp256k1: 21k, P256: 26k, WebAuthn: 26k + calldata)
 /// - Batch call costs (per-call overhead, calldata, CREATE, value transfers)
+#[inline(always)]
 fn validate_aa_initial_tx_gas<DB, I>(
     evm: &TempoEvm<DB, I>,
 ) -> Result<InitialAndFloorGas, EVMError<DB::Error, TempoInvalidTransaction>>
