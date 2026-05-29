@@ -20,6 +20,12 @@ use tempo_primitives::TempoAddressExt;
 /// Precision multiplier for reward-per-token accumulator (1e18).
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
 
+#[cold]
+#[inline(never)]
+fn invalid_reward_amount_error() -> TempoPrecompileError {
+    TIP20Error::invalid_amount().into()
+}
+
 impl TIP20Token {
     /// Distributes `amount` of reward tokens from the caller into the opted-in reward pool.
     /// Transfers tokens to the contract and increases the global reward-per-token accumulator
@@ -41,7 +47,7 @@ impl TIP20Token {
         let token_address = self.address;
 
         if call.amount == U256::ZERO {
-            return Err(TIP20Error::invalid_amount().into());
+            return Err(invalid_reward_amount_error());
         }
 
         self.ensure_transfer_authorized(msg_sender, token_address)?;
