@@ -62,6 +62,12 @@ pub fn validate_usd_currency(token: Address) -> Result<()> {
     Ok(())
 }
 
+#[cold]
+#[inline(never)]
+fn policy_forbids_error() -> TempoPrecompileError {
+    TIP20Error::policy_forbids().into()
+}
+
 /// TIP-20 token contract — the native token standard on Tempo.
 ///
 /// Implements ERC-20-like functionality (balances, allowances, transfers) with additional
@@ -619,7 +625,7 @@ impl TIP20Token {
         let policy_id = self.transfer_policy_id()?;
         if TIP403Registry::new().is_authorized_as(policy_id, owner, AuthRole::sender())? {
             // Only allow burning from addresses that are blocked from transferring
-            return Err(TIP20Error::policy_forbids().into());
+            return Err(policy_forbids_error());
         }
 
         let burn_from = if check_protected {
@@ -1088,7 +1094,7 @@ impl TIP20Token {
             to.target,
             AuthRole::mint_recipient(),
         )? {
-            return Err(TIP20Error::policy_forbids().into());
+            return Err(policy_forbids_error());
         }
 
         if self.validate_inbound_or_block(msg_sender, &to, amount, Some(total_supply), memo)? {
@@ -1121,7 +1127,7 @@ impl TIP20Token {
     /// - `PolicyForbids` — sender or recipient is not authorized by the active transfer policy
     pub fn ensure_transfer_authorized(&self, from: Address, to: Address) -> Result<()> {
         if !self.is_transfer_authorized(from, to)? {
-            return Err(TIP20Error::policy_forbids().into());
+            return Err(policy_forbids_error());
         }
 
         Ok(())
@@ -1134,7 +1140,7 @@ impl TIP20Token {
     pub fn ensure_authorized_as(&self, user: Address, role: AuthRole) -> Result<()> {
         let policy_id = self.transfer_policy_id()?;
         if !TIP403Registry::new().is_authorized_as(policy_id, user, role)? {
-            return Err(TIP20Error::policy_forbids().into());
+            return Err(policy_forbids_error());
         }
         Ok(())
     }
@@ -1247,7 +1253,7 @@ impl TIP20Token {
                 .validate_receive_policy(self.address, policy_subject, destination.target)?
                 .is_some()
             {
-                return Err(TIP20Error::policy_forbids().into());
+                return Err(policy_forbids_error());
             }
             if let Some(addr) = recovery_mode.spending_account(recovery_auth) {
                 self.check_and_update_spending_limit(addr, amount)?;
