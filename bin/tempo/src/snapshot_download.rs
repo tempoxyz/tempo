@@ -6,14 +6,14 @@ use std::{
 
 use alloy_primitives::hex;
 use clap::{ArgMatches, FromArgMatches, Parser};
-use eyre::{Context as _, OptionExt, Result, bail, eyre};
-use reth_cli_commands::download::{DownloadCommand, manifest::SnapshotManifest};
+use eyre::{Context as _, OptionExt, bail, eyre};
+use reth_cli_commands::download::DownloadCommand;
 use reth_cli_runner::CliRunner;
 use tempo_chainspec::spec::TempoChainSpecParser;
 
 use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest};
 
-const FINALIZATION_FILE: &str = "bootstrap/finalization.bin";
+const FINALIZATION_FILE: &str = "bootstrap/finalization.cert";
 
 #[derive(Debug, Parser)]
 #[command(
@@ -33,7 +33,7 @@ pub(crate) struct Args {
     consensus_datadir: Option<PathBuf>,
 }
 
-pub(crate) fn run(matches: &ArgMatches) -> Result<()> {
+pub(crate) fn run(matches: &ArgMatches) -> eyre::Result<()> {
     let args = Args::from_arg_matches(matches).map_err(|e| eyre!("{e}"))?;
 
     let datadir = matches
@@ -66,78 +66,58 @@ pub(crate) fn run(matches: &ArgMatches) -> Result<()> {
             .consensus_datadir
             .unwrap_or_else(|| datadir.join("consensus"));
 
-        let loaded_manifest = load_manifest(manifest_url, manifest_path).await?;
-
-        let start = Instant::now();
-        let tempo_consensus = loaded_manifest
-            .tempo_consensus
-            .as_ref()
-            .ok_or_eyre("missing consensus in manifest")?;
-
-        write_finalization_bootstrap(&consensus_dir, tempo_consensus)
-            .wrap_err("consensus bootstrap failed")?;
+        let consensus_manifest = load_consensus_manifest(manifest_url, manifest_path).await?;
+        write_finalization(&consensus_dir, &consensus_manifest)?;
 
         eprintln!("consensus bootstrap finished in {:?}", start.elapsed());
         Ok(())
     })
 }
 
-#[derive(Debug)]
-struct LoadedManifest {
-    tempo_consensus: Option<TempoConsensusManifest>,
-}
-
-async fn load_manifest(
+async fn load_consensus_manifest(
     manifest_url: Option<String>,
     manifest_path: Option<PathBuf>,
-) -> Result<LoadedManifest> {
-    if let Some(path) = manifest_path {
-        let bytes = fs::read(path).wrap_err("failed to read manifest file")?;
-        return parse_manifest(&bytes);
-    }
+) -> eyre::Result<TempoConsensusManifest> {
+    let manifest_bytes = match (manifest_path, (manifest_url)) {
+        (None, None) => bail!("--manifest-url or --manifest-path must be set"),
+        (Some(path), _) => fs::read(path).wrap_err("failed to read manifest file")?,
+        (_, Some(url)) => {
+            let client = reqwest::Client::new();
+            let resp = client
+                .get(url)
+                .send()
+                .await
+                .wrap_err("failed to fetch from manifest url")?
+                .error_for_status()
+                .wrap_err("invalid response from manifest url")?;
 
-    if let Some(url) = manifest_url {
-        let client = reqwest::Client::new();
-        let resp = client
-            .get(url)
-            .send()
-            .await
-            .wrap_err("failed to fetch from manifest url")?
-            .error_for_status()
-            .wrap_err("invalid response from manifest url")?;
-        let bytes = resp
-            .bytes()
-            .await
-            .wrap_err("failed to parse manifest from url")?;
+            resp.bytes()
+                .await
+                .wrap_err("failed to parse manifest from url")?
+                .to_vec()
+        }
+    };
 
-        return parse_manifest(&bytes);
-    }
-
-    bail!("--manifest-url or --manifest-path must be set")
-}
-
-fn parse_manifest(bytes: &[u8]) -> Result<LoadedManifest> {
     let value: serde_json::Value =
-        serde_json::from_slice(bytes).wrap_err("failed to parse manifest.json")?;
+        serde_json::from_slice(&manifest_bytes).wrap_err("failed to parse manifest.json")?;
 
-    let _manifest: SnapshotManifest =
-        serde_json::from_value(value.clone()).wrap_err("failed to parse manifest.json")?;
-
-    let tempo_consensus = value
+    let consensus_manifest = value
         .get(TEMPO_CONSENSUS_MANIFEST_KEY)
         .map(|value| serde_json::from_value(value.clone()))
         .transpose()
-        .wrap_err("failed to parse Tempo consensus manifest extension")?;
+        .wrap_err("failed to parse TempoConsensusManifest extension")?
+        .ok_or_eyre("missing consensus in manifest")?;
 
-    Ok(LoadedManifest { tempo_consensus })
+    Ok(consensus_manifest)
 }
 
-fn write_finalization_bootstrap(
+fn write_finalization(
     consensus_dir: &Path,
-    tempo_consensus: &TempoConsensusManifest,
-) -> Result<()> {
-    let bytes = hex::decode(&tempo_consensus.finalization)
-        .wrap_err("failed to decode Tempo consensus finalization")?;
+    consensus_manifest: &TempoConsensusManifest,
+) -> eyre::Result<()> {
+    let bytes = hex::decode(&consensus_manifest.finalization)
+        .wrap_err("failed to decode consensus finalization")?;
+
     let path = consensus_dir.join(FINALIZATION_FILE);
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
@@ -176,7 +156,9 @@ mod tests {
     }
 
     #[test]
-    fn parse_manifest_reads_tempo_consensus_extension() {
+    fn load_manifest_reads_tempo_consensus_extension_from_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("manifest.json");
         let bytes = br#"{
             "block": 42,
             "chain_id": 1,
@@ -188,23 +170,27 @@ mod tests {
             }
         }"#;
 
-        let loaded = parse_manifest(bytes).unwrap();
+        fs::write(&path, bytes).unwrap();
+
+        let manifest =
+            futures::executor::block_on(load_consensus_manifest(None, Some(path))).unwrap();
+
         assert_eq!(
-            loaded.tempo_consensus,
-            Some(TempoConsensusManifest {
+            manifest,
+            TempoConsensusManifest {
                 finalization: "aabbcc".to_string(),
-            })
+            }
         );
     }
 
     #[test]
-    fn write_finalization_bootstrap_decodes_raw_bytes() {
+    fn write_finalization_decodes_raw_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let tempo_consensus = TempoConsensusManifest {
             finalization: "000102ff".to_string(),
         };
 
-        write_finalization_bootstrap(dir.path(), &tempo_consensus).unwrap();
+        write_finalization(dir.path(), &tempo_consensus).unwrap();
 
         let bytes = fs::read(dir.path().join(FINALIZATION_FILE)).unwrap();
         assert_eq!(bytes, [0x00, 0x01, 0x02, 0xff]);

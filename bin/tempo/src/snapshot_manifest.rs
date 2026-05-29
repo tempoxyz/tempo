@@ -91,6 +91,7 @@ impl Args {
 
         eprintln!("execution layer snapshot finished in {:?}", start.elapsed());
         if self.skip_consensus {
+            eprintln!("--skip-consensus set. skipping consensus layer");
             return Ok(());
         }
 
