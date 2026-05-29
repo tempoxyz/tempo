@@ -326,7 +326,10 @@ fn mutate_void<T: SolCall>(
             StorageCtx.reservoir(),
         ));
     }
-    f(sender, call).into_precompile_result(0, 0, |()| Bytes::new())
+    match f(sender, call) {
+        Ok(()) => Ok(PrecompileOutput::new(0, Bytes::new(), 0)),
+        Err(err) => err.into_precompile_result(0, 0),
+    }
 }
 
 /// Deducts the calldata input cost, returning an OOG halt result if insufficient gas.
