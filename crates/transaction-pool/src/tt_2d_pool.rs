@@ -2,7 +2,7 @@
 use crate::{metrics::AA2dPoolMetrics, transaction::TempoPooledTransaction};
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, B256Map, HashMap, HashSet, U256Map},
+    map::{AddressMap, B256Map, B256Set, HashMap, HashSet, U256Map},
 };
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_tracing::tracing::trace;
@@ -31,6 +31,7 @@ use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tokio::sync::broadcast;
 
 type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
+
 /// A sub-pool that keeps track of 2D nonce transactions.
 ///
 /// It maintains both pending and queued transactions.
@@ -70,6 +71,8 @@ pub struct AA2dPool {
     ///
     /// Used to track inclusion of expiring nonce transactions.
     slot_to_expiring_nonce_hash: U256Map<B256>,
+    /// Scratch set reused while processing included expiring nonce transactions.
+    included_expiring_nonce_hashes: B256Set,
     /// Reverse index for the storage slot of an account's nonce
     ///
     /// ```solidity
@@ -119,6 +122,7 @@ impl AA2dPool {
             expiring_nonce_txs: Default::default(),
             expiring_nonce_eviction_order: Default::default(),
             slot_to_expiring_nonce_hash: Default::default(),
+            included_expiring_nonce_hashes: Default::default(),
             slot_to_seq_id: Default::default(),
             config,
             metrics: AA2dPoolMetrics::default(),
@@ -1145,6 +1149,29 @@ impl AA2dPool {
         Some(self.remove_expiring_nonce_pending_tx(pending_tx))
     }
 
+    /// Removes included expiring nonce transactions with one `extract_if` pass
+    /// and cleans the eviction index with one retain pass.
+    fn remove_expiring_nonce_txs_by_hashes(
+        &mut self,
+        expiring_hashes: &B256Set,
+        mined: &mut Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    ) {
+        if expiring_hashes.is_empty() {
+            return;
+        }
+
+        let mut expiring_nonce_txs = core::mem::take(&mut self.expiring_nonce_txs);
+        for (_, pending_tx) in expiring_nonce_txs
+            .extract_if(|expiring_hash, _| expiring_hashes.contains(expiring_hash))
+        {
+            mined.push(self.remove_expiring_nonce_pending_tx(pending_tx));
+        }
+        self.expiring_nonce_txs = expiring_nonce_txs;
+
+        self.expiring_nonce_eviction_order
+            .retain(|key| !expiring_hashes.contains(&key.expiring_hash));
+    }
+
     /// Removes secondary state for an already-detached expiring nonce transaction.
     ///
     /// Call only after removing the transaction from `expiring_nonce_txs` and
@@ -1232,7 +1259,9 @@ impl AA2dPool {
         };
 
         let mut changes = HashMap::default();
-        let mut included_expiring_nonce_hashes = Vec::new();
+        let mut included_expiring_nonce_hashes =
+            core::mem::take(&mut self.included_expiring_nonce_hashes);
+        included_expiring_nonce_hashes.clear();
 
         // Process known 2D nonce slot changes.
         for (slot, value) in nonce_state.storage.iter() {
@@ -1244,18 +1273,16 @@ impl AA2dPool {
             if !value.present_value.is_zero()
                 && let Some(expiring_nonce_hash) = self.slot_to_expiring_nonce_hash.get(slot)
             {
-                included_expiring_nonce_hashes.push(*expiring_nonce_hash);
+                included_expiring_nonce_hashes.insert(*expiring_nonce_hash);
             }
         }
 
         let (promoted, mut mined) = self.on_nonce_changes(changes);
 
         // Remove included expiring nonce transactions
-        for expiring_nonce_hash in included_expiring_nonce_hashes {
-            if let Some(tx) = self.remove_expiring_nonce_tx(&expiring_nonce_hash) {
-                mined.push(tx);
-            }
-        }
+        self.remove_expiring_nonce_txs_by_hashes(&included_expiring_nonce_hashes, &mut mined);
+        included_expiring_nonce_hashes.clear();
+        self.included_expiring_nonce_hashes = included_expiring_nonce_hashes;
 
         // Record metrics for all changes
         if !promoted.is_empty() {
