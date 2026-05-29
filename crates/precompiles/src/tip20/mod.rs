@@ -248,6 +248,8 @@ impl TIP20Token {
     /// # Errors
     /// - `Unauthorized` — caller does not hold `DEFAULT_ADMIN_ROLE`
     /// - `InvalidTransferPolicyId` — policy does not exist in the [`TIP403Registry`]
+    #[cold]
+    #[inline(never)]
     pub fn change_transfer_policy_id(
         &mut self,
         msg_sender: Address,
@@ -276,6 +278,8 @@ impl TIP20Token {
     /// - `Unauthorized` — caller does not hold `DEFAULT_ADMIN_ROLE`
     /// - `InvalidSupplyCap` — new cap is below current total supply
     /// - `SupplyCapExceeded` — new cap exceeds [`U128_MAX`]
+    #[cold]
+    #[inline(never)]
     pub fn set_supply_cap(
         &mut self,
         msg_sender: Address,
@@ -353,6 +357,8 @@ impl TIP20Token {
     /// - `InvalidLogoURI` — `newLogoURI` is non-empty and either has no
     ///   parseable scheme (RFC 3986 §3.1) or its scheme is not in
     ///   [`Self::ALLOWED_LOGO_URI_SCHEMES`]
+    #[cold]
+    #[inline(never)]
     pub fn set_logo_uri(
         &mut self,
         msg_sender: Address,
@@ -383,6 +389,8 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `Unauthorized` — caller does not hold `PAUSE_ROLE`
+    #[cold]
+    #[inline(never)]
     pub fn pause(&mut self, msg_sender: Address, _call: ITIP20::pauseCall) -> Result<()> {
         self.check_role(msg_sender, *PAUSE_ROLE)?;
         self.paused.write(true)?;
@@ -394,6 +402,8 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `Unauthorized` — caller does not hold `UNPAUSE_ROLE`
+    #[cold]
+    #[inline(never)]
     pub fn unpause(&mut self, msg_sender: Address, _call: ITIP20::unpauseCall) -> Result<()> {
         self.check_role(msg_sender, *UNPAUSE_ROLE)?;
         self.paused.write(false)?;
@@ -409,6 +419,8 @@ impl TIP20Token {
     /// - `Unauthorized` — caller does not hold `DEFAULT_ADMIN_ROLE`
     /// - `InvalidQuoteToken` — token is pathUSD, candidate is not a deployed TIP-20, or
     ///   USD currency mismatch
+    #[cold]
+    #[inline(never)]
     pub fn set_next_quote_token(
         &mut self,
         msg_sender: Address,
@@ -449,6 +461,8 @@ impl TIP20Token {
     /// # Errors
     /// - `Unauthorized` — caller does not hold `DEFAULT_ADMIN_ROLE`
     /// - `InvalidQuoteToken` — update would create a cycle in the quote-token graph
+    #[cold]
+    #[inline(never)]
     pub fn complete_quote_token_update(
         &mut self,
         msg_sender: Address,
@@ -488,6 +502,8 @@ impl TIP20Token {
     /// - `InvalidRecipient` — (+T3) recipient is zero or a TIP-20 prefix address
     /// - `PolicyForbids` — TIP-403 policy rejects the mint recipient
     /// - `SupplyCapExceeded` — minting would push total supply above the cap
+    #[cold]
+    #[inline(never)]
     pub fn mint(&mut self, msg_sender: Address, call: ITIP20::mintCall) -> Result<()> {
         let Some((total_supply, to)) =
             self.validate_mint(msg_sender, call.to, call.amount, B256::ZERO)?
@@ -559,6 +575,8 @@ impl TIP20Token {
     /// - `ContractPaused` — (+T3) token is paused
     /// - `Unauthorized` — caller does not hold the `ISSUER_ROLE` role
     /// - `InsufficientBalance` — caller balance lower than burn amount
+    #[cold]
+    #[inline(never)]
     pub fn burn(&mut self, msg_sender: Address, call: ITIP20::burnCall) -> Result<()> {
         self._burn(msg_sender, call.amount)?;
         self.emit_event(TIP20Event::burn(msg_sender, call.amount))
@@ -589,6 +607,8 @@ impl TIP20Token {
     /// - `Unauthorized` — caller does not hold `BURN_BLOCKED_ROLE`
     /// - `PolicyForbids` — target address is not blocked by policy
     /// - `ProtectedAddress` — cannot burn from protected system custody addresses
+    #[cold]
+    #[inline(never)]
     pub fn burn_blocked(
         &mut self,
         msg_sender: Address,
@@ -670,6 +690,8 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `SpendingLimitExceeded` — new allowance exceeds access key spending limit
+    #[cold]
+    #[inline(never)]
     pub fn approve(&mut self, msg_sender: Address, call: ITIP20::approveCall) -> Result<bool> {
         // Check and update spending limits for access keys
         AccountKeychain::new().authorize_approve(
@@ -720,6 +742,8 @@ impl TIP20Token {
     /// # Errors
     /// - `PermitExpired` — current timestamp exceeds permit deadline
     /// - `InvalidSignature` — ECDSA recovery failed or recovered signer ≠ owner
+    #[cold]
+    #[inline(never)]
     pub fn permit(&mut self, call: ITIP20::permitCall) -> Result<()> {
         // 1. Check deadline
         if self.storage.timestamp() > call.deadline {
