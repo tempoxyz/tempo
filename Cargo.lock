@@ -4468,8 +4468,7 @@ dependencies = [
 [[package]]
 name = "fixed-cache"
 version = "0.1.8"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c41c7aa69c00ebccf06c3fa7ffe2a6cf26a58b5fe4deabfe646285ff48136a8f"
+source = "git+https://github.com/klkvr/fixed-cache?rev=be9c70203fef6df45a6c954192b510520567883e#be9c70203fef6df45a6c954192b510520567883e"
 dependencies = [
  "equivalent",
  "rapidhash",
