@@ -104,6 +104,8 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     enable_prewarming: bool,
+    /// Whether to apply the local elastic payload build budget.
+    enable_elastic_payload_budget: bool,
     /// Conservative estimate of total replayable build work divided by work at tx cutoff.
     build_time_multiplier: Arc<AtomicU64>,
 }
@@ -117,6 +119,8 @@ pub struct TempoPayloadBuilderConfig {
     pub state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     pub enable_prewarming: bool,
+    /// Whether to apply the local elastic payload build budget.
+    pub enable_elastic_payload_budget: bool,
     /// Initial estimate of total replayable build work divided by work at tx cutoff.
     pub build_time_multiplier: f64,
 }
@@ -127,6 +131,7 @@ impl Default for TempoPayloadBuilderConfig {
             is_dev: false,
             state_provider_metrics: false,
             enable_prewarming: false,
+            enable_elastic_payload_budget: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -151,6 +156,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             is_dev: config.is_dev,
             state_provider_metrics: config.state_provider_metrics,
             enable_prewarming: config.enable_prewarming,
+            enable_elastic_payload_budget: config.enable_elastic_payload_budget,
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
@@ -520,7 +526,10 @@ where
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
-        let payload_build_budget = attributes.payload_build_budget();
+        let payload_build_budget = self
+            .enable_elastic_payload_budget
+            .then(|| attributes.payload_build_budget())
+            .flatten();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let block_build_stop_reason = loop {
