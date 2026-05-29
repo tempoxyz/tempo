@@ -474,15 +474,15 @@ update_bench_status() {
 }
 
 # ============================================================================
-# Interleaved runs. For run-pairs=2 this preserves the previous B-F-F-B order.
+# Interleaved runs. For run-pairs=2 this uses F-B-B-F order.
 # ============================================================================
 
 build_run_order() {
   local run_pairs="$1"
   if [ $((run_pairs % 2)) -eq 0 ]; then
-    printf 'BFFB%.0s' $(seq 1 $((run_pairs / 2)))
+    printf 'FBBF%.0s' $(seq 1 $((run_pairs / 2)))
   else
-    printf 'BF%.0s' $(seq 1 "$run_pairs")
+    printf 'FB%.0s' $(seq 1 "$run_pairs")
   fi
   echo
 }
