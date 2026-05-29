@@ -7,6 +7,7 @@ use std::{
 };
 
 use alloy_primitives::{Address, TxKind, U256};
+use alloy_sol_types::SolCall;
 use reth_evm::{EvmError, EvmInternals};
 use revm::{
     Database,
@@ -53,7 +54,9 @@ use tempo_precompiles::{
     },
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, decode_tip20_balance},
-    tip20_channel_reserve::TIP20ChannelReserve,
+    tip20_channel_reserve::{
+        ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20ChannelReserve,
+    },
 };
 use tempo_primitives::{
     TempoAddressExt,
@@ -417,13 +420,24 @@ impl<DB, I> TempoEvmHandler<DB, I> {
     }
 }
 
+#[inline]
+fn has_channel_open_call(tx: &TempoTxEnv) -> bool {
+    tx.calls().any(|(kind, input)| {
+        matches!(kind, TxKind::Call(to) if *to == TIP20_CHANNEL_RESERVE_ADDRESS)
+            && input.get(..4) == Some(ITIP20ChannelReserve::openCall::SELECTOR.as_slice())
+    })
+}
+
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     fn seed_precompile_tx_context(
         &self,
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         let ctx = evm.ctx_mut();
-        let channel_open_context_hash = ctx.tx.channel_open_context_hash();
+        let channel_open_context_hash = ctx
+            .tx
+            .channel_open_context_hash()
+            .filter(|_| has_channel_open_call(&ctx.tx));
 
         // Seed transient precompile transaction context for both regular execution and RPC
         // simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
