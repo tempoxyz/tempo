@@ -26,6 +26,10 @@ const T5_ADDED: &[[u8; 4]] = &[
     IAccountKeychain::burnKeyAuthorizationWitnessCall::SELECTOR,
     IAccountKeychain::isKeyAuthorizationWitnessBurnedCall::SELECTOR,
 ];
+const T6_ADDED: &[[u8; 4]] = &[
+    IAccountKeychain::authorizeAdminKeyCall::SELECTOR,
+    IAccountKeychain::isAdminKeyCall::SELECTOR,
+];
 
 impl Precompile for AccountKeychain {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
@@ -40,6 +44,7 @@ impl Precompile for AccountKeychain {
                     .with_added(T3_ADDED)
                     .with_dropped(T3_DROPPED),
                 SelectorSchedule::new(TempoHardfork::T5).with_added(T5_ADDED),
+                SelectorSchedule::new(TempoHardfork::T6).with_added(T6_ADDED),
             ],
             IAccountKeychainCalls::abi_decode,
             |call| match call {
@@ -92,6 +97,11 @@ impl Precompile for AccountKeychain {
                         )
                     })
                 }
+                IAccountKeychainCalls::authorizeAdminKey(call) => {
+                    mutate_void(call, msg_sender, |sender, c| {
+                        self.authorize_admin_key(sender, c.keyId, c.signatureType, Some(c.witness))
+                    })
+                }
                 IAccountKeychainCalls::burnKeyAuthorizationWitness(call) => {
                     mutate_void(call, msg_sender, |sender, c| {
                         self.burn_key_authorization_witness(sender, c)
@@ -128,6 +138,9 @@ impl Precompile for AccountKeychain {
                 IAccountKeychainCalls::isKeyAuthorizationWitnessBurned(call) => {
                     view(call, |c| self.is_key_authorization_witness_burned(c))
                 }
+                IAccountKeychainCalls::isAdminKey(call) => {
+                    view(call, |c| self.is_admin_key(c.account, c.keyId))
+                }
                 IAccountKeychainCalls::getTransactionKey(call) => {
                     view(call, |c| self.get_transaction_key(c, msg_sender))
                 }
@@ -154,7 +167,7 @@ mod tests {
 
     #[test]
     fn test_account_keychain_selector_coverage() -> eyre::Result<()> {
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut storage, || {
             let mut fee_manager = AccountKeychain::new();
             let selectors: Vec<_> = IAccountKeychainCalls::SELECTORS
