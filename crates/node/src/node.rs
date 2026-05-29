@@ -68,16 +68,12 @@ pub struct TempoNodeArgs {
     pub builder_state_provider_metrics: bool,
 
     /// Enable prewarming for the payload builder.
-    #[arg(long = "builder.enable-prewarming", default_value_t = true)]
+    #[arg(long = "builder.enable-prewarming", default_value_t = false)]
     pub builder_enable_prewarming: bool,
 
-    /// Disable prewarming for the payload builder.
-    #[arg(long = "builder.disable-prewarming", default_value_t = false)]
-    pub builder_disable_prewarming: bool,
-
-    /// Disable sharing the execution cache with the payload builder.
-    #[arg(long = "builder.disable-execution-cache", default_value_t = false)]
-    pub builder_disable_execution_cache: bool,
+    /// Enable sharing the execution cache with the payload builder.
+    #[arg(long = "builder.enable-execution-cache", default_value_t = false)]
+    pub builder_enable_execution_cache: bool,
 
     /// Disable sharing the sparse trie with the payload builder.
     #[arg(long = "builder.disable-sparse-trie", default_value_t = false)]
@@ -89,6 +85,13 @@ pub struct TempoNodeArgs {
         default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
     )]
     pub builder_build_time_multiplier: f64,
+
+    /// Enable the elastic payload build budget.
+    #[arg(
+        long = "builder.enable-elastic-payload-budget",
+        default_value_t = false
+    )]
+    pub builder_enable_elastic_payload_budget: bool,
 }
 
 impl Default for TempoNodeArgs {
@@ -98,10 +101,10 @@ impl Default for TempoNodeArgs {
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             builder_state_provider_metrics: false,
             builder_enable_prewarming: false,
-            builder_disable_prewarming: false,
-            builder_disable_execution_cache: false,
+            builder_enable_execution_cache: false,
             builder_disable_sparse_trie: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            builder_enable_elastic_payload_budget: false,
         }
     }
 }
@@ -119,8 +122,9 @@ impl TempoNodeArgs {
     pub fn payload_builder_builder(&self) -> TempoPayloadBuilderBuilder {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
-            enable_prewarming: self.builder_enable_prewarming && !self.builder_disable_prewarming,
+            enable_prewarming: self.builder_enable_prewarming,
             build_time_multiplier: self.builder_build_time_multiplier,
+            enable_elastic_payload_budget: self.builder_enable_elastic_payload_budget,
         }
     }
 }
@@ -531,6 +535,8 @@ pub struct TempoPayloadBuilderBuilder {
     pub enable_prewarming: bool,
     /// Initial multiplier for predicting replayable payload build work.
     pub build_time_multiplier: f64,
+    /// Enable the elastic payload build budget.
+    pub enable_elastic_payload_budget: bool,
 }
 
 impl Default for TempoPayloadBuilderBuilder {
@@ -539,6 +545,7 @@ impl Default for TempoPayloadBuilderBuilder {
             state_provider_metrics: false,
             enable_prewarming: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
+            enable_elastic_payload_budget: false,
         }
     }
 }
@@ -566,6 +573,7 @@ where
                 state_provider_metrics: self.state_provider_metrics,
                 enable_prewarming: self.enable_prewarming,
                 build_time_multiplier: self.build_time_multiplier,
+                enable_elastic_payload_budget: self.enable_elastic_payload_budget,
             },
         ))
     }

@@ -357,7 +357,7 @@ fn main() -> eyre::Result<()> {
         }
     };
 
-    apply_builder_disable_flags(&mut cli);
+    apply_builder_feature_flags(&mut cli);
 
     if let Commands::Node(node_cmd) = &cli.command
         && node_cmd.engine.share_sparse_trie_with_payload_builder
@@ -752,16 +752,13 @@ fn main() -> eyre::Result<()> {
     Ok(())
 }
 
-fn apply_builder_disable_flags(cli: &mut TempoCli) {
+fn apply_builder_feature_flags(cli: &mut TempoCli) {
     let Commands::Node(node_cmd) = &mut cli.command else {
         return;
     };
 
-    if node_cmd.ext.node_args.builder_disable_prewarming {
-        node_cmd.ext.node_args.builder_enable_prewarming = false;
-    }
-    if node_cmd.ext.node_args.builder_disable_execution_cache {
-        node_cmd.engine.share_execution_cache_with_payload_builder = false;
+    if node_cmd.ext.node_args.builder_enable_execution_cache {
+        node_cmd.engine.share_execution_cache_with_payload_builder = true;
     }
     if node_cmd.ext.node_args.builder_disable_sparse_trie {
         node_cmd.engine.share_sparse_trie_with_payload_builder = false;
@@ -774,7 +771,7 @@ mod tests {
 
     use clap::Parser;
 
-    use super::{Commands, TempoCli, apply_builder_disable_flags, defaults};
+    use super::{Commands, TempoCli, apply_builder_feature_flags, defaults};
 
     fn init_defaults_once() {
         static INIT: Once = Once::new();
@@ -785,17 +782,25 @@ mod tests {
     fn consensus_block_budget_defaults_are_stable() {
         init_defaults_once();
 
-        let cli = TempoCli::try_parse_from(["tempo", "node", "--dev"]).unwrap();
+        let mut cli = TempoCli::try_parse_from(["tempo", "node", "--dev"]).unwrap();
+        apply_builder_feature_flags(&mut cli);
         let Commands::Node(node_cmd) = cli.command else {
             panic!("expected node command");
         };
-        assert!(node_cmd.engine.share_execution_cache_with_payload_builder);
+        assert!(!node_cmd.engine.share_execution_cache_with_payload_builder);
         assert!(node_cmd.engine.share_sparse_trie_with_payload_builder);
         assert_eq!(node_cmd.builder.max_payload_tasks, 1);
-        assert!(node_cmd.ext.node_args.builder_enable_prewarming);
-        assert!(!node_cmd.ext.node_args.builder_disable_prewarming);
-        assert!(!node_cmd.ext.node_args.builder_disable_execution_cache);
+        assert!(!node_cmd.ext.node_args.builder_enable_prewarming);
+        assert!(!node_cmd.ext.node_args.builder_enable_execution_cache);
         assert!(!node_cmd.ext.node_args.builder_disable_sparse_trie);
+        assert!(!node_cmd.ext.node_args.builder_enable_elastic_payload_budget);
+        assert!(
+            !node_cmd
+                .ext
+                .node_args
+                .payload_builder_builder()
+                .enable_elastic_payload_budget
+        );
         assert_eq!(
             node_cmd.ext.consensus.target_block_time.into_duration(),
             Duration::from_millis(550)
@@ -835,27 +840,35 @@ mod tests {
     }
 
     #[test]
-    fn builder_disable_flags_parse() {
+    fn builder_feature_flags_parse() {
         init_defaults_once();
 
         let mut cli = TempoCli::try_parse_from([
             "tempo",
             "node",
             "--dev",
-            "--builder.disable-prewarming",
-            "--builder.disable-execution-cache",
+            "--builder.enable-prewarming",
+            "--builder.enable-execution-cache",
             "--builder.disable-sparse-trie",
+            "--builder.enable-elastic-payload-budget",
         ])
         .unwrap();
-        apply_builder_disable_flags(&mut cli);
+        apply_builder_feature_flags(&mut cli);
         let Commands::Node(node_cmd) = cli.command else {
             panic!("expected node command");
         };
-        assert!(node_cmd.ext.node_args.builder_disable_prewarming);
-        assert!(node_cmd.ext.node_args.builder_disable_execution_cache);
+        assert!(node_cmd.ext.node_args.builder_enable_prewarming);
+        assert!(node_cmd.ext.node_args.builder_enable_execution_cache);
         assert!(node_cmd.ext.node_args.builder_disable_sparse_trie);
-        assert!(!node_cmd.ext.node_args.builder_enable_prewarming);
-        assert!(!node_cmd.engine.share_execution_cache_with_payload_builder);
+        assert!(node_cmd.ext.node_args.builder_enable_elastic_payload_budget);
+        assert!(node_cmd.engine.share_execution_cache_with_payload_builder);
         assert!(!node_cmd.engine.share_sparse_trie_with_payload_builder);
+        assert!(
+            node_cmd
+                .ext
+                .node_args
+                .payload_builder_builder()
+                .enable_elastic_payload_budget
+        );
     }
 }
