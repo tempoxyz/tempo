@@ -317,13 +317,17 @@ impl IntoTxEnv<Self> for TempoTxEnv {
 impl FromRecoveredTx<AASigned> for TempoTxEnv {
     fn from_recovered_tx(aa_signed: &AASigned, caller: Address) -> Self {
         let tx = aa_signed.tx();
-        let signature = aa_signed.signature();
 
-        // Populate the key_id cache for Keychain signatures before cloning
-        // This parallelizes recovery during Tx->TxEnv conversion, and the cache is preserved when cloned
-        if let Some(keychain_sig) = signature.as_keychain() {
-            let _ = keychain_sig.key_id(&aa_signed.signature_hash());
-        }
+        let signature = match aa_signed.signature() {
+            TempoSignature::Primitive(primitive_sig) => {
+                TempoSignature::Primitive(primitive_sig.clone())
+            }
+            TempoSignature::Keychain(keychain_sig) => {
+                // Populate the key_id cache before cloning so the cloned keychain signature keeps it.
+                let _ = keychain_sig.key_id(&aa_signed.signature_hash());
+                TempoSignature::Keychain(keychain_sig.clone())
+            }
+        };
 
         let TempoTransaction {
             chain_id,
@@ -389,7 +393,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             }),
             // Bundle AA-specific fields into TempoBatchCallEnv
             tempo_tx_env: Some(Box::new(TempoBatchCallEnv {
-                signature: signature.clone(),
+                signature,
                 valid_before: valid_before.map(NonZeroU64::get),
                 valid_after: valid_after.map(NonZeroU64::get),
                 aa_calls: calls.clone(),
