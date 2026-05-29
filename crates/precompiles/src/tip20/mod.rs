@@ -1144,7 +1144,8 @@ impl TIP20Token {
     /// # Errors
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
-        AccountKeychain::new().authorize_transfer(from, self.address, amount)
+        let token_address = self.address;
+        AccountKeychain::new().authorize_transfer(from, token_address, amount)
     }
 
     /// Core transfer: debits `from`, credits `to.target`, emits `Transfer(from, event_addr, amount)`.
@@ -1152,12 +1153,13 @@ impl TIP20Token {
     /// For virtual recipients the event address is the virtual alias; the balance update always
     /// targets `to.target` (the resolved master).
     pub(crate) fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
+        let token_address = self.address;
         let from_balance = self.get_balance(from)?;
         if amount > from_balance.amount() {
             return Err(TIP20Error::insufficient_balance(
                 from_balance.amount(),
                 amount,
-                self.address,
+                token_address,
             )
             .into());
         }
@@ -1271,6 +1273,7 @@ impl TIP20Token {
     /// - `InsufficientBalance` — sender balance lower than fee amount
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     pub fn transfer_fee_pre_tx(&mut self, from: Address, amount: U256) -> Result<()> {
+        let token_address = self.address;
         // This function respects the token's pause state and will revert if the token is paused.
         // transfer_fee_post_tx is intentionally allowed to execute even when the token is paused.
         // This ensures that a transaction which pauses the token can still complete successfully and receive its fee refund.
@@ -1281,7 +1284,7 @@ impl TIP20Token {
             return Err(TIP20Error::insufficient_balance(
                 from_balance.amount(),
                 amount,
-                self.address,
+                token_address,
             )
             .into());
         }
@@ -1314,6 +1317,7 @@ impl TIP20Token {
         refund: U256,
         actual_spending: U256,
     ) -> Result<()> {
+        let token_address = self.address;
         self.emit_event(TIP20Event::transfer(
             to,
             TIP_FEE_MANAGER_ADDRESS,
@@ -1326,7 +1330,7 @@ impl TIP20Token {
         }
 
         if self.storage.spec().is_t1c() {
-            AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
+            AccountKeychain::new().refund_spending_limit(to, token_address, refund)?;
         }
 
         // Update rewards for the recipient and get their reward recipient
@@ -1339,7 +1343,7 @@ impl TIP20Token {
 
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
         let new_from_balance = from_balance.checked_sub(refund).map_err(|_| {
-            TIP20Error::insufficient_balance(from_balance.amount(), refund, self.address)
+            TIP20Error::insufficient_balance(from_balance.amount(), refund, token_address)
         })?;
         self.set_balance(
             TIP_FEE_MANAGER_ADDRESS,
