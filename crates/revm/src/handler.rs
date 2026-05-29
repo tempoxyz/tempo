@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use alloy_primitives::{Address, TxKind, U256};
+use alloy_primitives::{Address, B256, TxKind, U256};
 use reth_evm::{EvmError, EvmInternals};
 use revm::{
     Database,
@@ -418,33 +418,50 @@ impl<DB, I> TempoEvmHandler<DB, I> {
 }
 
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
-    fn seed_precompile_tx_context(
-        &self,
-        evm: &mut TempoEvm<DB, I>,
+    #[inline]
+    fn seed_precompile_tx_context_current(
+        caller: Address,
+        channel_open_context_hash: Option<B256>,
+    ) -> Result<(), TempoPrecompileError> {
+        let mut keychain = AccountKeychain::new();
+        keychain.set_tx_origin(caller)?;
+
+        if let Some(channel_open_context_hash) = channel_open_context_hash {
+            let mut channel_reserve = TIP20ChannelReserve::new();
+            channel_reserve.set_channel_open_context_hash(channel_open_context_hash)?;
+        }
+
+        Ok(())
+    }
+
+    fn ensure_tip20_usd_current(
+        fee_token: Address,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
-        let ctx = evm.ctx_mut();
-        let channel_open_context_hash = ctx.tx.channel_open_context_hash();
+        let token = TIP20Token::from_address_unchecked(fee_token);
+        let len = token
+            .currency
+            .len()
+            .map_err(|err| EVMError::Custom(err.to_string()))?;
 
-        // Seed transient precompile transaction context for both regular execution and RPC
-        // simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
-        StorageCtx::enter_evm(
-            &mut ctx.journaled_state,
-            &ctx.block,
-            &ctx.cfg,
-            &ctx.tx,
-            || {
-                let mut keychain = AccountKeychain::new();
-                keychain.set_tx_origin(ctx.tx.caller())?;
+        let currency = if len > 31 {
+            format!("<{len} bytes>")
+        } else {
+            token
+                .currency
+                .read()
+                .map_err(|err| EVMError::Custom(err.to_string()))?
+        };
 
-                if let Some(channel_open_context_hash) = channel_open_context_hash {
-                    let mut channel_reserve = TIP20ChannelReserve::new();
-                    channel_reserve.set_channel_open_context_hash(channel_open_context_hash)?;
-                }
+        if currency.as_str() != "USD" {
+            return Err(EVMError::Transaction(
+                TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                    address: fee_token,
+                    currency,
+                },
+            ));
+        }
 
-                Ok::<(), TempoPrecompileError>(())
-            },
-        )
-        .map_err(|e| EVMError::Custom(e.to_string()))
+        Ok(())
     }
 }
 
@@ -904,12 +921,12 @@ where
         evm: &mut Self::Evm,
         init_gas: &mut InitialAndFloorGas,
     ) -> Result<(), Self::Error> {
-        self.seed_precompile_tx_context(evm)?;
-
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
+        let caller = tx.caller();
+        let channel_open_context_hash = tx.channel_open_context_hash();
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
         let fee_token = journal
@@ -926,9 +943,21 @@ where
 
         // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
         // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
-        if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
-            journal.ensure_tip20_usd(cfg.spec, fee_token)?;
-        }
+        let check_usd_currency =
+            !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction();
+
+        // Seed transient precompile transaction context for both regular execution and RPC
+        // simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
+        // The mandatory USD fee-token check uses the same storage scope to avoid a second
+        // read-only precompile context on ordinary fee-paying transactions.
+        StorageCtx::enter_evm(journal, block, cfg, tx, || {
+            Self::seed_precompile_tx_context_current(caller, channel_open_context_hash)
+                .map_err(|e| EVMError::Custom(e.to_string()))?;
+            if check_usd_currency {
+                Self::ensure_tip20_usd_current(fee_token)?;
+            }
+            Ok::<(), EVMError<DB::Error, TempoInvalidTransaction>>(())
+        })?;
 
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, fee_token, fee_payer)?;
