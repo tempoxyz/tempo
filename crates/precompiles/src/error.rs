@@ -346,9 +346,19 @@ impl<T> IntoPrecompileResult<T> for Result<T> {
     ) -> PrecompileResult {
         match self {
             Ok(res) => Ok(PrecompileOutput::new(gas, encode_ok(res), reservoir)),
-            Err(err) => err.into_precompile_result(gas, reservoir),
+            Err(err) => precompile_error_result(err, gas, reservoir),
         }
     }
+}
+
+#[cold]
+#[inline(never)]
+fn precompile_error_result(
+    err: TempoPrecompileError,
+    gas: u64,
+    reservoir: u64,
+) -> PrecompileResult {
+    err.into_precompile_result(gas, reservoir)
 }
 
 #[cfg(test)]
