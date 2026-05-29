@@ -26,6 +26,8 @@ const E2E_LOCAL_RETH_ARGS = [
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
     "--consensus.no-legacy-archive"
+    "--engine.share-execution-cache-with-payload-builder"
+    "--builder.enable-prewarming"
 ]
 
 def tempo-node-help [tempo_bin: string] {
