@@ -11,12 +11,22 @@ const MIN_SAMPLE_BYTES: usize = 128 * 1024;
 
 static MARSHAL_PERSIST_NS_PER_BYTE: AtomicU64 = AtomicU64::new(0);
 
-/// Returns the current marshal persistence estimator.
+/// Returns the current estimate of consensus marshal persistence cost.
+///
+/// This is a point-in-time snapshot. Callers use it before building or
+/// returning a proposal so the same estimate is applied consistently to that
+/// decision.
 pub fn marshal_persist_estimate() -> MarshalPersistEstimator {
     MarshalPersistEstimator::from_ns_per_byte(MARSHAL_PERSIST_NS_PER_BYTE.load(Ordering::Relaxed))
 }
 
 /// Records time spent persisting an encoded block through consensus marshal.
+///
+/// The observation is stored as nanoseconds per encoded block byte. Large
+/// blocks teach future build and return budgets how much size-dependent
+/// persistence time to reserve for both proposers and validators.
+/// Consensus records this from local `marshal.proposed` time after persisting a
+/// proposal.
 pub fn observe_marshal_persist(block_size_bytes: usize, elapsed: Duration) {
     if block_size_bytes < MIN_SAMPLE_BYTES || elapsed == Duration::ZERO {
         return;

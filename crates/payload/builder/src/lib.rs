@@ -106,7 +106,10 @@ pub struct TempoPayloadBuilder<Provider> {
     enable_prewarming: bool,
     /// Whether to include block access lists in built execution payloads.
     enable_bal: bool,
-    /// Conservative estimate of total replayable build work divided by work at tx cutoff.
+    /// Learned estimate of total replayable build work divided by work at tx cutoff.
+    ///
+    /// This lets the builder reserve time for non-interruptible
+    /// `builder_finish` without a fixed duration.
     build_time_multiplier: Arc<AtomicU64>,
 }
 
@@ -120,6 +123,10 @@ pub struct TempoPayloadBuilderConfig {
     /// Whether to enable prewarming of best transactions.
     pub enable_prewarming: bool,
     /// Initial estimate of total replayable build work divided by work at tx cutoff.
+    ///
+    /// `1.0` means no finish-work headroom beyond observed work so far. Values
+    /// above `1.0` stop transaction execution earlier to leave room for
+    /// `builder_finish`, which validators also repeat.
     pub build_time_multiplier: f64,
 }
 
@@ -524,6 +531,9 @@ where
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        // Consensus builds carry a remaining proposal budget. When present, the
+        // builder stops pool tx execution before projected proposer and validator
+        // work would consume that window.
         let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
