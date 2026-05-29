@@ -364,6 +364,12 @@ struct ReadOnlyStorageProvider<'a, S, M = ()> {
     _marker: PhantomData<M>,
 }
 
+#[cold]
+#[inline(never)]
+fn read_only_storage_error<E: core::fmt::Display>(err: E) -> TempoPrecompileError {
+    TempoPrecompileError::Fatal(err.to_string())
+}
+
 impl<'a, S, M> ReadOnlyStorageProvider<'a, S, M>
 where
     S: TempoStateAccess<M>,
@@ -405,10 +411,8 @@ where
         let _ = self
             .state
             .basic(address)
-            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
-        self.state
-            .sload(address, key)
-            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))
+            .map_err(read_only_storage_error)?;
+        self.state.sload(address, key).map_err(read_only_storage_error)
     }
 
     fn with_account_info(
@@ -419,7 +423,7 @@ where
         let info = self
             .state
             .basic(address)
-            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
+            .map_err(read_only_storage_error)?;
         f(&info);
         Ok(())
     }
