@@ -305,7 +305,7 @@ struct Peers {
 }
 
 impl Peers {
-    fn what_has_changed_compared_to(&self, old: &Peers) -> WhatHasChanged {
+    fn what_has_changed_compared_to(&self, old: &Self) -> WhatHasChanged {
         if old.primary.keys() == self.primary.keys()
             && old.secondary.keys() == self.secondary.keys()
         {
