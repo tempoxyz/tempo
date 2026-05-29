@@ -11,11 +11,13 @@
 pub mod dispatch;
 pub mod rewards;
 pub mod roles;
+pub mod user_state;
 
 pub use tempo_contracts::precompiles::{
     IRolesAuth, ITIP20, RolesAuthError, RolesAuthEvent, TIP20Error, TIP20Event, USD_CURRENCY,
 };
 pub use tempo_primitives::is_tip20_prefix;
+pub use user_state::{RewardFlag, UserState, decode_tip20_balance};
 
 // Re-export the generated slots module for external access to storage slot constants
 pub use slots as tip20_slots;
@@ -95,7 +97,7 @@ pub struct TIP20Token {
 
     // TIP20 Token
     total_supply: U256,
-    balances: Mapping<Address, U256>,
+    balances: Mapping<Address, UserState>,
     allowances: Mapping<Address, Mapping<Address, U256>>,
     permit_nonces: Mapping<Address, U256>,
     paused: bool,
@@ -231,7 +233,9 @@ impl TIP20Token {
 
     /// Returns the token balance of `account`.
     pub fn balance_of(&self, call: ITIP20::balanceOfCall) -> Result<U256> {
-        self.balances[call.account].read()
+        self.balances[call.account]
+            .read()
+            .map(|res| U256::from(res.amount))
     }
 
     /// Returns the remaining allowance that `spender` can transfer on behalf of `owner`.
@@ -537,14 +541,14 @@ impl TIP20Token {
             return Err(TIP20Error::supply_cap_exceeded().into());
         }
 
-        self.handle_rewards_on_mint(to.target, amount)?;
+        let to_flag = self.handle_rewards_on_mint(to.target, amount)?;
 
         self.set_total_supply(new_supply)?;
         let to_balance = self.get_balance(to.target)?;
-        let new_to_balance = to_balance
-            .checked_add(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-        self.set_balance(to.target, new_to_balance)?;
+        self.set_balance(
+            to.target,
+            UserState::new(to_balance.checked_add(amount)?, to_flag)?,
+        )?;
 
         self.emit_event(to.build_transfer_event(Address::ZERO, amount))
     }
@@ -994,11 +998,11 @@ impl TIP20Token {
         self.grant_default_admin(msg_sender, admin)
     }
 
-    fn get_balance(&self, account: Address) -> Result<U256> {
+    fn get_balance(&self, account: Address) -> Result<UserState> {
         self.balances[account].read()
     }
 
-    fn set_balance(&mut self, account: Address, amount: U256) -> Result<()> {
+    fn set_balance(&mut self, account: Address, amount: UserState) -> Result<()> {
         self.balances[account].write(amount)
     }
 
@@ -1149,28 +1153,29 @@ impl TIP20Token {
     /// targets `to.target` (the resolved master).
     pub(crate) fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
         let from_balance = self.get_balance(from)?;
-        if amount > from_balance {
-            return Err(
-                TIP20Error::insufficient_balance(from_balance, amount, self.address).into(),
-            );
+        if amount > from_balance.amount() {
+            return Err(TIP20Error::insufficient_balance(
+                from_balance.amount(),
+                amount,
+                self.address,
+            )
+            .into());
         }
 
-        self.handle_rewards_on_transfer(from, to.target, amount)?;
+        let (from_flag, to_flag) = self.handle_rewards_on_transfer(from, to.target, amount)?;
 
         // Adjust balances
-        let new_from_balance = from_balance
-            .checked_sub(amount)
-            .ok_or(TempoPrecompileError::under_overflow())?;
-
-        self.set_balance(from, new_from_balance)?;
+        self.set_balance(
+            from,
+            UserState::new(from_balance.checked_sub(amount)?, from_flag)?,
+        )?;
 
         if to.target != Address::ZERO {
             let to_balance = self.get_balance(to.target)?;
-            let new_to_balance = to_balance
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-
-            self.set_balance(to.target, new_to_balance)?;
+            self.set_balance(
+                to.target,
+                UserState::new(to_balance.checked_add(amount)?, to_flag)?,
+            )?;
         }
 
         self.emit_event(to.build_transfer_event(from, amount))
@@ -1272,44 +1277,30 @@ impl TIP20Token {
         // Apart from this specific refund transfer, no other token transfers can occur after a pause event.
         self.check_not_paused()?;
         let from_balance = self.get_balance(from)?;
-        if amount > from_balance {
-            return Err(
-                TIP20Error::insufficient_balance(from_balance, amount, self.address).into(),
-            );
+        if amount > from_balance.amount() {
+            return Err(TIP20Error::insufficient_balance(
+                from_balance.amount(),
+                amount,
+                self.address,
+            )
+            .into());
         }
 
         self.check_and_update_spending_limit(from, amount)?;
 
         // Update rewards for the sender and get their reward recipient
-        let from_reward_recipient = self.update_rewards(from)?;
+        let from_flag = self.update_rewards(from)?;
 
         // If user is opted into rewards, decrease opted-in supply
-        if from_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_sub(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
+        if from_flag.is_opted_in() {
+            self.decrease_opted_in_supply(amount)?;
         }
 
-        let new_from_balance =
-            from_balance
-                .checked_sub(amount)
-                .ok_or(TIP20Error::insufficient_balance(
-                    from_balance,
-                    amount,
-                    self.address,
-                ))?;
-
+        let new_from_balance = UserState::new(from_balance.checked_sub(amount)?, from_flag)?;
         self.set_balance(from, new_from_balance)?;
 
         let to_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_to_balance = to_balance
-            .checked_add(amount)
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
+        let new_to_balance = UserState::new(to_balance.checked_add(amount)?, to_balance.flag)?;
         self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_to_balance)
     }
 
@@ -1339,37 +1330,27 @@ impl TIP20Token {
         }
 
         // Update rewards for the recipient and get their reward recipient
-        let to_reward_recipient = self.update_rewards(to)?;
+        let to_flag = self.update_rewards(to)?;
 
         // If user is opted into rewards, increase opted-in supply by refund amount
-        if to_reward_recipient != Address::ZERO {
-            let opted_in_supply = U256::from(self.get_opted_in_supply()?)
-                .checked_add(refund)
-                .ok_or(TempoPrecompileError::under_overflow())?;
-            self.set_opted_in_supply(
-                opted_in_supply
-                    .try_into()
-                    .map_err(|_| TempoPrecompileError::under_overflow())?,
-            )?;
+        if to_flag.is_opted_in() {
+            self.increase_opted_in_supply(refund)?;
         }
 
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_from_balance =
-            from_balance
-                .checked_sub(refund)
-                .ok_or(TIP20Error::insufficient_balance(
-                    from_balance,
-                    refund,
-                    self.address,
-                ))?;
+        let new_from_balance = from_balance.checked_sub(refund).map_err(|_| {
+            TIP20Error::insufficient_balance(from_balance.amount(), refund, self.address)
+        })?;
+        self.set_balance(
+            TIP_FEE_MANAGER_ADDRESS,
+            UserState::new(new_from_balance, from_balance.flag)?,
+        )?;
 
-        self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_from_balance)?;
-
-        let to_balance = self.get_balance(to)?;
-        let new_to_balance = to_balance
+        let new_to_balance = self
+            .get_balance(to)?
             .checked_add(refund)
-            .ok_or(TIP20Error::supply_cap_exceeded())?;
-        self.set_balance(to, new_to_balance)
+            .map_err(|_| TIP20Error::supply_cap_exceeded())?;
+        self.set_balance(to, UserState::new(new_to_balance, to_flag)?)
     }
 }
 
@@ -1590,7 +1571,7 @@ pub(crate) mod tests {
 
             token.mint(admin, ITIP20::mintCall { to: addr, amount })?;
 
-            assert_eq!(token.get_balance(addr)?, amount);
+            assert_eq!(token.get_balance(addr)?.amount(), amount);
             assert_eq!(token.total_supply()?, amount);
 
             token.assert_emitted_events(vec![
@@ -1618,8 +1599,8 @@ pub(crate) mod tests {
 
             token.transfer(from, ITIP20::transferCall { to, amount })?;
 
-            assert_eq!(token.get_balance(from)?, U256::ZERO);
-            assert_eq!(token.get_balance(to)?, amount);
+            assert_eq!(token.get_balance(from)?.amount(), U256::ZERO);
+            assert_eq!(token.get_balance(to)?.amount(), amount);
             assert_eq!(token.total_supply()?, amount); // Supply unchanged
 
             token.assert_emitted_events(vec![TIP20Event::transfer(from, to, amount)]);
@@ -1682,9 +1663,12 @@ pub(crate) mod tests {
                     },
                 )?;
 
-                assert_eq!(token.get_balance(sender)?, U256::ZERO);
-                assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
+                assert_eq!(token.get_balance(sender)?.amount(), U256::ZERO);
+                assert_eq!(token.get_balance(receiver)?.amount(), U256::ZERO);
+                assert_eq!(
+                    token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?.amount(),
+                    amount
+                );
                 token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
                     from: sender,
                     to: RECEIVE_POLICY_GUARD_ADDRESS,
@@ -1748,7 +1732,10 @@ pub(crate) mod tests {
                     let mut token = TIP20Setup::create("Test", "TST", admin)
                         .with_issuer(admin)
                         .apply()?;
-                    token.set_balance(RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
+                    token.set_balance(
+                        RECEIVE_POLICY_GUARD_ADDRESS,
+                        UserState::new(amount, RewardFlag::OptedOut)?,
+                    )?;
 
                     set_receive_policy(
                         receiver,
@@ -1776,12 +1763,12 @@ pub(crate) mod tests {
 
                     if should_succeed {
                         result?;
-                        assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
-                        assert_eq!(token.get_balance(destination)?, amount);
+                        assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?.amount(), U256::ZERO);
+                        assert_eq!(token.get_balance(destination)?.amount(), amount);
                     } else {
                         assert_eq!(result.unwrap_err(), TIP20Error::policy_forbids().into());
-                        assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
-                        assert_eq!(token.get_balance(destination)?, U256::ZERO);
+                        assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?.amount(), amount);
+                        assert_eq!(token.get_balance(destination)?.amount(), U256::ZERO);
                     }
 
                     Ok::<(), TempoPrecompileError>(())
@@ -1817,7 +1804,10 @@ pub(crate) mod tests {
                         newPolicyId: transfer_policy,
                     },
                 )?;
-                token.set_balance(RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
+                token.set_balance(
+                    RECEIVE_POLICY_GUARD_ADDRESS,
+                    UserState::new(amount, RewardFlag::OptedOut)?,
+                )?;
 
                 // A third-party claim back to the receiver is a resume. It requires the receiver
                 // to be authorized as recipient, but must not require the receiver/policy subject
@@ -1831,8 +1821,8 @@ pub(crate) mod tests {
                     third_party,
                 )?;
 
-                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
-                assert_eq!(token.get_balance(receiver)?, amount);
+                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?.amount(), U256::ZERO);
+                assert_eq!(token.get_balance(receiver)?.amount(), amount);
 
                 Ok::<(), TempoPrecompileError>(())
             })?;
@@ -1921,8 +1911,11 @@ pub(crate) mod tests {
                     result,
                     Err(e) if e == ReceivePolicyGuardError::address_reserved().into()
                 ));
-                assert_eq!(token.get_balance(sender)?, amount);
-                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
+                assert_eq!(token.get_balance(sender)?.amount(), amount);
+                assert_eq!(
+                    token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?.amount(),
+                    U256::ZERO
+                );
 
                 Ok(())
             })
@@ -1958,9 +1951,12 @@ pub(crate) mod tests {
                     },
                 )?;
 
-                assert_eq!(token.get_balance(sender)?, U256::ZERO);
-                assert_eq!(token.get_balance(receiver)?, amount);
-                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, U256::ZERO);
+                assert_eq!(token.get_balance(sender)?.amount(), U256::ZERO);
+                assert_eq!(token.get_balance(receiver)?.amount(), amount);
+                assert_eq!(
+                    token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?.amount(),
+                    U256::ZERO
+                );
                 token.assert_emitted_events(vec![TIP20Event::Transfer(ITIP20::Transfer {
                     from: sender,
                     to: receiver,
@@ -2023,9 +2019,12 @@ pub(crate) mod tests {
                     token.allowance(ITIP20::allowanceCall { owner, spender })?,
                     allowance - amount
                 );
-                assert_eq!(token.get_balance(owner)?, U256::ZERO);
-                assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
+                assert_eq!(token.get_balance(owner)?.amount(), U256::ZERO);
+                assert_eq!(token.get_balance(receiver)?.amount(), U256::ZERO);
+                assert_eq!(
+                    token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?.amount(),
+                    amount
+                );
 
                 Ok(())
             })
@@ -2119,8 +2118,11 @@ pub(crate) mod tests {
                 )?;
 
                 assert_eq!(token.total_supply()?, amount);
-                assert_eq!(token.get_balance(receiver)?, U256::ZERO);
-                assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?, amount);
+                assert_eq!(token.get_balance(receiver)?.amount(), U256::ZERO);
+                assert_eq!(
+                    token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?.amount(),
+                    amount
+                );
                 token.assert_emitted_events(vec![
                     TIP20Event::transfer(Address::ZERO, RECEIVE_POLICY_GUARD_ADDRESS, amount),
                     TIP20Event::mint(RECEIVE_POLICY_GUARD_ADDRESS, amount),
@@ -2281,8 +2283,11 @@ pub(crate) mod tests {
 
             token.transfer_fee_pre_tx(user, fee_amount)?;
 
-            assert_eq!(token.get_balance(user)?, fee_amount);
-            assert_eq!(token.get_balance(TIP_FEE_MANAGER_ADDRESS)?, fee_amount);
+            assert_eq!(token.get_balance(user)?.amount(), fee_amount);
+            assert_eq!(
+                token.get_balance(TIP_FEE_MANAGER_ADDRESS)?.amount(),
+                fee_amount
+            );
 
             Ok(())
         })
@@ -2355,9 +2360,9 @@ pub(crate) mod tests {
 
             token.transfer_fee_post_tx(user, refund_amount, gas_used)?;
 
-            assert_eq!(token.get_balance(user)?, refund_amount);
+            assert_eq!(token.get_balance(user)?.amount(), refund_amount);
             assert_eq!(
-                token.get_balance(TIP_FEE_MANAGER_ADDRESS)?,
+                token.get_balance(TIP_FEE_MANAGER_ADDRESS)?.amount(),
                 initial_fee - refund_amount
             );
             assert_eq!(
@@ -3298,7 +3303,10 @@ pub(crate) mod tests {
                     newPolicyId: REJECT_ALL_POLICY_ID,
                 },
             )?;
-            token.set_balance(RECEIVE_POLICY_GUARD_ADDRESS, amount)?;
+            token.set_balance(
+                RECEIVE_POLICY_GUARD_ADDRESS,
+                UserState::new(amount, RewardFlag::OptedIn)?,
+            )?;
             token.set_total_supply(token.total_supply()? + amount)?;
 
             token.burn_blocked(burner, RECEIVE_POLICY_GUARD_ADDRESS, burn_amount, true)?;
@@ -3329,7 +3337,7 @@ pub(crate) mod tests {
             )?;
 
             // simulate a mint to TIP20 address.
-            token.set_balance(token.address, amount)?;
+            token.set_balance(token.address, UserState::new(amount, RewardFlag::OptedOut)?)?;
             token.set_total_supply(token.total_supply()? + amount)?;
 
             for unprotected in [TIP20_CHANNEL_RESERVE_ADDRESS, token.address] {
@@ -3701,8 +3709,8 @@ pub(crate) mod tests {
 
                 if hardfork.is_t3() {
                     // T3: master is credited, virtual balance stays zero
-                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, amount);
-                    assert_eq!(token.get_balance(virtual_addr)?, U256::ZERO);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?.amount(), amount);
+                    assert_eq!(token.get_balance(virtual_addr)?.amount(), U256::ZERO);
                     assert_eq!(token.total_supply()?, amount);
 
                     // Events: Transfer(0→virtual) + Mint(virtual) + Transfer(virtual→master)
@@ -3713,12 +3721,12 @@ pub(crate) mod tests {
                     ]);
                 } else {
                     // Pre-T3: virtual address treated as literal, balance goes there
-                    assert_eq!(token.get_balance(virtual_addr)?, amount);
-                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, U256::ZERO);
+                    assert_eq!(token.get_balance(virtual_addr)?.amount(), amount);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?.amount(), U256::ZERO);
                 }
 
                 // mintWithMemo: same resolution behavior
-                let pre = token.get_balance(credited)?;
+                let pre = token.get_balance(credited)?.amount();
                 token.mint_with_memo(
                     admin,
                     ITIP20::mintWithMemoCall {
@@ -3727,7 +3735,7 @@ pub(crate) mod tests {
                         memo: FixedBytes::ZERO,
                     },
                 )?;
-                assert_eq!(token.get_balance(credited)? - pre, amount);
+                assert_eq!(token.get_balance(credited)?.amount() - pre, amount);
 
                 Ok::<_, TempoPrecompileError>(())
             })?;
@@ -3769,8 +3777,8 @@ pub(crate) mod tests {
                 )?;
 
                 if hardfork.is_t3() {
-                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, amount);
-                    assert_eq!(token.get_balance(virtual_addr)?, U256::ZERO);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?.amount(), amount);
+                    assert_eq!(token.get_balance(virtual_addr)?.amount(), U256::ZERO);
 
                     // Events: Transfer(sender→virtual) + Transfer(virtual→master)
                     token.assert_emitted_events(vec![
@@ -3778,12 +3786,12 @@ pub(crate) mod tests {
                         TIP20Event::transfer(virtual_addr, VIRTUAL_MASTER, amount),
                     ]);
                 } else {
-                    assert_eq!(token.get_balance(virtual_addr)?, amount);
-                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, U256::ZERO);
+                    assert_eq!(token.get_balance(virtual_addr)?.amount(), amount);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?.amount(), U256::ZERO);
                 }
 
                 // transferWithMemo: same resolution behavior
-                let pre = token.get_balance(credited)?;
+                let pre = token.get_balance(credited)?.amount();
                 token.transfer_with_memo(
                     sender,
                     ITIP20::transferWithMemoCall {
@@ -3792,7 +3800,7 @@ pub(crate) mod tests {
                         memo: FixedBytes::ZERO,
                     },
                 )?;
-                assert_eq!(token.get_balance(credited)? - pre, amount);
+                assert_eq!(token.get_balance(credited)?.amount() - pre, amount);
 
                 Ok::<_, TempoPrecompileError>(())
             })?;
@@ -3838,15 +3846,15 @@ pub(crate) mod tests {
                 )?;
 
                 if hardfork.is_t3() {
-                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, amount);
-                    assert_eq!(token.get_balance(virtual_addr)?, U256::ZERO);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?.amount(), amount);
+                    assert_eq!(token.get_balance(virtual_addr)?.amount(), U256::ZERO);
                 } else {
-                    assert_eq!(token.get_balance(virtual_addr)?, amount);
-                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?, U256::ZERO);
+                    assert_eq!(token.get_balance(virtual_addr)?.amount(), amount);
+                    assert_eq!(token.get_balance(VIRTUAL_MASTER)?.amount(), U256::ZERO);
                 }
 
                 // transferFromWithMemo: same resolution behavior
-                let pre = token.get_balance(credited)?;
+                let pre = token.get_balance(credited)?.amount();
                 token.transfer_from_with_memo(
                     spender,
                     ITIP20::transferFromWithMemoCall {
@@ -3856,7 +3864,7 @@ pub(crate) mod tests {
                         memo: FixedBytes::ZERO,
                     },
                 )?;
-                assert_eq!(token.get_balance(credited)? - pre, amount);
+                assert_eq!(token.get_balance(credited)?.amount() - pre, amount);
 
                 Ok::<_, TempoPrecompileError>(())
             })?;
@@ -4592,7 +4600,7 @@ pub(crate) mod tests {
                 } else {
                     // T2: pause not enforced, burn succeeds
                     assert!(result.is_ok());
-                    assert_eq!(token.get_balance(blocked)?, U256::ZERO);
+                    assert_eq!(token.get_balance(blocked)?.amount(), U256::ZERO);
                 }
 
                 Ok::<_, TempoPrecompileError>(())
