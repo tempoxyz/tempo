@@ -61,6 +61,15 @@ pub trait PrecompileStorageProvider {
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<()>;
 
+    /// Returns true if the account at `address` has code deployed.
+    fn account_has_code(&mut self, address: Address) -> Result<bool> {
+        let mut has_code = false;
+        self.with_account_info(address, &mut |info| {
+            has_code = !info.is_empty_code_hash();
+        })?;
+        Ok(has_code)
+    }
+
     /// Performs an SLOAD operation (persistent storage read).
     fn sload(&mut self, address: Address, key: U256) -> Result<U256>;
 
@@ -186,7 +195,6 @@ pub trait ContractStorage {
 
     /// Returns true if the contract has been initialized (has bytecode deployed).
     fn is_initialized(&self) -> Result<bool> {
-        self.storage()
-            .with_account_info(self.address(), |info| Ok(!info.is_empty_code_hash()))
+        self.storage().account_has_code(self.address())
     }
 }

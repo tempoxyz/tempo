@@ -117,6 +117,11 @@ impl StorageCtx {
         result.unwrap()
     }
 
+    /// Returns true if the account has bytecode deployed.
+    pub fn account_has_code(&self, address: Address) -> Result<bool> {
+        Self::try_with_storage(|s| s.account_has_code(address))
+    }
+
     /// Returns the chain ID.
     pub fn chain_id(&self) -> u64 {
         Self::with_storage(|s| s.chain_id())

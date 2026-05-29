@@ -119,6 +119,14 @@ impl PrecompileStorageProvider for HashMapStorageProvider {
         Ok(())
     }
 
+    fn account_has_code(&mut self, address: Address) -> Result<bool, TempoPrecompileError> {
+        Ok(!self
+            .accounts
+            .entry(address)
+            .or_default()
+            .is_empty_code_hash())
+    }
+
     fn sstore(
         &mut self,
         address: Address,
