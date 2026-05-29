@@ -999,22 +999,22 @@ where
             let tempo_tx_env = tx
                 .tempo_tx_env
                 .as_ref()
-                .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?;
+                .ok_or_else(expiring_nonce_missing_tx_env_error)?;
 
             // Expiring nonce txs must have nonce == 0
             if tx.nonce() != 0 {
-                return Err(TempoInvalidTransaction::ExpiringNonceNonceNotZero.into());
+                return Err(expiring_nonce_nonce_not_zero_error().into());
             }
 
             let replay_hash = if spec.is_t1b() {
                 tx.unique_tx_identifier()
-                    .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?
+                    .ok_or_else(expiring_nonce_missing_tx_env_error)?
             } else {
                 tempo_tx_env.tx_hash
             };
             let valid_before = tempo_tx_env
                 .valid_before
-                .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
+                .ok_or_else(expiring_nonce_missing_valid_before_error)?;
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
@@ -2378,6 +2378,24 @@ fn check_gas_limit(
         return Some(oog_frame_result(kind, tx.gas_limit()));
     }
     None
+}
+
+#[cold]
+#[inline(never)]
+fn expiring_nonce_missing_tx_env_error() -> TempoInvalidTransaction {
+    TempoInvalidTransaction::ExpiringNonceMissingTxEnv
+}
+
+#[cold]
+#[inline(never)]
+fn expiring_nonce_nonce_not_zero_error() -> TempoInvalidTransaction {
+    TempoInvalidTransaction::ExpiringNonceNonceNotZero
+}
+
+#[cold]
+#[inline(never)]
+fn expiring_nonce_missing_valid_before_error() -> TempoInvalidTransaction {
+    TempoInvalidTransaction::ExpiringNonceMissingValidBefore
 }
 
 /// Validates time window for AA transactions
