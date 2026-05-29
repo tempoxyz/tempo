@@ -553,6 +553,9 @@ where
                 // Precompute the fee balance slot after validation has resolved the fee token.
                 transaction.transaction().fee_balance_slot();
 
+                // Warm the global keccak cache with storage slot hashes for this transaction.
+                transaction.transaction().precalculate_keccak_slots();
+
                 TransactionValidationOutcome::Valid {
                     balance,
                     state_nonce,
@@ -753,7 +756,7 @@ mod tests {
         let balance_slot = TIP20Token::from_address(PATH_USD_ADDRESS)
             .expect("PATH_USD_ADDRESS is a valid TIP20 token")
             .balances[transaction.sender()]
-        .slot();
+        .base_slot();
         // Give the sender enough balance to cover the transaction cost
         let fee_payer_balance = U256::from(1_000_000_000_000u64); // 1M USD in 6 decimals
         provider.add_account(

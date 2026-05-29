@@ -7,6 +7,9 @@
 
 pub mod dispatch;
 
+// Re-export the generated slots module for external access to storage slot constants.
+pub use slots as tip403_registry_slots;
+
 use crate::{
     StorageCtx,
     receive_policy_guard::{RECOVERY_ORIGINATOR, RecoveryMode},
