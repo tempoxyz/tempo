@@ -33,6 +33,16 @@ contract StablecoinDEXTest is TempoTest {
         bool partialFill
     );
 
+    event OrderFlipped(
+        uint128 indexed orderId,
+        address indexed maker,
+        address indexed base,
+        uint128 amount,
+        bool isBid,
+        int16 tick,
+        int16 flipTick
+    );
+
     event PairCreated(bytes32 indexed key, address indexed base, address indexed quote);
 
     function setUp() public override {
@@ -364,20 +374,28 @@ contract StablecoinDEXTest is TempoTest {
         vm.prank(alice);
         uint128 flipOrderId = exchange.placeFlip(address(token1), 1e18, true, 100, 200);
 
-        // Orders are immediately active, no executeBlock needed
-        // Event order: Transfer (in), OrderFilled, FlipOrderPlaced, Transfer (out)
+        // Orders are immediately active, no executeBlock needed.
+        // T5 flips in place under the same order ID.
 
         vm.expectEmit(true, true, true, true);
         emit OrderFilled(flipOrderId, alice, bob, 1e18, false);
 
         vm.expectEmit(true, true, true, true);
-        emit OrderPlaced(2, alice, address(token1), 1e18, false, 200, true, 100);
+        emit OrderFlipped(flipOrderId, alice, address(token1), 1e18, false, 200, 100);
 
         vm.prank(bob);
         exchange.swapExactAmountIn(address(token1), address(pathUSD), 1e18, 0);
 
-        assertEq(exchange.nextOrderId(), 3);
-        // TODO: pull the order from orders mapping and assert state changes
+        assertEq(exchange.nextOrderId(), 2);
+
+        IStablecoinDEX.Order memory flipped = exchange.getOrder(flipOrderId);
+        assertEq(flipped.orderId, flipOrderId);
+        assertEq(flipped.maker, alice);
+        assertFalse(flipped.isBid);
+        assertEq(flipped.tick, 200);
+        assertEq(flipped.flipTick, 100);
+        assertEq(flipped.amount, 1e18);
+        assertEq(flipped.remaining, 1e18);
     }
 
     function test_OrdersImmediatelyActive() public {
@@ -755,10 +773,10 @@ contract StablecoinDEXTest is TempoTest {
         } else if (flipTick % exchange.TICK_SPACING() != 0) {
             shouldRevert = true;
             expectedSelector = IStablecoinDEX.InvalidFlipTick.selector;
-        } else if (isBid && flipTick <= tick) {
+        } else if (isBid && flipTick < tick) {
             shouldRevert = true;
             expectedSelector = IStablecoinDEX.InvalidFlipTick.selector;
-        } else if (!isBid && flipTick >= tick) {
+        } else if (!isBid && flipTick > tick) {
             shouldRevert = true;
             expectedSelector = IStablecoinDEX.InvalidFlipTick.selector;
         }
@@ -2043,8 +2061,6 @@ contract StablecoinDEXTest is TempoTest {
     }
 
     /// @notice Test cancelStaleOrder with compound policy - maker blocked as sender
-    /// forge-config: default.hardfork = "tempo:T2"
-    /// forge-config: fuzz500.hardfork = "tempo:T2"
     function test_CancelStaleOrder_Succeeds_BlockedMaker_CompoundPolicy() public {
         // Create compound policy: sender blacklist, recipient always-allow, mint always-allow
         uint64 senderBlacklist = registry.createPolicy(admin, ITIP403Registry.PolicyType.BLACKLIST);
@@ -2074,8 +2090,6 @@ contract StablecoinDEXTest is TempoTest {
     }
 
     /// @notice Test cancelStaleOrder fails with compound policy when maker only blocked as recipient
-    /// forge-config: default.hardfork = "tempo:T2"
-    /// forge-config: fuzz500.hardfork = "tempo:T2"
     function test_CancelStaleOrder_Fails_MakerOnlyBlockedAsRecipient_CompoundPolicy() public {
         // Create compound policy: sender always-allow, recipient blacklist, mint always-allow
         uint64 recipientBlacklist =

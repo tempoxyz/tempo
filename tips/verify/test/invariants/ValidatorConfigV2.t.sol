@@ -1101,7 +1101,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Run all invariant checks
-    function invariant_globalInvariants() public view {
+    function invariant_validatorConfigV2Global() public view {
         _invariantAppendOnlyCount(); // VALV2-8
         _invariantDeleteOnce(); // VALV2-9
         _invariantHeightTracking(); // VALV2-10
@@ -1519,7 +1519,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
     }
 
     /// @notice Regression test for fuzz sequence: migrate one validator then rotate it.
-    /// @dev Reproduces the shrunk sequence from invariant_globalInvariants failure.
+    /// @dev Reproduces the shrunk sequence from invariant_validatorConfigV2Global failure.
     function test_regression_migrateAndRotate() public {
         // Step 1: migrate validator index 0 (exact args from shrunk sequence)
         this.handler_migrateValidator(
@@ -1531,7 +1531,7 @@ contract ValidatorConfigV2InvariantTest is InvariantBaseTest {
         this.handler_rotateValidator(10_000_000_000, 900_000_000_000_000_000_000, 100_000);
 
         // Verify all global invariants hold
-        invariant_globalInvariants();
+        invariant_validatorConfigV2Global();
     }
 
 }

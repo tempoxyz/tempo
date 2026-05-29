@@ -445,7 +445,7 @@ where
         match self.amm_liquidity_cache.has_enough_liquidity(
             validation_ctx.fee_token,
             fee,
-            &mut state_provider,
+            &state_provider,
         ) {
             Ok(true) => {}
             Ok(false) => {
@@ -549,6 +549,12 @@ where
                         }
                     }
                 }
+
+                // Precompute the fee balance slot after validation has resolved the fee token.
+                transaction.transaction().fee_balance_slot();
+
+                // Warm the global keccak cache with storage slot hashes for this transaction.
+                transaction.transaction().precalculate_keccak_slots();
 
                 TransactionValidationOutcome::Valid {
                     balance,
@@ -750,7 +756,7 @@ mod tests {
         let balance_slot = TIP20Token::from_address(PATH_USD_ADDRESS)
             .expect("PATH_USD_ADDRESS is a valid TIP20 token")
             .balances[transaction.sender()]
-        .slot();
+        .base_slot();
         // Give the sender enough balance to cover the transaction cost
         let fee_payer_balance = U256::from(1_000_000_000_000u64); // 1M USD in 6 decimals
         provider.add_account(
@@ -1676,7 +1682,7 @@ mod tests {
                 assert!(matches!(
                     err.downcast_other_ref::<TempoPoolTransactionError>(),
                     Some(TempoPoolTransactionError::Evm(
-                        TempoInvalidTransaction::InvalidFeeToken(_)
+                        TempoInvalidTransaction::FeeTokenNotTip20 { .. }
                     ))
                 ));
             }
@@ -1762,7 +1768,7 @@ mod tests {
         // Create a transaction with max_fee_per_gas exactly at minimum
         let active_fork = MODERATO.tempo_hardfork_at(current_time);
         let transaction = TxBuilder::aa(Address::random())
-            .max_fee(active_fork.base_fee() as u128)
+            .max_fee(u128::from(active_fork.base_fee()))
             .max_priority_fee(1_000_000_000)
             .build();
 
@@ -2439,7 +2445,7 @@ mod tests {
         // Verify has_enough_liquidity would bypass (return true) for this token
         // because it matches a validator token. This confirms the vulnerability we're testing.
         let liquidity_result =
-            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &mut state);
+            amm_cache.has_enough_liquidity(paused_validator_token, U256::from(1000), &state);
         assert!(
             liquidity_result.is_ok() && liquidity_result.unwrap(),
             "Token in unique_tokens should bypass liquidity check and return true"

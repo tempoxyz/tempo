@@ -77,8 +77,8 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          # tmp: mablr/bump_alloy_2.0.5
-          ref: 08bf6fcdc3765a421f2239c0bf78cdcc9267104d
+          # tmp: rus/bump-tempo-v1.7
+          ref: 5ad62bb61e88facba18f800c73b9ff7b60ef3fb7
           path: foundry
           persist-credentials: false
 
@@ -220,8 +220,8 @@ jobs:
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: foundry-rs/foundry
-          # tmp: mablr/bump_alloy_2.0.5
-          ref: 08bf6fcdc3765a421f2239c0bf78cdcc9267104d
+          # tmp: rus/bump-tempo-v1.7
+          ref: 5ad62bb61e88facba18f800c73b9ff7b60ef3fb7
           path: foundry
           persist-credentials: false
 
@@ -245,7 +245,7 @@ jobs:
       - name: Build foundry forge with coverage instrumentation
         if: needs.check-precompiles.outputs.coverage == 'true'
         working-directory: foundry
-        run: RUSTFLAGS="-C instrument-coverage" cargo build -p forge --profile release --no-default-features
+        run: RUSTFLAGS="-C instrument-coverage" cargo build --bin forge --profile release --no-default-features
 
       - name: Run Forge tests with Rust precompiles (with coverage)
         if: needs.check-precompiles.outputs.coverage == 'true'
@@ -258,7 +258,7 @@ jobs:
       - name: Build foundry forge
         if: needs.check-precompiles.outputs.coverage != 'true'
         working-directory: foundry
-        run: cargo build -p forge --profile release --no-default-features
+        run: cargo build --bin forge --profile release --no-default-features
 
       - name: Run Forge tests with Rust precompiles
         if: needs.check-precompiles.outputs.coverage != 'true'

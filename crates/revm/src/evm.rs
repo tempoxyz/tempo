@@ -31,6 +31,11 @@ pub struct TempoEvm<DB: Database, I> {
     >,
     /// The fee collected in `collectFeePreTx` call.
     pub(crate) collected_fee: U256,
+    /// The validator-credited amount (post-feeAMM haircut, in the validator's fee token) returned
+    /// by the most recent `collectFeePostTx` call.
+    ///
+    /// Reset to zero before each transaction so it reflects only the current tx.
+    pub validator_fee: U256,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
     /// The expiry timestamp of the access key used by the current transaction.
@@ -77,6 +82,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         Self {
             inner,
             collected_fee: U256::ZERO,
+            validator_fee: U256::ZERO,
             fee_token: None,
             key_expiry: None,
             skip_valid_after_check: false,
@@ -92,14 +98,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         // Pre-T0 it could happen that the initial gas spending is greater than the gas limit due to faulty validation.
         //
         // Before that it would overflow, so we are reproducing this behavior here by setting the gas limit to u64::MAX and the reservoir to 0.
-        if !self.cfg.spec.is_t0() && init_and_floor_gas.initial_total_gas > self.tx.gas_limit {
+        if !self.cfg.spec.is_t0() && init_and_floor_gas.initial_total_gas() > self.tx.gas_limit {
             (u64::MAX, 0)
         } else {
-            init_and_floor_gas.initial_gas_and_reservoir(
-                self.tx.gas_limit,
-                self.cfg.tx_gas_limit_cap(),
-                self.cfg.is_amsterdam_eip8037_enabled(),
-            )
+            init_and_floor_gas
+                .initial_gas_and_reservoir(self.tx.gas_limit, self.cfg.tx_gas_limit_cap())
         }
     }
 }
@@ -951,7 +954,7 @@ mod tests {
         })?;
         drop(provider);
 
-        assert_eq!(slot, U256::from(100_000));
+        assert_eq!(slot.amount(), U256::from(100_000));
 
         let result1 = evm.transact_commit(tx_env1)?;
         assert!(result1.is_success());
@@ -967,7 +970,7 @@ mod tests {
         })?;
         drop(provider);
 
-        assert_eq!(slot, U256::from(97_132));
+        assert_eq!(slot.amount(), U256::from(97_132));
 
         // Second tx: two calls
         let tx2 = TxBuilder::new()
@@ -996,7 +999,7 @@ mod tests {
         })?;
         drop(provider);
 
-        assert_eq!(slot, U256::from(94_003));
+        assert_eq!(slot.amount(), U256::from(94_003));
 
         Ok(())
     }
@@ -1673,10 +1676,10 @@ mod tests {
             let gas = result.unwrap();
             // Verify floor_gas > initial_total_gas for this calldata (EIP-7623 scenario)
             assert!(
-                gas.floor_gas > gas.initial_total_gas,
+                gas.floor_gas > gas.initial_total_gas(),
                 "Expected floor_gas ({}) > initial_total_gas ({}) for large calldata",
                 gas.floor_gas,
-                gas.initial_total_gas
+                gas.initial_total_gas()
             );
         }
 
@@ -1694,7 +1697,7 @@ mod tests {
 
             let gas = result.unwrap();
             assert!(
-                gas.initial_total_gas >= 21_000,
+                gas.initial_total_gas() >= 21_000,
                 "Initial gas should be at least 21k base"
             );
         }

@@ -1,0 +1,30 @@
+#!/bin/bash
+
+BRANCH=$(git rev-parse --abbrev-ref HEAD)
+STAGED_FILES=$(git diff --cached --name-only --diff-filter=A)
+ADDED_TIPS_FILES=$(echo "$STAGED_FILES" | grep '^tips/')
+ADDED_TIPS_COUNT=$(echo "$ADDED_TIPS_FILES" | grep -c .)
+
+if [ "$ADDED_TIPS_COUNT" -gt 1 ]; then
+  echo "❌ Only one file can be added under tips/ at a time:"
+  echo "$ADDED_TIPS_FILES" | sed 's/^/  - /'
+  exit 1
+fi
+
+if [ "$ADDED_TIPS_COUNT" -eq 1 ]; then
+  TIP_FILE="$ADDED_TIPS_FILES"
+  TIP_BASENAME=$(basename "$TIP_FILE")
+
+  if ! echo "$TIP_BASENAME" | grep -qE '^tip-[0-9]{4}\.md$'; then
+    echo "❌ New files under tips/ must be named 'tip-XXXX.md' (got: '$TIP_BASENAME')"
+    exit 1
+  fi
+
+  TIP_ID=$(basename "$TIP_FILE" .md | sed 's/^tip-//')
+  EXPECTED="tip/$TIP_ID"
+
+  if [ "$BRANCH" != "$EXPECTED" ]; then
+    echo "❌ Branch must be named '$EXPECTED' when adding $TIP_FILE (current: '$BRANCH')"
+    exit 1
+  fi
+fi

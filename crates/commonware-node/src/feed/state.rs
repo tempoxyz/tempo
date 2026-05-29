@@ -1,6 +1,6 @@
 //! Shared state for the feed module.
 
-use crate::alias::marshal;
+use crate::{alias::marshal, network_identity::NetworkIdentity};
 use alloy_consensus::BlockHeader as _;
 use alloy_primitives::hex;
 use commonware_codec::{Encode, ReadExt as _};
@@ -8,7 +8,6 @@ use commonware_consensus::{
     marshal::Identifier,
     types::{Epoch, Epocher as _, FixedEpocher, Height, Round, View},
 };
-use commonware_cryptography::bls12381::primitives::variant::{MinSig, Variant};
 use parking_lot::RwLock;
 use reth_node_core::rpc::compat::FromConsensusHeader;
 use reth_provider::HeaderProvider as _;
@@ -44,12 +43,12 @@ pub(super) struct FeedState {
 struct IdentityTransitionCache {
     /// The epoch from which the chain was built (inclusive).
     from_epoch: u64,
-    /// Public key at `from_epoch`.
-    from_pubkey: <MinSig as Variant>::Public,
+    /// NetworkIdentity at `from_epoch`.
+    from_identity: NetworkIdentity,
     /// The earliest epoch we walked to (0 if we reached genesis).
     to_epoch: u64,
-    /// The public key at `to_epoch`.
-    to_pubkey: <MinSig as Variant>::Public,
+    /// NetworkIdentity at `to_epoch`.
+    to_identity: NetworkIdentity,
     /// Cached transitions, ordered newest to oldest.
     transitions: Arc<Vec<IdentityTransition>>,
 }
@@ -169,7 +168,7 @@ impl FeedStateHandle {
         if let Some(cache) = &cached
             && start_epoch > cache.from_epoch
             && cache.to_epoch == 0
-            && cache.from_pubkey == epoch_pubkey
+            && cache.from_identity.public_key() == epoch_pubkey
         {
             let mut updated = cache.clone();
             updated.from_epoch = start_epoch;
@@ -195,7 +194,7 @@ impl FeedStateHandle {
                     break;
                 }
 
-                pubkey = cache.to_pubkey;
+                pubkey = cache.to_identity.public_key();
             }
 
             let prev_outcome = match get_outcome(execution, epocher, search_epoch - 1) {
@@ -291,25 +290,25 @@ impl FeedStateHandle {
         // Build updated cache. The walk absorbs cached transitions in the correct order.
         // `pubkey` is the identity at the point where the walk stopped.
         let new_cache = if let Some(c) = &cached {
-            let (from, from_pk) = if start_epoch >= c.from_epoch {
+            let (from, from_pubkey) = if start_epoch >= c.from_epoch {
                 (start_epoch, epoch_pubkey)
             } else {
-                (c.from_epoch, c.from_pubkey)
+                (c.from_epoch, c.from_identity.public_key())
             };
 
             IdentityTransitionCache {
                 from_epoch: from,
-                from_pubkey: from_pk,
+                from_identity: NetworkIdentity(from_pubkey),
                 to_epoch: search_epoch,
-                to_pubkey: pubkey,
+                to_identity: NetworkIdentity(pubkey),
                 transitions: Arc::new(transitions),
             }
         } else {
             IdentityTransitionCache {
                 from_epoch: start_epoch,
-                from_pubkey: epoch_pubkey,
+                from_identity: NetworkIdentity(epoch_pubkey),
                 to_epoch: search_epoch,
-                to_pubkey: pubkey,
+                to_identity: NetworkIdentity(pubkey),
                 transitions: Arc::new(transitions),
             }
         };
@@ -456,7 +455,7 @@ impl ConsensusFeed for FeedStateHandle {
             .filter(|t| t.transition_epoch > start_epoch)
             .last()
             .map(|t| t.old_identity.clone())
-            .unwrap_or_else(|| hex::encode(cache.from_pubkey.encode()));
+            .unwrap_or_else(|| hex::encode(cache.from_identity.public_key().encode()));
 
         // If not full, only return the most recent real transition (exclude genesis marker)
         let transitions = if full {

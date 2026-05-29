@@ -4,30 +4,10 @@ use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_node_api::PayloadAttributes;
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, atomic, atomic::Ordering};
+use std::{sync::Arc, time::Duration};
 use tempo_primitives::{RecoveredSubBlock, TempoConsensusContext};
 
-/// A handle for a payload interrupt flag.
-///
-/// Can be fired using [`InterruptHandle::interrupt`].
-#[derive(Debug, Clone, Default)]
-pub struct InterruptHandle(Arc<atomic::AtomicBool>);
-
-impl InterruptHandle {
-    /// Turns on the interrupt flag on the associated payload.
-    pub fn interrupt(&self) {
-        self.0.store(true, Ordering::Relaxed);
-    }
-
-    /// Returns whether the interrupt flag is set.
-    pub fn is_interrupted(&self) -> bool {
-        self.0.load(Ordering::Relaxed)
-    }
-}
-
 /// Container type for all components required to build a payload.
-///
-/// The `TempoPayloadAttributes` has an additional feature of interrupting payload.
 ///
 /// It also carries DKG data to be included in the block's extra_data field.
 #[derive(
@@ -40,9 +20,13 @@ pub struct TempoPayloadAttributes {
     #[deref_mut]
     #[serde(flatten)]
     inner: EthPayloadAttributes,
-    /// Interrupt handle.
+    /// Remaining local proposal budget available to this payload build.
+    ///
+    /// Consensus sets this to the proposal return budget left when it dispatches
+    /// the build. `None` means the build was not requested by consensus, so the
+    /// builder should not stop early for block pacing.
     #[serde(skip)]
-    interrupt: InterruptHandle,
+    payload_build_budget: Option<Duration>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -91,7 +75,7 @@ impl TempoPayloadAttributes {
                 parent_beacon_block_root: Some(B256::ZERO),
                 slot_number: None,
             },
-            interrupt: InterruptHandle::default(),
+            payload_build_budget: None,
             timestamp_millis_part,
             extra_data,
             proposer_public_key,
@@ -110,15 +94,23 @@ impl TempoPayloadAttributes {
         self.proposer_public_key.as_ref()
     }
 
-    /// Returns the `interrupt` flag. If true, it marks that a payload is requested to stop
-    /// processing any more transactions.
-    pub fn is_interrupted(&self) -> bool {
-        self.interrupt.0.load(Ordering::Relaxed)
+    /// Sets the remaining local proposal budget for a consensus payload build.
+    ///
+    /// The value should already account for any time spent before the build was
+    /// requested. The builder treats it as a shared budget for leader
+    /// build/persist work and validator replay/persist work.
+    pub fn with_payload_build_budget(mut self, budget: Duration) -> Self {
+        self.payload_build_budget = Some(budget);
+        self
     }
 
-    /// Returns a cloneable [`InterruptHandle`] for turning on the `interrupt` flag.
-    pub fn interrupt_handle(&self) -> &InterruptHandle {
-        &self.interrupt
+    /// Returns the consensus-provided build budget, if this is a paced build.
+    ///
+    /// `None` is intentional for non-consensus builds such as dev or external
+    /// payload requests; those builds are not constrained by the consensus
+    /// block-time budget.
+    pub fn payload_build_budget(&self) -> Option<Duration> {
+        self.payload_build_budget
     }
 
     /// Returns the milliseconds portion of the timestamp.
@@ -152,7 +144,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
     fn from(inner: EthPayloadAttributes) -> Self {
         Self {
             inner,
-            interrupt: InterruptHandle::default(),
+            payload_build_budget: None,
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
             proposer_public_key: None,
@@ -278,33 +270,6 @@ mod tests {
     }
 
     #[test]
-    fn test_interrupt_handle() {
-        // Default state
-        let handle = InterruptHandle::default();
-        assert!(!handle.is_interrupted());
-
-        // Interrupt sets flag
-        handle.interrupt();
-        assert!(handle.is_interrupted());
-
-        // Clone shares state
-        let handle2 = handle.clone();
-        assert!(handle2.is_interrupted());
-
-        // New handle via clone before interrupt
-        let fresh = InterruptHandle::default();
-        let cloned = fresh.clone();
-        assert!(!cloned.is_interrupted());
-        fresh.interrupt();
-        assert!(cloned.is_interrupted()); // shared atomic
-
-        // Multiple interrupts are idempotent
-        handle.interrupt();
-        handle.interrupt();
-        assert!(handle.is_interrupted());
-    }
-
-    #[test]
     fn test_builder_attributes_construction() {
         let parent = B256::random();
         let extra_data = Bytes::from(vec![1, 2, 3, 4, 5]);
@@ -347,26 +312,6 @@ mod tests {
     }
 
     #[test]
-    fn test_builder_attributes_interrupt_integration() {
-        let attrs = TempoPayloadAttributes::random();
-
-        // Initially not interrupted
-        assert!(!attrs.is_interrupted());
-
-        // Get handle and interrupt
-        let handle = attrs.interrupt_handle().clone();
-        handle.interrupt();
-
-        // Both see interrupted state
-        assert!(attrs.is_interrupted());
-        assert!(handle.is_interrupted());
-
-        // Multiple handle accesses return same underlying state
-        let handle2 = attrs.interrupt_handle();
-        assert!(handle2.is_interrupted());
-    }
-
-    #[test]
     fn test_builder_attributes_timestamp_handling() {
         // Exact second boundary
         let attrs = TempoPayloadAttributes::random().with_timestamp(3000);
@@ -395,7 +340,7 @@ mod tests {
 
     #[test]
     fn test_builder_attributes_subblocks() {
-        use std::sync::atomic::AtomicUsize;
+        use std::sync::atomic::{AtomicUsize, Ordering};
 
         let call_count = Arc::new(AtomicUsize::new(0));
         let count_clone = call_count.clone();
@@ -447,7 +392,6 @@ mod tests {
         // Tempo-specific defaults
         assert_eq!(tempo_attrs.timestamp_millis_part(), 0);
         assert_eq!(tempo_attrs.extra_data(), &Bytes::default());
-        assert!(!tempo_attrs.is_interrupted());
         assert!(tempo_attrs.subblocks().is_empty());
     }
 

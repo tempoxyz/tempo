@@ -63,7 +63,7 @@ impl AmmLiquidityCache {
         &self,
         user_token: Address,
         fee: U256,
-        state_provider: &mut impl StateProvider,
+        mut state_provider: impl StateProvider,
     ) -> Result<bool, ProviderError> {
         let mut missing_in_cache = Vec::new();
         let hardfork;
@@ -419,10 +419,10 @@ mod tests {
         };
 
         let provider = create_mock_provider();
-        let mut state = provider.latest().unwrap();
+        let state = provider.latest().unwrap();
 
         let user_token = address!("1111111111111111111111111111111111111111");
-        let result = cache.has_enough_liquidity(user_token, U256::from(100), &mut state);
+        let result = cache.has_enough_liquidity(user_token, U256::from(100), &state);
 
         assert!(result.is_ok());
         assert!(
@@ -449,9 +449,9 @@ mod tests {
         };
 
         let provider = create_mock_provider();
-        let mut state = provider.latest().unwrap();
+        let state = provider.latest().unwrap();
 
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &mut state);
+        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
         assert!(result.is_ok());
         assert!(
             result.unwrap(),
@@ -477,9 +477,9 @@ mod tests {
         };
 
         let provider = create_mock_provider();
-        let mut state = provider.latest().unwrap();
+        let state = provider.latest().unwrap();
 
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &mut state);
+        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
         assert!(result.is_ok());
         assert!(
             !result.unwrap(),
@@ -494,10 +494,10 @@ mod tests {
         };
 
         let provider = create_mock_provider();
-        let mut state = provider.latest().unwrap();
+        let state = provider.latest().unwrap();
 
         let user_token = address!("1111111111111111111111111111111111111111");
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &mut state);
+        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
         assert!(result.is_ok());
         assert!(
             !result.unwrap(),
@@ -534,9 +534,9 @@ mod tests {
         // Provider would return zero for any storage read; if the slow path runs we'd see
         // either a `false` result or a panic from the missing TIP-20 prefix on `user`.
         let provider = create_mock_provider();
-        let mut state = provider.latest().unwrap();
+        let state = provider.latest().unwrap();
 
-        let result = cache.has_enough_liquidity(user, U256::from(100), &mut state);
+        let result = cache.has_enough_liquidity(user, U256::from(100), &state);
         assert!(result.is_ok());
         assert!(
             result.unwrap(),
@@ -558,10 +558,10 @@ mod tests {
         };
 
         let provider = create_mock_provider();
-        let mut state = provider.latest().unwrap();
+        let state = provider.latest().unwrap();
 
         // Provider returns default (zero) storage values
-        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &mut state);
+        let result = cache.has_enough_liquidity(user_token, U256::from(1000), &state);
         assert!(result.is_ok());
         assert!(
             !result.unwrap(),

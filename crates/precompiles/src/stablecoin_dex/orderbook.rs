@@ -438,7 +438,7 @@ pub fn compute_book_key(base: Address, quote: Address) -> B256 {
 
 /// Convert relative tick to scaled price
 pub fn tick_to_price(tick: i16) -> u32 {
-    (PRICE_SCALE as i32 + tick as i32) as u32
+    (PRICE_SCALE as i32 + i32::from(tick)) as u32
 }
 
 /// Converts a scaled price back to a relative tick.
@@ -539,7 +539,7 @@ mod tests {
         let result = price_to_tick(MIN_PRICE);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), MIN_TICK);
-        assert_eq!(MIN_PRICE, (PRICE_SCALE as i32 + MIN_TICK as i32) as u32);
+        assert_eq!(MIN_PRICE, (PRICE_SCALE as i32 + i32::from(MIN_TICK)) as u32);
     }
 
     #[test]
@@ -547,7 +547,7 @@ mod tests {
         let result = price_to_tick(MAX_PRICE);
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), MAX_TICK);
-        assert_eq!(MAX_PRICE, (PRICE_SCALE as i32 + MAX_TICK as i32) as u32);
+        assert_eq!(MAX_PRICE, (PRICE_SCALE as i32 + i32::from(MAX_TICK)) as u32);
     }
 
     #[test]
@@ -1103,9 +1103,9 @@ mod tests {
             let base_amount = 33u128;
             let tick = 100i16;
 
-            let price = tick_to_price(tick) as u128;
+            let price = u128::from(tick_to_price(tick));
             let numerator = base_amount * price;
-            let has_remainder = !numerator.is_multiple_of(PRICE_SCALE as u128);
+            let has_remainder = !numerator.is_multiple_of(u128::from(PRICE_SCALE));
 
             let quote_down = base_to_quote(base_amount, tick, RoundingDirection::Down).unwrap();
             let quote_up = base_to_quote(base_amount, tick, RoundingDirection::Up).unwrap();
@@ -1141,8 +1141,8 @@ mod tests {
             let quote_amount = 33u128;
             let tick = 100i16;
 
-            let price = tick_to_price(tick) as u128;
-            let numerator = quote_amount * PRICE_SCALE as u128;
+            let price = u128::from(tick_to_price(tick));
+            let numerator = quote_amount * u128::from(PRICE_SCALE);
             let has_remainder = !numerator.is_multiple_of(price);
 
             let base_down = quote_to_base(quote_amount, tick, RoundingDirection::Down).unwrap();
@@ -1212,11 +1212,11 @@ mod tests {
 
         #[test]
         fn test_quote_to_base_large_amount_no_overflow() {
-            let large_quote_amount: u128 = (u128::MAX / PRICE_SCALE as u128) + 1;
+            let large_quote_amount: u128 = (u128::MAX / u128::from(PRICE_SCALE)) + 1;
 
             assert!(
                 large_quote_amount
-                    .checked_mul(PRICE_SCALE as u128)
+                    .checked_mul(u128::from(PRICE_SCALE))
                     .is_none(),
                 "Test setup: this value should overflow u128 multiplication"
             );

@@ -460,7 +460,7 @@ impl StablecoinDEX {
     /// - `TickOutOfBounds` — tick is outside the allowed `[MIN_TICK, MAX_TICK]` range
     /// - `InvalidTick` — tick is not aligned to `TICK_SPACING`
     /// - `BelowMinimumOrderSize` — order amount is below `MIN_ORDER_AMOUNT`
-    /// - `InsufficientBalance` — sender balance lower than required escrow
+    /// - `InsufficientBalance` — sender balance lower than required
     /// - `PolicyForbids` — TIP-403 policy rejects the token transfer
     ///
     /// # Returns
@@ -924,9 +924,18 @@ impl StablecoinDEX {
 
             // Business logic errors are ignored so that flip failure does not block the swap.
             // System errors (OOG, DB errors, panics) propagate because state may be inconsistent.
-            if res.as_ref().is_err_and(|err| err.is_system_error()) && self.storage.spec().is_t1a()
-            {
-                return Err(res.unwrap_err());
+            if let Err(err) = &res {
+                if err.is_system_error() && self.storage.spec().is_t1a() {
+                    return Err(res.unwrap_err());
+                }
+
+                if self.storage.spec().is_t5() {
+                    self.emit_event(StablecoinDEXEvents::flip_failed(
+                        order.order_id(),
+                        order.maker(),
+                        err.selector(),
+                    ))?;
+                }
             }
 
             // T5+: a successful `flip_in_place` already rewrote the order
@@ -1502,6 +1511,10 @@ impl StablecoinDEX {
 
     /// Validates that all pairs in the path exist and returns book keys with direction info.
     ///
+    /// Multi-hop intermediate amounts are transitory: every route token is checked for pause state,
+    /// but TIP-403 transfer policy is only enforced for the taker's initial input transfer and final
+    /// output receipt, not for intermediate route tokens.
+    ///
     /// # Errors
     /// - `InvalidToken` — a token address does not have a valid TIP-20 prefix
     /// - `PairDoesNotExist` — no orderbook exists for a hop in the route
@@ -1654,7 +1667,10 @@ fn is_authorized_for_token(token: Address, address: Address, role: AuthRole) -> 
 
 #[cfg(test)]
 mod tests {
-    use alloy::{primitives::IntoLogData, sol_types::SolEvent};
+    use alloy::{
+        primitives::{FixedBytes, IntoLogData},
+        sol_types::{SolEvent, SolInterface},
+    };
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::TIP20Error;
 
@@ -1697,7 +1713,7 @@ mod tests {
         let test_ticks = [-2000i16, -1000, -100, -1, 0, 1, 100, 1000, 2000];
         for tick in test_ticks {
             let price = orderbook::tick_to_price(tick);
-            let expected_price = (orderbook::PRICE_SCALE as i32 + tick as i32) as u32;
+            let expected_price = (orderbook::PRICE_SCALE as i32 + i32::from(tick)) as u32;
             assert_eq!(price, expected_price);
         }
     }
@@ -1794,10 +1810,10 @@ mod tests {
             let base_amount = 100_000_003u128;
             let tick = 100i16;
 
-            let price = orderbook::tick_to_price(tick) as u128;
-            let expected_quote_floor = (base_amount * price) / orderbook::PRICE_SCALE as u128;
+            let price = u128::from(orderbook::tick_to_price(tick));
+            let expected_quote_floor = (base_amount * price) / u128::from(orderbook::PRICE_SCALE);
             let expected_quote_ceil =
-                (base_amount * price).div_ceil(orderbook::PRICE_SCALE as u128);
+                (base_amount * price).div_ceil(u128::from(orderbook::PRICE_SCALE));
 
             let max_escrow = expected_quote_ceil * 2;
 
@@ -1859,8 +1875,8 @@ mod tests {
             let base_amount = 100_000_003u128;
             let tick = 100i16;
 
-            let price = orderbook::tick_to_price(tick) as u128;
-            let escrow_ceil = (base_amount * price).div_ceil(orderbook::PRICE_SCALE as u128);
+            let price = u128::from(orderbook::tick_to_price(tick));
+            let escrow_ceil = (base_amount * price).div_ceil(u128::from(orderbook::PRICE_SCALE));
 
             let base = TIP20Setup::create("BASE", "BASE", admin)
                 .with_issuer(admin)
@@ -1914,7 +1930,7 @@ mod tests {
 
             let price = orderbook::tick_to_price(tick);
             let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+                (min_order_amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, expected_escrow)?;
@@ -1941,7 +1957,8 @@ mod tests {
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick);
-            let escrow_amount = (below_minimum * price as u128) / orderbook::PRICE_SCALE as u128;
+            let escrow_amount =
+                (below_minimum * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, escrow_amount)?;
@@ -1976,7 +1993,7 @@ mod tests {
 
             let price = orderbook::tick_to_price(tick);
             let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+                (min_order_amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             // Setup tokens with enough balance for the escrow
             let (base_token, quote_token) =
@@ -2103,7 +2120,8 @@ mod tests {
             let flip_tick = 200i16;
 
             let price = orderbook::tick_to_price(tick);
-            let escrow_amount = (below_minimum * price as u128) / orderbook::PRICE_SCALE as u128;
+            let escrow_amount =
+                (below_minimum * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, escrow_amount)?;
@@ -2197,7 +2215,7 @@ mod tests {
             // Calculate escrow amount needed for bid
             let price = orderbook::tick_to_price(tick);
             let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+                (min_order_amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             // Setup tokens with enough balance for the escrow
             let (base_token, quote_token) =
@@ -2270,7 +2288,8 @@ mod tests {
                 let tick = 100i16;
 
                 let price = orderbook::tick_to_price(tick);
-                let escrow = (MIN_ORDER_AMOUNT * price as u128) / orderbook::PRICE_SCALE as u128;
+                let escrow =
+                    (MIN_ORDER_AMOUNT * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
                 let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
                 exchange.create_pair(base_token)?;
@@ -2318,7 +2337,8 @@ mod tests {
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick);
-            let escrow = (MIN_ORDER_AMOUNT * price as u128) / orderbook::PRICE_SCALE as u128;
+            let escrow =
+                (MIN_ORDER_AMOUNT * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             let (base_token, _) = setup_test_tokens(admin, alice, exchange.address, escrow)?;
             exchange.create_pair(base_token)?;
@@ -2382,7 +2402,7 @@ mod tests {
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick);
-            let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let expected_escrow = (amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             // Alice escrows two bids' worth of quote; Bob holds enough base
             // and quote to drive two opposite-direction swaps. Mint externally
@@ -2524,7 +2544,7 @@ mod tests {
             let tick = 100i16;
             let price = orderbook::tick_to_price(tick);
             let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+                (min_order_amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             // Setup tokens
             let (base_token, quote_token) =
@@ -2625,7 +2645,8 @@ mod tests {
                 .expect("Swap should succeed");
 
             let price = orderbook::tick_to_price(tick);
-            let expected_amount_in = (amount_out * price as u128) / orderbook::PRICE_SCALE as u128;
+            let expected_amount_in =
+                (amount_out * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
             assert_eq!(amount_in, expected_amount_in);
 
             Ok(())
@@ -2662,7 +2683,8 @@ mod tests {
 
             // Calculate expected amount_out based on tick price
             let price = orderbook::tick_to_price(tick);
-            let expected_amount_out = (amount_in * price as u128) / orderbook::PRICE_SCALE as u128;
+            let expected_amount_out =
+                (amount_in * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
             assert_eq!(amount_out, expected_amount_out);
 
             Ok(())
@@ -2703,7 +2725,7 @@ mod tests {
             let price = orderbook::tick_to_price(tick);
             // Expected: ceil(amount_out * PRICE_SCALE / price)
             let expected_amount_in =
-                (amount_out * orderbook::PRICE_SCALE as u128).div_ceil(price as u128);
+                (amount_out * u128::from(orderbook::PRICE_SCALE)).div_ceil(u128::from(price));
             assert_eq!(amount_in, expected_amount_in);
 
             Ok(())
@@ -2777,7 +2799,8 @@ mod tests {
                 .expect("Could not set balance");
 
             let price = orderbook::tick_to_price(tick);
-            let max_amount_in = (amount_out * price as u128) / orderbook::PRICE_SCALE as u128;
+            let max_amount_in =
+                (amount_out * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             let amount_in = exchange
                 .swap_exact_amount_out(bob, quote_token, base_token, amount_out, max_amount_in)
@@ -2824,7 +2847,8 @@ mod tests {
                 .expect("Could not set balance");
 
             let price = orderbook::tick_to_price(tick);
-            let min_amount_out = (amount_in * price as u128) / orderbook::PRICE_SCALE as u128;
+            let min_amount_out =
+                (amount_in * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             let amount_out = exchange
                 .swap_exact_amount_in(bob, base_token, quote_token, amount_in, min_amount_out)
@@ -2858,7 +2882,7 @@ mod tests {
             let flip_tick = 200i16;
 
             let price = orderbook::tick_to_price(tick);
-            let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let expected_escrow = (amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
@@ -2920,7 +2944,7 @@ mod tests {
             let flip_tick = tick;
 
             let price = orderbook::tick_to_price(tick);
-            let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let expected_escrow = (amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
@@ -3094,8 +3118,22 @@ mod tests {
             )?;
 
             exchange.set_balance(bob, base_token, amount)?;
-            // Swap succeeds — flip failure is silently swallowed.
+            let events_before = exchange.emitted_events().len();
+            // Swap succeeds — flip failure is swallowed after emitting FlipFailed.
             exchange.swap_exact_amount_in(bob, base_token, quote_token, amount, 0)?;
+
+            let new_events = &exchange.emitted_events()[events_before..];
+            let flip_failed = new_events
+                .iter()
+                .find(|event| event.topics()[0] == IStablecoinDEX::FlipFailed::SIGNATURE_HASH)
+                .expect("expected FlipFailed event");
+            let decoded = IStablecoinDEX::FlipFailed::decode_log_data(flip_failed)?;
+            assert_eq!(decoded.orderId, flip_order_id);
+            assert_eq!(decoded.maker, alice);
+            assert_eq!(
+                decoded.reason,
+                FixedBytes::from(TIP20Error::policy_forbids().selector())
+            );
 
             // No orphan: the original order record was deleted by fill_order
             // so getOrder/cancel observe "does not exist".
@@ -3716,9 +3754,9 @@ mod tests {
             let price_100 = orderbook::tick_to_price(tick_100);
             // Taker pays quote with ceiling rounding
             let quote_for_first =
-                (order_amount * price_50 as u128).div_ceil(orderbook::PRICE_SCALE as u128);
+                (order_amount * u128::from(price_50)).div_ceil(u128::from(orderbook::PRICE_SCALE));
             let quote_for_partial_second =
-                (999 * price_100 as u128).div_ceil(orderbook::PRICE_SCALE as u128);
+                (999 * u128::from(price_100)).div_ceil(u128::from(orderbook::PRICE_SCALE));
             let total_needed = quote_for_first + quote_for_partial_second;
 
             let result = exchange.swap_exact_amount_out(
@@ -3756,7 +3794,7 @@ mod tests {
             exchange.place(alice, base_token, order_amount_base, true, tick)?;
 
             let amount_out_quote = 5_000_000u128;
-            let base_needed = (amount_out_quote * PRICE_SCALE as u128) / price as u128;
+            let base_needed = (amount_out_quote * u128::from(PRICE_SCALE)) / u128::from(price);
             let max_amount_in = base_needed + 10000;
 
             exchange.set_balance(bob, base_token, max_amount_in * 2)?;
@@ -3812,7 +3850,7 @@ mod tests {
                 min_amount_out,
             )?;
 
-            let expected_base = (amount_in_quote * PRICE_SCALE as u128) / price as u128;
+            let expected_base = (amount_in_quote * u128::from(PRICE_SCALE)) / u128::from(price);
             assert_eq!(amount_out, expected_base);
 
             Ok(())
@@ -3904,8 +3942,10 @@ mod tests {
             // Calculate escrow for all orders
             let bid_price_1 = orderbook::tick_to_price(bid_tick_1);
             let bid_price_2 = orderbook::tick_to_price(bid_tick_2);
-            let bid_escrow_1 = (amount * bid_price_1 as u128) / orderbook::PRICE_SCALE as u128;
-            let bid_escrow_2 = (amount * bid_price_2 as u128) / orderbook::PRICE_SCALE as u128;
+            let bid_escrow_1 =
+                (amount * u128::from(bid_price_1)) / u128::from(orderbook::PRICE_SCALE);
+            let bid_escrow_2 =
+                (amount * u128::from(bid_price_2)) / u128::from(orderbook::PRICE_SCALE);
             let total_bid_escrow = bid_escrow_1 + bid_escrow_2;
 
             let (base_token, quote_token) =
@@ -3948,7 +3988,8 @@ mod tests {
 
             // Fill all asks at tick 50 (bob buys base)
             let ask_price_1 = orderbook::tick_to_price(ask_tick_1);
-            let quote_needed = (amount * ask_price_1 as u128) / orderbook::PRICE_SCALE as u128;
+            let quote_needed =
+                (amount * u128::from(ask_price_1)) / u128::from(orderbook::PRICE_SCALE);
             exchange.set_balance(bob, quote_token, quote_needed)?;
             exchange.swap_exact_amount_in(bob, quote_token, base_token, quote_needed, 0)?;
             // Verify best_ask_tick moved to tick 60, best_bid_tick unchanged
@@ -3977,8 +4018,8 @@ mod tests {
             // Calculate escrow for 3 bid orders (2 at tick 100, 1 at tick 90)
             let price_1 = orderbook::tick_to_price(bid_tick_1);
             let price_2 = orderbook::tick_to_price(bid_tick_2);
-            let escrow_1 = (amount * price_1 as u128) / orderbook::PRICE_SCALE as u128;
-            let escrow_2 = (amount * price_2 as u128) / orderbook::PRICE_SCALE as u128;
+            let escrow_1 = (amount * u128::from(price_1)) / u128::from(orderbook::PRICE_SCALE);
+            let escrow_2 = (amount * u128::from(price_2)) / u128::from(orderbook::PRICE_SCALE);
             let total_escrow = escrow_1 * 2 + escrow_2;
 
             let (base_token, quote_token) =
@@ -4203,7 +4244,7 @@ mod tests {
             let price = orderbook::tick_to_price(tick);
 
             // Calculate escrow for bid order (quote needed to buy `amount` base)
-            let bid_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let bid_escrow = (amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             let (base_token, quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, bid_escrow)?;
@@ -4222,8 +4263,8 @@ mod tests {
             // Test is_bid == true: base -> quote
             let quoted_out_bid = exchange.quote_exact_in(book_key, amount, true)?;
             let expected_quote_out = amount
-                .checked_mul(price as u128)
-                .and_then(|v| v.checked_div(orderbook::PRICE_SCALE as u128))
+                .checked_mul(u128::from(price))
+                .and_then(|v| v.checked_div(u128::from(orderbook::PRICE_SCALE)))
                 .expect("calculation");
             assert_eq!(
                 quoted_out_bid, expected_quote_out,
@@ -4234,11 +4275,11 @@ mod tests {
             exchange.place(alice, base_token, amount, false, tick)?;
 
             // Test is_bid == false: quote -> base
-            let quote_in = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let quote_in = (amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
             let quoted_out_ask = exchange.quote_exact_in(book_key, quote_in, false)?;
             let expected_base_out = quote_in
-                .checked_mul(orderbook::PRICE_SCALE as u128)
-                .and_then(|v| v.checked_div(price as u128))
+                .checked_mul(u128::from(orderbook::PRICE_SCALE))
+                .and_then(|v| v.checked_div(u128::from(price)))
                 .expect("calculation");
             assert_eq!(
                 quoted_out_ask, expected_base_out,
@@ -4341,7 +4382,7 @@ mod tests {
 
             let price = orderbook::tick_to_price(tick);
             let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+                (min_order_amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
@@ -4394,7 +4435,7 @@ mod tests {
 
             let price = orderbook::tick_to_price(tick);
             let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+                (min_order_amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
@@ -4462,7 +4503,7 @@ mod tests {
 
             let price = orderbook::tick_to_price(tick);
             let expected_escrow =
-                (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+                (min_order_amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             TIP20Setup::path_usd(admin)
                 .with_issuer(admin)
@@ -5157,7 +5198,8 @@ mod tests {
             let tick = 100i16;
 
             let price = orderbook::tick_to_price(tick);
-            let escrow = (min_order_amount * price as u128) / orderbook::PRICE_SCALE as u128;
+            let escrow =
+                (min_order_amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
             let (base_token, _quote_token) =
                 setup_test_tokens(admin, alice, exchange.address, escrow)?;
@@ -5218,7 +5260,7 @@ mod tests {
         let flip_tick = 200i16;
 
         let price = orderbook::tick_to_price(tick);
-        let expected_escrow = (amount * price as u128) / orderbook::PRICE_SCALE as u128;
+        let expected_escrow = (amount * u128::from(price)) / u128::from(orderbook::PRICE_SCALE);
 
         let (base_token, quote_token) =
             setup_test_tokens(admin, alice, exchange.address, expected_escrow * 2)?;
@@ -5392,8 +5434,8 @@ mod tests {
             let amount = MIN_ORDER_AMOUNT;
             let tick = 100i16;
 
-            let price = orderbook::tick_to_price(tick) as u128;
-            let quote_amount = (amount * price).div_ceil(orderbook::PRICE_SCALE as u128);
+            let price = u128::from(orderbook::tick_to_price(tick));
+            let quote_amount = (amount * price).div_ceil(u128::from(orderbook::PRICE_SCALE));
 
             let base = TIP20Setup::create("BASE", "BASE", admin)
                 .with_issuer(admin)
@@ -5507,8 +5549,8 @@ mod tests {
             let amount = MIN_ORDER_AMOUNT;
             let tick = 100i16;
 
-            let price = orderbook::tick_to_price(tick) as u128;
-            let quote_amount = (amount * price).div_ceil(orderbook::PRICE_SCALE as u128);
+            let price = u128::from(orderbook::tick_to_price(tick));
+            let quote_amount = (amount * price).div_ceil(u128::from(orderbook::PRICE_SCALE));
 
             let base = TIP20Setup::create("BASE", "BASE", admin)
                 .with_issuer(admin)

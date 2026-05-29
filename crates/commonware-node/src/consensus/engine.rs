@@ -15,7 +15,6 @@ use commonware_cryptography::{
     ed25519::{PrivateKey, PublicKey},
 };
 use commonware_p2p::{AddressableManager, Blocker, Receiver, Sender};
-use commonware_parallel::Sequential;
 use commonware_runtime::{
     BufferPooler, Clock, ContextCell, Handle, Metrics, Network, Pacer, Spawner, Storage,
     buffer::paged::CacheRef, spawn_cell,
@@ -28,6 +27,7 @@ use tempo_node::TempoFullNode;
 use tracing::info;
 
 use crate::{
+    alias,
     consensus::application,
     dkg,
     epoch::{self, SchemeProvider},
@@ -62,20 +62,34 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub mailbox_size: usize,
     pub deque_size: usize,
 
+    /// Maximum time to wait for the leader's proposal before timing out a view.
+    ///
+    /// This is a liveness timeout, not the normal block pacing target.
     pub time_to_propose: Duration,
     pub time_to_collect_notarizations: Duration,
     pub time_to_retry_nullify_broadcast: Duration,
     pub time_for_peer_response: Duration,
     pub views_to_track: u64,
     pub views_until_leader_skip: u64,
-    pub payload_interrupt_time: Duration,
-    pub new_payload_wait_time: Duration,
+    /// Local proposal return budget after reserving network propagation time.
+    ///
+    /// The leader uses this window for payload building, local marshal
+    /// persistence, and any final wait before returning the proposal.
+    pub proposal_return_budget: Duration,
     pub time_to_build_subblock: Duration,
     pub subblock_broadcast_interval: Duration,
     pub fcu_heartbeat_interval: Duration,
     pub with_subblocks: bool,
 
     pub feed_state: crate::feed::FeedStateHandle,
+
+    /// Number of recently finalized blocks retained in the prunable archive
+    /// passed to the marshal actor. Older blocks are served from reth.
+    pub finalized_blocks_retention: u64,
+
+    /// Whether to dual-write finalized block to the legacy
+    /// immutable archive in addition to the prunable archive.
+    pub with_legacy: bool,
 }
 
 impl<TBlocker, TPeerManager> Builder<TBlocker, TPeerManager>
@@ -130,49 +144,30 @@ where
 
         let scheme_provider = SchemeProvider::new();
 
-        let finalizations_by_height = storage::init_finalizations_archive(
-            &context,
-            &self.partition_prefix,
+        let alias::marshal::Initialized {
+            actor: marshal,
+            mailbox: marshal_mailbox,
+            last_finalized_height,
+        } = alias::marshal::init(
+            context.clone(),
             page_cache_ref.clone(),
-        )
-        .await
-        .wrap_err("failed to initialize finalizations by height archive")?;
-
-        let finalized_blocks = storage::init_finalized_blocks_archive(
-            &context,
-            &self.partition_prefix,
-            page_cache_ref.clone(),
-        )
-        .await
-        .wrap_err("failed to initialize finalizations by height archive")?;
-
-        // TODO(janis): forward `last_finalized_height` to application so it can
-        // forward missing blocks to EL.
-        let (marshal, marshal_mailbox, last_finalized_height) = marshal::core::Actor::init(
-            context.with_label("marshal"),
-            finalizations_by_height,
-            finalized_blocks,
-            marshal::Config {
-                provider: scheme_provider.clone(),
-                epocher: epoch_strategy.clone(),
+            execution_node.clone(),
+            alias::marshal::Config {
                 partition_prefix: self.partition_prefix.clone(),
                 mailbox_size: self.mailbox_size,
                 view_retention_timeout: ViewDelta::new(
                     self.views_to_track
                         .saturating_mul(SYNCER_ACTIVITY_TIMEOUT_MULTIPLIER),
                 ),
-                prunable_items_per_section: storage::PRUNABLE_ITEMS_PER_SECTION,
-                page_cache: page_cache_ref.clone(),
-                replay_buffer: storage::REPLAY_BUFFER,
-                key_write_buffer: storage::WRITE_BUFFER,
-                value_write_buffer: storage::WRITE_BUFFER,
-                max_repair: storage::MAX_REPAIR,
                 max_pending_acks: MAX_PENDING_ACKS,
-                block_codec_config: (),
-                strategy: Sequential,
+                finalized_blocks_retention: self.finalized_blocks_retention,
+                with_legacy: self.with_legacy,
+                epoch_strategy: epoch_strategy.clone(),
+                scheme_provider: scheme_provider.clone(),
             },
         )
-        .await;
+        .await
+        .wrap_err("failed to initialize marshal")?;
 
         let (executor, executor_mailbox) = crate::executor::init(
             context.with_label("executor"),
@@ -254,8 +249,7 @@ where
             marshal: marshal_mailbox.clone(),
             execution_node: execution_node.clone(),
             executor: executor_mailbox.clone(),
-            payload_resolve_time: self.payload_interrupt_time,
-            payload_return_time: self.new_payload_wait_time,
+            proposal_return_budget: self.proposal_return_budget,
             subblocks: subblocks.as_ref().map(|s| s.mailbox()),
             scheme_provider: scheme_provider.clone(),
             epoch_strategy: epoch_strategy.clone(),
