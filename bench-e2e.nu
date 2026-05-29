@@ -1045,11 +1045,11 @@ def e2e-run-sides [run_pairs: int] {
     mut sides = []
     if ($run_pairs mod 2) == 0 {
         for _ in 0..<($run_pairs // 2) {
-            $sides = ($sides | append ["baseline" "feature" "feature" "baseline"])
+            $sides = ($sides | append ["feature" "baseline" "baseline" "feature"])
         }
     } else {
         for _ in 0..<$run_pairs {
-            $sides = ($sides | append ["baseline" "feature"])
+            $sides = ($sides | append ["feature" "baseline"])
         }
     }
     $sides

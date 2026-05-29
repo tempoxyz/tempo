@@ -110,6 +110,11 @@ on:
         type: boolean
         required: true
         default: true
+      valscope:
+        description: Generate and publish ValScope static reports.
+        type: boolean
+        required: true
+        default: false
       baseline-args:
         description: Extra args passed only to the baseline node.
         type: string
@@ -262,6 +267,10 @@ on:
         type: string
         required: false
         default: "true"
+      valscope:
+        type: string
+        required: false
+        default: "false"
       baseline-args:
         type: string
         required: false
@@ -384,6 +393,7 @@ jobs:
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '30' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset || '120' }}
       BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' }}
+      BENCH_VALSCOPE: ${{ inputs.valscope == true || inputs.valscope == 'true' }}
       BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
       BENCH_BASELINE_FEATURES: ${{ inputs.baseline-features }}
       BENCH_FEATURE_FEATURES: ${{ inputs.feature-features }}
@@ -484,6 +494,7 @@ jobs:
           ref: ${{ steps.checkout-ref.outputs.ref }}
 
       - name: Checkout ValScope report builder
+        if: env.BENCH_VALSCOPE == 'true'
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           repository: tempoxyz/valscope
@@ -530,13 +541,15 @@ jobs:
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
             const otlp = process.env.BENCH_OTLP === 'true';
             const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
+            const valscope = process.env.BENCH_VALSCOPE === 'true';
+            const valscopeNote = valscope ? ', valscope: `enabled`' : ', valscope: `disabled`';
             const noCache = process.env.BENCH_NO_CACHE === 'true';
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
             const gasLimit = process.env.BENCH_GAS_LIMIT;
             const runPairs = process.env.BENCH_RUN_PAIRS || '2';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
             const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`);
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${noCacheNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -720,13 +733,15 @@ jobs:
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
             const otlp = process.env.BENCH_OTLP === 'true';
             const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
+            const valscope = process.env.BENCH_VALSCOPE === 'true';
+            const valscopeNote = valscope ? ', valscope: `enabled`' : ', valscope: `disabled`';
             const noCache = process.env.BENCH_NO_CACHE === 'true';
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
             const gasLimit = process.env.BENCH_GAS_LIMIT;
             const runPairs = process.env.BENCH_RUN_PAIRS || '2';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
             const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
-            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`;
+            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${noCacheNote}`;
             core.exportVariable('BENCH_CONFIG', config);
 
             const { data: comment } = await github.rest.issues.createComment({
@@ -800,11 +815,13 @@ jobs:
           [ -n "$CLICKHOUSE_URL" ] && cmd+=(--clickhouse-url "$CLICKHOUSE_URL")
           [ -n "$BENCH_RUN_TYPE" ] && cmd+=(--run-type "$BENCH_RUN_TYPE")
           [ -n "$BENCH_CLICKHOUSE_RUN" ] && cmd+=(--clickhouse-run "$BENCH_CLICKHOUSE_RUN")
-          if [ ! -f "valscope/apps/api/Cargo.toml" ]; then
-            echo "::error::ValScope static report builder not found"
-            exit 1
+          if [ "$BENCH_VALSCOPE" = "true" ]; then
+            if [ ! -f "valscope/apps/api/Cargo.toml" ]; then
+              echo "::error::ValScope static report builder not found"
+              exit 1
+            fi
+            cmd+=(--valscope-static-report --valscope-dir "valscope")
           fi
-          cmd+=(--valscope-static-report --valscope-dir "valscope")
 
           quote_arg() {
             local value="$1"
@@ -888,7 +905,7 @@ jobs:
 
       - name: Publish ValScope static reports
         id: publish-valscope-static
-        if: success() && steps.results-dir.outputs.path != '' && hashFiles('bench-results/*/valscope-static/index.html') != ''
+        if: success() && env.BENCH_VALSCOPE == 'true' && steps.results-dir.outputs.path != '' && hashFiles('bench-results/*/valscope-static/index.html') != ''
         env:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
         run: |
