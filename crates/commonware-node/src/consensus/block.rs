@@ -7,7 +7,9 @@ use alloy_consensus::BlockHeader as _;
 use alloy_primitives::{B256, Bytes, keccak256};
 use alloy_rlp::Encodable as _;
 use bytes::{Buf, BufMut};
-use commonware_codec::{EncodeSize, RangeCfg, Read, Write};
+#[cfg(feature = "bal")]
+use commonware_codec::RangeCfg;
+use commonware_codec::{EncodeSize, Read, Write};
 use commonware_consensus::{
     Heightable,
     simplex::types::Context,
@@ -212,16 +214,21 @@ impl Read for Block {
                 commonware_codec::Error::Wrapped("reading RLP encoded block", rlp_err.into())
             })?;
 
-        let block_access_list = if inner.block_access_list_hash().is_some() {
-            let block_access_list: Bytes = bytes::Bytes::read_cfg(buf, &RangeCfg::from(..))
-                .map_err(|err| {
-                    commonware_codec::Error::Wrapped("reading block access list", err.into())
-                })?
-                .into();
-            Some(block_access_list)
-        } else {
-            None
+        #[cfg(feature = "bal")]
+        let block_access_list = {
+            if inner.block_access_list_hash().is_some() {
+                let block_access_list: Bytes = bytes::Bytes::read_cfg(buf, &RangeCfg::from(..))
+                    .map_err(|err| {
+                        commonware_codec::Error::Wrapped("reading block access list", err.into())
+                    })?
+                    .into();
+                Some(block_access_list)
+            } else {
+                None
+            }
         };
+        #[cfg(not(feature = "bal"))]
+        let block_access_list = None;
 
         Self::from_execution_block(inner, block_access_list).map_err(|err| err.codec_error())
     }
@@ -498,8 +505,9 @@ mod tests {
     #[cfg(feature = "bal")]
     use alloy_consensus::BlockHeader as _;
     use alloy_primitives::B256;
-    #[cfg(feature = "bal")]
     use alloy_primitives::{bytes, keccak256};
+    #[cfg(not(feature = "bal"))]
+    use commonware_codec::Write as _;
     use commonware_codec::{Encode, Read as _};
     use reth_node_core::primitives::SealedBlock;
     use tempo_primitives::{Block as TempoBlock, TempoHeader};
@@ -508,7 +516,6 @@ mod tests {
     #[cfg(feature = "bal")]
     use super::BlockAccessListError;
 
-    #[cfg(feature = "bal")]
     fn execution_block_with_block_access_list_hash(
         block_access_list_hash: B256,
     ) -> SealedBlock<TempoBlock> {
@@ -579,6 +586,24 @@ mod tests {
         let encoded = decoded.encode();
 
         assert_eq!(encoded.as_ref(), block_bytes.as_slice());
+    }
+
+    #[cfg(not(feature = "bal"))]
+    #[test]
+    fn read_rejects_block_access_list_hash_when_bal_feature_disabled() {
+        let block_access_list = bytes!("0xc0");
+        let execution_block =
+            execution_block_with_block_access_list_hash(keccak256(block_access_list.as_ref()));
+        let mut encoded = Vec::new();
+        alloy_rlp::Encodable::encode(&execution_block, &mut encoded);
+        block_access_list.write(&mut encoded);
+
+        let err = Block::read_cfg(&mut encoded.as_ref(), &()).unwrap_err();
+
+        assert!(matches!(
+            err,
+            commonware_codec::Error::Invalid("block access list", "missing for header hash")
+        ));
     }
 
     #[cfg(feature = "bal")]
