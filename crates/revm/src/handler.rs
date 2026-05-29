@@ -541,6 +541,7 @@ where
     ///
     /// This is the core implementation that both `execute_single_call` and inspector-aware
     /// execution can use by providing the appropriate exec loop function.
+    #[inline(always)]
     fn execute_single_call_with<F>(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -570,6 +571,7 @@ where
     /// Executes a standard single-call transaction using the default handler logic.
     ///
     /// This calls the same helper methods used by the default [`Handler::execution`] implementation.
+    #[inline(always)]
     fn execute_single_call(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -598,6 +600,7 @@ where
     /// This checkpoint only covers user-call execution. Inline key authorization attached to the
     /// transaction is applied earlier during validation/pre-execution and intentionally remains
     /// persisted if scope prevalidation fails here or if a later user call reverts the batch.
+    #[inline(always)]
     fn execute_multi_call_with<F>(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -738,6 +741,7 @@ where
     }
 
     /// Executes a multi-call AA transaction atomically.
+    #[inline(always)]
     fn execute_multi_call(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -752,6 +756,7 @@ where
     ///
     /// This is the inspector-aware version of execute_single_call that uses
     /// inspect_run_exec_loop instead of run_exec_loop.
+    #[inline(always)]
     fn inspect_execute_single_call(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -768,6 +773,7 @@ where
     ///
     /// This is the inspector-aware version of execute_multi_call that uses
     /// inspect_execute_single_call instead of execute_single_call.
+    #[inline(always)]
     fn inspect_execute_multi_call(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
