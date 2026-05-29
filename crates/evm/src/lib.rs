@@ -102,6 +102,7 @@ impl BlockExecutorFactory for TempoEvmConfig {
         self.inner.executor_factory.evm_factory()
     }
 
+    #[inline(always)]
     fn create_executor<'a, DB, I>(
         &'a self,
         evm: TempoEvm<DB, I>,
