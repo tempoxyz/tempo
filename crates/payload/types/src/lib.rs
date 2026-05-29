@@ -36,9 +36,13 @@ pub struct TempoBuiltPayload {
     inner: EthBuiltPayload<TempoPrimitives>,
     /// The executed block data, used to skip re-execution in the engine tree.
     executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
-    /// Estimated time validators spend reproducing the build work.
+    /// Time validators are expected to spend reproducing this payload's build work.
+    ///
+    /// This excludes proposer-only idle waiting, but includes replayable work
+    /// such as transaction execution and non-interruptible `builder_finish`.
     validation_work_duration: Duration,
-    /// RLP-encoded block size in bytes.
+    /// RLP-encoded block size used for proposal return marshal estimates and
+    /// learning the rate used by future builder budgets.
     rlp_block_size_bytes: usize,
 }
 
@@ -58,12 +62,15 @@ impl TempoBuiltPayload {
         }
     }
 
-    /// Returns the estimated validation work duration for this payload.
+    /// Returns the time validators are expected to spend reproducing this payload's build work.
     pub fn validation_work_duration(&self) -> Duration {
         self.validation_work_duration
     }
 
     /// Returns the RLP-encoded block size in bytes.
+    ///
+    /// Consensus uses this with the learned marshal persistence rate to reserve
+    /// time for validators to persist similarly sized proposals.
     pub fn rlp_block_size_bytes(&self) -> usize {
         self.rlp_block_size_bytes
     }

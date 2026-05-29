@@ -7,9 +7,9 @@ use alloy_primitives::{
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_tracing::tracing::trace;
 use reth_transaction_pool::{
-    BestTransactions, CoinbaseTipOrdering, GetPooledTransactionLimit, PoolResult, PoolTransaction,
-    PriceBumpConfig, Priority, SubPool, SubPoolLimit, TransactionOrdering, TransactionOrigin,
-    ValidPoolTransaction,
+    AllPoolTransactions, BestTransactions, CoinbaseTipOrdering, GetPooledTransactionLimit,
+    PoolResult, PoolTransaction, PriceBumpConfig, Priority, SubPool, SubPoolLimit,
+    TransactionOrdering, TransactionOrigin, ValidPoolTransaction,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
     pool::{AddedPendingTransaction, AddedTransaction, QueuedReason, pending::PendingTransaction},
 };
@@ -533,6 +533,29 @@ impl AA2dPool {
             .values()
             .map(|tx| tx.transaction.clone());
         regular_pending.chain(expiring_pending)
+    }
+
+    /// Appends all transactions to the provided collection.
+    pub(crate) fn append_all_transactions(
+        &self,
+        transactions: &mut AllPoolTransactions<TempoPooledTransaction>,
+    ) {
+        transactions.pending.reserve(self.pending_count);
+        transactions.queued.reserve(self.queued_count);
+
+        for tx in self.by_id.values() {
+            if tx.is_pending() {
+                transactions.pending.push(tx.inner.transaction.clone());
+            } else {
+                transactions.queued.push(tx.inner.transaction.clone());
+            }
+        }
+
+        transactions.pending.extend(
+            self.expiring_nonce_txs
+                .values()
+                .map(|tx| tx.transaction.clone()),
+        );
     }
 
     /// Returns the best, executable transactions for this sub-pool
@@ -3571,6 +3594,39 @@ mod tests {
         assert!(queued_hashes.contains(&tx5_hash));
         assert!(queued_hashes.contains(&tx6_hash));
         assert!(queued_hashes.contains(&tx7_hash));
+    }
+
+    #[test]
+    fn test_append_all_transactions() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+        let expiring_sender = Address::random();
+
+        let tx0 = TxBuilder::aa(sender).build();
+        let tx2 = TxBuilder::aa(sender).nonce(2).build();
+        let expiring_tx = TxBuilder::aa(expiring_sender).nonce_key(U256::MAX).build();
+
+        for tx in [tx0, tx2, expiring_tx] {
+            pool.add_transaction(
+                Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+                0,
+                TempoHardfork::T1,
+            )
+            .unwrap();
+        }
+
+        let expected_pending: HashSet<_> =
+            pool.pending_transactions().map(|tx| *tx.hash()).collect();
+        let expected_queued: HashSet<_> = pool.queued_transactions().map(|tx| *tx.hash()).collect();
+
+        let mut transactions = AllPoolTransactions::default();
+        pool.append_all_transactions(&mut transactions);
+
+        let pending_hashes: HashSet<_> = transactions.pending.iter().map(|tx| *tx.hash()).collect();
+        let queued_hashes: HashSet<_> = transactions.queued.iter().map(|tx| *tx.hash()).collect();
+
+        assert_eq!(pending_hashes, expected_pending);
+        assert_eq!(queued_hashes, expected_queued);
     }
 
     #[test]
