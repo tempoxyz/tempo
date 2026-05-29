@@ -183,28 +183,36 @@ where
         }
     }
 
-    /// Deploys `0xEF` marker bytecode to a precompile address if it doesn't already have code.
+    /// Deploys `0xEF` marker bytecode to precompile addresses if they don't already have code.
     ///
     /// This also dispatches the state change to the system caller's state hook so that the
     /// sparse trie task is aware of the change.
-    fn deploy_precompile_at_boundary(
+    fn deploy_precompiles_at_boundary(
         &mut self,
-        address: Address,
+        addresses: impl IntoIterator<Item = Address>,
     ) -> Result<(), BlockExecutionError> {
-        let info = self
-            .inner
-            .evm
-            .db_mut()
-            .basic(address)
-            .map_err(BlockExecutionError::other)?
-            .unwrap_or_default();
-        if info.is_empty_code_hash() {
+        let mut state = EvmState::default();
+        for address in addresses {
+            let info = self
+                .inner
+                .evm
+                .db_mut()
+                .basic(address)
+                .map_err(BlockExecutionError::other)?
+                .unwrap_or_default();
+            if !info.is_empty_code_hash() {
+                continue;
+            }
+
             let mut account = Account::from(info);
             let code = Bytecode::new_legacy([0xef].into());
             account.info.code_hash = code.hash_slow();
             account.info.code = Some(code);
             account.mark_touch();
-            let state = EvmState::from_iter([(address, account)]);
+            state.insert(address, account);
+        }
+
+        if !state.is_empty() {
             self.inner.system_caller.on_state(
                 StateChangeSource::PreBlock(StateChangePreBlockSource::BlockHashesContract),
                 &state,
@@ -486,19 +494,21 @@ where
 
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
         let timestamp = self.evm().block().timestamp.to::<u64>();
+        let mut boundary_precompiles = Vec::with_capacity(5);
         if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
+            boundary_precompiles.push(VALIDATOR_CONFIG_V2_ADDRESS);
         }
         if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
-            self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
+            boundary_precompiles.push(SIGNATURE_VERIFIER_ADDRESS);
+            boundary_precompiles.push(ADDRESS_REGISTRY_ADDRESS);
         }
         if self.inner.spec.is_t5_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS)?;
+            boundary_precompiles.push(TIP20_CHANNEL_RESERVE_ADDRESS);
         }
         if self.inner.spec.is_t6_active_at_timestamp(timestamp) {
-            self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
+            boundary_precompiles.push(RECEIVE_POLICY_GUARD_ADDRESS);
         }
+        self.deploy_precompiles_at_boundary(boundary_precompiles)?;
 
         Ok(())
     }
