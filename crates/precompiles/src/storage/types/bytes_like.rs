@@ -117,7 +117,7 @@ impl Storable for Bytes {
     #[inline]
     fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
         debug_assert!(ctx.is_full(), "Bytes cannot be packed");
-        load_bytes_like(storage, slot, |data| Ok(Self::from(data)))
+        load_bytes_vec(storage, slot).map(Self::from)
     }
 
     #[inline]
@@ -138,11 +138,7 @@ impl Storable for String {
     #[inline]
     fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
         debug_assert!(ctx.is_full(), "String cannot be packed");
-        load_bytes_like(storage, slot, |data| {
-            Self::from_utf8(data).map_err(|e| {
-                TempoPrecompileError::Fatal(format!("Invalid UTF-8 in stored string: {e}"))
-            })
-        })
+        Self::from_utf8(load_bytes_vec(storage, slot)?).map_err(invalid_utf8)
     }
 
     #[inline]
@@ -163,10 +159,9 @@ impl Storable for String {
 
 /// Generic load implementation for string-like types (String, Bytes) using Solidity's encoding.
 #[inline]
-fn load_bytes_like<T, S, F>(storage: &S, base_slot: U256, into: F) -> Result<T>
+fn load_bytes_vec<S>(storage: &S, base_slot: U256) -> Result<Vec<u8>>
 where
     S: StorageOps,
-    F: FnOnce(Vec<u8>) -> Result<T>,
 {
     let base_value = storage.load(base_slot)?;
     let is_long = is_long_string(base_value);
@@ -176,7 +171,7 @@ where
         // Long string: read data from keccak256(base_slot) + i
         let slot_start = calc_data_slot(base_slot);
         let chunks = calc_chunks(length);
-        let mut data = Vec::new();
+        let mut data = Vec::with_capacity(length);
 
         for i in 0..chunks {
             let slot = slot_start + U256::from(i);
@@ -192,12 +187,18 @@ where
             data.extend_from_slice(&chunk_bytes[..bytes_to_take]);
         }
 
-        into(data)
+        Ok(data)
     } else {
         // Short string: data is inline in the main slot
         let bytes = base_value.to_be_bytes::<32>();
-        into(bytes[..length].to_vec())
+        Ok(bytes[..length].to_vec())
     }
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_utf8(error: std::string::FromUtf8Error) -> TempoPrecompileError {
+    TempoPrecompileError::Fatal(format!("Invalid UTF-8 in stored string: {error}"))
 }
 
 /// Generic store implementation for byte-like types (String, Bytes) using Solidity's encoding.
