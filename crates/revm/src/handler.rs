@@ -972,10 +972,10 @@ where
 
             // do the gas limit check again (include state gas for T4+).
             if tx.gas_limit() < init_gas.initial_total_gas() {
-                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
-                    gas_limit: tx.gas_limit(),
-                    initial_gas: init_gas.initial_total_gas(),
-                }
+                return Err(nonce_create_call_gas_more_than_limit_error(
+                    tx.gas_limit(),
+                    init_gas.initial_total_gas(),
+                )
                 .into());
             }
 
@@ -983,10 +983,10 @@ where
             if cfg.is_amsterdam_eip8037_enabled()
                 && init_gas.initial_regular_gas().max(init_gas.floor_gas) > cfg.tx_gas_limit_cap()
             {
-                return Err(InvalidTransaction::GasFloorMoreThanGasLimit {
-                    gas_floor: init_gas.initial_regular_gas(),
-                    gas_limit: cfg.tx_gas_limit_cap(),
-                }
+                return Err(nonce_create_gas_floor_more_than_limit_error(
+                    init_gas.initial_regular_gas(),
+                    cfg.tx_gas_limit_cap(),
+                )
                 .into());
             }
         }
@@ -2378,6 +2378,30 @@ fn check_gas_limit(
         return Some(oog_frame_result(kind, tx.gas_limit()));
     }
     None
+}
+
+#[cold]
+#[inline(never)]
+fn nonce_create_call_gas_more_than_limit_error(
+    gas_limit: u64,
+    initial_gas: u64,
+) -> InvalidTransaction {
+    InvalidTransaction::CallGasCostMoreThanGasLimit {
+        gas_limit,
+        initial_gas,
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn nonce_create_gas_floor_more_than_limit_error(
+    gas_floor: u64,
+    gas_limit: u64,
+) -> InvalidTransaction {
+    InvalidTransaction::GasFloorMoreThanGasLimit {
+        gas_floor,
+        gas_limit,
+    }
 }
 
 /// Validates time window for AA transactions
