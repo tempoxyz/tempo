@@ -361,6 +361,7 @@ impl<T: reth_storage_api::StateProvider> TempoStateAccess<((), (), ())> for T {
 struct ReadOnlyStorageProvider<'a, S, M = ()> {
     state: &'a mut S,
     spec: TempoHardfork,
+    last_basic: Option<(Address, AccountInfo)>,
     _marker: PhantomData<M>,
 }
 
@@ -373,8 +374,33 @@ where
         Self {
             state,
             spec,
+            last_basic: None,
             _marker: PhantomData,
         }
+    }
+
+    fn ensure_basic(&mut self, address: Address) -> TempoResult<()> {
+        let needs_load =
+            !matches!(self.last_basic.as_ref(), Some((cached, _)) if *cached == address);
+
+        if needs_load {
+            let info = self
+                .state
+                .basic(address)
+                .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
+            self.last_basic = Some((address, info));
+        }
+
+        Ok(())
+    }
+
+    fn cached_basic(&mut self, address: Address) -> TempoResult<&AccountInfo> {
+        self.ensure_basic(address)?;
+        Ok(&self
+            .last_basic
+            .as_ref()
+            .expect("read-only account info is cached after ensure_basic")
+            .1)
     }
 }
 
@@ -402,10 +428,7 @@ where
     }
 
     fn sload(&mut self, address: Address, key: U256) -> TempoResult<U256> {
-        let _ = self
-            .state
-            .basic(address)
-            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
+        self.ensure_basic(address)?;
         self.state
             .sload(address, key)
             .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))
@@ -416,11 +439,8 @@ where
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> TempoResult<()> {
-        let info = self
-            .state
-            .basic(address)
-            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
-        f(&info);
+        let info = self.cached_basic(address)?;
+        f(info);
         Ok(())
     }
 
