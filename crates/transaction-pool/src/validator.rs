@@ -417,9 +417,8 @@ where
         transaction.set_resolved_fee_token(validation_ctx.fee_token);
 
         // Pre-warm slot-derivation OnceLocks so the keccak + HandlerCache
-        // allocation runs on the validator pool rather than inside
-        // `aa_2d_pool.write()` during admission (and during eviction under the
-        // same lock). Idempotent; no-op for non-AA / non-2D transactions.
+        // allocation runs during validation instead of inside
+        // `aa_2d_pool.write()` on AA2D admission.
         let _ = transaction.expiring_nonce_slot();
         let _ = transaction.nonce_key_slot();
 
