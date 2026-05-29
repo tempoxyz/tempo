@@ -7,6 +7,7 @@ use std::{
 };
 
 use alloy_primitives::{Address, TxKind, U256};
+use alloy_sol_types::SolCall;
 use reth_evm::{EvmError, EvmInternals};
 use revm::{
     Database,
@@ -38,6 +39,7 @@ use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
 use tempo_precompiles::{
+    ACCOUNT_KEYCHAIN_ADDRESS,
     ECRECOVER_GAS,
     account_keychain::{
         AccountKeychain, AuthorizedKey, CallScope as PrecompileCallScope, KeyRestrictions,
@@ -53,7 +55,9 @@ use tempo_precompiles::{
     },
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, decode_tip20_balance},
-    tip20_channel_reserve::TIP20ChannelReserve,
+    tip20_channel_reserve::{
+        ITIP20ChannelReserve, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20ChannelReserve,
+    },
 };
 use tempo_primitives::{
     TempoAddressExt,
@@ -417,13 +421,40 @@ impl<DB, I> TempoEvmHandler<DB, I> {
     }
 }
 
+#[inline]
+fn needs_keychain_tx_origin(tx: &TempoTxEnv) -> bool {
+    tx.tempo_tx_env.as_ref().is_some_and(|aa| {
+        aa.signature.is_keychain()
+            || aa.key_authorization.is_some()
+            || !aa.tempo_authorization_list.is_empty()
+    }) || tx
+        .calls()
+        .any(|(kind, _)| matches!(kind, TxKind::Call(to) if *to == ACCOUNT_KEYCHAIN_ADDRESS))
+}
+
+#[inline]
+fn has_channel_open_call(tx: &TempoTxEnv) -> bool {
+    tx.calls().any(|(kind, input)| {
+        matches!(kind, TxKind::Call(to) if *to == TIP20_CHANNEL_RESERVE_ADDRESS)
+            && input.get(..4) == Some(ITIP20ChannelReserve::openCall::SELECTOR.as_slice())
+    })
+}
+
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     fn seed_precompile_tx_context(
         &self,
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         let ctx = evm.ctx_mut();
-        let channel_open_context_hash = ctx.tx.channel_open_context_hash();
+        let seed_tx_origin = needs_keychain_tx_origin(&ctx.tx);
+        let channel_open_context_hash = ctx
+            .tx
+            .channel_open_context_hash()
+            .filter(|_| has_channel_open_call(&ctx.tx));
+
+        if !seed_tx_origin && channel_open_context_hash.is_none() {
+            return Ok(());
+        }
 
         // Seed transient precompile transaction context for both regular execution and RPC
         // simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
@@ -433,8 +464,10 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             &ctx.cfg,
             &ctx.tx,
             || {
-                let mut keychain = AccountKeychain::new();
-                keychain.set_tx_origin(ctx.tx.caller())?;
+                if seed_tx_origin {
+                    let mut keychain = AccountKeychain::new();
+                    keychain.set_tx_origin(ctx.tx.caller())?;
+                }
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
                     let mut channel_reserve = TIP20ChannelReserve::new();
