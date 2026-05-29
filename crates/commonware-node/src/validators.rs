@@ -26,11 +26,10 @@ use crate::utils::public_key_to_b256;
 
 /// Minimal execution-node interface needed to read validator config state.
 ///
-/// This keeps validator config consumers from depending on a full launched
-/// [`TempoFullNode`] when they only need a historical state provider and an
-/// EVM configured for the corresponding block. Tests can supply lightweight
-/// in-memory state providers while still exercising the same validator config
-/// reader used in production.
+/// Production code uses [`TempoFullNode`]. This trait exists so unit tests can
+/// use a mock that only provides a historical state provider and an EVM
+/// configured for the corresponding block, while still exercising the same
+/// validator config reader used in production.
 pub(crate) trait ValidatorConfigExecution {
     fn validator_config_header(&self, block_hash: B256) -> eyre::Result<TempoHeader>;
 
@@ -60,9 +59,7 @@ impl ValidatorConfigExecution for TempoFullNode {
     ) -> eyre::Result<StateProviderBox> {
         self.provider
             .state_by_block_hash(block_hash)
-            .wrap_err_with(|| {
-                format!("failed to get state from node provider for hash `{block_hash}`")
-            })
+            .map_err(eyre::Report::new)
     }
 
     fn validator_config_evm_for_block(
@@ -72,7 +69,7 @@ impl ValidatorConfigExecution for TempoFullNode {
     ) -> eyre::Result<TempoEvm<State<StateProviderDatabase<StateProviderBox>>>> {
         self.evm_config
             .evm_for_block(db, header)
-            .wrap_err("failed instantiating evm for block")
+            .map_err(eyre::Report::new)
     }
 }
 
@@ -168,11 +165,16 @@ where
 
     let db = State::builder()
         .with_database(StateProviderDatabase::new(
-            node.validator_config_state_by_block_hash(block_hash)?,
+            node.validator_config_state_by_block_hash(block_hash)
+                .wrap_err_with(|| {
+                    format!("failed to get state from node provider for hash `{block_hash}`")
+                })?,
         ))
         .build();
 
-    let mut evm = node.validator_config_evm_for_block(db, &header)?;
+    let mut evm = node
+        .validator_config_evm_for_block(db, &header)
+        .wrap_err("failed instantiating evm for block")?;
 
     let ctx = evm.ctx_mut();
     let res = StorageCtx::enter_evm(

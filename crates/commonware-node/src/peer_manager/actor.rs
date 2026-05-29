@@ -371,8 +371,10 @@ impl PeersBuilder {
         hash: B256,
     ) -> eyre::Result<Peers> {
         let Self { primary, secondary } = self;
-        let (_, _, (primary, secondary)) =
-            read_validator_config_at_block_hash(node, hash, |config: &ValidatorConfigV2| {
+        let (_, _, (primary, secondary)) = read_validator_config_at_block_hash(
+            node,
+            hash,
+            |config: &ValidatorConfigV2| {
                 let mut active_validators = HashMap::new();
                 for (i, raw) in config
                     .get_active_validators()
@@ -404,54 +406,49 @@ impl PeersBuilder {
                     historic peers that are still in the peer set but no \
                     longer marked active",
                 );
-                let primary =
-                    ordered::Map::from_iter_dedup(primary.into_iter().filter_map(|peer| {
-                        active_validators.remove_entry(&peer).or_else(|| {
-                            config
-                                .validator_by_public_key(public_key_to_b256(&peer))
-                                .map_err(eyre::Report::new)
-                                .and_then(DecodedValidatorV2::decode_from_contract)
-                                .inspect_err(|error| {
-                                    warn!(
-                                        %peer,
-                                        %error,
-                                        "this is a problem: a known peer could not \
-                                        be found in the smart contract or was \
-                                        malformed"
-                                    )
-                                })
-                                .map(|decoded| {
-                                    (decoded.public_key().clone(), decoded.to_p2p_address())
-                                })
-                                .ok()
-                        })
-                    }));
-
-                for peer in secondary {
-                    if let Entry::Vacant(slot) = active_validators.entry(peer.clone())
-                        && let Ok(address) = config
+                let primary = ordered::Map::from_iter_dedup(primary.into_iter().map(|peer| {
+                    active_validators.remove_entry(&peer).unwrap_or_else(|| {
+                        let decoded = config
                             .validator_by_public_key(public_key_to_b256(&peer))
                             .map_err(eyre::Report::new)
                             .and_then(DecodedValidatorV2::decode_from_contract)
-                            .inspect_err(|error| {
-                                warn!(
-                                    %peer,
-                                    %error,
-                                    "this is a problem: a known peer could not \
-                                    be found in the smart contract or was \
-                                    malformed"
+                            .wrap_err_with(|| {
+                                format!(
+                                    "failed to read DKG peer `{peer}` from validator config contract"
                                 )
                             })
-                            .map(|decoded| decoded.to_p2p_address())
-                    {
-                        slot.insert_entry(address);
+                            .expect(
+                                "invariant: DKG peers must have an entry in the \
+                                smart contract and be well formed",
+                            );
+                        (decoded.public_key().clone(), decoded.to_p2p_address())
+                    })
+                }));
+
+                for peer in secondary {
+                    if let Entry::Vacant(slot) = active_validators.entry(peer.clone()) {
+                        let decoded = config
+                            .validator_by_public_key(public_key_to_b256(&peer))
+                            .map_err(eyre::Report::new)
+                            .and_then(DecodedValidatorV2::decode_from_contract)
+                            .wrap_err_with(|| {
+                                format!(
+                                    "failed to read next DKG peer `{peer}` from validator config contract"
+                                )
+                            })
+                            .expect(
+                                "invariant: next DKG peers must have an entry in the \
+                                smart contract and be well formed",
+                            );
+                        slot.insert_entry(decoded.to_p2p_address());
                     }
                 }
 
                 let secondary = ordered::Map::from_iter_dedup(active_validators.into_iter());
 
                 Ok((primary, secondary))
-            })?;
+            },
+        )?;
         Ok(Peers { primary, secondary })
     }
 }
