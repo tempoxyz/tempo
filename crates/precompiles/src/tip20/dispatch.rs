@@ -61,12 +61,20 @@ impl Precompile for TIP20Token {
             return self.storage.error_result(TIP20Error::uninitialized());
         }
 
-        dispatch_call(
-            calldata,
-            &[
+        let selector_schedules;
+        let active_selector_schedules = if self.storage.spec().is_t5() {
+            &[][..]
+        } else {
+            selector_schedules = [
                 SelectorSchedule::new(TempoHardfork::T2).with_added(T2_ADDED),
                 SelectorSchedule::new(TempoHardfork::T5).with_added(T5_ADDED),
-            ],
+            ];
+            &selector_schedules[..]
+        };
+
+        dispatch_call(
+            calldata,
+            active_selector_schedules,
             TIP20Call::decode,
             |call| match call {
                 // Metadata functions (no calldata decoding needed)
