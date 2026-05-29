@@ -12613,6 +12613,7 @@ dependencies = [
  "tempo-node",
  "tempo-precompiles",
  "tempo-primitives",
+ "tempo-telemetry-util",
  "tempo-validator-config",
  "tokio",
  "tokio-util",

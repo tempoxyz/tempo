@@ -10,6 +10,7 @@ use eyre::{Context as _, OptionExt, bail, eyre};
 use reth_cli_commands::download::DownloadCommand;
 use reth_cli_runner::CliRunner;
 use tempo_chainspec::spec::TempoChainSpecParser;
+use tempo_telemetry_util::display_duration;
 
 use crate::snapshot_manifest::{TEMPO_CONSENSUS_MANIFEST_KEY, TempoConsensusManifest};
 
@@ -55,7 +56,10 @@ pub(crate) fn run(matches: &ArgMatches) -> eyre::Result<()> {
             .await
             .wrap_err("execution layer download failed")?;
 
-        eprintln!("execution layer download finished in {:?}", start.elapsed());
+        eprintln!(
+            "execution layer download finished in {}",
+            display_duration(start.elapsed())
+        );
 
         if args.skip_consensus {
             eprintln!("--skip-consensus set. skipping consensus layer");
@@ -69,7 +73,6 @@ pub(crate) fn run(matches: &ArgMatches) -> eyre::Result<()> {
         let consensus_manifest = load_consensus_manifest(manifest_url, manifest_path).await?;
         write_finalization(&consensus_dir, &consensus_manifest)?;
 
-        eprintln!("consensus bootstrap finished in {:?}", start.elapsed());
         Ok(())
     })
 }
@@ -127,7 +130,7 @@ fn write_finalization(
     fs::write(&path, bytes)
         .wrap_err_with(|| format!("failed to write finalization certificate to {path:?}"))?;
 
-    eprintln!("wrote consensus finalization: {path:?}");
+    eprintln!("persisted consensus finalization: {path:?}");
     Ok(())
 }
 

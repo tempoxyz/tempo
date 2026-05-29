@@ -28,6 +28,7 @@ use serde::{Deserialize, Serialize};
 use tempo_chainspec::{TempoChainSpec, spec::chainspec_from_chain_id};
 use tempo_commonware_node::consensus::Digest;
 use tempo_node::node::TempoNode;
+use tempo_telemetry_util::display_duration;
 
 pub(crate) const TEMPO_CONSENSUS_MANIFEST_KEY: &str = "consensus";
 
@@ -89,7 +90,11 @@ impl Args {
             .execute()
             .wrap_err("reth snapshot-manifest (EL packaging) failed")?;
 
-        eprintln!("execution layer snapshot finished in {:?}", start.elapsed());
+        eprintln!(
+            "execution layer snapshot finished in {}",
+            display_duration(start.elapsed())
+        );
+
         if self.skip_consensus {
             eprintln!("--skip-consensus set. skipping consensus layer");
             return Ok(());
