@@ -35,6 +35,21 @@ fn is_tip20_fee_inference_call(input: &[u8]) -> bool {
     })
 }
 
+#[cold]
+#[inline(never)]
+fn describe_long_currency(len: usize) -> String {
+    format!("<{len} bytes>")
+}
+
+#[cold]
+#[inline(never)]
+fn fee_token_not_usd_error<DBError>(
+    address: Address,
+    currency: String,
+) -> EVMError<DBError, TempoInvalidTransaction> {
+    EVMError::Transaction(TempoInvalidTransaction::FeeTokenNotUsdCurrency { address, currency })
+}
+
 /// Helper trait to abstract over different representations of Tempo transactions.
 #[auto_impl::auto_impl(&, Arc)]
 pub trait TempoTx {
@@ -225,17 +240,14 @@ pub trait TempoStateAccess<M = ()> {
             let len = token.currency.len()?;
 
             let currency = if len > 31 {
-                format!("<{len} bytes>")
+                describe_long_currency(len)
             } else {
                 token.currency.read()?
             };
 
             if currency.as_str() != "USD" {
-                return Ok(Err(EVMError::Transaction(
-                    TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                        address: fee_token,
-                        currency,
-                    },
+                return Ok(Err(fee_token_not_usd_error::<Self::Error>(
+                    fee_token, currency,
                 )));
             }
 
