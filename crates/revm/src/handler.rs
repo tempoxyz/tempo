@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use alloy_primitives::{Address, TxKind, U256};
+use alloy_primitives::{Address, B256, TxKind, U256};
 use reth_evm::{EvmError, EvmInternals};
 use revm::{
     Database,
@@ -418,33 +418,20 @@ impl<DB, I> TempoEvmHandler<DB, I> {
 }
 
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
-    fn seed_precompile_tx_context(
-        &self,
-        evm: &mut TempoEvm<DB, I>,
-    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
-        let ctx = evm.ctx_mut();
-        let channel_open_context_hash = ctx.tx.channel_open_context_hash();
+    #[inline]
+    fn seed_precompile_tx_context_current(
+        caller: Address,
+        channel_open_context_hash: Option<B256>,
+    ) -> Result<(), TempoPrecompileError> {
+        let mut keychain = AccountKeychain::new();
+        keychain.set_tx_origin(caller)?;
 
-        // Seed transient precompile transaction context for both regular execution and RPC
-        // simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
-        StorageCtx::enter_evm(
-            &mut ctx.journaled_state,
-            &ctx.block,
-            &ctx.cfg,
-            &ctx.tx,
-            || {
-                let mut keychain = AccountKeychain::new();
-                keychain.set_tx_origin(ctx.tx.caller())?;
+        if let Some(channel_open_context_hash) = channel_open_context_hash {
+            let mut channel_reserve = TIP20ChannelReserve::new();
+            channel_reserve.set_channel_open_context_hash(channel_open_context_hash)?;
+        }
 
-                if let Some(channel_open_context_hash) = channel_open_context_hash {
-                    let mut channel_reserve = TIP20ChannelReserve::new();
-                    channel_reserve.set_channel_open_context_hash(channel_open_context_hash)?;
-                }
-
-                Ok::<(), TempoPrecompileError>(())
-            },
-        )
-        .map_err(|e| EVMError::Custom(e.to_string()))
+        Ok(())
     }
 }
 
@@ -904,12 +891,12 @@ where
         evm: &mut Self::Evm,
         init_gas: &mut InitialAndFloorGas,
     ) -> Result<(), Self::Error> {
-        self.seed_precompile_tx_context(evm)?;
-
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
+        let caller = tx.caller();
+        let channel_open_context_hash = tx.channel_open_context_hash();
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
         let fee_token = journal
@@ -933,9 +920,6 @@ where
         // Load the fee payer balance
         let account_balance = get_token_balance(journal, fee_token, fee_payer)?;
 
-        // Load caller's account
-        let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
-
         let nonce_key = tx
             .tempo_tx_env
             .as_ref()
@@ -946,6 +930,18 @@ where
 
         // Only treat as expiring nonce if T1 is active, otherwise treat as regular 2D nonce
         let is_expiring_nonce = nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1();
+
+        if nonce_key.is_zero() {
+            // Seed transient precompile transaction context for both regular execution and RPC
+            // simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
+            StorageCtx::enter_evm(journal, block, cfg, tx, || {
+                Self::seed_precompile_tx_context_current(caller, channel_open_context_hash)
+            })
+            .map_err(|err| EVMError::Custom(err.to_string()))?;
+        }
+
+        // Load caller's account
+        let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
 
         // Validate account nonce and code (EIP-3607) using upstream helper
         pre_execution::validate_account_nonce_and_code(
@@ -1018,6 +1014,9 @@ where
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
+                Self::seed_precompile_tx_context_current(caller, channel_open_context_hash)
+                    .map_err(|err| EVMError::Custom(err.to_string()))?;
+
                 let mut nonce_manager = NonceManager::new();
 
                 let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
@@ -1074,6 +1073,9 @@ where
         } else if !nonce_key.is_zero() {
             // 2D nonce transaction
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
+                Self::seed_precompile_tx_context_current(caller, channel_open_context_hash)
+                    .map_err(|err| EVMError::Custom(err.to_string()))?;
+
                 let mut nonce_manager = NonceManager::new();
 
                 if !cfg.is_nonce_check_disabled() {
