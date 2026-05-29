@@ -189,6 +189,22 @@ impl TipFeeManager {
         max_amount: U256,
         route: FeeRoute,
     ) -> Result<()> {
+        if matches!(route, FeeRoute::SameToken) {
+            return Ok(());
+        }
+
+        self.reserve_fee_liquidity_for_swap(user_token, validator_token, max_amount, route)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn reserve_fee_liquidity_for_swap(
+        &mut self,
+        user_token: Address,
+        validator_token: Address,
+        max_amount: U256,
+        route: FeeRoute,
+    ) -> Result<()> {
         match route {
             FeeRoute::SameToken => {}
             FeeRoute::Direct if self.storage.spec().is_t1c() => {
