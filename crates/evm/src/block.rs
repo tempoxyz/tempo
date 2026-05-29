@@ -153,6 +153,7 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
     incentive_gas_used: u64,
+    payment_v2_active: bool,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -165,12 +166,15 @@ where
         ctx: TempoBlockExecutionCtx<'a>,
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
+        let payment_v2_active = evm.cfg.spec.is_t5();
+
         Self {
             incentive_gas_used: 0,
             validator_set: ctx.validator_set,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
             shared_gas_limit: ctx.shared_gas_limit,
+            payment_v2_active,
             inner: EthBlockExecutor::new(
                 evm,
                 ctx.inner,
@@ -391,7 +395,7 @@ where
     /// [`is_payment_v1`]: TempoTxEnvelope::is_payment_v1
     /// [`is_payment_v2`]: TempoTxEnvelope::is_payment_v2
     pub(crate) fn is_payment(&self, tx: &TempoTxEnvelope) -> bool {
-        if self.evm().cfg.spec.is_t5() {
+        if self.payment_v2_active {
             tx.is_payment_v2()
         } else {
             tx.is_payment_v1()
