@@ -109,10 +109,16 @@ pub enum TempoPrecompileError {
     Fatal(String),
 }
 
+#[cold]
+#[inline(never)]
+fn fatal_precompile_error(error: impl ToString) -> TempoPrecompileError {
+    TempoPrecompileError::Fatal(error.to_string())
+}
+
 impl From<EvmInternalsError> for TempoPrecompileError {
     fn from(value: EvmInternalsError) -> Self {
         match value {
-            EvmInternalsError::Database(e) => Self::Fatal(e.to_string()),
+            EvmInternalsError::Database(e) => fatal_precompile_error(e),
         }
     }
 }
@@ -129,7 +135,7 @@ impl From<JournalLoadError<EvmInternalsError>> for TempoPrecompileError {
 impl From<JournalLoadError<revm::context::ErasedError>> for TempoPrecompileError {
     fn from(value: JournalLoadError<revm::context::ErasedError>) -> Self {
         match value {
-            JournalLoadError::DBError(e) => Self::Fatal(e.to_string()),
+            JournalLoadError::DBError(e) => fatal_precompile_error(e),
             JournalLoadError::ColdLoadSkipped => Self::OutOfGas,
         }
     }
