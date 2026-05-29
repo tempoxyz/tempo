@@ -63,6 +63,7 @@ impl ReceiptBuilder for TempoReceiptBuilder {
     type Transaction = TempoTxEnvelope;
     type Receipt = TempoReceipt;
 
+    #[inline]
     fn build_receipt<E: Evm>(&self, ctx: ReceiptBuilderCtx<'_, TempoTxType, E>) -> Self::Receipt {
         let ReceiptBuilderCtx {
             tx_type,
