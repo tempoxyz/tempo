@@ -912,6 +912,9 @@ where
         let journal = &mut evm.inner.ctx.journaled_state;
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
+        let caller = tx.caller();
+        let tx_nonce = tx.nonce();
+        let tx_kind = tx.kind();
         let fee_token = journal
             .get_fee_token(tx, fee_payer, cfg.spec)
             .map_err(|err| EVMError::Custom(err.to_string()))?;
@@ -934,7 +937,7 @@ where
         let account_balance = get_token_balance(journal, fee_token, fee_payer)?;
 
         // Load caller's account
-        let mut caller_account = journal.load_account_with_code_mut(tx.caller())?.data;
+        let mut caller_account = journal.load_account_with_code_mut(caller)?.data;
 
         let nonce_key = tx
             .tempo_tx_env
@@ -950,7 +953,7 @@ where
         // Validate account nonce and code (EIP-3607) using upstream helper
         pre_execution::validate_account_nonce_and_code(
             &caller_account.account().info,
-            tx.nonce(),
+            tx_nonce,
             cfg.is_eip3607_disabled(),
             // skip nonce check if 2D nonce or expiring nonce is used
             cfg.is_nonce_check_disabled() || !nonce_key.is_zero(),
@@ -1002,7 +1005,7 @@ where
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingTxEnv)?;
 
             // Expiring nonce txs must have nonce == 0
-            if tx.nonce() != 0 {
+            if tx_nonce != 0 {
                 return Err(TempoInvalidTransaction::ExpiringNonceNonceNotZero.into());
             }
 
@@ -1077,10 +1080,9 @@ where
                 let mut nonce_manager = NonceManager::new();
 
                 if !cfg.is_nonce_check_disabled() {
-                    let tx_nonce = tx.nonce();
                     let state = nonce_manager
                         .get_nonce(getNonceCall {
-                            account: tx.caller(),
+                            account: caller,
                             nonceKey: nonce_key,
                         })
                         .map_err(|err| match err {
@@ -1111,7 +1113,7 @@ where
 
                 // Always increment nonce for AA transactions with non-zero nonce keys.
                 nonce_manager
-                    .increment_nonce(tx.caller(), nonce_key)
+                    .increment_nonce(caller, nonce_key)
                     .map_err(|err| match err {
                         TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                         err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
@@ -1124,7 +1126,7 @@ where
             // Bump the nonce for calls. Nonce for CREATE will be bumped in `make_create_frame`.
             // This applies uniformly to both standard and AA transactions - we only bump here
             // for CALLs, letting make_create_frame handle the nonce for CREATE operations.
-            if tx.kind().is_call() {
+            if tx_kind.is_call() {
                 caller_account.bump_nonce();
             }
         }
@@ -1151,10 +1153,10 @@ where
             let user_address = &keychain_sig.user_address;
 
             // Sanity check: user_address should match tx.caller
-            if *user_address != tx.caller {
+            if *user_address != caller {
                 return Err(TempoInvalidTransaction::KeychainUserAddressMismatch {
                     user_address: *user_address,
-                    caller: tx.caller,
+                    caller,
                 }
                 .into());
             }
@@ -1181,7 +1183,7 @@ where
                 // check must use the inline limits directly. `collectFeePreTx` cannot enforce this
                 // because `transaction_key` is intentionally not set until after authorization.
                 if !gas_balance_spending.is_zero()
-                    && fee_payer == tx.caller
+                    && fee_payer == caller
                     && let Some(limits) = key_auth.limits.as_ref()
                 {
                     let remaining = limits
@@ -1264,7 +1266,7 @@ where
                 .recover_signer()
                 .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
 
-            if auth_signer != tx.caller {
+            if auth_signer != caller {
                 let key_auth_sig_type: u8 = key_auth.signature.signature_type().into();
                 let signer_is_admin = match loaded_tx_access_key {
                     Some(loaded_key)
@@ -1285,7 +1287,7 @@ where
 
                 if !signer_is_admin {
                     return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
-                        expected: tx.caller,
+                        expected: caller,
                         actual: auth_signer,
                     }
                     .into());
@@ -1451,14 +1453,14 @@ where
                 // Call precompile to authorize the key (same phase as nonce increment).
                 let result = if key_auth.is_admin() {
                     keychain.authorize_admin_key(
-                        tx.caller,
+                        caller,
                         access_key_addr,
                         signature_type,
                         key_auth.witness(),
                     )
                 } else {
                     keychain.authorize_key(
-                        tx.caller,
+                        caller,
                         access_key_addr,
                         signature_type,
                         config,
