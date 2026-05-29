@@ -110,6 +110,15 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 /// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
 pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
 
+#[cold]
+#[inline(never)]
+fn self_sponsored_fee_payer_error<DB>() -> EVMError<DB::Error, TempoInvalidTransaction>
+where
+    DB: alloy_evm::Database,
+{
+    TempoInvalidTransaction::SelfSponsoredFeePayer.into()
+}
+
 /// Calculates the gas cost for verifying a primitive signature.
 ///
 /// Returns the additional gas required beyond the base transaction cost:
@@ -1635,7 +1644,7 @@ where
             && evm.ctx.tx.has_fee_payer_signature()
             && fee_payer == evm.ctx.tx.caller()
         {
-            return Err(TempoInvalidTransaction::SelfSponsoredFeePayer.into());
+            return Err(self_sponsored_fee_payer_error::<DB>());
         }
 
         // All accounts have zero balance so transfer of value is not possible.
