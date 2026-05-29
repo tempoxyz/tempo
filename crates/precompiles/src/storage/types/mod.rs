@@ -391,11 +391,12 @@ impl<K, H> HandlerCache<K, H> {
             inner: RefCell::new(Vec::new()),
         }
     }
+}
 
-    /// Lazily allocate enough room for the common case of a couple cached handlers.
-    #[inline]
-    fn reserve_initial_capacity(cache: &mut Vec<(K, Box<H>)>) {
-        if cache.capacity() == 0 {}
+impl<K, H> Clone for HandlerCache<K, H> {
+    /// Creates a new empty cache (cached handlers are not cloned).
+    fn clone(&self) -> Self {
+        Self::new()
     }
 }
 
