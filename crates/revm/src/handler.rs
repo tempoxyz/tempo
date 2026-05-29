@@ -12,7 +12,7 @@ use revm::{
     Database,
     context::{
         Block, Cfg, ContextTr, JournalTr, LocalContextTr, Transaction, TransactionType,
-        journaled_state::account::JournaledAccountTr,
+        journaled_state::{account::JournaledAccountTr, JournalCheckpoint},
         result::{EVMError, ExecutionResult, InvalidTransaction, ResultGas},
         transaction::{AccessListItem, AccessListItemTr},
     },
@@ -662,46 +662,17 @@ where
                 tx.inner.gas_limit = original_gas_limit;
             }
 
-            let mut frame_result = frame_result?;
+            let frame_result = frame_result?;
 
             // Check if call succeeded
             if !frame_result.instruction_result().is_ok() {
-                // Revert checkpoint - rolls back ALL state changes from all executed calls.
-                evm.ctx().journal_mut().checkpoint_revert(checkpoint);
-
-                // For AA transactions with CREATE as the first call, the nonce was bumped by
-                // make_create_frame during execution. Since checkpoint_revert rolled that back,
-                // we need to manually bump the nonce here to ensure it persists even on failure.
-                //
-                // However, this only applies when using the protocol nonce (nonce_key == 0).
-                // When using 2D nonces (nonce_key != 0), replay protection is handled by the
-                // NonceManager, and the protocol nonce is only used for CREATE address derivation.
-                // Since the CREATE reverted, no contract was deployed, so the address wasn't
-                // "claimed" and we don't need to burn the protocol nonce.
-                let uses_protocol_nonce = evm
-                    .ctx()
-                    .tx()
-                    .tempo_tx_env
-                    .as_ref()
-                    .map(|aa| aa.nonce_key.is_zero())
-                    .unwrap_or(true);
-
-                if uses_protocol_nonce && calls.first().map(|c| c.to.is_create()).unwrap_or(false) {
-                    let caller = evm.ctx().tx().caller();
-                    if let Ok(mut caller_acc) =
-                        evm.ctx().journal_mut().load_account_with_code_mut(caller)
-                    {
-                        caller_acc.data.bump_nonce();
-                    }
-                }
-
-                normalize_failed_batch_result_gas(
-                    &mut frame_result,
-                    evm.ctx().tx().gas_limit(),
+                return self.finish_failed_multi_call(
+                    evm,
+                    checkpoint,
+                    &calls,
                     accumulated_state_gas_spent,
+                    frame_result,
                 );
-
-                return Ok(frame_result);
             }
 
             // Call succeeded - accumulate gas usage, refunds, and state gas
@@ -785,6 +756,52 @@ where
             calls,
             Self::inspect_execute_single_call,
         )
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn finish_failed_multi_call(
+        &mut self,
+        evm: &mut TempoEvm<DB, I>,
+        checkpoint: JournalCheckpoint,
+        calls: &[tempo_primitives::transaction::Call],
+        accumulated_state_gas_spent: i64,
+        mut frame_result: FrameResult,
+    ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
+        // Revert checkpoint - rolls back ALL state changes from all executed calls.
+        evm.ctx().journal_mut().checkpoint_revert(checkpoint);
+
+        // For AA transactions with CREATE as the first call, the nonce was bumped by
+        // make_create_frame during execution. Since checkpoint_revert rolled that back,
+        // we need to manually bump the nonce here to ensure it persists even on failure.
+        //
+        // However, this only applies when using the protocol nonce (nonce_key == 0).
+        // When using 2D nonces (nonce_key != 0), replay protection is handled by the
+        // NonceManager, and the protocol nonce is only used for CREATE address derivation.
+        // Since the CREATE reverted, no contract was deployed, so the address wasn't
+        // "claimed" and we don't need to burn the protocol nonce.
+        let uses_protocol_nonce = evm
+            .ctx()
+            .tx()
+            .tempo_tx_env
+            .as_ref()
+            .map(|aa| aa.nonce_key.is_zero())
+            .unwrap_or(true);
+
+        if uses_protocol_nonce && calls.first().map(|c| c.to.is_create()).unwrap_or(false) {
+            let caller = evm.ctx().tx().caller();
+            if let Ok(mut caller_acc) = evm.ctx().journal_mut().load_account_with_code_mut(caller) {
+                caller_acc.data.bump_nonce();
+            }
+        }
+
+        normalize_failed_batch_result_gas(
+            &mut frame_result,
+            evm.ctx().tx().gas_limit(),
+            accumulated_state_gas_spent,
+        );
+
+        Ok(frame_result)
     }
 }
 
