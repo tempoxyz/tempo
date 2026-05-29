@@ -62,6 +62,12 @@ pub fn validate_usd_currency(token: Address) -> Result<()> {
     Ok(())
 }
 
+#[cold]
+#[inline(never)]
+fn receive_policy_guard_reserved_error() -> TempoPrecompileError {
+    ReceivePolicyGuardError::address_reserved().into()
+}
+
 /// TIP-20 token contract — the native token standard on Tempo.
 ///
 /// Implements ERC-20-like functionality (balances, allowances, transfers) with additional
@@ -1196,7 +1202,7 @@ impl TIP20Token {
             return Ok(false);
         }
         if to.target == RECEIVE_POLICY_GUARD_ADDRESS {
-            return Err(ReceivePolicyGuardError::address_reserved().into());
+            return Err(receive_policy_guard_reserved_error());
         }
 
         let token = self.address;
