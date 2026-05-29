@@ -1883,19 +1883,19 @@ where
                 }
             }
 
-            // Validate priority fee for AA transactions using revm's validate_priority_fee_tx
-            let base_fee = if cfg.is_base_fee_check_disabled() {
-                None
-            } else {
-                Some(u128::from(evm.ctx_ref().block().basefee()))
-            };
-
-            validation::validate_priority_fee_tx(
-                tx.max_fee_per_gas(),
-                tx.max_priority_fee_per_gas().unwrap_or_default(),
-                base_fee,
-                cfg.is_priority_fee_check_disabled(),
-            )?;
+            // Validate priority fee for AA transactions. This is equivalent to
+            // revm's validate_priority_fee_tx, specialized to the AA env path.
+            let max_fee_per_gas = tx.max_fee_per_gas();
+            let max_priority_fee_per_gas = tx.max_priority_fee_per_gas().unwrap_or_default();
+            if !cfg.is_priority_fee_check_disabled() && max_priority_fee_per_gas > max_fee_per_gas
+            {
+                return Err(InvalidTransaction::PriorityFeeGreaterThanMaxFee.into());
+            }
+            if !cfg.is_base_fee_check_disabled()
+                && max_fee_per_gas < u128::from(evm.ctx_ref().block().basefee())
+            {
+                return Err(InvalidTransaction::GasPriceLessThanBasefee.into());
+            }
 
             // Validate time window for AA transactions
             let block_timestamp = evm.ctx_ref().block().timestamp().saturating_to();
