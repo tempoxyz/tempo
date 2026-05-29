@@ -2396,10 +2396,7 @@ pub fn validate_time_window(
     if let Some(after) = valid_after
         && block_timestamp < after
     {
-        return Err(TempoInvalidTransaction::ValidAfter {
-            current: block_timestamp,
-            valid_after: after,
-        });
+        return Err(valid_after_error(block_timestamp, after));
     }
 
     // Validate validBefore constraint
@@ -2407,13 +2404,28 @@ pub fn validate_time_window(
     if let Some(before) = valid_before
         && block_timestamp >= before
     {
-        return Err(TempoInvalidTransaction::ValidBefore {
-            current: block_timestamp,
-            valid_before: before,
-        });
+        return Err(valid_before_error(block_timestamp, before));
     }
 
     Ok(())
+}
+
+#[cold]
+#[inline(never)]
+fn valid_after_error(current: u64, valid_after: u64) -> TempoInvalidTransaction {
+    TempoInvalidTransaction::ValidAfter {
+        current,
+        valid_after,
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn valid_before_error(current: u64, valid_before: u64) -> TempoInvalidTransaction {
+    TempoInvalidTransaction::ValidBefore {
+        current,
+        valid_before,
+    }
 }
 
 #[cfg(test)]
