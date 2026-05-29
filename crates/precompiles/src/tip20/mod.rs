@@ -902,6 +902,8 @@ impl TIP20Token {
     }
 
     /// Debits `spender`'s allowance on `owner`. No-op when unlimited.
+    #[cold]
+    #[inline(never)]
     fn consume_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
         let allowed = self.get_allowance(owner, spender)?;
         if amount > allowed {
