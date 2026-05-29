@@ -121,8 +121,6 @@ pub struct TempoPayloadBuilderConfig {
     pub enable_prewarming: bool,
     /// Initial estimate of total replayable build work divided by work at tx cutoff.
     pub build_time_multiplier: f64,
-    /// Whether to include block access lists in built execution payloads.
-    pub enable_bal: bool,
 }
 
 impl Default for TempoPayloadBuilderConfig {
@@ -131,7 +129,6 @@ impl Default for TempoPayloadBuilderConfig {
             is_dev: false,
             state_provider_metrics: false,
             enable_prewarming: false,
-            enable_bal: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -156,7 +153,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             is_dev: config.is_dev,
             state_provider_metrics: config.state_provider_metrics,
             enable_prewarming: config.enable_prewarming,
-            enable_bal: config.enable_bal,
+            enable_bal: cfg!(feature = "bal"),
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
