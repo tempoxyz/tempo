@@ -110,6 +110,46 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 /// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
 pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
 
+#[cold]
+#[inline(never)]
+fn map_expiring_nonce_error<DBError>(
+    err: TempoPrecompileError,
+    valid_before: u64,
+    block_timestamp: u64,
+) -> EVMError<DBError, TempoInvalidTransaction> {
+    match err {
+        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+        TempoPrecompileError::NonceError(
+            tempo_contracts::precompiles::NonceError::InvalidExpiringNonceExpiry(_),
+        ) => {
+            let max_allowed = block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
+            if valid_before <= block_timestamp {
+                TempoInvalidTransaction::NonceManagerError(format!(
+                    "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({block_timestamp})"
+                ))
+                .into()
+            } else {
+                TempoInvalidTransaction::NonceManagerError(format!(
+                    "expiring nonce valid_before ({valid_before}) too far in the future: must be within {EXPIRING_NONCE_MAX_EXPIRY_SECS}s of block timestamp ({block_timestamp}), max allowed is {max_allowed}"
+                ))
+                .into()
+            }
+        }
+        err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn map_nonce_manager_error<DBError>(
+    err: TempoPrecompileError,
+) -> EVMError<DBError, TempoInvalidTransaction> {
+    match err {
+        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+        err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
+    }
+}
+
 /// Calculates the gas cost for verifying a primitive signature.
 ///
 /// Returns the additional gas required beyond the base transaction cost:
@@ -1040,26 +1080,8 @@ where
 
                 nonce_manager
                     .check_and_mark_expiring_nonce(replay_hash, valid_before)
-                    .map_err(|err| match err {
-                        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                        TempoPrecompileError::NonceError(
-                            tempo_contracts::precompiles::NonceError::InvalidExpiringNonceExpiry(_),
-                        ) => {
-                            let max_allowed =
-                                block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
-                            if valid_before <= block_timestamp {
-                                TempoInvalidTransaction::NonceManagerError(format!(
-                                    "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({block_timestamp})"
-                                ))
-                                .into()
-                            } else {
-                                TempoInvalidTransaction::NonceManagerError(format!(
-                                    "expiring nonce valid_before ({valid_before}) too far in the future: must be within {EXPIRING_NONCE_MAX_EXPIRY_SECS}s of block timestamp ({block_timestamp}), max allowed is {max_allowed}"
-                                ))
-                                .into()
-                            }
-                        }
-                        err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
+                    .map_err(|err| {
+                        map_expiring_nonce_error::<DB::Error>(err, valid_before, block_timestamp)
                     })?;
 
                 if let Some(prev_ptr) = prev_ptr {
@@ -1083,12 +1105,7 @@ where
                             account: tx.caller(),
                             nonceKey: nonce_key,
                         })
-                        .map_err(|err| match err {
-                            TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                            err => {
-                                TempoInvalidTransaction::NonceManagerError(err.to_string()).into()
-                            }
-                        })?;
+                        .map_err(map_nonce_manager_error::<DB::Error>)?;
 
                     match tx_nonce.cmp(&state) {
                         Ordering::Greater => {
@@ -1112,10 +1129,7 @@ where
                 // Always increment nonce for AA transactions with non-zero nonce keys.
                 nonce_manager
                     .increment_nonce(tx.caller(), nonce_key)
-                    .map_err(|err| match err {
-                        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                        err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
-                    })?;
+                    .map_err(map_nonce_manager_error::<DB::Error>)?;
 
                 Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
             })?;
