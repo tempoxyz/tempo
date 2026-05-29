@@ -22,6 +22,14 @@ use crate::{
 
 scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
 
+#[cold]
+#[inline(never)]
+fn missing_storage_context() -> TempoPrecompileError {
+    TempoPrecompileError::Fatal(
+        "No storage context. 'StorageCtx::enter' must be called first".to_string(),
+    )
+}
+
 /// Thread-local storage accessor that implements `PrecompileStorageProvider` without the trait bound.
 ///
 /// This is the only type that exposes access to the thread-local `STORAGE` static.
@@ -86,9 +94,7 @@ impl StorageCtx {
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> Result<R>,
     {
         if !STORAGE.is_set() {
-            return Err(TempoPrecompileError::Fatal(
-                "No storage context. 'StorageCtx::enter' must be called first".to_string(),
-            ));
+            return Err(missing_storage_context());
         }
         STORAGE.with(|cell| {
             // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
