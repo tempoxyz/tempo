@@ -926,8 +926,11 @@ where
 
         // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
         // Since we already validated the TIP20 prefix above, we only need to check the USD currency.
-        if !tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction() {
+        if (!tx.max_balance_spending()?.is_zero() || tx.is_subblock_transaction())
+            && evm.validated_usd_fee_token != Some(fee_token)
+        {
             journal.ensure_tip20_usd(cfg.spec, fee_token)?;
+            evm.validated_usd_fee_token = Some(fee_token);
         }
 
         // Load the fee payer balance
