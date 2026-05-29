@@ -416,6 +416,13 @@ where
         // Cache the resolved fee token from EVM validation for pool maintenance.
         transaction.set_resolved_fee_token(validation_ctx.fee_token);
 
+        // Pre-warm slot-derivation OnceLocks so the keccak + HandlerCache
+        // allocation runs on the validator pool rather than inside
+        // `aa_2d_pool.write()` during admission (and during eviction under the
+        // same lock). Idempotent; no-op for non-AA / non-2D transactions.
+        let _ = transaction.expiring_nonce_slot();
+        let _ = transaction.nonce_key_slot();
+
         // Pool-only key-expiry propagation buffer: reject keychain txs whose key
         // expires too soon (within AA_VALID_BEFORE_MIN_SECS of tip timestamp).
         if let Some(key_expiry) = validation_ctx.key_expiry {
@@ -838,6 +845,62 @@ mod tests {
             }
             other => panic!("Expected Valid outcome with recovered authorities, got: {other:?}"),
         }
+    }
+
+    /// Verifies the validator pre-warms `expiring_nonce_slot` and `nonce_key_slot`
+    /// `OnceLock` caches so the keccak-driven slot derivations never run inside
+    /// `aa_2d_pool.write()` during admission. The pool consumes the same
+    /// `TempoPooledTransaction` instance the validator hands back, so an
+    /// `OnceLock` initialized here is a cache hit at admission time.
+    #[tokio::test]
+    async fn test_validator_prewarms_slot_caches() {
+        let current_time = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+
+        // An expiring-nonce AA tx exercises the non-trivial branch of
+        // `expiring_nonce_slot()` (closure body actually computes a slot).
+        let transaction = TxBuilder::aa(Address::random())
+            .fee_token(PATH_USD_ADDRESS)
+            .nonce_key(TEMPO_EXPIRING_NONCE_KEY)
+            .valid_before(current_time + TEST_VALIDITY_WINDOW)
+            .build();
+
+        assert!(
+            !transaction.expiring_nonce_slot_initialized(),
+            "expiring_nonce_slot must be cold before validation"
+        );
+        assert!(
+            !transaction.nonce_key_slot_initialized(),
+            "nonce_key_slot must be cold before validation"
+        );
+
+        let validator = setup_validator(&transaction, current_time);
+        let outcome = validator
+            .validate_transaction(TransactionOrigin::External, transaction)
+            .await;
+
+        let validated_tx = match outcome {
+            TransactionValidationOutcome::Valid { transaction, .. } => {
+                transaction.into_transaction()
+            }
+            TransactionValidationOutcome::Invalid(_, err) => {
+                panic!("expected Valid outcome, got Invalid: {err:?}")
+            }
+            TransactionValidationOutcome::Error(_, err) => {
+                panic!("validation errored: {err:?}")
+            }
+        };
+
+        assert!(
+            validated_tx.expiring_nonce_slot_initialized(),
+            "validator did not pre-warm expiring_nonce_slot"
+        );
+        assert!(
+            validated_tx.nonce_key_slot_initialized(),
+            "validator did not pre-warm nonce_key_slot"
+        );
     }
 
     #[tokio::test]

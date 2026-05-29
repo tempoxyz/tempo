@@ -310,6 +310,20 @@ impl TempoPooledTransaction {
             Some(NonceManager::new().expiring_nonce_seen[hash].slot())
         })
     }
+
+    /// Returns true if the `expiring_nonce_slot` cache has been initialized,
+    /// without triggering initialization.
+    #[cfg(test)]
+    pub(crate) fn expiring_nonce_slot_initialized(&self) -> bool {
+        self.expiring_nonce_slot.get().is_some()
+    }
+
+    /// Returns true if the `nonce_key_slot` cache has been initialized,
+    /// without triggering initialization.
+    #[cfg(test)]
+    pub(crate) fn nonce_key_slot_initialized(&self) -> bool {
+        self.nonce_key_slot.get().is_some()
+    }
 }
 
 /// Tempo-specific transaction pool rejection reasons.
