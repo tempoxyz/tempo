@@ -634,7 +634,7 @@ where
             // rejection in validation, so there is no first-call CREATE nonce to preserve here.
             normalize_failed_batch_result_gas(
                 &mut frame_result,
-                evm.ctx().tx().gas_limit(),
+                original_gas_limit,
                 accumulated_state_gas_spent,
             );
             return Ok(frame_result);
@@ -697,7 +697,7 @@ where
 
                 normalize_failed_batch_result_gas(
                     &mut frame_result,
-                    evm.ctx().tx().gas_limit(),
+                    original_gas_limit,
                     accumulated_state_gas_spent,
                 );
 
@@ -726,7 +726,7 @@ where
 
         // Create new Gas with correct limit, because Gas does not have a set_limit method
         // (the frame_result has the limit from just the last call)
-        let mut corrected_gas = Gas::new(evm.ctx().tx().gas_limit());
+        let mut corrected_gas = Gas::new(original_gas_limit);
         corrected_gas.set_remaining(result.gas().remaining());
         corrected_gas.set_refund(accumulated_gas_refund);
         corrected_gas.set_state_gas_spent(accumulated_state_gas_spent);
