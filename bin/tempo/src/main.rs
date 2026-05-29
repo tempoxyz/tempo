@@ -793,14 +793,6 @@ mod tests {
         assert!(!node_cmd.ext.node_args.builder_enable_prewarming);
         assert!(!node_cmd.ext.node_args.builder_enable_execution_cache);
         assert!(!node_cmd.ext.node_args.builder_disable_sparse_trie);
-        assert!(!node_cmd.ext.node_args.builder_enable_elastic_payload_budget);
-        assert!(
-            !node_cmd
-                .ext
-                .node_args
-                .payload_builder_builder()
-                .enable_elastic_payload_budget
-        );
         assert_eq!(
             node_cmd.ext.consensus.target_block_time.into_duration(),
             Duration::from_millis(550)
@@ -850,7 +842,6 @@ mod tests {
             "--builder.enable-prewarming",
             "--builder.enable-execution-cache",
             "--builder.disable-sparse-trie",
-            "--builder.enable-elastic-payload-budget",
         ])
         .unwrap();
         apply_builder_feature_flags(&mut cli);
@@ -860,15 +851,7 @@ mod tests {
         assert!(node_cmd.ext.node_args.builder_enable_prewarming);
         assert!(node_cmd.ext.node_args.builder_enable_execution_cache);
         assert!(node_cmd.ext.node_args.builder_disable_sparse_trie);
-        assert!(node_cmd.ext.node_args.builder_enable_elastic_payload_budget);
         assert!(node_cmd.engine.share_execution_cache_with_payload_builder);
         assert!(!node_cmd.engine.share_sparse_trie_with_payload_builder);
-        assert!(
-            node_cmd
-                .ext
-                .node_args
-                .payload_builder_builder()
-                .enable_elastic_payload_budget
-        );
     }
 }

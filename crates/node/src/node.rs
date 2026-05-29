@@ -85,13 +85,6 @@ pub struct TempoNodeArgs {
         default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
     )]
     pub builder_build_time_multiplier: f64,
-
-    /// Enable the elastic payload build budget.
-    #[arg(
-        long = "builder.enable-elastic-payload-budget",
-        default_value_t = false
-    )]
-    pub builder_enable_elastic_payload_budget: bool,
 }
 
 impl Default for TempoNodeArgs {
@@ -104,7 +97,6 @@ impl Default for TempoNodeArgs {
             builder_enable_execution_cache: false,
             builder_disable_sparse_trie: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
-            builder_enable_elastic_payload_budget: false,
         }
     }
 }
@@ -124,7 +116,6 @@ impl TempoNodeArgs {
             state_provider_metrics: self.builder_state_provider_metrics,
             enable_prewarming: self.builder_enable_prewarming,
             build_time_multiplier: self.builder_build_time_multiplier,
-            enable_elastic_payload_budget: self.builder_enable_elastic_payload_budget,
         }
     }
 }
@@ -535,8 +526,6 @@ pub struct TempoPayloadBuilderBuilder {
     pub enable_prewarming: bool,
     /// Initial multiplier for predicting replayable payload build work.
     pub build_time_multiplier: f64,
-    /// Enable the elastic payload build budget.
-    pub enable_elastic_payload_budget: bool,
 }
 
 impl Default for TempoPayloadBuilderBuilder {
@@ -545,7 +534,6 @@ impl Default for TempoPayloadBuilderBuilder {
             state_provider_metrics: false,
             enable_prewarming: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
-            enable_elastic_payload_budget: false,
         }
     }
 }
@@ -573,7 +561,6 @@ where
                 state_provider_metrics: self.state_provider_metrics,
                 enable_prewarming: self.enable_prewarming,
                 build_time_multiplier: self.build_time_multiplier,
-                enable_elastic_payload_budget: self.enable_elastic_payload_budget,
             },
         ))
     }
