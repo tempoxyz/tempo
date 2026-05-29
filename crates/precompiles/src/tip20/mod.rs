@@ -1020,7 +1020,7 @@ impl TIP20Token {
 
     pub fn check_not_paused(&self) -> Result<()> {
         if self.paused()? {
-            return Err(TIP20Error::contract_paused().into());
+            return Err(contract_paused_error());
         }
         Ok(())
     }
@@ -1352,6 +1352,12 @@ impl TIP20Token {
             .map_err(|_| TIP20Error::supply_cap_exceeded())?;
         self.set_balance(to, UserState::new(new_to_balance, to_flag)?)
     }
+}
+
+#[cold]
+#[inline(never)]
+fn contract_paused_error() -> TempoPrecompileError {
+    TIP20Error::contract_paused().into()
 }
 
 /// Resolved transfer recipient for [TIP-1022] virtual address support.
