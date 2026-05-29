@@ -89,6 +89,25 @@ impl TIP20Token {
         Ok(flag)
     }
 
+    /// Updates rewards and returns the T6 balance loaded by reward accounting.
+    pub(crate) fn update_rewards_with_current_balance(
+        &mut self,
+        holder: Address,
+    ) -> Result<(RewardFlag, Option<UserState>)> {
+        if self.storage.spec().is_t6() {
+            let holder_balance = self.get_balance(holder)?;
+            let flag = self.update_rewards_t6_with_balance(holder, holder_balance, false)?;
+            // RewardFlag output of reward updates MUST be binary (opted-in/out).
+            debug_assert!(matches!(flag, RewardFlag::OptedIn | RewardFlag::OptedOut));
+            Ok((flag, Some(holder_balance)))
+        } else {
+            let flag = self.update_rewards_legacy(holder)?;
+            // RewardFlag output of reward updates MUST be binary (opted-in/out).
+            debug_assert!(matches!(flag, RewardFlag::OptedIn | RewardFlag::OptedOut));
+            Ok((flag, None))
+        }
+    }
+
     /// Updates rewards and ensures the holder is checkpointed before cold-path state transitions.
     fn update_rewards_with_checkpoint(&mut self, holder: Address) -> Result<RewardFlag> {
         let flag = if self.storage.spec().is_t6() {
@@ -148,7 +167,15 @@ impl TIP20Token {
     ) -> Result<RewardFlag> {
         // On T6, once initialized, the balance flag is the source of truth for user reward state.
         let holder_balance = self.get_balance(holder)?;
+        self.update_rewards_t6_with_balance(holder, holder_balance, checkpoint_opted_out_rewards)
+    }
 
+    fn update_rewards_t6_with_balance(
+        &mut self,
+        holder: Address,
+        holder_balance: UserState,
+        checkpoint_opted_out_rewards: bool,
+    ) -> Result<RewardFlag> {
         // Check uninitialized opt-outs before loading global rewards; first transfers hit this path.
         let delegate = if holder_balance.flag.is_uninitialized() {
             Some(self.user_reward_info[holder].reward_recipient.read()?)

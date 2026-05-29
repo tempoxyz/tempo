@@ -1329,8 +1329,8 @@ impl TIP20Token {
             AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
         }
 
-        // Update rewards for the recipient and get their reward recipient
-        let to_flag = self.update_rewards(to)?;
+        // Update rewards for the recipient and keep the balance loaded on T6.
+        let (to_flag, to_balance) = self.update_rewards_with_current_balance(to)?;
 
         // If user is opted into rewards, increase opted-in supply by refund amount
         if to_flag.is_opted_in() {
@@ -1346,8 +1346,11 @@ impl TIP20Token {
             UserState::new(new_from_balance, from_balance.flag)?,
         )?;
 
-        let new_to_balance = self
-            .get_balance(to)?
+        let to_balance = match to_balance {
+            Some(to_balance) => to_balance,
+            None => self.get_balance(to)?,
+        };
+        let new_to_balance = to_balance
             .checked_add(refund)
             .map_err(|_| TIP20Error::supply_cap_exceeded())?;
         self.set_balance(to, UserState::new(new_to_balance, to_flag)?)
