@@ -118,10 +118,11 @@ pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
 /// macro which enforces direct-call-only (no delegatecall) and sets up the storage context.
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<TempoHardfork>) {
     let cfg = cfg.clone();
+    let tip20_precompile = TIP20Token::create_dynamic_precompile(&cfg);
 
     precompiles.set_precompile_lookup(move |address: &Address| {
         if address.is_tip20() {
-            Some(TIP20Token::create_precompile(*address, &cfg))
+            Some(tip20_precompile.clone())
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20Factory::create_precompile(&cfg))
         } else if *address == TIP20_CHANNEL_RESERVE_ADDRESS && cfg.spec.is_t5() {
@@ -219,6 +220,13 @@ impl TIP20Token {
     pub fn create_precompile(address: Address, cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
         tempo_precompile!("TIP20Token", cfg, |input| {
             Self::from_address(address).expect("TIP20 prefix already verified")
+        })
+    }
+
+    /// Creates a reusable EVM precompile for dynamically-addressed TIP-20 tokens.
+    pub fn create_dynamic_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("TIP20Token", cfg, |input| {
+            Self::from_address(input.bytecode_address).expect("TIP20 prefix already verified")
         })
     }
 }
