@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use alloy_primitives::{Address, TxKind, U256};
+use alloy_primitives::{Address, B256, TxKind, U256};
 use reth_evm::{EvmError, EvmInternals};
 use revm::{
     Database,
@@ -418,33 +418,20 @@ impl<DB, I> TempoEvmHandler<DB, I> {
 }
 
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
-    fn seed_precompile_tx_context(
-        &self,
-        evm: &mut TempoEvm<DB, I>,
-    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
-        let ctx = evm.ctx_mut();
-        let channel_open_context_hash = ctx.tx.channel_open_context_hash();
+    #[inline]
+    fn seed_precompile_tx_context_current(
+        caller: Address,
+        channel_open_context_hash: Option<B256>,
+    ) -> Result<(), TempoPrecompileError> {
+        let mut keychain = AccountKeychain::new();
+        keychain.set_tx_origin(caller)?;
 
-        // Seed transient precompile transaction context for both regular execution and RPC
-        // simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
-        StorageCtx::enter_evm(
-            &mut ctx.journaled_state,
-            &ctx.block,
-            &ctx.cfg,
-            &ctx.tx,
-            || {
-                let mut keychain = AccountKeychain::new();
-                keychain.set_tx_origin(ctx.tx.caller())?;
+        if let Some(channel_open_context_hash) = channel_open_context_hash {
+            let mut channel_reserve = TIP20ChannelReserve::new();
+            channel_reserve.set_channel_open_context_hash(channel_open_context_hash)?;
+        }
 
-                if let Some(channel_open_context_hash) = channel_open_context_hash {
-                    let mut channel_reserve = TIP20ChannelReserve::new();
-                    channel_reserve.set_channel_open_context_hash(channel_open_context_hash)?;
-                }
-
-                Ok::<(), TempoPrecompileError>(())
-            },
-        )
-        .map_err(|e| EVMError::Custom(e.to_string()))
+        Ok(())
     }
 }
 
@@ -904,12 +891,12 @@ where
         evm: &mut Self::Evm,
         init_gas: &mut InitialAndFloorGas,
     ) -> Result<(), Self::Error> {
-        self.seed_precompile_tx_context(evm)?;
-
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
         let journal = &mut evm.inner.ctx.journaled_state;
+        let caller = tx.caller();
+        let channel_open_context_hash = tx.channel_open_context_hash();
 
         let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
         let fee_token = journal
@@ -1135,6 +1122,13 @@ where
         // balance if `cfg.is_balance_check_disabled()` is true.
         let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
 
+        if gas_balance_spending.is_zero() {
+            StorageCtx::enter_evm(journal, block, cfg, tx, || {
+                Self::seed_precompile_tx_context_current(caller, channel_open_context_hash)
+            })
+            .map_err(|e| EVMError::Custom(e.to_string()))?;
+        }
+
         // Note: Signature verification happens during recover_signer() before entering the pool
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
 
@@ -1299,6 +1293,7 @@ where
 
             let skip_liquidity_check = evm.skip_liquidity_check;
             let result = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
+                Self::seed_precompile_tx_context_current(caller, channel_open_context_hash)?;
                 TipFeeManager::new().collect_fee_pre_tx(
                     fee_payer,
                     fee_token,
