@@ -125,7 +125,8 @@ pub mod gas {
 }
 
 pub mod mainnet {
-    //! Tempo mainnet (Presto) hardfork activation constants.
+    //! Tempo mainnet (Presto) chain id and hardfork activation constants.
+    pub const MAINNET_CHAIN_ID: u64 = 4217;
 
     /// Genesis activation block.
     pub const MAINNET_GENESIS_BLOCK: u64 = 0;
@@ -167,10 +168,14 @@ pub mod mainnet {
 
     /// T4 activation timestamp (May 18th 2026 14:00 UTC).
     pub const MAINNET_T4_TIMESTAMP: u64 = 1_779_112_800;
+
+    /// T5 activation timestamp (Jun 9th 2026 14:00 UTC).
+    pub const MAINNET_T5_TIMESTAMP: u64 = 1_781_013_600;
 }
 
 pub mod moderato {
-    //! Moderato testnet hardfork activation constants.
+    //! Moderato testnet chain id and hardfork activation constants.
+    pub const MODERATO_CHAIN_ID: u64 = 42431;
 
     /// Genesis activation block.
     pub const MODERATO_GENESIS_BLOCK: u64 = 0;
@@ -212,4 +217,7 @@ pub mod moderato {
 
     /// T4 activation timestamp (May 14th 2026 14:00 UTC).
     pub const MODERATO_T4_TIMESTAMP: u64 = 1_778_767_200;
+
+    /// T5 activation timestamp (Jun 3rd 2026 14:00 UTC).
+    pub const MODERATO_T5_TIMESTAMP: u64 = 1_780_495_200;
 }

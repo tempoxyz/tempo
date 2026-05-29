@@ -1,5 +1,7 @@
 use crate::tt_2d_pool::{AA2dTransactionId, AASequenceId};
-use alloy_consensus::{BlobTransactionValidationError, Transaction, transaction::TxHashRef};
+use alloy_consensus::{
+    BlobTransactionValidationError, Transaction, crypto::RecoveryError, transaction::TxHashRef,
+};
 use alloy_eips::{
     eip2718::{Encodable2718, Typed2718},
     eip2930::AccessList,
@@ -8,7 +10,10 @@ use alloy_eips::{
     eip7702::SignedAuthorization,
 };
 use alloy_evm::FromRecoveredTx;
-use alloy_primitives::{Address, B256, Bytes, TxHash, TxKind, U256, bytes, map::AddressMap};
+use alloy_primitives::{
+    Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
+};
+use alloy_sol_types::SolInterface;
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered};
 use reth_transaction_pool::{
@@ -20,7 +25,14 @@ use std::{
     fmt::Debug,
     sync::{Arc, OnceLock},
 };
-use tempo_precompiles::{DEFAULT_FEE_TOKEN, nonce::NonceManager, tip20::TIP20Token};
+use tempo_contracts::precompiles::ITIP20;
+use tempo_precompiles::{
+    DEFAULT_FEE_TOKEN,
+    nonce::NonceManager,
+    storage::StorageKey,
+    tip20::{TIP20Token, tip20_slots},
+    tip403_registry::tip403_registry_slots,
+};
 use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
 use tempo_revm::{TempoInvalidTransaction, TempoTxEnv};
 use thiserror::Error;
@@ -33,7 +45,7 @@ pub struct TempoPooledTransaction {
     inner: EthPooledTransaction<TempoTxEnvelope>,
     /// Cached cost of the transaction in the fee token.
     fee_token_cost: U256,
-    /// Cached payment classification for efficient block building
+    /// Cached T5+ payment classification for efficient block building.
     is_payment: bool,
     /// Precomputed sender-scoped hash used to deduplicate expiring nonce transactions.
     expiring_nonce_hash: Option<B256>,
@@ -53,6 +65,10 @@ pub struct TempoPooledTransaction {
     /// Used by `keychain_subject()` so pool maintenance matches against the same token
     /// that was validated without requiring state access.
     resolved_fee_token: OnceLock<Address>,
+    /// Cached keychain subject for the signer of an inline `KeyAuthorization`.
+    key_authorization_signer_subject: OnceLock<Option<KeychainSubject>>,
+    /// Cached target key of an inline `KeyAuthorization`.
+    key_authorization_target_subject: OnceLock<Option<KeyAuthorizationTargetSubject>>,
     /// Cached TIP20 balance storage slot for the fee payer.
     ///
     /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
@@ -90,6 +106,8 @@ impl TempoPooledTransaction {
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
+            key_authorization_signer_subject: OnceLock::new(),
+            key_authorization_target_subject: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
         }
     }
@@ -103,6 +121,11 @@ impl TempoPooledTransaction {
     /// Returns a reference to inner [`TempoTxEnvelope`].
     pub fn inner(&self) -> &Recovered<TempoTxEnvelope> {
         &self.inner.transaction
+    }
+
+    /// Resolves the transaction fee payer.
+    pub fn fee_payer(&self) -> Result<Address, RecoveryError> {
+        self.inner().fee_payer(self.inner().signer())
     }
 
     /// Returns true if this is an AA transaction
@@ -125,7 +148,7 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Returns whether this is a payment transaction according to the builder criteria.
+    /// Returns whether this is a payment transaction according to the T5+ builder criteria.
     pub fn is_payment(&self) -> bool {
         self.is_payment
     }
@@ -162,6 +185,47 @@ impl TempoPooledTransaction {
             account: keychain_sig.user_address,
             key_id,
             fee_token,
+        })
+    }
+
+    /// Extracts the keychain subject for the signer of an inline `KeyAuthorization`.
+    ///
+    /// Used for revocation matching: if the access key that signed an inline authorization is
+    /// revoked while the transaction is still in the pool, the transaction must be revalidated.
+    pub fn key_authorization_signer_subject(&self) -> Option<KeychainSubject> {
+        *self.key_authorization_signer_subject.get_or_init(|| {
+            let aa_tx = self.inner().as_aa()?;
+            let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
+            let key_id = key_authorization.recover_signer().ok()?;
+            let account = key_authorization
+                .authorization
+                .account
+                .unwrap_or(*self.sender_ref());
+            let fee_token = self.effective_fee_token();
+            Some(KeychainSubject {
+                account,
+                key_id,
+                fee_token,
+            })
+        })
+    }
+
+    /// Extracts the target key of an inline `KeyAuthorization`.
+    ///
+    /// Used for matching pending authorizations against key status changes emitted by
+    /// already-included authorizations or revocations.
+    pub fn key_authorization_target_subject(&self) -> Option<KeyAuthorizationTargetSubject> {
+        *self.key_authorization_target_subject.get_or_init(|| {
+            let aa_tx = self.inner().as_aa()?;
+            let key_authorization = aa_tx.tx().key_authorization.as_ref()?;
+            let account = key_authorization
+                .authorization
+                .account
+                .unwrap_or(*self.sender_ref());
+            Some(KeyAuthorizationTargetSubject {
+                account,
+                key_id: key_authorization.authorization.key_id,
+            })
         })
     }
 
@@ -255,17 +319,32 @@ impl TempoPooledTransaction {
         self.key_expiry.get().copied().flatten()
     }
 
-    /// Caches the resolved fee token determined during validation.
+    /// Caches the effective fee token determined during transaction validation.
+    ///
+    /// The validator sets this after EVM validation resolves the token from the
+    /// transaction's explicit `fee_token` field or from fee-manager state. Pool
+    /// maintenance code should not call this directly.
     pub fn set_resolved_fee_token(&self, fee_token: Address) {
         let _ = self.resolved_fee_token.set(fee_token);
     }
 
-    /// Returns the resolved fee token cached during validation, if available.
+    /// Returns the fee token cached during transaction validation, if available.
+    ///
+    /// This is `None` for transactions that have not completed validation through
+    /// the pool validator. Prefer [`Self::effective_fee_token`] in maintenance code
+    /// that needs the token a transaction will actually use to pay fees.
     pub fn resolved_fee_token(&self) -> Option<Address> {
         self.resolved_fee_token.get().copied()
     }
 
-    /// Returns the effective fee token for the transaction
+    /// Returns the effective fee token for pool maintenance and accounting.
+    ///
+    /// This prefers the token cached by validation, then falls back to the raw
+    /// transaction `fee_token` field, and finally to [`DEFAULT_FEE_TOKEN`]. This
+    /// fallback covers non-AA transactions and AA transactions without an explicit
+    /// fee token. Use this when checking liquidity, token pause state, balances, or
+    /// transfer policies. Use the raw `fee_token` field only when the code
+    /// specifically needs to know whether the transaction explicitly supplied a token.
     pub fn effective_fee_token(&self) -> Address {
         self.resolved_fee_token()
             .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN))
@@ -278,10 +357,21 @@ impl TempoPooledTransaction {
             let fee_token = self
                 .resolved_fee_token()
                 .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN));
-            let fee_payer = self.inner().fee_payer(self.sender()).ok()?;
-            let slot = TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].slot();
+            let fee_payer = self.fee_payer().ok()?;
+            let slot =
+                TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].base_slot();
             Some((fee_token, slot))
         })
+    }
+
+    /// Returns true when the transaction fee is paid by the transaction sender.
+    ///
+    /// Invalid fee payer recovery is treated as sender-paid so maintenance never skips a
+    /// conservative sender-scoped invalidation for malformed pooled state.
+    pub(crate) fn is_sender_paid_fee(&self) -> bool {
+        let sender = self.sender();
+        self.fee_payer()
+            .map_or(true, |fee_payer| fee_payer == sender)
     }
 
     /// Returns the sender-scoped expiring nonce hash for AA transactions.
@@ -310,7 +400,6 @@ impl TempoPooledTransaction {
             Some(NonceManager::new().expiring_nonce_seen[hash].slot())
         })
     }
-
     /// Returns true if the `expiring_nonce_slot` cache has been initialized,
     /// without triggering initialization.
     #[cfg(test)]
@@ -324,6 +413,58 @@ impl TempoPooledTransaction {
     pub(crate) fn nonce_key_slot_initialized(&self) -> bool {
         self.nonce_key_slot.get().is_some()
     }
+  
+    /// Warms the global keccak cache with storage slot hashes that will be accessed
+    /// during payment execution after pool validation.
+    ///
+    /// Fee-path slots like `balances[fee_payer]`, `user_reward_info[fee_payer]`,
+    /// `user_tokens[fee_payer]`, and `expiring_nonce_seen[hash]` are already cached from
+    /// `validate_with_evm`. `validator_tokens[beneficiary]` depends on the block producer,
+    /// which is unknown at validation time.
+    pub fn precalculate_keccak_slots(&self) {
+        if !self.is_payment {
+            return;
+        }
+
+        let sender = self.sender();
+        let fee_payer = self.inner().fee_payer(sender).unwrap_or(sender);
+        let fee_collection_warms_fee_payer_rewards = !self.fee_token_cost.is_zero();
+
+        // For payment transactions, warm sender + recipient balance and allowance slots.
+        if fee_payer != sender {
+            sender.mapping_slot(tip20_slots::BALANCES);
+        }
+        for (_kind, input) in self.inner().calls() {
+            if let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) {
+                for addr in call.balance_addresses().into_iter().flatten() {
+                    if addr != fee_payer {
+                        addr.mapping_slot(tip20_slots::BALANCES);
+                    }
+                }
+                for addr in call.reward_addresses(sender).into_iter().flatten() {
+                    if fee_collection_warms_fee_payer_rewards && addr == fee_payer {
+                        continue;
+                    }
+                    addr.mapping_slot(tip20_slots::USER_REWARD_INFO);
+                }
+                if let Some(slot) = call
+                    .to()
+                    .map(|addr| addr.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES))
+                {
+                    let _ = keccak256(slot.to_be_bytes::<32>());
+                }
+
+                // Allowance slots for transferFrom variants: allowances[from][sender]
+                let from = match &call {
+                    ITIP20::ITIP20Calls::transferFrom(c) => Some(c.from),
+                    ITIP20::ITIP20Calls::transferFromWithMemo(c) => Some(c.from),
+                    _ => None,
+                };
+                if let Some(from) = from {
+                    sender.mapping_slot(from.mapping_slot(tip20_slots::ALLOWANCES));
+                }
+            }
+        }
 }
 
 /// Tempo-specific transaction pool rejection reasons.
@@ -1249,15 +1390,6 @@ pub struct KeychainSubject {
     pub fee_token: Address,
 }
 
-/// Key-authorization witness identity extracted from an AA transaction.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct KeyAuthorizationWitnessSubject {
-    /// The account whose key-authorization witness is carried or burned.
-    pub account: Address,
-    /// The TIP-1053 witness.
-    pub witness: B256,
-}
-
 impl KeychainSubject {
     /// Returns true if this subject matches any of the revoked keys.
     ///
@@ -1276,5 +1408,30 @@ impl KeychainSubject {
         spending_limit_updates: &SpendingLimitUpdates,
     ) -> bool {
         spending_limit_updates.contains(self.account, self.key_id, self.fee_token)
+    }
+}
+
+/// Key-authorization witness identity extracted from an AA transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyAuthorizationWitnessSubject {
+    /// The account whose key-authorization witness is carried or burned.
+    pub account: Address,
+    /// The TIP-1053 witness.
+    pub witness: B256,
+}
+
+/// Target key identity extracted from an inline key authorization.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct KeyAuthorizationTargetSubject {
+    /// The account that owns the target key.
+    pub account: Address,
+    /// The key being authorized.
+    pub key_id: Address,
+}
+
+impl KeyAuthorizationTargetSubject {
+    /// Returns true if this target key is affected by a key status update.
+    pub fn matches_key_update(&self, key_updates: &RevokedKeys) -> bool {
+        key_updates.contains(self.account, self.key_id)
     }
 }

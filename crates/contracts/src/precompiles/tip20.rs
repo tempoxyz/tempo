@@ -1,5 +1,6 @@
 pub use IRolesAuth::{IRolesAuthErrors as RolesAuthError, IRolesAuthEvents as RolesAuthEvent};
 pub use ITIP20::{ITIP20Errors as TIP20Error, ITIP20Events as TIP20Event};
+use alloy_primitives::Address;
 use alloy_sol_types::{SolCall, SolType};
 
 /// Decimal precision for all TIP-20 tokens.
@@ -178,6 +179,19 @@ crate::sol! {
 }
 
 impl ITIP20::ITIP20Calls {
+    /// Returns the recipient address for the TIP-20 call, if one exists.
+    pub fn to(&self) -> Option<Address> {
+        Some(match self {
+            Self::transfer(c) => c.to,
+            Self::transferWithMemo(c) => c.to,
+            Self::transferFrom(c) => c.to,
+            Self::transferFromWithMemo(c) => c.to,
+            Self::mint(c) => c.to,
+            Self::mintWithMemo(c) => c.to,
+            _ => return None,
+        })
+    }
+
     /// Returns `true` if `input` matches one of the recognized [TIP-20 payment] selectors:
     /// - `transfer` / `transferWithMemo`
     /// - `transferFrom` / `transferFromWithMemo`
@@ -229,6 +243,36 @@ impl ITIP20::ITIP20Calls {
             || is_call::<ITIP20::transferFromWithMemoCall>(input)
             || is_call::<ITIP20::burnCall>(input)
             || is_call::<ITIP20::burnWithMemoCall>(input)
+    }
+
+    /// Returns addresses whose balance slots are accessed by this call.
+    ///
+    /// For transfers: `[to]` or `[from, to]`. For mints: `[to]`.
+    /// For burns, approves, and view calls: empty.
+    pub fn balance_addresses(&self) -> [Option<Address>; 2] {
+        match self {
+            Self::transfer(c) => [Some(c.to), None],
+            Self::transferWithMemo(c) => [Some(c.to), None],
+            Self::transferFrom(c) => [Some(c.from), Some(c.to)],
+            Self::transferFromWithMemo(c) => [Some(c.from), Some(c.to)],
+            Self::mint(c) => [Some(c.to), None],
+            Self::mintWithMemo(c) => [Some(c.to), None],
+            _ => [None, None],
+        }
+    }
+
+    /// Returns addresses whose rewards slots are accessed by this call.
+    pub fn reward_addresses(&self, sender: Address) -> [Option<Address>; 2] {
+        match self {
+            Self::transfer(c) => [Some(sender), Some(c.to)],
+            Self::transferWithMemo(c) => [Some(sender), Some(c.to)],
+            Self::transferFrom(c) => [Some(c.from), Some(c.to)],
+            Self::transferFromWithMemo(c) => [Some(c.from), Some(c.to)],
+            Self::mint(c) => [Some(c.to), None],
+            Self::mintWithMemo(c) => [Some(c.to), None],
+            Self::burn(_) | Self::burnWithMemo(_) => [Some(sender), Some(Address::ZERO)],
+            _ => [None, None],
+        }
     }
 }
 

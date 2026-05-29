@@ -22,8 +22,11 @@ use tempo_contracts::precompiles::{
     ITIPFeeAMM, IValidatorConfig, UnknownFunctionSelector,
 };
 use tempo_precompiles::{
-    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS, error::TempoPrecompileError, storage::ContractStorage,
-    tip20::TIP20Token, validator_config::ValidatorConfig,
+    PATH_USD_ADDRESS, TIP20_FACTORY_ADDRESS,
+    error::TempoPrecompileError,
+    storage::ContractStorage,
+    tip20::{TIP20Token, decode_tip20_balance},
+    validator_config::ValidatorConfig,
 };
 use test_case::test_case;
 
@@ -170,7 +173,7 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
     let slot = TIP20Token::from_address(token_address)
         .expect("valid TIP20 address")
         .balances[caller]
-        .slot();
+        .base_slot();
     let sender_balance = token_storage_diff
         .get(&B256::from(slot))
         .expect("Could not get recipient balance delta");
@@ -180,14 +183,16 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
     let Delta::Changed(ChangedType { from, to }) = sender_balance else {
         panic!("Unexpected delta");
     };
-    assert_eq!(from.into_u256(), mint_amount);
-    assert_eq!(to.into_u256(), U256::ZERO);
+    let from_word = from.into_u256();
+    let to_word = to.into_u256();
+    assert_eq!(decode_tip20_balance(from_word), mint_amount);
+    assert_eq!(decode_tip20_balance(to_word), U256::ZERO);
 
     // Assert recipient token balance is changed
     let slot = TIP20Token::from_address(token_address)
         .expect("valid TIP20 address")
         .balances[recipient]
-        .slot();
+        .base_slot();
     let recipient_balance = token_storage_diff
         .get(&B256::from(slot))
         .expect("Could not get recipient balance delta");
@@ -196,8 +201,10 @@ async fn test_eth_trace_call(schedule: ForkSchedule) -> eyre::Result<()> {
     let Delta::Changed(ChangedType { from, to }) = recipient_balance else {
         panic!("Unexpected delta");
     };
-    assert_eq!(from.into_u256(), U256::ZERO);
-    assert_eq!(to.into_u256(), mint_amount);
+    let from_word = from.into_u256();
+    let to_word = to.into_u256();
+    assert_eq!(decode_tip20_balance(from_word), U256::ZERO);
+    assert_eq!(decode_tip20_balance(to_word), mint_amount);
 
     Ok(())
 }
@@ -294,7 +301,7 @@ async fn test_eth_estimate_gas(schedule: ForkSchedule) -> eyre::Result<()> {
     // gas estimation is calldata dependent, but should be consistent with same calldata
     // TIP-1000 (T1): gas includes 250k new account cost when nonce=0
     let expected_gas = if schedule.is_active(TempoHardfork::T6) {
-        553657
+        547407
     } else if schedule.is_active(TempoHardfork::T3) {
         551540
     } else {
