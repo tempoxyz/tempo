@@ -504,8 +504,7 @@ impl commonware_consensus::CertifiableBlock for Block {
 mod tests {
     #[cfg(feature = "bal")]
     use alloy_consensus::BlockHeader as _;
-    use alloy_primitives::B256;
-    use alloy_primitives::{bytes, keccak256};
+    use alloy_primitives::{B256, bytes, keccak256};
     #[cfg(not(feature = "bal"))]
     use commonware_codec::Write as _;
     use commonware_codec::{Encode, Read as _};
