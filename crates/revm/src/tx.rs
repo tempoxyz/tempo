@@ -315,6 +315,7 @@ impl IntoTxEnv<Self> for TempoTxEnv {
 }
 
 impl FromRecoveredTx<AASigned> for TempoTxEnv {
+    #[inline]
     fn from_recovered_tx(aa_signed: &AASigned, caller: Address) -> Self {
         let tx = aa_signed.tx();
         let signature = aa_signed.signature();
@@ -413,6 +414,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
 }
 
 impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
+    #[inline]
     fn from_recovered_tx(tx: &TempoTxEnvelope, sender: Address) -> Self {
         match tx {
             tx @ TempoTxEnvelope::Legacy(inner) => Self {
@@ -444,12 +446,14 @@ impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
 }
 
 impl FromTxWithEncoded<AASigned> for TempoTxEnv {
+    #[inline]
     fn from_encoded_tx(tx: &AASigned, sender: Address, _encoded: Bytes) -> Self {
         Self::from_recovered_tx(tx, sender)
     }
 }
 
 impl FromTxWithEncoded<TempoTxEnvelope> for TempoTxEnv {
+    #[inline]
     fn from_encoded_tx(tx: &TempoTxEnvelope, sender: Address, _encoded: Bytes) -> Self {
         Self::from_recovered_tx(tx, sender)
     }
