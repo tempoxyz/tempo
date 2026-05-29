@@ -1262,7 +1262,7 @@ where
         {
             let auth_signer = key_auth
                 .recover_signer()
-                .map_err(|_| TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed)?;
+                .map_err(|_| key_authorization_signature_recovery_failed_error())?;
 
             if auth_signer != tx.caller {
                 let key_auth_sig_type: u8 = key_auth.signature.signature_type().into();
@@ -1274,21 +1274,14 @@ where
                         loaded_key.key.is_admin
                     }
                     Some(_) | None => {
-                        return Err(TempoInvalidTransaction::KeychainValidationFailed {
-                            reason:
-                                "admin-signed key authorization must be signed by transaction key"
-                                    .to_string(),
-                        }
-                        .into());
+                        return Err(admin_key_authorization_requires_transaction_key_error().into());
                     }
                 };
 
                 if !signer_is_admin {
-                    return Err(TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot {
-                        expected: tx.caller,
-                        actual: auth_signer,
-                    }
-                    .into());
+                    return Err(
+                        key_authorization_not_signed_by_root_error(tx.caller, auth_signer).into(),
+                    );
                 }
             }
         }
@@ -2378,6 +2371,29 @@ fn check_gas_limit(
         return Some(oog_frame_result(kind, tx.gas_limit()));
     }
     None
+}
+
+#[cold]
+#[inline(never)]
+fn key_authorization_signature_recovery_failed_error() -> TempoInvalidTransaction {
+    TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
+}
+
+#[cold]
+#[inline(never)]
+fn admin_key_authorization_requires_transaction_key_error() -> TempoInvalidTransaction {
+    TempoInvalidTransaction::KeychainValidationFailed {
+        reason: "admin-signed key authorization must be signed by transaction key".to_string(),
+    }
+}
+
+#[cold]
+#[inline(never)]
+fn key_authorization_not_signed_by_root_error(
+    expected: Address,
+    actual: Address,
+) -> TempoInvalidTransaction {
+    TempoInvalidTransaction::KeyAuthorizationNotSignedByRoot { expected, actual }
 }
 
 /// Validates time window for AA transactions
