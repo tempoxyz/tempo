@@ -417,6 +417,12 @@ impl<DB, I> TempoEvmHandler<DB, I> {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn empty_aa_batch_error<DBError>() -> EVMError<DBError, TempoInvalidTransaction> {
+    EVMError::Custom("No calls executed".into())
+}
+
 impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
     fn seed_precompile_tx_context(
         &self,
@@ -721,8 +727,7 @@ where
         evm.ctx().journal_mut().checkpoint_commit();
 
         // Fix gas accounting for the entire batch
-        let mut result =
-            final_result.ok_or_else(|| EVMError::Custom("No calls executed".into()))?;
+        let mut result = final_result.ok_or_else(empty_aa_batch_error::<DB::Error>)?;
 
         // Create new Gas with correct limit, because Gas does not have a set_limit method
         // (the frame_result has the limit from just the last call)
