@@ -143,6 +143,12 @@ fn tempo_signature_verification_gas(signature: &TempoSignature) -> u64 {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn fee_token_not_tip20(address: Address) -> TempoInvalidTransaction {
+    TempoInvalidTransaction::FeeTokenNotTip20 { address }
+}
+
 #[derive(Debug, Clone)]
 struct LoadedTxAccessKey {
     key_id: Address,
@@ -921,7 +927,7 @@ where
         // Always validate TIP20 prefix to prevent panics in get_token_balance.
         // This is a protocol-level check since validators could bypass initial validation.
         if !fee_token.is_tip20() {
-            return Err(TempoInvalidTransaction::FeeTokenNotTip20 { address: fee_token }.into());
+            return Err(fee_token_not_tip20(fee_token).into());
         }
 
         // Skip USD currency check for cases when the transaction is free and is not a part of a subblock.
