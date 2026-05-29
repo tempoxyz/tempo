@@ -50,7 +50,7 @@ pub(crate) struct Args {
     #[arg(long, default_value_t = true)]
     skip_consensus: bool,
 
-    /// Consensus storage directory. If not set, this will be dirived from --datadir.
+    /// Consensus storage directory. If not set, this will be derived from --datadir.
     #[arg(long)]
     consensus_source_dir: Option<PathBuf>,
 
