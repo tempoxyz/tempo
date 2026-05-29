@@ -110,6 +110,40 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 /// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
 pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
 
+#[cold]
+#[inline(never)]
+fn map_fee_precharge_error<DBError>(
+    err: TempoPrecompileError,
+    gas_balance_spending: U256,
+    fee_token: Address,
+) -> EVMError<DBError, TempoInvalidTransaction> {
+    match err {
+        TempoPrecompileError::TIPFeeAMMError(TIPFeeAMMError::InsufficientLiquidity(_)) => {
+            FeePaymentError::InsufficientAmmLiquidity {
+                fee: gas_balance_spending,
+            }
+            .into()
+        }
+
+        TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(InsufficientBalance {
+            available,
+            ..
+        })) => FeePaymentError::InsufficientFeeTokenBalance {
+            fee: gas_balance_spending,
+            balance: available,
+        }
+        .into(),
+
+        TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
+            TempoInvalidTransaction::FeeTokenPaused { address: fee_token }.into()
+        }
+
+        TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
+
+        _ => FeePaymentError::Other(err.to_string()).into(),
+    }
+}
+
 /// Calculates the gas cost for verifying a primitive signature.
 ///
 /// Returns the additional gas required beyond the base transaction cost:
@@ -1315,30 +1349,11 @@ where
                 // Map fee collection errors to transaction validation errors since they
                 // indicate the transaction cannot be included (e.g., insufficient liquidity
                 // in FeeAMM pool for fee swaps)
-                return Err(match err {
-                    TempoPrecompileError::TIPFeeAMMError(
-                        TIPFeeAMMError::InsufficientLiquidity(_),
-                    ) => FeePaymentError::InsufficientAmmLiquidity {
-                        fee: gas_balance_spending,
-                    }
-                    .into(),
-
-                    TempoPrecompileError::TIP20(TIP20Error::InsufficientBalance(
-                        InsufficientBalance { available, .. },
-                    )) => FeePaymentError::InsufficientFeeTokenBalance {
-                        fee: gas_balance_spending,
-                        balance: available,
-                    }
-                    .into(),
-
-                    TempoPrecompileError::TIP20(TIP20Error::ContractPaused(_)) => {
-                        TempoInvalidTransaction::FeeTokenPaused { address: fee_token }.into()
-                    }
-
-                    TempoPrecompileError::Fatal(e) => EVMError::Custom(e),
-
-                    _ => FeePaymentError::Other(err.to_string()).into(),
-                });
+                return Err(map_fee_precharge_error::<DB::Error>(
+                    err,
+                    gas_balance_spending,
+                    fee_token,
+                ));
             }
 
             journal.checkpoint_commit();
