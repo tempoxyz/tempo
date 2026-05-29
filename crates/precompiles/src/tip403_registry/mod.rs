@@ -300,6 +300,7 @@ impl TIP403Registry {
 
     /// Checks `receiver`'s receive policy for an inbound transfer. Returns the blocking
     /// reason, or `None` if authorized.
+    #[inline(always)]
     pub fn validate_receive_policy(
         &self,
         token: Address,
@@ -313,6 +314,7 @@ impl TIP403Registry {
 
     /// Checks the receive policy. If valid, returns `None`. Otherwise returns the
     /// blocking reason and recovery address.
+    #[inline(always)]
     pub(crate) fn check_receive_policy(
         &self,
         token: Address,

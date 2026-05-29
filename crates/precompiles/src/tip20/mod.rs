@@ -1184,6 +1184,7 @@ impl TIP20Token {
     /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
     /// account and stores a claim receipt; returns `true`. Returns `false` when the inbound is
     /// authorized and the caller should proceed with the normal transfer or mint.
+    #[inline(always)]
     pub(crate) fn validate_inbound_or_block(
         &mut self,
         originator: Address,
