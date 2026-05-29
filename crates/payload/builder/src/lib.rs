@@ -483,6 +483,7 @@ where
             warn!(%err, "failed to apply pre-execution changes");
             PayloadBuilderError::Internal(err.into())
         })?;
+        executor.evm_mut().db_mut().bump_bal_index();
 
         check_cancel!();
 
@@ -701,6 +702,7 @@ where
                 }
             };
             trace!("Transaction executed");
+            executor.evm_mut().db_mut().bump_bal_index();
 
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
@@ -773,6 +775,7 @@ where
                         return Err(PayloadBuilderError::evm(err));
                     }
                 }
+                executor.evm_mut().db_mut().bump_bal_index();
 
                 subblock_tx_count += 1.0;
                 let _ = roots_tx.send((
@@ -811,6 +814,7 @@ where
             executor
                 .execute_transaction(&system_tx)
                 .map_err(PayloadBuilderError::evm)?;
+            executor.evm_mut().db_mut().bump_bal_index();
 
             let _ = roots_tx.send((
                 BuilderTx::Owned(Box::new(system_tx)),
