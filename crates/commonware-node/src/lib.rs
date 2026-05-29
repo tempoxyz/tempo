@@ -98,6 +98,9 @@ pub async fn run_consensus_stack(
     let subblocks = network.register(SUBBLOCKS_CHANNEL_IDENT, SUBBLOCKS_LIMIT, message_backlog);
 
     let target_block_time = config.target_block_time.into_duration();
+    // Consensus owns the end-to-end local proposal window. The network budget
+    // is reserved for propagation, and the remaining time is passed down to
+    // proposal handling and local payload building.
     let proposal_return_budget =
         target_block_time.saturating_sub(config.network_budget.into_duration());
 

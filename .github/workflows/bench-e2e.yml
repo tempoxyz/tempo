@@ -222,6 +222,14 @@ on:
         type: string
         required: false
         default: T6
+      baseline-features:
+        type: string
+        required: false
+        default: ""
+      feature-features:
+        type: string
+        required: false
+        default: ""
       txgen-ref:
         type: string
         required: false
@@ -377,6 +385,8 @@ jobs:
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset || '120' }}
       BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' }}
       BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
+      BENCH_BASELINE_FEATURES: ${{ inputs.baseline-features }}
+      BENCH_FEATURE_FEATURES: ${{ inputs.feature-features }}
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
       BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '1000000000' }}
@@ -509,6 +519,8 @@ jobs:
             const maxConcurrentRequests = process.env.BENCH_MAX_CONCURRENT_REQUESTS;
             const baselineHardfork = process.env.BENCH_BASELINE_HARDFORK || '';
             const featureHardfork = process.env.BENCH_FEATURE_HARDFORK || '';
+            const baselineFeatureFlags = process.env.BENCH_BASELINE_FEATURES || '';
+            const featureFeatureFlags = process.env.BENCH_FEATURE_FEATURES || '';
             const baseline = process.env.INPUT_BASELINE_NAME;
             const feature = process.env.INPUT_FEATURE_NAME;
             const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
@@ -523,7 +535,8 @@ jobs:
             const gasLimit = process.env.BENCH_GAS_LIMIT;
             const runPairs = process.env.BENCH_RUN_PAIRS || '2';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`);
+            const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -696,6 +709,8 @@ jobs:
             const maxConcurrentRequests = process.env.BENCH_MAX_CONCURRENT_REQUESTS;
             const baselineHardfork = process.env.BENCH_BASELINE_HARDFORK || '';
             const featureHardfork = process.env.BENCH_FEATURE_HARDFORK || '';
+            const baselineFeatureFlags = process.env.BENCH_BASELINE_FEATURES || '';
+            const featureFeatureFlags = process.env.BENCH_FEATURE_FEATURES || '';
             const baseline = process.env.INPUT_BASELINE_NAME;
             const feature = process.env.INPUT_FEATURE_NAME;
             const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
@@ -710,7 +725,8 @@ jobs:
             const gasLimit = process.env.BENCH_GAS_LIMIT;
             const runPairs = process.env.BENCH_RUN_PAIRS || '2';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
-            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`;
+            const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
+            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`;
             core.exportVariable('BENCH_CONFIG', config);
 
             const { data: comment } = await github.rest.issues.createComment({
@@ -772,6 +788,8 @@ jobs:
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
           [ -n "$BENCH_BASELINE_HARDFORK" ] && cmd+=(--baseline-hardfork="$BENCH_BASELINE_HARDFORK")
           [ -n "$BENCH_FEATURE_HARDFORK" ] && cmd+=(--feature-hardfork="$BENCH_FEATURE_HARDFORK")
+          [ -n "$BENCH_BASELINE_FEATURES" ] && cmd+=(--baseline-features="$BENCH_BASELINE_FEATURES")
+          [ -n "$BENCH_FEATURE_FEATURES" ] && cmd+=(--feature-features="$BENCH_FEATURE_FEATURES")
           [ -n "$BENCH_BASELINE_ARGS" ] && cmd+=(--baseline-args="$BENCH_BASELINE_ARGS")
           [ -n "$BENCH_FEATURE_ARGS" ] && cmd+=(--feature-args="$BENCH_FEATURE_ARGS")
           [ -n "$BENCH_BENCH_ARGS" ] && cmd+=(--bench-args="$BENCH_BENCH_ARGS")
@@ -835,6 +853,8 @@ jobs:
           [ -n "$BENCH_TXGEN_REF" ] && derek_cmd+=(txgen-ref="$BENCH_TXGEN_REF")
           [ "$BENCH_SAMPLY" = "true" ] && derek_cmd+=(samply)
           [ "$BENCH_TRACY" != "off" ] && derek_cmd+=(tracy="$BENCH_TRACY" tracy-seconds="$BENCH_TRACY_SECONDS" tracy-offset="$BENCH_TRACY_OFFSET")
+          [ -n "$BENCH_BASELINE_FEATURES" ] && derek_cmd+=(baseline-features="$BENCH_BASELINE_FEATURES")
+          [ -n "$BENCH_FEATURE_FEATURES" ] && derek_cmd+=(feature-features="$BENCH_FEATURE_FEATURES")
           [ -n "$BENCH_BASELINE_ARGS" ] && derek_cmd+=(baseline-args="$BENCH_BASELINE_ARGS")
           [ -n "$BENCH_FEATURE_ARGS" ] && derek_cmd+=(feature-args="$BENCH_FEATURE_ARGS")
           [ -n "$BENCH_BENCH_ARGS" ] && derek_cmd+=(bench-args="$BENCH_BENCH_ARGS")

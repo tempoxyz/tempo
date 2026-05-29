@@ -71,7 +71,11 @@ pub struct TempoNodeArgs {
     #[arg(long = "builder.enable-prewarming", default_value_t = false)]
     pub builder_enable_prewarming: bool,
 
-    /// Initial multiplier for predicting replayable payload build work.
+    /// Initial estimate of total replayable payload build work divided by work
+    /// at transaction cutoff.
+    ///
+    /// The builder updates this at runtime. Higher values stop pool transaction
+    /// execution earlier to leave more room for `builder_finish`.
     #[arg(
         long = "builder.build-time-multiplier",
         default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
@@ -514,7 +518,8 @@ pub struct TempoPayloadBuilderBuilder {
     pub state_provider_metrics: bool,
     /// Enable prewarming for the payload builder.
     pub enable_prewarming: bool,
-    /// Initial multiplier for predicting replayable payload build work.
+    /// Initial estimate of total replayable payload build work divided by work
+    /// at transaction cutoff.
     pub build_time_multiplier: f64,
 }
 
