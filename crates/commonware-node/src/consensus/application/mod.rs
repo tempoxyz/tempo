@@ -58,6 +58,10 @@ pub(super) struct Config<TContext> {
     pub(crate) subblocks: Option<subblocks::Mailbox>,
 
     /// Local proposal return budget, excluding the network propagation allowance.
+    ///
+    /// Starts at `target_block_time - network_budget`; `handle_propose`
+    /// subtracts time already spent in the view before handing the remaining
+    /// budget to the payload builder.
     pub(super) proposal_return_budget: Duration,
 
     /// The epoch strategy used by tempo, to map block heights to epochs.

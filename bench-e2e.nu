@@ -26,6 +26,8 @@ const E2E_LOCAL_RETH_ARGS = [
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
     "--consensus.no-legacy-archive"
+    "--engine.share-execution-cache-with-payload-builder"
+    "--builder.enable-prewarming"
 ]
 
 def tempo-node-help [tempo_bin: string] {
@@ -1043,11 +1045,11 @@ def e2e-run-sides [run_pairs: int] {
     mut sides = []
     if ($run_pairs mod 2) == 0 {
         for _ in 0..<($run_pairs // 2) {
-            $sides = ($sides | append ["baseline" "feature" "feature" "baseline"])
+            $sides = ($sides | append ["feature" "baseline" "baseline" "feature"])
         }
     } else {
         for _ in 0..<$run_pairs {
-            $sides = ($sides | append ["baseline" "feature"])
+            $sides = ($sides | append ["feature" "baseline"])
         }
     }
     $sides
@@ -1138,6 +1140,8 @@ def "main e2e" [
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
     --features: string = $DEFAULT_FEATURES              # Cargo features
+    --baseline-features: string = ""                    # Cargo features for baseline build (defaults to --features)
+    --feature-features: string = ""                     # Cargo features for feature build (defaults to --features)
     --no-default-features                               # Disable Cargo default features
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
@@ -1363,26 +1367,28 @@ def "main e2e" [
         git worktree add $regenesis_wt origin/main
     }
 
-    let tbc = (tracy-build-config $features $tracy)
-    let effective_features = $tbc.features
-    let effective_extra_rustflags = $tbc.extra_rustflags
+    let baseline_build_features = if $baseline_features != "" { $baseline_features } else { $features }
+    let feature_build_features = if $feature_features != "" { $feature_features } else { $features }
+    let baseline_tbc = (tracy-build-config $baseline_build_features $tracy)
+    let feature_tbc = (tracy-build-config $feature_build_features $tracy)
+    let regenesis_tbc = (tracy-build-config $features $tracy)
     let effective_no_cache = $no_cache or ($tracy != "off")
     # Build benchmark binaries in parallel. Regenesis uses latest origin/main so
     # snapshot rewriting is independent of either side being benchmarked.
     # with independent target/ directories, so cargo invocations don't collide.
     mut builds = [
-        { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline" }
-        { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature" }
+        { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features }
+        { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features }
     ]
     let regenesis_sha = if $regenesis_needed { git rev-parse origin/main | str trim } else { "" }
     if $regenesis_needed {
-        $builds = ($builds | append { wt: $regenesis_wt, ref_name: "origin/main", sha: $regenesis_sha, label: "regenesis-main" })
+        $builds = ($builds | append { wt: $regenesis_wt, ref_name: "origin/main", sha: $regenesis_sha, label: "regenesis-main", features: $regenesis_tbc.features, extra_rustflags: $regenesis_tbc.extra_rustflags, bench_features: $features })
     }
     $builds | par-each { |b|
         if $effective_no_cache {
-            build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $effective_extra_rustflags --bench-features $features $b.wt $b.ref_name $profile $effective_features $b.sha
+            build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
         } else {
-            build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $effective_features $b.sha
+            build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
         }
     } | ignore
     let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
