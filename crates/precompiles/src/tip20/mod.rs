@@ -787,7 +787,7 @@ impl TIP20Token {
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
         let Some(to) =
-            self.validate_transfer(None, msg_sender, call.to, call.amount, B256::ZERO)?
+            self.validate_transfer(msg_sender, call.to, call.amount, B256::ZERO)?
         else {
             return Ok(true);
         };
@@ -814,8 +814,8 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::transferFromCall,
     ) -> Result<bool> {
-        let Some(to) = self.validate_transfer(
-            Some(msg_sender),
+        let Some(to) = self.validate_transfer_from(
+            msg_sender,
             call.from,
             call.to,
             call.amount,
@@ -840,7 +840,7 @@ impl TIP20Token {
         call: ITIP20::transferFromWithMemoCall,
     ) -> Result<bool> {
         let Some(to) =
-            self.validate_transfer(Some(msg_sender), call.from, call.to, call.amount, call.memo)?
+            self.validate_transfer_from(msg_sender, call.from, call.to, call.amount, call.memo)?
         else {
             return Ok(true);
         };
@@ -889,7 +889,7 @@ impl TIP20Token {
             return Err(TIP20Error::unauthorized().into());
         }
 
-        let Some(to) = self.validate_transfer(None, from, caller, amount, B256::ZERO)? else {
+        let Some(to) = self.validate_transfer(from, caller, amount, B256::ZERO)? else {
             return Ok(true);
         };
 
@@ -923,7 +923,7 @@ impl TIP20Token {
         msg_sender: Address,
         call: ITIP20::transferWithMemoCall,
     ) -> Result<()> {
-        let Some(to) = self.validate_transfer(None, msg_sender, call.to, call.amount, call.memo)?
+        let Some(to) = self.validate_transfer(msg_sender, call.to, call.amount, call.memo)?
         else {
             return Ok(());
         };
@@ -1025,33 +1025,48 @@ impl TIP20Token {
         Ok(())
     }
 
-    /// Resolves `to`, checks pause state and recipient validity, ensures TIP-403 transfer
-    /// authorization, and runs the caller-specific spend check. Additionally (+T6) applies
-    /// TIP-1028 address-level receive policies.
-    ///
-    /// Updates the sender's [`AccountKeychain`] spending limit for direct transfers, and
-    /// consumes allowance for `transfer_from` style calls.
-    ///
-    /// Returns `Some(to)` when the caller should perform the normal transfer.
-    /// Returns `None` when funds were blocked, and the caller should return immediately.
-    fn validate_transfer(
+    /// Resolves `to`, checks pause state and recipient validity, and ensures TIP-403 transfer
+    /// authorization before caller-specific spend checks.
+    fn validate_transfer_precheck(
         &mut self,
-        spender: Option<Address>,
         from: Address,
         to: Address,
-        amount: U256,
-        memo: B256,
-    ) -> Result<Option<Recipient>> {
+    ) -> Result<Recipient> {
         let to = Recipient::resolve(to)?;
         self.check_not_paused()?;
         to.validate()?;
         self.ensure_transfer_authorized(from, to.target)?;
 
-        if let Some(spender) = spender {
-            self.consume_allowance(from, spender, amount)?;
-        } else {
-            self.check_and_update_spending_limit(from, amount)?;
+        Ok(to)
+    }
+
+    fn validate_transfer(
+        &mut self,
+        from: Address,
+        to: Address,
+        amount: U256,
+        memo: B256,
+    ) -> Result<Option<Recipient>> {
+        let to = self.validate_transfer_precheck(from, to)?;
+        self.check_and_update_spending_limit(from, amount)?;
+
+        if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
+            return Ok(None);
         }
+
+        Ok(Some(to))
+    }
+
+    fn validate_transfer_from(
+        &mut self,
+        spender: Address,
+        from: Address,
+        to: Address,
+        amount: U256,
+        memo: B256,
+    ) -> Result<Option<Recipient>> {
+        let to = self.validate_transfer_precheck(from, to)?;
+        self.consume_allowance(from, spender, amount)?;
 
         if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
             return Ok(None);
