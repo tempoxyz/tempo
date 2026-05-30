@@ -165,6 +165,8 @@ impl TIP20Token {
     /// Returns the logo URI for this token (TIP-1026).
     ///
     /// Returns an empty string if not set.
+    #[cold]
+    #[inline(never)]
     pub fn logo_uri(&self) -> Result<String> {
         self.logo_uri.read()
     }
