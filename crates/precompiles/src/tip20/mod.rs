@@ -786,14 +786,15 @@ impl TIP20Token {
     /// - `InsufficientBalance` — sender balance lower than transfer amount
     pub fn transfer(&mut self, msg_sender: Address, call: ITIP20::transferCall) -> Result<bool> {
         trace!(%msg_sender, ?call, "transferring TIP20");
-        let Some(to) =
-            self.validate_transfer(None, msg_sender, call.to, call.amount, B256::ZERO)?
+        let recipient = call.to;
+        let amount = call.amount;
+        let Some(to) = self.validate_transfer(None, msg_sender, recipient, amount, B256::ZERO)?
         else {
             return Ok(true);
         };
 
-        self._transfer(msg_sender, &to, call.amount)?;
-        if let Some(hop) = to.build_virtual_transfer_event(call.amount) {
+        self._transfer(msg_sender, &to, amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(amount) {
             self.emit_event(hop)?;
         }
 
