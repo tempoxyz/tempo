@@ -563,7 +563,8 @@ where
             }
 
             let Some(pool_tx) = best_txs.next() else {
-                if build_once_with_shared_trie
+                if !empty
+                    && build_once_with_shared_trie
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
                 {
