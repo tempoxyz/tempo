@@ -196,34 +196,36 @@ where
         &mut self,
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
-        if tx.is_system_tx {
-            let TxKind::Call(to) = tx.inner.kind else {
-                return Err(TempoInvalidTransaction::SystemTransactionMustBeCall.into());
-            };
-
-            let mut result = if self.inspect {
-                self.inner
-                    .inspect_system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
+        if !tx.is_system_tx {
+            return if self.inspect {
+                self.inner.inspect_tx(tx)
             } else {
-                self.inner
-                    .system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
+                self.inner.transact(tx)
             };
-
-            // system transactions should not consume any gas
-            let ExecutionResult::Success { gas, .. } = &mut result.result else {
-                return Err(
-                    TempoInvalidTransaction::SystemTransactionFailed(result.result.into()).into(),
-                );
-            };
-
-            *gas = ResultGas::default();
-
-            Ok(result)
-        } else if self.inspect {
-            self.inner.inspect_tx(tx)
-        } else {
-            self.inner.transact(tx)
         }
+
+        let TxKind::Call(to) = tx.inner.kind else {
+            return Err(TempoInvalidTransaction::SystemTransactionMustBeCall.into());
+        };
+
+        let mut result = if self.inspect {
+            self.inner
+                .inspect_system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
+        } else {
+            self.inner
+                .system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
+        };
+
+        // system transactions should not consume any gas
+        let ExecutionResult::Success { gas, .. } = &mut result.result else {
+            return Err(
+                TempoInvalidTransaction::SystemTransactionFailed(result.result.into()).into(),
+            );
+        };
+
+        *gas = ResultGas::default();
+
+        Ok(result)
     }
 
     fn transact_system_call(
