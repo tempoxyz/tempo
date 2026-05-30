@@ -13,7 +13,7 @@ use revm::{
     context::{
         Block, Cfg, ContextTr, JournalTr, LocalContextTr, Transaction, TransactionType,
         journaled_state::account::JournaledAccountTr,
-        result::{EVMError, ExecutionResult, InvalidTransaction, ResultGas},
+        result::{EVMError, ExecutionResult, HaltReason, InvalidTransaction, ResultGas},
         transaction::{AccessListItem, AccessListItemTr},
     },
     context_interface::cfg::{GasId, GasParams},
@@ -109,6 +109,33 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 ///
 /// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
 pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
+
+#[inline]
+fn map_mainnet_execution_result(
+    result: ExecutionResult<HaltReason>,
+) -> ExecutionResult<TempoHaltReason> {
+    match result {
+        ExecutionResult::Success {
+            reason,
+            gas,
+            logs,
+            output,
+        } => ExecutionResult::Success {
+            reason,
+            gas,
+            logs,
+            output,
+        },
+        ExecutionResult::Revert { gas, logs, output } => {
+            ExecutionResult::Revert { gas, logs, output }
+        }
+        ExecutionResult::Halt { reason, gas, logs } => ExecutionResult::Halt {
+            reason: reason.into(),
+            gas,
+            logs,
+        },
+    }
+}
 
 /// Calculates the gas cost for verifying a primitive signature.
 ///
@@ -840,9 +867,10 @@ where
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         evm.clear();
 
-        MainnetHandler::default()
-            .execution_result(evm, result, result_gas)
-            .map(|result| result.map_haltreason(Into::into))
+        let mut mainnet: MainnetHandler<Self::Evm, Self::Error, <Self::Evm as EvmTr>::Frame> =
+            MainnetHandler::default();
+        let result = mainnet.execution_result(evm, result, result_gas)?;
+        Ok(map_mainnet_execution_result(result))
     }
 
     /// Override apply_eip7702_auth_list to support AA transactions with authorization lists.
