@@ -137,9 +137,8 @@ where
     fn ensure_pool_time_bounds(
         &self,
         tx: &TempoTransaction,
+        tip_timestamp: u64,
     ) -> Result<(), TempoPoolTransactionError> {
-        let tip_timestamp = self.inner.fork_tracker().tip_timestamp();
-
         // Reject AA txs where `valid_before` is too close to current time (or already expired).
         // The EVM checks `valid_before > block_timestamp` but the pool needs an extra
         // propagation buffer to prevent txs from expiring at peers with slightly newer tips.
@@ -330,10 +329,8 @@ where
         mut state_provider: impl StateProvider,
     ) -> TransactionValidationOutcome<TempoPooledTransaction> {
         // Get the current hardfork based on tip timestamp
-        let spec = self
-            .inner
-            .chain_spec()
-            .tempo_hardfork_at(self.inner.fork_tracker().tip_timestamp());
+        let tip_timestamp = self.inner.fork_tracker().tip_timestamp();
+        let spec = self.inner.chain_spec().tempo_hardfork_at(tip_timestamp);
 
         // Reject system transactions, those are never allowed in the pool.
         if transaction.inner().is_system_tx() {
@@ -374,7 +371,7 @@ where
 
         // Pool-only time-bound checks: valid_before propagation buffer, valid_after max offset.
         if let Some(tx) = transaction.inner().as_aa()
-            && let Err(err) = self.ensure_pool_time_bounds(tx.tx())
+            && let Err(err) = self.ensure_pool_time_bounds(tx.tx(), tip_timestamp)
         {
             return TransactionValidationOutcome::Invalid(
                 transaction,
@@ -419,11 +416,7 @@ where
         // Pool-only key-expiry propagation buffer: reject keychain txs whose key
         // expires too soon (within AA_VALID_BEFORE_MIN_SECS of tip timestamp).
         if let Some(key_expiry) = validation_ctx.key_expiry {
-            let min_allowed = self
-                .inner
-                .fork_tracker()
-                .tip_timestamp()
-                .saturating_add(AA_VALID_BEFORE_MIN_SECS);
+            let min_allowed = tip_timestamp.saturating_add(AA_VALID_BEFORE_MIN_SECS);
             if key_expiry <= min_allowed {
                 return TransactionValidationOutcome::Invalid(
                     transaction,
@@ -512,13 +505,7 @@ where
                     }
 
                     // Check if T1 hardfork is active for expiring nonce handling
-                    let current_time = self.inner.fork_tracker().tip_timestamp();
-                    let is_t1_active = self
-                        .inner
-                        .chain_spec()
-                        .is_t1_active_at_timestamp(current_time);
-
-                    if is_t1_active && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                    if spec.is_t1() && nonce_key == TEMPO_EXPIRING_NONCE_KEY {
                         // Expiring nonce transactions are validated by the EVM
                     } else {
                         // This is a 2D nonce transaction - validate against 2D nonce
