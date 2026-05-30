@@ -1,4 +1,4 @@
-use crate::{TempoBlockEnv, TempoTxEnv, instructions};
+use crate::{TempoBlockEnv, TempoTxEnv, instructions, precompiles::TempoPrecompiles};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
 use revm::{
@@ -26,7 +26,7 @@ pub struct TempoEvm<DB: Database, I> {
         TempoContext<DB>,
         I,
         EthInstructions<EthInterpreter, TempoContext<DB>>,
-        PrecompilesMap,
+        TempoPrecompiles,
         EthFrame<EthInterpreter>,
     >,
     /// The fee collected in `collectFeePreTx` call.
@@ -56,7 +56,7 @@ pub struct TempoEvm<DB: Database, I> {
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Create a new Tempo EVM.
     pub fn new(ctx: TempoContext<DB>, inspector: I) -> Self {
-        let precompiles = tempo_precompiles::tempo_precompiles(&ctx.cfg);
+        let precompiles = TempoPrecompiles::new(tempo_precompiles::tempo_precompiles(&ctx.cfg));
 
         Self::new_inner(Evm {
             instruction: instructions::tempo_instructions(ctx.cfg.spec),
@@ -75,7 +75,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             TempoContext<DB>,
             I,
             EthInstructions<EthInterpreter, TempoContext<DB>>,
-            PrecompilesMap,
+            TempoPrecompiles,
             EthFrame<EthInterpreter>,
         >,
     ) -> Self {
@@ -115,7 +115,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 
     /// Consumes self and returns a new Evm type with given Precompiles.
     pub fn with_precompiles(self, precompiles: PrecompilesMap) -> Self {
-        Self::new_inner(self.inner.with_precompiles(precompiles))
+        Self::new_inner(self.inner.with_precompiles(TempoPrecompiles::new(precompiles)))
     }
 
     /// Consumes self and returns the inner Inspector.
@@ -136,7 +136,7 @@ where
 {
     type Context = TempoContext<DB>;
     type Instructions = EthInstructions<EthInterpreter, TempoContext<DB>>;
-    type Precompiles = PrecompilesMap;
+    type Precompiles = TempoPrecompiles;
     type Frame = EthFrame<EthInterpreter>;
 
     fn all(

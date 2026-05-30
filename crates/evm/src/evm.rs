@@ -254,7 +254,7 @@ where
         (
             &self.inner.inner.ctx.journaled_state.database,
             &self.inner.inner.inspector,
-            &self.inner.inner.precompiles,
+            self.inner.inner.precompiles.as_map(),
         )
     }
 
@@ -262,7 +262,7 @@ where
         (
             &mut self.inner.inner.ctx.journaled_state.database,
             &mut self.inner.inner.inspector,
-            &mut self.inner.inner.precompiles,
+            self.inner.inner.precompiles.as_map_mut(),
         )
     }
 }
