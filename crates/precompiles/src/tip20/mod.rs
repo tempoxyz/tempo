@@ -1360,7 +1360,7 @@ impl TIP20Token {
 /// recipients, `virtual_addr` carries the original virtual address for event emission.
 ///
 /// [TIP-1022]: <https://docs.tempo.xyz/protocol/tip1022>
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub(crate) struct Recipient {
     /// The effective (resolved) address where the balance is credited.
     pub(crate) target: Address,
