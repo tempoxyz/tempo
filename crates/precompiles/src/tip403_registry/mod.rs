@@ -194,12 +194,16 @@ impl TIP403Registry {
     }
 
     /// Returns the next policy ID to be assigned (always ≥ 2, since IDs 0 and 1 are reserved).
+    #[cold]
+    #[inline(never)]
     pub fn policy_id_counter(&self) -> Result<u64> {
         // Skips the built-in policy IDs, when initializing the counter for the first time.
         self.policy_id_counter.read().map(|counter| counter.max(2))
     }
 
     /// Returns `true` if the given policy ID exists (built-in or user-created).
+    #[cold]
+    #[inline(never)]
     pub fn policy_exists(&self, call: ITIP403Registry::policyExistsCall) -> Result<bool> {
         // Built-in policies (0 and 1) always exist
         if self.builtin_authorization(call.policyId).is_some() {
@@ -217,6 +221,8 @@ impl TIP403Registry {
     /// # Errors
     /// - `PolicyNotFound` — the policy ID does not exist
     /// - `InvalidPolicyType` — stored type cannot be decoded (e.g. pre-T1 `COMPOUND` on T2+)
+    #[cold]
+    #[inline(never)]
     pub fn policy_data(
         &self,
         call: ITIP403Registry::policyDataCall,
@@ -258,6 +264,8 @@ impl TIP403Registry {
     /// # Errors
     /// - `IncompatiblePolicyType` — the policy exists but is not compound
     /// - `PolicyNotFound` — the policy ID does not exist
+    #[cold]
+    #[inline(never)]
     pub fn compound_policy_data(
         &self,
         call: ITIP403Registry::compoundPolicyDataCall,
@@ -286,6 +294,8 @@ impl TIP403Registry {
     }
 
     /// Returns `account`'s receive-policy configuration.
+    #[cold]
+    #[inline(never)]
     pub fn receive_policy(&self, account: Address) -> Result<ITIP403Registry::receivePolicyReturn> {
         let config = self.receive_policies[account].config.read()?;
         Ok(ITIP403Registry::receivePolicyReturn {
@@ -300,6 +310,8 @@ impl TIP403Registry {
 
     /// Checks `receiver`'s receive policy for an inbound transfer. Returns the blocking
     /// reason, or `None` if authorized.
+    #[cold]
+    #[inline(never)]
     pub fn validate_receive_policy(
         &self,
         token: Address,
