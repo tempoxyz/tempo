@@ -1,7 +1,9 @@
 use crate::{
     TempoEvmConfig, TempoEvmFactory, block::TempoReceiptBuilder, context::TempoBlockExecutionCtx,
 };
+use alloy_consensus::{TxReceipt, proofs::calculate_receipt_root};
 use alloy_evm::{block::BlockExecutionError, eth::EthBlockExecutorFactory};
+use alloy_primitives::Bloom;
 use reth_evm::execute::{BlockAssembler, BlockAssemblerInput};
 use reth_evm_ethereum::EthBlockAssembler;
 use reth_primitives_traits::SealedHeader;
@@ -55,10 +57,26 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
 
         let timestamp_millis_part = evm_env.block_env.timestamp_millis_part;
 
+        let (receipts_root, logs_bloom) = if output.receipts.is_empty() {
+            (None, None)
+        } else {
+            let receipts_with_bloom = output
+                .receipts
+                .iter()
+                .map(|receipt| receipt.with_bloom_ref())
+                .collect::<Vec<_>>();
+            let receipts_root = calculate_receipt_root(&receipts_with_bloom);
+            let logs_bloom = receipts_with_bloom
+                .iter()
+                .fold(Bloom::ZERO, |bloom, receipt| bloom | receipt.bloom_ref());
+
+            (Some(receipts_root), Some(logs_bloom))
+        };
+
         // Delegate block building to the inner assembler
-        let block = BlockAssembler::<
+        let block = EthBlockAssembler::<TempoChainSpec>::assemble_block::<
             EthBlockExecutorFactory<TempoReceiptBuilder, TempoChainSpec, TempoEvmFactory>,
-        >::assemble_block(
+        >(
             &self.inner,
             BlockAssemblerInput::new(
                 evm_env,
@@ -71,6 +89,9 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
                 state_root,
                 block_access_list_hash,
             ),
+            None,
+            receipts_root,
+            logs_bloom,
         )?;
 
         Ok(block.map_header(|inner| TempoHeader {
