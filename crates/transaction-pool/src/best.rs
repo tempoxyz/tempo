@@ -140,6 +140,15 @@ where
             }
 
             for (&slot, storage_slot) in &account.storage {
+                if storage_slot.present_value == storage_slot.original_value {
+                    if !self.decreased_balances.is_empty()
+                        && let Some(balance) = self.decreased_balances.get_mut(&(address, slot))
+                    {
+                        *balance = decode_tip20_balance(storage_slot.present_value);
+                    }
+                    continue;
+                }
+
                 // Decode packed TIP-20 balances so metadata changes cannot hide balance decreases.
                 let present_balance = decode_tip20_balance(storage_slot.present_value);
                 let original_balance = decode_tip20_balance(storage_slot.original_value);
