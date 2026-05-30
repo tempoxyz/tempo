@@ -79,8 +79,8 @@ pub(crate) fn gen_handler_field_init(
                 packing::gen_layout_ctx_expr(
                     ty,
                     false, // storable fields are always auto-allocated
-                    quote! { #const_mod::#loc_const.offset_slots },
-                    quote! { #const_mod::#loc_const.offset_bytes },
+                    quote! { #const_mod::#loc_const.offset_slots as usize },
+                    quote! { #const_mod::#loc_const.offset_bytes as usize },
                     prev_slot_const_ref,
                     next_slot_const_ref,
                 )

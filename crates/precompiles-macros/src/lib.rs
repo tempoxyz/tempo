@@ -411,7 +411,7 @@ pub fn gen_test_fields_struct(input: TokenStream) -> TokenStream {
             let slot_ident = Ident::new(&const_name, ident.span());
             let offset_ident = Ident::new(&format!("{const_name}_OFFSET"), ident.span());
             let loc_ident = Ident::new(&format!("{const_name}_LOC"), ident.span());
-            let bytes_ident = quote! {#loc_ident.size};
+            let bytes_ident = quote! {#loc_ident.size as usize};
 
             quote! {
                 RustStorageField::new(#field_name, #base_slot + #slot_ident, #offset_ident, #bytes_ident)

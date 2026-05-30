@@ -43,21 +43,24 @@ impl StorageOps for PackedSlot {
 #[derive(Debug, Clone, Copy)]
 pub struct FieldLocation {
     /// Offset in slots from the base slot
-    pub offset_slots: usize,
+    pub offset_slots: u32,
     /// Offset in bytes within the target slot
-    pub offset_bytes: usize,
+    pub offset_bytes: u8,
     /// Size of the field in bytes
-    pub size: usize,
+    pub size: u8,
 }
 
 impl FieldLocation {
     /// Create a new field location
     #[inline]
     pub const fn new(offset_slots: usize, offset_bytes: usize, size: usize) -> Self {
+        assert!(offset_slots <= u32::MAX as usize);
+        assert!(offset_bytes <= u8::MAX as usize);
+        assert!(size <= u8::MAX as usize);
         Self {
-            offset_slots,
-            offset_bytes,
-            size,
+            offset_slots: offset_slots as u32,
+            offset_bytes: offset_bytes as u8,
+            size: size as u8,
         }
     }
 }

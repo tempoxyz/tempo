@@ -91,7 +91,7 @@ impl<T> Slot<T> {
         );
         Self {
             slot: base_slot.saturating_add(U256::from_limbs([loc.offset_slots as u64, 0, 0, 0])),
-            ctx: LayoutCtx::packed(loc.offset_bytes),
+            ctx: LayoutCtx::packed(loc.offset_bytes as usize),
             address,
             _ty: PhantomData,
         }

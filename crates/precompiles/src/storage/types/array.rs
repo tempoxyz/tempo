@@ -126,7 +126,7 @@ impl<T: StorableType, const N: usize> ArrayHandler<T, N> {
             let location = packing::calc_element_loc(index, T::BYTES);
             (
                 base_slot + U256::from(location.offset_slots),
-                LayoutCtx::packed(location.offset_bytes),
+                LayoutCtx::packed(location.offset_bytes as usize),
             )
         } else {
             (base_slot + U256::from(index * T::SLOTS), LayoutCtx::FULL)

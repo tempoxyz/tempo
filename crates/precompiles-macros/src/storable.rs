@@ -440,12 +440,12 @@ fn gen_load_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
             packing::get_neighbor_slot_refs(idx, fields, packing, |(name, _)| name, false);
 
         let slot_addr = quote! { base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots) };
-        let packed_ctx = quote! { crate::storage::LayoutCtx::packed(#packing::#loc_const.offset_bytes) };
+        let packed_ctx = quote! { crate::storage::LayoutCtx::packed(#packing::#loc_const.offset_bytes as usize) };
 
         if let Some(prev_slot_ref) = prev_slot_ref {
             quote! {
                 let #name = {
-                    let curr_offset = #packing::#loc_const.offset_slots;
+                    let curr_offset = #packing::#loc_const.offset_slots as usize;
                     let prev_offset = #prev_slot_ref;
 
                     if <#ty as crate::storage::StorableType>::IS_PACKABLE && curr_offset == prev_offset {
@@ -506,14 +506,14 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
             packing::get_neighbor_slot_refs(idx, fields, packing, |(name, _)| name, false);
 
         let slot_addr = quote! { base_slot + ::alloy::primitives::U256::from(#packing::#loc_const.offset_slots) };
-        let packed_ctx = quote! { crate::storage::LayoutCtx::packed(#packing::#loc_const.offset_bytes) };
+        let packed_ctx = quote! { crate::storage::LayoutCtx::packed(#packing::#loc_const.offset_bytes as usize) };
 
         // Determine if we need to store after this field
         let should_store = match (&next_slot_ref, next_ty) {
             (Some(next_slot), Some(next_ty)) => {
                 // Store if next field is in different slot OR next field is not packable
                 quote! {
-                    #packing::#loc_const.offset_slots != #next_slot
+                    #packing::#loc_const.offset_slots as usize != #next_slot
                         || !<#next_ty as crate::storage::StorableType>::IS_PACKABLE
                 }
             }
@@ -522,7 +522,7 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
 
         if let Some(prev_slot_ref) = prev_slot_ref {
             quote! {{
-                let curr_offset = #packing::#loc_const.offset_slots;
+                let curr_offset = #packing::#loc_const.offset_slots as usize;
                 let prev_offset = #prev_slot_ref;
 
                 if <#ty as crate::storage::StorableType>::IS_PACKABLE && curr_offset == prev_offset {
@@ -578,7 +578,7 @@ fn gen_store_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
                     } else {
                         storage.load(#slot_addr)?
                     };
-                    pending_offset = Some(#packing::#loc_const.offset_slots);
+                    pending_offset = Some(#packing::#loc_const.offset_slots as usize);
                     let mut packed = crate::storage::packing::PackedSlot(pending_val);
                     <#ty as crate::storage::Storable>::store(&self.#name, &mut packed, ::alloy::primitives::U256::ZERO, #packed_ctx)?;
                     pending_val = packed.0;
@@ -626,7 +626,8 @@ fn gen_delete_impl(fields: &[(&Ident, &Type)], packing: &Ident) -> TokenStream {
     let is_static_slot = fields.iter().map(|(name, ty)| {
         let loc_const = PackingConstants::new(name).location();
         quote! {
-            ((#packing::#loc_const.offset_slots..#packing::#loc_const.offset_slots + <#ty as crate::storage::StorableType>::SLOTS)
+            (((#packing::#loc_const.offset_slots as usize)
+                ..(#packing::#loc_const.offset_slots as usize + <#ty as crate::storage::StorableType>::SLOTS))
                 .contains(&slot_offset) &&
              !<#ty as crate::storage::StorableType>::IS_DYNAMIC)
         }

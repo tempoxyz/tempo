@@ -252,7 +252,7 @@ where
             let location = calc_element_loc(index, T::BYTES);
             (
                 data_start + U256::from(location.offset_slots),
-                LayoutCtx::packed(location.offset_bytes),
+                LayoutCtx::packed(location.offset_bytes as usize),
             )
         } else {
             (data_start + U256::from(index * T::SLOTS), LayoutCtx::FULL)
@@ -644,7 +644,7 @@ mod tests {
             elem_slot.slot(),
             data_start + U256::from(expected_loc.offset_slots)
         );
-        assert_eq!(elem_slot.offset(), Some(expected_loc.offset_bytes));
+        assert_eq!(elem_slot.offset(), Some(expected_loc.offset_bytes as usize));
 
         // Element at index 35 should be in slot 1, offset 3 (35 % 32 = 3)
         let elem_slot = &handler[35];
@@ -653,7 +653,7 @@ mod tests {
             elem_slot.slot(),
             data_start + U256::from(expected_loc.offset_slots)
         );
-        assert_eq!(elem_slot.offset(), Some(expected_loc.offset_bytes));
+        assert_eq!(elem_slot.offset(), Some(expected_loc.offset_bytes as usize));
     }
 
     #[test]

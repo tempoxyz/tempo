@@ -244,7 +244,7 @@ pub(crate) fn classify_field_type(ty: &Type) -> syn::Result<FieldKind<'_>> {
 /// Generic over the field type - uses a closure to extract the field name.
 ///
 /// - `use_full_slot=true`: returns `*_SLOT` (U256) for contracts
-/// - `use_full_slot=false`: returns `*_LOC.offset_slots` (usize) for storable structs
+/// - `use_full_slot=false`: returns `*_LOC.offset_slots as usize` for storable structs
 pub(crate) fn get_neighbor_slot_refs<T, F>(
     idx: usize,
     fields: &[T],
@@ -262,7 +262,7 @@ where
             Some(quote! { #packing::#prev_slot })
         } else {
             let prev_loc = PackingConstants::new(prev_name).location();
-            Some(quote! { #packing::#prev_loc.offset_slots })
+            Some(quote! { #packing::#prev_loc.offset_slots as usize })
         }
     } else {
         None
@@ -275,7 +275,7 @@ where
             Some(quote! { #packing::#next_slot })
         } else {
             let next_loc = PackingConstants::new(next_name).location();
-            Some(quote! { #packing::#next_loc.offset_slots })
+            Some(quote! { #packing::#next_loc.offset_slots as usize })
         }
     } else {
         None
