@@ -203,6 +203,8 @@ impl TIP20Token {
     ///
     /// This role identifier grants permission to pause the token contract.
     /// The role is computed as `keccak256("PAUSE_ROLE")`.
+    #[cold]
+    #[inline(never)]
     pub fn pause_role() -> B256 {
         *PAUSE_ROLE
     }
@@ -211,6 +213,8 @@ impl TIP20Token {
     ///
     /// This role identifier grants permission to unpause the token contract.
     /// The role is computed as `keccak256("UNPAUSE_ROLE")`.
+    #[cold]
+    #[inline(never)]
     pub fn unpause_role() -> B256 {
         *UNPAUSE_ROLE
     }
@@ -219,6 +223,8 @@ impl TIP20Token {
     ///
     /// This role identifier grants permission to mint and burn tokens.
     /// The role is computed as `keccak256("ISSUER_ROLE")`.
+    #[cold]
+    #[inline(never)]
     pub fn issuer_role() -> B256 {
         *ISSUER_ROLE
     }
@@ -227,6 +233,8 @@ impl TIP20Token {
     ///
     /// This role identifier grants permission to burn tokens from blocked accounts.
     /// The role is computed as `keccak256("BURN_BLOCKED_ROLE")`.
+    #[cold]
+    #[inline(never)]
     pub fn burn_blocked_role() -> B256 {
         *BURN_BLOCKED_ROLE
     }
