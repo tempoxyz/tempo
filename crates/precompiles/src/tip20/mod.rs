@@ -877,6 +877,8 @@ impl TIP20Token {
     /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     /// - `InsufficientBalance` — `from` balance lower than transfer amount
+    #[cold]
+    #[inline(never)]
     pub fn system_transfer_from(
         &mut self,
         caller: Address,
