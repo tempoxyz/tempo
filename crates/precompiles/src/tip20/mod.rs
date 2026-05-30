@@ -809,6 +809,8 @@ impl TIP20Token {
     /// - `PolicyForbids` — TIP-403 policy rejects sender or recipient
     /// - `InsufficientAllowance` — caller allowance lower than transfer amount
     /// - `InsufficientBalance` — `from` balance lower than transfer amount
+    #[cold]
+    #[inline(never)]
     pub fn transfer_from(
         &mut self,
         msg_sender: Address,
