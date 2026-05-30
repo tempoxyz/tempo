@@ -558,6 +558,7 @@ where
                 self.executor.clone(),
                 self.provider.clone(),
                 execution_cache,
+                payload_id,
                 parent_header.hash(),
                 builder.evm().evm_env(),
                 best_txs,

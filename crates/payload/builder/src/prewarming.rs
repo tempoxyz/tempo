@@ -1,13 +1,17 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
+    time::{Duration, Instant},
 };
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_sol_types::SolInterface;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Database, Evm, EvmEnvFor};
+use reth_payload_builder::PayloadId;
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerPool};
@@ -24,18 +28,24 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
-use tracing::trace;
+use tracing::{debug, trace};
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+
+fn timing_micros(duration: Duration) -> u128 {
+    duration.as_micros()
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
 /// [`BestTransactions`] iterator with the source order and invalidations triggered
 /// by [`Self::mark_invalid`] preserved.
 pub(crate) struct BestTransactionsPrewarming {
+    payload_id: PayloadId,
     transactions_rx: Receiver<Option<BestTransaction>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
+    next_calls: u64,
 }
 
 impl BestTransactionsPrewarming {
@@ -44,6 +54,7 @@ impl BestTransactionsPrewarming {
         executor: TaskExecutor,
         provider: Provider,
         cache: Option<SavedCache>,
+        payload_id: PayloadId,
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
         best_txs: Txs,
@@ -64,9 +75,11 @@ impl BestTransactionsPrewarming {
         };
 
         let this = Self {
+            payload_id,
             transactions_rx,
             commands_tx: commands_tx.clone(),
             stop,
+            next_calls: 0,
         };
 
         let prewarm_executor = executor.clone();
@@ -240,13 +253,89 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
-            return Some(tx);
-        }
-        self.commands_tx
+        self.next_calls += 1;
+        let call = self.next_calls;
+        let total_start = Instant::now();
+
+        let try_recv_result = match self.transactions_rx.try_recv() {
+            Ok(Some(tx)) => {
+                let total_elapsed = total_start.elapsed();
+                debug!(
+                    target: "payload_builder::build_payload_timing::prewarming",
+                    id = %self.payload_id,
+                    phase = "best_txs.prewarming.next",
+                    call,
+                    try_recv_result = "ready_transaction",
+                    ready_transaction = true,
+                    advance_sent = false,
+                    yielded_transaction = true,
+                    tx = %tx.hash(),
+                    send_advance_duration_us = 0u128,
+                    recv_wait_duration_us = 0u128,
+                    total_duration_us = timing_micros(total_elapsed),
+                    ?total_elapsed,
+                    "timed prewarming best_txs.next operation"
+                );
+                return Some(tx);
+            }
+            Ok(None) => "ready_none",
+            Err(mpsc::TryRecvError::Empty) => "empty",
+            Err(mpsc::TryRecvError::Disconnected) => "disconnected",
+        };
+
+        let send_advance_start = Instant::now();
+        let advance_sent = self
+            .commands_tx
             .send(BestTransactionsCommand::Advance)
-            .ok()?;
-        self.transactions_rx.recv().ok().flatten()
+            .is_ok();
+        let send_advance_elapsed = send_advance_start.elapsed();
+
+        if !advance_sent {
+            let total_elapsed = total_start.elapsed();
+            debug!(
+                target: "payload_builder::build_payload_timing::prewarming",
+                id = %self.payload_id,
+                phase = "best_txs.prewarming.next",
+                call,
+                try_recv_result,
+                ready_transaction = false,
+                advance_sent,
+                yielded_transaction = false,
+                send_advance_duration_us = timing_micros(send_advance_elapsed),
+                recv_wait_duration_us = 0u128,
+                total_duration_us = timing_micros(total_elapsed),
+                ?send_advance_elapsed,
+                ?total_elapsed,
+                "timed prewarming best_txs.next operation"
+            );
+            return None;
+        }
+
+        let recv_wait_start = Instant::now();
+        let tx = self.transactions_rx.recv().ok().flatten();
+        let recv_wait_elapsed = recv_wait_start.elapsed();
+        let total_elapsed = total_start.elapsed();
+
+        debug!(
+            target: "payload_builder::build_payload_timing::prewarming",
+            id = %self.payload_id,
+            phase = "best_txs.prewarming.next",
+            call,
+            try_recv_result,
+            ready_transaction = false,
+            advance_sent,
+            yielded_transaction = tx.is_some(),
+            tx = ?tx.as_ref().map(|tx| tx.hash()),
+            send_advance_duration_us = timing_micros(send_advance_elapsed),
+            recv_wait_duration_us = timing_micros(recv_wait_elapsed),
+            total_duration_us = timing_micros(total_elapsed),
+            ?send_advance_elapsed,
+            ?recv_wait_elapsed,
+            ?total_elapsed,
+            "timed prewarming best_txs.next operation"
+        );
+
+        tx
     }
 }
 
@@ -804,6 +893,7 @@ mod tests {
             executor.clone(),
             provider,
             None,
+            PayloadId::new([0; 8]),
             parent_header.hash(),
             evm_env,
             TestBestTransactions::new(txs, log),
