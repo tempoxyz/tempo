@@ -215,7 +215,12 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+        if !self
+            .gas_tracker
+            .record_regular_cost(self.gas_params.warm_storage_read_cost())
+        {
+            return Err(TempoPrecompileError::OutOfGas);
+        }
         self.internals.tstore(address, key, value);
         Ok(())
     }
@@ -273,7 +278,12 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
-        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+        if !self
+            .gas_tracker
+            .record_regular_cost(self.gas_params.warm_storage_read_cost())
+        {
+            return Err(TempoPrecompileError::OutOfGas);
+        }
 
         Ok(self.internals.tload(address, key))
     }
