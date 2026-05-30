@@ -15,6 +15,8 @@ use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
 const T5_ADDED: &[[u8; 4]] = &[IAddressRegistry::isImplicitlyApprovedCall::SELECTOR];
 
 impl Precompile for AddressRegistry {
+    #[cold]
+    #[inline(never)]
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
