@@ -91,6 +91,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     /// Computes initial gas limit and reservoir for a transaction given its initial gas spending.
+    #[inline(always)]
     pub(crate) fn initial_gas_and_reservoir(
         &self,
         init_and_floor_gas: &InitialAndFloorGas,
