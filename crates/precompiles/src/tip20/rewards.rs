@@ -420,6 +420,8 @@ impl TIP20Token {
     ///
     /// For accounts that have delegated their rewards to another recipient, only the stored
     /// reward balance is returned (new accrual is skipped since it goes to the delegate).
+    #[cold]
+    #[inline(never)]
     pub fn get_pending_rewards(&self, account: Address) -> Result<u128> {
         let info = self.user_reward_info[account].read()?;
 
