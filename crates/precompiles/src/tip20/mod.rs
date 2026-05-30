@@ -1053,7 +1053,7 @@ impl TIP20Token {
             self.check_and_update_spending_limit(from, amount)?;
         }
 
-        if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
+        if self.validate_transfer_inbound_or_block(from, &to, amount, memo)? {
             return Ok(None);
         }
 
@@ -1091,7 +1091,7 @@ impl TIP20Token {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        if self.validate_inbound_or_block(msg_sender, &to, amount, Some(total_supply), memo)? {
+        if self.validate_mint_inbound_or_block(msg_sender, &to, total_supply, amount, memo)? {
             return Ok(None);
         }
 
@@ -1181,15 +1181,14 @@ impl TIP20Token {
         self.emit_event(to.build_transfer_event(from, amount))
     }
 
-    /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
-    /// account and stores a claim receipt; returns `true`. Returns `false` when the inbound is
-    /// authorized and the caller should proceed with the normal transfer or mint.
-    pub(crate) fn validate_inbound_or_block(
+    /// Validates the receive policy of `to.target`. If blocked, transfers the funds into the
+    /// guard account and stores a claim receipt; returns `true`. Returns `false` when the inbound
+    /// is authorized and the caller should proceed with the normal transfer.
+    pub(crate) fn validate_transfer_inbound_or_block(
         &mut self,
         originator: Address,
         to: &Recipient,
         amount: U256,
-        mint_total_supply: Option<U256>,
         memo: B256,
     ) -> Result<bool> {
         if !self.storage.spec().is_t6() {
@@ -1207,16 +1206,59 @@ impl TIP20Token {
         };
 
         let guard = Recipient::direct(RECEIVE_POLICY_GUARD_ADDRESS);
-        let kind = if let Some(total_supply) = mint_total_supply {
-            self._mint(&guard, total_supply, amount)?;
-            self.emit_event(TIP20Event::mint(guard.target, amount))?;
-            InboundKind::MINT
-        } else {
-            self._transfer(originator, &guard, amount)?;
-            InboundKind::TRANSFER
+        self._transfer(originator, &guard, amount)?;
+        ReceivePolicyGuard::new().store_blocked(
+            token,
+            originator,
+            to,
+            recovery,
+            amount,
+            reason,
+            InboundKind::TRANSFER,
+            memo,
+        )?;
+
+        Ok(true)
+    }
+
+    /// Validates the receive policy of `to.target`. If blocked, mints the funds into the guard
+    /// account and stores a claim receipt; returns `true`. Returns `false` when the inbound is
+    /// authorized and the caller should proceed with the normal mint.
+    pub(crate) fn validate_mint_inbound_or_block(
+        &mut self,
+        originator: Address,
+        to: &Recipient,
+        total_supply: U256,
+        amount: U256,
+        memo: B256,
+    ) -> Result<bool> {
+        if !self.storage.spec().is_t6() {
+            return Ok(false);
+        }
+        if to.target == RECEIVE_POLICY_GUARD_ADDRESS {
+            return Err(ReceivePolicyGuardError::address_reserved().into());
+        }
+
+        let token = self.address;
+        let Some((reason, recovery)) =
+            TIP403Registry::new().check_receive_policy(token, originator, to.target)?
+        else {
+            return Ok(false);
         };
-        ReceivePolicyGuard::new()
-            .store_blocked(token, originator, to, recovery, amount, reason, kind, memo)?;
+
+        let guard = Recipient::direct(RECEIVE_POLICY_GUARD_ADDRESS);
+        self._mint(&guard, total_supply, amount)?;
+        self.emit_event(TIP20Event::mint(guard.target, amount))?;
+        ReceivePolicyGuard::new().store_blocked(
+            token,
+            originator,
+            to,
+            recovery,
+            amount,
+            reason,
+            InboundKind::MINT,
+            memo,
+        )?;
 
         Ok(true)
     }
