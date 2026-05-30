@@ -145,6 +145,14 @@ struct ExecutionFixture {
 
 type FixedCacheDb = State<StateProviderDatabase<CachedStateProvider<InMemoryStateProvider>>>;
 
+fn reserve_transition_state(db: &mut FixedCacheDb, account_count: usize) {
+    if let Some(transition_state) = db.transition_state.as_mut() {
+        transition_state
+            .transitions
+            .reserve(account_count.saturating_add(16));
+    }
+}
+
 impl ExecutionFixture {
     fn state_db(&self) -> FixedCacheDb {
         let provider = CachedStateProvider::new(
@@ -152,18 +160,22 @@ impl ExecutionFixture {
             self.cache.clone(),
             Some(self.metrics.clone()),
         );
-        State::builder()
+        let mut db = State::builder()
             .with_database(StateProviderDatabase::new(provider))
             .with_bundle_update()
-            .build()
+            .build();
+        reserve_transition_state(&mut db, self.provider.accounts.len());
+        db
     }
 
     fn prewarm_state_db(&self) -> FixedCacheDb {
         let provider = CachedStateProvider::new_prewarm(self.provider.clone(), self.cache.clone());
-        State::builder()
+        let mut db = State::builder()
             .with_database(StateProviderDatabase::new(provider))
             .with_bundle_update()
-            .build()
+            .build();
+        reserve_transition_state(&mut db, self.provider.accounts.len());
+        db
     }
 }
 
