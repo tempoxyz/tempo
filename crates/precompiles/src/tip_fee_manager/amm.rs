@@ -500,6 +500,7 @@ impl TipFeeManager {
     /// - `UnderOverflow` — fee-amount arithmetic overflows
     ///
     /// [TIP-1033]: <https://docs.tempo.xyz/protocol/tips/tip-1033>
+    #[inline]
     pub fn plan_fee_route(
         &self,
         user_token: Address,
