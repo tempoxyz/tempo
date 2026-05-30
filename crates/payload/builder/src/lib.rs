@@ -341,10 +341,13 @@ where
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
         let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
         if let Some(execution_cache) = &execution_cache {
+            let cache_metrics = self
+                .state_provider_metrics
+                .then(|| self.cache_metrics.clone());
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
                 execution_cache.cache().clone(),
-                Some(self.cache_metrics.clone()),
+                cache_metrics,
             ));
         }
         if self.state_provider_metrics {
