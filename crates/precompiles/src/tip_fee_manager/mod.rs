@@ -148,7 +148,6 @@ impl TipFeeManager {
     /// Transfers `max_amount` of `user_token` to the fee manager via [`TIP20Token`] and, if the
     /// validator prefers a different token, verifies sufficient pool liquidity.
     /// Reserves liquidity on T1C+, with a two-hop fallback through `userToken.quoteToken()` on T5+.
-    /// Returns the user's fee token.
     ///
     /// # Errors
     /// - `InvalidToken` — `user_token` does not have a valid TIP-20 prefix
@@ -161,7 +160,7 @@ impl TipFeeManager {
         max_amount: U256,
         beneficiary: Address,
         skip_liquidity_check: bool,
-    ) -> Result<Address> {
+    ) -> Result<()> {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
 
@@ -177,8 +176,7 @@ impl TipFeeManager {
             self.reserve_fee_liquidity(user_token, validator_token, max_amount, route)?;
         }
 
-        // Return the user's token preference
-        Ok(user_token)
+        Ok(())
     }
 
     /// Reserves AMM liquidity needed to settle the selected fee route after transaction execution.
@@ -508,10 +506,7 @@ mod tests {
             )?;
 
             // Call collect_fee_pre_tx directly
-            let result =
-                fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator, false);
-            assert!(result.is_ok());
-            assert_eq!(result?, token.address());
+            fee_manager.collect_fee_pre_tx(user, token.address(), max_amount, validator, false)?;
 
             Ok(())
         })
@@ -869,15 +864,13 @@ mod tests {
             );
 
             // Skip liquidity check = true should pass
-            let result = fee_manager.collect_fee_pre_tx(
+            fee_manager.collect_fee_pre_tx(
                 user,
                 user_token.address(),
                 U256::from(1000),
                 validator,
                 true,
-            );
-            assert!(result.is_ok());
-            assert_eq!(result?, user_token.address());
+            )?;
 
             Ok(())
         })
