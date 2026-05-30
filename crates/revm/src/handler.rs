@@ -786,6 +786,69 @@ where
             Self::inspect_execute_single_call,
         )
     }
+
+    /// Calculates the standard non-AA intrinsic gas path away from AA validation.
+    #[cold]
+    #[inline(never)]
+    fn validate_non_aa_initial_tx_gas(
+        &self,
+        evm: &mut TempoEvm<DB, I>,
+        gas_limit: u64,
+    ) -> Result<InitialAndFloorGas, EVMError<DB::Error, TempoInvalidTransaction>> {
+        let tx = evm.ctx_ref().tx();
+        let spec = evm.ctx_ref().cfg().spec();
+        let gas_params = evm.ctx_ref().cfg().gas_params();
+
+        let mut acc = 0;
+        let mut storage = 0;
+        // legacy is only tx type that does not have access list.
+        if tx.tx_type() != TransactionType::Legacy {
+            (acc, storage) = tx
+                .access_list()
+                .map(|al| {
+                    al.fold((0, 0), |(acc, storage), item| {
+                        (acc + 1, storage + item.storage_slots().count())
+                    })
+                })
+                .unwrap_or_default();
+        };
+        let mut init_gas = gas_params.initial_tx_gas(
+            tx.input(),
+            tx.kind().is_create(),
+            acc as u64,
+            storage as u64,
+            tx.authorization_list_len() as u64,
+        );
+        // TIP-1000: Storage pricing updates for launch
+        // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
+        // no need for v1 fork check as gas_params would be zero
+        for auth in tx.authorization_list() {
+            if spec.is_t1() && auth.nonce == 0 {
+                init_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
+                init_gas.initial_state_gas += gas_params.new_account_state_gas();
+            }
+        }
+
+        // TIP-1000: Storage pricing updates for launch
+        // Transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
+        if spec.is_t1() && tx.nonce == 0 {
+            // Add both execution and state portions to initial_total_gas
+            // (revm's invariant: initial_total_gas >= initial_state_gas)
+            init_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
+            init_gas.initial_state_gas += gas_params.new_account_state_gas();
+        }
+
+        // Validate gas limit is sufficient for initial gas
+        if gas_limit < init_gas.initial_total_gas() {
+            return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+                gas_limit,
+                initial_gas: init_gas.initial_total_gas(),
+            }
+            .into());
+        }
+
+        Ok(init_gas)
+    }
 }
 
 impl<DB, I> Default for TempoEvmHandler<DB, I> {
@@ -1918,64 +1981,15 @@ where
         evm: &mut Self::Evm,
     ) -> Result<InitialAndFloorGas, Self::Error> {
         let tx = evm.ctx_ref().tx();
-        let spec = evm.ctx_ref().cfg().spec();
-        let gas_params = evm.ctx_ref().cfg().gas_params();
         let gas_limit = tx.gas_limit();
+        let is_aa = tx.tempo_tx_env.is_some();
 
         // Route to appropriate gas calculation and validation based on transaction type
-        let mut init_gas = if tx.tempo_tx_env.is_some() {
+        let mut init_gas = if is_aa {
             // AA transaction - use batch gas calculation (includes validation)
             validate_aa_initial_tx_gas(evm)?
         } else {
-            let mut acc = 0;
-            let mut storage = 0;
-            // legacy is only tx type that does not have access list.
-            if tx.tx_type() != TransactionType::Legacy {
-                (acc, storage) = tx
-                    .access_list()
-                    .map(|al| {
-                        al.fold((0, 0), |(acc, storage), item| {
-                            (acc + 1, storage + item.storage_slots().count())
-                        })
-                    })
-                    .unwrap_or_default();
-            };
-            let mut init_gas = gas_params.initial_tx_gas(
-                tx.input(),
-                tx.kind().is_create(),
-                acc as u64,
-                storage as u64,
-                tx.authorization_list_len() as u64,
-            );
-            // TIP-1000: Storage pricing updates for launch
-            // EIP-7702 authorisation list entries with `auth_list.nonce == 0` require an additional 250,000 gas.
-            // no need for v1 fork check as gas_params would be zero
-            for auth in tx.authorization_list() {
-                if spec.is_t1() && auth.nonce == 0 {
-                    init_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
-                    init_gas.initial_state_gas += gas_params.new_account_state_gas();
-                }
-            }
-
-            // TIP-1000: Storage pricing updates for launch
-            // Transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas.
-            if spec.is_t1() && tx.nonce == 0 {
-                // Add both execution and state portions to initial_total_gas
-                // (revm's invariant: initial_total_gas >= initial_state_gas)
-                init_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
-                init_gas.initial_state_gas += gas_params.new_account_state_gas();
-            }
-
-            // Validate gas limit is sufficient for initial gas
-            if gas_limit < init_gas.initial_total_gas() {
-                return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
-                    gas_limit,
-                    initial_gas: init_gas.initial_total_gas(),
-                }
-                .into());
-            }
-
-            init_gas
+            self.validate_non_aa_initial_tx_gas(evm, gas_limit)?
         };
 
         if evm.ctx.cfg.is_eip7623_disabled() {
