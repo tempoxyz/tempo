@@ -50,7 +50,7 @@ use reth_transaction_pool::{
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicU64, Ordering},
+        atomic::{AtomicU64, AtomicUsize, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -68,6 +68,8 @@ use tempo_transaction_pool::{
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
+
+const MAX_PAYLOAD_TX_COUNT_HINT: usize = 32_768;
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
@@ -109,6 +111,8 @@ pub struct TempoPayloadBuilder<Provider> {
     /// This lets the builder reserve time for non-interruptible
     /// `builder_finish` without a fixed duration.
     build_time_multiplier: Arc<AtomicU64>,
+    /// Last non-empty payload size, used to size block-builder transaction storage.
+    last_nonempty_tx_count_hint: Arc<AtomicUsize>,
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -161,11 +165,29 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
+            last_nonempty_tx_count_hint: Default::default(),
         }
     }
 
     fn build_time_multiplier(&self) -> u64 {
         self.build_time_multiplier.load(Ordering::Relaxed)
+    }
+
+    fn tx_count_hint(&self) -> Option<usize> {
+        let hint = self
+            .last_nonempty_tx_count_hint
+            .load(Ordering::Relaxed)
+            .min(MAX_PAYLOAD_TX_COUNT_HINT);
+        (hint != 0).then_some(hint)
+    }
+
+    fn update_tx_count_hint(&self, total_transactions: usize) {
+        if total_transactions != 0 {
+            self.last_nonempty_tx_count_hint.store(
+                total_transactions.min(MAX_PAYLOAD_TX_COUNT_HINT),
+                Ordering::Relaxed,
+            );
+        }
     }
 
     fn update_build_time_multiplier(&self, total_work: Duration, work_at_tx_cutoff: Duration) {
@@ -457,6 +479,7 @@ where
                     shared_gas_limit,
                     timestamp_millis_part: attributes.timestamp_millis_part(),
                     consensus_context: attributes.consensus_context(),
+                    builder_tx_count_hint: self.tx_count_hint(),
                     subblock_fee_recipients,
                 },
             )
@@ -886,6 +909,7 @@ where
             .record(payload_finalization_elapsed);
 
         let total_transactions = block.transaction_count();
+        self.update_tx_count_hint(total_transactions);
         self.metrics
             .total_transactions
             .record(total_transactions as f64);

@@ -39,6 +39,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
                     shared_gas_limit,
                     validator_set: _,
                     consensus_context,
+                    builder_tx_count_hint: _,
                     subblock_fee_recipients: _,
                 },
             parent,
@@ -178,6 +179,7 @@ mod tests {
             shared_gas_limit,
             validator_set: None,
             consensus_context: None,
+            builder_tx_count_hint: None,
             subblock_fee_recipients: HashMap::new(),
         };
 
@@ -289,6 +291,7 @@ mod tests {
             shared_gas_limit,
             validator_set: None,
             consensus_context: Some(ctx),
+            builder_tx_count_hint: None,
             subblock_fee_recipients: HashMap::new(),
         };
 

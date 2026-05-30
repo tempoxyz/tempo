@@ -795,6 +795,7 @@ mod tests {
             shared_gas_limit: 0,
             timestamp_millis_part: 0,
             consensus_context: None,
+            builder_tx_count_hint: None,
             subblock_fee_recipients: Default::default(),
         };
         let evm_env = evm_config
