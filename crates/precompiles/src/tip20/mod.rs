@@ -690,11 +690,15 @@ impl TIP20Token {
     // EIP-2612 Permit
 
     /// Returns the current nonce for an address (EIP-2612)
+    #[cold]
+    #[inline(never)]
     pub fn nonces(&self, call: ITIP20::noncesCall) -> Result<U256> {
         self.permit_nonces[call.owner].read()
     }
 
     /// Returns the EIP-712 domain separator, computed dynamically from the token name and chain ID.
+    #[cold]
+    #[inline(never)]
     pub fn domain_separator(&self) -> Result<B256> {
         let name = self.name()?;
         let name_hash = self.storage.keccak256(name.as_bytes())?;
