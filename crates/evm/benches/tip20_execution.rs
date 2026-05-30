@@ -762,6 +762,8 @@ fn transfer_reward_workload(
     }
 }
 
+#[cold]
+#[inline(never)]
 fn decode_raw_tx_line(line: &str) -> Recovered<TempoTxEnvelope> {
     let raw = line
         .trim()
@@ -775,6 +777,8 @@ fn decode_raw_tx_line(line: &str) -> Recovered<TempoTxEnvelope> {
         .expect("raw transaction should recover signer")
 }
 
+#[cold]
+#[inline(never)]
 fn load_txgen_workload(path: &Path) -> Workload {
     let raw = fs::read_to_string(path).expect("failed to read txgen transaction stream");
     let transactions: Vec<_> = raw
