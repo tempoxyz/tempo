@@ -86,6 +86,158 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         }
         Ok(())
     }
+
+    #[inline]
+    fn with_account_info_t4(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<(), TempoPrecompileError> {
+        let additional_cost = self.gas_params.cold_account_additional_cost();
+
+        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+        let insufficient_gas_for_cold_load = self.gas_tracker.remaining() < additional_cost;
+
+        let mut account = self
+            .internals
+            .load_account_mut_skip_cold_load(address, insufficient_gas_for_cold_load)?;
+
+        if account.is_cold {
+            deduct_gas(&mut self.gas_tracker, additional_cost)?;
+        }
+
+        account.load_code()?;
+
+        f(&account.data.account().info);
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn with_account_info_legacy(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<(), TempoPrecompileError> {
+        let additional_cost = self.gas_params.cold_account_additional_cost();
+
+        let mut account = self
+            .internals
+            .load_account_mut_skip_cold_load(address, false)?;
+
+        deduct_gas(
+            &mut self.gas_tracker,
+            self.gas_params.warm_storage_read_cost(),
+        )?;
+
+        if account.is_cold {
+            deduct_gas(&mut self.gas_tracker, additional_cost)?;
+        }
+
+        account.load_code()?;
+
+        f(&account.data.account().info);
+        Ok(())
+    }
+
+    #[inline]
+    fn sstore_t4(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        self.deduct_gas(self.gas_params.sstore_static_gas())?;
+        let insufficient_gas_for_cold_load =
+            self.gas_tracker.remaining() < self.gas_params.cold_storage_additional_cost();
+
+        let result = self.internals.load_account_mut(address)?.sstore(
+            key,
+            value,
+            insufficient_gas_for_cold_load,
+        )?;
+
+        self.deduct_gas(
+            self.gas_params
+                .sstore_dynamic_gas(true, &result.data, result.is_cold),
+        )?;
+        self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
+        self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
+
+        Ok(())
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn sstore_legacy(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        let result = self
+            .internals
+            .load_account_mut(address)?
+            .sstore(key, value, false)?;
+
+        self.deduct_gas(self.gas_params.sstore_static_gas())?;
+        self.deduct_gas(
+            self.gas_params
+                .sstore_dynamic_gas(true, &result.data, result.is_cold),
+        )?;
+        self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
+        self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
+
+        Ok(())
+    }
+
+    #[inline]
+    fn sload_t4(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
+        let additional_cost = self.gas_params.cold_storage_additional_cost();
+
+        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+        let insufficient_gas_for_cold_load = self.gas_tracker.remaining() < additional_cost;
+
+        let value;
+        let is_cold;
+        {
+            let mut account = self.internals.load_account_mut(address)?;
+            let val = account.sload(key, insufficient_gas_for_cold_load)?;
+
+            value = val.present_value;
+            is_cold = val.is_cold;
+        };
+
+        if is_cold {
+            self.deduct_gas(additional_cost)?;
+        }
+
+        Ok(value)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn sload_legacy(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
+        let additional_cost = self.gas_params.cold_storage_additional_cost();
+
+        let value;
+        let is_cold;
+        {
+            let mut account = self.internals.load_account_mut(address)?;
+            let val = account.sload(key, false)?;
+
+            value = val.present_value;
+            is_cold = val.is_cold;
+        };
+
+        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+
+        if is_cold {
+            self.deduct_gas(additional_cost)?;
+        }
+
+        Ok(value)
+    }
 }
 
 impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
@@ -136,36 +288,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
-        let additional_cost = self.gas_params.cold_account_additional_cost();
-
-        // T4+: pre-charge static gas to avoid cheap useless work.
-        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
-            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
-            self.gas_tracker.remaining() < additional_cost
+        if self.spec.is_t4() {
+            self.with_account_info_t4(address, f)
         } else {
-            false
-        };
-
-        let mut account = self
-            .internals
-            .load_account_mut_skip_cold_load(address, insufficient_gas_for_cold_load)?;
-
-        if !self.spec.is_t4() {
-            deduct_gas(
-                &mut self.gas_tracker,
-                self.gas_params.warm_storage_read_cost(),
-            )?;
+            self.with_account_info_legacy(address, f)
         }
-
-        // dynamic gas
-        if account.is_cold {
-            deduct_gas(&mut self.gas_tracker, additional_cost)?;
-        }
-
-        account.load_code()?;
-
-        f(&account.data.account().info);
-        Ok(())
     }
 
     #[inline]
@@ -175,37 +302,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
-        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
-            self.deduct_gas(self.gas_params.sstore_static_gas())?;
-            self.gas_tracker.remaining() < self.gas_params.cold_storage_additional_cost()
+        if self.spec.is_t4() {
+            self.sstore_t4(address, key, value)
         } else {
-            false
-        };
-
-        let result = self.internals.load_account_mut(address)?.sstore(
-            key,
-            value,
-            insufficient_gas_for_cold_load,
-        )?;
-
-        if !self.spec.is_t4() {
-            self.deduct_gas(self.gas_params.sstore_static_gas())?;
+            self.sstore_legacy(address, key, value)
         }
-
-        // dynamic gas
-        self.deduct_gas(
-            self.gas_params
-                .sstore_dynamic_gas(true, &result.data, result.is_cold),
-        )?;
-
-        // Track state gas (cold SSTORE zero->non-zero only)
-        self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
-
-        // refund gas.
-        self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
-
-        Ok(())
     }
 
     #[inline]
@@ -239,36 +340,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
-        let additional_cost = self.gas_params.cold_storage_additional_cost();
-
-        // T4+: pre-charge static gas to avoid cheap useless work.
-        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
-            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
-            self.gas_tracker.remaining() < additional_cost
+        if self.spec.is_t4() {
+            self.sload_t4(address, key)
         } else {
-            false
-        };
-
-        let value;
-        let is_cold;
-        {
-            let mut account = self.internals.load_account_mut(address)?;
-            let val = account.sload(key, insufficient_gas_for_cold_load)?;
-
-            value = val.present_value;
-            is_cold = val.is_cold;
-        };
-
-        if !self.spec.is_t4() {
-            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+            self.sload_legacy(address, key)
         }
-
-        // dynamic gas
-        if is_cold {
-            self.deduct_gas(additional_cost)?;
-        }
-
-        Ok(value)
     }
 
     #[inline]
