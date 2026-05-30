@@ -35,9 +35,8 @@ use reth_trie::{
 };
 use revm::{
     DatabaseCommit,
-    context::{BlockEnv, CfgEnv},
+    context::{BlockEnv, CfgEnv, JournalTr},
     database::{CacheDB, DbAccount, EmptyDB},
-    inspector::JournalExt,
 };
 use std::{collections::BTreeSet, fs, hint::black_box, num::NonZeroU64, path::Path, sync::Arc};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork, spec::TEMPO_T1_BASE_FEE};

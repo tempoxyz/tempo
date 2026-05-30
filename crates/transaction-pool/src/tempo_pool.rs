@@ -18,7 +18,7 @@ use reth_provider::{ChangedAccount, StateProviderFactory};
 use reth_storage_api::StateProvider;
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
-    BlockInfo, CanonicalStateUpdate, CoinbaseTipOrdering, GetPooledTransactionLimit,
+    BlobStore, BlockInfo, CanonicalStateUpdate, CoinbaseTipOrdering, GetPooledTransactionLimit,
     NewBlobSidecar, Pool, PoolResult, PoolSize, PoolTransaction, PropagatedTransactions,
     TransactionEvents, TransactionOrigin, TransactionPool, TransactionPoolExt,
     TransactionValidationOutcome, TransactionValidationTaskExecutor, TransactionValidator,
@@ -936,6 +936,13 @@ where
         announcement.retain_by_hash(|tx| !aa_pool.contains(tx))
     }
 
+    fn retain_contains<A: HandleMempoolData>(&self, announcement: &mut A) {
+        if announcement.is_empty() {
+            return;
+        }
+        announcement.retain_by_hash(|tx| self.contains(tx))
+    }
+
     fn contains(&self, tx_hash: &B256) -> bool {
         self.protocol_pool.contains(tx_hash) || self.aa_2d_pool.read().contains(tx_hash)
     }
@@ -954,6 +961,10 @@ where
 
     fn on_propagated(&self, txs: PropagatedTransactions) {
         self.protocol_pool.on_propagated(txs);
+    }
+
+    fn blob_store(&self) -> Box<dyn BlobStore> {
+        Box::new(self.protocol_pool.blob_store().clone())
     }
 
     fn get_transactions_by_sender(

@@ -2,7 +2,9 @@ use crate::evm::TempoContext;
 use alloy_evm::Database;
 use revm::{
     handler::instructions::EthInstructions,
-    interpreter::{Instruction, InstructionContext, interpreter::EthInterpreter, push},
+    interpreter::{
+        Instruction, InstructionContext, InstructionExecResult, interpreter::EthInterpreter, push,
+    },
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -16,8 +18,11 @@ const MILLIS_TIMESTAMP_GAS_COST: u64 = 2;
 type TempoInstructionContext<'a, DB> = InstructionContext<'a, TempoContext<DB>, EthInterpreter>;
 
 /// Opcode returning current timestamp in milliseconds.
-fn millis_timestamp<DB: Database>(context: TempoInstructionContext<'_, DB>) {
+fn millis_timestamp<DB: Database>(
+    context: TempoInstructionContext<'_, DB>,
+) -> InstructionExecResult {
     push!(context.interpreter, context.host.block.timestamp_millis());
+    Ok(())
 }
 
 /// Returns configured instructions table for Tempo.
@@ -28,7 +33,8 @@ pub(crate) fn tempo_instructions<DB: Database>(
     if !spec.is_t1c() {
         instructions.insert_instruction(
             MILLIS_TIMESTAMP,
-            Instruction::new(millis_timestamp, MILLIS_TIMESTAMP_GAS_COST),
+            Instruction::new(millis_timestamp),
+            MILLIS_TIMESTAMP_GAS_COST as u16,
         );
     }
     instructions

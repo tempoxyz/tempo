@@ -3,6 +3,7 @@ use alloy_evm::{
     precompiles::PrecompilesMap,
     revm::{
         Context, ExecuteEvm, InspectEvm, Inspector, SystemCallEvm,
+        context::DBErrorMarker,
         context::result::{EVMError, ResultAndState, ResultGas},
         inspector::NoOpInspector,
     },
@@ -29,7 +30,7 @@ impl EvmFactory for TempoEvmFactory {
     type Evm<DB: Database, I: Inspector<Self::Context<DB>>> = TempoEvm<DB, I>;
     type Context<DB: Database> = TempoContext<DB>;
     type Tx = TempoTxEnv;
-    type Error<DBError: std::error::Error + Send + Sync + 'static> =
+    type Error<DBError: std::error::Error + Send + Sync + DBErrorMarker + 'static> =
         EVMError<DBError, TempoInvalidTransaction>;
     type HaltReason = TempoHaltReason;
     type Spec = TempoHardfork;

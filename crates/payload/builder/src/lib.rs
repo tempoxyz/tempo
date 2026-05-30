@@ -936,7 +936,7 @@ where
             "Built payload"
         );
 
-        let eth_payload = EthBuiltPayload::new(sealed_block, total_fees, requests, None);
+        let eth_payload = EthBuiltPayload::new(Arc::new(block.clone()), total_fees, requests, None);
 
         let execution_output = BlockExecutionOutput {
             result: execution_result,
@@ -1126,7 +1126,15 @@ mod tests {
             },
         };
         let sealed = Arc::new(SealedBlock::seal_slow(block));
-        let eth = EthBuiltPayload::new(sealed, U256::ZERO, None, None);
+        let eth = EthBuiltPayload::new(
+            Arc::new(reth_primitives_traits::RecoveredBlock::new_sealed(
+                Arc::unwrap_or_clone(sealed),
+                vec![TEMPO_SYSTEM_TX_SENDER],
+            )),
+            U256::ZERO,
+            None,
+            None,
+        );
         TempoBuiltPayload::new(eth, None)
     }
 
