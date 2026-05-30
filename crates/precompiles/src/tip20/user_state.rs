@@ -130,6 +130,19 @@ impl Slot<UserState> {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn map_packed_user_state_load_error(err: TempoPrecompileError) -> TempoPrecompileError {
+    match err {
+        TempoPrecompileError::Panic(PanicKind::EnumConversionError) => {
+            TempoPrecompileError::Fatal(
+                "invalid T6 TIP-20 packed user state: reward flag discriminant".into(),
+            )
+        }
+        err => err,
+    }
+}
+
 impl Storable for UserState {
     fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
         debug_assert!(ctx.is_full(), "`UserState` is only loadable as a full slot");
@@ -143,15 +156,9 @@ impl Storable for UserState {
             });
         }
 
-        match PackedUserState::load(storage, slot, ctx) {
-            Ok(value) => Ok(value.into()),
-            Err(TempoPrecompileError::Panic(PanicKind::EnumConversionError)) => {
-                Err(TempoPrecompileError::Fatal(
-                    "invalid T6 TIP-20 packed user state: reward flag discriminant".into(),
-                ))
-            }
-            Err(err) => Err(err),
-        }
+        PackedUserState::load(storage, slot, ctx)
+            .map(Into::into)
+            .map_err(map_packed_user_state_load_error)
     }
 
     fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
