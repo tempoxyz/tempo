@@ -1,13 +1,21 @@
 use crate::{
     TempoEvmConfig, TempoEvmFactory, block::TempoReceiptBuilder, context::TempoBlockExecutionCtx,
 };
-use alloy_evm::{block::BlockExecutionError, eth::EthBlockExecutorFactory};
+use alloy_consensus::{
+    TxReceipt,
+    proofs::{calculate_receipt_root, calculate_transaction_root},
+};
+use alloy_evm::{
+    block::{BlockExecutionError, BlockExecutionResult},
+    eth::EthBlockExecutorFactory,
+};
+use alloy_primitives::{B256, Bloom};
 use reth_evm::execute::{BlockAssembler, BlockAssemblerInput};
 use reth_evm_ethereum::EthBlockAssembler;
-use reth_primitives_traits::SealedHeader;
+use reth_primitives_traits::{SealedHeader, logs_bloom as calculate_logs_bloom};
 use std::sync::Arc;
 use tempo_chainspec::TempoChainSpec;
-use tempo_primitives::TempoHeader;
+use tempo_primitives::{TempoHeader, TempoReceipt, TempoTxEnvelope};
 
 /// Assembler for Tempo blocks.
 #[derive(Debug, Clone)]
@@ -54,12 +62,15 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
         let parent = SealedHeader::new_unhashed(parent.clone().into_header().inner);
 
         let timestamp_millis_part = evm_env.block_env.timestamp_millis_part;
+        let (transactions_root, receipts_root, logs_bloom) =
+            precompute_block_roots(&transactions, output);
 
-        // Delegate block building to the inner assembler
-        let block = BlockAssembler::<
-            EthBlockExecutorFactory<TempoReceiptBuilder, TempoChainSpec, TempoEvmFactory>,
-        >::assemble_block(
-            &self.inner,
+        // Delegate block building to the inner assembler with roots computed above.
+        let block = self.inner.assemble_block::<EthBlockExecutorFactory<
+            TempoReceiptBuilder,
+            TempoChainSpec,
+            TempoEvmFactory,
+        >>(
             BlockAssemblerInput::new(
                 evm_env,
                 inner,
@@ -71,6 +82,9 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
                 state_root,
                 block_access_list_hash,
             ),
+            Some(transactions_root),
+            Some(receipts_root),
+            Some(logs_bloom),
         )?;
 
         Ok(block.map_header(|inner| TempoHeader {
@@ -81,6 +95,37 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
             consensus_context,
         }))
     }
+}
+
+fn precompute_block_roots(
+    transactions: &[TempoTxEnvelope],
+    output: &BlockExecutionResult<TempoReceipt>,
+) -> (B256, B256, Bloom) {
+    #[cfg(feature = "engine")]
+    {
+        let (transactions_root, (receipts_root, logs_bloom)) = rayon::join(
+            || calculate_transaction_root(transactions),
+            || calculate_receipts_root_and_bloom(&output.receipts),
+        );
+        (transactions_root, receipts_root, logs_bloom)
+    }
+
+    #[cfg(not(feature = "engine"))]
+    {
+        let transactions_root = calculate_transaction_root(transactions);
+        let (receipts_root, logs_bloom) = calculate_receipts_root_and_bloom(&output.receipts);
+        (transactions_root, receipts_root, logs_bloom)
+    }
+}
+
+fn calculate_receipts_root_and_bloom(receipts: &[TempoReceipt]) -> (B256, Bloom) {
+    let receipts_with_bloom = receipts
+        .iter()
+        .map(TxReceipt::with_bloom_ref)
+        .collect::<Vec<_>>();
+    let receipts_root = calculate_receipt_root(&receipts_with_bloom);
+    let logs_bloom = calculate_logs_bloom(receipts.iter().flat_map(|receipt| receipt.logs()));
+    (receipts_root, logs_bloom)
 }
 
 #[cfg(test)]
