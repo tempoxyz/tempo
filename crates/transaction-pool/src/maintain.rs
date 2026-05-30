@@ -20,7 +20,7 @@ use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{PoolTransaction, TransactionPool};
 use std::{
     collections::{BTreeMap, btree_map::Entry},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
@@ -33,6 +33,10 @@ use tracing::{debug, error};
 /// Evict transactions this many seconds before they expire to reduce propagation
 /// of near-expiry transactions that are likely to fail validation on peers.
 const EVICTION_BUFFER_SECS: u64 = 3;
+
+fn timing_micros(duration: Duration) -> u128 {
+    duration.as_micros()
+}
 
 /// Aggregated block-level invalidation events for the transaction pool.
 ///
@@ -587,6 +591,7 @@ where
     }
 
     let amm_cache = pool.amm_liquidity_cache();
+    let mut maintain_iteration = 0u64;
 
     loop {
         tokio::select! {
@@ -601,7 +606,7 @@ where
 
             // Process all maintenance operations on new block commit or reorg
             Some(event) = chain_events.next() => {
-                let new = match event {
+                let (event_kind, new) = match event {
                     CanonStateNotification::Reorg { old: _, new } => {
                         // Repopulate AMM liquidity cache from the new canonical chain
                         // to invalidate stale entries from orphaned blocks.
@@ -609,23 +614,53 @@ where
                             error!(target: "txpool", ?err, "AMM liquidity cache repopulate after reorg failed");
                         }
 
-                        new
+                        ("reorg", new)
                     }
-                    CanonStateNotification::Commit { new } => new,
+                    CanonStateNotification::Commit { new } => ("commit", new),
                 };
 
+                maintain_iteration = maintain_iteration.wrapping_add(1);
                 let block_update_start = Instant::now();
 
                 let tip = &new;
                 let bundle_state = tip.execution_outcome().state().state();
+                let tip_number = tip.tip().header().number();
+                let tip_hash = tip.tip().hash();
                 let tip_timestamp = tip.tip().header().timestamp();
+
+                debug!(
+                    target: "payload_builder::build_payload_timing::txpool_update",
+                    phase = "maintain_tempo_pool.chain_event_start",
+                    maintain_iteration,
+                    event_kind,
+                    block_number = tip_number,
+                    %tip_hash,
+                    tip_timestamp,
+                    chain_len = tip.len(),
+                    bundle_state_accounts = bundle_state.len(),
+                    "timed txpool maintain phase"
+                );
 
                 // 1. Update 2D nonce pool before scan-based maintenance.
                 // This removes mined 2D nonce transactions and promotes newly
                 // unblocked transactions before later pool scans.
                 let nonce_pool_start = Instant::now();
-                let _mined_aa_txs = pool.notify_aa_pool_on_state_updates(bundle_state);
-                metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
+                let mined_aa_txs = pool.notify_aa_pool_on_state_updates(bundle_state);
+                let nonce_pool_elapsed = nonce_pool_start.elapsed();
+                metrics
+                    .nonce_pool_update_duration_seconds
+                    .record(nonce_pool_elapsed);
+                debug!(
+                    target: "payload_builder::build_payload_timing::txpool_update",
+                    phase = "maintain_tempo_pool.notify_aa_pool_on_state_updates",
+                    maintain_iteration,
+                    block_number = tip_number,
+                    %tip_hash,
+                    mined_aa_count = mined_aa_txs.len(),
+                    duration_us = timing_micros(nonce_pool_elapsed),
+                    ?nonce_pool_elapsed,
+                    "timed txpool maintain phase"
+                );
 
                 // 2. Update AMM liquidity cache before revalidation/invalidation scans.
                 let amm_start = Instant::now();
@@ -635,12 +670,51 @@ where
                 {
                     error!(target: "txpool", ?err, "AMM liquidity cache update failed");
                 }
-                metrics.amm_cache_update_duration_seconds.record(amm_start.elapsed());
+                let amm_elapsed = amm_start.elapsed();
+                metrics.amm_cache_update_duration_seconds.record(amm_elapsed);
+                debug!(
+                    target: "payload_builder::build_payload_timing::txpool_update",
+                    phase = "maintain_tempo_pool.amm_cache_update",
+                    maintain_iteration,
+                    block_number = tip_number,
+                    %tip_hash,
+                    duration_us = timing_micros(amm_elapsed),
+                    ?amm_elapsed,
+                    "timed txpool maintain phase"
+                );
 
                 // 3. Collect all block-level invalidation events
+                let updates_from_chain_start = Instant::now();
                 let mut updates = TempoPoolUpdates::from_chain(tip);
+                let updates_from_chain_elapsed = updates_from_chain_start.elapsed();
+                debug!(
+                    target: "payload_builder::build_payload_timing::txpool_update",
+                    phase = "maintain_tempo_pool.updates_from_chain",
+                    maintain_iteration,
+                    block_number = tip_number,
+                    %tip_hash,
+                    revoked_keys = updates.revoked_keys.len(),
+                    key_authorization_target_changes =
+                        updates.key_authorization_target_changes.len(),
+                    spending_limit_changes = updates.spending_limit_changes.len(),
+                    spending_limit_spends = updates.spending_limit_spends.len(),
+                    validator_token_changes = updates.validator_token_changes.len(),
+                    user_token_changes = updates.user_token_changes.len(),
+                    blacklist_additions = updates.blacklist_additions.len(),
+                    whitelist_removals = updates.whitelist_removals.len(),
+                    pause_events = updates.pause_events.len(),
+                    transfer_policy_updates = updates.transfer_policy_updates.len(),
+                    quote_token_updates = updates.quote_token_updates.len(),
+                    fee_balance_changes = updates.fee_balance_changes.len(),
+                    key_authorization_witness_burns =
+                        updates.key_authorization_witness_burns.len(),
+                    duration_us = timing_micros(updates_from_chain_elapsed),
+                    ?updates_from_chain_elapsed,
+                    "timed txpool maintain phase"
+                );
 
                 // Remove expiry tracking for mined transactions.
+                let expiry_tracking_start = Instant::now();
                 state.untrack_many(tip.transaction_hashes());
 
                 // Evict transactions slightly before they expire to prevent
@@ -656,10 +730,23 @@ where
                         .filter(|hash| !mined_hashes.contains(hash) && pool.contains(hash))
                         .collect();
                 }
+                let expiry_tracking_elapsed = expiry_tracking_start.elapsed();
+                debug!(
+                    target: "payload_builder::build_payload_timing::txpool_update",
+                    phase = "maintain_tempo_pool.expiry_tracking",
+                    maintain_iteration,
+                    block_number = tip_number,
+                    %tip_hash,
+                    expired_count = updates.expired_txs.len(),
+                    duration_us = timing_micros(expiry_tracking_elapsed),
+                    ?expiry_tracking_elapsed,
+                    "timed txpool maintain phase"
+                );
 
                 // 4. Evict expired AA transactions
                 let expired_start = Instant::now();
                 let expired_count = updates.expired_txs.len();
+                let mut expired_removed_count = 0;
                 if expired_count > 0 {
                     debug!(
                         target: "txpool",
@@ -667,10 +754,26 @@ where
                         tip_timestamp,
                         "Evicting expired AA transactions (valid_before)"
                     );
-                    pool.remove_transactions(updates.expired_txs.clone());
+                    let removed_txs = pool.remove_transactions(updates.expired_txs.clone());
+                    expired_removed_count = removed_txs.len();
                     metrics.expired_transactions_evicted.increment(expired_count as u64);
                 }
-                metrics.expired_eviction_duration_seconds.record(expired_start.elapsed());
+                let expired_elapsed = expired_start.elapsed();
+                metrics
+                    .expired_eviction_duration_seconds
+                    .record(expired_elapsed);
+                debug!(
+                    target: "payload_builder::build_payload_timing::txpool_update",
+                    phase = "maintain_tempo_pool.expired_eviction",
+                    maintain_iteration,
+                    block_number = tip_number,
+                    %tip_hash,
+                    expired_count,
+                    removed_count = expired_removed_count,
+                    duration_us = timing_micros(expired_elapsed),
+                    ?expired_elapsed,
+                    "timed txpool maintain phase"
+                );
 
                 // 5. Handle fee token pause/unpause events
                 let pause_start = Instant::now();
@@ -687,7 +790,24 @@ where
                 // Process pause events: fetch pool transactions once for all pause tokens.
                 // This avoids the O(pause_events * pool_size) cost of fetching per event.
                 if !pause_tokens.is_empty() {
+                    let pause_all_transactions_start = Instant::now();
                     let all_txs = pool.all_transactions();
+                    let pause_all_transactions_elapsed = pause_all_transactions_start.elapsed();
+                    let pending_count = all_txs.pending.len();
+                    let queued_count = all_txs.queued.len();
+                    debug!(
+                        target: "payload_builder::build_payload_timing::txpool_update",
+                        phase = "maintain_tempo_pool.pause_all_transactions",
+                        maintain_iteration,
+                        block_number = tip_number,
+                        %tip_hash,
+                        pause_token_count = pause_tokens.len(),
+                        pending_count,
+                        queued_count,
+                        duration_us = timing_micros(pause_all_transactions_elapsed),
+                        ?pause_all_transactions_elapsed,
+                        "timed txpool maintain phase"
+                    );
 
                     // Group transactions by effective fee token for efficient batch processing.
                     // This single pass over all transactions handles all pause events.
@@ -709,8 +829,24 @@ where
                             continue;
                         };
 
+                        let hash_count = hashes_to_pause.len();
+                        let pause_remove_start = Instant::now();
                         let removed_txs = pool.remove_transactions(hashes_to_pause);
+                        let pause_remove_elapsed = pause_remove_start.elapsed();
                         let count = removed_txs.len();
+                        debug!(
+                            target: "payload_builder::build_payload_timing::txpool_update",
+                            phase = "maintain_tempo_pool.pause_remove_transactions",
+                            maintain_iteration,
+                            block_number = tip_number,
+                            %tip_hash,
+                            %token,
+                            hash_count,
+                            removed_count = count,
+                            duration_us = timing_micros(pause_remove_elapsed),
+                            ?pause_remove_elapsed,
+                            "timed txpool maintain phase"
+                        );
 
                         if count > 0 {
                             // Clean up expiry tracking for paused txs
@@ -812,7 +948,19 @@ where
                         &updates.key_authorization_witness_burns,
                     );
                 }
-                metrics.pause_events_duration_seconds.record(pause_start.elapsed());
+                let pause_elapsed = pause_start.elapsed();
+                metrics.pause_events_duration_seconds.record(pause_elapsed);
+                debug!(
+                    target: "payload_builder::build_payload_timing::txpool_update",
+                    phase = "maintain_tempo_pool.pause_events_total",
+                    maintain_iteration,
+                    block_number = tip_number,
+                    %tip_hash,
+                    pause_events = updates.pause_events.len(),
+                    duration_us = timing_micros(pause_elapsed),
+                    ?pause_elapsed,
+                    "timed txpool maintain phase"
+                );
 
                 // 8. Handle potentially invalidating updates
                 // When a cached value changes of a token (transfer policy, or quote token) changes,
@@ -834,7 +982,26 @@ where
                         continue;
                     }
 
+                    let revalidation_all_transactions_start = Instant::now();
                     let all_txs = pool.all_transactions();
+                    let revalidation_all_transactions_elapsed =
+                        revalidation_all_transactions_start.elapsed();
+                    let pending_count = all_txs.pending.len();
+                    let queued_count = all_txs.queued.len();
+                    debug!(
+                        target: "payload_builder::build_payload_timing::txpool_update",
+                        phase = "maintain_tempo_pool.revalidation_all_transactions",
+                        maintain_iteration,
+                        block_number = tip_number,
+                        %tip_hash,
+                        reason,
+                        updated_count = updated.len(),
+                        pending_count,
+                        queued_count,
+                        duration_us = timing_micros(revalidation_all_transactions_elapsed),
+                        ?revalidation_all_transactions_elapsed,
+                        "timed txpool maintain phase"
+                    );
                     let hashes: Vec<TxHash> = all_txs
                         .pending
                         .iter()
@@ -847,8 +1014,24 @@ where
                         .map(|tx| *tx.hash())
                         .collect();
                     if !hashes.is_empty() {
+                        let hash_count = hashes.len();
+                        let revalidation_remove_start = Instant::now();
                         let removed_txs = pool.remove_transactions(hashes);
+                        let revalidation_remove_elapsed = revalidation_remove_start.elapsed();
                         let count = removed_txs.len();
+                        debug!(
+                            target: "payload_builder::build_payload_timing::txpool_update",
+                            phase = "maintain_tempo_pool.revalidation_remove_transactions",
+                            maintain_iteration,
+                            block_number = tip_number,
+                            %tip_hash,
+                            reason,
+                            hash_count,
+                            removed_count = count,
+                            duration_us = timing_micros(revalidation_remove_elapsed),
+                            ?revalidation_remove_elapsed,
+                            "timed txpool maintain phase"
+                        );
 
                         for tx in &removed_txs {
                             state.untrack(tx.hash());
@@ -896,23 +1079,48 @@ where
                         "Processing transaction invalidation events"
                     );
                     let evicted = pool.evict_invalidated_transactions(&updates);
+                    let invalidation_elapsed = invalidation_start.elapsed();
                     for hash in &evicted {
                         state.untrack(hash);
                     }
                     metrics.transactions_invalidated.increment(evicted.len() as u64);
                     metrics
                         .invalidation_eviction_duration_seconds
-                        .record(invalidation_start.elapsed());
+                        .record(invalidation_elapsed);
+                    debug!(
+                        target: "payload_builder::build_payload_timing::txpool_update",
+                        phase = "maintain_tempo_pool.evict_invalidated_transactions",
+                        maintain_iteration,
+                        block_number = tip_number,
+                        %tip_hash,
+                        evicted_count = evicted.len(),
+                        duration_us = timing_micros(invalidation_elapsed),
+                        ?invalidation_elapsed,
+                        "timed txpool maintain phase"
+                    );
                 }
 
                 // 10. Evict stale pending transactions (must happen after AA pool promotions in step 1)
                 // Only runs once per interval (~30 min) to avoid overhead on every block.
                 // Transactions pending across two consecutive snapshots are considered stale.
                 if state.pending_staleness.should_check(tip_timestamp) {
+                    let stale_pending_snapshot_start = Instant::now();
                     let current_pending: B256Set =
                         pool.pending_transactions().iter().map(|tx| *tx.hash()).collect();
+                    let stale_pending_snapshot_elapsed = stale_pending_snapshot_start.elapsed();
                     let stale_to_evict =
                         state.pending_staleness.check_and_update(current_pending, tip_timestamp);
+                    debug!(
+                        target: "payload_builder::build_payload_timing::txpool_update",
+                        phase = "maintain_tempo_pool.stale_pending_snapshot",
+                        maintain_iteration,
+                        block_number = tip_number,
+                        %tip_hash,
+                        stale_to_evict_count = stale_to_evict.len(),
+                        duration_us = timing_micros(stale_pending_snapshot_elapsed),
+                        ?stale_pending_snapshot_elapsed,
+                        "timed txpool maintain phase"
+                    );
 
                     if !stale_to_evict.is_empty() {
                         debug!(
@@ -925,12 +1133,40 @@ where
                         for hash in &stale_to_evict {
                             state.untrack(hash);
                         }
+                        let hash_count = stale_to_evict.len();
+                        let stale_remove_start = Instant::now();
                         pool.remove_transactions(stale_to_evict);
+                        let stale_remove_elapsed = stale_remove_start.elapsed();
+                        debug!(
+                            target: "payload_builder::build_payload_timing::txpool_update",
+                            phase = "maintain_tempo_pool.stale_remove_transactions",
+                            maintain_iteration,
+                            block_number = tip_number,
+                            %tip_hash,
+                            hash_count,
+                            duration_us = timing_micros(stale_remove_elapsed),
+                            ?stale_remove_elapsed,
+                            "timed txpool maintain phase"
+                        );
                     }
                 }
 
                 // Record total block update duration
-                metrics.block_update_duration_seconds.record(block_update_start.elapsed());
+                let block_update_elapsed = block_update_start.elapsed();
+                metrics
+                    .block_update_duration_seconds
+                    .record(block_update_elapsed);
+                debug!(
+                    target: "payload_builder::build_payload_timing::txpool_update",
+                    phase = "maintain_tempo_pool.chain_event_total",
+                    maintain_iteration,
+                    event_kind,
+                    block_number = tip_number,
+                    %tip_hash,
+                    duration_us = timing_micros(block_update_elapsed),
+                    ?block_update_elapsed,
+                    "timed txpool maintain phase"
+                );
             }
         }
     }

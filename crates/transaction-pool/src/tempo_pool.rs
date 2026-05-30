@@ -102,11 +102,44 @@ where
         &self,
         state: &AddressMap<BundleAccount>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let (promoted, mined) = self.aa_2d_pool.write().on_state_updates(state);
+        let total_start = Instant::now();
+        let aa_write_lock_start = Instant::now();
+        let mut aa_pool = self.aa_2d_pool.write();
+        let aa_write_lock_wait_elapsed = aa_write_lock_start.elapsed();
+
+        let aa_on_state_updates_start = Instant::now();
+        let (promoted, mined) = aa_pool.on_state_updates(state);
+        let aa_write_lock_hold_elapsed = aa_on_state_updates_start.elapsed();
+        drop(aa_pool);
+
+        let promoted_count = promoted.len();
+        let mined_count = mined.len();
+
         // Note: mined transactions are notified via the vanilla pool updates
+        let protocol_notify_start = Instant::now();
         self.protocol_pool
             .inner()
             .notify_on_transaction_updates(promoted, Vec::new());
+        let protocol_notify_elapsed = protocol_notify_start.elapsed();
+        let total_elapsed = total_start.elapsed();
+
+        tracing::debug!(
+            target: "payload_builder::build_payload_timing::txpool_update",
+            phase = "tempo_pool.notify_aa_pool_on_state_updates",
+            state_accounts = state.len(),
+            promoted_count,
+            mined_count,
+            aa_write_lock_wait_duration_us = timing_micros(aa_write_lock_wait_elapsed),
+            aa_write_lock_hold_duration_us = timing_micros(aa_write_lock_hold_elapsed),
+            protocol_notify_duration_us = timing_micros(protocol_notify_elapsed),
+            total_duration_us = timing_micros(total_elapsed),
+            ?aa_write_lock_wait_elapsed,
+            ?aa_write_lock_hold_elapsed,
+            ?protocol_notify_elapsed,
+            ?total_elapsed,
+            "timed txpool update phase"
+        );
+
         mined
     }
 
@@ -135,11 +168,14 @@ where
             return Vec::new();
         }
 
+        let total_start = Instant::now();
+
         // Fetch state provider if any check needs on-chain reads:
         // - validator token changes (liquidity check)
         // - blacklist/whitelist (policy check)
         // - fee payer balance changes (balance check)
         // - spending limit spends (remaining limit check)
+        let state_provider_start = Instant::now();
         let mut state_provider = if !updates.validator_token_changes.is_empty()
             || !updates.blacklist_additions.is_empty()
             || !updates.whitelist_removals.is_empty()
@@ -150,6 +186,7 @@ where
         } else {
             None
         };
+        let state_provider_elapsed = state_provider_start.elapsed();
 
         // Resolve the active hardfork for storage context.
         let tip_timestamp = self
@@ -213,7 +250,13 @@ where
             !updates.key_authorization_target_changes.is_empty();
         let mut fee_balance_cache: HashMap<(Address, Address), U256> = HashMap::default();
 
+        let all_transactions_start = Instant::now();
         let all_txs = self.all_transactions();
+        let all_transactions_elapsed = all_transactions_start.elapsed();
+        let pending_count = all_txs.pending.len();
+        let queued_count = all_txs.queued.len();
+
+        let scan_start = Instant::now();
         for tx in all_txs.pending.iter().chain(all_txs.queued.iter()) {
             // Avoid recovering key ids unless a keychain invalidation can use them.
             if has_keychain_subject_updates || has_key_authorization_target_updates {
@@ -460,7 +503,9 @@ where
                 user_token_count += 1;
             }
         }
+        let scan_elapsed = scan_start.elapsed();
 
+        let mut remove_elapsed = Duration::ZERO;
         if !to_remove.is_empty() {
             tracing::debug!(
                 target: "txpool",
@@ -477,8 +522,41 @@ where
                 insolvent_fee_payer_count,
                 "Evicting invalidated transactions"
             );
+            let remove_start = Instant::now();
             self.remove_transactions(to_remove.clone());
+            remove_elapsed = remove_start.elapsed();
         }
+        let total_elapsed = total_start.elapsed();
+
+        tracing::debug!(
+            target: "payload_builder::build_payload_timing::txpool_update",
+            phase = "tempo_pool.evict_invalidated_transactions",
+            pending_count,
+            queued_count,
+            total_scanned = pending_count + queued_count,
+            removed_count = to_remove.len(),
+            revoked_count,
+            key_authorization_target_count,
+            spending_limit_count,
+            spending_limit_spend_count,
+            key_authorization_witness_count,
+            liquidity_count,
+            user_token_count,
+            blacklisted_count,
+            unwhitelisted_count,
+            insolvent_fee_payer_count,
+            state_provider_duration_us = timing_micros(state_provider_elapsed),
+            all_transactions_duration_us = timing_micros(all_transactions_elapsed),
+            scan_duration_us = timing_micros(scan_elapsed),
+            remove_transactions_duration_us = timing_micros(remove_elapsed),
+            total_duration_us = timing_micros(total_elapsed),
+            ?state_provider_elapsed,
+            ?all_transactions_elapsed,
+            ?scan_elapsed,
+            ?remove_elapsed,
+            ?total_elapsed,
+            "timed txpool update phase"
+        );
         to_remove
     }
 
@@ -528,11 +606,37 @@ where
                         .tip_timestamp();
                     let hardfork = self.client().chain_spec().tempo_hardfork_at(tip_timestamp);
 
-                    let added = self.aa_2d_pool.write().add_transaction(
-                        Arc::new(tx),
+                    let tx = Arc::new(tx);
+                    let tx_hash = *tx.hash();
+                    let total_start = Instant::now();
+                    let aa_write_lock_start = Instant::now();
+                    let mut aa_pool = self.aa_2d_pool.write();
+                    let aa_write_lock_wait_elapsed = aa_write_lock_start.elapsed();
+
+                    let aa_add_transaction_start = Instant::now();
+                    let added_result = aa_pool.add_transaction(tx, state_nonce, hardfork);
+                    let aa_write_lock_hold_elapsed = aa_add_transaction_start.elapsed();
+                    drop(aa_pool);
+                    let total_elapsed = total_start.elapsed();
+
+                    tracing::debug!(
+                        target: "payload_builder::build_payload_timing::txpool_update",
+                        phase = "tempo_pool.add_validated_transaction.aa_2d",
+                        %tx_hash,
                         state_nonce,
-                        hardfork,
-                    )?;
+                        success = added_result.is_ok(),
+                        aa_write_lock_wait_duration_us =
+                            timing_micros(aa_write_lock_wait_elapsed),
+                        aa_write_lock_hold_duration_us =
+                            timing_micros(aa_write_lock_hold_elapsed),
+                        total_duration_us = timing_micros(total_elapsed),
+                        ?aa_write_lock_wait_elapsed,
+                        ?aa_write_lock_hold_elapsed,
+                        ?total_elapsed,
+                        "timed txpool update phase"
+                    );
+
+                    let added = added_result?;
                     let hash = *added.hash();
                     if let Some(pending) = added.as_pending() {
                         if pending.discarded.iter().any(|tx| *tx.hash() == hash) {
@@ -948,8 +1052,43 @@ where
         &self,
         hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
-        txs.extend(self.protocol_pool.remove_transactions(hashes));
+        let total_start = Instant::now();
+        let hash_count = hashes.len();
+
+        let aa_write_lock_start = Instant::now();
+        let mut aa_pool = self.aa_2d_pool.write();
+        let aa_write_lock_wait_elapsed = aa_write_lock_start.elapsed();
+
+        let aa_remove_start = Instant::now();
+        let mut txs = aa_pool.remove_transactions(hashes.iter());
+        let aa_write_lock_hold_elapsed = aa_remove_start.elapsed();
+        drop(aa_pool);
+        let aa_removed_count = txs.len();
+
+        let protocol_remove_start = Instant::now();
+        let protocol_removed = self.protocol_pool.remove_transactions(hashes);
+        let protocol_remove_elapsed = protocol_remove_start.elapsed();
+        let protocol_removed_count = protocol_removed.len();
+        txs.extend(protocol_removed);
+        let total_elapsed = total_start.elapsed();
+
+        tracing::debug!(
+            target: "payload_builder::build_payload_timing::txpool_update",
+            phase = "tempo_pool.remove_transactions",
+            hash_count,
+            aa_removed_count,
+            protocol_removed_count,
+            total_removed_count = txs.len(),
+            aa_write_lock_wait_duration_us = timing_micros(aa_write_lock_wait_elapsed),
+            aa_write_lock_hold_duration_us = timing_micros(aa_write_lock_hold_elapsed),
+            protocol_remove_duration_us = timing_micros(protocol_remove_elapsed),
+            total_duration_us = timing_micros(total_elapsed),
+            ?aa_write_lock_wait_elapsed,
+            ?aa_write_lock_hold_elapsed,
+            ?protocol_remove_elapsed,
+            ?total_elapsed,
+            "timed txpool update phase"
+        );
         txs
     }
 
@@ -957,13 +1096,44 @@ where
         &self,
         hashes: Vec<B256>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self
-            .aa_2d_pool
-            .write()
-            .remove_transactions_and_descendants(hashes.iter());
-        txs.extend(
-            self.protocol_pool
-                .remove_transactions_and_descendants(hashes),
+        let total_start = Instant::now();
+        let hash_count = hashes.len();
+
+        let aa_write_lock_start = Instant::now();
+        let mut aa_pool = self.aa_2d_pool.write();
+        let aa_write_lock_wait_elapsed = aa_write_lock_start.elapsed();
+
+        let aa_remove_start = Instant::now();
+        let mut txs = aa_pool.remove_transactions_and_descendants(hashes.iter());
+        let aa_write_lock_hold_elapsed = aa_remove_start.elapsed();
+        drop(aa_pool);
+        let aa_removed_count = txs.len();
+
+        let protocol_remove_start = Instant::now();
+        let protocol_removed = self
+            .protocol_pool
+            .remove_transactions_and_descendants(hashes);
+        let protocol_remove_elapsed = protocol_remove_start.elapsed();
+        let protocol_removed_count = protocol_removed.len();
+        txs.extend(protocol_removed);
+        let total_elapsed = total_start.elapsed();
+
+        tracing::debug!(
+            target: "payload_builder::build_payload_timing::txpool_update",
+            phase = "tempo_pool.remove_transactions_and_descendants",
+            hash_count,
+            aa_removed_count,
+            protocol_removed_count,
+            total_removed_count = txs.len(),
+            aa_write_lock_wait_duration_us = timing_micros(aa_write_lock_wait_elapsed),
+            aa_write_lock_hold_duration_us = timing_micros(aa_write_lock_hold_elapsed),
+            protocol_remove_duration_us = timing_micros(protocol_remove_elapsed),
+            total_duration_us = timing_micros(total_elapsed),
+            ?aa_write_lock_wait_elapsed,
+            ?aa_write_lock_hold_elapsed,
+            ?protocol_remove_elapsed,
+            ?total_elapsed,
+            "timed txpool update phase"
         );
         txs
     }
@@ -972,11 +1142,42 @@ where
         &self,
         sender: Address,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self
-            .aa_2d_pool
-            .write()
-            .remove_transactions_by_sender(sender);
-        txs.extend(self.protocol_pool.remove_transactions_by_sender(sender));
+        let total_start = Instant::now();
+
+        let aa_write_lock_start = Instant::now();
+        let mut aa_pool = self.aa_2d_pool.write();
+        let aa_write_lock_wait_elapsed = aa_write_lock_start.elapsed();
+
+        let aa_remove_start = Instant::now();
+        let mut txs = aa_pool.remove_transactions_by_sender(sender);
+        let aa_write_lock_hold_elapsed = aa_remove_start.elapsed();
+        drop(aa_pool);
+        let aa_removed_count = txs.len();
+
+        let protocol_remove_start = Instant::now();
+        let protocol_removed = self.protocol_pool.remove_transactions_by_sender(sender);
+        let protocol_remove_elapsed = protocol_remove_start.elapsed();
+        let protocol_removed_count = protocol_removed.len();
+        txs.extend(protocol_removed);
+        let total_elapsed = total_start.elapsed();
+
+        tracing::debug!(
+            target: "payload_builder::build_payload_timing::txpool_update",
+            phase = "tempo_pool.remove_transactions_by_sender",
+            %sender,
+            aa_removed_count,
+            protocol_removed_count,
+            total_removed_count = txs.len(),
+            aa_write_lock_wait_duration_us = timing_micros(aa_write_lock_wait_elapsed),
+            aa_write_lock_hold_duration_us = timing_micros(aa_write_lock_hold_elapsed),
+            protocol_remove_duration_us = timing_micros(protocol_remove_elapsed),
+            total_duration_us = timing_micros(total_elapsed),
+            ?aa_write_lock_wait_elapsed,
+            ?aa_write_lock_hold_elapsed,
+            ?protocol_remove_elapsed,
+            ?total_elapsed,
+            "timed txpool update phase"
+        );
         txs
     }
 
@@ -984,8 +1185,43 @@ where
         &self,
         hashes: Vec<TxHash>,
     ) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
-        let mut txs = self.aa_2d_pool.write().remove_transactions(hashes.iter());
-        txs.extend(self.protocol_pool.prune_transactions(hashes));
+        let total_start = Instant::now();
+        let hash_count = hashes.len();
+
+        let aa_write_lock_start = Instant::now();
+        let mut aa_pool = self.aa_2d_pool.write();
+        let aa_write_lock_wait_elapsed = aa_write_lock_start.elapsed();
+
+        let aa_remove_start = Instant::now();
+        let mut txs = aa_pool.remove_transactions(hashes.iter());
+        let aa_write_lock_hold_elapsed = aa_remove_start.elapsed();
+        drop(aa_pool);
+        let aa_removed_count = txs.len();
+
+        let protocol_prune_start = Instant::now();
+        let protocol_removed = self.protocol_pool.prune_transactions(hashes);
+        let protocol_prune_elapsed = protocol_prune_start.elapsed();
+        let protocol_removed_count = protocol_removed.len();
+        txs.extend(protocol_removed);
+        let total_elapsed = total_start.elapsed();
+
+        tracing::debug!(
+            target: "payload_builder::build_payload_timing::txpool_update",
+            phase = "tempo_pool.prune_transactions",
+            hash_count,
+            aa_removed_count,
+            protocol_removed_count,
+            total_removed_count = txs.len(),
+            aa_write_lock_wait_duration_us = timing_micros(aa_write_lock_wait_elapsed),
+            aa_write_lock_hold_duration_us = timing_micros(aa_write_lock_hold_elapsed),
+            protocol_prune_duration_us = timing_micros(protocol_prune_elapsed),
+            total_duration_us = timing_micros(total_elapsed),
+            ?aa_write_lock_wait_elapsed,
+            ?aa_write_lock_hold_elapsed,
+            ?protocol_prune_elapsed,
+            ?total_elapsed,
+            "timed txpool update phase"
+        );
         txs
     }
 
@@ -1234,15 +1470,59 @@ where
     type Block = Block;
 
     fn set_block_info(&self, info: BlockInfo) {
-        self.protocol_pool.set_block_info(info)
+        let start = Instant::now();
+        self.protocol_pool.set_block_info(info);
+        let elapsed = start.elapsed();
+
+        tracing::debug!(
+            target: "payload_builder::build_payload_timing::txpool_update",
+            phase = "tempo_pool.set_block_info",
+            block_number = info.last_seen_block_number,
+            block_hash = %info.last_seen_block_hash,
+            duration_us = timing_micros(elapsed),
+            ?elapsed,
+            "timed txpool update phase"
+        );
     }
 
     fn on_canonical_state_change(&self, update: CanonicalStateUpdate<'_, Self::Block>) {
-        self.protocol_pool.on_canonical_state_change(update)
+        let block_number = update.number();
+        let block_hash = update.hash();
+        let changed_accounts_count = update.changed_accounts.len();
+        let mined_transactions_count = update.mined_transactions.len();
+        let update_kind = update.update_kind;
+        let start = Instant::now();
+        self.protocol_pool.on_canonical_state_change(update);
+        let elapsed = start.elapsed();
+
+        tracing::debug!(
+            target: "payload_builder::build_payload_timing::txpool_update",
+            phase = "tempo_pool.on_canonical_state_change",
+            block_number,
+            %block_hash,
+            changed_accounts_count,
+            mined_transactions_count,
+            ?update_kind,
+            duration_us = timing_micros(elapsed),
+            ?elapsed,
+            "timed txpool update phase"
+        );
     }
 
     fn update_accounts(&self, accounts: Vec<ChangedAccount>) {
-        self.protocol_pool.update_accounts(accounts)
+        let accounts_count = accounts.len();
+        let start = Instant::now();
+        self.protocol_pool.update_accounts(accounts);
+        let elapsed = start.elapsed();
+
+        tracing::debug!(
+            target: "payload_builder::build_payload_timing::txpool_update",
+            phase = "tempo_pool.update_accounts",
+            accounts_count,
+            duration_us = timing_micros(elapsed),
+            ?elapsed,
+            "timed txpool update phase"
+        );
     }
 
     fn delete_blob(&self, tx: B256) {
