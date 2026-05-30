@@ -45,6 +45,8 @@ where
         self.inner.ctx.journal_mut().finalize()
     }
 
+    #[cold]
+    #[inline(never)]
     fn replay(
         &mut self,
     ) -> Result<ExecResultAndState<Self::ExecutionResult, Self::State>, Self::Error> {
@@ -72,10 +74,14 @@ where
 {
     type Inspector = I;
 
+    #[cold]
+    #[inline(never)]
     fn set_inspector(&mut self, inspector: Self::Inspector) {
         self.inner.inspector = inspector;
     }
 
+    #[cold]
+    #[inline(never)]
     fn inspect_one_tx(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
         self.inner.ctx.set_tx(tx);
         let mut h = TempoEvmHandler::new();
@@ -94,6 +100,8 @@ impl<DB, I> SystemCallEvm for TempoEvm<DB, I>
 where
     DB: Database,
 {
+    #[cold]
+    #[inline(never)]
     fn system_call_one_with_caller(
         &mut self,
         caller: Address,
@@ -113,6 +121,8 @@ where
     DB: Database,
     I: Inspector<TempoContext<DB>>,
 {
+    #[cold]
+    #[inline(never)]
     fn inspect_one_system_call_with_caller(
         &mut self,
         caller: Address,
