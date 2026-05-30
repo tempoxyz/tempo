@@ -126,12 +126,13 @@ impl TIP20Token {
                         .checked_add(reward)
                         .ok_or(TempoPrecompileError::under_overflow())?;
                 } else {
-                    let mut delegate_info = self.user_reward_info[cached_delegate].read()?;
+                    let delegate_reward_info = self.user_reward_info.at_mut(&cached_delegate);
+                    let mut delegate_info = delegate_reward_info.read()?;
                     delegate_info.reward_balance = delegate_info
                         .reward_balance
                         .checked_add(reward)
                         .ok_or(TempoPrecompileError::under_overflow())?;
-                    self.user_reward_info[cached_delegate].write(delegate_info)?;
+                    delegate_reward_info.write(delegate_info)?;
                 }
             }
             info.reward_per_token = global_reward_per_token;
