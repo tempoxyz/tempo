@@ -142,7 +142,7 @@ impl NonceManager {
 
         // 2. Replay check: reject if hash is already seen and not expired
         let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
-        if seen_expiry != 0 && seen_expiry > now {
+        if seen_expiry > now {
             return Err(NonceError::expiring_nonce_replay().into());
         }
 
@@ -156,7 +156,7 @@ impl NonceManager {
         // in case TPS exceeds expectations.
         if old_hash != B256::ZERO {
             let old_expiry = self.expiring_nonce_seen[old_hash].read()?;
-            if old_expiry != 0 && old_expiry > now {
+            if old_expiry > now {
                 // Entry is still valid, cannot evict - buffer is full
                 return Err(NonceError::expiring_nonce_set_full().into());
             }
