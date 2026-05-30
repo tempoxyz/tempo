@@ -193,6 +193,37 @@ impl TempoTxEnv {
                 && is_discounted_tip20_call(&self.inner.kind, self.input())
         }
     }
+
+    #[cold]
+    #[inline(never)]
+    fn from_recovered_non_aa_tx(tx: &TempoTxEnvelope, sender: Address) -> Self {
+        match tx {
+            TempoTxEnvelope::Legacy(inner) => Self {
+                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                fee_token: None,
+                is_system_tx: tx.is_system_tx(),
+                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
+                fee_payer: None,
+                tempo_tx_env: None, // Non-AA transaction
+            },
+            TempoTxEnvelope::Eip2930(inner) => Self {
+                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
+                ..Default::default()
+            },
+            TempoTxEnvelope::Eip1559(inner) => Self {
+                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
+                ..Default::default()
+            },
+            TempoTxEnvelope::Eip7702(inner) => Self {
+                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
+                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
+                ..Default::default()
+            },
+            TempoTxEnvelope::AA(_) => unreachable!("AA transactions use direct AA conversion"),
+        }
+    }
 }
 
 fn is_discounted_tip20_call(to: &TxKind, input: &[u8]) -> bool {
@@ -414,31 +445,10 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
 
 impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
     fn from_recovered_tx(tx: &TempoTxEnvelope, sender: Address) -> Self {
-        match tx {
-            tx @ TempoTxEnvelope::Legacy(inner) => Self {
-                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
-                fee_token: None,
-                is_system_tx: tx.is_system_tx(),
-                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
-                fee_payer: None,
-                tempo_tx_env: None, // Non-AA transaction
-            },
-            TempoTxEnvelope::Eip2930(inner) => Self {
-                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
-                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
-                ..Default::default()
-            },
-            TempoTxEnvelope::Eip1559(inner) => Self {
-                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
-                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
-                ..Default::default()
-            },
-            TempoTxEnvelope::Eip7702(inner) => Self {
-                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
-                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
-                ..Default::default()
-            },
-            TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx, sender),
+        if let TempoTxEnvelope::AA(tx) = tx {
+            Self::from_recovered_tx(tx, sender)
+        } else {
+            Self::from_recovered_non_aa_tx(tx, sender)
         }
     }
 }
