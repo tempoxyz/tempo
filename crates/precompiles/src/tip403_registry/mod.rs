@@ -23,7 +23,7 @@ use tempo_precompiles_macros::{Storable, contract};
 use crate::{
     RECEIVE_POLICY_GUARD_ADDRESS, TIP403_REGISTRY_ADDRESS,
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, Slot, StorageKey as _},
 };
 use alloy::primitives::Address;
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -319,7 +319,9 @@ impl TIP403Registry {
         sender: Address,
         receiver: Address,
     ) -> Result<Option<(ITIP403Registry::BlockedReason, Address)>> {
-        let config = self.receive_policies[receiver].config.read()?;
+        let config_slot = receiver.mapping_slot(slots::RECEIVE_POLICIES);
+        let config =
+            Slot::<ReceivePolicyConfig>::new(config_slot, TIP403_REGISTRY_ADDRESS).read()?;
         if !config.has_receive_policy {
             return Ok(None);
         }
