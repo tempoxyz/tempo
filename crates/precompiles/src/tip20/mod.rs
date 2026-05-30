@@ -1120,11 +1120,20 @@ impl TIP20Token {
     /// # Errors
     /// - `PolicyForbids` — sender or recipient is not authorized by the active transfer policy
     pub fn ensure_transfer_authorized(&self, from: Address, to: Address) -> Result<()> {
-        if !self.is_transfer_authorized(from, to)? {
+        let policy_id = self.transfer_policy_id()?;
+        let registry = TIP403Registry::new();
+
+        let sender_auth = registry.is_authorized_as(policy_id, from, AuthRole::sender())?;
+        if self.storage.spec().is_t2() && !sender_auth {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        Ok(())
+        let recipient_auth = registry.is_authorized_as(policy_id, to, AuthRole::recipient())?;
+        if sender_auth && recipient_auth {
+            Ok(())
+        } else {
+            Err(TIP20Error::policy_forbids().into())
+        }
     }
 
     /// Check whether a user is authorized by the token's [`TIP403Registry`] policy for a given role.
