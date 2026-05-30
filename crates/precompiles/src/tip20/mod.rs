@@ -175,16 +175,22 @@ impl TIP20Token {
     }
 
     /// Returns the active quote token address used for pricing.
+    #[cold]
+    #[inline(never)]
     pub fn quote_token(&self) -> Result<Address> {
         self.quote_token.read()
     }
 
     /// Returns the pending next quote token address (set but not yet finalized).
+    #[cold]
+    #[inline(never)]
     pub fn next_quote_token(&self) -> Result<Address> {
         self.next_quote_token.read()
     }
 
     /// Returns the maximum mintable supply.
+    #[cold]
+    #[inline(never)]
     pub fn supply_cap(&self) -> Result<U256> {
         self.supply_cap.read()
     }
