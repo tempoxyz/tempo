@@ -287,12 +287,12 @@ impl TIP20Token {
     /// - `PolicyForbids` — TIP-403 policy rejects the contract→caller transfer authorization
     pub fn claim_rewards(&mut self, msg_sender: Address) -> Result<U256> {
         self.check_not_paused()?;
-        self.ensure_transfer_authorized(self.address, msg_sender)?;
+        let contract_address = self.address;
+        self.ensure_transfer_authorized(contract_address, msg_sender)?;
 
         let flag = self.update_rewards(msg_sender)?;
         let mut info = self.user_reward_info[msg_sender].read()?;
         let amount = info.reward_balance;
-        let contract_address = self.address;
         let contract_balance = self.get_balance(contract_address)?;
         let max_amount = amount.min(contract_balance.amount());
 
