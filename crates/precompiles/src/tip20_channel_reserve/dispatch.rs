@@ -9,6 +9,8 @@ use tempo_contracts::precompiles::{
 };
 
 impl Precompile for TIP20ChannelReserve {
+    #[cold]
+    #[inline(never)]
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
