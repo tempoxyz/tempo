@@ -12,7 +12,7 @@ use tempo_precompiles_macros::contract;
 use crate::{
     NONCE_PRECOMPILE_ADDRESS,
     error::Result,
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorageCtx, StorageKey},
 };
 use alloy::primitives::{Address, B256, U256};
 
@@ -132,7 +132,8 @@ impl NonceManager {
         expiring_nonce_hash: B256,
         valid_before: u64,
     ) -> Result<()> {
-        let now: u64 = self.storage.timestamp().saturating_to();
+        let mut storage = StorageCtx;
+        let now: u64 = storage.timestamp().saturating_to();
 
         // 1. Validate expiry window: must be in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
         if valid_before <= now || valid_before > now.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
@@ -141,32 +142,53 @@ impl NonceManager {
         }
 
         // 2. Replay check: reject if hash is already seen and not expired
-        let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
+        let seen_slot = expiring_nonce_hash.mapping_slot(slots::EXPIRING_NONCE_SEEN);
+        let seen_expiry: u64 = storage
+            .sload(NONCE_PRECOMPILE_ADDRESS, seen_slot)?
+            .saturating_to();
         if seen_expiry != 0 && seen_expiry > now {
             return Err(NonceError::expiring_nonce_replay().into());
         }
 
         // 3. Get current pointer (bounded in [0, CAPACITY)) and use directly as index
-        let ptr = self.expiring_nonce_ring_ptr.read()?;
+        let ptr: u32 = storage
+            .sload(NONCE_PRECOMPILE_ADDRESS, slots::EXPIRING_NONCE_RING_PTR)?
+            .saturating_to();
         let idx = ptr;
-        let old_hash = self.expiring_nonce_ring[idx].read()?;
+        let ring_slot = idx.mapping_slot(slots::EXPIRING_NONCE_RING);
+        let old_hash = B256::from(
+            storage
+                .sload(NONCE_PRECOMPILE_ADDRESS, ring_slot)?
+                .to_be_bytes::<32>(),
+        );
 
         // 4. If there's an existing entry, check if it's expired (can be evicted)
         // Safety check: buffer is sized so entries should always be expired, but verify
         // in case TPS exceeds expectations.
         if old_hash != B256::ZERO {
-            let old_expiry = self.expiring_nonce_seen[old_hash].read()?;
+            let old_seen_slot = old_hash.mapping_slot(slots::EXPIRING_NONCE_SEEN);
+            let old_expiry: u64 = storage
+                .sload(NONCE_PRECOMPILE_ADDRESS, old_seen_slot)?
+                .saturating_to();
             if old_expiry != 0 && old_expiry > now {
                 // Entry is still valid, cannot evict - buffer is full
                 return Err(NonceError::expiring_nonce_set_full().into());
             }
             // Clear the old entry from seen set
-            self.expiring_nonce_seen[old_hash].write(0)?;
+            storage.sstore(NONCE_PRECOMPILE_ADDRESS, old_seen_slot, U256::ZERO)?;
         }
 
         // 5. Insert new entry
-        self.expiring_nonce_ring[idx].write(expiring_nonce_hash)?;
-        self.expiring_nonce_seen[expiring_nonce_hash].write(valid_before)?;
+        storage.sstore(
+            NONCE_PRECOMPILE_ADDRESS,
+            ring_slot,
+            U256::from_be_slice(expiring_nonce_hash.as_slice()),
+        )?;
+        storage.sstore(
+            NONCE_PRECOMPILE_ADDRESS,
+            seen_slot,
+            U256::from(valid_before),
+        )?;
 
         // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
         let next = if ptr + 1 >= EXPIRING_NONCE_SET_CAPACITY {
@@ -174,7 +196,11 @@ impl NonceManager {
         } else {
             ptr + 1
         };
-        self.expiring_nonce_ring_ptr.write(next)?;
+        storage.sstore(
+            NONCE_PRECOMPILE_ADDRESS,
+            slots::EXPIRING_NONCE_RING_PTR,
+            U256::from(next),
+        )?;
 
         Ok(())
     }
