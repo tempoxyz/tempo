@@ -59,6 +59,8 @@ impl TipFeeManager {
     pub const MINIMUM_BALANCE: U256 = uint!(1_000_000_000_U256);
 
     /// Initializes the fee manager precompile.
+    #[cold]
+    #[inline(never)]
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
@@ -84,6 +86,8 @@ impl TipFeeManager {
     /// - `InvalidToken` — token is not a deployed TIP-20 in [`TIP20Factory`]
     /// - `CannotChangeWithinBlock` — `sender` equals the current block `beneficiary`
     /// - `InvalidCurrency` — token is not USD-denominated
+    #[cold]
+    #[inline(never)]
     pub fn set_validator_token(
         &mut self,
         sender: Address,
@@ -115,6 +119,8 @@ impl TipFeeManager {
     /// # Errors
     /// - `InvalidToken` — token is not a deployed TIP-20 in [`TIP20Factory`]
     /// - `InvalidCurrency` — token is not USD-denominated
+    #[cold]
+    #[inline(never)]
     pub fn set_user_token(
         &mut self,
         sender: Address,
@@ -290,6 +296,8 @@ impl TipFeeManager {
     ///
     /// # Errors
     /// - `InvalidToken` — `token` does not have a valid TIP-20 prefix
+    #[cold]
+    #[inline(never)]
     pub fn distribute_fees(&mut self, validator: Address, token: Address) -> Result<()> {
         let amount = self.collected_fees[validator][token].read()?;
         if amount.is_zero() {
@@ -314,6 +322,8 @@ impl TipFeeManager {
     }
 
     /// Reads the stored fee token preference for a user.
+    #[cold]
+    #[inline(never)]
     pub fn user_tokens(&self, call: IFeeManager::userTokensCall) -> Result<Address> {
         self.user_tokens[call.user].read()
     }
