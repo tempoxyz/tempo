@@ -848,8 +848,13 @@ fn execute_txs<DB>(
 where
     DB: StateDB,
 {
-    let evm: TempoEvm<_, _> =
+    let mut evm: TempoEvm<_, _> =
         TempoEvmFactory::default().create_evm(db, bench_env(hardfork, block_timestamp));
+    evm.ctx_mut()
+        .journaled_state
+        .inner
+        .transient_storage
+        .reserve(8);
     let ctx = TempoBlockExecutionCtx {
         inner: EthBlockExecutionCtx {
             parent_hash: B256::ZERO,
