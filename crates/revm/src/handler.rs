@@ -326,7 +326,8 @@ fn translate_allowed_calls_for_precompile(
 /// Returns `(total_gas, state_gas)` where `total_gas` includes the state gas portion.
 /// On T4+, each storage-creating SSTORE contributes `sstore_set_state_gas` to state gas
 /// per TIP-1016.
-#[inline]
+#[cold]
+#[inline(never)]
 fn calculate_key_authorization_gas(
     key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
     gas_params: &GasParams,
