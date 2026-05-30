@@ -2296,6 +2296,7 @@ where
 }
 
 /// IMPORTANT: the caller must ensure `token` is a valid TIP20Token address.
+#[inline(always)]
 pub fn get_token_balance<JOURNAL>(
     journal: &mut JOURNAL,
     token: Address,
