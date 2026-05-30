@@ -35,7 +35,7 @@ enum TIP20Call {
 impl TIP20Call {
     fn decode(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
         // safe to expect as `dispatch_call` pre-validates calldata len
-        let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
+        let selector = [calldata[0], calldata[1], calldata[2], calldata[3]];
 
         if IRolesAuthCalls::valid_selector(selector) {
             IRolesAuthCalls::abi_decode(calldata).map(Self::RolesAuth)
