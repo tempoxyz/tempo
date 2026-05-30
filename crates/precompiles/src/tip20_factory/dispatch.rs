@@ -16,6 +16,8 @@ use tempo_contracts::precompiles::{ITIP20Factory::ITIP20FactoryCalls, createToke
 const T5_ADDED: &[[u8; 4]] = &[createTokenWithLogoCall::SELECTOR];
 
 impl Precompile for TIP20Factory {
+    #[cold]
+    #[inline(never)]
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
