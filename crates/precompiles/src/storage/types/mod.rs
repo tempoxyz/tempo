@@ -93,9 +93,12 @@ impl Layout {
 /// ```
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[repr(transparent)]
-pub struct LayoutCtx(usize);
+pub struct LayoutCtx(u8);
 
 impl LayoutCtx {
+    const FULL_TAG: u8 = u8::MAX;
+    const INIT_TAG: u8 = u8::MAX - 1;
+
     /// Load/store the entire value at a given slot.
     ///
     /// For writes, this signals that the value occupies full slot(s), and that the
@@ -103,7 +106,7 @@ impl LayoutCtx {
     ///
     /// - Static types overwrite the entire slot without needing an SLOAD.
     /// - Dynamic types read the prior length (1 extra SLOAD) and zero any stale tail slots.
-    pub const FULL: Self = Self(usize::MAX);
+    pub const FULL: Self = Self(Self::FULL_TAG);
 
     /// Like `Full`, but the asserts the destination is virgin (zero-filled).
     ///
@@ -111,7 +114,7 @@ impl LayoutCtx {
     /// - Dynamic types skip reading the prior length and clearing stale tail slots.
     ///
     /// Used by hot paths that know by construction the target is empty.
-    pub const INIT: Self = Self(usize::MAX - 1);
+    pub const INIT: Self = Self(Self::INIT_TAG);
 
     /// Load/store a packed primitive at the given byte offset within a slot.
     ///
@@ -123,16 +126,16 @@ impl LayoutCtx {
     /// Note that these include enums which are representable as `u8`.
     pub const fn packed(offset: usize) -> Self {
         debug_assert!(offset < 32);
-        Self(offset)
+        Self(offset as u8)
     }
 
     /// Get the packed offset, returns `None` for `FULL` and `INIT`
     #[inline]
     pub const fn packed_offset(&self) -> Option<usize> {
-        if self.0 >= usize::MAX - 1 {
+        if self.0 >= Self::INIT_TAG {
             None
         } else {
-            Some(self.0)
+            Some(self.0 as usize)
         }
     }
 
@@ -141,13 +144,13 @@ impl LayoutCtx {
     /// Used by dynamic type's `Storable::store` to skip the extra SLOAD to check stale tails.
     #[inline]
     pub const fn skip_tail_cleanup(&self) -> bool {
-        self.0 == usize::MAX - 1
+        self.0 == Self::INIT_TAG
     }
 
     /// Returns true if this context is a full-slot context (`FULL` or `INIT`).
     #[inline]
     pub const fn is_full(&self) -> bool {
-        self.0 >= usize::MAX - 1
+        self.0 >= Self::INIT_TAG
     }
 }
 
