@@ -69,6 +69,14 @@ use tempo_transaction_pool::{
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
+const PAYLOAD_TX_COUNT_HINT_GAS: u64 = 75_000;
+const MAX_PAYLOAD_TX_COUNT_HINT: usize = 16 * 1024;
+
+fn payload_tx_count_hint(non_shared_gas_limit: u64) -> Option<usize> {
+    let hint = (non_shared_gas_limit / PAYLOAD_TX_COUNT_HINT_GAS) as usize;
+    (hint > 0).then_some(hint.min(MAX_PAYLOAD_TX_COUNT_HINT))
+}
+
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
     subblock.transactions.iter().any(|tx| {
@@ -458,6 +466,7 @@ where
                     timestamp_millis_part: attributes.timestamp_millis_part(),
                     consensus_context: attributes.consensus_context(),
                     subblock_fee_recipients,
+                    tx_count_hint: payload_tx_count_hint(non_shared_gas_limit),
                 },
             )
             .map_err(PayloadBuilderError::other)?;
@@ -1256,6 +1265,21 @@ mod tests {
         let injected_data = attrs.extra_data().clone();
 
         assert_eq!(injected_data, extra_data);
+    }
+
+    #[test]
+    fn test_payload_tx_count_hint() {
+        assert_eq!(payload_tx_count_hint(0), None);
+        assert_eq!(payload_tx_count_hint(PAYLOAD_TX_COUNT_HINT_GAS - 1), None);
+        assert_eq!(payload_tx_count_hint(PAYLOAD_TX_COUNT_HINT_GAS), Some(1));
+        assert_eq!(
+            payload_tx_count_hint(1_000_000_000),
+            Some(13_333.min(MAX_PAYLOAD_TX_COUNT_HINT))
+        );
+        assert_eq!(
+            payload_tx_count_hint(u64::MAX),
+            Some(MAX_PAYLOAD_TX_COUNT_HINT)
+        );
     }
 
     #[test]

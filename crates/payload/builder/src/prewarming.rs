@@ -796,6 +796,7 @@ mod tests {
             timestamp_millis_part: 0,
             consensus_context: None,
             subblock_fee_recipients: Default::default(),
+            tx_count_hint: None,
         };
         let evm_env = evm_config
             .next_evm_env(&parent_header, &attributes)

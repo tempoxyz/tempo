@@ -279,7 +279,7 @@ impl ConfigureEvm for TempoEvmConfig {
                     .withdrawals
                     .map(|w| Cow::Owned(w.into_inner())),
                 extra_data: attributes.inner.extra_data,
-                tx_count_hint: None,
+                tx_count_hint: attributes.tx_count_hint,
             },
             general_gas_limit: attributes.general_gas_limit,
             shared_gas_limit: attributes.shared_gas_limit,
@@ -424,6 +424,7 @@ mod tests {
             timestamp_millis_part: 750,
             consensus_context: None,
             subblock_fee_recipients: HashMap::new(),
+            tx_count_hint: None,
         };
 
         let result = evm_config.next_evm_env(&parent, &attributes);
@@ -593,6 +594,7 @@ mod tests {
             timestamp_millis_part: 999,
             consensus_context: None,
             subblock_fee_recipients: subblock_fee_recipients.clone(),
+            tx_count_hint: Some(1234),
         };
 
         let result = evm_config.context_for_next_block(&parent, attributes);
@@ -609,6 +611,7 @@ mod tests {
             context.inner.parent_beacon_block_root,
             Some(B256::repeat_byte(0x05))
         );
+        assert_eq!(context.inner.tx_count_hint, Some(1234));
 
         // Verify subblock_fee_recipients passed through
         assert_eq!(

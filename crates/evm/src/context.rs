@@ -46,6 +46,8 @@ pub struct TempoNextBlockEnvAttributes {
     pub consensus_context: Option<TempoConsensusContext>,
     /// Mapping from a subblock validator public key to the fee recipient configured.
     pub subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
+    /// Estimated number of transactions expected in the next block.
+    pub tx_count_hint: Option<usize>,
 }
 
 #[cfg(feature = "rpc")]
@@ -60,6 +62,7 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<tempo_primitives:
             timestamp_millis_part: parent.timestamp_millis_part,
             consensus_context: None,
             subblock_fee_recipients: Default::default(),
+            tx_count_hint: None,
         }
     }
 }
