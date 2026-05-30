@@ -360,6 +360,8 @@ impl TIP403Registry {
     /// # Errors
     /// - `IncompatiblePolicyType` — `policyType` is not `WHITELIST` or `BLACKLIST` (T2+)
     /// - `UnderOverflow` — policy ID counter overflows
+    #[cold]
+    #[inline(never)]
     pub fn create_policy(
         &mut self,
         msg_sender: Address,
@@ -398,6 +400,8 @@ impl TIP403Registry {
     }
 
     /// Sets the caller's TIP-1028 receive policy.
+    #[cold]
+    #[inline(never)]
     pub fn set_receive_policy(
         &mut self,
         msg_sender: Address,
@@ -453,6 +457,8 @@ impl TIP403Registry {
     /// - `IncompatiblePolicyType` — `policyType` is not `WHITELIST` or `BLACKLIST` (T2+), or
     ///   accounts are non-empty for compound/invalid types (pre-T2)
     /// - `VirtualAddressNotAllowed` — virtual addresses are forbidden (T3+)
+    #[cold]
+    #[inline(never)]
     pub fn create_policy_with_accounts(
         &mut self,
         msg_sender: Address,
@@ -531,6 +537,8 @@ impl TIP403Registry {
     /// # Errors
     /// - `Unauthorized` — `msg_sender` is not the current admin
     /// - `PolicyNotFound` — the policy ID does not exist (T2+)
+    #[cold]
+    #[inline(never)]
     pub fn set_policy_admin(
         &mut self,
         msg_sender: Address,
@@ -566,6 +574,8 @@ impl TIP403Registry {
     /// - `IncompatiblePolicyType` — the policy is not a whitelist
     /// - `PolicyNotFound` — the policy ID does not exist (T2+)
     /// - `VirtualAddressNotAllowed` — virtual addresses are forbidden (T3+)
+    #[cold]
+    #[inline(never)]
     pub fn modify_policy_whitelist(
         &mut self,
         msg_sender: Address,
@@ -605,6 +615,8 @@ impl TIP403Registry {
     /// - `IncompatiblePolicyType` — the policy is not a blacklist
     /// - `PolicyNotFound` — the policy ID does not exist (T2+)
     /// - `VirtualAddressNotAllowed` — virtual addresses are forbidden (T3+)
+    #[cold]
+    #[inline(never)]
     pub fn modify_policy_blacklist(
         &mut self,
         msg_sender: Address,
@@ -646,6 +658,8 @@ impl TIP403Registry {
     /// - `PolicyNotFound` — a referenced sub-policy ID does not exist
     /// - `PolicyNotSimple` — a referenced sub-policy is itself compound
     /// - `UnderOverflow` — policy ID counter overflows
+    #[cold]
+    #[inline(never)]
     pub fn create_compound_policy(
         &mut self,
         msg_sender: Address,
