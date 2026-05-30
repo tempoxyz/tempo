@@ -128,7 +128,7 @@ impl LayoutCtx {
 
     /// Get the packed offset, returns `None` for `FULL` and `INIT`
     #[inline]
-    pub const fn packed_offset(&self) -> Option<usize> {
+    pub const fn packed_offset(self) -> Option<usize> {
         if self.0 >= usize::MAX - 1 {
             None
         } else {
@@ -140,13 +140,13 @@ impl LayoutCtx {
     ///
     /// Used by dynamic type's `Storable::store` to skip the extra SLOAD to check stale tails.
     #[inline]
-    pub const fn skip_tail_cleanup(&self) -> bool {
+    pub const fn skip_tail_cleanup(self) -> bool {
         self.0 == usize::MAX - 1
     }
 
     /// Returns true if this context is a full-slot context (`FULL` or `INIT`).
     #[inline]
-    pub const fn is_full(&self) -> bool {
+    pub const fn is_full(self) -> bool {
         self.0 >= usize::MAX - 1
     }
 }
