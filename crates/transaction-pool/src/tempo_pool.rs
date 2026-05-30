@@ -3,8 +3,11 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    amm::AmmLiquidityCache, best::MergeBestTransactions, transaction::TempoPooledTransaction,
-    tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
+    amm::AmmLiquidityCache,
+    best::{AttributedBestTransactions, MergeBestTransactions},
+    transaction::TempoPooledTransaction,
+    tt_2d_pool::AA2dPool,
+    validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{
@@ -848,9 +851,18 @@ where
 
     fn best_transactions_with_attributes(
         &self,
-        _attributes: BestTransactionsAttributes,
+        attributes: BestTransactionsAttributes,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        self.best_transactions()
+        let base_fee = attributes.basefee;
+        let left = self
+            .protocol_pool
+            .inner()
+            .best_transactions_with_attributes(attributes);
+        let right = self.aa_2d_pool.read().best_transactions();
+        Box::new(MergeBestTransactions::new(
+            AttributedBestTransactions::new(left, base_fee),
+            right,
+        ))
     }
 
     fn pending_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {

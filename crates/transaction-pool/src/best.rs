@@ -5,7 +5,7 @@ use alloy_primitives::{Address, U256, map::HashMap};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    BestTransactions, CoinbaseTipOrdering, Priority, ValidPoolTransaction,
+    BestTransactions, CoinbaseTipOrdering, Priority, TransactionOrdering, ValidPoolTransaction,
     error::InvalidPoolTransactionError, pool::BestTransactions as BestProtocolTransactions,
 };
 use std::sync::Arc;
@@ -16,21 +16,81 @@ type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u128>);
 
+pub(crate) trait PriorityBestTransactions: BestTransactions<Item = BestTransaction> {
+    fn next_tx_and_priority(&mut self) -> Option<BestTransactionWithPriority>;
+}
+
+impl PriorityBestTransactions for BestProtocolTransactions<TxOrdering> {
+    fn next_tx_and_priority(&mut self) -> Option<BestTransactionWithPriority> {
+        Self::next_tx_and_priority(self)
+    }
+}
+
+pub(crate) struct AttributedBestTransactions<I> {
+    inner: I,
+    base_fee: u64,
+}
+
+impl<I> AttributedBestTransactions<I> {
+    pub(crate) const fn new(inner: I, base_fee: u64) -> Self {
+        Self { inner, base_fee }
+    }
+}
+
+impl<I> Iterator for AttributedBestTransactions<I>
+where
+    I: BestTransactions<Item = BestTransaction>,
+{
+    type Item = BestTransaction;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        self.inner.next()
+    }
+}
+
+impl<I> PriorityBestTransactions for AttributedBestTransactions<I>
+where
+    I: BestTransactions<Item = BestTransaction>,
+{
+    fn next_tx_and_priority(&mut self) -> Option<BestTransactionWithPriority> {
+        let tx = self.inner.next()?;
+        let priority = CoinbaseTipOrdering::default().priority(&tx.transaction, self.base_fee);
+        Some((tx, priority))
+    }
+}
+
+impl<I> BestTransactions for AttributedBestTransactions<I>
+where
+    I: BestTransactions<Item = BestTransaction>,
+{
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
+        self.inner.mark_invalid(transaction, kind);
+    }
+
+    fn no_updates(&mut self) {
+        self.inner.no_updates();
+    }
+
+    fn set_skip_blobs(&mut self, skip_blobs: bool) {
+        self.inner.set_skip_blobs(skip_blobs);
+    }
+}
+
 /// A best-transaction iterator that merges the protocol pool and the 2D nonces pool,
 /// always yielding the next best item from either iterator.
-pub struct MergeBestTransactions {
-    protocol_pool: BestProtocolTransactions<TxOrdering>,
+pub(crate) struct MergeBestTransactions<ProtocolPool = BestProtocolTransactions<TxOrdering>> {
+    protocol_pool: ProtocolPool,
     aa_2d_pool: BestAA2dTransactions,
     next_protocol_pool: Option<BestTransactionWithPriority>,
     next_aa_2d_pool: Option<BestTransactionWithPriority>,
 }
 
-impl MergeBestTransactions {
+impl<ProtocolPool> MergeBestTransactions<ProtocolPool>
+where
+    ProtocolPool: PriorityBestTransactions,
+{
     /// Creates a new iterator over the given iterators.
-    pub(crate) fn new(
-        protocol_pool: BestProtocolTransactions<TxOrdering>,
-        aa_2d_pool: BestAA2dTransactions,
-    ) -> Self {
+    pub(crate) fn new(protocol_pool: ProtocolPool, aa_2d_pool: BestAA2dTransactions) -> Self {
         Self {
             protocol_pool,
             aa_2d_pool,
@@ -40,7 +100,10 @@ impl MergeBestTransactions {
     }
 }
 
-impl MergeBestTransactions {
+impl<ProtocolPool> MergeBestTransactions<ProtocolPool>
+where
+    ProtocolPool: PriorityBestTransactions,
+{
     /// Returns the next transaction from either pool with the higher priority.
     fn next_best(&mut self) -> Option<BestTransactionWithPriority> {
         if self.next_protocol_pool.is_none() {
@@ -80,7 +143,10 @@ impl MergeBestTransactions {
     }
 }
 
-impl Iterator for MergeBestTransactions {
+impl<ProtocolPool> Iterator for MergeBestTransactions<ProtocolPool>
+where
+    ProtocolPool: PriorityBestTransactions,
+{
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
@@ -88,7 +154,10 @@ impl Iterator for MergeBestTransactions {
     }
 }
 
-impl BestTransactions for MergeBestTransactions {
+impl<ProtocolPool> BestTransactions for MergeBestTransactions<ProtocolPool>
+where
+    ProtocolPool: PriorityBestTransactions + Send,
+{
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
         if transaction.transaction.is_aa_2d() {
             self.aa_2d_pool.mark_invalid(transaction, kind);
