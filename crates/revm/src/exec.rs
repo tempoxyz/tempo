@@ -7,7 +7,7 @@ use crate::{
 use alloy_evm::{Database, TransactionEnvMut};
 use revm::{
     DatabaseCommit, ExecuteCommitEvm, ExecuteEvm,
-    context::{ContextSetters, TxEnv, result::ExecResultAndState},
+    context::{TxEnv, result::ExecResultAndState},
     context_interface::{
         ContextTr, JournalTr,
         result::{EVMError, ExecutionResult},
@@ -32,11 +32,11 @@ where
     type ExecutionResult = ExecutionResult<TempoHaltReason>;
 
     fn set_block(&mut self, block: Self::Block) {
-        self.inner.ctx.set_block(block);
+        self.inner.ctx.block = block;
     }
 
     fn transact_one(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
-        self.inner.ctx.set_tx(tx);
+        self.inner.ctx.tx = tx;
         let mut h = TempoEvmHandler::new();
         h.run(self)
     }
@@ -77,7 +77,7 @@ where
     }
 
     fn inspect_one_tx(&mut self, tx: Self::Tx) -> Result<Self::ExecutionResult, Self::Error> {
-        self.inner.ctx.set_tx(tx);
+        self.inner.ctx.tx = tx;
         let mut h = TempoEvmHandler::new();
         h.inspect_run(self)
     }
@@ -102,7 +102,7 @@ where
     ) -> Result<Self::ExecutionResult, Self::Error> {
         let mut tx = TxEnv::new_system_tx_with_caller(caller, system_contract_address, data);
         tx.set_gas_limit(SYSTEM_CALL_GAS_LIMIT);
-        self.inner.ctx.set_tx(tx.into());
+        self.inner.ctx.tx = tx.into();
         let mut h = TempoEvmHandler::new();
         h.run_system_call(self)
     }
@@ -121,7 +121,7 @@ where
     ) -> Result<Self::ExecutionResult, Self::Error> {
         let mut tx = TxEnv::new_system_tx_with_caller(caller, system_contract_address, data);
         tx.set_gas_limit(SYSTEM_CALL_GAS_LIMIT);
-        self.inner.ctx.set_tx(tx.into());
+        self.inner.ctx.tx = tx.into();
         let mut h = TempoEvmHandler::new();
         h.inspect_run_system_call(self)
     }
