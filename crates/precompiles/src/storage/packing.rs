@@ -29,10 +29,12 @@ use crate::{
 pub struct PackedSlot(pub U256);
 
 impl StorageOps for PackedSlot {
+    #[inline(always)]
     fn load(&self, _slot: U256) -> Result<U256> {
         Ok(self.0)
     }
 
+    #[inline(always)]
     fn store(&mut self, _slot: U256, value: U256) -> Result<()> {
         self.0 = value;
         Ok(())
