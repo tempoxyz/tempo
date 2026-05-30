@@ -171,7 +171,7 @@ impl TipFeeManager {
         tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
         tip20_token.transfer_fee_pre_tx(fee_payer, max_amount)?;
 
-        if !skip_liquidity_check {
+        if !skip_liquidity_check && user_token != validator_token {
             let (route, ..) = self.plan_fee_route(user_token, validator_token, max_amount)?;
             let route = route.ok_or_else(TIPFeeAMMError::insufficient_liquidity)?;
             self.reserve_fee_liquidity(user_token, validator_token, max_amount, route)?;
