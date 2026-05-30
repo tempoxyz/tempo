@@ -1042,10 +1042,11 @@ impl TIP20Token {
         amount: U256,
         memo: B256,
     ) -> Result<Option<Recipient>> {
+        let spec = self.storage.spec();
         let to = Recipient::resolve(to)?;
         self.check_not_paused()?;
         to.validate()?;
-        self.ensure_transfer_authorized(from, to.target)?;
+        self.ensure_transfer_authorized_with_spec(spec, from, to.target)?;
 
         if let Some(spender) = spender {
             self.consume_allowance(from, spender, amount)?;
@@ -1053,7 +1054,7 @@ impl TIP20Token {
             self.check_and_update_spending_limit(from, amount)?;
         }
 
-        if self.validate_inbound_or_block(from, &to, amount, None, memo)? {
+        if self.validate_inbound_or_block_with_spec(spec, from, &to, amount, None, memo)? {
             return Ok(None);
         }
 
@@ -1077,7 +1078,8 @@ impl TIP20Token {
         self.check_role(msg_sender, *ISSUER_ROLE)?;
         let total_supply = self.total_supply()?;
 
-        if self.storage.spec().is_t3() {
+        let spec = self.storage.spec();
+        if spec.is_t3() {
             self.check_not_paused()?;
             to.validate()?;
         }
@@ -1091,7 +1093,14 @@ impl TIP20Token {
             return Err(TIP20Error::policy_forbids().into());
         }
 
-        if self.validate_inbound_or_block(msg_sender, &to, amount, Some(total_supply), memo)? {
+        if self.validate_inbound_or_block_with_spec(
+            spec,
+            msg_sender,
+            &to,
+            amount,
+            Some(total_supply),
+            memo,
+        )? {
             return Ok(None);
         }
 
@@ -1103,12 +1112,21 @@ impl TIP20Token {
     ///
     /// [TIP-1015]: <https://docs.tempo.xyz/protocol/tips/tip-1015>
     pub fn is_transfer_authorized(&self, from: Address, to: Address) -> Result<bool> {
+        self.is_transfer_authorized_with_spec(self.storage.spec(), from, to)
+    }
+
+    fn is_transfer_authorized_with_spec(
+        &self,
+        spec: TempoHardfork,
+        from: Address,
+        to: Address,
+    ) -> Result<bool> {
         let policy_id = self.transfer_policy_id()?;
         let registry = TIP403Registry::new();
 
         // (spec: +T2) short-circuit and skip recipient check if sender fails
         let sender_auth = registry.is_authorized_as(policy_id, from, AuthRole::sender())?;
-        if self.storage.spec().is_t2() && !sender_auth {
+        if spec.is_t2() && !sender_auth {
             return Ok(false);
         }
         let recipient_auth = registry.is_authorized_as(policy_id, to, AuthRole::recipient())?;
@@ -1120,7 +1138,20 @@ impl TIP20Token {
     /// # Errors
     /// - `PolicyForbids` — sender or recipient is not authorized by the active transfer policy
     pub fn ensure_transfer_authorized(&self, from: Address, to: Address) -> Result<()> {
-        if !self.is_transfer_authorized(from, to)? {
+        if !self.is_transfer_authorized_with_spec(self.storage.spec(), from, to)? {
+            return Err(TIP20Error::policy_forbids().into());
+        }
+
+        Ok(())
+    }
+
+    fn ensure_transfer_authorized_with_spec(
+        &self,
+        spec: TempoHardfork,
+        from: Address,
+        to: Address,
+    ) -> Result<()> {
+        if !self.is_transfer_authorized_with_spec(spec, from, to)? {
             return Err(TIP20Error::policy_forbids().into());
         }
 
@@ -1181,18 +1212,16 @@ impl TIP20Token {
         self.emit_event(to.build_transfer_event(from, amount))
     }
 
-    /// Validates the receive policy of `to.target`. If blocked, moves the funds into the guard
-    /// account and stores a claim receipt; returns `true`. Returns `false` when the inbound is
-    /// authorized and the caller should proceed with the normal transfer or mint.
-    pub(crate) fn validate_inbound_or_block(
+    fn validate_inbound_or_block_with_spec(
         &mut self,
+        spec: TempoHardfork,
         originator: Address,
         to: &Recipient,
         amount: U256,
         mint_total_supply: Option<U256>,
         memo: B256,
     ) -> Result<bool> {
-        if !self.storage.spec().is_t6() {
+        if !spec.is_t6() {
             return Ok(false);
         }
         if to.target == RECEIVE_POLICY_GUARD_ADDRESS {
