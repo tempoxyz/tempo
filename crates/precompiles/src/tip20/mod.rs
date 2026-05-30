@@ -1162,7 +1162,8 @@ impl TIP20Token {
             .into());
         }
 
-        let (from_flag, to_flag) = self.handle_rewards_on_transfer(from, to.target, amount)?;
+        let (from_flag, to_flag, to_balance) =
+            self.handle_rewards_on_transfer_and_get_recipient_balance(from, to.target, amount)?;
 
         // Adjust balances
         self.set_balance(
@@ -1171,7 +1172,14 @@ impl TIP20Token {
         )?;
 
         if to.target != Address::ZERO {
-            let to_balance = self.get_balance(to.target)?;
+            let to_balance = if to.target == from {
+                self.get_balance(to.target)?
+            } else {
+                match to_balance {
+                    Some(to_balance) => to_balance,
+                    None => self.get_balance(to.target)?,
+                }
+            };
             self.set_balance(
                 to.target,
                 UserState::new(to_balance.checked_add(amount)?, to_flag)?,
