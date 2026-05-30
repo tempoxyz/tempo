@@ -16,6 +16,8 @@ use tempo_contracts::precompiles::IValidatorConfig::{self, IValidatorConfigCalls
 const T1_ADDED: &[[u8; 4]] = &[IValidatorConfig::changeValidatorStatusByIndexCall::SELECTOR];
 
 impl Precompile for ValidatorConfig {
+    #[cold]
+    #[inline(never)]
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
