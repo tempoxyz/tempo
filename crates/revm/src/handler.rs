@@ -1574,19 +1574,23 @@ where
             return Ok(());
         }
 
+        let fee_settlement = if !actual_spending.is_zero() || !refund_amount.is_zero() {
+            Some((
+                tx.fee_payer().expect("pre-validated in `validate_env`"),
+                evm.fee_token
+                    .expect("set in `validate_against_state_and_deduct_caller`"),
+            ))
+        } else {
+            None
+        };
+
         // Create storage provider and fee manager
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
 
-        let credited = StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
-            let mut fee_manager = TipFeeManager::new();
-
-            if !actual_spending.is_zero() || !refund_amount.is_zero() {
-                let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-                let fee_token = evm
-                    .fee_token
-                    .expect("set in `validate_against_state_and_deduct_caller`");
-                // Call collectFeePostTx (handles both refund and fee queuing)
+        let credited = if let Some((fee_payer, fee_token)) = fee_settlement {
+            StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
+                let mut fee_manager = TipFeeManager::new();
                 fee_manager
                     .collect_fee_post_tx(
                         fee_payer,
@@ -1596,10 +1600,10 @@ where
                         beneficiary,
                     )
                     .map_err(|e| EVMError::Custom(format!("{e:?}")))
-            } else {
-                Ok(U256::ZERO)
-            }
-        })?;
+            })?
+        } else {
+            U256::ZERO
+        };
 
         // Stash the per-tx credit so `TempoBlockExecutor` can surface it on `TempoTxResult`
         // for payload scoring. Reset to zero on every tx entry below in `validate_env`.
