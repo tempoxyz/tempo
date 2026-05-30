@@ -38,11 +38,15 @@ impl TIP20Token {
     }
 
     /// Returns whether `account` holds the given `role`.
+    #[cold]
+    #[inline(never)]
     pub fn has_role(&self, call: IRolesAuth::hasRoleCall) -> Result<bool> {
         self.has_role_internal(call.account, call.role)
     }
 
     /// Returns the admin role that governs `role`.
+    #[cold]
+    #[inline(never)]
     pub fn get_role_admin(&self, call: IRolesAuth::getRoleAdminCall) -> Result<B256> {
         self.get_role_admin_internal(call.role)
     }
@@ -51,6 +55,8 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `Unauthorized` — caller does not hold the admin role for `role`
+    #[cold]
+    #[inline(never)]
     pub fn grant_role(
         &mut self,
         msg_sender: Address,
@@ -72,6 +78,8 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `Unauthorized` — caller does not hold the admin role for `role`
+    #[cold]
+    #[inline(never)]
     pub fn revoke_role(
         &mut self,
         msg_sender: Address,
@@ -93,6 +101,8 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `Unauthorized` — caller does not hold `role`
+    #[cold]
+    #[inline(never)]
     pub fn renounce_role(
         &mut self,
         msg_sender: Address,
@@ -110,6 +120,8 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `Unauthorized` — caller does not hold the current admin role for `role`
+    #[cold]
+    #[inline(never)]
     pub fn set_role_admin(
         &mut self,
         msg_sender: Address,
