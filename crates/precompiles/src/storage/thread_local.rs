@@ -11,7 +11,7 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use scoped_tls::scoped_thread_local;
-use std::{cell::RefCell, fmt::Debug};
+use std::{cell::RefCell, fmt::Debug, mem::MaybeUninit};
 use tempo_chainspec::hardfork::TempoHardfork;
 
 use crate::{
@@ -108,13 +108,32 @@ impl StorageCtx {
         address: Address,
         mut f: impl FnMut(&AccountInfo) -> Result<T>,
     ) -> Result<T> {
-        let mut result: Option<Result<T>> = None;
-        Self::try_with_storage(|s| {
+        let mut result = MaybeUninit::<Result<T>>::uninit();
+        let mut result_written = false;
+
+        let storage_result = Self::try_with_storage(|s| {
             s.with_account_info(address, &mut |info| {
-                result = Some(f(info));
+                if result_written {
+                    // Preserve the old "last callback wins" behavior if a provider ever calls twice.
+                    unsafe { result.assume_init_drop() };
+                }
+                result.write(f(info));
+                result_written = true;
             })
-        })?;
-        result.unwrap()
+        });
+
+        if let Err(err) = storage_result {
+            if result_written {
+                unsafe { result.assume_init_drop() };
+            }
+            return Err(err);
+        }
+
+        if !result_written {
+            return Err(account_info_callback_not_called());
+        }
+
+        unsafe { result.assume_init() }
     }
 
     /// Returns the chain ID.
@@ -288,6 +307,12 @@ impl StorageCtx {
             .into()
             .into_precompile_result(self.gas_used(), self.reservoir())
     }
+}
+
+#[cold]
+#[inline(never)]
+fn account_info_callback_not_called() -> TempoPrecompileError {
+    TempoPrecompileError::Fatal("with_account_info callback was not called".to_string())
 }
 
 /// RAII guard for atomic state mutation batching.
