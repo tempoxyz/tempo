@@ -87,13 +87,14 @@ impl NonceManager {
             return Err(NonceError::invalid_nonce_key().into());
         }
 
-        let current = self.nonces[account][nonce_key].read()?;
+        let nonce = &mut self.nonces[account][nonce_key];
+        let current = nonce.read()?;
 
         let new_nonce = current
             .checked_add(1)
             .ok_or_else(NonceError::nonce_overflow)?;
 
-        self.nonces[account][nonce_key].write(new_nonce)?;
+        nonce.write(new_nonce)?;
 
         self.emit_event(NonceEvent::nonce_incremented(account, nonce_key, new_nonce))?;
 
@@ -155,13 +156,14 @@ impl NonceManager {
         // Safety check: buffer is sized so entries should always be expired, but verify
         // in case TPS exceeds expectations.
         if old_hash != B256::ZERO {
-            let old_expiry = self.expiring_nonce_seen[old_hash].read()?;
+            let old_seen = &mut self.expiring_nonce_seen[old_hash];
+            let old_expiry = old_seen.read()?;
             if old_expiry != 0 && old_expiry > now {
                 // Entry is still valid, cannot evict - buffer is full
                 return Err(NonceError::expiring_nonce_set_full().into());
             }
             // Clear the old entry from seen set
-            self.expiring_nonce_seen[old_hash].write(0)?;
+            old_seen.write(0)?;
         }
 
         // 5. Insert new entry
