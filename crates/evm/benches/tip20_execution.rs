@@ -61,8 +61,8 @@ use tempo_precompiles::{
     SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
     error::TempoPrecompileError,
     nonce::NonceManager,
-    storage::StorageCtx,
-    tip_fee_manager::TipFeeManager,
+    storage::{StorageCtx, StorageKey as _},
+    tip_fee_manager::{TipFeeManager, slots as fee_manager_slots},
     tip20::{ISSUER_ROLE, TIP20Token},
     tip20_factory::TIP20Factory,
     tip403_registry::TIP403Registry,
@@ -894,6 +894,12 @@ where
     stats
 }
 
+fn prewarm_fee_manager_slots() {
+    let beneficiary = Address::repeat_byte(0x42);
+    beneficiary.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS);
+    PATH_USD_ADDRESS.mapping_slot(beneficiary.mapping_slot(fee_manager_slots::COLLECTED_FEES));
+}
+
 fn tip20_execution(c: &mut Criterion) {
     let workload = workload();
     let hardfork_cases = hardfork_bench_cases();
@@ -913,6 +919,7 @@ fn tip20_execution(c: &mut Criterion) {
             workload.block_timestamp,
             hardfork,
         );
+        prewarm_fee_manager_slots();
 
         let mut group = c.benchmark_group(format!("{label}/tip20_execution"));
         group.throughput(Throughput::Elements(workload.transactions.len() as u64));
@@ -951,6 +958,7 @@ fn tip20_execution(c: &mut Criterion) {
                 DEFAULT_BLOCK_TIMESTAMP,
                 hardfork,
             );
+            prewarm_fee_manager_slots();
 
             let mut group = c.benchmark_group(format!("{label}/tip20_rewards"));
             group.throughput(Throughput::Elements(
