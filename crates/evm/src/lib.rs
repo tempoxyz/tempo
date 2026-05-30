@@ -279,7 +279,7 @@ impl ConfigureEvm for TempoEvmConfig {
                     .withdrawals
                     .map(|w| Cow::Owned(w.into_inner())),
                 extra_data: attributes.inner.extra_data,
-                tx_count_hint: None,
+                tx_count_hint: attributes.tx_count_hint,
             },
             general_gas_limit: attributes.general_gas_limit,
             shared_gas_limit: attributes.shared_gas_limit,
@@ -423,6 +423,7 @@ mod tests {
             shared_gas_limit: 3_000_000,
             timestamp_millis_part: 750,
             consensus_context: None,
+            tx_count_hint: None,
             subblock_fee_recipients: HashMap::new(),
         };
 
@@ -592,6 +593,7 @@ mod tests {
             shared_gas_limit: 4_000_000,
             timestamp_millis_part: 999,
             consensus_context: None,
+            tx_count_hint: Some(9_432),
             subblock_fee_recipients: subblock_fee_recipients.clone(),
         };
 
@@ -609,6 +611,7 @@ mod tests {
             context.inner.parent_beacon_block_root,
             Some(B256::repeat_byte(0x05))
         );
+        assert_eq!(context.inner.tx_count_hint, Some(9_432));
 
         // Verify subblock_fee_recipients passed through
         assert_eq!(
