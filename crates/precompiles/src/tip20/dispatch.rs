@@ -37,11 +37,11 @@ impl TIP20Call {
         // safe to expect as `dispatch_call` pre-validates calldata len
         let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
 
-        if IRolesAuthCalls::valid_selector(selector) {
-            IRolesAuthCalls::abi_decode(calldata).map(Self::RolesAuth)
-        } else {
-            ITIP20Calls::abi_decode(calldata).map(Self::TIP20)
+        if !IRolesAuthCalls::valid_selector(selector) {
+            return ITIP20Calls::abi_decode(calldata).map(Self::TIP20);
         }
+
+        IRolesAuthCalls::abi_decode(calldata).map(Self::RolesAuth)
     }
 }
 
