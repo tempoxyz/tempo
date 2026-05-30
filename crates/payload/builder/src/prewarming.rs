@@ -55,11 +55,14 @@ impl BestTransactionsPrewarming {
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
+        let fee_recipient = evm_env.block_env.beneficiary;
         let prewarm = PrewarmingExecutionContext {
             provider,
             parent_hash,
             cache,
             evm_env,
+            fee_manager_validator_token_slot: fee_recipient
+                .mapping_slot(fee_manager_slots::VALIDATOR_TOKENS),
             stop: stop.clone(),
         };
 
@@ -182,8 +185,11 @@ impl BestTransactionsPrewarming {
             let tx_hash = *tx.hash();
 
             let touched = if is_tip20_transfer_transaction(&tx) {
-                let touches =
-                    storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary);
+                let touches = storage_touches_for_transaction(
+                    &tx,
+                    prewarm.evm_env.block_env.beneficiary,
+                    prewarm.fee_manager_validator_token_slot,
+                );
 
                 for touch in &touches {
                     if prewarm.is_stopped() {
@@ -291,6 +297,7 @@ struct PrewarmingExecutionContext<Provider> {
     parent_hash: B256,
     cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
+    fee_manager_validator_token_slot: U256,
     stop: Arc<AtomicBool>,
 }
 
@@ -392,6 +399,7 @@ fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
 fn storage_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
+    fee_manager_validator_token_slot: U256,
 ) -> Vec<StorageTouch> {
     let mut touches = Vec::new();
     let sender = tx.transaction.sender();
@@ -404,7 +412,12 @@ fn storage_touches_for_transaction(
     });
 
     add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
-    add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
+    add_fee_manager_touches(
+        &mut touches,
+        fee_recipient,
+        fee_token,
+        fee_manager_validator_token_slot,
+    );
 
     if tx.transaction.is_payment() {
         for (kind, input) in tx.transaction.inner().calls() {
@@ -529,13 +542,10 @@ fn add_fee_manager_touches(
     touches: &mut Vec<StorageTouch>,
     fee_recipient: Address,
     fee_token: Address,
+    validator_token_slot: U256,
 ) {
     add_account_touch(touches, TIP_FEE_MANAGER_ADDRESS);
-    add_storage_touch(
-        touches,
-        TIP_FEE_MANAGER_ADDRESS,
-        fee_recipient.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS),
-    );
+    add_storage_touch(touches, TIP_FEE_MANAGER_ADDRESS, validator_token_slot);
     add_storage_touch(
         touches,
         TIP_FEE_MANAGER_ADDRESS,
