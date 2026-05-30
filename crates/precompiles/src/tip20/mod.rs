@@ -143,21 +143,29 @@ pub const PROTECTED: &[(TempoHardfork, &[Address])] = &[
 
 impl TIP20Token {
     /// Returns the token name.
+    #[cold]
+    #[inline(never)]
     pub fn name(&self) -> Result<String> {
         self.name.read()
     }
 
     /// Returns the token symbol.
+    #[cold]
+    #[inline(never)]
     pub fn symbol(&self) -> Result<String> {
         self.symbol.read()
     }
 
     /// Returns the token decimals (always 6 for TIP-20).
+    #[cold]
+    #[inline(never)]
     pub fn decimals(&self) -> Result<u8> {
         Ok(TIP20_DECIMALS)
     }
 
     /// Returns the token's currency denomination (e.g. `"USD"`).
+    #[cold]
+    #[inline(never)]
     pub fn currency(&self) -> Result<String> {
         self.currency.read()
     }
@@ -170,6 +178,8 @@ impl TIP20Token {
     }
 
     /// Returns the current total supply.
+    #[cold]
+    #[inline(never)]
     pub fn total_supply(&self) -> Result<U256> {
         self.total_supply.read()
     }
@@ -232,6 +242,8 @@ impl TIP20Token {
     }
 
     /// Returns the token balance of `account`.
+    #[cold]
+    #[inline(never)]
     pub fn balance_of(&self, call: ITIP20::balanceOfCall) -> Result<U256> {
         self.balances[call.account]
             .read()
@@ -239,6 +251,8 @@ impl TIP20Token {
     }
 
     /// Returns the remaining allowance that `spender` can transfer on behalf of `owner`.
+    #[cold]
+    #[inline(never)]
     pub fn allowance(&self, call: ITIP20::allowanceCall) -> Result<U256> {
         self.allowances[call.owner][call.spender].read()
     }
