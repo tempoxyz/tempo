@@ -80,6 +80,38 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
     })
 }
 
+#[inline]
+fn duration_to_micros(duration: Duration) -> u64 {
+    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+}
+
+#[inline]
+fn debug_build_payload_timing(
+    payload_id: &impl std::fmt::Display,
+    phase: &'static str,
+    start_offset: Duration,
+    duration: Duration,
+) {
+    debug!(
+        target: "payload_builder::build_payload_timing",
+        id = %payload_id,
+        phase = phase,
+        start_offset_us = duration_to_micros(start_offset),
+        duration_us = duration_to_micros(duration),
+        end_offset_us = duration_to_micros(start_offset + duration),
+        "timed build_payload phase"
+    );
+}
+
+const fn block_build_stop_reason_label(reason: &BlockBuildStopReason) -> &'static str {
+    match reason {
+        BlockBuildStopReason::GasLimit => "gas_limit",
+        BlockBuildStopReason::RlpBlockSizeLimit => "rlp_block_size_limit",
+        BlockBuildStopReason::TxPoolEmpty => "tx_pool_empty",
+        BlockBuildStopReason::BuildBudget => "build_budget",
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
@@ -357,9 +389,16 @@ where
             .with_bundle_update()
             .build();
         drop(_state_setup_span);
+        let state_setup_elapsed = state_setup_start.elapsed();
         self.metrics
             .state_setup_duration_seconds
-            .record(state_setup_start.elapsed());
+            .record(state_setup_elapsed);
+        debug_build_payload_timing(
+            &payload_id,
+            "state_setup",
+            state_setup_start.duration_since(start),
+            state_setup_elapsed,
+        );
 
         check_cancel!();
 
@@ -493,9 +532,16 @@ where
         self.metrics
             .prepare_system_transactions_duration_seconds
             .record(prepare_system_txs_elapsed);
+        debug_build_payload_timing(
+            &payload_id,
+            "prepare_system_txs",
+            prepare_system_txs_start.duration_since(start),
+            prepare_system_txs_elapsed,
+        );
 
         let base_fee = builder.evm_mut().block().basefee;
         let pool_fetch_start = Instant::now();
+        let best_txs_create_start = Instant::now();
         let best_txs = best_txs(BestTransactionsAttributes::new(
             base_fee,
             builder
@@ -504,6 +550,7 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
+        let best_transactions_create_elapsed = best_txs_create_start.elapsed();
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
         let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
@@ -518,15 +565,39 @@ where
         } else {
             Box::new(best_txs)
         });
+        let pool_fetch_elapsed = pool_fetch_start.elapsed();
         self.metrics
             .pool_fetch_duration_seconds
-            .record(pool_fetch_start.elapsed());
+            .record(pool_fetch_elapsed);
+        debug_build_payload_timing(
+            &payload_id,
+            "best_txs_create",
+            best_txs_create_start.duration_since(start),
+            best_transactions_create_elapsed,
+        );
+        let pool_fetch_start_offset = pool_fetch_start.duration_since(start);
+        debug!(
+            target: "payload_builder::build_payload_timing",
+            id = %payload_id,
+            phase = "pool_fetch",
+            start_offset_us = duration_to_micros(pool_fetch_start_offset),
+            duration_us = duration_to_micros(pool_fetch_elapsed),
+            end_offset_us = duration_to_micros(pool_fetch_start_offset + pool_fetch_elapsed),
+            prewarming = self.enable_prewarming,
+            "timed build_payload operation"
+        );
 
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let mut best_transactions_next_calls = 0u64;
+        let mut total_best_transactions_next_elapsed = Duration::ZERO;
+        let mut max_best_transactions_next_elapsed = Duration::ZERO;
+        let mut execute_transaction_with_result_closure_calls = 0u64;
+        let mut total_execute_transaction_with_result_closure_elapsed = Duration::ZERO;
+        let mut max_execute_transaction_with_result_closure_elapsed = Duration::ZERO;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -562,23 +633,48 @@ where
                 }
             }
 
-            let Some(pool_tx) = best_txs.next() else {
-                if build_once_with_shared_trie
-                    && payload_build_budget.is_some()
-                    && cumulative_gas_used < non_shared_gas_limit
-                {
-                    std::thread::sleep(Duration::from_millis(1));
-                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
-                    continue;
+            let best_txs_next_start = Instant::now();
+            let next_pool_tx = best_txs.next();
+            let best_txs_next_elapsed = best_txs_next_start.elapsed();
+            best_transactions_next_calls += 1;
+            total_best_transactions_next_elapsed += best_txs_next_elapsed;
+            max_best_transactions_next_elapsed =
+                max_best_transactions_next_elapsed.max(best_txs_next_elapsed);
+            let best_txs_next_start_offset = best_txs_next_start.duration_since(start);
+            debug!(
+                target: "payload_builder::build_payload_timing",
+                id = %payload_id,
+                phase = "best_txs.next",
+                call = best_transactions_next_calls,
+                yielded_transaction = next_pool_tx.is_some(),
+                start_offset_us = duration_to_micros(best_txs_next_start_offset),
+                duration_us = duration_to_micros(best_txs_next_elapsed),
+                end_offset_us = duration_to_micros(
+                    best_txs_next_start_offset + best_txs_next_elapsed
+                ),
+                "timed build_payload operation"
+            );
+
+            let pool_tx = match next_pool_tx {
+                Some(pool_tx) => pool_tx,
+                None => {
+                    if build_once_with_shared_trie
+                        && payload_build_budget.is_some()
+                        && cumulative_gas_used < non_shared_gas_limit
+                    {
+                        std::thread::sleep(Duration::from_millis(1));
+                        normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                        continue;
+                    }
+                    let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
+                        BlockBuildStopReason::GasLimit
+                    } else if skipped_oversized_block {
+                        BlockBuildStopReason::RlpBlockSizeLimit
+                    } else {
+                        BlockBuildStopReason::TxPoolEmpty
+                    };
+                    break stop_reason;
                 }
-                let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
-                    BlockBuildStopReason::GasLimit
-                } else if skipped_oversized_block {
-                    BlockBuildStopReason::RlpBlockSizeLimit
-                } else {
-                    BlockBuildStopReason::TxPoolEmpty
-                };
-                break stop_reason;
             };
             pool_transactions_yielded += 1;
 
@@ -651,6 +747,8 @@ where
                 .unwrap_or_default();
 
             let tx_with_env = pool_tx.transaction.clone_into_with_tx_env();
+            execute_transaction_with_result_closure_calls += 1;
+            let execute_transaction_with_result_closure_start = Instant::now();
             let execution_result =
                 builder.execute_transaction_with_result_closure(tx_with_env, |result| {
                     cumulative_gas_used += result.block_gas_used();
@@ -666,6 +764,33 @@ where
                     // Notify transactions iterator about the new state.
                     best_txs.on_new_result(result);
                 });
+            let execute_transaction_with_result_closure_elapsed =
+                execute_transaction_with_result_closure_start.elapsed();
+            total_execute_transaction_with_result_closure_elapsed +=
+                execute_transaction_with_result_closure_elapsed;
+            max_execute_transaction_with_result_closure_elapsed =
+                max_execute_transaction_with_result_closure_elapsed
+                    .max(execute_transaction_with_result_closure_elapsed);
+            let execute_transaction_with_result_closure_start_offset =
+                execute_transaction_with_result_closure_start.duration_since(start);
+            debug!(
+                target: "payload_builder::build_payload_timing",
+                id = %payload_id,
+                phase = "execute_transaction_with_result_closure",
+                call = execute_transaction_with_result_closure_calls,
+                yielded_transaction_index = pool_transactions_yielded,
+                success = execution_result.is_ok(),
+                tx = %tx_debug_repr,
+                start_offset_us = duration_to_micros(
+                    execute_transaction_with_result_closure_start_offset
+                ),
+                duration_us = duration_to_micros(execute_transaction_with_result_closure_elapsed),
+                end_offset_us = duration_to_micros(
+                    execute_transaction_with_result_closure_start_offset
+                        + execute_transaction_with_result_closure_elapsed
+                ),
+                "timed build_payload operation"
+            );
             if let Err(err) = execution_result {
                 if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,
@@ -704,6 +829,7 @@ where
         let validation_work_at_tx_cutoff =
             elapsed_at_tx_cutoff.saturating_sub(normal_transaction_fill_idle_elapsed);
         drop(_block_fill_span);
+        let block_build_stop_reason_name = block_build_stop_reason_label(&block_build_stop_reason);
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
         let normal_transaction_fill_elapsed = execution_start.elapsed();
@@ -713,12 +839,34 @@ where
         self.metrics
             .normal_transaction_fill_idle_duration_seconds
             .record(normal_transaction_fill_idle_elapsed);
+        let execution_start_offset = execution_start.duration_since(start);
+        debug!(
+            target: "payload_builder::build_payload_timing",
+            id = %payload_id,
+            phase = "normal_transaction_fill",
+            start_offset_us = duration_to_micros(execution_start_offset),
+            duration_us = duration_to_micros(normal_transaction_fill_elapsed),
+            end_offset_us = duration_to_micros(execution_start_offset + normal_transaction_fill_elapsed),
+            idle_duration_us = duration_to_micros(normal_transaction_fill_idle_elapsed),
+            stop_reason = block_build_stop_reason_name,
+            "timed build_payload operation"
+        );
         self.metrics
             .payment_transactions
             .record(payment_transactions as f64);
         self.metrics
             .payment_transactions_last
             .set(payment_transactions as f64);
+        debug!(
+            target: "payload_builder::build_payload_timing",
+            best_transactions_next_calls,
+            ?total_best_transactions_next_elapsed,
+            ?max_best_transactions_next_elapsed,
+            execute_transaction_with_result_closure_calls,
+            ?total_execute_transaction_with_result_closure_elapsed,
+            ?max_execute_transaction_with_result_closure_elapsed,
+            "completed normal transaction fill instrumentation"
+        );
 
         check_cancel!();
 
@@ -726,6 +874,17 @@ where
         if !is_better_payload(best_payload.as_ref(), total_fees)
             && !is_more_subblocks(best_payload.as_ref(), &subblocks)
         {
+            let elapsed = start.elapsed();
+            debug!(
+                target: "payload_builder::build_payload_timing",
+                id = %payload_id,
+                phase = "build_payload",
+                outcome = "aborted",
+                start_offset_us = 0_u64,
+                duration_us = duration_to_micros(elapsed),
+                end_offset_us = duration_to_micros(elapsed),
+                "timed build_payload operation"
+            );
             // Release db
             drop(builder);
             drop(db);
@@ -742,7 +901,7 @@ where
         let subblocks_count = subblocks.len() as f64;
         let mut subblock_transactions = 0f64;
         // Apply subblock transactions
-        for subblock in &subblocks {
+        for (subblock_index, subblock) in subblocks.iter().enumerate() {
             let subblock_start = Instant::now();
             let mut subblock_tx_count = 0f64;
 
@@ -768,12 +927,27 @@ where
                 subblock_tx_count += 1.0;
             }
 
+            let subblock_execution_elapsed = subblock_start.elapsed();
             self.metrics
                 .subblock_execution_duration_seconds
-                .record(subblock_start.elapsed());
+                .record(subblock_execution_elapsed);
             self.metrics
                 .subblock_transaction_count
                 .record(subblock_tx_count);
+            let subblock_start_offset = subblock_start.duration_since(start);
+            debug!(
+                target: "payload_builder::build_payload_timing",
+                id = %payload_id,
+                phase = "subblock_execution",
+                subblock_index,
+                transaction_count = subblock_tx_count,
+                start_offset_us = duration_to_micros(subblock_start_offset),
+                duration_us = duration_to_micros(subblock_execution_elapsed),
+                end_offset_us = duration_to_micros(
+                    subblock_start_offset + subblock_execution_elapsed
+                ),
+                "timed build_payload operation"
+            );
             subblock_transactions += subblock_tx_count;
         }
         drop(_subblock_txs_span);
@@ -781,6 +955,20 @@ where
         self.metrics
             .total_subblock_transaction_execution_duration_seconds
             .record(total_subblock_transaction_execution_elapsed);
+        let subblocks_start_offset = subblocks_start.duration_since(start);
+        debug!(
+            target: "payload_builder::build_payload_timing",
+            id = %payload_id,
+            phase = "total_subblock_transaction_execution",
+            subblocks_count,
+            transaction_count = subblock_transactions,
+            start_offset_us = duration_to_micros(subblocks_start_offset),
+            duration_us = duration_to_micros(total_subblock_transaction_execution_elapsed),
+            end_offset_us = duration_to_micros(
+                subblocks_start_offset + total_subblock_transaction_execution_elapsed
+            ),
+            "timed build_payload operation"
+        );
         self.metrics.subblocks.record(subblocks_count);
         self.metrics.subblocks_last.set(subblocks_count);
         self.metrics
@@ -804,6 +992,12 @@ where
         self.metrics
             .system_transactions_execution_duration_seconds
             .record(system_txs_execution_elapsed);
+        debug_build_payload_timing(
+            &payload_id,
+            "system_transactions_execution",
+            system_txs_execution_start.duration_since(start),
+            system_txs_execution_elapsed,
+        );
 
         let total_transaction_execution_elapsed = normal_transaction_fill_elapsed
             + total_subblock_transaction_execution_elapsed
@@ -834,6 +1028,12 @@ where
                         self.metrics
                             .sparse_trie_state_root_wait_duration_seconds
                             .record(elapsed);
+                        debug_build_payload_timing(
+                            &payload_id,
+                            "sparse_trie_state_root_wait",
+                            state_root_wait_start.duration_since(start),
+                            elapsed,
+                        );
                         debug!(
                             target: "payload_builder",
                             id = %payload_id,
@@ -879,11 +1079,23 @@ where
         self.metrics
             .builder_finish_duration_seconds
             .record(builder_finish_elapsed);
+        debug_build_payload_timing(
+            &payload_id,
+            "builder_finish",
+            builder_finish_start.duration_since(start),
+            builder_finish_elapsed,
+        );
         drop(_finish_span);
         let payload_finalization_elapsed = payload_finalization_start.elapsed();
         self.metrics
             .payload_finalization_duration_seconds
             .record(payload_finalization_elapsed);
+        debug_build_payload_timing(
+            &payload_id,
+            "payload_finalization",
+            payload_finalization_start.duration_since(start),
+            payload_finalization_elapsed,
+        );
 
         let total_transactions = block.transaction_count();
         self.metrics
@@ -974,6 +1186,16 @@ where
         self.metrics
             .rlp_block_size_bytes_last
             .set(rlp_length as f64);
+        debug!(
+            target: "payload_builder::build_payload_timing",
+            id = %payload_id,
+            phase = "build_payload",
+            outcome = "built",
+            start_offset_us = 0_u64,
+            duration_us = duration_to_micros(elapsed),
+            end_offset_us = duration_to_micros(elapsed),
+            "timed build_payload operation"
+        );
 
         info!(
             parent_hash = ?block.parent_hash(),
@@ -994,6 +1216,15 @@ where
             total_transactions,
             ?elapsed,
             ?validation_work_duration,
+            block_build_stop_reason = block_build_stop_reason_name,
+            ?best_transactions_create_elapsed,
+            ?pool_fetch_elapsed,
+            best_transactions_next_calls,
+            ?total_best_transactions_next_elapsed,
+            ?max_best_transactions_next_elapsed,
+            execute_transaction_with_result_closure_calls,
+            ?total_execute_transaction_with_result_closure_elapsed,
+            ?max_execute_transaction_with_result_closure_elapsed,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
             ?total_subblock_transaction_execution_elapsed,
