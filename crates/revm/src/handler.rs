@@ -1131,9 +1131,13 @@ where
 
         // calculate the new balance after the fee is collected.
         let new_balance = calculate_caller_fee(account_balance, tx, block, cfg)?;
-        // doing max to avoid underflow as new_balance can be more than account
-        // balance if `cfg.is_balance_check_disabled()` is true.
-        let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
+        let gas_balance_spending = if cfg.is_balance_check_disabled() {
+            // Avoid underflow when balance checks are disabled, because the fee calculation may
+            // preserve transaction value even when it exceeds the account balance.
+            core::cmp::max(account_balance, new_balance) - new_balance
+        } else {
+            account_balance - new_balance
+        };
 
         // Note: Signature verification happens during recover_signer() before entering the pool
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
