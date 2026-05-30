@@ -11,7 +11,7 @@ use tempo_precompiles_macros::contract;
 
 use crate::{
     NONCE_PRECOMPILE_ADDRESS,
-    error::Result,
+    error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256, U256};
@@ -53,6 +53,24 @@ pub struct NonceManager {
     expiring_nonce_seen: Mapping<B256, u64>,
     expiring_nonce_ring: Mapping<u32, B256>,
     expiring_nonce_ring_ptr: u32,
+}
+
+#[cold]
+#[inline(never)]
+fn invalid_expiring_nonce_expiry() -> TempoPrecompileError {
+    NonceError::invalid_expiring_nonce_expiry().into()
+}
+
+#[cold]
+#[inline(never)]
+fn expiring_nonce_replay() -> TempoPrecompileError {
+    NonceError::expiring_nonce_replay().into()
+}
+
+#[cold]
+#[inline(never)]
+fn expiring_nonce_set_full() -> TempoPrecompileError {
+    NonceError::expiring_nonce_set_full().into()
 }
 
 impl NonceManager {
@@ -137,13 +155,13 @@ impl NonceManager {
         // 1. Validate expiry window: must be in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
         if valid_before <= now || valid_before > now.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
         {
-            return Err(NonceError::invalid_expiring_nonce_expiry().into());
+            return Err(invalid_expiring_nonce_expiry());
         }
 
         // 2. Replay check: reject if hash is already seen and not expired
         let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
         if seen_expiry != 0 && seen_expiry > now {
-            return Err(NonceError::expiring_nonce_replay().into());
+            return Err(expiring_nonce_replay());
         }
 
         // 3. Get current pointer (bounded in [0, CAPACITY)) and use directly as index
@@ -158,7 +176,7 @@ impl NonceManager {
             let old_expiry = self.expiring_nonce_seen[old_hash].read()?;
             if old_expiry != 0 && old_expiry > now {
                 // Entry is still valid, cannot evict - buffer is full
-                return Err(NonceError::expiring_nonce_set_full().into());
+                return Err(expiring_nonce_set_full());
             }
             // Clear the old entry from seen set
             self.expiring_nonce_seen[old_hash].write(0)?;
