@@ -18,7 +18,7 @@ use crate::{
     prewarming::BestTransactionsPrewarming,
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256};
 use alloy_rlp::{Decodable, Encodable};
 use reth_basic_payload_builder::{
     BuildArguments, BuildOutcome, MissingPayloadBehaviour, PayloadBuilder, PayloadConfig,
@@ -49,7 +49,7 @@ use reth_transaction_pool::{
 };
 use std::{
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
@@ -109,6 +109,15 @@ pub struct TempoPayloadBuilder<Provider> {
     /// This lets the builder reserve time for non-interruptible
     /// `builder_finish` without a fixed duration.
     build_time_multiplier: Arc<AtomicU64>,
+    /// Last fee-recipient lookup for duplicate payload jobs on the same parent state.
+    fee_recipient_cache: Arc<Mutex<Option<FeeRecipientCacheEntry>>>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FeeRecipientCacheEntry {
+    parent_hash: B256,
+    public_key: B256,
+    fee_recipient: Option<Address>,
 }
 
 /// Runtime settings for the Tempo payload builder.
@@ -161,6 +170,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
+            fee_recipient_cache: Default::default(),
         }
     }
 
@@ -177,6 +187,29 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             Ordering::Relaxed,
             |current| Some(decay_build_time_multiplier(current, observed)),
         );
+    }
+
+    fn cached_fee_recipient(&self, parent_hash: B256, public_key: B256) -> Option<Option<Address>> {
+        let cache = self.fee_recipient_cache.lock().ok()?;
+        cache
+            .as_ref()
+            .filter(|entry| entry.parent_hash == parent_hash && entry.public_key == public_key)
+            .map(|entry| entry.fee_recipient)
+    }
+
+    fn cache_fee_recipient(
+        &self,
+        parent_hash: B256,
+        public_key: B256,
+        fee_recipient: Option<Address>,
+    ) {
+        if let Ok(mut cache) = self.fee_recipient_cache.lock() {
+            *cache = Some(FeeRecipientCacheEntry {
+                parent_hash,
+                public_key,
+                fee_recipient,
+            });
+        }
     }
 }
 
@@ -466,7 +499,7 @@ where
 
         // Override the fee recipient with the on-chain value from the V2
         // validator config contract, if available.
-        maybe_override_fee_recipient(&mut builder, &attributes);
+        self.maybe_override_fee_recipient(&mut builder, &attributes, parent_header.hash());
 
         if let Some(ref handle) = trie_handle {
             builder
@@ -1060,55 +1093,68 @@ pub fn is_more_subblocks(
     subblocks.len() > best_metadata.len()
 }
 
-/// Overrides the block's fee recipient (beneficiary) with the value from the
-/// V2 validator config contract, if the contract is active and returns a
-/// non-zero address for the given `public_key`.
-fn maybe_override_fee_recipient<DB: Database>(
-    builder: &mut impl BlockBuilder<Executor: BlockExecutor<Evm = TempoEvm<DB>>>,
-    attributes: &TempoPayloadAttributes,
-) {
-    let Some(public_key) = attributes.proposer_public_key() else {
-        return;
-    };
-    let ctx = builder.evm_mut().ctx_mut();
-    if !ctx.cfg.spec.is_t2() {
-        return;
-    }
-
-    // We are using the database as a read-only storage context to avoid modifying the journal state.
-    // Reading slots here might be dangerous because they would end up being warmed and might affect gas accounting.
-    match ctx.journaled_state.database.with_read_only_storage_ctx(
-        ctx.cfg.spec,
-        || -> Result<Option<Address>, PayloadBuilderError> {
-            let parent_number = ctx.block.number.saturating_to::<u64>() - 1;
-
-            let config = ValidatorConfigV2::default();
-            if !config
-                .is_initialized()
-                .map_err(PayloadBuilderError::other)?
-            {
-                return Ok(None);
-            }
-            let init_height = config
-                .get_initialized_at_height()
-                .map_err(PayloadBuilderError::other)?;
-            if init_height > parent_number {
-                return Ok(None);
-            }
-            let on_chain = config
-                .validator_by_public_key(*public_key)
-                .map(|v| v.feeRecipient)
-                .map_err(PayloadBuilderError::other)?;
-            Ok((!on_chain.is_zero()).then_some(on_chain))
-        },
+impl<Provider> TempoPayloadBuilder<Provider> {
+    /// Overrides the block's fee recipient (beneficiary) with the value from the
+    /// V2 validator config contract, if the contract is active and returns a
+    /// non-zero address for the given `public_key`.
+    fn maybe_override_fee_recipient<DB: Database>(
+        &self,
+        builder: &mut impl BlockBuilder<Executor: BlockExecutor<Evm = TempoEvm<DB>>>,
+        attributes: &TempoPayloadAttributes,
+        parent_hash: B256,
     ) {
-        Ok(Some(fee_recipient)) => {
-            debug!(%fee_recipient, "resolved fee recipient from contract");
-            builder.evm_mut().ctx_mut().block.beneficiary = fee_recipient;
+        let Some(public_key) = attributes.proposer_public_key().copied() else {
+            return;
+        };
+        let ctx = builder.evm_mut().ctx_mut();
+        if !ctx.cfg.spec.is_t2() {
+            return;
         }
-        Ok(None) => {}
-        Err(err) => {
-            warn!(%err, "failed resolving fee recipient from contract; using fallback");
+
+        if let Some(cached) = self.cached_fee_recipient(parent_hash, public_key) {
+            if let Some(fee_recipient) = cached {
+                ctx.block.beneficiary = fee_recipient;
+            }
+            return;
+        }
+
+        // We are using the database as a read-only storage context to avoid modifying the journal state.
+        // Reading slots here might be dangerous because they would end up being warmed and might affect gas accounting.
+        match ctx.journaled_state.database.with_read_only_storage_ctx(
+            ctx.cfg.spec,
+            || -> Result<Option<Address>, PayloadBuilderError> {
+                let parent_number = ctx.block.number.saturating_to::<u64>() - 1;
+
+                let config = ValidatorConfigV2::default();
+                if !config
+                    .is_initialized()
+                    .map_err(PayloadBuilderError::other)?
+                {
+                    return Ok(None);
+                }
+                let init_height = config
+                    .get_initialized_at_height()
+                    .map_err(PayloadBuilderError::other)?;
+                if init_height > parent_number {
+                    return Ok(None);
+                }
+                let on_chain = config
+                    .validator_by_public_key(public_key)
+                    .map(|v| v.feeRecipient)
+                    .map_err(PayloadBuilderError::other)?;
+                Ok((!on_chain.is_zero()).then_some(on_chain))
+            },
+        ) {
+            Ok(fee_recipient) => {
+                self.cache_fee_recipient(parent_hash, public_key, fee_recipient);
+                if let Some(fee_recipient) = fee_recipient {
+                    debug!(%fee_recipient, "resolved fee recipient from contract");
+                    ctx.block.beneficiary = fee_recipient;
+                }
+            }
+            Err(err) => {
+                warn!(%err, "failed resolving fee recipient from contract; using fallback");
+            }
         }
     }
 }
