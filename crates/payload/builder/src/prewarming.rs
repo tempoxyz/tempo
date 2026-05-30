@@ -1,7 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -10,7 +13,7 @@ use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Database, Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use reth_tasks::{TaskExecutor, WorkerPool};
+use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -27,6 +30,10 @@ use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+
+thread_local! {
+    static PREWARM_EVM_STATE: RefCell<PrewarmEvmState> = const { RefCell::new(None) };
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -97,13 +104,13 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        let prewarm = ctx.prewarm.clone();
+        init_prewarm_evm_state(&prewarm);
+        pool.broadcast(pool.current_num_threads(), |_| {
+            init_prewarm_evm_state(&prewarm);
+        });
 
         pool.in_place_scope(|scope| {
-            let prewarm = ctx.prewarm.clone();
-            scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-            });
-
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
@@ -161,7 +168,8 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        pool.broadcast(pool.current_num_threads(), |_| clear_prewarm_evm_state());
+        clear_prewarm_evm_state();
     }
 
     fn prewarm_transaction<Provider>(
@@ -174,11 +182,7 @@ impl BestTransactionsPrewarming {
             return;
         }
 
-        WorkerPool::with_worker_mut(|worker| {
-            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
-                return;
-            };
-
+        with_prewarm_evm(&prewarm, |evm| {
             let tx_hash = *tx.hash();
 
             let touched = if is_tip20_transfer_transaction(&tx) {
@@ -227,6 +231,40 @@ impl BestTransactionsPrewarming {
             );
         });
     }
+}
+
+fn init_prewarm_evm_state<Provider>(prewarm: &PrewarmingExecutionContext<Provider>)
+where
+    Provider: StateProviderFactory + Clone + 'static,
+{
+    PREWARM_EVM_STATE.with_borrow_mut(|evm| {
+        *evm = prewarm.evm_for_ctx();
+    });
+}
+
+fn clear_prewarm_evm_state() {
+    PREWARM_EVM_STATE.with_borrow_mut(|evm| {
+        *evm = None;
+    });
+}
+
+fn with_prewarm_evm<Provider>(
+    prewarm: &PrewarmingExecutionContext<Provider>,
+    f: impl FnOnce(&mut TempoEvm<StateProviderDatabase<StateProviderBox>>),
+) where
+    Provider: StateProviderFactory + Clone + 'static,
+{
+    PREWARM_EVM_STATE.with_borrow_mut(|evm| {
+        if evm.is_none() {
+            *evm = prewarm.evm_for_ctx();
+        }
+
+        let Some(evm) = evm else {
+            return;
+        };
+
+        f(evm);
+    });
 }
 
 impl Drop for BestTransactionsPrewarming {
