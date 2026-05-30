@@ -1607,7 +1607,7 @@ where
         Ok(())
     }
 
-    #[inline]
+    #[inline(always)]
     fn reward_beneficiary(
         &self,
         _evm: &mut Self::Evm,
