@@ -190,20 +190,28 @@ impl BlockHashReader for InMemoryStateProvider {
         Ok(self.block_hashes.get(&number).copied())
     }
 
+    #[cold]
+    #[inline(never)]
     fn canonical_hashes_range(&self, _start: u64, _end: u64) -> ProviderResult<Vec<B256>> {
         Err(ProviderError::UnsupportedProvider)
     }
 }
 
 impl StateRootProvider for InMemoryStateProvider {
+    #[cold]
+    #[inline(never)]
     fn state_root(&self, _hashed_state: HashedPostState) -> ProviderResult<B256> {
         Err(ProviderError::UnsupportedProvider)
     }
 
+    #[cold]
+    #[inline(never)]
     fn state_root_from_nodes(&self, _input: TrieInput) -> ProviderResult<B256> {
         Err(ProviderError::UnsupportedProvider)
     }
 
+    #[cold]
+    #[inline(never)]
     fn state_root_with_updates(
         &self,
         _hashed_state: HashedPostState,
@@ -211,6 +219,8 @@ impl StateRootProvider for InMemoryStateProvider {
         Err(ProviderError::UnsupportedProvider)
     }
 
+    #[cold]
+    #[inline(never)]
     fn state_root_from_nodes_with_updates(
         &self,
         _input: TrieInput,
@@ -220,6 +230,8 @@ impl StateRootProvider for InMemoryStateProvider {
 }
 
 impl StorageRootProvider for InMemoryStateProvider {
+    #[cold]
+    #[inline(never)]
     fn storage_root(
         &self,
         _address: Address,
@@ -228,6 +240,8 @@ impl StorageRootProvider for InMemoryStateProvider {
         Err(ProviderError::UnsupportedProvider)
     }
 
+    #[cold]
+    #[inline(never)]
     fn storage_proof(
         &self,
         _address: Address,
@@ -237,6 +251,8 @@ impl StorageRootProvider for InMemoryStateProvider {
         Err(ProviderError::UnsupportedProvider)
     }
 
+    #[cold]
+    #[inline(never)]
     fn storage_multiproof(
         &self,
         _address: Address,
@@ -248,6 +264,8 @@ impl StorageRootProvider for InMemoryStateProvider {
 }
 
 impl StateProofProvider for InMemoryStateProvider {
+    #[cold]
+    #[inline(never)]
     fn proof(
         &self,
         _input: TrieInput,
@@ -257,6 +275,8 @@ impl StateProofProvider for InMemoryStateProvider {
         Err(ProviderError::UnsupportedProvider)
     }
 
+    #[cold]
+    #[inline(never)]
     fn multiproof(
         &self,
         _input: TrieInput,
@@ -265,6 +285,8 @@ impl StateProofProvider for InMemoryStateProvider {
         Err(ProviderError::UnsupportedProvider)
     }
 
+    #[cold]
+    #[inline(never)]
     fn witness(
         &self,
         _input: TrieInput,
@@ -276,6 +298,8 @@ impl StateProofProvider for InMemoryStateProvider {
 }
 
 impl HashedPostStateProvider for InMemoryStateProvider {
+    #[cold]
+    #[inline(never)]
     fn hashed_post_state(&self, _bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
         unreachable!("TIP20 execution benchmark does not compute hashed post-state")
     }
