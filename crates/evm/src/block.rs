@@ -372,6 +372,7 @@ where
     /// This is only done for system transaction as they are effectively bypassing
     /// the regular block gas limit checks and we need to make sure that they
     /// only perform explicitly allowed actions.
+    #[inline(always)]
     pub(crate) fn validate_tx_pre_execution(
         &self,
         tx: &TempoTxEnvelope,
