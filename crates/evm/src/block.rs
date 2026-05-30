@@ -108,11 +108,13 @@ pub struct TempoTxResult {
 
 impl TempoTxResult {
     /// Returns the block gas consumed by this transaction.
+    #[inline(always)]
     pub fn block_gas_used(&self) -> u64 {
         self.block_gas_used
     }
 
     /// Returns the state gas consumed by this transaction.
+    #[inline(always)]
     pub fn state_gas_used(&self) -> u64 {
         self.inner.result.result.gas().state_gas_spent_final()
     }
@@ -126,10 +128,12 @@ impl TempoTxResult {
 impl TxResult for TempoTxResult {
     type HaltReason = TempoHaltReason;
 
+    #[inline(always)]
     fn result(&self) -> &ResultAndState<Self::HaltReason> {
         self.inner.result()
     }
 
+    #[inline(always)]
     fn into_result(self) -> ResultAndState<Self::HaltReason> {
         self.inner.into_result()
     }
