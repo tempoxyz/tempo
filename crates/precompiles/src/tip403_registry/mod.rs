@@ -716,6 +716,18 @@ impl TIP403Registry {
             return Ok(auth);
         }
 
+        self.is_authorized_custom_policy(policy_id, user, role, hardfork)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn is_authorized_custom_policy(
+        &self,
+        policy_id: u64,
+        user: Address,
+        role: AuthRole,
+        hardfork: TempoHardfork,
+    ) -> Result<bool> {
         let data = self.get_policy_data(policy_id)?;
 
         if data.is_compound() {
