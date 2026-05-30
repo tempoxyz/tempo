@@ -19,6 +19,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     spec: TempoHardfork,
     amsterdam_eip8037_enabled: bool,
     is_static: bool,
+    meter_gas: bool,
     gas_params: GasParams,
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
@@ -42,6 +43,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             spec,
             amsterdam_eip8037_enabled,
             is_static,
+            meter_gas: true,
             gas_params,
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
@@ -59,6 +61,22 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             false,
             cfg.gas_params.clone(),
         )
+    }
+
+    /// Creates a new storage provider for EVM-side validation scopes that do not consume
+    /// precompile gas accounting.
+    pub fn new_unmetered(internals: EvmInternals<'a>, cfg: &CfgEnv<TempoHardfork>) -> Self {
+        Self {
+            internals,
+            gas_tracker: GasTracker::new(u64::MAX, u64::MAX, 0),
+            spec: cfg.spec,
+            amsterdam_eip8037_enabled: cfg.enable_amsterdam_eip8037,
+            is_static: false,
+            meter_gas: false,
+            gas_params: cfg.gas_params.clone(),
+            #[cfg(debug_assertions)]
+            checkpoint_stack: Vec::new(),
+        }
     }
 
     /// Creates a new storage provider with the given gas limit, deriving spec from `cfg`.
@@ -81,6 +99,9 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
+        if !self.meter_gas || gas == 0 {
+            return Ok(());
+        }
         if !self.gas_tracker.record_state_cost(gas) {
             return Err(TempoPrecompileError::OutOfGas);
         }
@@ -108,10 +129,12 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     #[inline]
     fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
         let code_len = code.len();
-        self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
+        if self.meter_gas {
+            self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
 
-        // Track state gas for code deposit
-        self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
+            // Track state gas for code deposit
+            self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
+        }
 
         let was_empty = {
             let mut account = self.internals.load_account_mut(address)?;
@@ -121,7 +144,7 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         };
 
         // TIP-1016: charge TIP20 deployments as CREATE.
-        if self.amsterdam_eip8037_enabled && was_empty {
+        if self.meter_gas && self.amsterdam_eip8037_enabled && was_empty {
             self.deduct_gas(self.gas_params.create_cost())?;
             self.deduct_state_gas(self.gas_params.create_state_gas())?;
             self.deduct_gas(self.gas_params.keccak256_cost(code_len.div_ceil(32)))?;
@@ -136,6 +159,16 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         address: Address,
         f: &mut dyn FnMut(&AccountInfo),
     ) -> Result<(), TempoPrecompileError> {
+        if !self.meter_gas {
+            let mut account = self
+                .internals
+                .load_account_mut_skip_cold_load(address, false)?;
+            account.load_code()?;
+
+            f(&account.data.account().info);
+            return Ok(());
+        }
+
         let additional_cost = self.gas_params.cold_account_additional_cost();
 
         // T4+: pre-charge static gas to avoid cheap useless work.
@@ -175,6 +208,13 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
+        if !self.meter_gas {
+            self.internals
+                .load_account_mut(address)?
+                .sstore(key, value, false)?;
+            return Ok(());
+        }
+
         // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
         let insufficient_gas_for_cold_load = if self.spec.is_t4() {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
@@ -215,19 +255,23 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         key: U256,
         value: U256,
     ) -> Result<(), TempoPrecompileError> {
-        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+        if self.meter_gas {
+            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+        }
         self.internals.tstore(address, key, value);
         Ok(())
     }
 
     #[inline]
     fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
-        self.deduct_gas(
-            gas::LOG
-                + self
-                    .gas_params
-                    .log_cost(event.topics().len() as u8, event.data.len() as u64),
-        )?;
+        if self.meter_gas {
+            self.deduct_gas(
+                gas::LOG
+                    + self
+                        .gas_params
+                        .log_cost(event.topics().len() as u8, event.data.len() as u64),
+            )?;
+        }
 
         self.internals.log(Log {
             address,
@@ -239,6 +283,11 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
+        if !self.meter_gas {
+            let mut account = self.internals.load_account_mut(address)?;
+            return Ok(account.sload(key, false)?.present_value);
+        }
+
         let additional_cost = self.gas_params.cold_storage_additional_cost();
 
         // T4+: pre-charge static gas to avoid cheap useless work.
@@ -273,19 +322,26 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
-        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+        if self.meter_gas {
+            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+        }
 
         Ok(self.internals.tload(address, key))
     }
 
     #[inline]
     fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
+        if !self.meter_gas || gas == 0 {
+            return Ok(());
+        }
         deduct_gas(&mut self.gas_tracker, gas)
     }
 
     #[inline]
     fn refund_gas(&mut self, gas: i64) {
-        self.gas_tracker.record_refund(gas);
+        if self.meter_gas {
+            self.gas_tracker.record_refund(gas);
+        }
     }
 
     #[inline]

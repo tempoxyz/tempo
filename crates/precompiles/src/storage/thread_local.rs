@@ -341,7 +341,7 @@ impl<'evm> StorageCtx {
         J: JournalTr<Database: Database> + Debug,
     {
         let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
+        let mut provider = EvmPrecompileStorageProvider::new_unmetered(internals, cfg);
 
         // The core logic of setting up thread-local storage is here.
         Self::enter(&mut provider, f)
