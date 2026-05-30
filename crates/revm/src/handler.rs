@@ -18,7 +18,7 @@ use revm::{
     },
     context_interface::cfg::{GasId, GasParams},
     handler::{
-        EvmTr, FrameResult, FrameTr, Handler, MainnetHandler,
+        EvmTr, FrameResult, FrameTr, Handler, MainnetHandler, PrecompileProvider,
         pre_execution::{self, apply_auth_list, calculate_caller_fee},
         precompile_output_to_interpreter_result, validation,
     },
@@ -32,6 +32,7 @@ use revm::{
         interpreter::EthInterpreter,
     },
     precompile::PrecompileError,
+    primitives::hardfork::SpecId,
 };
 use tempo_chainspec::constants::gas::tempo_t6_discounted_payment_effective_gas_price;
 use tempo_contracts::precompiles::{
@@ -828,6 +829,38 @@ where
         } else {
             self.execute_single_call(evm, gas_limit, reservoir)
         }
+    }
+
+    /// Loads pre-execution warm state without building an empty access-list map.
+    #[inline]
+    fn load_accounts(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
+        if !evm.ctx_ref().tx().inner.access_list.is_empty() {
+            return pre_execution::load_accounts(evm);
+        }
+
+        let (context, precompiles) = evm.ctx_precompiles();
+
+        let gen_spec = *context.cfg().spec();
+        let spec = gen_spec.into();
+        context.journal_mut().set_spec_id(spec);
+
+        let precompiles_changed =
+            <_ as PrecompileProvider<TempoContext<DB>>>::set_spec(precompiles, gen_spec);
+        let empty_warmed_precompiles = context.journal_mut().precompile_addresses().is_empty();
+        if precompiles_changed || empty_warmed_precompiles {
+            context
+                .journal_mut()
+                .warm_precompiles(
+                    <_ as PrecompileProvider<TempoContext<DB>>>::warm_addresses(precompiles),
+                );
+        }
+
+        if spec.is_enabled_in(SpecId::SHANGHAI) {
+            let coinbase = context.block().beneficiary();
+            context.journal_mut().warm_coinbase_account(coinbase);
+        }
+
+        Ok(())
     }
 
     /// Take logs from the Journal if outcome is Halt Or Revert.
