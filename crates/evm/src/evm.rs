@@ -38,6 +38,7 @@ impl EvmFactory for TempoEvmFactory {
     type BlockEnv = TempoBlockEnv;
     type Precompiles = PrecompilesMap;
 
+    #[inline(always)]
     fn create_evm<DB: Database>(
         &self,
         db: DB,
@@ -46,6 +47,7 @@ impl EvmFactory for TempoEvmFactory {
         TempoEvm::new(db, input)
     }
 
+    #[inline(always)]
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
         &self,
         db: DB,
@@ -69,6 +71,7 @@ pub struct TempoEvm<DB: Database, I = NoOpInspector> {
 
 impl<DB: Database> TempoEvm<DB> {
     /// Create a new [`TempoEvm`] instance.
+    #[inline(always)]
     pub fn new(db: DB, input: EvmEnv<TempoHardfork, TempoBlockEnv>) -> Self {
         // TIP-1016 (EIP-8037 state gas split) is gated by `cfg_env.enable_amsterdam_eip8037`
         // and is independent of the T4 hardfork. The caller is responsible for setting the
