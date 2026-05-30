@@ -305,6 +305,8 @@ impl OrderbookHandler {
     }
 
     /// Finds the next initialized tick with liquidity. Searches downward for bids, upward for asks.
+    #[cold]
+    #[inline(never)]
     pub fn next_initialized_tick(&self, tick: i16, is_bid: bool) -> Result<(i16, bool)> {
         if is_bid {
             self.next_initialized_bid_tick(tick)
@@ -317,6 +319,8 @@ impl OrderbookHandler {
     ///
     /// Uses efficient bitmap word traversal: reads entire 256-bit words and uses
     /// bit manipulation to find set bits, minimizing storage reads.
+    #[cold]
+    #[inline(never)]
     fn next_initialized_ask_tick(&self, tick: i16) -> Result<(i16, bool)> {
         // Guard against overflow when tick is at or above MAX_TICK
         if tick >= MAX_TICK {
@@ -367,6 +371,8 @@ impl OrderbookHandler {
     ///
     /// Uses efficient bitmap word traversal: reads entire 256-bit words and uses
     /// bit manipulation to find set bits, minimizing storage reads.
+    #[cold]
+    #[inline(never)]
     fn next_initialized_bid_tick(&self, tick: i16) -> Result<(i16, bool)> {
         // Guard against underflow when tick is at or below MIN_TICK
         if tick <= MIN_TICK {
