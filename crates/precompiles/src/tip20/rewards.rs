@@ -20,6 +20,12 @@ use tempo_primitives::TempoAddressExt;
 /// Precision multiplier for reward-per-token accumulator (1e18).
 pub const ACC_PRECISION: U256 = uint!(1000000000000000000_U256);
 
+#[cold]
+#[inline(never)]
+fn no_opted_in_supply_error() -> TempoPrecompileError {
+    TIP20Error::no_opted_in_supply().into()
+}
+
 impl TIP20Token {
     /// Distributes `amount` of reward tokens from the caller into the opted-in reward pool.
     /// Transfers tokens to the contract and increases the global reward-per-token accumulator
@@ -51,7 +57,7 @@ impl TIP20Token {
 
         let opted_in_supply = U256::from(self.get_opted_in_supply()?);
         if opted_in_supply.is_zero() {
-            return Err(TIP20Error::no_opted_in_supply().into());
+            return Err(no_opted_in_supply_error());
         }
 
         let delta_rpt = call
