@@ -106,10 +106,15 @@ impl BestTransactionsPrewarming {
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
-                    let _ = ctx.transactions_tx.send(None);
+                    if ctx.transactions_tx.send(None).is_err() {
+                        ctx.prewarm.stop();
+                    }
                     return;
                 };
-                let _ = ctx.transactions_tx.send(Some(tx.clone()));
+                if ctx.transactions_tx.send(Some(tx.clone())).is_err() {
+                    ctx.prewarm.stop();
+                    return;
+                }
 
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
