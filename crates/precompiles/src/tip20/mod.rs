@@ -1162,7 +1162,12 @@ impl TIP20Token {
             .into());
         }
 
-        let (from_flag, to_flag) = self.handle_rewards_on_transfer(from, to.target, amount)?;
+        let (from_flag, to_flag) = self.handle_rewards_on_transfer_with_from_balance(
+            from,
+            from_balance,
+            to.target,
+            amount,
+        )?;
 
         // Adjust balances
         self.set_balance(
