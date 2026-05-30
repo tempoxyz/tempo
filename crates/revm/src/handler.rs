@@ -752,6 +752,8 @@ where
     ///
     /// This is the inspector-aware version of execute_single_call that uses
     /// inspect_run_exec_loop instead of run_exec_loop.
+    #[cold]
+    #[inline(never)]
     fn inspect_execute_single_call(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -768,6 +770,8 @@ where
     ///
     /// This is the inspector-aware version of execute_multi_call that uses
     /// inspect_execute_single_call instead of execute_single_call.
+    #[cold]
+    #[inline(never)]
     fn inspect_execute_multi_call(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
@@ -2324,7 +2328,8 @@ where
     type IT = EthInterpreter;
 
     /// Overridden execution method with inspector support that handles AA vs standard transactions.
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn inspect_execution(
         &mut self,
         evm: &mut Self::Evm,
