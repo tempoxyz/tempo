@@ -121,35 +121,46 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
 
     precompiles.set_precompile_lookup(move |address: &Address| {
         if address.is_tip20() {
-            Some(TIP20Token::create_precompile(*address, &cfg))
-        } else if *address == TIP20_FACTORY_ADDRESS {
-            Some(TIP20Factory::create_precompile(&cfg))
-        } else if *address == TIP20_CHANNEL_RESERVE_ADDRESS && cfg.spec.is_t5() {
-            Some(TIP20ChannelReserve::create_precompile(&cfg))
-        } else if *address == ADDRESS_REGISTRY_ADDRESS && cfg.spec.is_t3() {
-            Some(AddressRegistry::create_precompile(&cfg))
-        } else if *address == TIP403_REGISTRY_ADDRESS {
-            Some(TIP403Registry::create_precompile(&cfg))
-        } else if *address == TIP_FEE_MANAGER_ADDRESS {
-            Some(TipFeeManager::create_precompile(&cfg))
-        } else if *address == STABLECOIN_DEX_ADDRESS {
-            Some(StablecoinDEX::create_precompile(&cfg))
-        } else if *address == NONCE_PRECOMPILE_ADDRESS {
-            Some(NonceManager::create_precompile(&cfg))
-        } else if *address == VALIDATOR_CONFIG_ADDRESS {
-            Some(ValidatorConfig::create_precompile(&cfg))
-        } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
-            Some(AccountKeychain::create_precompile(&cfg))
-        } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
-            Some(ValidatorConfigV2::create_precompile(&cfg))
-        } else if *address == SIGNATURE_VERIFIER_ADDRESS && cfg.spec.is_t3() {
-            Some(SignatureVerifier::create_precompile(&cfg))
-        } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && cfg.spec.is_t6() {
-            Some(ReceivePolicyGuard::create_precompile(&cfg))
-        } else {
-            None
+            return Some(TIP20Token::create_precompile(*address, &cfg));
         }
+
+        non_tip20_precompile(*address, &cfg)
     });
+}
+
+#[cold]
+#[inline(never)]
+fn non_tip20_precompile(
+    address: Address,
+    cfg: &CfgEnv<TempoHardfork>,
+) -> Option<DynPrecompile> {
+    if address == TIP20_FACTORY_ADDRESS {
+        Some(TIP20Factory::create_precompile(cfg))
+    } else if address == TIP20_CHANNEL_RESERVE_ADDRESS && cfg.spec.is_t5() {
+        Some(TIP20ChannelReserve::create_precompile(cfg))
+    } else if address == ADDRESS_REGISTRY_ADDRESS && cfg.spec.is_t3() {
+        Some(AddressRegistry::create_precompile(cfg))
+    } else if address == TIP403_REGISTRY_ADDRESS {
+        Some(TIP403Registry::create_precompile(cfg))
+    } else if address == TIP_FEE_MANAGER_ADDRESS {
+        Some(TipFeeManager::create_precompile(cfg))
+    } else if address == STABLECOIN_DEX_ADDRESS {
+        Some(StablecoinDEX::create_precompile(cfg))
+    } else if address == NONCE_PRECOMPILE_ADDRESS {
+        Some(NonceManager::create_precompile(cfg))
+    } else if address == VALIDATOR_CONFIG_ADDRESS {
+        Some(ValidatorConfig::create_precompile(cfg))
+    } else if address == ACCOUNT_KEYCHAIN_ADDRESS {
+        Some(AccountKeychain::create_precompile(cfg))
+    } else if address == VALIDATOR_CONFIG_V2_ADDRESS {
+        Some(ValidatorConfigV2::create_precompile(cfg))
+    } else if address == SIGNATURE_VERIFIER_ADDRESS && cfg.spec.is_t3() {
+        Some(SignatureVerifier::create_precompile(cfg))
+    } else if address == RECEIVE_POLICY_GUARD_ADDRESS && cfg.spec.is_t6() {
+        Some(ReceivePolicyGuard::create_precompile(cfg))
+    } else {
+        None
+    }
 }
 
 sol! {
