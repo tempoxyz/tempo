@@ -151,7 +151,7 @@ impl TIP20Token {
 
         // Check uninitialized opt-outs before loading global rewards; first transfers hit this path.
         let delegate = if holder_balance.flag.is_uninitialized() {
-            Some(self.user_reward_info[holder].reward_recipient.read()?)
+            Some(self.user_reward_info.at(&holder).reward_recipient.read()?)
         } else {
             None
         };
@@ -159,7 +159,8 @@ impl TIP20Token {
         if matches!(delegate, Some(Address::ZERO)) || holder_balance.flag.is_opted_out() {
             if checkpoint_opted_out_rewards {
                 let global_reward_per_token = self.get_global_reward_per_token()?;
-                self.user_reward_info[holder]
+                self.user_reward_info
+                    .at_mut(&holder)
                     .reward_per_token
                     .write(global_reward_per_token)?;
             }
@@ -173,7 +174,8 @@ impl TIP20Token {
             return Ok(RewardFlag::OptedIn);
         }
 
-        let holder_reward_per_token = self.user_reward_info[holder].reward_per_token.read()?;
+        let holder_reward_info = self.user_reward_info.at(&holder);
+        let holder_reward_per_token = holder_reward_info.reward_per_token.read()?;
         let reward_per_token_delta = global_reward_per_token
             .checked_sub(holder_reward_per_token)
             .ok_or(TempoPrecompileError::under_overflow())?;
@@ -185,7 +187,7 @@ impl TIP20Token {
 
         let delegate = match delegate {
             Some(delegate) => delegate,
-            None => self.user_reward_info[holder].reward_recipient.read()?,
+            None => holder_reward_info.reward_recipient.read()?,
         };
 
         let reward = holder_balance
@@ -194,17 +196,19 @@ impl TIP20Token {
 
         if reward != U256::ZERO {
             // Add reward to delegate's balance (or holder's own balance if self-delegated)
-            let new_reward_balance = self.user_reward_info[delegate]
+            let delegate_reward_info = self.user_reward_info.at_mut(&delegate);
+            let new_reward_balance = delegate_reward_info
                 .reward_balance
                 .read()?
                 .checked_add(reward)
                 .ok_or(TempoPrecompileError::under_overflow())?;
-            self.user_reward_info[delegate]
+            delegate_reward_info
                 .reward_balance
                 .write(new_reward_balance)?;
         }
 
-        self.user_reward_info[holder]
+        self.user_reward_info
+            .at_mut(&holder)
             .reward_per_token
             .write(global_reward_per_token)?;
 
