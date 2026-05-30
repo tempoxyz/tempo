@@ -2054,6 +2054,8 @@ where
     /// Runs the full transaction validation pipeline without executing the transaction.
     ///
     /// Returns a [`ValidationContext`] with context relevant for the transaction pool.
+    #[cold]
+    #[inline(never)]
     pub fn validate_transaction(
         &mut self,
         evm: &mut TempoEvm<DB, I>,
