@@ -2006,6 +2006,8 @@ where
         Ok(init_gas)
     }
 
+    #[cold]
+    #[inline(never)]
     fn catch_error(
         &self,
         evm: &mut Self::Evm,
