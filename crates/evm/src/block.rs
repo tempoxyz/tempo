@@ -614,6 +614,8 @@ where
         gas_output
     }
 
+    #[cold]
+    #[inline(never)]
     fn finish(
         self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
