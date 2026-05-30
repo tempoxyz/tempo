@@ -51,7 +51,7 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
             ..
         } = input;
 
-        let parent = SealedHeader::new_unhashed(parent.clone().into_header().inner);
+        let parent = SealedHeader::new(parent.header().inner.clone(), parent.hash());
 
         let timestamp_millis_part = evm_env.block_env.timestamp_millis_part;
 
