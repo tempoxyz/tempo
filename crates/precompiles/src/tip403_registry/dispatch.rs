@@ -28,6 +28,8 @@ const T6_ADDED: &[[u8; 4]] = &[
 ];
 
 impl Precompile for TIP403Registry {
+    #[cold]
+    #[inline(never)]
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
