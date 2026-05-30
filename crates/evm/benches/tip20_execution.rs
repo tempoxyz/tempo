@@ -12,12 +12,12 @@ use alloy_evm::{
     eth::EthBlockExecutionCtx,
 };
 use alloy_primitives::{
-    Address, B256, Bytes, TxKind, U256,
+    Address, B256, Bytes, TxKind, U256, keccak256,
     map::{AddressMap, B256Map, HashMap},
 };
 use alloy_signer::SignerSync;
 use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
-use alloy_sol_types::SolCall;
+use alloy_sol_types::{SolCall, SolInterface};
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use reth_execution_cache::{
     CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider, ExecutionCache,
@@ -61,11 +61,11 @@ use tempo_precompiles::{
     SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
     error::TempoPrecompileError,
     nonce::NonceManager,
-    storage::StorageCtx,
+    storage::{StorageCtx, StorageKey as _},
     tip_fee_manager::TipFeeManager,
-    tip20::{ISSUER_ROLE, TIP20Token},
+    tip20::{ISSUER_ROLE, TIP20Token, tip20_slots},
     tip20_factory::TIP20Factory,
-    tip403_registry::TIP403Registry,
+    tip403_registry::{TIP403Registry, tip403_registry_slots},
 };
 use tempo_primitives::{
     AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
@@ -894,6 +894,37 @@ where
     stats
 }
 
+fn prewarm_tip20_payment_slots(txs: &[Recovered<TempoTxEnvelope>]) {
+    for tx in txs {
+        let sender = tx.signer();
+        let fee_payer = tx.inner().fee_payer(sender).unwrap_or(sender);
+        fee_payer.mapping_slot(tip20_slots::BALANCES);
+
+        for (_kind, input) in tx.inner().calls() {
+            let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) else {
+                continue;
+            };
+
+            for addr in call.balance_addresses().into_iter().flatten() {
+                if addr != fee_payer {
+                    addr.mapping_slot(tip20_slots::BALANCES);
+                }
+            }
+
+            for addr in call.reward_addresses(sender).into_iter().flatten() {
+                addr.mapping_slot(tip20_slots::USER_REWARD_INFO);
+            }
+
+            if let Some(slot) = call
+                .to()
+                .map(|addr| addr.mapping_slot(tip403_registry_slots::RECEIVE_POLICIES))
+            {
+                let _ = keccak256(slot.to_be_bytes::<32>());
+            }
+        }
+    }
+}
+
 fn tip20_execution(c: &mut Criterion) {
     let workload = workload();
     let hardfork_cases = hardfork_bench_cases();
@@ -913,6 +944,7 @@ fn tip20_execution(c: &mut Criterion) {
             workload.block_timestamp,
             hardfork,
         );
+        prewarm_tip20_payment_slots(&workload.transactions);
 
         let mut group = c.benchmark_group(format!("{label}/tip20_execution"));
         group.throughput(Throughput::Elements(workload.transactions.len() as u64));
@@ -951,6 +983,7 @@ fn tip20_execution(c: &mut Criterion) {
                 DEFAULT_BLOCK_TIMESTAMP,
                 hardfork,
             );
+            prewarm_tip20_payment_slots(&reward_workload.transactions);
 
             let mut group = c.benchmark_group(format!("{label}/tip20_rewards"));
             group.throughput(Throughput::Elements(
