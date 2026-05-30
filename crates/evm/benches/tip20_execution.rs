@@ -553,6 +553,8 @@ fn apply_seed_reward_mode(
     Ok(())
 }
 
+#[cold]
+#[inline(never)]
 fn txgen_signers(account_count: usize) -> Vec<PrivateKeySigner> {
     (0..account_count)
         .map(|idx| {
@@ -565,6 +567,8 @@ fn txgen_signers(account_count: usize) -> Vec<PrivateKeySigner> {
         .collect()
 }
 
+#[cold]
+#[inline(never)]
 fn sign_tip20_transfer(
     signer: &PrivateKeySigner,
     recipient: Address,
@@ -582,6 +586,8 @@ fn sign_tip20_transfer(
     )
 }
 
+#[cold]
+#[inline(never)]
 fn sign_tip20_call(signer: &PrivateKeySigner, input: Bytes) -> Recovered<TempoTxEnvelope> {
     let tx = TempoTransaction {
         chain_id: CHAIN_ID,
@@ -616,6 +622,8 @@ fn sign_tip20_call(signer: &PrivateKeySigner, input: Bytes) -> Recovered<TempoTx
         .expect("generated TIP20 benchmark transaction should recover")
 }
 
+#[cold]
+#[inline(never)]
 fn generated_workload() -> Workload {
     let signers = txgen_signers(DEFAULT_ACCOUNT_COUNT);
     let mut participants = Vec::with_capacity(signers.len());
@@ -636,6 +644,8 @@ fn generated_workload() -> Workload {
     }
 }
 
+#[cold]
+#[inline(never)]
 fn reward_bench_workloads() -> Vec<RewardBenchWorkload> {
     let signers = txgen_signers(DEFAULT_ACCOUNT_COUNT);
     let participants: Vec<_> = signers.iter().map(|signer| signer.address()).collect();
@@ -732,6 +742,8 @@ fn reward_bench_workloads() -> Vec<RewardBenchWorkload> {
     ]
 }
 
+#[cold]
+#[inline(never)]
 fn transfer_reward_workload(
     name: &'static str,
     signers: &[PrivateKeySigner],
