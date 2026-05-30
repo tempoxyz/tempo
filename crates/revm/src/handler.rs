@@ -579,6 +579,18 @@ where
         self.execute_single_call_with(evm, gas_limit, reservoir, Self::run_exec_loop)
     }
 
+    /// Executes the standard non-AA fallback out of the AA-hot dispatch body.
+    #[cold]
+    #[inline(never)]
+    fn execute_standard_transaction(
+        &mut self,
+        evm: &mut TempoEvm<DB, I>,
+        gas_limit: u64,
+        reservoir: u64,
+    ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
+        self.execute_single_call(evm, gas_limit, reservoir)
+    }
+
     /// Generic multi-call execution that works with both standard and inspector exec loops.
     ///
     /// This is the core implementation for atomic batch execution that both `execute_multi_call`
@@ -826,7 +838,7 @@ where
             let calls = tempo_tx_env.aa_calls.clone();
             self.execute_multi_call(evm, gas_limit, reservoir, calls)
         } else {
-            self.execute_single_call(evm, gas_limit, reservoir)
+            self.execute_standard_transaction(evm, gas_limit, reservoir)
         }
     }
 
