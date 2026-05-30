@@ -139,7 +139,7 @@ impl TempoTxEnv {
                 .first()
                 .map(|call| (&call.to, call.input.as_ref()))
         } else {
-            Some((&self.inner.kind, &self.inner.data))
+            Some((&self.inner.kind, self.inner.data.as_ref()))
         }
     }
 
@@ -157,7 +157,7 @@ impl TempoTxEnv {
         } else {
             Either::Right(core::iter::once((
                 &self.inner.kind,
-                self.inner.input().as_ref(),
+                self.inner.data.as_ref(),
             )))
         }
     }
