@@ -19,6 +19,12 @@ pub use tempo_contracts::precompiles::{
 };
 use tempo_precompiles_macros::contract;
 
+#[cold]
+#[inline(never)]
+fn insufficient_fee_liquidity() -> TempoPrecompileError {
+    TIPFeeAMMError::insufficient_liquidity().into()
+}
+
 /// Fee manager precompile that handles transaction fee collection and distribution.
 ///
 /// Users and validators choose their preferred TIP-20 fee token. When they differ, fees are
@@ -173,7 +179,7 @@ impl TipFeeManager {
 
         if !skip_liquidity_check {
             let (route, ..) = self.plan_fee_route(user_token, validator_token, max_amount)?;
-            let route = route.ok_or_else(TIPFeeAMMError::insufficient_liquidity)?;
+            let route = route.ok_or_else(insufficient_fee_liquidity)?;
             self.reserve_fee_liquidity(user_token, validator_token, max_amount, route)?;
         }
 
