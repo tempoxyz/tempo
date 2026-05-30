@@ -170,10 +170,7 @@ impl TempoTxEnv {
     ///
     /// See: <https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#eligibility-rules>
     pub fn is_discounted_payment(&self) -> bool {
-        if self
-            .access_list()
-            .is_some_and(|mut list| list.next().is_some())
-        {
+        if !self.inner.access_list.is_empty() {
             return false;
         }
 
@@ -189,8 +186,8 @@ impl TempoTxEnv {
                     .iter()
                     .all(|call| is_discounted_tip20_call(&call.to, &call.input))
         } else {
-            self.authorization_list_len() == 0
-                && is_discounted_tip20_call(&self.inner.kind, self.input())
+            self.inner.authorization_list.is_empty()
+                && is_discounted_tip20_call(&self.inner.kind, self.inner.data.as_ref())
         }
     }
 }
