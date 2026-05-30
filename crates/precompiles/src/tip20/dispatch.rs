@@ -32,6 +32,29 @@ enum TIP20Call {
     RolesAuth(IRolesAuthCalls),
 }
 
+#[cold]
+#[inline(never)]
+fn global_reward_per_token(
+    token: &TIP20Token,
+    call: ITIP20::globalRewardPerTokenCall,
+) -> PrecompileResult {
+    view(call, |_| token.get_global_reward_per_token())
+}
+
+#[cold]
+#[inline(never)]
+fn opted_in_supply(token: &TIP20Token, call: ITIP20::optedInSupplyCall) -> PrecompileResult {
+    view(call, |_| token.get_opted_in_supply())
+}
+
+#[cold]
+#[inline(never)]
+fn user_reward_info(token: &TIP20Token, call: ITIP20::userRewardInfoCall) -> PrecompileResult {
+    view(call, |c| {
+        token.get_user_reward_info(c.account).map(|info| info.into())
+    })
+}
+
 impl TIP20Call {
     fn decode(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
         // safe to expect as `dispatch_call` pre-validates calldata len
@@ -192,14 +215,14 @@ impl Precompile for TIP20Token {
                     mutate(call, msg_sender, |_, _| self.claim_rewards(msg_sender))
                 }
                 TIP20Call::TIP20(ITIP20Calls::globalRewardPerToken(call)) => {
-                    view(call, |_| self.get_global_reward_per_token())
+                    global_reward_per_token(self, call)
                 }
                 TIP20Call::TIP20(ITIP20Calls::optedInSupply(call)) => {
-                    view(call, |_| self.get_opted_in_supply())
+                    opted_in_supply(self, call)
                 }
-                TIP20Call::TIP20(ITIP20Calls::userRewardInfo(call)) => view(call, |c| {
-                    self.get_user_reward_info(c.account).map(|info| info.into())
-                }),
+                TIP20Call::TIP20(ITIP20Calls::userRewardInfo(call)) => {
+                    user_reward_info(self, call)
+                }
                 TIP20Call::TIP20(ITIP20Calls::getPendingRewards(call)) => {
                     view(call, |c| self.get_pending_rewards(c.account))
                 }
