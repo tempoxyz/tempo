@@ -6,6 +6,8 @@ use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::INonce::INonceCalls;
 
 impl Precompile for NonceManager {
+    #[cold]
+    #[inline(never)]
     fn call(&mut self, calldata: &[u8], _msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
