@@ -398,7 +398,8 @@ where
         }
     }
 
-    pub(crate) fn validate_tx(
+    #[cfg(test)]
+    fn validate_tx(
         &self,
         tx: &TempoTxEnvelope,
         gas_used: u64,
@@ -406,7 +407,18 @@ where
         // Start with processing of transaction kinds that require specific sections.
         if tx.is_system_tx() {
             self.validate_system_tx(tx)
-        } else if let Some(tx_proposer) = tx.subblock_proposer() {
+        } else {
+            self.validate_non_system_tx(tx, gas_used, tx.subblock_proposer())
+        }
+    }
+
+    fn validate_non_system_tx(
+        &self,
+        tx: &TempoTxEnvelope,
+        gas_used: u64,
+        tx_proposer: Option<PartialValidatorKey>,
+    ) -> Result<BlockSection, BlockValidationError> {
+        if let Some(tx_proposer) = tx_proposer {
             match self.section {
                 BlockSection::GasIncentive | BlockSection::System { .. } => {
                     Err(BlockValidationError::msg("subblock section already passed"))
@@ -517,10 +529,15 @@ where
             tempo_tx_env.expiring_nonce_idx = None;
         }
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
+        let tx_proposer = if next_section.is_none() {
+            recovered.tx().subblock_proposer()
+        } else {
+            None
+        };
 
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
-        if let Some(validator) = recovered.tx().subblock_proposer() {
+        if let Some(validator) = tx_proposer {
             let fee_recipient = *self
                 .subblock_fee_recipients
                 .get(&validator)
@@ -548,7 +565,7 @@ where
             // If pre-execution validation returned a section to use, just use it.
             next_section
         } else {
-            self.validate_tx(recovered.tx(), block_gas_used)?
+            self.validate_non_system_tx(recovered.tx(), block_gas_used, tx_proposer)?
         };
         // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
         let validator_fee = self.evm().validator_fee();
