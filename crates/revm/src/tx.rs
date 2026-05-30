@@ -342,14 +342,14 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             tempo_authorization_list,
         } = tx;
 
-        // Extract to/value/input from calls (use first call or defaults)
-        let (to, value, input) = if let Some(first_call) = calls.first() {
-            (first_call.to, first_call.value, first_call.input.clone())
+        // Extract to/value from calls (use first call or defaults). AA execution reads calldata
+        // from `tempo_tx_env.aa_calls`, so `TxEnv.data` does not need a duplicate first-call copy.
+        let (to, value) = if let Some(first_call) = calls.first() {
+            (first_call.to, first_call.value)
         } else {
             (
                 alloy_primitives::TxKind::Create,
                 alloy_primitives::U256::ZERO,
-                alloy_primitives::Bytes::new(),
             )
         };
 
@@ -361,7 +361,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 gas_price: *max_fee_per_gas,
                 kind: to,
                 value,
-                data: input,
+                data: Bytes::new(),
                 nonce: *nonce, // AA: nonce maps to TxEnv.nonce
                 chain_id: Some(*chain_id),
                 gas_priority_fee: Some(*max_priority_fee_per_gas),
