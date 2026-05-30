@@ -60,8 +60,8 @@ use tempo_precompiles::{
     ADDRESS_REGISTRY_ADDRESS, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
     SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
     error::TempoPrecompileError,
-    nonce::NonceManager,
-    storage::StorageCtx,
+    nonce::{NonceManager, slots as nonce_slots},
+    storage::{StorageCtx, StorageKey as _},
     tip_fee_manager::TipFeeManager,
     tip20::{ISSUER_ROLE, TIP20Token},
     tip20_factory::TIP20Factory,
@@ -894,6 +894,20 @@ where
     stats
 }
 
+fn prewarm_expiring_nonce_slots(txs: &[Recovered<TempoTxEnvelope>]) {
+    for tx in txs {
+        let Some(aa) = tx.inner().as_aa() else {
+            continue;
+        };
+        if !aa.tx().is_expiring_nonce_tx() {
+            continue;
+        }
+
+        aa.expiring_nonce_hash(tx.signer())
+            .mapping_slot(nonce_slots::EXPIRING_NONCE_SEEN);
+    }
+}
+
 fn tip20_execution(c: &mut Criterion) {
     let workload = workload();
     let hardfork_cases = hardfork_bench_cases();
@@ -913,6 +927,7 @@ fn tip20_execution(c: &mut Criterion) {
             workload.block_timestamp,
             hardfork,
         );
+        prewarm_expiring_nonce_slots(&workload.transactions);
 
         let mut group = c.benchmark_group(format!("{label}/tip20_execution"));
         group.throughput(Throughput::Elements(workload.transactions.len() as u64));
@@ -951,6 +966,7 @@ fn tip20_execution(c: &mut Criterion) {
                 DEFAULT_BLOCK_TIMESTAMP,
                 hardfork,
             );
+            prewarm_expiring_nonce_slots(&reward_workload.transactions);
 
             let mut group = c.benchmark_group(format!("{label}/tip20_rewards"));
             group.throughput(Throughput::Elements(
