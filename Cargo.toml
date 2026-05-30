@@ -90,6 +90,7 @@ incremental = true
 # Include debug info in benchmarks too.
 [profile.bench]
 inherits = "profiling"
+strip = "symbols"
 
 [profile.maxperf]
 inherits = "release"
