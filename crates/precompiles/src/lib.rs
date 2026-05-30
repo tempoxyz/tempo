@@ -444,7 +444,7 @@ pub(crate) fn dispatch_call<T>(
         }
     }
 
-    let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
+    let selector = [calldata[0], calldata[1], calldata[2], calldata[3]];
     if hardforks
         .iter()
         .any(|schedule| schedule.rejects(selector, storage.spec()))
