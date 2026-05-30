@@ -38,10 +38,16 @@ impl TIP20Call {
         let selector: [u8; 4] = calldata[..4].try_into().expect("calldata len >= 4");
 
         if IRolesAuthCalls::valid_selector(selector) {
-            IRolesAuthCalls::abi_decode(calldata).map(Self::RolesAuth)
+            Self::decode_roles_auth(calldata)
         } else {
             ITIP20Calls::abi_decode(calldata).map(Self::TIP20)
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn decode_roles_auth(calldata: &[u8]) -> Result<Self, alloy::sol_types::Error> {
+        IRolesAuthCalls::abi_decode(calldata).map(Self::RolesAuth)
     }
 }
 
