@@ -1567,7 +1567,7 @@ where
         //
         // This is normally unreachable unless the gas price was increased mid-transaction,
         // which is only possible when there are some EVM customizations involved (e.g Foundry EVM).
-        if context.cfg.disable_fee_charge
+        if context.cfg.is_fee_charge_disabled()
             && evm.collected_fee.is_zero()
             && !actual_spending.is_zero()
         {
