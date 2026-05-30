@@ -386,7 +386,7 @@ impl<K, H> HandlerCache<K, H> {
     #[inline]
     pub(super) fn new() -> Self {
         Self {
-            inner: RefCell::new(HashMap::new()),
+            inner: RefCell::new(HashMap::with_capacity(1)),
         }
     }
 }
