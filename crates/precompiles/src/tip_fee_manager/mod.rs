@@ -67,11 +67,11 @@ impl TipFeeManager {
     pub fn get_validator_token(&self, beneficiary: Address) -> Result<Address> {
         let token = self.validator_tokens[beneficiary].read()?;
 
-        if token.is_zero() {
-            Ok(DEFAULT_FEE_TOKEN)
+        Ok(if token.is_zero() {
+            DEFAULT_FEE_TOKEN
         } else {
-            Ok(token)
-        }
+            token
+        })
     }
 
     /// Sets the caller's preferred fee token as a validator.
