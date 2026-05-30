@@ -290,6 +290,12 @@ impl TempoPooledTransaction {
         }
     }
 
+    /// Returns executable transaction parts by cloning the cached [`TempoTxEnv`] and recovered
+    /// transaction without wrapping the transaction in an intermediate [`Arc`].
+    pub fn clone_into_executable_parts(&self) -> (TempoTxEnv, Recovered<TempoTxEnvelope>) {
+        (self.clone_tx_env(), self.inner.transaction.clone())
+    }
+
     /// Returns a [`WithTxEnv`] wrapper containing the cached [`TempoTxEnv`].
     ///
     /// If the [`TempoTxEnv`] was pre-computed via [`Self::tx_env`], the cached
