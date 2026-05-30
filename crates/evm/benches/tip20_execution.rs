@@ -853,7 +853,7 @@ where
     let ctx = TempoBlockExecutionCtx {
         inner: EthBlockExecutionCtx {
             parent_hash: B256::ZERO,
-            parent_beacon_block_root: Some(B256::ZERO),
+            parent_beacon_block_root: None,
             ommers: &[],
             withdrawals: None,
             extra_data: Bytes::new(),
