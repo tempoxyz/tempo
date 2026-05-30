@@ -28,7 +28,10 @@ use reth_transaction_pool::{
     identifier::TransactionId,
 };
 use revm::database::BundleAccount;
-use std::{sync::Arc, time::Instant};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 use tempo_chainspec::{
     TempoChainSpec,
     hardfork::{TempoHardfork, TempoHardforks},
@@ -43,6 +46,10 @@ use tempo_precompiles::{
 };
 use tempo_primitives::Block;
 use tempo_revm::TempoStateAccess;
+
+fn timing_micros(duration: Duration) -> u128 {
+    duration.as_micros()
+}
 
 /// Tempo transaction pool that routes based on nonce_key
 pub struct TempoTransactionPool<Client> {
@@ -841,9 +848,42 @@ where
     fn best_transactions(
         &self,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
+        let total_start = Instant::now();
+
+        let protocol_start = Instant::now();
         let left = self.protocol_pool.inner().best_transactions();
-        let right = self.aa_2d_pool.read().best_transactions();
-        Box::new(MergeBestTransactions::new(left, right))
+        let protocol_elapsed = protocol_start.elapsed();
+
+        let aa_lock_start = Instant::now();
+        let aa_pool = self.aa_2d_pool.read();
+        let aa_lock_wait_elapsed = aa_lock_start.elapsed();
+
+        let aa_snapshot_start = Instant::now();
+        let right = aa_pool.best_transactions();
+        let aa_snapshot_elapsed = aa_snapshot_start.elapsed();
+        drop(aa_pool);
+
+        let merge_start = Instant::now();
+        let merged = MergeBestTransactions::new(left, right);
+        let merge_elapsed = merge_start.elapsed();
+        let total_elapsed = total_start.elapsed();
+
+        tracing::debug!(
+            target: "payload_builder::build_payload_timing::txpool",
+            phase = "tempo_pool.best_transactions",
+            protocol_duration_us = timing_micros(protocol_elapsed),
+            aa_lock_wait_duration_us = timing_micros(aa_lock_wait_elapsed),
+            aa_snapshot_duration_us = timing_micros(aa_snapshot_elapsed),
+            merge_duration_us = timing_micros(merge_elapsed),
+            total_duration_us = timing_micros(total_elapsed),
+            ?protocol_elapsed,
+            ?aa_lock_wait_elapsed,
+            ?aa_snapshot_elapsed,
+            ?merge_elapsed,
+            ?total_elapsed,
+            "timed best_transactions pool phase"
+        );
+        Box::new(merged)
     }
 
     fn best_transactions_with_attributes(

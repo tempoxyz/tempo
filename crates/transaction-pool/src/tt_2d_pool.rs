@@ -5,7 +5,7 @@ use alloy_primitives::{
     map::{AddressMap, B256Map, HashMap, HashSet, U256Map},
 };
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
-use reth_tracing::tracing::trace;
+use reth_tracing::tracing::{debug, trace};
 use reth_transaction_pool::{
     AllPoolTransactions, BestTransactions, CoinbaseTipOrdering, GetPooledTransactionLimit,
     PoolResult, PoolTransaction, PriceBumpConfig, Priority, SubPool, SubPoolLimit,
@@ -25,12 +25,18 @@ use std::{
         Arc,
         atomic::{AtomicBool, Ordering},
     },
+    time::{Duration, Instant},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tokio::sync::broadcast;
 
 type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
+
+fn timing_micros(duration: Duration) -> u128 {
+    duration.as_micros()
+}
+
 /// A sub-pool that keeps track of 2D nonce transactions.
 ///
 /// It maintains both pending and queued transactions.
@@ -557,22 +563,66 @@ impl AA2dPool {
     /// Returns the best, executable transactions for this sub-pool
     #[allow(clippy::mutable_key_type)]
     pub(crate) fn best_transactions(&self) -> BestAA2dTransactions {
+        let total_start = Instant::now();
+        let independent_count = self.independent_transactions.len();
+        let expiring_count = self.expiring_nonce_txs.len();
+        let by_id_count = self.by_id.len();
+        let pending_count = self.pending_count;
+        let queued_count = self.queued_count;
+
         // Collect independent transactions from both 2D nonce pool and expiring nonce pool
+        let independent_start = Instant::now();
         let mut independent: BTreeSet<_> =
             self.independent_transactions.values().cloned().collect();
+        let independent_clone_elapsed = independent_start.elapsed();
+
         // Expiring nonce txs are always independent (no nonce dependencies)
+        let expiring_start = Instant::now();
         independent.extend(self.expiring_nonce_txs.values().cloned());
+        let expiring_clone_elapsed = expiring_start.elapsed();
+        let independent_snapshot_count = independent.len();
+
+        let by_id_start = Instant::now();
+        let by_id = self
+            .by_id
+            .iter()
+            .filter(|(_, tx)| tx.is_pending())
+            .map(|(id, tx)| (*id, tx.inner.clone()))
+            .collect();
+        let by_id_clone_elapsed = by_id_start.elapsed();
+
+        let subscribe_start = Instant::now();
+        let new_transaction_receiver = Some(self.new_transaction_notifier.subscribe());
+        let subscribe_elapsed = subscribe_start.elapsed();
+        let total_elapsed = total_start.elapsed();
+
+        debug!(
+            target: "payload_builder::build_payload_timing::txpool",
+            phase = "aa_2d.best_transactions",
+            independent_count,
+            expiring_count,
+            independent_snapshot_count,
+            by_id_count,
+            pending_count,
+            queued_count,
+            independent_clone_duration_us = timing_micros(independent_clone_elapsed),
+            expiring_clone_duration_us = timing_micros(expiring_clone_elapsed),
+            by_id_clone_duration_us = timing_micros(by_id_clone_elapsed),
+            subscribe_duration_us = timing_micros(subscribe_elapsed),
+            total_duration_us = timing_micros(total_elapsed),
+            ?independent_clone_elapsed,
+            ?expiring_clone_elapsed,
+            ?by_id_clone_elapsed,
+            ?subscribe_elapsed,
+            ?total_elapsed,
+            "timed aa_2d best_transactions snapshot"
+        );
 
         BestAA2dTransactions {
             independent,
-            by_id: self
-                .by_id
-                .iter()
-                .filter(|(_, tx)| tx.is_pending())
-                .map(|(id, tx)| (*id, tx.inner.clone()))
-                .collect(),
+            by_id,
             invalid: Default::default(),
-            new_transaction_receiver: Some(self.new_transaction_notifier.subscribe()),
+            new_transaction_receiver,
             last_priority: None,
         }
     }
