@@ -69,6 +69,8 @@ use tempo_transaction_pool::{
 };
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
+const PAYLOAD_BUDGET_CHECK_INTERVAL: u64 = 32;
+
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
     subblock.transactions.iter().any(|tx| {
@@ -533,10 +535,13 @@ where
         let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
+        let mut next_budget_check_at = 0u64;
         let block_build_stop_reason = loop {
             check_cancel!();
 
-            if let Some(build_budget) = payload_build_budget {
+            if let Some(build_budget) = payload_build_budget
+                && pool_transactions_yielded >= next_budget_check_at
+            {
                 let elapsed = start.elapsed();
                 if payload_budget_exhausted(
                     elapsed,
@@ -560,6 +565,8 @@ where
                     );
                     break BlockBuildStopReason::BuildBudget;
                 }
+                next_budget_check_at =
+                    pool_transactions_yielded.saturating_add(PAYLOAD_BUDGET_CHECK_INTERVAL);
             }
 
             let Some(pool_tx) = best_txs.next() else {
@@ -567,6 +574,7 @@ where
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
                 {
+                    next_budget_check_at = pool_transactions_yielded;
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
