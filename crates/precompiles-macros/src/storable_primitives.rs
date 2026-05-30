@@ -190,16 +190,17 @@ fn gen_complete_impl_set(config: &TypeConfig) -> TokenStream {
         quote! {
             impl crate::storage::types::sealed::OnlyPrimitives for #type_path {}
             impl crate::storage::Storable for #type_path {
-                #[inline]
+                #[inline(always)]
                 fn load<S: crate::storage::StorageOps>(
                     storage: &S,
                     slot: ::alloy::primitives::U256,
                     _ctx: crate::storage::LayoutCtx
                 ) -> crate::error::Result<Self> {
-                    storage.load(slot).and_then(<Self as crate::storage::types::FromWord>::from_word)
+                    let word = storage.load(slot)?;
+                    <Self as crate::storage::types::FromWord>::from_word(word)
                 }
 
-                #[inline]
+                #[inline(always)]
                 fn store<S: crate::storage::StorageOps>(
                     &self,
                     storage: &mut S,
