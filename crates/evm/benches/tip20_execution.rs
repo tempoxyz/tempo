@@ -335,6 +335,8 @@ fn bench_env(
     }
 }
 
+#[cold]
+#[inline(never)]
 fn seed_in_memory_cache_db(
     participants: &[Address],
     block_timestamp: u64,
@@ -398,6 +400,8 @@ fn seed_in_memory_cache_db(
     evm.finish().0
 }
 
+#[cold]
+#[inline(never)]
 fn setup_fixed_cache_state(
     participants: &[Address],
     block_timestamp: u64,
@@ -456,6 +460,8 @@ fn setup_fixed_cache_state(
     }
 }
 
+#[cold]
+#[inline(never)]
 fn insert_account(
     cache: &ExecutionCache,
     accounts: &mut AddressMap<RethAccount>,
@@ -472,6 +478,8 @@ fn insert_account(
     accounts.insert(address, account);
 }
 
+#[cold]
+#[inline(never)]
 fn seed_reward_bench_state(
     token: &mut TIP20Token,
     admin: Address,
@@ -535,6 +543,8 @@ fn seed_reward_bench_state(
     Ok(())
 }
 
+#[cold]
+#[inline(never)]
 fn apply_seed_reward_mode(
     token: &mut TIP20Token,
     account: Address,
