@@ -54,6 +54,12 @@ pub(crate) enum BlockSection {
     System { seen_subblocks_signatures: bool },
 }
 
+#[cold]
+#[inline(never)]
+fn withdrawals_not_permitted() -> BlockExecutionError {
+    BlockValidationError::msg("withdrawals are not permitted").into()
+}
+
 /// Builder for [`TempoReceipt`].
 #[derive(Debug, Clone, Copy, Default)]
 #[non_exhaustive]
@@ -479,7 +485,7 @@ where
             .as_ref()
             .is_some_and(|withdrawals| !withdrawals.is_empty())
         {
-            return Err(BlockValidationError::msg("withdrawals are not permitted").into());
+            return Err(withdrawals_not_permitted());
         }
 
         self.inner.apply_pre_execution_changes()?;
