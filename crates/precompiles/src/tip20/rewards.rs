@@ -39,23 +39,23 @@ impl TIP20Token {
     ) -> Result<()> {
         self.check_not_paused()?;
         let token_address = self.address;
+        let amount = call.amount;
 
-        if call.amount == U256::ZERO {
+        if amount == U256::ZERO {
             return Err(TIP20Error::invalid_amount().into());
         }
 
         self.ensure_transfer_authorized(msg_sender, token_address)?;
-        self.check_and_update_spending_limit(msg_sender, call.amount)?;
+        self.check_and_update_spending_limit(msg_sender, amount)?;
 
-        self._transfer(msg_sender, &Recipient::direct(token_address), call.amount)?;
+        self._transfer(msg_sender, &Recipient::direct(token_address), amount)?;
 
         let opted_in_supply = U256::from(self.get_opted_in_supply()?);
         if opted_in_supply.is_zero() {
             return Err(TIP20Error::no_opted_in_supply().into());
         }
 
-        let delta_rpt = call
-            .amount
+        let delta_rpt = amount
             .checked_mul(ACC_PRECISION)
             .and_then(|v| v.checked_div(opted_in_supply))
             .ok_or(TempoPrecompileError::under_overflow())?;
@@ -66,7 +66,7 @@ impl TIP20Token {
         self.set_global_reward_per_token(new_rpt)?;
 
         // Emit distributed reward event (recipients claim accrued rewards separately)
-        self.emit_event(TIP20Event::reward_distributed(msg_sender, call.amount))?;
+        self.emit_event(TIP20Event::reward_distributed(msg_sender, amount))?;
 
         Ok(())
     }
