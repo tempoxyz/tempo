@@ -250,8 +250,9 @@ where
             let finalized_tip_has_moved =
                 self.latest_observed_finalized_tip
                     .is_some_and(|(height, digest)| {
-                        self.last_canonicalized
-                            != self.last_canonicalized.update_finalized(height, digest)
+                        height <= self.last_execution_finalized_height
+                            && self.last_canonicalized
+                                != self.last_canonicalized.update_finalized(height, digest)
                     });
 
             select! {
@@ -522,16 +523,18 @@ where
         self.reset_fcu_heartbeat_timer();
     }
 
-    /// Finalizes `block` by sending it to the execution layer.
+    /// Finalizes `block` by sending it to the execution layer and then
+    /// canonicalizing it.
     ///
     /// If `response` is set, `block` is considered to at the tip of the
     /// finalized chain. The agent will also confirm the finalization  by
     /// responding on that channel and set the digest as the latest finalized
     /// head.
     ///
-    /// The agent will also cache `digest` as the latest finalized digest.
-    /// The agent does not update the forkchoice state of the execution layer
-    /// here but upon serving a `Command::Canonicalize` request.
+    /// The agent only sends the forkchoice update after the execution layer has
+    /// accepted the block via `new_payload`. This keeps head/finalized FCUs
+    /// sequential and prevents advertising a block that is still too far in the
+    /// future for the local execution layer.
     ///
     /// If `response` is not set the agent assumes that `block` is an older
     /// block backfilled from the consensus layer.
@@ -557,19 +560,8 @@ where
         block: Block,
         acknowledgment: Exact,
     ) -> eyre::Result<()> {
-        let (response, rx) = oneshot::channel();
-        self.canonicalize(
-            Span::current(),
-            HeadOrFinalized::Finalized,
-            block.height(),
-            block.digest(),
-            JustCanonicalizeOrAlsoBuild::JustCanonicalize { response },
-        )
-        .await;
-        rx.await
-            .wrap_err("executor dropped channel")
-            .and_then(|res| res)?;
-
+        let height = block.height();
+        let digest = block.digest();
         let block = block.into_inner();
         let consensus_context = block.header().consensus_context;
         let payload_status = self
@@ -589,10 +581,27 @@ where
             )?;
 
         ensure!(
-            payload_status.is_valid() || payload_status.is_syncing(),
+            payload_status.is_valid(),
             "this is a problem: payload status of block-to-be-finalized was \
-            neither valid nor syncing: `{payload_status}`"
+            not valid: `{payload_status}`"
         );
+
+        let (response, rx) = oneshot::channel();
+        self.canonicalize(
+            Span::current(),
+            HeadOrFinalized::Finalized,
+            height,
+            digest,
+            JustCanonicalizeOrAlsoBuild::JustCanonicalize { response },
+        )
+        .await;
+        rx.await
+            .wrap_err("executor dropped channel")
+            .and_then(|res| res)?;
+
+        if height > self.last_execution_finalized_height {
+            self.last_execution_finalized_height = height;
+        }
 
         if let Some(public_key) = self.public_key.as_ref()
             && consensus_context
