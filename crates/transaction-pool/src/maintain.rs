@@ -442,13 +442,13 @@ impl TempoPoolState {
     /// Mined transactions often share the same expiry timestamp, so first group
     /// hashes by their recorded expiry and then touch each expiry bucket once.
     /// This avoids repeating the `expiry_map` lookup for every mined hash while
-    /// preserving O(1)-ish removal from each `B256Set` bucket.
+    /// keeping the per-expiry staging structure cheap to build and drop.
     fn untrack_many<'a>(&mut self, hashes: impl IntoIterator<Item = &'a TxHash>) {
-        let mut hashes_by_expiry: BTreeMap<u64, B256Set> = BTreeMap::new();
+        let mut hashes_by_expiry: BTreeMap<u64, Vec<TxHash>> = BTreeMap::new();
 
         for hash in hashes {
             if let Some(expiry) = self.tx_to_expiry.remove(hash) {
-                hashes_by_expiry.entry(expiry).or_default().insert(*hash);
+                hashes_by_expiry.entry(expiry).or_default().push(*hash);
             }
         }
 
