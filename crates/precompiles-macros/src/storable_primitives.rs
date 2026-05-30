@@ -90,20 +90,36 @@ fn gen_to_word_impl(type_path: &TokenStream, strategy: &StorableConversionStrate
             }
         }
         StorableConversionStrategy::UnsignedAlloy(ty) => {
-            quote! {
-                impl FromWord for #type_path {
-                    #[inline]
-                    fn to_word(&self) -> ::alloy::primitives::U256 {
-                        ::alloy::primitives::U256::from(*self)
-                    }
-
-                    #[inline]
-                    fn from_word(word: ::alloy::primitives::U256) -> crate::error::Result<Self> {
-                        // Check if value fits in target type
-                        if word > ::alloy::primitives::U256::from(::alloy::primitives::aliases::#ty::MAX) {
-                            return Err(crate::error::TempoPrecompileError::under_overflow());
+            if ty.to_string() == "U256" {
+                quote! {
+                    impl FromWord for #type_path {
+                        #[inline]
+                        fn to_word(&self) -> ::alloy::primitives::U256 {
+                            *self
                         }
-                        Ok(word.to::<Self>())
+
+                        #[inline]
+                        fn from_word(word: ::alloy::primitives::U256) -> crate::error::Result<Self> {
+                            Ok(word)
+                        }
+                    }
+                }
+            } else {
+                quote! {
+                    impl FromWord for #type_path {
+                        #[inline]
+                        fn to_word(&self) -> ::alloy::primitives::U256 {
+                            ::alloy::primitives::U256::from(*self)
+                        }
+
+                        #[inline]
+                        fn from_word(word: ::alloy::primitives::U256) -> crate::error::Result<Self> {
+                            // Check if value fits in target type
+                            if word > ::alloy::primitives::U256::from(::alloy::primitives::aliases::#ty::MAX) {
+                                return Err(crate::error::TempoPrecompileError::under_overflow());
+                            }
+                            Ok(word.to::<Self>())
+                        }
                     }
                 }
             }
