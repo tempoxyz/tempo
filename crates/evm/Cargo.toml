@@ -52,6 +52,7 @@ reth-storage-api.workspace = true
 reth-trie.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary"] }
+tikv-jemallocator = "0.6.1"
 
 [features]
 default = ["rpc", "engine"]
