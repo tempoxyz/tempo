@@ -44,10 +44,7 @@ use tempo_precompiles::{
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
-    nonce::{
-        EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, INonce::getNonceCall,
-        NonceManager,
-    },
+    nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, INonce::getNonceCall, NonceManager},
     storage::{
         Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
     },
@@ -1020,54 +1017,42 @@ where
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
                 let mut nonce_manager = NonceManager::new();
 
-                let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
+                let result = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
                     let ptr = nonce_manager
                         .expiring_nonce_ring_ptr
                         .read()
                         .map_err(|err| EVMError::Custom(err.to_string()))?;
 
-                    let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
-
-                    nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(next)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
-
-                    Some(ptr)
+                    nonce_manager.check_and_mark_expiring_nonce_at_index(
+                        replay_hash,
+                        valid_before,
+                        ptr + expiring_nonce_idx as u32,
+                    )
                 } else {
-                    None
+                    nonce_manager.check_and_mark_expiring_nonce(replay_hash, valid_before)
                 };
 
-                nonce_manager
-                    .check_and_mark_expiring_nonce(replay_hash, valid_before)
-                    .map_err(|err| match err {
-                        TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
-                        TempoPrecompileError::NonceError(
-                            tempo_contracts::precompiles::NonceError::InvalidExpiringNonceExpiry(_),
-                        ) => {
-                            let max_allowed =
-                                block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
-                            if valid_before <= block_timestamp {
-                                TempoInvalidTransaction::NonceManagerError(format!(
-                                    "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({block_timestamp})"
-                                ))
-                                .into()
-                            } else {
-                                TempoInvalidTransaction::NonceManagerError(format!(
-                                    "expiring nonce valid_before ({valid_before}) too far in the future: must be within {EXPIRING_NONCE_MAX_EXPIRY_SECS}s of block timestamp ({block_timestamp}), max allowed is {max_allowed}"
-                                ))
-                                .into()
-                            }
+                result.map_err(|err| match err {
+                    TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
+                    TempoPrecompileError::NonceError(
+                        tempo_contracts::precompiles::NonceError::InvalidExpiringNonceExpiry(_),
+                    ) => {
+                        let max_allowed =
+                            block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
+                        if valid_before <= block_timestamp {
+                            TempoInvalidTransaction::NonceManagerError(format!(
+                                "expiring nonce transaction expired: valid_before ({valid_before}) <= block timestamp ({block_timestamp})"
+                            ))
+                            .into()
+                        } else {
+                            TempoInvalidTransaction::NonceManagerError(format!(
+                                "expiring nonce valid_before ({valid_before}) too far in the future: must be within {EXPIRING_NONCE_MAX_EXPIRY_SECS}s of block timestamp ({block_timestamp}), max allowed is {max_allowed}"
+                            ))
+                            .into()
                         }
-                        err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
-                    })?;
-
-                if let Some(prev_ptr) = prev_ptr {
-                    nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(prev_ptr)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
-                }
+                    }
+                    err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
+                })?;
 
                 Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
             })?;

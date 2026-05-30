@@ -132,6 +132,33 @@ impl NonceManager {
         expiring_nonce_hash: B256,
         valid_before: u64,
     ) -> Result<()> {
+        let ptr = self.expiring_nonce_ring_ptr.read()?;
+        self.check_and_mark_expiring_nonce_at(expiring_nonce_hash, valid_before, ptr, true)
+    }
+
+    /// Validates and records an expiring nonce at a precomputed ring index without advancing
+    /// the shared pointer.
+    pub fn check_and_mark_expiring_nonce_at_index(
+        &mut self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+        idx: u32,
+    ) -> Result<()> {
+        self.check_and_mark_expiring_nonce_at(
+            expiring_nonce_hash,
+            valid_before,
+            idx % EXPIRING_NONCE_SET_CAPACITY,
+            false,
+        )
+    }
+
+    fn check_and_mark_expiring_nonce_at(
+        &mut self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+        idx: u32,
+        advance_ptr: bool,
+    ) -> Result<()> {
         let now: u64 = self.storage.timestamp().saturating_to();
 
         // 1. Validate expiry window: must be in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
@@ -146,9 +173,6 @@ impl NonceManager {
             return Err(NonceError::expiring_nonce_replay().into());
         }
 
-        // 3. Get current pointer (bounded in [0, CAPACITY)) and use directly as index
-        let ptr = self.expiring_nonce_ring_ptr.read()?;
-        let idx = ptr;
         let old_hash = self.expiring_nonce_ring[idx].read()?;
 
         // 4. If there's an existing entry, check if it's expired (can be evicted)
@@ -169,12 +193,14 @@ impl NonceManager {
         self.expiring_nonce_seen[expiring_nonce_hash].write(valid_before)?;
 
         // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
-        let next = if ptr + 1 >= EXPIRING_NONCE_SET_CAPACITY {
-            0
-        } else {
-            ptr + 1
-        };
-        self.expiring_nonce_ring_ptr.write(next)?;
+        if advance_ptr {
+            let next = if idx + 1 >= EXPIRING_NONCE_SET_CAPACITY {
+                0
+            } else {
+                idx + 1
+            };
+            self.expiring_nonce_ring_ptr.write(next)?;
+        }
 
         Ok(())
     }
