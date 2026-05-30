@@ -160,10 +160,15 @@ impl AddressRegistry {
 
         match to.decode_virtual() {
             None => Ok(to),
-            Some((master_id, _)) => self
-                .get_master(master_id)?
-                .ok_or(AddrRegistryError::virtual_address_unregistered().into()),
+            Some((master_id, _)) => self.resolve_registered_recipient(master_id),
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn resolve_registered_recipient(&self, master_id: MasterId) -> Result<Address> {
+        self.get_master(master_id)?
+            .ok_or(AddrRegistryError::virtual_address_unregistered().into())
     }
 
     /// Resolves a virtual address to its registered master.
