@@ -7,7 +7,7 @@ pub mod dispatch;
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping},
+    storage::{FromWord, Handler, Mapping, StorageCtx, StorageKey},
     tip_fee_manager::amm::{FeeRoute, Pool, compute_amount_out},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
@@ -65,7 +65,11 @@ impl TipFeeManager {
 
     /// Returns the validator's preferred fee token, falling back to [`DEFAULT_FEE_TOKEN`].
     pub fn get_validator_token(&self, beneficiary: Address) -> Result<Address> {
-        let token = self.validator_tokens[beneficiary].read()?;
+        let storage = StorageCtx;
+        let token = <Address as FromWord>::from_word(storage.sload(
+            self.address,
+            beneficiary.mapping_slot(slots::VALIDATOR_TOKENS),
+        )?)?;
 
         if token.is_zero() {
             Ok(DEFAULT_FEE_TOKEN)
