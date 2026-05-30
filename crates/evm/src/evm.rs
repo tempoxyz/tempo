@@ -106,6 +106,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     /// Provides a mutable reference to the EVM context.
+    #[inline(always)]
     pub fn ctx_mut(&mut self) -> &mut TempoContext<DB> {
         &mut self.inner.inner.ctx
     }
