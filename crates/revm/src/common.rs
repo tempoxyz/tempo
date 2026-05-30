@@ -129,6 +129,21 @@ pub trait TempoStateAccess<M = ()> {
             return Ok(fee_token);
         }
 
+        self.infer_fee_token(tx, fee_payer, spec)
+    }
+
+    /// Resolves a fee token when the transaction did not specify one directly.
+    #[cold]
+    #[inline(never)]
+    fn infer_fee_token(
+        &mut self,
+        tx: impl TempoTx,
+        fee_payer: Address,
+        spec: TempoHardfork,
+    ) -> TempoResult<Address>
+    where
+        Self: Sized,
+    {
         // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
         // new preference, the newly set preference should be used immediately instead of the
         // previously stored one
