@@ -57,6 +57,8 @@ pub struct NonceManager {
 
 impl NonceManager {
     /// Initializes the nonce manager precompile storage layout.
+    #[cold]
+    #[inline(never)]
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
@@ -65,6 +67,8 @@ impl NonceManager {
     ///
     /// # Errors
     /// - `ProtocolNonceNotSupported` — nonce key 0 is the protocol nonce and cannot be read here
+    #[cold]
+    #[inline(never)]
     pub fn get_nonce(&self, call: INonce::getNonceCall) -> Result<u64> {
         // Protocol nonce (key 0) is stored in account state, not in this precompile
         // Users should query account nonce directly, not through this precompile
@@ -82,6 +86,8 @@ impl NonceManager {
     /// # Errors
     /// - `InvalidNonceKey` — `nonce_key` is 0, which is reserved for the protocol nonce
     /// - `NonceOverflow` — the current nonce value is `u64::MAX` and cannot be incremented
+    #[cold]
+    #[inline(never)]
     pub fn increment_nonce(&mut self, account: Address, nonce_key: U256) -> Result<u64> {
         if nonce_key == 0 {
             return Err(NonceError::invalid_nonce_key().into());
@@ -102,6 +108,8 @@ impl NonceManager {
 
     /// Checks if a hash has been seen and is still valid (not expired).
     /// NOTE: internally used by the transaction pool.
+    #[cold]
+    #[inline(never)]
     pub fn is_expiring_nonce_seen(&self, hash: B256, now: u64) -> Result<bool> {
         let expiry = self.expiring_nonce_seen[hash].read()?;
         Ok(expiry != 0 && expiry > now)
