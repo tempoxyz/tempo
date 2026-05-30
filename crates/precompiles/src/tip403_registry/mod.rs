@@ -702,8 +702,16 @@ impl TIP403Registry {
     /// - `InvalidPolicyType` — stored type cannot be decoded
     /// - `IncompatiblePolicyType` — a compound policy was passed where a simple one is required
     pub fn is_authorized_as(&self, policy_id: u64, user: Address, role: AuthRole) -> Result<bool> {
-        let hardfork = self.storage.spec();
+        self.is_authorized_as_at(policy_id, user, role, self.storage.spec())
+    }
 
+    pub(crate) fn is_authorized_as_at(
+        &self,
+        policy_id: u64,
+        user: Address,
+        role: AuthRole,
+        hardfork: TempoHardfork,
+    ) -> Result<bool> {
         // (spec: +T6) some protocol addresses can't be policed and are always authorized.
         if ALWAYS_AUTHORIZED
             .iter()
