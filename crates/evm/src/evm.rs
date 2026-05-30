@@ -142,6 +142,43 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 }
 
+impl<DB, I> TempoEvm<DB, I>
+where
+    DB: Database,
+    I: Inspector<TempoContext<DB>>,
+{
+    #[cold]
+    #[inline(never)]
+    fn transact_system_tx_raw(
+        &mut self,
+        tx: TempoTxEnv,
+    ) -> Result<ResultAndState<TempoHaltReason>, EVMError<DB::Error, TempoInvalidTransaction>>
+    {
+        let TxKind::Call(to) = tx.inner.kind else {
+            return Err(TempoInvalidTransaction::SystemTransactionMustBeCall.into());
+        };
+
+        let mut result = if self.inspect {
+            self.inner
+                .inspect_system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
+        } else {
+            self.inner
+                .system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
+        };
+
+        // system transactions should not consume any gas
+        let ExecutionResult::Success { gas, .. } = &mut result.result else {
+            return Err(
+                TempoInvalidTransaction::SystemTransactionFailed(result.result.into()).into(),
+            );
+        };
+
+        *gas = ResultGas::default();
+
+        Ok(result)
+    }
+}
+
 impl<DB: Database, I> Deref for TempoEvm<DB, I>
 where
     DB: Database,
@@ -197,28 +234,7 @@ where
         tx: Self::Tx,
     ) -> Result<ResultAndState<Self::HaltReason>, Self::Error> {
         if tx.is_system_tx {
-            let TxKind::Call(to) = tx.inner.kind else {
-                return Err(TempoInvalidTransaction::SystemTransactionMustBeCall.into());
-            };
-
-            let mut result = if self.inspect {
-                self.inner
-                    .inspect_system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
-            } else {
-                self.inner
-                    .system_call_with_caller(tx.inner.caller, to, tx.inner.data)?
-            };
-
-            // system transactions should not consume any gas
-            let ExecutionResult::Success { gas, .. } = &mut result.result else {
-                return Err(
-                    TempoInvalidTransaction::SystemTransactionFailed(result.result.into()).into(),
-                );
-            };
-
-            *gas = ResultGas::default();
-
-            Ok(result)
+            self.transact_system_tx_raw(tx)
         } else if self.inspect {
             self.inner.inspect_tx(tx)
         } else {
