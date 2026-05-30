@@ -55,11 +55,15 @@ impl BestTransactionsPrewarming {
         let (transactions_tx, transactions_rx) = mpsc::channel();
         let (commands_tx, commands_rx) = mpsc::channel();
         let stop = Arc::new(AtomicBool::new(false));
+        let fee_recipient = evm_env.block_env.beneficiary;
+        let collected_fees_base_slot =
+            fee_recipient.mapping_slot(fee_manager_slots::COLLECTED_FEES);
         let prewarm = PrewarmingExecutionContext {
             provider,
             parent_hash,
             cache,
             evm_env,
+            default_collected_fee_slot: DEFAULT_FEE_TOKEN.mapping_slot(collected_fees_base_slot),
             stop: stop.clone(),
         };
 
@@ -182,8 +186,11 @@ impl BestTransactionsPrewarming {
             let tx_hash = *tx.hash();
 
             let touched = if is_tip20_transfer_transaction(&tx) {
-                let touches =
-                    storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary);
+                let touches = storage_touches_for_transaction(
+                    &tx,
+                    prewarm.evm_env.block_env.beneficiary,
+                    prewarm.default_collected_fee_slot,
+                );
 
                 for touch in &touches {
                     if prewarm.is_stopped() {
@@ -291,6 +298,7 @@ struct PrewarmingExecutionContext<Provider> {
     parent_hash: B256,
     cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
+    default_collected_fee_slot: U256,
     stop: Arc<AtomicBool>,
 }
 
@@ -392,6 +400,7 @@ fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
 fn storage_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
+    default_collected_fee_slot: U256,
 ) -> Vec<StorageTouch> {
     let mut touches = Vec::new();
     let sender = tx.transaction.sender();
@@ -404,7 +413,12 @@ fn storage_touches_for_transaction(
     });
 
     add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
-    add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
+    add_fee_manager_touches(
+        &mut touches,
+        fee_recipient,
+        fee_token,
+        default_collected_fee_slot,
+    );
 
     if tx.transaction.is_payment() {
         for (kind, input) in tx.transaction.inner().calls() {
@@ -529,6 +543,7 @@ fn add_fee_manager_touches(
     touches: &mut Vec<StorageTouch>,
     fee_recipient: Address,
     fee_token: Address,
+    default_collected_fee_slot: U256,
 ) {
     add_account_touch(touches, TIP_FEE_MANAGER_ADDRESS);
     add_storage_touch(
@@ -536,11 +551,12 @@ fn add_fee_manager_touches(
         TIP_FEE_MANAGER_ADDRESS,
         fee_recipient.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS),
     );
-    add_storage_touch(
-        touches,
-        TIP_FEE_MANAGER_ADDRESS,
-        fee_token.mapping_slot(fee_recipient.mapping_slot(fee_manager_slots::COLLECTED_FEES)),
-    );
+    let collected_fee_slot = if fee_token == DEFAULT_FEE_TOKEN {
+        default_collected_fee_slot
+    } else {
+        fee_token.mapping_slot(fee_recipient.mapping_slot(fee_manager_slots::COLLECTED_FEES))
+    };
+    add_storage_touch(touches, TIP_FEE_MANAGER_ADDRESS, collected_fee_slot);
 }
 
 fn add_expiring_nonce_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransaction) {
@@ -859,6 +875,43 @@ mod tests {
         assert!(touches.contains(&StorageTouch::Storage {
             address: token,
             slot: recipient.mapping_slot(tip20_slots::BALANCES)
+        }));
+    }
+
+    #[test]
+    fn fee_manager_touches_use_default_collected_fee_slot_hint() {
+        let fee_recipient = Address::random();
+        let hinted_slot = U256::from(0x1234);
+        let expected_non_default_token = Address::repeat_byte(0x42);
+        let expected_non_default_slot = expected_non_default_token
+            .mapping_slot(fee_recipient.mapping_slot(fee_manager_slots::COLLECTED_FEES));
+
+        let mut default_touches = Vec::new();
+        add_fee_manager_touches(
+            &mut default_touches,
+            fee_recipient,
+            DEFAULT_FEE_TOKEN,
+            hinted_slot,
+        );
+        assert!(default_touches.contains(&StorageTouch::Storage {
+            address: TIP_FEE_MANAGER_ADDRESS,
+            slot: hinted_slot,
+        }));
+
+        let mut non_default_touches = Vec::new();
+        add_fee_manager_touches(
+            &mut non_default_touches,
+            fee_recipient,
+            expected_non_default_token,
+            hinted_slot,
+        );
+        assert!(non_default_touches.contains(&StorageTouch::Storage {
+            address: TIP_FEE_MANAGER_ADDRESS,
+            slot: expected_non_default_slot,
+        }));
+        assert!(!non_default_touches.contains(&StorageTouch::Storage {
+            address: TIP_FEE_MANAGER_ADDRESS,
+            slot: hinted_slot,
         }));
     }
 
