@@ -290,6 +290,15 @@ impl TempoPooledTransaction {
         }
     }
 
+    /// Returns the cached transaction environment and recovered transaction as
+    /// owned parts for payload execution.
+    ///
+    /// This avoids allocating a temporary [`Arc`] when the block builder can
+    /// consume the `(tx_env, recovered_transaction)` tuple directly.
+    pub fn clone_into_tx_env_parts(&self) -> (TempoTxEnv, Recovered<TempoTxEnvelope>) {
+        (self.clone_tx_env(), self.inner.transaction.clone())
+    }
+
     /// Returns a [`WithTxEnv`] wrapper containing the cached [`TempoTxEnv`].
     ///
     /// If the [`TempoTxEnv`] was pre-computed via [`Self::tx_env`], the cached
@@ -1198,6 +1207,20 @@ mod tests {
         let cloned = tx.clone_into_consensus();
         assert_eq!(cloned.tx_hash(), &hash);
         assert_eq!(cloned.signer(), sender);
+    }
+
+    #[test]
+    fn test_pool_transaction_clone_into_tx_env_parts() {
+        let sender = Address::random();
+        let tx = TxBuilder::aa(sender).build();
+        let hash = *tx.hash();
+
+        let (tx_env, recovered) = tx.clone_into_tx_env_parts();
+
+        assert_eq!(recovered.tx_hash(), &hash);
+        assert_eq!(recovered.signer(), sender);
+        assert_eq!(tx_env.inner.caller, sender);
+        assert!(tx_env.tempo_tx_env.is_some());
     }
 
     #[test]

@@ -650,7 +650,7 @@ where
                 .then(|| format!("{:?}", pool_tx.transaction))
                 .unwrap_or_default();
 
-            let tx_with_env = pool_tx.transaction.clone_into_with_tx_env();
+            let tx_with_env = pool_tx.transaction.clone_into_tx_env_parts();
             let execution_result =
                 builder.execute_transaction_with_result_closure(tx_with_env, |result| {
                     cumulative_gas_used += result.block_gas_used();
