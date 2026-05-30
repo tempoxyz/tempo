@@ -319,6 +319,15 @@ impl TIP403Registry {
         sender: Address,
         receiver: Address,
     ) -> Result<Option<(ITIP403Registry::BlockedReason, Address)>> {
+        let config_slot = self.receive_policies[receiver].config.as_slot().slot();
+        if self
+            .storage
+            .sload(TIP403_REGISTRY_ADDRESS, config_slot)?
+            .is_zero()
+        {
+            return Ok(None);
+        }
+
         let config = self.receive_policies[receiver].config.read()?;
         if !config.has_receive_policy {
             return Ok(None);
