@@ -1,8 +1,8 @@
 //! ABI dispatch for the [`TIP20Token`] precompile.
 
 use crate::{
-    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
-    storage::ContractStorage,
+    INPUT_PER_WORD_COST, Precompile, SelectorSchedule, charge_input_cost_value, dispatch_call,
+    metadata, mutate, mutate_void, storage::ContractStorage,
     tip20::{ITIP20, TIP20Token},
     view,
 };
@@ -47,7 +47,14 @@ impl TIP20Call {
 
 impl Precompile for TIP20Token {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
-        if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
+        let input_cost = match calldata.len() {
+            4 => INPUT_PER_WORD_COST,
+            36 => INPUT_PER_WORD_COST * 2,
+            68 => INPUT_PER_WORD_COST * 3,
+            100 => INPUT_PER_WORD_COST * 4,
+            len => crate::input_cost(len),
+        };
+        if let Some(err) = charge_input_cost_value(&mut self.storage, input_cost) {
             return err;
         }
 
