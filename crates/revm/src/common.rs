@@ -17,7 +17,7 @@ use tempo_precompiles::{
     error::{Result as TempoResult, TempoPrecompileError},
     storage::{Handler, PrecompileStorageProvider, StorageCtx},
     tip_fee_manager::TipFeeManager,
-    tip20::{ITIP20, TIP20Token},
+    tip20::{ITIP20, TIP20Token, tip20_slots},
     tip403_registry::{AuthRole, TIP403Registry},
 };
 use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
@@ -213,35 +213,52 @@ pub trait TempoStateAccess<M = ()> {
     /// IMPORTANT: Caller must ensure `fee_token` has a valid TIP20 prefix.
     fn ensure_tip20_usd(
         &mut self,
-        spec: TempoHardfork,
+        _spec: TempoHardfork,
         fee_token: Address,
     ) -> Result<(), EVMError<Self::Error, TempoInvalidTransaction>>
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(spec, || {
-            // SAFETY: caller must ensure prefix is already checked
-            let token = TIP20Token::from_address_unchecked(fee_token);
-            let len = token.currency.len()?;
+        let slot = self
+            .sload(fee_token, tip20_slots::CURRENCY)
+            .map_err(EVMError::Database)?;
 
-            let currency = if len > 31 {
-                format!("<{len} bytes>")
-            } else {
-                token.currency.read()?
-            };
-
-            if currency.as_str() != "USD" {
-                return Ok(Err(EVMError::Transaction(
-                    TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                        address: fee_token,
-                        currency,
-                    },
+        if (slot.byte(0) & 1) == 0 {
+            let bytes = slot.to_be_bytes::<32>();
+            let len = (bytes[31] / 2) as usize;
+            if len > 31 {
+                return Err(EVMError::Custom(format!(
+                    "short string length {len} exceeds maximum of 31 bytes"
                 )));
             }
 
-            Ok(Ok(()))
-        })
-        .map_err(|err: TempoPrecompileError| EVMError::Custom(err.to_string()))?
+            if len == 3 && &bytes[..3] == b"USD" {
+                return Ok(());
+            }
+
+            let currency = String::from_utf8(bytes[..len].to_vec())
+                .map_err(|e| EVMError::Custom(format!("Invalid UTF-8 in stored string: {e}")))?;
+            return Err(EVMError::Transaction(
+                TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                    address: fee_token,
+                    currency,
+                },
+            ));
+        }
+
+        let len: U256 = (slot - U256::ONE) >> 1;
+        if len > U256::from(u32::MAX) {
+            return Err(EVMError::Custom(
+                TempoPrecompileError::under_overflow().to_string(),
+            ));
+        }
+        let len = len.to::<usize>();
+        Err(EVMError::Transaction(
+            TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                address: fee_token,
+                currency: format!("<{len} bytes>"),
+            },
+        ))
     }
 
     /// Checks if the given token can be used as a fee token.
