@@ -132,6 +132,27 @@ impl NonceManager {
         expiring_nonce_hash: B256,
         valid_before: u64,
     ) -> Result<()> {
+        self.check_and_mark_expiring_nonce_from_storage(expiring_nonce_hash, valid_before)
+            .map(|_| ())
+    }
+
+    /// Validates and records an expiring nonce transaction, returning the advanced ring pointer.
+    pub fn check_and_mark_expiring_nonce_from_storage(
+        &mut self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+    ) -> Result<u32> {
+        let ptr = self.expiring_nonce_ring_ptr.read()?;
+        self.check_and_mark_expiring_nonce_at_ptr(expiring_nonce_hash, valid_before, ptr)
+    }
+
+    /// Validates and records an expiring nonce transaction at a caller-supplied ring pointer.
+    pub fn check_and_mark_expiring_nonce_at_ptr(
+        &mut self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+        ptr: u32,
+    ) -> Result<u32> {
         let now: u64 = self.storage.timestamp().saturating_to();
 
         // 1. Validate expiry window: must be in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
@@ -146,8 +167,7 @@ impl NonceManager {
             return Err(NonceError::expiring_nonce_replay().into());
         }
 
-        // 3. Get current pointer (bounded in [0, CAPACITY)) and use directly as index
-        let ptr = self.expiring_nonce_ring_ptr.read()?;
+        // 3. Use the current pointer (bounded in [0, CAPACITY)) directly as index
         let idx = ptr;
         let old_hash = self.expiring_nonce_ring[idx].read()?;
 
@@ -176,7 +196,7 @@ impl NonceManager {
         };
         self.expiring_nonce_ring_ptr.write(next)?;
 
-        Ok(())
+        Ok(next)
     }
 }
 

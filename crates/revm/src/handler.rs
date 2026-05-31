@@ -1017,29 +1017,49 @@ where
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
-            StorageCtx::enter_evm(journal, block, cfg, tx, || {
-                let mut nonce_manager = NonceManager::new();
+            let cached_expiring_nonce_ring_ptr = evm.expiring_nonce_ring_ptr;
+            let next_expiring_nonce_ring_ptr = StorageCtx::enter_evm(
+                journal,
+                block,
+                cfg,
+                tx,
+                || {
+                    let mut nonce_manager = NonceManager::new();
 
-                let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
-                    let ptr = nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .read()
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
+                    let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx
+                    {
+                        let ptr = nonce_manager
+                            .expiring_nonce_ring_ptr
+                            .read()
+                            .map_err(|err| EVMError::Custom(err.to_string()))?;
 
-                    let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
+                        let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
 
-                    nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(next)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
+                        nonce_manager
+                            .expiring_nonce_ring_ptr
+                            .write(next)
+                            .map_err(|err| EVMError::Custom(err.to_string()))?;
 
-                    Some(ptr)
-                } else {
-                    None
-                };
+                        Some(ptr)
+                    } else {
+                        None
+                    };
 
-                nonce_manager
-                    .check_and_mark_expiring_nonce(replay_hash, valid_before)
+                    let next_ptr = if prev_ptr.is_none() {
+                        if let Some(ptr) = cached_expiring_nonce_ring_ptr {
+                            nonce_manager.check_and_mark_expiring_nonce_at_ptr(
+                                replay_hash,
+                                valid_before,
+                                ptr,
+                            )
+                        } else {
+                            nonce_manager
+                                .check_and_mark_expiring_nonce_from_storage(replay_hash, valid_before)
+                        }
+                    } else {
+                        nonce_manager
+                            .check_and_mark_expiring_nonce_from_storage(replay_hash, valid_before)
+                    }
                     .map_err(|err| match err {
                         TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                         TempoPrecompileError::NonceError(
@@ -1062,15 +1082,22 @@ where
                         err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
                     })?;
 
-                if let Some(prev_ptr) = prev_ptr {
-                    nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(prev_ptr)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
-                }
+                    let cached_next_ptr = if let Some(prev_ptr) = prev_ptr {
+                        nonce_manager
+                            .expiring_nonce_ring_ptr
+                            .write(prev_ptr)
+                            .map_err(|err| EVMError::Custom(err.to_string()))?;
+                        Some(prev_ptr)
+                    } else {
+                        Some(next_ptr)
+                    };
 
-                Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
-            })?;
+                    Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(cached_next_ptr)
+                },
+            )?;
+            if let Some(next_ptr) = next_expiring_nonce_ring_ptr {
+                evm.expiring_nonce_ring_ptr = Some(next_ptr);
+            }
         } else if !nonce_key.is_zero() {
             // 2D nonce transaction
             StorageCtx::enter_evm(journal, block, cfg, tx, || {

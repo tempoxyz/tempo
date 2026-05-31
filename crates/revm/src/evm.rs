@@ -41,6 +41,8 @@ pub struct TempoEvm<DB: Database, I> {
     /// The expiry timestamp of the access key used by the current transaction.
     /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub(crate) key_expiry: Option<u64>,
+    /// Cached expiring-nonce ring pointer for sequential transaction execution.
+    pub(crate) expiring_nonce_ring_ptr: Option<u32>,
     /// When true, skips the `valid_after` time-window check during validation.
     ///
     /// The transaction pool sets this because it intentionally accepts transactions
@@ -85,6 +87,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             validator_fee: U256::ZERO,
             fee_token: None,
             key_expiry: None,
+            expiring_nonce_ring_ptr: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
         }
