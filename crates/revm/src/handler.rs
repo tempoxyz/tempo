@@ -2370,14 +2370,16 @@ fn check_gas_limit(
     tx: &TempoTxEnv,
     adjusted_gas: &InitialAndFloorGas,
 ) -> Option<FrameResult> {
-    if spec.is_t0() && tx.gas_limit() < adjusted_gas.initial_total_gas() {
-        let kind = *tx
-            .first_call()
-            .expect("we already checked that there is at least one call in aa tx")
-            .0;
-        return Some(oog_frame_result(kind, tx.gas_limit()));
+    let gas_limit = tx.gas_limit();
+    if gas_limit >= adjusted_gas.initial_total_gas() || !spec.is_t0() {
+        return None;
     }
-    None
+
+    let kind = *tx
+        .first_call()
+        .expect("we already checked that there is at least one call in aa tx")
+        .0;
+    Some(oog_frame_result(kind, gas_limit))
 }
 
 /// Validates time window for AA transactions
