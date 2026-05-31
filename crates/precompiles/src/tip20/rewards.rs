@@ -220,6 +220,8 @@ impl TIP20Token {
     /// - `Paused` — token transfers are currently paused
     /// - `PolicyForbids` — TIP-403 policy rejects the sender→recipient transfer authorization
     /// - `InvalidRecipient` — TIP-1022 virtual addresses are rejected
+    #[cold]
+    #[inline(never)]
     pub fn set_reward_recipient(
         &mut self,
         msg_sender: Address,
