@@ -23,7 +23,7 @@ use crate::{
     storage::{StorageOps, packing},
 };
 use alloy::primitives::{Address, U256, keccak256};
-use std::{cell::RefCell, collections::HashMap, hash::Hash};
+use std::{cell::UnsafeCell, collections::HashMap, fmt, hash::Hash};
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -374,11 +374,10 @@ pub trait StorageKey: sealed::OnlyPrimitives {
 /// Enables `Index` implementations on handlers by storing child handlers and
 /// returning references that remain valid across insertions.
 ///
-/// Uses `RefCell` for interior mutability with runtime borrow checking.
-/// Re-entrant access will panic rather than cause undefined behavior.
-#[derive(Debug, Default)]
+/// Uses `UnsafeCell` for interior mutability. The cache is append-only and handlers are boxed, so
+/// returned handler references remain stable across insertions.
 pub(super) struct HandlerCache<K, H> {
-    inner: RefCell<HashMap<K, Box<H>>>,
+    inner: UnsafeCell<HashMap<K, Box<H>>>,
 }
 
 impl<K, H> HandlerCache<K, H> {
@@ -386,8 +385,29 @@ impl<K, H> HandlerCache<K, H> {
     #[inline]
     pub(super) fn new() -> Self {
         Self {
-            inner: RefCell::new(HashMap::new()),
+            inner: UnsafeCell::new(HashMap::new()),
         }
+    }
+
+    #[inline]
+    fn inner_mut(&self) -> &mut HashMap<K, Box<H>> {
+        // SAFETY: storage handler caches are owned by a single contract handle during precompile
+        // execution. Existing callers may hold handler references returned from earlier lookups,
+        // but the cache mutates only by inserting additional boxed handlers; existing boxes are not
+        // moved or mutated through this shared path.
+        unsafe { &mut *self.inner.get() }
+    }
+}
+
+impl<K, H> Default for HandlerCache<K, H> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<K, H> fmt::Debug for HandlerCache<K, H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("HandlerCache").finish_non_exhaustive()
     }
 }
 
@@ -402,7 +422,7 @@ impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
     /// Returns a reference to a lazily initialized handler for the given key.
     #[inline]
     pub(super) fn get_or_insert(&self, key: &K, f: impl FnOnce() -> H) -> &H {
-        let mut cache = self.inner.borrow_mut();
+        let cache = self.inner_mut();
         // Lookup first to avoid cloning on cache hit
         if let Some(boxed) = cache.get(key) {
             // SAFETY: Box provides stable heap address. Cache is append-only.
@@ -416,7 +436,7 @@ impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
     /// Returns a mutable reference to a lazily initialized handler for the given key.
     #[inline]
     pub(super) fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> &mut H {
-        let mut cache = self.inner.borrow_mut();
+        let cache = self.inner.get_mut();
         // Lookup first to avoid cloning on cache hit
         if let Some(boxed) = cache.get_mut(key) {
             // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
