@@ -140,6 +140,8 @@ impl AddressRegistry {
     // ────────────────── View Functions ──────────────────
 
     /// Returns the registered master address for `master_id`, or `None` if unregistered.
+    #[cold]
+    #[inline(never)]
     pub fn get_master(&self, master_id: MasterId) -> Result<Option<Address>> {
         Ok(self.data[master_id].read()?.master_address())
     }
@@ -169,6 +171,8 @@ impl AddressRegistry {
     /// Resolves a virtual address to its registered master.
     ///
     /// Returns `address(0)` if the address is not virtual or the [`MasterId`] is unregistered.
+    #[cold]
+    #[inline(never)]
     pub fn resolve_virtual_address(&self, addr: Address) -> Result<Address> {
         match addr.decode_virtual() {
             None => Ok(Address::ZERO),
@@ -178,6 +182,8 @@ impl AddressRegistry {
 
     /// Returns `true` iff `addr` is on the TIP-1035 [`IMPLICIT_APPROVAL_LIST`] for the active
     /// hardfork. Returns `false` for all addresses before `TempoHardfork::T5`.
+    #[cold]
+    #[inline(never)]
     pub fn is_implicitly_approved(&self, addr: Address) -> bool {
         is_implicitly_approved(addr, self.storage.spec())
     }
