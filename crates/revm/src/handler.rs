@@ -2306,10 +2306,7 @@ where
 {
     // Address has already been validated as having TIP20 prefix
     journal.load_account(token)?;
-    let balance_slot = TIP20Token::from_address(token)
-        .expect("TIP20 prefix already validated")
-        .balances[sender]
-        .base_slot();
+    let balance_slot = TIP20Token::from_address_unchecked(token).balances[sender].base_slot();
     // T6 packs reward state into the high 128 bits; fee validation only needs the low 128-bit token amount.
     Ok(decode_tip20_balance(
         journal.sload(token, balance_slot)?.data,
