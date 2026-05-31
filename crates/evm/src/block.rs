@@ -22,7 +22,7 @@ use commonware_cryptography::{
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
-    context::result::ResultAndState,
+    context::result::{ExecutionResult, ResultAndState},
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
@@ -70,13 +70,20 @@ impl ReceiptBuilder for TempoReceiptBuilder {
             cumulative_gas_used,
             ..
         } = ctx;
+        let (success, logs) = match result {
+            ExecutionResult::Success { logs, .. } => (true, logs),
+            ExecutionResult::Revert { logs, .. } | ExecutionResult::Halt { logs, .. } => {
+                (false, logs)
+            }
+        };
+
         TempoReceipt {
             tx_type,
             // Success flag was added in `EIP-658: Embedding transaction status code in
             // receipts`.
-            success: result.is_success(),
+            success,
             cumulative_gas_used,
-            logs: result.into_logs(),
+            logs,
         }
     }
 }
