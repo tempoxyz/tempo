@@ -49,10 +49,13 @@ use tempo_precompiles::{
         NonceManager,
     },
     storage::{
-        Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
+        Handler as _, PrecompileStorageProvider, StorageCtx, StorageKey,
+        evm::EvmPrecompileStorageProvider,
     },
     tip_fee_manager::TipFeeManager,
-    tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, decode_tip20_balance},
+    tip20::{
+        ITIP20::InsufficientBalance, TIP20Error, decode_tip20_balance, tip20_slots,
+    },
     tip20_channel_reserve::TIP20ChannelReserve,
 };
 use tempo_primitives::{
@@ -2304,12 +2307,7 @@ pub fn get_token_balance<JOURNAL>(
 where
     JOURNAL: JournalTr,
 {
-    // Address has already been validated as having TIP20 prefix
-    journal.load_account(token)?;
-    let balance_slot = TIP20Token::from_address(token)
-        .expect("TIP20 prefix already validated")
-        .balances[sender]
-        .base_slot();
+    let balance_slot = sender.mapping_slot(tip20_slots::BALANCES);
     // T6 packs reward state into the high 128 bits; fee validation only needs the low 128-bit token amount.
     Ok(decode_tip20_balance(
         journal.sload(token, balance_slot)?.data,
@@ -2440,6 +2438,7 @@ mod tests {
     use tempo_contracts::precompiles::DEFAULT_FEE_TOKEN;
     use tempo_precompiles::{
         PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, storage::ContractStorage, test_util::TIP20Setup,
+        tip20::TIP20Token,
     };
     use tempo_primitives::transaction::{
         Call, RecoveredTempoAuthorization, TempoSignature, TempoSignedAuthorization,
