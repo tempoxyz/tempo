@@ -898,7 +898,7 @@ where
         Ok(refunded_gas)
     }
 
-    #[inline]
+    #[inline(never)]
     fn validate_against_state_and_deduct_caller(
         &self,
         evm: &mut Self::Evm,
