@@ -1466,6 +1466,8 @@ impl AccountKeychain {
     /// - `KeyAlreadyRevoked` — the session key has been permanently revoked
     /// - `KeyNotFound` — no key is registered for the current transaction key
     /// - `SpendingLimitExceeded` — the approval increase exceeds the remaining limit for `token`
+    #[cold]
+    #[inline(never)]
     pub fn authorize_approve(
         &mut self,
         account: Address,
