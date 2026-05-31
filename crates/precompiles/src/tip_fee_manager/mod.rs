@@ -59,6 +59,8 @@ impl TipFeeManager {
     pub const MINIMUM_BALANCE: U256 = uint!(1_000_000_000_U256);
 
     /// Initializes the fee manager precompile.
+    #[cold]
+    #[inline(never)]
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
