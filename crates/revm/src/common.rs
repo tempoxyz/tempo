@@ -129,14 +129,19 @@ pub trait TempoStateAccess<M = ()> {
             return Ok(fee_token);
         }
 
+        let tx_is_aa = tx.is_aa();
+        let tx_caller = tx.caller();
+        let mut calls = tx.calls();
+        let first_call = calls.next();
+
         // If the fee payer is also the msg.sender and the transaction is calling FeeManager to set a
         // new preference, the newly set preference should be used immediately instead of the
         // previously stored one
-        if !tx.is_aa()
-            && fee_payer == tx.caller()
-            && let Some((kind, input)) = tx.calls().next()
+        if !tx_is_aa
+            && fee_payer == tx_caller
+            && let Some((kind, input)) = first_call.as_ref()
             && kind.to() == Some(&TIP_FEE_MANAGER_ADDRESS)
-            && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode(input)
+            && let Ok(call) = IFeeManager::setUserTokenCall::abi_decode((*input).as_ref())
         {
             return Ok(call.token);
         }
@@ -152,17 +157,20 @@ pub trait TempoStateAccess<M = ()> {
         }
 
         // Check if the fee can be inferred from the TIP20 token being called
-        if let Some(to) = tx.calls().next().and_then(|(kind, _)| kind.to().copied()) {
+        if let Some((kind, input)) = first_call.as_ref()
+            && let Some(to) = kind.to().copied()
+        {
             let can_infer_tip20 =
                 // AA txs only when fee_payer == tx.origin.
-                if tx.is_aa() && fee_payer != tx.caller() {
+                if tx_is_aa && fee_payer != tx_caller {
                     false
                 }
                 // Otherwise, restricted to transfer/transferWithMemo/distributeReward,
                 else {
-                    tx.calls().all(|(kind, input)| {
-                        kind.to() == Some(&to) && is_tip20_fee_inference_call(input)
-                    })
+                    is_tip20_fee_inference_call((*input).as_ref())
+                        && calls.all(|(kind, input)| {
+                            kind.to() == Some(&to) && is_tip20_fee_inference_call(input)
+                        })
                 }
             ;
 
@@ -174,16 +182,16 @@ pub trait TempoStateAccess<M = ()> {
         // If calling swapExactAmountOut() or swapExactAmountIn() on the Stablecoin DEX,
         // use the input token as the fee token (the token that will be pulled from the user).
         // For AA transactions, this only applies if there's exactly one call.
-        let mut calls = tx.calls();
-        if let Some((kind, input)) = calls.next()
+        if let Some((kind, input)) = first_call.as_ref()
             && kind.to() == Some(&STABLECOIN_DEX_ADDRESS)
-            && (!tx.is_aa() || calls.next().is_none())
+            && (!tx_is_aa || calls.next().is_none())
         {
-            if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode(input)
+            if let Ok(call) = IStablecoinDEX::swapExactAmountInCall::abi_decode((*input).as_ref())
                 && self.is_valid_fee_token(spec, call.tokenIn)?
             {
                 return Ok(call.tokenIn);
-            } else if let Ok(call) = IStablecoinDEX::swapExactAmountOutCall::abi_decode(input)
+            } else if let Ok(call) =
+                IStablecoinDEX::swapExactAmountOutCall::abi_decode((*input).as_ref())
                 && self.is_valid_fee_token(spec, call.tokenIn)?
             {
                 return Ok(call.tokenIn);
