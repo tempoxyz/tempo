@@ -107,6 +107,24 @@ impl UserState {
             .ok_or(TempoPrecompileError::under_overflow())
     }
 
+    pub(super) fn checked_add_state(&self, amount: U256, flag: RewardFlag) -> Result<Self> {
+        let amount = u128::try_from(amount).map_err(|_| TempoPrecompileError::under_overflow())?;
+        let amount = self
+            .amount
+            .checked_add(amount)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        Ok(Self { amount, flag })
+    }
+
+    pub(super) fn checked_sub_state(&self, amount: U256, flag: RewardFlag) -> Result<Self> {
+        let amount = u128::try_from(amount).map_err(|_| TempoPrecompileError::under_overflow())?;
+        let amount = self
+            .amount
+            .checked_sub(amount)
+            .ok_or(TempoPrecompileError::under_overflow())?;
+        Ok(Self { amount, flag })
+    }
+
     pub(super) fn checked_mul(&self, amount: U256) -> Result<U256> {
         self.amount()
             .checked_mul(amount)

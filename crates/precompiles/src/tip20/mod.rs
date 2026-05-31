@@ -545,10 +545,7 @@ impl TIP20Token {
 
         self.set_total_supply(new_supply)?;
         let to_balance = self.get_balance(to.target)?;
-        self.set_balance(
-            to.target,
-            UserState::new(to_balance.checked_add(amount)?, to_flag)?,
-        )?;
+        self.set_balance(to.target, to_balance.checked_add_state(amount, to_flag)?)?;
 
         self.emit_event(to.build_transfer_event(Address::ZERO, amount))
     }
@@ -1165,17 +1162,11 @@ impl TIP20Token {
         let (from_flag, to_flag) = self.handle_rewards_on_transfer(from, to.target, amount)?;
 
         // Adjust balances
-        self.set_balance(
-            from,
-            UserState::new(from_balance.checked_sub(amount)?, from_flag)?,
-        )?;
+        self.set_balance(from, from_balance.checked_sub_state(amount, from_flag)?)?;
 
         if to.target != Address::ZERO {
             let to_balance = self.get_balance(to.target)?;
-            self.set_balance(
-                to.target,
-                UserState::new(to_balance.checked_add(amount)?, to_flag)?,
-            )?;
+            self.set_balance(to.target, to_balance.checked_add_state(amount, to_flag)?)?;
         }
 
         self.emit_event(to.build_transfer_event(from, amount))
@@ -1296,12 +1287,13 @@ impl TIP20Token {
             self.decrease_opted_in_supply(amount)?;
         }
 
-        let new_from_balance = UserState::new(from_balance.checked_sub(amount)?, from_flag)?;
-        self.set_balance(from, new_from_balance)?;
+        self.set_balance(from, from_balance.checked_sub_state(amount, from_flag)?)?;
 
         let to_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_to_balance = UserState::new(to_balance.checked_add(amount)?, to_balance.flag)?;
-        self.set_balance(TIP_FEE_MANAGER_ADDRESS, new_to_balance)
+        self.set_balance(
+            TIP_FEE_MANAGER_ADDRESS,
+            to_balance.checked_add_state(amount, to_balance.flag)?,
+        )
     }
 
     /// Refunds unused fee tokens from the fee manager back to `to` and emits a transfer event for
