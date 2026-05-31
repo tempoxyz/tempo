@@ -313,6 +313,8 @@ impl TIP20Token {
     /// - syntactically well-formed URI schemes in [`Self::ALLOWED_LOGO_URI_SCHEMES`].
     ///
     /// Empty strings are accepted unconditionally.
+    #[cold]
+    #[inline(never)]
     pub(crate) fn validate_logo_uri(uri: &str) -> Result<()> {
         if uri.len() > Self::MAX_LOGO_URI_BYTES {
             return Err(TIP20Error::logo_uri_too_long().into());
@@ -323,6 +325,8 @@ impl TIP20Token {
         Ok(())
     }
 
+    #[cold]
+    #[inline(never)]
     fn is_allowed_logo_uri(uri: &str) -> bool {
         let Some((scheme, _rest)) = uri.split_once(':') else {
             return false;
