@@ -103,6 +103,8 @@ impl TIP20Factory {
     /// - `TokenAlreadyExists` — a TIP-20 is already deployed at the derived address
     /// - `InvalidQuoteToken` — quote token is not a deployed TIP-20 or has incompatible currency
     /// - `AddressReserved` — the derived address is in the reserved range
+    #[cold]
+    #[inline(never)]
     pub fn create_token(&mut self, sender: Address, call: createTokenCall) -> Result<Address> {
         trace!(%sender, ?call, "Create token");
 
@@ -166,6 +168,8 @@ impl TIP20Factory {
     /// - All errors from [`Self::create_token`]
     /// - `LogoURITooLong` — `bytes(logoURI).length > 256`
     /// - `InvalidLogoURI` — `logoURI` is non-empty and fails validation
+    #[cold]
+    #[inline(never)]
     pub fn create_token_with_logo(
         &mut self,
         sender: Address,
@@ -204,6 +208,8 @@ impl TIP20Factory {
     /// - `InvalidQuoteToken` — quote token is invalid, not deployed, or has incompatible
     ///   currency; pathUSD must use `Address::ZERO` as quote token
     /// - `AddressNotReserved` — the address is outside the reserved range
+    #[cold]
+    #[inline(never)]
     pub fn create_token_reserved_address(
         &mut self,
         address: Address,
