@@ -118,6 +118,8 @@ impl TIP20ChannelReserve {
     ///
     /// Payees cannot be zero or TIP-20 addresses. Virtual payees require a non-virtual operator.
     /// This prevents channels whose payee cannot receive direct payouts or submit vouchers itself.
+    #[cold]
+    #[inline(never)]
     pub fn open(
         &mut self,
         msg_sender: Address,
@@ -184,6 +186,8 @@ impl TIP20ChannelReserve {
     ///
     /// The payee can call directly. If an operator was set when the channel was opened, that
     /// operator can submit the payee's voucher and route the payment to the descriptor payee.
+    #[cold]
+    #[inline(never)]
     pub fn settle(
         &mut self,
         msg_sender: Address,
@@ -244,6 +248,8 @@ impl TIP20ChannelReserve {
     /// Adds deposit to an existing channel and cancels a pending close request.
     ///
     /// A zero top-up is allowed and only cancels a pending close request.
+    #[cold]
+    #[inline(never)]
     pub fn top_up(
         &mut self,
         msg_sender: Address,
@@ -311,6 +317,8 @@ impl TIP20ChannelReserve {
     /// Starts the payer's unilateral close timer.
     ///
     /// Repeated calls are idempotent while the timer is active.
+    #[cold]
+    #[inline(never)]
     pub fn request_close(
         &mut self,
         msg_sender: Address,
@@ -348,6 +356,8 @@ impl TIP20ChannelReserve {
     ///
     /// `captureAmount` can be below `cumulativeAmount` but cannot be below what has already
     /// settled. A new voucher is only required when the close captures more than `settled`.
+    #[cold]
+    #[inline(never)]
     pub fn close(
         &mut self,
         msg_sender: Address,
@@ -422,6 +432,8 @@ impl TIP20ChannelReserve {
     }
 
     /// Withdraws the payer's remaining deposit after the close grace period has elapsed.
+    #[cold]
+    #[inline(never)]
     pub fn withdraw(
         &mut self,
         msg_sender: Address,
