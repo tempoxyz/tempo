@@ -19,7 +19,7 @@ use revm::{
     context_interface::cfg::{GasId, GasParams},
     handler::{
         EvmTr, FrameResult, FrameTr, Handler, MainnetHandler,
-        pre_execution::{self, apply_auth_list, calculate_caller_fee},
+        pre_execution::{self, apply_auth_list},
         precompile_output_to_interpreter_result, validation,
     },
     inspector::{Inspector, InspectorHandler},
@@ -1129,11 +1129,30 @@ where
             }
         }
 
-        // calculate the new balance after the fee is collected.
-        let new_balance = calculate_caller_fee(account_balance, tx, block, cfg)?;
-        // doing max to avoid underflow as new_balance can be more than account
-        // balance if `cfg.is_balance_check_disabled()` is true.
-        let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
+        let gas_balance_spending = if cfg.is_fee_charge_disabled() {
+            U256::ZERO
+        } else {
+            if !cfg.is_balance_check_disabled() {
+                tx.ensure_enough_balance(account_balance)?;
+            }
+
+            let effective_balance_spending = tx
+                .effective_balance_spending(
+                    block.basefee() as u128,
+                    block.blob_gasprice().unwrap_or_default(),
+                )
+                .expect("effective balance is always smaller than max balance so it can't overflow");
+            let gas_balance_spending = effective_balance_spending - tx.value();
+
+            if cfg.is_balance_check_disabled() {
+                let new_balance = account_balance
+                    .saturating_sub(gas_balance_spending)
+                    .max(tx.value());
+                core::cmp::max(account_balance, new_balance) - new_balance
+            } else {
+                gas_balance_spending
+            }
+        };
 
         // Note: Signature verification happens during recover_signer() before entering the pool
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
