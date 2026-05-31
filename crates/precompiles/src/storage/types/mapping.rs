@@ -99,6 +99,22 @@ impl<K, V: StorableType> Mapping<K, V> {
             V::handle(key.mapping_slot(base_slot), LayoutCtx::FULL, address)
         })
     }
+
+    /// Returns an uncached handler for a one-shot key.
+    ///
+    /// This avoids both the per-mapping handler cache and the global keccak cache. It is useful
+    /// for high-cardinality keys that are not expected to repeat.
+    #[inline]
+    pub fn uncached(&self, key: &K) -> V::Handler
+    where
+        K: StorageKey,
+    {
+        V::handle(
+            key.mapping_slot_uncached(self.base_slot),
+            LayoutCtx::FULL,
+            self.address,
+        )
+    }
 }
 
 impl<K, V: StorableType> Default for Mapping<K, V> {

@@ -22,7 +22,7 @@ use crate::{
     error::Result,
     storage::{StorageOps, packing},
 };
-use alloy::primitives::{Address, U256, keccak256};
+use alloy::primitives::{Address, U256, keccak256, keccak256_uncached};
 use std::{cell::RefCell, collections::HashMap, hash::Hash};
 
 /// Describes how a type is laid out in EVM storage.
@@ -366,6 +366,22 @@ pub trait StorageKey: sealed::OnlyPrimitives {
         buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
 
         U256::from_be_bytes(keccak256(buf).0)
+    }
+
+    /// Compute storage slot without using the global keccak cache.
+    ///
+    /// Use this for one-shot mapping keys where cache lookup overhead is more expensive than
+    /// the chance of a future hit.
+    fn mapping_slot_uncached(&self, slot: U256) -> U256 {
+        let key_bytes = self.as_storage_bytes();
+        let key_bytes = key_bytes.as_ref();
+        debug_assert!(key_bytes.len() <= 32);
+
+        let mut buf = [0u8; 64];
+        buf[32 - key_bytes.len()..32].copy_from_slice(key_bytes);
+        buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
+
+        U256::from_be_bytes(keccak256_uncached(buf).0)
     }
 }
 
