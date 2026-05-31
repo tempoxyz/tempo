@@ -175,7 +175,7 @@ where
                 evm,
                 ctx.inner,
                 chain_spec,
-                TempoReceiptBuilder::default(),
+                TempoReceiptBuilder,
             ),
             section: BlockSection::StartOfBlock,
             seen_subblocks: Vec::new(),
