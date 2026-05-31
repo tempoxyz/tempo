@@ -1,6 +1,10 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
+use core::{
+    cell::{RefCell, RefMut},
+    fmt,
+};
 use revm::{
     Context, Inspector,
     context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
@@ -11,9 +15,60 @@ use revm::{
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::{
+    error::Result as PrecompileResult, tip20::TIP20Token,
+};
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
+
+struct CachedTip20TokenInner {
+    address: Address,
+    token: TIP20Token,
+}
+
+/// Cached checked TIP20 fee-token handle.
+///
+/// The handle only keeps deterministic storage handlers; each read or write still uses the active
+/// storage context installed for the current transaction.
+pub(crate) struct CachedTip20Token {
+    inner: RefCell<Option<CachedTip20TokenInner>>,
+}
+
+impl CachedTip20Token {
+    fn new() -> Self {
+        Self {
+            inner: RefCell::new(None),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn borrow_mut(&self, address: Address) -> PrecompileResult<RefMut<'_, TIP20Token>> {
+        let mut cached = self.inner.borrow_mut();
+        if cached
+            .as_ref()
+            .is_none_or(|cached| cached.address != address)
+        {
+            *cached = Some(CachedTip20TokenInner {
+                address,
+                token: TIP20Token::from_address(address)?,
+            });
+        }
+
+        Ok(RefMut::map(cached, |cached| {
+            &mut cached
+                .as_mut()
+                .expect("fee token cache initialized above")
+                .token
+        }))
+    }
+}
+
+impl fmt::Debug for CachedTip20Token {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CachedTip20Token").finish_non_exhaustive()
+    }
+}
 
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
@@ -38,6 +93,8 @@ pub struct TempoEvm<DB: Database, I> {
     pub validator_fee: U256,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
+    /// Cached generated handle for the current fee token.
+    pub(crate) fee_token_handle: CachedTip20Token,
     /// The expiry timestamp of the access key used by the current transaction.
     /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub(crate) key_expiry: Option<u64>,
@@ -84,6 +141,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             collected_fee: U256::ZERO,
             validator_fee: U256::ZERO,
             fee_token: None,
+            fee_token_handle: CachedTip20Token::new(),
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,

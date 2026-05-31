@@ -7,7 +7,7 @@ pub mod dispatch;
 
 use crate::{
     error::{Result, TempoPrecompileError},
-    storage::{Handler, Mapping},
+    storage::{ContractStorage, Handler, Mapping},
     tip_fee_manager::amm::{FeeRoute, Pool, compute_amount_out},
     tip20::{ITIP20, TIP20Token, validate_usd_currency},
     tip20_factory::TIP20Factory,
@@ -162,10 +162,33 @@ impl TipFeeManager {
         beneficiary: Address,
         skip_liquidity_check: bool,
     ) -> Result<Address> {
+        let mut tip20_token = TIP20Token::from_address(user_token)?;
+        self.collect_fee_pre_tx_with_token(
+            &mut tip20_token,
+            fee_payer,
+            user_token,
+            max_amount,
+            beneficiary,
+            skip_liquidity_check,
+        )
+    }
+
+    /// Like [`Self::collect_fee_pre_tx`], using a prevalidated TIP20 fee-token handle.
+    ///
+    /// The supplied handle must be for `user_token`.
+    pub fn collect_fee_pre_tx_with_token(
+        &mut self,
+        tip20_token: &mut TIP20Token,
+        fee_payer: Address,
+        user_token: Address,
+        max_amount: U256,
+        beneficiary: Address,
+        skip_liquidity_check: bool,
+    ) -> Result<Address> {
+        debug_assert_eq!(tip20_token.address(), user_token);
+
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
-
-        let mut tip20_token = TIP20Token::from_address(user_token)?;
 
         // Ensure that user and FeeManager are authorized to interact with the token
         tip20_token.ensure_transfer_authorized(fee_payer, self.address)?;
@@ -236,6 +259,30 @@ impl TipFeeManager {
     ) -> Result<U256> {
         // Refund unused tokens to user
         let mut tip20_token = TIP20Token::from_address(fee_token)?;
+        self.collect_fee_post_tx_with_token(
+            &mut tip20_token,
+            fee_payer,
+            actual_spending,
+            refund_amount,
+            fee_token,
+            beneficiary,
+        )
+    }
+
+    /// Like [`Self::collect_fee_post_tx`], using a prevalidated TIP20 fee-token handle.
+    ///
+    /// The supplied handle must be for `fee_token`.
+    pub fn collect_fee_post_tx_with_token(
+        &mut self,
+        tip20_token: &mut TIP20Token,
+        fee_payer: Address,
+        actual_spending: U256,
+        refund_amount: U256,
+        fee_token: Address,
+        beneficiary: Address,
+    ) -> Result<U256> {
+        debug_assert_eq!(tip20_token.address(), fee_token);
+
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
         // Execute fee swap and track collected fees

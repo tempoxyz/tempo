@@ -1298,8 +1298,11 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
+            let fee_token_handle = &evm.fee_token_handle;
             let result = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
-                TipFeeManager::new().collect_fee_pre_tx(
+                let mut tip20_token = fee_token_handle.borrow_mut(fee_token)?;
+                TipFeeManager::new().collect_fee_pre_tx_with_token(
+                    &mut tip20_token,
                     fee_payer,
                     fee_token,
                     gas_balance_spending,
@@ -1577,6 +1580,7 @@ where
         // Create storage provider and fee manager
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
+        let fee_token_handle = &evm.fee_token_handle;
 
         let credited = StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
             let mut fee_manager = TipFeeManager::new();
@@ -1586,9 +1590,13 @@ where
                 let fee_token = evm
                     .fee_token
                     .expect("set in `validate_against_state_and_deduct_caller`");
+                let mut tip20_token = fee_token_handle
+                    .borrow_mut(fee_token)
+                    .map_err(|e| EVMError::Custom(format!("{e:?}")))?;
                 // Call collectFeePostTx (handles both refund and fee queuing)
                 fee_manager
-                    .collect_fee_post_tx(
+                    .collect_fee_post_tx_with_token(
+                        &mut tip20_token,
                         fee_payer,
                         actual_spending,
                         refund_amount,
