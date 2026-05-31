@@ -22,6 +22,16 @@ use crate::{
 
 scoped_thread_local!(static STORAGE: RefCell<&mut dyn PrecompileStorageProvider>);
 
+/// Precompile gas-accounting fields captured from the active storage context.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct PrecompileGasAccounting {
+    pub(crate) spec: TempoHardfork,
+    pub(crate) amsterdam_eip8037_enabled: bool,
+    pub(crate) gas_refunded: i64,
+    pub(crate) reservoir: u64,
+    pub(crate) state_gas_used: u64,
+}
+
 /// Thread-local storage accessor that implements `PrecompileStorageProvider` without the trait bound.
 ///
 /// This is the only type that exposes access to the thread-local `STORAGE` static.
@@ -206,6 +216,17 @@ impl StorageCtx {
     /// regular/state gas split independently of the active hardfork.
     pub fn amsterdam_eip8037_enabled(&self) -> bool {
         Self::with_storage(|s| s.amsterdam_eip8037_enabled())
+    }
+
+    /// Captures the fields needed to fill precompile gas accounting with a single TLS borrow.
+    pub(crate) fn gas_accounting(&self) -> PrecompileGasAccounting {
+        Self::with_storage(|s| PrecompileGasAccounting {
+            spec: s.spec(),
+            amsterdam_eip8037_enabled: s.amsterdam_eip8037_enabled(),
+            gas_refunded: s.gas_refunded(),
+            reservoir: s.reservoir(),
+            state_gas_used: s.state_gas_used(),
+        })
     }
 
     /// Returns whether the current call context is static.
