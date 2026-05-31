@@ -79,6 +79,8 @@ impl ValidatorConfig {
     ///
     /// # Errors
     /// - `unauthorized` — if `sender` is not the contract owner
+    #[cold]
+    #[inline(never)]
     pub fn change_owner(
         &mut self,
         sender: Address,
@@ -166,6 +168,8 @@ impl ValidatorConfig {
     /// - `validator_already_exists` — if a validator with `newValidatorAddress` already exists
     /// - `not_host_port` — if `inboundAddress` is not a valid `<ip>:<port>`
     /// - `not_ip_port` — if `outboundAddress` is not a valid `<ip>:<port>`
+    #[cold]
+    #[inline(never)]
     pub fn add_validator(
         &mut self,
         sender: Address,
@@ -256,6 +260,8 @@ impl ValidatorConfig {
     /// - `validator_already_exists` — if rotating to an address that already has a validator
     /// - `not_host_port` — if `inboundAddress` is not a valid `<ip>:<port>`
     /// - `not_ip_port` — if `outboundAddress` is not a valid `<ip>:<port>`
+    #[cold]
+    #[inline(never)]
     pub fn update_validator(
         &mut self,
         sender: Address,
@@ -338,6 +344,8 @@ impl ValidatorConfig {
     /// # Errors
     /// - `unauthorized` — if `sender` is not the contract owner
     /// - `validator_not_found` — if no validator exists at `call.validator`
+    #[cold]
+    #[inline(never)]
     pub fn change_validator_status(
         &mut self,
         sender: Address,
@@ -361,6 +369,8 @@ impl ValidatorConfig {
     /// # Errors
     /// - `unauthorized` — if `sender` is not the contract owner
     /// - `validator_not_found` — if `call.index` is out of bounds
+    #[cold]
+    #[inline(never)]
     pub fn change_validator_status_by_index(
         &mut self,
         sender: Address,
@@ -397,6 +407,8 @@ impl ValidatorConfig {
     ///
     /// # Errors
     /// - `unauthorized` — if `sender` is not the contract owner
+    #[cold]
+    #[inline(never)]
     pub fn set_next_full_dkg_ceremony(
         &mut self,
         sender: Address,
