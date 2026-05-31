@@ -135,8 +135,8 @@ impl NonceManager {
         let now: u64 = self.storage.timestamp().saturating_to();
 
         // 1. Validate expiry window: must be in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
-        if valid_before <= now || valid_before > now.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
-        {
+        let expiry_delta = valid_before.saturating_sub(now);
+        if expiry_delta == 0 || expiry_delta > EXPIRING_NONCE_MAX_EXPIRY_SECS {
             return Err(NonceError::invalid_expiring_nonce_expiry().into());
         }
 
