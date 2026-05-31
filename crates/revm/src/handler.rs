@@ -1256,9 +1256,9 @@ where
 
         // T6 stateless signer/account checks run in `validate_env`. This state-aware phase only
         // proves that a non-root sidecar signer is an active admin key for the caller account.
-        if cfg.spec.is_t6()
-            && let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
+        if let Some(tempo_tx_env) = tx.tempo_tx_env.as_ref()
             && let Some(key_auth) = tempo_tx_env.key_authorization.as_ref()
+            && cfg.spec.is_t6()
         {
             let auth_signer = key_auth
                 .recover_signer()
