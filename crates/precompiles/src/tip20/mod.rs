@@ -967,6 +967,8 @@ impl TIP20Token {
 
     /// Initializes the TIP-20 token precompile with metadata, quote token, supply cap, and
     /// default admin role. Called once by [`TIP20Factory`] during token creation.
+    #[cold]
+    #[inline(never)]
     pub fn initialize(
         &mut self,
         msg_sender: Address,
