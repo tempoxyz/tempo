@@ -518,6 +518,8 @@ impl ValidatorConfigV2 {
     /// - `NotIpPort` / `NotIp` — endpoints fail validation
     /// - `IngressAlreadyExists` — the new ingress is already in use
     /// - `InvalidSignature` — signature verification fails
+    #[cold]
+    #[inline(never)]
     pub fn add_validator(
         &mut self,
         sender: Address,
@@ -580,6 +582,8 @@ impl ValidatorConfigV2 {
     /// - `ValidatorNotFound` — `idx` is out of bounds
     /// - `ValidatorAlreadyDeleted` — the validator is already deactivated
     /// - `Unauthorized` — `sender` is neither the owner nor the validator
+    #[cold]
+    #[inline(never)]
     pub fn deactivate_validator(
         &mut self,
         sender: Address,
@@ -623,6 +627,8 @@ impl ValidatorConfigV2 {
     /// - `InvalidOwner` — `newOwner` is `address(0)`
     /// - `Unauthorized` — `sender` is not the owner
     /// - `NotInitialized` — the contract has not been initialized
+    #[cold]
+    #[inline(never)]
     pub fn transfer_ownership(
         &mut self,
         sender: Address,
@@ -648,6 +654,8 @@ impl ValidatorConfigV2 {
     /// Distribute-Key-Generation (DKG) ceremony to rotate its identity at the new epoch `E`.
     /// - If the DKG ceremony is successful, then epoch `E+1` will run with a new network identity.
     /// - If `E` is not ahead of the network epoch this value is ignored.
+    #[cold]
+    #[inline(never)]
     pub fn set_network_identity_rotation_epoch(
         &mut self,
         sender: Address,
@@ -687,6 +695,8 @@ impl ValidatorConfigV2 {
     /// - `InvalidPublicKey` / `PublicKeyAlreadyExists` — the new key is invalid
     /// - `NotIpPort` / `NotIp` / `IngressAlreadyExists` — endpoint validation failure
     /// - `InvalidSignature` — signature verification fails
+    #[cold]
+    #[inline(never)]
     pub fn rotate_validator(
         &mut self,
         sender: Address,
@@ -761,6 +771,8 @@ impl ValidatorConfigV2 {
     /// - `NotInitialized` — the contract has not been initialized
     /// - `ValidatorNotFound` / `ValidatorAlreadyDeleted` — `idx` is invalid
     /// - `Unauthorized` — `sender` is neither the owner nor the validator
+    #[cold]
+    #[inline(never)]
     pub fn set_fee_recipient(
         &mut self,
         sender: Address,
@@ -790,6 +802,8 @@ impl ValidatorConfigV2 {
     /// - `Unauthorized` — `sender` is neither the owner nor the validator
     /// - `NotIpPort` / `NotIp` — the new endpoints fail validation
     /// - `IngressAlreadyExists` — the new ingress is already in use.
+    #[cold]
+    #[inline(never)]
     pub fn set_ip_addresses(
         &mut self,
         sender: Address,
@@ -827,6 +841,8 @@ impl ValidatorConfigV2 {
     /// - `NotInitialized` / `Unauthorized` — auth failure
     /// - `InvalidValidatorAddress` — `newAddress` is zero
     /// - `AddressAlreadyHasValidator` — `newAddress` belongs to an active validator
+    #[cold]
+    #[inline(never)]
     pub fn transfer_validator_ownership(
         &mut self,
         sender: Address,
@@ -904,6 +920,8 @@ impl ValidatorConfigV2 {
     /// - `Unauthorized` — `sender` is not the owner
     /// - `AlreadyInitialized` — V2 is already initialized
     /// - `InvalidMigrationIndex` — `idx` is out of order
+    #[cold]
+    #[inline(never)]
     pub fn migrate_validator(
         &mut self,
         sender: Address,
@@ -1003,6 +1021,8 @@ impl ValidatorConfigV2 {
     /// - `Unauthorized` — `sender` is not the owner
     /// - `AlreadyInitialized` — V2 is already initialized
     /// - `MigrationNotComplete` — `validator_count + skipped < v1.validator_count`
+    #[cold]
+    #[inline(never)]
     pub fn initialize_if_migrated(&mut self, sender: Address) -> Result<()> {
         let mut config = self.require_migration_owner(sender)?;
 
