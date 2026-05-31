@@ -307,6 +307,7 @@ fn hardfork_bench_cases() -> Vec<(&'static str, TempoHardfork)> {
     cases
 }
 
+#[inline]
 fn bench_env(
     hardfork: TempoHardfork,
     block_timestamp: u64,
