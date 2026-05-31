@@ -236,6 +236,8 @@ impl AccountKeychain {
     /// - `KeyAlreadyExists` — a key with this ID is already registered
     /// - `KeyAlreadyRevoked` — revoked keys cannot be re-authorized
     /// - `InvalidSignatureType` — must be Secp256k1, P256, or WebAuthn
+    #[cold]
+    #[inline(never)]
     pub fn authorize_key(
         &mut self,
         msg_sender: Address,
@@ -247,6 +249,8 @@ impl AccountKeychain {
         self.authorize_key_internal(msg_sender, key_id, signature_type, config, witness, false)
     }
 
+    #[cold]
+    #[inline(never)]
     fn authorize_key_internal(
         &mut self,
         msg_sender: Address,
@@ -375,6 +379,8 @@ impl AccountKeychain {
 
     /// Registers a new unrestricted admin access key. Only newly authorized key IDs can become
     /// admin keys; existing or previously revoked keys must not be upgraded in place.
+    #[cold]
+    #[inline(never)]
     pub fn authorize_admin_key(
         &mut self,
         msg_sender: Address,
@@ -402,6 +408,8 @@ impl AccountKeychain {
     }
 
     /// Burns a TIP-1053 witness without authorizing a key.
+    #[cold]
+    #[inline(never)]
     pub fn burn_key_authorization_witness(
         &mut self,
         msg_sender: Address,
@@ -418,6 +426,8 @@ impl AccountKeychain {
     /// - `UnauthorizedCaller` — only the root key or, on T6+, an admin access key can revoke;
     ///   for contract callers on T2+, `msg.sender` must match `tx.origin`
     /// - `KeyNotFound` — no key registered with this ID
+    #[cold]
+    #[inline(never)]
     pub fn revoke_key(&mut self, msg_sender: Address, call: revokeKeyCall) -> Result<()> {
         self.ensure_admin_caller(msg_sender)?;
 
@@ -453,6 +463,8 @@ impl AccountKeychain {
     /// - `KeyAlreadyRevoked` — the target key has been permanently revoked
     /// - `KeyNotFound` — no key is registered under the given `keyId`
     /// - `KeyExpired` — the key's expiry is at or before the current block timestamp
+    #[cold]
+    #[inline(never)]
     pub fn update_spending_limit(
         &mut self,
         msg_sender: Address,
