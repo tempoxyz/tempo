@@ -36,6 +36,8 @@ pub struct ReceivePolicyGuard {
 
 impl ReceivePolicyGuard {
     /// One-time storage initialization.
+    #[cold]
+    #[inline(never)]
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
