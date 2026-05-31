@@ -221,6 +221,8 @@ impl AccountKeychain {
     }
 
     /// Initializes the account keychain precompile.
+    #[cold]
+    #[inline(never)]
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
