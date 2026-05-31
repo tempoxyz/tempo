@@ -200,6 +200,15 @@ fn is_discounted_tip20_call(to: &TxKind, input: &[u8]) -> bool {
         && ITIP20::ITIP20Calls::is_discounted_payment_call(input)
 }
 
+fn regular_unique_tx_identifier(
+    tx: &TempoTxEnvelope,
+    inner: &TxEnv,
+    sender: Address,
+) -> Option<B256> {
+    (!is_discounted_tip20_call(&inner.kind, &inner.data))
+        .then(|| tx.unique_tx_identifier(sender))
+}
+
 impl From<TxEnv> for TempoTxEnv {
     fn from(inner: TxEnv) -> Self {
         Self {
@@ -415,29 +424,49 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
 impl FromRecoveredTx<TempoTxEnvelope> for TempoTxEnv {
     fn from_recovered_tx(tx: &TempoTxEnvelope, sender: Address) -> Self {
         match tx {
-            tx @ TempoTxEnvelope::Legacy(inner) => Self {
-                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
-                fee_token: None,
-                is_system_tx: tx.is_system_tx(),
-                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
-                fee_payer: None,
-                tempo_tx_env: None, // Non-AA transaction
-            },
-            TempoTxEnvelope::Eip2930(inner) => Self {
-                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
-                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
-                ..Default::default()
-            },
-            TempoTxEnvelope::Eip1559(inner) => Self {
-                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
-                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
-                ..Default::default()
-            },
-            TempoTxEnvelope::Eip7702(inner) => Self {
-                inner: TxEnv::from_recovered_tx(inner.tx(), sender),
-                unique_tx_identifier: Some(tx.unique_tx_identifier(sender)),
-                ..Default::default()
-            },
+            tx @ TempoTxEnvelope::Legacy(signed) => {
+                let inner = TxEnv::from_recovered_tx(signed.tx(), sender);
+                let unique_tx_identifier = regular_unique_tx_identifier(tx, &inner, sender);
+
+                Self {
+                    inner,
+                    fee_token: None,
+                    is_system_tx: tx.is_system_tx(),
+                    unique_tx_identifier,
+                    fee_payer: None,
+                    tempo_tx_env: None, // Non-AA transaction
+                }
+            }
+            TempoTxEnvelope::Eip2930(signed) => {
+                let inner = TxEnv::from_recovered_tx(signed.tx(), sender);
+                let unique_tx_identifier = regular_unique_tx_identifier(tx, &inner, sender);
+
+                Self {
+                    inner,
+                    unique_tx_identifier,
+                    ..Default::default()
+                }
+            }
+            TempoTxEnvelope::Eip1559(signed) => {
+                let inner = TxEnv::from_recovered_tx(signed.tx(), sender);
+                let unique_tx_identifier = regular_unique_tx_identifier(tx, &inner, sender);
+
+                Self {
+                    inner,
+                    unique_tx_identifier,
+                    ..Default::default()
+                }
+            }
+            TempoTxEnvelope::Eip7702(signed) => {
+                let inner = TxEnv::from_recovered_tx(signed.tx(), sender);
+                let unique_tx_identifier = regular_unique_tx_identifier(tx, &inner, sender);
+
+                Self {
+                    inner,
+                    unique_tx_identifier,
+                    ..Default::default()
+                }
+            }
             TempoTxEnvelope::AA(tx) => Self::from_recovered_tx(tx, sender),
         }
     }
@@ -639,6 +668,31 @@ mod tests {
             tx_env.channel_open_context_hash(),
             Some(encoded_payload_context)
         );
+    }
+
+    #[test]
+    fn test_legacy_tip20_transfer_skips_channel_open_context_hash() {
+        let caller = Address::repeat_byte(0xAA);
+        let token = address!("20c0000000000000000000000000000000000001");
+        let tx = TxLegacy {
+            chain_id: Some(1),
+            nonce: 7,
+            gas_price: 1,
+            gas_limit: 100_000,
+            to: TxKind::Call(token),
+            value: U256::ZERO,
+            input: ITIP20::transferCall {
+                to: Address::repeat_byte(0xBB),
+                amount: U256::from(1),
+            }
+            .abi_encode()
+            .into(),
+        };
+        let envelope =
+            TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()));
+        let tx_env = TempoTxEnv::from_recovered_tx(&envelope, caller);
+
+        assert_eq!(tx_env.channel_open_context_hash(), None);
     }
 
     #[test]
