@@ -148,6 +148,7 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
     validator_set: Option<Vec<B256>>,
     shared_gas_limit: u64,
+    amsterdam_eip8037_enabled: bool,
     subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
 
     non_shared_gas_left: u64,
@@ -165,12 +166,16 @@ where
         ctx: TempoBlockExecutionCtx<'a>,
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
+        let non_shared_gas_left = evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit);
+        let amsterdam_eip8037_enabled = evm.cfg.enable_amsterdam_eip8037;
+
         Self {
             incentive_gas_used: 0,
             validator_set: ctx.validator_set,
             non_payment_gas_left: ctx.general_gas_limit,
-            non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
+            non_shared_gas_left,
             shared_gas_limit: ctx.shared_gas_limit,
+            amsterdam_eip8037_enabled,
             inner: EthBlockExecutor::new(
                 evm,
                 ctx.inner,
@@ -538,7 +543,7 @@ where
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
-        let block_gas_used = if self.evm().cfg.enable_amsterdam_eip8037 {
+        let block_gas_used = if self.amsterdam_eip8037_enabled {
             inner.result.result.gas().block_regular_gas_used()
         } else {
             inner.result.result.tx_gas_used()
@@ -629,7 +634,7 @@ where
             self.validate_shared_gas(&[])?;
         }
 
-        let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
+        let amsterdam_eip8037_enabled = self.amsterdam_eip8037_enabled;
 
         let regular_gas_used = self.inner.block_regular_gas_used;
         let (evm, mut result) = self.inner.finish()?;
