@@ -23,6 +23,7 @@ impl StorableType for Bytes {
     const IS_DYNAMIC: bool = true;
     type Handler = BytesLikeHandler<Self>;
 
+    #[inline(always)]
     fn handle(slot: U256, _ctx: LayoutCtx, address: Address) -> Self::Handler {
         BytesLikeHandler::new(slot, address)
     }
@@ -33,6 +34,7 @@ impl StorableType for String {
     const IS_DYNAMIC: bool = true;
     type Handler = BytesLikeHandler<Self>;
 
+    #[inline(always)]
     fn handle(slot: U256, _ctx: LayoutCtx, address: Address) -> Self::Handler {
         BytesLikeHandler::new(slot, address)
     }
@@ -50,7 +52,7 @@ pub struct BytesLikeHandler<T> {
 
 impl<T: Storable> BytesLikeHandler<T> {
     /// Creates a new handler for the bytes-like value at the given base slot.
-    #[inline]
+    #[inline(always)]
     pub fn new(base_slot: U256, address: Address) -> Self {
         Self {
             base_slot,
