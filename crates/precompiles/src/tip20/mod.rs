@@ -37,7 +37,7 @@ use alloy::{
     primitives::{Address, B256, U256, keccak256, uint},
     sol_types::SolValue,
 };
-use std::sync::LazyLock;
+use std::{cell::RefCell, sync::LazyLock};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     DECIMALS as TIP20_DECIMALS, ReceivePolicyGuardError, STABLECOIN_DEX_ADDRESS,
@@ -49,6 +49,18 @@ use tracing::trace;
 
 /// u128::MAX as U256
 pub const U128_MAX: U256 = uint!(0xffffffffffffffffffffffffffffffff_U256);
+
+thread_local! {
+    static TIP20_KEYCHAIN: RefCell<AccountKeychain> = RefCell::new(AccountKeychain::new());
+}
+
+#[inline]
+fn with_tip20_keychain<R>(f: impl FnOnce(&mut AccountKeychain) -> R) -> R {
+    TIP20_KEYCHAIN.with(|keychain| {
+        let mut keychain = keychain.borrow_mut();
+        f(&mut keychain)
+    })
+}
 
 /// Validates that the given token's currency is `"USD"`.
 ///
@@ -672,12 +684,14 @@ impl TIP20Token {
     /// - `SpendingLimitExceeded` — new allowance exceeds access key spending limit
     pub fn approve(&mut self, msg_sender: Address, call: ITIP20::approveCall) -> Result<bool> {
         // Check and update spending limits for access keys
-        AccountKeychain::new().authorize_approve(
-            msg_sender,
-            self.address,
-            self.get_allowance(msg_sender, call.spender)?,
-            call.amount,
-        )?;
+        with_tip20_keychain(|keychain| {
+            keychain.authorize_approve(
+                msg_sender,
+                self.address,
+                self.get_allowance(msg_sender, call.spender)?,
+                call.amount,
+            )
+        })?;
 
         // Set the new allowance
         self.set_allowance(msg_sender, call.spender, call.amount)?;
@@ -1144,7 +1158,7 @@ impl TIP20Token {
     /// # Errors
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
     pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
-        AccountKeychain::new().authorize_transfer(from, self.address, amount)
+        with_tip20_keychain(|keychain| keychain.authorize_transfer(from, self.address, amount))
     }
 
     /// Core transfer: debits `from`, credits `to.target`, emits `Transfer(from, event_addr, amount)`.
@@ -1326,7 +1340,9 @@ impl TIP20Token {
         }
 
         if self.storage.spec().is_t1c() {
-            AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
+            with_tip20_keychain(|keychain| {
+                keychain.refund_spending_limit(to, self.address, refund)
+            })?;
         }
 
         // Update rewards for the recipient and get their reward recipient
