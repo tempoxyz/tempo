@@ -332,4 +332,88 @@ mod tests {
 
         assert_eq!(block.header.consensus_context, Some(ctx));
     }
+
+    #[test]
+    fn test_assemble_block_preserves_pre_amsterdam_bal_hash() {
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
+        let assembler = TempoBlockAssembler::new(chainspec.clone());
+
+        let gas_limit = 30_000_000u64;
+        let general_gas_limit = 10_000_000u64;
+        let shared_gas_limit = 10_000_000u64;
+
+        let evm_env = EvmEnv {
+            block_env: TempoBlockEnv {
+                inner: BlockEnv {
+                    number: U256::from(1),
+                    timestamp: U256::from(1000),
+                    beneficiary: Address::repeat_byte(0x01),
+                    basefee: 1,
+                    gas_limit,
+                    ..Default::default()
+                },
+                timestamp_millis_part: 0,
+            },
+            ..Default::default()
+        };
+
+        let parent_header = TempoHeader {
+            inner: alloy_consensus::Header {
+                gas_limit,
+                ..Default::default()
+            },
+            general_gas_limit,
+            shared_gas_limit,
+            ..Default::default()
+        };
+        let parent = SealedHeader::seal_slow(parent_header);
+
+        let execution_ctx = TempoBlockExecutionCtx {
+            inner: EthBlockExecutionCtx {
+                parent_hash: parent.hash(),
+                parent_beacon_block_root: Some(B256::ZERO),
+                ommers: &[],
+                withdrawals: None,
+                extra_data: Bytes::new(),
+                tx_count_hint: None,
+                slot_number: None,
+            },
+            general_gas_limit,
+            shared_gas_limit,
+            validator_set: None,
+            consensus_context: None,
+            subblock_fee_recipients: HashMap::new(),
+        };
+
+        let transactions = vec![create_legacy_tx()];
+        let output = BlockExecutionResult {
+            receipts: vec![create_test_receipt(21000)],
+            requests: Default::default(),
+            gas_used: 21000,
+            blob_gas_used: 0,
+        };
+
+        let bundle_state = BundleState::default();
+        let state_provider = NoopProvider::<TempoChainSpec, TempoPrimitives>::new(chainspec);
+        let input = BlockAssemblerInput::<TempoEvmConfig, TempoHeader>::new(
+            evm_env,
+            execution_ctx,
+            &parent,
+            transactions,
+            &output,
+            &bundle_state,
+            &state_provider,
+            B256::ZERO,
+            Some(B256::repeat_byte(0x42)),
+        );
+
+        let block = assembler
+            .assemble_block(input)
+            .expect("should assemble block");
+
+        assert_eq!(
+            block.header.inner.block_access_list_hash,
+            Some(B256::repeat_byte(0x42))
+        );
+    }
 }

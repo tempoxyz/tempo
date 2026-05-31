@@ -48,4 +48,5 @@ crossbeam-channel.workspace = true
 tokio.workspace = true
 
 [features]
+bal = []
 trie-debug = ["reth-engine-tree/trie-debug"]

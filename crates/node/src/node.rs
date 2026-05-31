@@ -68,10 +68,14 @@ pub struct TempoNodeArgs {
     pub builder_state_provider_metrics: bool,
 
     /// Enable prewarming for the payload builder.
-    #[arg(long = "builder.enable-prewarming", default_value_t = true)]
+    #[arg(long = "builder.enable-prewarming", default_value_t = false)]
     pub builder_enable_prewarming: bool,
 
-    /// Initial multiplier for predicting replayable payload build work.
+    /// Initial estimate of total replayable payload build work divided by work
+    /// at transaction cutoff.
+    ///
+    /// The builder updates this at runtime. Higher values stop pool transaction
+    /// execution earlier to leave more room for `builder_finish`.
     #[arg(
         long = "builder.build-time-multiplier",
         default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
@@ -369,9 +373,20 @@ where
 }
 
 /// Builder for [`TempoConsensus`].
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
-pub struct TempoConsensusBuilder;
+pub struct TempoConsensusBuilder {
+    /// Whether to allow BAL hashes before Amsterdam activation.
+    pub allow_bal_hashes: bool,
+}
+
+impl Default for TempoConsensusBuilder {
+    fn default() -> Self {
+        Self {
+            allow_bal_hashes: cfg!(feature = "bal"),
+        }
+    }
+}
 
 impl<Node> ConsensusBuilder<Node> for TempoConsensusBuilder
 where
@@ -380,7 +395,10 @@ where
     type Consensus = TempoConsensus;
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
-        Ok(TempoConsensus::new(ctx.chain_spec()))
+        Ok(TempoConsensus::new_with_bal_hashes(
+            ctx.chain_spec(),
+            self.allow_bal_hashes,
+        ))
     }
 }
 
@@ -514,7 +532,8 @@ pub struct TempoPayloadBuilderBuilder {
     pub state_provider_metrics: bool,
     /// Enable prewarming for the payload builder.
     pub enable_prewarming: bool,
-    /// Initial multiplier for predicting replayable payload build work.
+    /// Initial estimate of total replayable payload build work divided by work
+    /// at transaction cutoff.
     pub build_time_multiplier: f64,
 }
 
