@@ -26,6 +26,8 @@ impl SignatureVerifier {
         self.__initialize()
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn recover(&mut self, hash: B256, signature: Bytes) -> Result<Address> {
         // Parse and validate signature (handles size checks + type disambiguation).
         let sig = PrimitiveSignature::from_bytes(&signature)
@@ -44,6 +46,8 @@ impl SignatureVerifier {
             .map_err(|_| SignatureVerifierError::invalid_signature().into())
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn verify_keychain(
         &mut self,
         account: Address,
@@ -58,6 +62,8 @@ impl SignatureVerifier {
         AccountKeychain::new().is_active_key(account, key_id)
     }
 
+    #[cold]
+    #[inline(never)]
     pub fn verify_keychain_admin(
         &mut self,
         account: Address,
@@ -72,6 +78,8 @@ impl SignatureVerifier {
         AccountKeychain::new().is_admin_key(account, key_id)
     }
 
+    #[cold]
+    #[inline(never)]
     fn recover_keychain_key(&mut self, hash: B256, signature: Bytes) -> Result<(Address, Address)> {
         let sig = TempoSignature::from_bytes(&signature)
             .map_err(|_| SignatureVerifierError::invalid_format())?;
