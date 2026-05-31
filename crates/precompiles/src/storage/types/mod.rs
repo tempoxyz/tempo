@@ -22,7 +22,8 @@ use crate::{
     error::Result,
     storage::{StorageOps, packing},
 };
-use alloy::primitives::{Address, U256, keccak256};
+use alloy::primitives::{Address, U256};
+use alloy_primitives::utils::keccak256_cached;
 use std::{cell::RefCell, collections::HashMap, hash::Hash};
 
 /// Describes how a type is laid out in EVM storage.
@@ -365,7 +366,7 @@ pub trait StorageKey: sealed::OnlyPrimitives {
         buf[32 - key_bytes.len()..32].copy_from_slice(key_bytes);
         buf[32..].copy_from_slice(&slot.to_be_bytes::<32>());
 
-        U256::from_be_bytes(keccak256(buf).0)
+        U256::from_be_bytes(keccak256_cached(buf).0)
     }
 }
 
