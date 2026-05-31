@@ -61,6 +61,8 @@ pub(crate) fn compute_tip20_address(sender: Address, salt: B256) -> (Address, u6
 // Precompile functions
 impl TIP20Factory {
     /// Initializes the TIP-20 factory precompile.
+    #[cold]
+    #[inline(never)]
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
