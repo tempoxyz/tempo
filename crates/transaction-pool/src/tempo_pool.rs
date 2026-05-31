@@ -94,8 +94,12 @@ where
     pub(crate) fn notify_aa_pool_on_state_updates(
         &self,
         state: &AddressMap<BundleAccount>,
+        included_expiring_nonce_hashes: impl IntoIterator<Item = B256>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let (promoted, mined) = self.aa_2d_pool.write().on_state_updates(state);
+        let (promoted, mined) = self
+            .aa_2d_pool
+            .write()
+            .on_state_updates_with_expiring_nonce_hashes(state, included_expiring_nonce_hashes);
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
             .inner()
