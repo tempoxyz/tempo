@@ -175,6 +175,9 @@ impl Write for Block {
         self.execution_block.encode(buf);
         #[cfg(feature = "bal")]
         if self.execution_block.block_access_list_hash().is_some() {
+            // FIXME: Blocks reconstructed from persisted EL data can carry a BAL hash
+            // without the commonware BAL sidecar. Encoding one will panic here, which
+            // can crash follower nodes and validators that request blocks over p2p.
             let block_access_list = self
                 .block_access_list
                 .as_ref()
