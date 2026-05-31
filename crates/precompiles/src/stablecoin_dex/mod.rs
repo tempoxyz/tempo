@@ -60,6 +60,8 @@ impl StablecoinDEX {
     }
 
     /// Initializes the stablecoin DEX precompile.
+    #[cold]
+    #[inline(never)]
     pub fn initialize(&mut self) -> Result<()> {
         // must ensure the account is not empty, by setting some code
         self.__initialize()
