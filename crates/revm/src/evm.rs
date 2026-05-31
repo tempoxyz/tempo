@@ -11,9 +11,38 @@ use revm::{
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::tip20_channel_reserve::TIP20ChannelReserve;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
+
+pub(crate) struct CachedChannelReserve(TIP20ChannelReserve);
+
+impl CachedChannelReserve {
+    fn new() -> Self {
+        Self(TIP20ChannelReserve::new())
+    }
+}
+
+impl core::fmt::Debug for CachedChannelReserve {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("CachedChannelReserve")
+    }
+}
+
+impl core::ops::Deref for CachedChannelReserve {
+    type Target = TIP20ChannelReserve;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for CachedChannelReserve {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
@@ -51,6 +80,8 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
+    /// Cached channel reserve handle for transaction context seeding.
+    pub(crate) channel_reserve: CachedChannelReserve,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -87,6 +118,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+            channel_reserve: CachedChannelReserve::new(),
         }
     }
 

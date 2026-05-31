@@ -53,7 +53,6 @@ use tempo_precompiles::{
     },
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, decode_tip20_balance},
-    tip20_channel_reserve::TIP20ChannelReserve,
 };
 use tempo_primitives::{
     TempoAddressExt,
@@ -422,7 +421,8 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         &self,
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
-        let ctx = evm.ctx_mut();
+        let channel_reserve = &mut evm.channel_reserve;
+        let ctx = &mut evm.inner.ctx;
         let channel_open_context_hash = ctx.tx.channel_open_context_hash();
 
         // Seed transient precompile transaction context for both regular execution and RPC
@@ -437,7 +437,6 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
                 keychain.set_tx_origin(ctx.tx.caller())?;
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
-                    let mut channel_reserve = TIP20ChannelReserve::new();
                     channel_reserve.set_channel_open_context_hash(channel_open_context_hash)?;
                 }
 
