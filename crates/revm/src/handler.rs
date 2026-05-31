@@ -1535,6 +1535,7 @@ where
         Ok(())
     }
 
+    #[inline(never)]
     fn reimburse_caller(
         &self,
         evm: &mut Self::Evm,
