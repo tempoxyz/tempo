@@ -838,6 +838,12 @@ fn workload() -> Workload {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn panic_tip20_execution_failed<E: core::fmt::Debug>(err: E) -> ! {
+    panic!("TIP20 transaction execution failed: {err:?}")
+}
+
 fn execute_txs<DB>(
     config: &TempoEvmConfig,
     db: DB,
@@ -878,9 +884,10 @@ where
             tx.inner().is_aa(),
             "tip20 execution bench expects Tempo AA transactions"
         );
-        let output = executor
-            .execute_transaction_without_commit(tx)
-            .expect("TIP20 transaction execution failed");
+        let output = match executor.execute_transaction_without_commit(tx) {
+            Ok(output) => output,
+            Err(err) => panic_tip20_execution_failed(err),
+        };
         assert!(
             output.result().result.is_success(),
             "TIP20 transaction reverted: {:?}",
