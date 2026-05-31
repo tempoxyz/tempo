@@ -403,6 +403,7 @@ where
         // Also don't include any subblocks if we've seen an invalid subblock
         // at this height or above.
         let mut subblocks = if empty
+            || hardfork.is_t4()
             || self.highest_invalid_subblock.load(Ordering::Relaxed) > parent_header.number()
         {
             vec![]
