@@ -300,11 +300,12 @@ fn mutate<T: SolCall>(
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<T::Return>,
 ) -> PrecompileResult {
-    if StorageCtx.is_static() {
+    let storage = StorageCtx;
+    if storage.is_static() {
         return Ok(PrecompileOutput::revert(
             0,
             StaticCallNotAllowed {}.abi_encode().into(),
-            StorageCtx.reservoir(),
+            storage.reservoir(),
         ));
     }
     f(sender, call).into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
@@ -319,11 +320,12 @@ fn mutate_void<T: SolCall>(
     sender: Address,
     f: impl FnOnce(Address, T) -> Result<()>,
 ) -> PrecompileResult {
-    if StorageCtx.is_static() {
+    let storage = StorageCtx;
+    if storage.is_static() {
         return Ok(PrecompileOutput::revert(
             0,
             StaticCallNotAllowed {}.abi_encode().into(),
-            StorageCtx.reservoir(),
+            storage.reservoir(),
         ));
     }
     f(sender, call).into_precompile_result(0, 0, |()| Bytes::new())
