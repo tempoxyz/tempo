@@ -114,11 +114,15 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     /// Consumes self and returns a new Evm type with given Precompiles.
+    #[cold]
+    #[inline(never)]
     pub fn with_precompiles(self, precompiles: PrecompilesMap) -> Self {
         Self::new_inner(self.inner.with_precompiles(precompiles))
     }
 
     /// Consumes self and returns the inner Inspector.
+    #[cold]
+    #[inline(never)]
     pub fn into_inspector(self) -> I {
         self.inner.into_inspector()
     }
