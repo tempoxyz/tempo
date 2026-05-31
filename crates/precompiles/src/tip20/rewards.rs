@@ -13,6 +13,7 @@ use crate::{
 };
 use alloy::primitives::{Address, U256, uint};
 use core::ops::Div;
+use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{ITIP20, TIP20Error, TIP20Event};
 use tempo_precompiles_macros::Storable;
 use tempo_primitives::TempoAddressExt;
@@ -77,22 +78,18 @@ impl TIP20Token {
     /// reward per token difference since their last update. Rewards are accumulated in the
     /// delegated recipient's rewardBalance. Returns the holder's delegated recipient address.
     pub fn update_rewards(&mut self, holder: Address) -> Result<RewardFlag> {
-        let flag = if self.storage.spec().is_t6() {
-            self.update_rewards_t6(holder, false)?
-        } else {
-            self.update_rewards_legacy(holder)?
-        };
-        // RewardFlag output of reward updates MUST be binary (opted-in/out).
-        // UserState has built-in logic to ensure pre-T6 we always store RewardFlag::Uninitialized.
-        debug_assert!(matches!(flag, RewardFlag::OptedIn | RewardFlag::OptedOut));
-
-        Ok(flag)
+        let hardfork = self.storage.spec();
+        self.update_rewards_with_spec(holder, false, hardfork)
     }
 
-    /// Updates rewards and ensures the holder is checkpointed before cold-path state transitions.
-    fn update_rewards_with_checkpoint(&mut self, holder: Address) -> Result<RewardFlag> {
-        let flag = if self.storage.spec().is_t6() {
-            self.update_rewards_t6(holder, true)?
+    fn update_rewards_with_spec(
+        &mut self,
+        holder: Address,
+        checkpoint_opted_out_rewards: bool,
+        hardfork: TempoHardfork,
+    ) -> Result<RewardFlag> {
+        let flag = if hardfork.is_t6() {
+            self.update_rewards_t6(holder, checkpoint_opted_out_rewards)?
         } else {
             self.update_rewards_legacy(holder)?
         };
@@ -229,7 +226,7 @@ impl TIP20Token {
         self.check_not_paused()?;
 
         // TIP-1022: reject virtual addresses as reward recipients
-        if self.storage.spec().is_t3() && call.recipient.is_virtual() {
+        if hardfork.is_t3() && call.recipient.is_virtual() {
             return Err(TIP20Error::invalid_recipient().into());
         }
 
@@ -240,7 +237,7 @@ impl TIP20Token {
             RewardFlag::OptedIn
         };
 
-        let old_flag = self.update_rewards_with_checkpoint(msg_sender)?;
+        let old_flag = self.update_rewards_with_spec(msg_sender, true, hardfork)?;
 
         let holder_balance = self.get_balance(msg_sender)?;
 
@@ -354,8 +351,9 @@ impl TIP20Token {
         to: Address,
         amount: U256,
     ) -> Result<(RewardFlag, RewardFlag)> {
-        let from_flag = self.update_rewards(from)?;
-        let to_flag = self.update_rewards(to)?;
+        let hardfork = self.storage.spec();
+        let from_flag = self.update_rewards_with_spec(from, false, hardfork)?;
+        let to_flag = self.update_rewards_with_spec(to, false, hardfork)?;
 
         match (from_flag, to_flag) {
             // Increase supply: from opted-out, to opted-in.
