@@ -922,14 +922,24 @@ where
             .is_prague_active_at_timestamp(attributes.timestamp)
             .then(|| execution_result.requests.clone());
 
-        let rlp_length = block.rlp_length();
+        const EXACT_RLP_LENGTH_CHECK_HEADROOM: usize = 64 * 1024;
 
-        if is_osaka && rlp_length > MAX_RLP_BLOCK_SIZE {
-            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
-                rlp_length,
-                max_rlp_length: MAX_RLP_BLOCK_SIZE,
-            }));
-        }
+        let rlp_length = if is_osaka
+            && block_size_used <= MAX_RLP_BLOCK_SIZE.saturating_sub(EXACT_RLP_LENGTH_CHECK_HEADROOM)
+        {
+            block_size_used
+        } else {
+            let rlp_length = block.rlp_length();
+
+            if is_osaka && rlp_length > MAX_RLP_BLOCK_SIZE {
+                return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+                    rlp_length,
+                    max_rlp_length: MAX_RLP_BLOCK_SIZE,
+                }));
+            }
+
+            rlp_length
+        };
 
         let pool_transactions_inclusion_ratio = if pool_transactions_yielded == 0 {
             0.0
