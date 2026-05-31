@@ -1223,6 +1223,8 @@ impl TIP20Token {
 
     /// Releases guarded funds to `to`. Resumes skip policy checks. Reroutes
     /// revalidate the transfer and receive policies and meter the spending limit.
+    #[cold]
+    #[inline(never)]
     pub(crate) fn release_blocked_funds(
         &mut self,
         originator: Address,
