@@ -465,6 +465,8 @@ impl StablecoinDEX {
     ///
     /// # Returns
     /// The assigned order ID
+    #[cold]
+    #[inline(never)]
     pub fn place(
         &mut self,
         sender: Address,
@@ -541,6 +543,8 @@ impl StablecoinDEX {
     }
 
     /// Commits an order to the specified orderbook, updating tick bits, best bid/ask, and total liquidity
+    #[cold]
+    #[inline(never)]
     fn commit_order_to_book(&mut self, mut order: Order) -> Result<()> {
         let orderbook = self.books[order.book_key()].read()?;
         let mut level = self.books[order.book_key()]
@@ -604,6 +608,8 @@ impl StablecoinDEX {
     /// - `InsufficientBalance` — sender balance lower than required escrow
     /// - `PolicyForbids` — TIP-403 policy rejects the token transfer
     #[allow(clippy::too_many_arguments)]
+    #[cold]
+    #[inline(never)]
     pub fn place_flip(
         &mut self,
         sender: Address,
