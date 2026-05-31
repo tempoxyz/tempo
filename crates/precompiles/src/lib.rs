@@ -425,7 +425,7 @@ impl<'a> SelectorSchedule<'a> {
 /// Handles missing selectors (revert on T1+, error on earlier forks), hardfork-gated selectors,
 /// unknown selectors (ABI-encoded `UnknownFunctionSelector`), and malformed ABI data (empty
 /// revert).
-#[inline]
+#[inline(always)]
 pub(crate) fn dispatch_call<T>(
     calldata: &[u8],
     hardforks: &[SelectorSchedule<'_>],
