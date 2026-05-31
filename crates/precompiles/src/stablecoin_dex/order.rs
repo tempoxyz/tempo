@@ -121,6 +121,8 @@ impl Order {
     /// - `InvalidBidFlipTick` - `is_bid` is true and `flip_tick < tick`
     /// - `InvalidAskFlipTick` - `is_bid` is false and `flip_tick > tick`
     #[allow(clippy::too_many_arguments)]
+    #[cold]
+    #[inline(never)]
     pub fn new_flip(
         order_id: u128,
         maker: Address,
@@ -258,6 +260,8 @@ impl Order {
     /// - New flip_tick = original tick
     /// - Amount is the same as original
     /// - Linked list pointers are reset to 0 (will be set by orderbook on insertion)
+    #[cold]
+    #[inline(never)]
     pub(crate) fn create_flipped_order(&self, new_order_id: u128) -> Self {
         debug_assert!(self.is_flip());
 
