@@ -89,6 +89,8 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
 }
 
 impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
+    #[cold]
+    #[inline(never)]
     fn chain_id(&self) -> u64 {
         self.internals.chain_id()
     }
@@ -97,10 +99,14 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.internals.block_timestamp()
     }
 
+    #[cold]
+    #[inline(never)]
     fn beneficiary(&self) -> Address {
         self.internals.block_env().beneficiary()
     }
 
+    #[cold]
+    #[inline(never)]
     fn block_number(&self) -> u64 {
         self.internals.block_env().number().to::<u64>()
     }
