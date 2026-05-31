@@ -71,6 +71,10 @@ pub const INPUT_PER_WORD_COST: u64 = 6;
 /// Gas cost for `ecrecover` signature verification (used by KeyAuthorization and Permit).
 pub const ECRECOVER_GAS: u64 = 3_000;
 
+static ABI_TRUE: [u8; 32] = [
+    0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1,
+];
+
 /// Returns the gas cost for decoding calldata of the given length, rounded up to word boundaries.
 #[inline]
 pub fn input_cost(calldata_len: usize) -> u64 {
@@ -308,6 +312,31 @@ fn mutate<T: SolCall>(
         ));
     }
     f(sender, call).into_precompile_result(0, 0, |ret| T::abi_encode_returns(&ret).into())
+}
+
+/// Dispatches a state-mutating call that returns an ABI boolean.
+///
+/// Successful TIP-20 transfer calls return `true`; use static bytes for that hot success path.
+#[inline]
+fn mutate_true<T: SolCall<Return = bool>>(
+    call: T,
+    sender: Address,
+    f: impl FnOnce(Address, T) -> Result<bool>,
+) -> PrecompileResult {
+    if StorageCtx.is_static() {
+        return Ok(PrecompileOutput::revert(
+            0,
+            StaticCallNotAllowed {}.abi_encode().into(),
+            StorageCtx.reservoir(),
+        ));
+    }
+    f(sender, call).into_precompile_result(0, 0, |ret| {
+        if ret {
+            Bytes::from_static(&ABI_TRUE)
+        } else {
+            T::abi_encode_returns(&ret).into()
+        }
+    })
 }
 
 /// Dispatches a state-mutating call that returns no data (e.g. `approve`, `transfer`).

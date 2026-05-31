@@ -1,7 +1,8 @@
 //! ABI dispatch for the [`TIP20Token`] precompile.
 
 use crate::{
-    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, metadata, mutate, mutate_void,
+    Precompile, SelectorSchedule, charge_input_cost, dispatch_call, metadata, mutate, mutate_true,
+    mutate_void,
     storage::ContractStorage,
     tip20::{ITIP20, TIP20Token},
     view,
@@ -124,10 +125,10 @@ impl Precompile for TIP20Token {
 
                 // State changing functions
                 TIP20Call::TIP20(ITIP20Calls::transferFrom(call)) => {
-                    mutate(call, msg_sender, |s, c| self.transfer_from(s, c))
+                    mutate_true(call, msg_sender, |s, c| self.transfer_from(s, c))
                 }
                 TIP20Call::TIP20(ITIP20Calls::transfer(call)) => {
-                    mutate(call, msg_sender, |s, c| self.transfer(s, c))
+                    mutate_true(call, msg_sender, |s, c| self.transfer(s, c))
                 }
                 TIP20Call::TIP20(ITIP20Calls::approve(call)) => {
                     mutate(call, msg_sender, |s, c| self.approve(s, c))
@@ -178,7 +179,7 @@ impl Precompile for TIP20Token {
                     mutate_void(call, msg_sender, |s, c| self.transfer_with_memo(s, c))
                 }
                 TIP20Call::TIP20(ITIP20Calls::transferFromWithMemo(call)) => {
-                    mutate(call, msg_sender, |sender, c| {
+                    mutate_true(call, msg_sender, |sender, c| {
                         self.transfer_from_with_memo(sender, c)
                     })
                 }
