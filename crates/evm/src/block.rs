@@ -577,7 +577,7 @@ where
 
         self.section = next_section;
 
-        match self.section {
+        match next_section {
             BlockSection::StartOfBlock => {
                 // no gas spending for start-of-block system transactions
             }
