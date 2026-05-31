@@ -26,7 +26,10 @@ use reth_revm::{
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
-use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
+use tempo_chainspec::{
+    TempoChainSpec,
+    hardfork::{TempoHardfork, TempoHardforks},
+};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
@@ -485,18 +488,22 @@ where
         self.inner.apply_pre_execution_changes()?;
 
         // Deploy 0xEF marker bytecode to precompiles at their activation hardforks.
-        let timestamp = self.evm().block().timestamp.to::<u64>();
-        if self.inner.spec.is_t2_active_at_timestamp(timestamp) {
+        let mut spec = self.evm().cfg.spec;
+        if matches!(spec, TempoHardfork::Genesis | TempoHardfork::T0) {
+            let timestamp = self.evm().block().timestamp.to::<u64>();
+            spec = self.inner.spec.tempo_hardfork_at(timestamp);
+        }
+        if spec.is_t2() {
             self.deploy_precompile_at_boundary(VALIDATOR_CONFIG_V2_ADDRESS)?;
         }
-        if self.inner.spec.is_t3_active_at_timestamp(timestamp) {
+        if spec.is_t3() {
             self.deploy_precompile_at_boundary(SIGNATURE_VERIFIER_ADDRESS)?;
             self.deploy_precompile_at_boundary(ADDRESS_REGISTRY_ADDRESS)?;
         }
-        if self.inner.spec.is_t5_active_at_timestamp(timestamp) {
+        if spec.is_t5() {
             self.deploy_precompile_at_boundary(TIP20_CHANNEL_RESERVE_ADDRESS)?;
         }
-        if self.inner.spec.is_t6_active_at_timestamp(timestamp) {
+        if spec.is_t6() {
             self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
         }
 
