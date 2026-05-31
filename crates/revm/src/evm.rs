@@ -1,6 +1,10 @@
 use crate::{TempoBlockEnv, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
+use core::{
+    cell::{RefCell, RefMut},
+    fmt,
+};
 use revm::{
     Context, Inspector,
     context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
@@ -11,9 +15,37 @@ use revm::{
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::tip_fee_manager::TipFeeManager;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
+
+/// Cached fee-manager handle used by internal fee collection.
+///
+/// The handle only caches generated storage handlers and derived slots; storage values still come
+/// from the active `StorageCtx` for each call.
+pub(crate) struct CachedTipFeeManager {
+    inner: RefCell<TipFeeManager>,
+}
+
+impl CachedTipFeeManager {
+    fn new() -> Self {
+        Self {
+            inner: RefCell::new(TipFeeManager::new()),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn borrow_mut(&self) -> RefMut<'_, TipFeeManager> {
+        self.inner.borrow_mut()
+    }
+}
+
+impl fmt::Debug for CachedTipFeeManager {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CachedTipFeeManager").finish_non_exhaustive()
+    }
+}
 
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
@@ -38,6 +70,8 @@ pub struct TempoEvm<DB: Database, I> {
     pub validator_fee: U256,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
+    /// Cached generated handle for internal fee collection.
+    pub(crate) fee_manager: CachedTipFeeManager,
     /// The expiry timestamp of the access key used by the current transaction.
     /// Populated during validation for keychain-signed transactions or transactions carrying a KeyAuthorization.
     pub(crate) key_expiry: Option<u64>,
@@ -84,6 +118,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             collected_fee: U256::ZERO,
             validator_fee: U256::ZERO,
             fee_token: None,
+            fee_manager: CachedTipFeeManager::new(),
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
