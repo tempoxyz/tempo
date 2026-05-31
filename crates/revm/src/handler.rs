@@ -1134,6 +1134,7 @@ where
         // doing max to avoid underflow as new_balance can be more than account
         // balance if `cfg.is_balance_check_disabled()` is true.
         let gas_balance_spending = core::cmp::max(account_balance, new_balance) - new_balance;
+        let has_fee_spending = !gas_balance_spending.is_zero();
 
         // Note: Signature verification happens during recover_signer() before entering the pool
         // Note: Transaction parameter validation (priority fee, time window) happens in validate_env()
@@ -1180,7 +1181,7 @@ where
                 // Same-tx auth+use path: the access key does not exist in storage yet, so the fee
                 // check must use the inline limits directly. `collectFeePreTx` cannot enforce this
                 // because `transaction_key` is intentionally not set until after authorization.
-                if !gas_balance_spending.is_zero()
+                if has_fee_spending
                     && fee_payer == tx.caller
                     && let Some(limits) = key_auth.limits.as_ref()
                 {
@@ -1294,7 +1295,7 @@ where
         }
 
         // Collect fees for the transaction.
-        if !gas_balance_spending.is_zero() {
+        if has_fee_spending {
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
