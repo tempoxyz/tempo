@@ -4,8 +4,8 @@
 //! At T6, the same storage slot is interpreted as a packed [`UserState`] containing a `u128`
 //! amount and a cached reward opt-in flag.
 //!
-//! The custom [`Storable`] impl preserves pre-T6 storage compatibility and delegates T6+ packing to
-//! a derived storage type.
+//! The custom [`Storable`] impl preserves pre-T6 storage compatibility and packs the T6+ state
+//! directly into one storage word.
 
 use crate::{
     error::{Result, TempoPrecompileError},
@@ -14,9 +14,10 @@ use crate::{
 };
 use alloy::{
     primitives::{Address, U256},
-    sol_types::PanicKind,
 };
 use tempo_precompiles_macros::Storable;
+
+const REWARD_FLAG_SHIFT: usize = 128;
 
 // NOTE: `RewardFlag` derives `Storable`, so the cached flag occupies 1 byte in storage despite
 // only needing 2 bits (as per the spec). If the balance slot needs to pack more metadata in the
@@ -59,32 +60,6 @@ pub struct UserState {
     pub(super) flag: RewardFlag,
 }
 
-// NOTE: derived storage layout is byte-granular, matching the `RewardFlag` byte above.
-// This keeps generated T6+ packing correct, but cannot represent future sub-byte fields.
-#[derive(Debug, Clone, Storable, Copy, PartialEq)]
-struct PackedUserState {
-    amount: u128,
-    flag: RewardFlag,
-}
-
-impl From<PackedUserState> for UserState {
-    fn from(value: PackedUserState) -> Self {
-        Self {
-            amount: value.amount,
-            flag: value.flag,
-        }
-    }
-}
-
-impl From<UserState> for PackedUserState {
-    fn from(value: UserState) -> Self {
-        Self {
-            amount: value.amount,
-            flag: value.flag,
-        }
-    }
-}
-
 impl UserState {
     pub(super) fn new(amount: U256, flag: RewardFlag) -> Result<Self> {
         let amount = u128::try_from(amount).map_err(|_| TempoPrecompileError::under_overflow())?;
@@ -112,10 +87,39 @@ impl UserState {
             .checked_mul(amount)
             .ok_or(TempoPrecompileError::under_overflow())
     }
+
+    #[inline]
+    fn decode_reward_flag(flag: u8) -> Result<RewardFlag> {
+        match flag {
+            0 => Ok(RewardFlag::Uninitialized),
+            1 => Ok(RewardFlag::OptedOut),
+            2 => Ok(RewardFlag::OptedIn),
+            _ => Err(TempoPrecompileError::Fatal(
+                "invalid T6 TIP-20 packed user state: reward flag discriminant".into(),
+            )),
+        }
+    }
+
+    #[inline]
+    fn from_packed_word(word: U256) -> Result<Self> {
+        let amount = u128::try_from(decode_tip20_balance(word))
+            .map_err(|_| TempoPrecompileError::under_overflow())?;
+        let flag = ((word >> REWARD_FLAG_SHIFT) & U256::from(u8::MAX)).to::<u8>();
+
+        Ok(Self {
+            amount,
+            flag: Self::decode_reward_flag(flag)?,
+        })
+    }
+
+    #[inline]
+    fn to_packed_word(self) -> U256 {
+        U256::from(self.amount) | (U256::from(self.flag as u8) << REWARD_FLAG_SHIFT)
+    }
 }
 
 impl StorableType for UserState {
-    const LAYOUT: Layout = PackedUserState::LAYOUT;
+    const LAYOUT: Layout = Layout::Slots(1);
 
     type Handler = Slot<Self>;
 
@@ -143,15 +147,7 @@ impl Storable for UserState {
             });
         }
 
-        match PackedUserState::load(storage, slot, ctx) {
-            Ok(value) => Ok(value.into()),
-            Err(TempoPrecompileError::Panic(PanicKind::EnumConversionError)) => {
-                Err(TempoPrecompileError::Fatal(
-                    "invalid T6 TIP-20 packed user state: reward flag discriminant".into(),
-                ))
-            }
-            Err(err) => Err(err),
-        }
+        Self::from_packed_word(storage.load(slot)?)
     }
 
     fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
@@ -161,7 +157,7 @@ impl Storable for UserState {
             return storage.store(slot, U256::from(self.amount));
         }
 
-        PackedUserState::from(*self).store(storage, slot, ctx)
+        storage.store(slot, self.to_packed_word())
     }
 }
 
