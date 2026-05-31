@@ -649,6 +649,8 @@ where
         Ok((evm, result))
     }
 
+    #[cold]
+    #[inline(never)]
     fn set_state_hook(&mut self, hook: Option<Box<dyn OnStateHook>>) {
         self.inner.set_state_hook(hook)
     }
