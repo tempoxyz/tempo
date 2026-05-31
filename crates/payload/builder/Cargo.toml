@@ -44,4 +44,5 @@ metrics.workspace = true
 tracing.workspace = true
 
 [features]
+bal = []
 trie-debug = ["reth-engine-tree/trie-debug"]
