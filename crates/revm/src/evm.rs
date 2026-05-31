@@ -98,12 +98,18 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         // Pre-T0 it could happen that the initial gas spending is greater than the gas limit due to faulty validation.
         //
         // Before that it would overflow, so we are reproducing this behavior here by setting the gas limit to u64::MAX and the reservoir to 0.
-        if !self.cfg.spec.is_t0() && init_and_floor_gas.initial_total_gas() > self.tx.gas_limit {
-            (u64::MAX, 0)
-        } else {
+        if self.cfg.spec.is_t0() || init_and_floor_gas.initial_total_gas() <= self.tx.gas_limit {
             init_and_floor_gas
                 .initial_gas_and_reservoir(self.tx.gas_limit, self.cfg.tx_gas_limit_cap())
+        } else {
+            Self::pre_t0_overflow_initial_gas_and_reservoir()
         }
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn pre_t0_overflow_initial_gas_and_reservoir() -> (u64, u64) {
+        (u64::MAX, 0)
     }
 }
 
