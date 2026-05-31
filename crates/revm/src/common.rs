@@ -402,10 +402,6 @@ where
     }
 
     fn sload(&mut self, address: Address, key: U256) -> TempoResult<U256> {
-        let _ = self
-            .state
-            .basic(address)
-            .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))?;
         self.state
             .sload(address, key)
             .map_err(|e| TempoPrecompileError::Fatal(e.to_string()))
