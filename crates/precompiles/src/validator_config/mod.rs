@@ -53,6 +53,8 @@ pub struct ValidatorConfig {
 
 impl ValidatorConfig {
     /// Initializes the validator config (V1) precompile with an owner.
+    #[cold]
+    #[inline(never)]
     pub fn initialize(&mut self, owner: Address) -> Result<()> {
         trace!(address=%self.address, %owner, "Initializing validator config precompile");
 
