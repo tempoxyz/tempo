@@ -964,6 +964,7 @@ where
         // We only check first call of the transaction because CREATE is only allowed
         // to appear as the first call in the batch (validated in `validate_calls`)
         if !nonce_key.is_zero()
+            && tx.kind().is_create()
             && tx.first_call().is_some_and(|(kind, _)| kind.is_create())
             && caller_account.nonce() == 0
         {
