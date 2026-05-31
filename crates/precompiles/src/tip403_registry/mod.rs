@@ -189,6 +189,8 @@ impl ReceivePolicyConfig {
 
 impl TIP403Registry {
     /// Initializes the TIP-403 registry precompile.
+    #[cold]
+    #[inline(never)]
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
