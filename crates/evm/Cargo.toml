@@ -52,6 +52,7 @@ reth-storage-api.workspace = true
 reth-trie.workspace = true
 tempo-precompiles = { workspace = true, features = ["test-utils"] }
 tempo-primitives = { workspace = true, features = ["arbitrary"] }
+tracing = { workspace = true, features = ["release_max_level_info"] }
 
 [features]
 default = ["rpc", "engine"]
