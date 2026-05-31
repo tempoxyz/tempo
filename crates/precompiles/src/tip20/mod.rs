@@ -1153,13 +1153,9 @@ impl TIP20Token {
     /// targets `to.target` (the resolved master).
     pub(crate) fn _transfer(&mut self, from: Address, to: &Recipient, amount: U256) -> Result<()> {
         let from_balance = self.get_balance(from)?;
-        if amount > from_balance.amount() {
-            return Err(TIP20Error::insufficient_balance(
-                from_balance.amount(),
-                amount,
-                self.address,
-            )
-            .into());
+        let from_amount = from_balance.amount();
+        if amount > from_amount {
+            return Err(TIP20Error::insufficient_balance(from_amount, amount, self.address).into());
         }
 
         let (from_flag, to_flag) = self.handle_rewards_on_transfer(from, to.target, amount)?;
@@ -1167,7 +1163,12 @@ impl TIP20Token {
         // Adjust balances
         self.set_balance(
             from,
-            UserState::new(from_balance.checked_sub(amount)?, from_flag)?,
+            UserState::new(
+                from_amount
+                    .checked_sub(amount)
+                    .ok_or(TempoPrecompileError::under_overflow())?,
+                from_flag,
+            )?,
         )?;
 
         if to.target != Address::ZERO {
@@ -1277,13 +1278,9 @@ impl TIP20Token {
         // Apart from this specific refund transfer, no other token transfers can occur after a pause event.
         self.check_not_paused()?;
         let from_balance = self.get_balance(from)?;
-        if amount > from_balance.amount() {
-            return Err(TIP20Error::insufficient_balance(
-                from_balance.amount(),
-                amount,
-                self.address,
-            )
-            .into());
+        let from_amount = from_balance.amount();
+        if amount > from_amount {
+            return Err(TIP20Error::insufficient_balance(from_amount, amount, self.address).into());
         }
 
         self.check_and_update_spending_limit(from, amount)?;
@@ -1296,7 +1293,12 @@ impl TIP20Token {
             self.decrease_opted_in_supply(amount)?;
         }
 
-        let new_from_balance = UserState::new(from_balance.checked_sub(amount)?, from_flag)?;
+        let new_from_balance = UserState::new(
+            from_amount
+                .checked_sub(amount)
+                .ok_or(TempoPrecompileError::under_overflow())?,
+            from_flag,
+        )?;
         self.set_balance(from, new_from_balance)?;
 
         let to_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
@@ -1338,9 +1340,10 @@ impl TIP20Token {
         }
 
         let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_from_balance = from_balance.checked_sub(refund).map_err(|_| {
-            TIP20Error::insufficient_balance(from_balance.amount(), refund, self.address)
-        })?;
+        let from_amount = from_balance.amount();
+        let new_from_balance = from_amount
+            .checked_sub(refund)
+            .ok_or_else(|| TIP20Error::insufficient_balance(from_amount, refund, self.address))?;
         self.set_balance(
             TIP_FEE_MANAGER_ADDRESS,
             UserState::new(new_from_balance, from_balance.flag)?,
