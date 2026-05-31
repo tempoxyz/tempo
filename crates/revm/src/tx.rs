@@ -200,6 +200,17 @@ fn is_discounted_tip20_call(to: &TxKind, input: &[u8]) -> bool {
         && ITIP20::ITIP20Calls::is_discounted_payment_call(input)
 }
 
+fn aa_needs_sender_scoped_context(tx: &TempoTransaction) -> bool {
+    tx.is_expiring_nonce_tx() || !is_direct_tip20_discounted_batch(&tx.calls)
+}
+
+fn is_direct_tip20_discounted_batch(calls: &[Call]) -> bool {
+    !calls.is_empty()
+        && calls
+            .iter()
+            .all(|call| is_discounted_tip20_call(&call.to, &call.input))
+}
+
 impl From<TxEnv> for TempoTxEnv {
     fn from(inner: TxEnv) -> Self {
         Self {
@@ -325,6 +336,9 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             let _ = keychain_sig.key_id(&aa_signed.signature_hash());
         }
 
+        let unique_tx_identifier =
+            aa_needs_sender_scoped_context(tx).then(|| aa_signed.expiring_nonce_hash(caller));
+
         let TempoTransaction {
             chain_id,
             fee_token,
@@ -383,7 +397,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             },
             fee_token: *fee_token,
             is_system_tx: false,
-            unique_tx_identifier: Some(aa_signed.expiring_nonce_hash(caller)),
+            unique_tx_identifier,
             fee_payer: fee_payer_signature.map(|sig| {
                 secp256k1::recover_signer(&sig, tx.fee_payer_signature_hash(caller)).ok()
             }),
@@ -639,6 +653,36 @@ mod tests {
             tx_env.channel_open_context_hash(),
             Some(encoded_payload_context)
         );
+    }
+
+    #[test]
+    fn test_aa_tip20_transfer_skips_channel_open_context_hash() {
+        let caller = Address::repeat_byte(0xAA);
+        let token = address!("20c0000000000000000000000000000000000001");
+        let tx = tempo_primitives::transaction::TempoTransaction {
+            chain_id: 1,
+            gas_limit: 1_000_000,
+            nonce_key: U256::from(42),
+            nonce: 0,
+            calls: vec![Call {
+                to: TxKind::Call(token),
+                value: U256::ZERO,
+                input: ITIP20::transferCall {
+                    to: Address::repeat_byte(0xBB),
+                    amount: U256::from(1),
+                }
+                .abi_encode()
+                .into(),
+            }],
+            ..Default::default()
+        };
+        let sig = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+            Signature::test_signature(),
+        ));
+        let signed = AASigned::new_unhashed(tx, sig);
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed, caller);
+
+        assert_eq!(tx_env.channel_open_context_hash(), None);
     }
 
     #[test]
