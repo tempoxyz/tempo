@@ -289,6 +289,8 @@ fn normalize_failed_batch_result_gas(
     *frame_result.gas_mut() = corrected_gas;
 }
 
+#[cold]
+#[inline(never)]
 fn translate_allowed_calls_for_precompile(
     key_auth: &tempo_primitives::transaction::SignedKeyAuthorization,
 ) -> Vec<PrecompileCallScope> {
