@@ -28,6 +28,8 @@ pub const ISO4217_CODES: &[&str] = &[
 ];
 
 /// Returns `true` if the given code is a recognized ISO 4217 currency code.
+#[cold]
+#[inline(never)]
 pub fn is_iso4217_currency(code: &str) -> bool {
     ISO4217_CODES.binary_search(&code).is_ok()
 }
