@@ -226,6 +226,8 @@ where
         }
     }
 
+    #[cold]
+    #[inline(never)]
     fn transact_system_call(
         &mut self,
         caller: Address,
