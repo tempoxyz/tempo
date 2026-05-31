@@ -22,6 +22,8 @@ const WEBAUTHN_VERIFY_GAS: u64 = 8_000;
 pub struct SignatureVerifier {}
 
 impl SignatureVerifier {
+    #[cold]
+    #[inline(never)]
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
