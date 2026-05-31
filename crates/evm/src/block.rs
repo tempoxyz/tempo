@@ -275,6 +275,8 @@ where
         })
     }
 
+    #[cold]
+    #[inline(never)]
     pub(crate) fn validate_shared_gas(
         &self,
         metadata: &[SubBlockMetadata],
