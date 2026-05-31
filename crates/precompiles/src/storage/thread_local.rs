@@ -85,17 +85,21 @@ impl StorageCtx {
     where
         F: FnOnce(&mut dyn PrecompileStorageProvider) -> Result<R>,
     {
-        if !STORAGE.is_set() {
+        let storage = STORAGE.inner.with(|cell| cell.get());
+        if storage.is_null() {
             return Err(TempoPrecompileError::Fatal(
                 "No storage context. 'StorageCtx::enter' must be called first".to_string(),
             ));
         }
-        STORAGE.with(|cell| {
-            // SAFETY: `scoped_tls` ensures the pointer is only accessible within the closure scope.
-            // Holding the guard prevents re-entrant borrows.
+
+        // SAFETY: this mirrors `ScopedKey::with` after the null check above, but keeps the hot
+        // fallible storage path to one TLS load instead of `is_set()` plus `with()`.
+        let cell =
+            unsafe { &*(storage as *const RefCell<&mut dyn PrecompileStorageProvider>) };
+        {
             let mut guard = cell.borrow_mut();
             f(&mut **guard)
-        })
+        }
     }
 
     // `PrecompileStorageProvider` methods (with modified mutability for read-only methods)
