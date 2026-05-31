@@ -97,6 +97,8 @@ pub struct TIP20ChannelReserve {
 
 impl TIP20ChannelReserve {
     /// Initializes the precompile storage layout.
+    #[cold]
+    #[inline(never)]
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
