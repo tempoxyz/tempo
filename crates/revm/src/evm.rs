@@ -43,7 +43,8 @@ impl CachedTipFeeManager {
 
 impl fmt::Debug for CachedTipFeeManager {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CachedTipFeeManager").finish_non_exhaustive()
+        f.debug_struct("CachedTipFeeManager")
+            .finish_non_exhaustive()
     }
 }
 

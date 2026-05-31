@@ -37,6 +37,8 @@ use tempo_chainspec::constants::gas::tempo_t6_discounted_payment_effective_gas_p
 use tempo_contracts::precompiles::{
     IAccountKeychain::SignatureType as PrecompileSignatureType, TIPFeeAMMError,
 };
+#[cfg(test)]
+use tempo_precompiles::tip_fee_manager::TipFeeManager;
 use tempo_precompiles::{
     ECRECOVER_GAS,
     account_keychain::{
@@ -54,8 +56,6 @@ use tempo_precompiles::{
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, decode_tip20_balance},
     tip20_channel_reserve::TIP20ChannelReserve,
 };
-#[cfg(test)]
-use tempo_precompiles::tip_fee_manager::TipFeeManager;
 use tempo_primitives::{
     TempoAddressExt,
     transaction::{
