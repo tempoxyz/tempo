@@ -107,7 +107,7 @@ impl BestTransactionsPrewarming {
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
-                    return;
+                    return false;
                 };
                 let _ = ctx.transactions_tx.send(Some(tx.clone()));
 
@@ -117,13 +117,17 @@ impl BestTransactionsPrewarming {
                     Self::prewarm_transaction(prewarm, tx.clone());
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
+
+                true
             };
 
             // Fill the initial batch of transactions to execute and prewarm.
             //
             // We schedule 2x the number of threads to make sure that workers are never idle.
             for _ in 0..pool.current_num_threads() * 2 {
-                advance(&mut ctx);
+                if !advance(&mut ctx) {
+                    break;
+                }
             }
 
             while let Ok(command) = ctx.commands_rx.recv() {
@@ -937,19 +941,18 @@ mod tests {
     }
 
     #[test]
-    fn empty_source_is_polled_for_eager_advances_and_each_consumer_advance() {
+    fn empty_source_is_polled_once_eagerly_and_for_each_consumer_advance() {
         let executor = TaskExecutor::test();
-        let eager_advances = executor.prewarming_pool().current_num_threads() * 2;
         let log = Arc::new(Mutex::new(TestLog::default()));
         let mut prewarming = prewarming_with_executor(executor, Vec::new(), log.clone());
 
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances);
+        wait_until(|| log.lock().unwrap().empty_polls == 1);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 1);
+        wait_until(|| log.lock().unwrap().empty_polls == 2);
 
         assert!(prewarming.next().is_none());
-        wait_until(|| log.lock().unwrap().empty_polls == eager_advances + 2);
+        wait_until(|| log.lock().unwrap().empty_polls == 3);
     }
 
     #[test]
