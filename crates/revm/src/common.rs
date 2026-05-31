@@ -219,6 +219,7 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
+        let _ = self.basic(fee_token).map_err(EVMError::Database)?;
         let slot = self
             .sload(fee_token, tip20_slots::CURRENCY)
             .map_err(EVMError::Database)?;
