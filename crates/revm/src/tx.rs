@@ -36,6 +36,9 @@ pub struct TempoBatchCallEnv {
     /// Multiple calls for Tempo transactions
     pub aa_calls: Vec<Call>,
 
+    /// Cached AA-only TIP-1059 discounted payment eligibility.
+    pub discounted_payment_eligible: bool,
+
     /// Authorization list (EIP-7702 with Tempo signatures)
     ///
     /// Each authorization lazily recovers the authority on first access and caches the result.
@@ -67,6 +70,22 @@ pub struct TempoBatchCallEnv {
     /// Stores how many other expiring nonce transactions are there in the block before this one.
     pub expiring_nonce_idx: Option<usize>,
 }
+
+impl TempoBatchCallEnv {
+    pub fn is_discounted_payment_batch(
+        aa_calls: &[Call],
+        tempo_authorization_list_is_empty: bool,
+        key_authorization: Option<&SignedKeyAuthorization>,
+    ) -> bool {
+        !aa_calls.is_empty()
+            && tempo_authorization_list_is_empty
+            && key_authorization.is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
+            && aa_calls
+                .iter()
+                .all(|call| is_discounted_tip20_call(&call.to, &call.input))
+    }
+}
+
 /// Tempo transaction environment.
 #[derive(Debug, Clone, Default, derive_more::Deref, derive_more::DerefMut)]
 pub struct TempoTxEnv {
@@ -178,16 +197,7 @@ impl TempoTxEnv {
         }
 
         if let Some(aa) = self.tempo_tx_env.as_ref() {
-            !aa.aa_calls.is_empty()
-                && aa.tempo_authorization_list.is_empty()
-                && aa
-                    .key_authorization
-                    .as_ref()
-                    .is_none_or(|auth| auth.length() <= KEY_AUTHORIZATION_MAX_RLP_LEN)
-                && aa
-                    .aa_calls
-                    .iter()
-                    .all(|call| is_discounted_tip20_call(&call.to, &call.input))
+            aa.discounted_payment_eligible
         } else {
             self.authorization_list_len() == 0
                 && is_discounted_tip20_call(&self.inner.kind, self.input())
@@ -342,6 +352,12 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             tempo_authorization_list,
         } = tx;
 
+        let discounted_payment_eligible = TempoBatchCallEnv::is_discounted_payment_batch(
+            calls,
+            tempo_authorization_list.is_empty(),
+            key_authorization.as_ref(),
+        );
+
         // Extract to/value/input from calls (use first call or defaults)
         let (to, value, input) = if let Some(first_call) = calls.first() {
             (first_call.to, first_call.value, first_call.input.clone())
@@ -393,6 +409,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 valid_before: valid_before.map(NonZeroU64::get),
                 valid_after: valid_after.map(NonZeroU64::get),
                 aa_calls: calls.clone(),
+                discounted_payment_eligible,
                 // Recover authorizations upfront to avoid recovery during execution
                 tempo_authorization_list: tempo_authorization_list
                     .iter()

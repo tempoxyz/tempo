@@ -173,9 +173,15 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                 if calls.is_empty() {
                     return Err(EthApiError::InvalidParams("empty calls list".to_string()));
                 }
+                let discounted_payment_eligible = TempoBatchCallEnv::is_discounted_payment_batch(
+                    &calls,
+                    tempo_authorization_list.is_empty(),
+                    key_authorization.as_ref(),
+                );
 
                 Some(Box::new(TempoBatchCallEnv {
                     aa_calls: calls,
+                    discounted_payment_eligible,
                     signature: mock_signature,
                     tempo_authorization_list: tempo_authorization_list
                         .into_iter()
