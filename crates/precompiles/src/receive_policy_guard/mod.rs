@@ -97,6 +97,8 @@ impl ReceivePolicyGuard {
     }
 
     /// Given a valid receipt, releases blocked funds to the authorized receiver.
+    #[cold]
+    #[inline(never)]
     pub fn claim(&mut self, msg_sender: Address, to: Address, receipt: Bytes) -> Result<()> {
         if to == RECEIVE_POLICY_GUARD_ADDRESS {
             return Err(ReceivePolicyGuardError::invalid_claim_address().into());
@@ -132,6 +134,8 @@ impl ReceivePolicyGuard {
     ///
     /// Lets token issuers use `burnBlocked` for receipt-backed funds without burning directly from
     /// the `ReceivePolicyGuard`.
+    #[cold]
+    #[inline(never)]
     pub fn burn_blocked_receipt(&mut self, msg_sender: Address, receipt: Bytes) -> Result<()> {
         let (receipt, receiver, recovery_mode) = resolve_receipt(receipt)?;
 
@@ -234,6 +238,8 @@ impl RecoveryMode {
     }
 }
 
+#[cold]
+#[inline(never)]
 fn resolve_receipt(bytes: Bytes) -> Result<(ClaimReceiptV1, Address, RecoveryMode)> {
     let receipt = ClaimReceiptV1::try_from(bytes)?;
     let receiver = AddressRegistry::new()
