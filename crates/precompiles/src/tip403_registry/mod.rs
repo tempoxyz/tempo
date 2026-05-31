@@ -326,23 +326,35 @@ impl TIP403Registry {
 
         let token_filter_data = config.token_filter_data();
         if !self.is_authorized_simple(config.token_filter_id, token, Some(token_filter_data))? {
-            let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
-            return Ok(Some((
+            return self.blocked_receive_policy(
                 ITIP403Registry::BlockedReason::TOKEN_FILTER,
-                recovery_address,
-            )));
+                receiver,
+                config.recovery_mode,
+            );
         }
 
         let sender_policy_data = config.sender_policy_data();
         if !self.is_authorized_simple(config.sender_policy_id, sender, Some(sender_policy_data))? {
-            let recovery_address = self.receive_policy_recovery(receiver, config.recovery_mode)?;
-            return Ok(Some((
+            return self.blocked_receive_policy(
                 ITIP403Registry::BlockedReason::RECEIVE_POLICY,
-                recovery_address,
-            )));
+                receiver,
+                config.recovery_mode,
+            );
         }
 
         Ok(None)
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn blocked_receive_policy(
+        &self,
+        reason: ITIP403Registry::BlockedReason,
+        receiver: Address,
+        recovery_mode: RecoveryMode,
+    ) -> Result<Option<(ITIP403Registry::BlockedReason, Address)>> {
+        let recovery_address = self.receive_policy_recovery(receiver, recovery_mode)?;
+        Ok(Some((reason, recovery_address)))
     }
 
     /// Returns the recovery authority encoded by `mode` for `account`.
