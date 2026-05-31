@@ -838,6 +838,12 @@ fn workload() -> Workload {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn panic_pre_execution_changes_failed<E: core::fmt::Debug>(err: E) -> ! {
+    panic!("failed to apply pre-execution changes: {err:?}")
+}
+
 fn execute_txs<DB>(
     config: &TempoEvmConfig,
     db: DB,
@@ -868,9 +874,9 @@ where
     };
 
     let mut executor = config.create_executor(evm, ctx);
-    executor
-        .apply_pre_execution_changes()
-        .expect("failed to apply pre-execution changes");
+    if let Err(err) = executor.apply_pre_execution_changes() {
+        panic_pre_execution_changes_failed(err);
+    }
 
     let mut stats = ExecutionStats::default();
     for tx in txs {
