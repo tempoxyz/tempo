@@ -238,6 +238,10 @@ impl TipFeeManager {
         let mut tip20_token = TIP20Token::from_address(fee_token)?;
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
+        if actual_spending.is_zero() {
+            return Ok(U256::ZERO);
+        }
+
         // Execute fee swap and track collected fees
         let hop_token = self.two_hop_intermediate.t_read()?;
         let validator_token = self.get_validator_token(beneficiary)?;
