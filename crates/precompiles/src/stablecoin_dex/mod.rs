@@ -1449,6 +1449,8 @@ impl StablecoinDEX {
     /// Find the trade path between two tokens
     /// Returns a vector of (book_key, base_for_quote) tuples for each hop
     /// Also validates that all pairs exist
+    #[cold]
+    #[inline(never)]
     fn find_trade_path(&self, token_in: Address, token_out: Address) -> Result<Vec<(B256, bool)>> {
         // Cannot trade same token
         if token_in == token_out {
@@ -1519,6 +1521,8 @@ impl StablecoinDEX {
     /// - `InvalidToken` — a token address does not have a valid TIP-20 prefix
     /// - `PairDoesNotExist` — no orderbook exists for a hop in the route
     /// - `Paused` — a token in the route is paused (T3+)
+    #[cold]
+    #[inline(never)]
     fn validate_and_build_route(&self, path: &[Address]) -> Result<Vec<(B256, bool)>> {
         let mut route = Vec::new();
 
@@ -1563,6 +1567,8 @@ impl StablecoinDEX {
 
     /// Find the path from a token to the root (pathUSD)
     /// Returns a vector of addresses starting with the token and ending with pathUSD
+    #[cold]
+    #[inline(never)]
     fn find_path_to_root(&self, mut token: Address) -> Result<Vec<Address>> {
         let mut path = vec![token];
 
