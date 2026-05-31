@@ -83,6 +83,8 @@ impl RegistryData {
 
 impl AddressRegistry {
     /// Initializes the registry contract by setting its bytecode marker.
+    #[cold]
+    #[inline(never)]
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
