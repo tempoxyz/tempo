@@ -2225,9 +2225,10 @@ where
     let calls = &aa_env.aa_calls;
 
     // Validate all CREATE calls' initcode size upfront (EIP-3860)
-    let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
     for call in calls {
-        if call.to.is_create() && call.input.len() > max_initcode_size {
+        if call.to.is_create()
+            && call.input.len() > evm.ctx_ref().cfg().max_initcode_size()
+        {
             return Err(InvalidTransaction::CreateInitCodeSizeLimit.into());
         }
     }
