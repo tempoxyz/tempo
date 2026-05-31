@@ -750,6 +750,8 @@ impl From<Signature> for TempoSignature {
 // ============================================================================
 
 /// Derives a P256 address from public key coordinates
+#[cold]
+#[inline(never)]
 pub fn derive_p256_address(pub_key_x: &B256, pub_key_y: &B256) -> Address {
     let hash = keccak256([pub_key_x.as_slice(), pub_key_y.as_slice()].concat());
 
@@ -770,6 +772,8 @@ fn concat<const N: usize>(slices: &[&[u8]]) -> [u8; N] {
 }
 
 #[cfg(feature = "std")]
+#[cold]
+#[inline(never)]
 fn verify_p256_signature_with_aws_lc(
     r: &[u8],
     s: &[u8],
@@ -799,6 +803,8 @@ fn verify_p256_signature_with_aws_lc(
 }
 
 #[cfg(any(test, not(feature = "std")))]
+#[cold]
+#[inline(never)]
 fn verify_p256_signature_with_p256(
     r: &[u8],
     s: &[u8],
@@ -840,6 +846,8 @@ fn verify_p256_signature_with_p256(
 /// - !std → p256
 /// - std && !test → aws-lc-rs (best performance)
 /// - std && test → both (ensures verification backend alignment)
+#[cold]
+#[inline(never)]
 fn verify_p256_signature_internal(
     r: &[u8],
     s: &[u8],
@@ -896,6 +904,8 @@ struct ClientDataJson<'a> {
 /// 2. Validates authenticatorData (min 37 bytes, UP flag set)
 /// 3. Validates clientDataJSON (type="webauthn.get", challenge matches tx_hash)
 /// 4. Computes message hash = sha256(authenticatorData || sha256(clientDataJSON))
+#[cold]
+#[inline(never)]
 fn verify_webauthn_data_internal(
     webauthn_data: &[u8],
     tx_hash: &B256,
