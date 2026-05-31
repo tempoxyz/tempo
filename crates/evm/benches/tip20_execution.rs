@@ -929,7 +929,7 @@ fn tip20_execution(c: &mut Criterion) {
                     );
                     black_box(stats.gas_used);
                 },
-                BatchSize::SmallInput,
+                BatchSize::LargeInput,
             )
         });
         group.finish();
@@ -969,7 +969,7 @@ fn tip20_execution(c: &mut Criterion) {
                         );
                         black_box(stats.gas_used);
                     },
-                    BatchSize::SmallInput,
+                    BatchSize::LargeInput,
                 )
             });
             group.finish();
