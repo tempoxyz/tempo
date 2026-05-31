@@ -128,6 +128,8 @@ impl TipFeeManager {
     /// - `InsufficientReserves` — adding `amount_in` overflows the validator reserve
     /// - `InsufficientLiquidity` — remaining reserve would violate the pending reservation (T1C+)
     /// - `UnderOverflow` — arithmetic overflow computing `amount_in`
+    #[cold]
+    #[inline(never)]
     pub fn rebalance_swap(
         &mut self,
         msg_sender: Address,
@@ -222,6 +224,8 @@ impl TipFeeManager {
     /// - `InsufficientLiquidity` — initial deposit ≤ `MIN_LIQUIDITY`, or zero liquidity minted
     /// - `InvalidSwapCalculation` — pro-rata arithmetic fails
     /// - `UnderOverflow` — supply or balance overflow
+    #[cold]
+    #[inline(never)]
     pub fn mint(
         &mut self,
         msg_sender: Address,
@@ -351,6 +355,8 @@ impl TipFeeManager {
     ///   violate the pending reservation (T1C+)
     /// - `InsufficientReserves` — pool reserves underflow after withdrawal
     /// - `UnderOverflow` — supply or balance arithmetic overflows
+    #[cold]
+    #[inline(never)]
     pub fn burn(
         &mut self,
         msg_sender: Address,
