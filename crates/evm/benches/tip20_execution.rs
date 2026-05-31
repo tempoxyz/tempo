@@ -122,7 +122,6 @@ struct RewardBenchWorkload {
     kind: RewardBenchKind,
 }
 
-#[derive(Default)]
 struct ExecutionStats {
     txs: u64,
     gas_used: u64,
@@ -872,7 +871,10 @@ where
         .apply_pre_execution_changes()
         .expect("failed to apply pre-execution changes");
 
-    let mut stats = ExecutionStats::default();
+    let mut stats = ExecutionStats {
+        txs: 0,
+        gas_used: 0,
+    };
     for tx in txs {
         assert!(
             tx.inner().is_aa(),
