@@ -1,7 +1,10 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    cell::RefCell,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
@@ -26,7 +29,56 @@ use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
 use tracing::trace;
 
-type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
+type PrewarmEvm = TempoEvm<StateProviderDatabase<StateProviderBox>>;
+type PrewarmEvmState = Option<PrewarmEvm>;
+
+thread_local! {
+    static PREWARM_EVM_STATE: RefCell<Option<PrewarmEvmState>> = const { RefCell::new(None) };
+}
+
+fn init_prewarming_evm_state<Provider>(
+    pool: &WorkerPool,
+    prewarm: &PrewarmingExecutionContext<Provider>,
+) where
+    Provider: StateProviderFactory + Clone + 'static,
+{
+    pool.broadcast(pool.current_num_threads(), |_| {
+        PREWARM_EVM_STATE.with_borrow_mut(|state| {
+            *state = Some(prewarm.evm_for_ctx());
+        });
+    });
+}
+
+fn clear_prewarming_evm_state(pool: &WorkerPool) {
+    pool.broadcast(pool.current_num_threads(), |_| {
+        PREWARM_EVM_STATE.with_borrow_mut(|state| {
+            *state = None;
+        });
+    });
+    PREWARM_EVM_STATE.with_borrow_mut(|state| {
+        *state = None;
+    });
+}
+
+fn with_prewarming_evm_mut<Provider, R>(
+    prewarm: &PrewarmingExecutionContext<Provider>,
+    f: impl FnOnce(&mut PrewarmEvm) -> R,
+) -> Option<R>
+where
+    Provider: StateProviderFactory + Clone + 'static,
+{
+    PREWARM_EVM_STATE.with_borrow_mut(|state| {
+        if state.is_none() {
+            *state = Some(prewarm.evm_for_ctx());
+        }
+
+        let Some(Some(evm)) = state.as_mut() else {
+            return None;
+        };
+
+        Some(f(evm))
+    })
+}
 
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
@@ -101,7 +153,7 @@ impl BestTransactionsPrewarming {
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
             scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+                init_prewarming_evm_state(pool, &prewarm);
             });
 
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -161,7 +213,7 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        clear_prewarming_evm_state(pool);
     }
 
     fn prewarm_transaction<Provider>(
@@ -174,11 +226,7 @@ impl BestTransactionsPrewarming {
             return;
         }
 
-        WorkerPool::with_worker_mut(|worker| {
-            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
-                return;
-            };
-
+        with_prewarming_evm_mut(&prewarm, |evm| {
             let tx_hash = *tx.hash();
 
             let touched = if is_tip20_transfer_transaction(&tx) {
@@ -795,6 +843,7 @@ mod tests {
             shared_gas_limit: 0,
             timestamp_millis_part: 0,
             consensus_context: None,
+            builder_tx_count_hint: None,
             subblock_fee_recipients: Default::default(),
         };
         let evm_env = evm_config

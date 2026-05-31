@@ -24,6 +24,8 @@ pub struct TempoBlockExecutionCtx<'a> {
     pub validator_set: Option<Vec<B256>>,
     /// Consensus metadata for the block. `None` for pre-fork blocks.
     pub consensus_context: Option<TempoConsensusContext>,
+    /// Optional transaction count hint used to preallocate block-builder transactions.
+    pub builder_tx_count_hint: Option<usize>,
     /// Mapping from a subblock validator public key to the fee recipient configured.
     ///
     /// Used to provide EVM with the fee recipient context when executing subblock transactions.
@@ -44,6 +46,8 @@ pub struct TempoNextBlockEnvAttributes {
     pub timestamp_millis_part: u64,
     /// Consensus context
     pub consensus_context: Option<TempoConsensusContext>,
+    /// Optional transaction count hint used to preallocate block-builder transactions.
+    pub builder_tx_count_hint: Option<usize>,
     /// Mapping from a subblock validator public key to the fee recipient configured.
     pub subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
 }
@@ -59,6 +63,7 @@ impl reth_rpc_eth_api::helpers::pending_block::BuildPendingEnv<tempo_primitives:
             shared_gas_limit: parent.shared_gas_limit,
             timestamp_millis_part: parent.timestamp_millis_part,
             consensus_context: None,
+            builder_tx_count_hint: None,
             subblock_fee_recipients: Default::default(),
         }
     }
@@ -97,6 +102,7 @@ mod tests {
         assert_eq!(pending_env.general_gas_limit, general_gas_limit);
         assert_eq!(pending_env.shared_gas_limit, shared_gas_limit);
         assert_eq!(pending_env.timestamp_millis_part, timestamp_millis_part);
+        assert_eq!(pending_env.builder_tx_count_hint, None);
         assert!(pending_env.subblock_fee_recipients.is_empty());
     }
 }

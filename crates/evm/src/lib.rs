@@ -28,8 +28,13 @@ use alloy_evm::{
 };
 pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
-use reth_evm::{self, ConfigureEvm, EvmEnvFor, block::StateDB};
+use reth_evm::{
+    self, BlockExecutorForEvm, ConfigureEvm, EvmEnvFor, EvmFor, InspectorFor,
+    block::StateDB,
+    execute::{BasicBlockBuilder, BlockBuilder},
+};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
+use reth_revm::State;
 use tempo_primitives::{
     Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -259,6 +264,7 @@ impl ConfigureEvm for TempoEvmConfig {
             // Not available when we only have a block body.
             validator_set: None,
             consensus_context: block.header().consensus_context,
+            builder_tx_count_hint: Some(block.body().transactions.len()),
             subblock_fee_recipients,
         })
     }
@@ -286,8 +292,29 @@ impl ConfigureEvm for TempoEvmConfig {
             // Fine to not validate during block building.
             validator_set: None,
             consensus_context: attributes.consensus_context,
+            builder_tx_count_hint: attributes.builder_tx_count_hint,
             subblock_fee_recipients: attributes.subblock_fee_recipients,
         })
+    }
+
+    fn create_block_builder<'a, DB, I>(
+        &'a self,
+        evm: EvmFor<Self, &'a mut State<DB>, I>,
+        parent: &'a SealedHeader<TempoHeader>,
+        ctx: TempoBlockExecutionCtx<'a>,
+    ) -> impl BlockBuilder<Primitives = Self::Primitives, Executor = BlockExecutorForEvm<'a, Self, DB, I>>
+    where
+        DB: reth_evm::Database,
+        I: InspectorFor<Self, &'a mut State<DB>> + 'a,
+    {
+        let transaction_capacity = ctx.builder_tx_count_hint.unwrap_or_default();
+        BasicBlockBuilder {
+            executor: <Self as ConfigureEvm>::create_executor(self, evm, ctx.clone()),
+            ctx,
+            assembler: self.block_assembler(),
+            parent,
+            transactions: Vec::with_capacity(transaction_capacity),
+        }
     }
 }
 
@@ -423,6 +450,7 @@ mod tests {
             shared_gas_limit: 3_000_000,
             timestamp_millis_part: 750,
             consensus_context: None,
+            builder_tx_count_hint: None,
             subblock_fee_recipients: HashMap::new(),
         };
 
@@ -592,6 +620,7 @@ mod tests {
             shared_gas_limit: 4_000_000,
             timestamp_millis_part: 999,
             consensus_context: None,
+            builder_tx_count_hint: Some(9_432),
             subblock_fee_recipients: subblock_fee_recipients.clone(),
         };
 
@@ -609,6 +638,7 @@ mod tests {
             context.inner.parent_beacon_block_root,
             Some(B256::repeat_byte(0x05))
         );
+        assert_eq!(context.builder_tx_count_hint, Some(9_432));
 
         // Verify subblock_fee_recipients passed through
         assert_eq!(

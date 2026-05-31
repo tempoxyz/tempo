@@ -864,6 +864,7 @@ where
         shared_gas_limit: 0,
         validator_set: None,
         consensus_context: None,
+        builder_tx_count_hint: Some(txs.len()),
         subblock_fee_recipients: Default::default(),
     };
 
