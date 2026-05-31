@@ -51,6 +51,7 @@ use revm::{
     precompile::{PrecompileHalt, PrecompileId, PrecompileOutput, PrecompileResult},
     primitives::hardfork::SpecId,
 };
+use std::sync::Mutex;
 
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, DEFAULT_FEE_TOKEN,
@@ -118,10 +119,11 @@ pub fn tempo_precompiles(cfg: &CfgEnv<TempoHardfork>) -> PrecompilesMap {
 /// macro which enforces direct-call-only (no delegatecall) and sets up the storage context.
 pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<TempoHardfork>) {
     let cfg = cfg.clone();
+    let tip20_precompile = TIP20Token::create_cached_dynamic_precompile(&cfg);
 
     precompiles.set_precompile_lookup(move |address: &Address| {
         if address.is_tip20() {
-            Some(TIP20Token::create_precompile(*address, &cfg))
+            Some(tip20_precompile.clone())
         } else if *address == TIP20_FACTORY_ADDRESS {
             Some(TIP20Factory::create_precompile(&cfg))
         } else if *address == TIP20_CHANNEL_RESERVE_ADDRESS && cfg.spec.is_t5() {
@@ -186,6 +188,11 @@ macro_rules! tempo_precompile {
     }};
 }
 
+struct CachedTip20PrecompileHandle {
+    address: Address,
+    token: TIP20Token,
+}
+
 impl TipFeeManager {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
@@ -215,6 +222,55 @@ impl TIP20Factory {
 }
 
 impl TIP20Token {
+    /// Creates the reusable EVM precompile for dynamic TIP20 addresses.
+    pub fn create_cached_dynamic_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        let spec = cfg.spec;
+        let amsterdam_eip8037_enabled = cfg.enable_amsterdam_eip8037;
+        let gas_params = cfg.gas_params.clone();
+        let cached_token: Mutex<Option<CachedTip20PrecompileHandle>> = Mutex::new(None);
+
+        DynPrecompile::new_stateful(PrecompileId::Custom("TIP20Token".into()), move |input| {
+            if !input.is_direct_call() {
+                return Ok(PrecompileOutput::revert(
+                    0,
+                    DelegateCallNotAllowed {}.abi_encode().into(),
+                    input.reservoir,
+                ));
+            }
+            let mut storage = crate::storage::evm::EvmPrecompileStorageProvider::new(
+                input.internals,
+                input.gas,
+                input.reservoir,
+                spec,
+                amsterdam_eip8037_enabled,
+                input.is_static,
+                gas_params.clone(),
+            );
+            crate::storage::StorageCtx::enter(&mut storage, || {
+                let address = input.bytecode_address;
+                let mut cached_token = cached_token
+                    .lock()
+                    .expect("cached TIP20 precompile lock poisoned");
+
+                if cached_token
+                    .as_ref()
+                    .is_none_or(|cached| cached.address != address)
+                {
+                    *cached_token = Some(CachedTip20PrecompileHandle {
+                        address,
+                        token: Self::from_address(address).expect("TIP20 prefix already verified"),
+                    });
+                }
+
+                cached_token
+                    .as_mut()
+                    .expect("cached TIP20 precompile initialized above")
+                    .token
+                    .call(input.data, input.caller)
+            })
+        })
+    }
+
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(address: Address, cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
         tempo_precompile!("TIP20Token", cfg, |input| {
