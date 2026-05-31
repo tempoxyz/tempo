@@ -492,6 +492,27 @@ where
 
             (access_key_addr, keychain_sig.user_address)
         };
+        self.prevalidate_keychain_call_scopes_for_keychain(
+            evm,
+            calls,
+            remaining_gas,
+            reservoir,
+            access_key_addr,
+            user_address,
+        )
+    }
+
+    #[cold]
+    #[inline(never)]
+    fn prevalidate_keychain_call_scopes_for_keychain(
+        &self,
+        evm: &mut TempoEvm<DB, I>,
+        calls: &[tempo_primitives::transaction::Call],
+        remaining_gas: &mut u64,
+        reservoir: u64,
+        access_key_addr: Address,
+        user_address: Address,
+    ) -> Result<Option<FrameResult>, EVMError<DB::Error, TempoInvalidTransaction>> {
         let Some(kind) = calls.first().map(|call| call.to) else {
             return Err(EVMError::Custom(
                 "AA transactions must contain at least one call".into(),
