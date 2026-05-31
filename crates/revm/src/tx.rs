@@ -5,7 +5,7 @@ use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_rlp::Encodable;
 use core::num::NonZeroU64;
 use revm::context::{
-    Transaction, TxEnv,
+    Transaction, TransactionType, TxEnv,
     either::Either,
     result::InvalidTransaction,
     transaction::{
@@ -278,8 +278,8 @@ impl Transaction for TempoTxEnv {
     }
 
     fn max_balance_spending(&self) -> Result<U256, InvalidTransaction> {
-        calc_gas_balance_spending(self.gas_limit(), self.max_fee_per_gas())
-            .checked_add(self.value())
+        calc_gas_balance_spending(self.inner.gas_limit, self.inner.gas_price)
+            .checked_add(self.inner.value)
             .ok_or(InvalidTransaction::OverflowPaymentInTransaction)
     }
 
@@ -288,8 +288,20 @@ impl Transaction for TempoTxEnv {
         base_fee: u128,
         _blob_price: u128,
     ) -> Result<U256, InvalidTransaction> {
-        calc_gas_balance_spending(self.gas_limit(), self.effective_gas_price(base_fee))
-            .checked_add(self.value())
+        let gas_price = if self.inner.tx_type == TransactionType::Legacy as u8
+            || self.inner.tx_type == TransactionType::Eip2930 as u8
+        {
+            self.inner.gas_price
+        } else if let Some(max_priority_fee) = self.inner.gas_priority_fee {
+            self.inner
+                .gas_price
+                .min(base_fee.saturating_add(max_priority_fee))
+        } else {
+            self.inner.gas_price
+        };
+
+        calc_gas_balance_spending(self.inner.gas_limit, gas_price)
+            .checked_add(self.inner.value)
             .ok_or(InvalidTransaction::OverflowPaymentInTransaction)
     }
 }
