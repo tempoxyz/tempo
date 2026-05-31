@@ -423,10 +423,15 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         let ctx = evm.ctx_mut();
-        let channel_open_context_hash = ctx.tx.channel_open_context_hash();
+        let channel_open_context_hash = ctx
+            .tx
+            .channel_open_context_hash()
+            .filter(|_| !ctx.tx.is_discounted_payment());
 
         // Seed transient precompile transaction context for both regular execution and RPC
         // simulations (`eth_call` / `eth_estimateGas`) that go through handler execution.
+        // Direct discounted TIP-20 payments cannot open channel reserves, but still need tx.origin
+        // seeded for keychain spending-limit checks inside TIP-20 execution.
         StorageCtx::enter_evm(
             &mut ctx.journaled_state,
             &ctx.block,
