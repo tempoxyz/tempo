@@ -791,16 +791,20 @@ where
             .set(subblock_transactions);
 
         // Apply system transactions
-        let system_txs_execution_start = Instant::now();
-        let _system_txs_span =
-            debug_span!(target: "payload_builder", "execute_system_txs").entered();
-        for system_tx in system_txs {
-            builder
-                .execute_transaction(system_tx)
-                .map_err(PayloadBuilderError::evm)?;
-        }
-        drop(_system_txs_span);
-        let system_txs_execution_elapsed = system_txs_execution_start.elapsed();
+        let system_txs_execution_elapsed = if system_txs.is_empty() {
+            Duration::ZERO
+        } else {
+            let system_txs_execution_start = Instant::now();
+            let _system_txs_span =
+                debug_span!(target: "payload_builder", "execute_system_txs").entered();
+            for system_tx in system_txs {
+                builder
+                    .execute_transaction(system_tx)
+                    .map_err(PayloadBuilderError::evm)?;
+            }
+            drop(_system_txs_span);
+            system_txs_execution_start.elapsed()
+        };
         self.metrics
             .system_transactions_execution_duration_seconds
             .record(system_txs_execution_elapsed);
