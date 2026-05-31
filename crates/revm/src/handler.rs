@@ -1016,7 +1016,6 @@ where
                 .valid_before
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
 
-            let block_timestamp = block.timestamp().saturating_to::<u64>();
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
                 let mut nonce_manager = NonceManager::new();
 
@@ -1045,6 +1044,7 @@ where
                         TempoPrecompileError::NonceError(
                             tempo_contracts::precompiles::NonceError::InvalidExpiringNonceExpiry(_),
                         ) => {
+                            let block_timestamp = block.timestamp().saturating_to::<u64>();
                             let max_allowed =
                                 block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
                             if valid_before <= block_timestamp {
