@@ -195,6 +195,7 @@ impl TempoTxEnv {
     }
 }
 
+#[inline]
 fn is_discounted_tip20_call(to: &TxKind, input: &[u8]) -> bool {
     matches!(to, TxKind::Call(to) if to.is_tip20())
         && ITIP20::ITIP20Calls::is_discounted_payment_call(input)
