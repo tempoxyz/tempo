@@ -40,7 +40,7 @@ impl TIP20Token {
         self.check_not_paused()?;
         let token_address = self.address;
 
-        if call.amount == U256::ZERO {
+        if call.amount.is_zero() {
             return Err(TIP20Error::invalid_amount().into());
         }
 
@@ -112,7 +112,7 @@ impl TIP20Token {
             .checked_sub(info.reward_per_token)
             .ok_or(TempoPrecompileError::under_overflow())?;
 
-        if reward_per_token_delta != U256::ZERO {
+        if !reward_per_token_delta.is_zero() {
             if cached_delegate != Address::ZERO {
                 let holder_balance = self.get_balance(holder)?;
                 let reward = holder_balance
@@ -179,7 +179,7 @@ impl TIP20Token {
             .ok_or(TempoPrecompileError::under_overflow())?;
 
         // Already-checkpointed holders have no new rewards to route.
-        if reward_per_token_delta == U256::ZERO {
+        if reward_per_token_delta.is_zero() {
             return Ok(RewardFlag::OptedIn);
         }
 
@@ -192,7 +192,7 @@ impl TIP20Token {
             .checked_mul(reward_per_token_delta)?
             .div(ACC_PRECISION);
 
-        if reward != U256::ZERO {
+        if !reward.is_zero() {
             // Add reward to delegate's balance (or holder's own balance if self-delegated)
             let new_reward_balance = self.user_reward_info[delegate]
                 .reward_balance
@@ -301,7 +301,7 @@ impl TIP20Token {
             .ok_or(TempoPrecompileError::under_overflow())?;
         self.user_reward_info[msg_sender].write(info)?;
 
-        if max_amount > U256::ZERO {
+        if !max_amount.is_zero() {
             let new_contract_balance = UserState::new(
                 contract_balance.checked_sub(max_amount)?,
                 contract_balance.flag,
