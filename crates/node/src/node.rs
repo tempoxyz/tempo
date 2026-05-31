@@ -68,14 +68,14 @@ pub struct TempoNodeArgs {
     pub builder_state_provider_metrics: bool,
 
     /// Enable prewarming for the payload builder.
-    #[arg(long = "builder.enable-prewarming", default_value_t = true)]
+    #[arg(long = "builder.enable-prewarming", default_value_t = false)]
     pub builder_enable_prewarming: bool,
 
-    /// Include an RLP-encoded block access list in built execution payloads. (EXPERIMENTAL)
-    #[arg(long = "builder.enable-bal", default_value_t = false, hide = true)]
-    pub builder_enable_bal: bool,
-
-    /// Initial multiplier for predicting replayable payload build work.
+    /// Initial estimate of total replayable payload build work divided by work
+    /// at transaction cutoff.
+    ///
+    /// The builder updates this at runtime. Higher values stop pool transaction
+    /// execution earlier to leave more room for `builder_finish`.
     #[arg(
         long = "builder.build-time-multiplier",
         default_value_t = DEFAULT_BUILD_TIME_MULTIPLIER
@@ -90,7 +90,6 @@ impl Default for TempoNodeArgs {
             max_tempo_authorizations: DEFAULT_MAX_TEMPO_AUTHORIZATIONS,
             builder_state_provider_metrics: false,
             builder_enable_prewarming: false,
-            builder_enable_bal: false,
             builder_build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -110,7 +109,6 @@ impl TempoNodeArgs {
         TempoPayloadBuilderBuilder {
             state_provider_metrics: self.builder_state_provider_metrics,
             enable_prewarming: self.builder_enable_prewarming,
-            enable_bal: self.builder_enable_bal,
             build_time_multiplier: self.builder_build_time_multiplier,
         }
     }
@@ -159,7 +157,7 @@ impl TempoNode {
             .executor(TempoExecutorBuilder::default())
             .payload(BasicPayloadServiceBuilder::new(payload_builder_builder))
             .network(EthereumNetworkBuilder::default())
-            .consensus(TempoConsensusBuilder)
+            .consensus(TempoConsensusBuilder::default())
     }
 
     pub fn provider_factory_builder() -> ProviderFactoryBuilder<Self> {
@@ -375,9 +373,20 @@ where
 }
 
 /// Builder for [`TempoConsensus`].
-#[derive(Debug, Default, Clone, Copy)]
+#[derive(Debug, Clone, Copy)]
 #[non_exhaustive]
-pub struct TempoConsensusBuilder;
+pub struct TempoConsensusBuilder {
+    /// Whether to allow BAL hashes before Amsterdam activation.
+    pub allow_bal_hashes: bool,
+}
+
+impl Default for TempoConsensusBuilder {
+    fn default() -> Self {
+        Self {
+            allow_bal_hashes: cfg!(feature = "bal"),
+        }
+    }
+}
 
 impl<Node> ConsensusBuilder<Node> for TempoConsensusBuilder
 where
@@ -386,7 +395,10 @@ where
     type Consensus = TempoConsensus;
 
     async fn build_consensus(self, ctx: &BuilderContext<Node>) -> eyre::Result<Self::Consensus> {
-        Ok(TempoConsensus::new(ctx.chain_spec()))
+        Ok(TempoConsensus::new_with_bal_hashes(
+            ctx.chain_spec(),
+            self.allow_bal_hashes,
+        ))
     }
 }
 
@@ -520,9 +532,8 @@ pub struct TempoPayloadBuilderBuilder {
     pub state_provider_metrics: bool,
     /// Enable prewarming for the payload builder.
     pub enable_prewarming: bool,
-    /// Include an RLP-encoded block access list in built execution payloads.
-    pub enable_bal: bool,
-    /// Initial multiplier for predicting replayable payload build work.
+    /// Initial estimate of total replayable payload build work divided by work
+    /// at transaction cutoff.
     pub build_time_multiplier: f64,
 }
 
@@ -531,7 +542,6 @@ impl Default for TempoPayloadBuilderBuilder {
         Self {
             state_provider_metrics: false,
             enable_prewarming: false,
-            enable_bal: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -559,7 +569,6 @@ where
                 is_dev: ctx.is_dev(),
                 state_provider_metrics: self.state_provider_metrics,
                 enable_prewarming: self.enable_prewarming,
-                enable_bal: self.enable_bal,
                 build_time_multiplier: self.build_time_multiplier,
             },
         ))

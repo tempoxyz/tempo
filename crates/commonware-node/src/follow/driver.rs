@@ -314,7 +314,7 @@ where
 
         let height = Height::new(certified.block.number());
         let consensus_block =
-            Block::from_execution_payload(SealedBlock::seal_slow(certified.block), None);
+            Block::from_execution_block_unchecked(SealedBlock::seal_slow(certified.block), None);
         ensure!(
             finalization.proposal.payload == consensus_block.digest(),
             "mismatch in finalization and block digest"

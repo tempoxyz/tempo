@@ -2,7 +2,6 @@ use crate::{
     TempoEvmConfig, TempoEvmFactory, block::TempoReceiptBuilder, context::TempoBlockExecutionCtx,
 };
 use alloy_evm::{block::BlockExecutionError, eth::EthBlockExecutorFactory};
-use reth_chainspec::EthereumHardforks;
 use reth_evm::execute::{BlockAssembler, BlockAssemblerInput};
 use reth_evm_ethereum::EthBlockAssembler;
 use reth_primitives_traits::SealedHeader;
@@ -55,12 +54,6 @@ impl BlockAssembler<TempoEvmConfig> for TempoBlockAssembler {
         let parent = SealedHeader::new_unhashed(parent.clone().into_header().inner);
 
         let timestamp_millis_part = evm_env.block_env.timestamp_millis_part;
-        let timestamp = evm_env.block_env.inner.timestamp.saturating_to();
-        let block_access_list_hash = block_access_list_hash.filter(|_| {
-            self.inner
-                .chain_spec
-                .is_amsterdam_active_at_timestamp(timestamp)
-        });
 
         // Delegate block building to the inner assembler
         let block = BlockAssembler::<
@@ -330,7 +323,7 @@ mod tests {
     }
 
     #[test]
-    fn test_assemble_block_omits_pre_amsterdam_bal_hash() {
+    fn test_assemble_block_preserves_pre_amsterdam_bal_hash() {
         let chainspec = Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()));
         let assembler = TempoBlockAssembler::new(chainspec.clone());
 
@@ -407,6 +400,9 @@ mod tests {
             .assemble_block(input)
             .expect("should assemble block");
 
-        assert!(block.header.inner.block_access_list_hash.is_none());
+        assert_eq!(
+            block.header.inner.block_access_list_hash,
+            Some(B256::repeat_byte(0x42))
+        );
     }
 }

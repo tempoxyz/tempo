@@ -62,12 +62,19 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub mailbox_size: usize,
     pub deque_size: usize,
 
+    /// Maximum time to wait for the leader's proposal before timing out a view.
+    ///
+    /// This is a liveness timeout, not the normal block pacing target.
     pub time_to_propose: Duration,
     pub time_to_collect_notarizations: Duration,
     pub time_to_retry_nullify_broadcast: Duration,
     pub time_for_peer_response: Duration,
     pub views_to_track: u64,
     pub views_until_leader_skip: u64,
+    /// Local proposal return budget after reserving network propagation time.
+    ///
+    /// The leader uses this window for payload building, local marshal
+    /// persistence, and any final wait before returning the proposal.
     pub proposal_return_budget: Duration,
     pub time_to_build_subblock: Duration,
     pub subblock_broadcast_interval: Duration,
