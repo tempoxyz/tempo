@@ -661,13 +661,7 @@ impl TempoSignature {
     ) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.recover_signer(sig_hash),
-            Self::Keychain(keychain_sig) => {
-                // Ensure validity of the keychain signature and cache the key id
-                keychain_sig.key_id(sig_hash)?;
-
-                // Return the user_address - the root account this transaction is for
-                Ok(keychain_sig.user_address)
-            }
+            Self::Keychain(keychain_sig) => recover_keychain_signer(keychain_sig, sig_hash),
         }
     }
 
@@ -713,6 +707,19 @@ impl TempoSignature {
             _ => None,
         }
     }
+}
+
+#[cold]
+#[inline(never)]
+fn recover_keychain_signer(
+    keychain_sig: &KeychainSignature,
+    sig_hash: &B256,
+) -> Result<Address, alloy_consensus::crypto::RecoveryError> {
+    // Ensure validity of the keychain signature and cache the key id.
+    keychain_sig.key_id(sig_hash)?;
+
+    // Return the user_address - the root account this transaction is for.
+    Ok(keychain_sig.user_address)
 }
 
 impl Default for TempoSignature {
