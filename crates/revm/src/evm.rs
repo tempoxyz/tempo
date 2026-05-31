@@ -15,9 +15,7 @@ use revm::{
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles::{
-    error::Result as PrecompileResult, tip20::TIP20Token,
-};
+use tempo_precompiles::{error::Result as PrecompileResult, tip20::TIP20Token};
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
