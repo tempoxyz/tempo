@@ -12,6 +12,7 @@ use revm::context::{
         AccessList, AccessListItem, RecoveredAuthority, RecoveredAuthorization, SignedAuthorization,
     },
 };
+use smallvec::SmallVec;
 use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
     AASigned, TempoAddressExt, TempoSignature, TempoTransaction, TempoTxEnvelope,
@@ -20,6 +21,8 @@ use tempo_primitives::{
         envelope::KEY_AUTHORIZATION_MAX_RLP_LEN,
     },
 };
+
+pub type TempoCallVec = SmallVec<[Call; 1]>;
 
 /// Tempo transaction environment for AA features.
 #[derive(Debug, Clone, Default)]
@@ -34,7 +37,7 @@ pub struct TempoBatchCallEnv {
     pub valid_after: Option<u64>,
 
     /// Multiple calls for Tempo transactions
-    pub aa_calls: Vec<Call>,
+    pub aa_calls: TempoCallVec,
 
     /// Authorization list (EIP-7702 with Tempo signatures)
     ///
@@ -392,7 +395,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 signature: signature.clone(),
                 valid_before: valid_before.map(NonZeroU64::get),
                 valid_after: valid_after.map(NonZeroU64::get),
-                aa_calls: calls.clone(),
+                aa_calls: calls.iter().cloned().collect(),
                 // Recover authorizations upfront to avoid recovery during execution
                 tempo_authorization_list: tempo_authorization_list
                     .iter()

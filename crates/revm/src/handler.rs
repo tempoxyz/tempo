@@ -64,7 +64,7 @@ use tempo_primitives::{
 };
 
 use crate::{
-    TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
+    TempoBatchCallEnv, TempoCallVec, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
@@ -603,7 +603,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         mut remaining_gas: u64,
         mut reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: TempoCallVec,
         mut execute_single: F,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
@@ -743,7 +743,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: TempoCallVec,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>> {
         self.execute_multi_call_with(evm, gas_limit, reservoir, calls, Self::execute_single_call)
     }
@@ -773,7 +773,7 @@ where
         evm: &mut TempoEvm<DB, I>,
         gas_limit: u64,
         reservoir: u64,
-        calls: Vec<tempo_primitives::transaction::Call>,
+        calls: TempoCallVec,
     ) -> Result<FrameResult, EVMError<DB::Error, TempoInvalidTransaction>>
     where
         I: Inspector<TempoContext<DB>, EthInterpreter>,
