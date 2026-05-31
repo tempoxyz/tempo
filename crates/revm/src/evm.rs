@@ -11,9 +11,38 @@ use revm::{
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::nonce::NonceManager;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
+
+pub(crate) struct CachedNonceManager(NonceManager);
+
+impl CachedNonceManager {
+    fn new() -> Self {
+        Self(NonceManager::new())
+    }
+}
+
+impl core::fmt::Debug for CachedNonceManager {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("CachedNonceManager")
+    }
+}
+
+impl core::ops::Deref for CachedNonceManager {
+    type Target = NonceManager;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for CachedNonceManager {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
@@ -51,6 +80,8 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
+    /// Cached nonce manager handle for hot expiring nonce validation.
+    pub(crate) nonce_manager: CachedNonceManager,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -87,6 +118,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+            nonce_manager: CachedNonceManager::new(),
         }
     }
 
