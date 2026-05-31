@@ -46,6 +46,8 @@ impl EvmFactory for TempoEvmFactory {
         TempoEvm::new(db, input)
     }
 
+    #[cold]
+    #[inline(never)]
     fn create_evm_with_inspector<DB: Database, I: Inspector<Self::Context<DB>>>(
         &self,
         db: DB,
@@ -122,6 +124,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     }
 
     /// Sets the inspector for the EVM.
+    #[cold]
+    #[inline(never)]
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
         TempoEvm {
             inner: self.inner.with_inspector(inspector),
