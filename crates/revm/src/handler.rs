@@ -2271,7 +2271,8 @@ where
     // For pre-T0 (Genesis), 2D nonce gas is added AFTER validation to allow transactions
     // with gas_limit < intrinsic + nonce_2d_gas to pass validation, but the gas is still
     // charged during execution via init_and_floor_gas (not evm.initial_gas)
-    if spec.is_t0() {
+    let add_nonce_2d_gas_before_validation = nonce_2d_gas != 0 && spec.is_t0();
+    if add_nonce_2d_gas_before_validation {
         batch_gas.initial_regular_gas += nonce_2d_gas;
     }
 
@@ -2288,7 +2289,7 @@ where
 
     // For pre-T0 (Genesis), add 2D nonce gas after validation
     // This gas will be charged via init_and_floor_gas, not evm.initial_gas
-    if !spec.is_t0() {
+    if nonce_2d_gas != 0 && !add_nonce_2d_gas_before_validation {
         batch_gas.initial_regular_gas += nonce_2d_gas;
     }
 
