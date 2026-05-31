@@ -266,6 +266,8 @@ impl StablecoinDEX {
     /// - `InvalidToken` — a token address does not have a valid TIP-20 prefix
     /// - `PairDoesNotExist` — no orderbook exists for one of the hops in the route
     /// - `InsufficientLiquidity` — not enough resting orders to fill `amount_in`
+    #[cold]
+    #[inline(never)]
     pub fn quote_swap_exact_amount_in(
         &self,
         token_in: Address,
@@ -293,6 +295,8 @@ impl StablecoinDEX {
     /// - `PairNotFound` — no orderbook exists for the token pair
     /// - `InsufficientOutput` — final output amount falls below `min_amount_out`
     /// - `InsufficientBalance` — sender balance lower than required input
+    #[cold]
+    #[inline(never)]
     pub fn swap_exact_amount_in(
         &mut self,
         sender: Address,
@@ -1084,6 +1088,8 @@ impl StablecoinDEX {
     }
 
     /// Fill orders with exact amount in
+    #[cold]
+    #[inline(never)]
     fn fill_orders_exact_in(
         &mut self,
         book_key: B256,
@@ -1575,6 +1581,8 @@ impl StablecoinDEX {
     }
 
     /// Quote exact input amount without executing trades
+    #[cold]
+    #[inline(never)]
     fn quote_exact_in(&self, book_key: B256, amount_in: u128, is_bid: bool) -> Result<u128> {
         let mut remaining_in = amount_in;
         let mut amount_out = 0u128;
