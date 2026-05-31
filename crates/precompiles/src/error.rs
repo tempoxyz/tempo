@@ -249,6 +249,8 @@ impl TempoPrecompileError {
 }
 
 /// Registers all ABI error selectors for a [`SolInterface`] type into the decoder registry.
+#[cold]
+#[inline(never)]
 pub fn add_errors_to_registry<T: SolInterface>(
     registry: &mut TempoPrecompileErrorRegistry,
     converter: impl Fn(T) -> TempoPrecompileError + 'static + Send + Sync,
@@ -283,6 +285,8 @@ pub type TempoPrecompileErrorRegistry = HashMap<
 >;
 
 /// Builds a [`TempoPrecompileErrorRegistry`] mapping every known error selector to its decoder.
+#[cold]
+#[inline(never)]
 pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     let mut registry: TempoPrecompileErrorRegistry = HashMap::new();
 
@@ -315,6 +319,8 @@ pub static ERROR_REGISTRY: LazyLock<TempoPrecompileErrorRegistry> =
 /// Decodes raw revert bytes into a typed [`DecodedTempoPrecompileError`] using the global
 /// [`ERROR_REGISTRY`], returning `None` if the data is shorter than 4 bytes or the selector
 /// is unrecognized.
+#[cold]
+#[inline(never)]
 pub fn decode_error<'a>(data: &'a [u8]) -> Option<DecodedTempoPrecompileError<'a>> {
     if data.len() < 4 {
         return None;
