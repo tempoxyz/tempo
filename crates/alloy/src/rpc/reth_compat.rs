@@ -173,9 +173,11 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                 if calls.is_empty() {
                     return Err(EthApiError::InvalidParams("empty calls list".to_string()));
                 }
+                let first_call_is_create = calls.first().is_some_and(|call| call.to.is_create());
 
                 Some(Box::new(TempoBatchCallEnv {
                     aa_calls: calls,
+                    first_call_is_create,
                     signature: mock_signature,
                     tempo_authorization_list: tempo_authorization_list
                         .into_iter()

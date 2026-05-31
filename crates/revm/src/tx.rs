@@ -36,6 +36,9 @@ pub struct TempoBatchCallEnv {
     /// Multiple calls for Tempo transactions
     pub aa_calls: Vec<Call>,
 
+    /// Cached first-call CREATE kind for AA validation.
+    pub first_call_is_create: bool,
+
     /// Authorization list (EIP-7702 with Tempo signatures)
     ///
     /// Each authorization lazily recovers the authority on first access and caches the result.
@@ -140,6 +143,15 @@ impl TempoTxEnv {
                 .map(|call| (&call.to, call.input.as_ref()))
         } else {
             Some((&self.inner.kind, &self.inner.data))
+        }
+    }
+
+    /// Returns whether the first top-level call is CREATE.
+    pub fn first_call_is_create(&self) -> bool {
+        if let Some(aa) = self.tempo_tx_env.as_ref() {
+            aa.first_call_is_create
+        } else {
+            self.inner.kind.is_create()
         }
     }
 
@@ -342,6 +354,8 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             tempo_authorization_list,
         } = tx;
 
+        let first_call_is_create = calls.first().is_some_and(|call| call.to.is_create());
+
         // Extract to/value/input from calls (use first call or defaults)
         let (to, value, input) = if let Some(first_call) = calls.first() {
             (first_call.to, first_call.value, first_call.input.clone())
@@ -393,6 +407,7 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 valid_before: valid_before.map(NonZeroU64::get),
                 valid_after: valid_after.map(NonZeroU64::get),
                 aa_calls: calls.clone(),
+                first_call_is_create,
                 // Recover authorizations upfront to avoid recovery during execution
                 tempo_authorization_list: tempo_authorization_list
                     .iter()
