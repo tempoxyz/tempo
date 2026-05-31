@@ -497,6 +497,8 @@ impl AccountKeychain {
     }
 
     /// Returns key info for the given account-key pair, or a blank entry if inexistent or revoked.
+    #[cold]
+    #[inline(never)]
     pub fn get_key(&self, call: getKeyCall) -> Result<KeyInfo> {
         let key = self.keys[call.account][call.keyId].read()?;
 
@@ -524,6 +526,8 @@ impl AccountKeychain {
     ///
     /// T2+ returns zero for missing, revoked, or expired keys. Pre-T2 preserves the historical
     /// behavior of reading the raw stored remaining amount so old blocks reexecute identically.
+    #[cold]
+    #[inline(never)]
     pub fn get_remaining_limit(&self, call: getRemainingLimitCall) -> Result<U256> {
         if !self.storage.spec().is_t2() {
             let limit_key = Self::spending_limit_key(call.account, call.keyId);
@@ -541,6 +545,8 @@ impl AccountKeychain {
     /// Returns the remaining spending limit together with the active period end timestamp.
     ///
     /// Missing, revoked, or expired keys report zeroed values instead of erroring.
+    #[cold]
+    #[inline(never)]
     pub fn get_remaining_limit_with_period(
         &self,
         call: getRemainingLimitWithPeriodCall,
@@ -622,6 +628,8 @@ impl AccountKeychain {
     /// `isScoped = false` means unrestricted. `isScoped = true` with an empty `scopes` vec means
     /// the key is scoped but currently allows no targets. Missing, revoked, or expired access
     /// keys also report scoped deny-all so this getter never exposes stale persisted scope state.
+    #[cold]
+    #[inline(never)]
     pub fn get_allowed_calls(&self, call: getAllowedCallsCall) -> Result<getAllowedCallsReturn> {
         if call.keyId.is_zero() {
             return Ok(getAllowedCallsReturn {
@@ -693,6 +701,8 @@ impl AccountKeychain {
     }
 
     /// Returns whether a TIP-1053 key-authorization witness has been manually burned.
+    #[cold]
+    #[inline(never)]
     pub fn is_key_authorization_witness_burned(
         &self,
         call: isKeyAuthorizationWitnessBurnedCall,
@@ -702,6 +712,8 @@ impl AccountKeychain {
 
     /// Returns true for the root key or for an active admin access key.
     /// Returns the access key used to authorize the current transaction (`Address::ZERO` = root key).
+    #[cold]
+    #[inline(never)]
     pub fn get_transaction_key(
         &self,
         _call: getTransactionKeyCall,
@@ -1102,6 +1114,8 @@ impl AccountKeychain {
     ///
     /// Warning: this returns true when `key_id == account`, because the root key
     /// is implicitly admin even when it is not stored as an access key.
+    #[cold]
+    #[inline(never)]
     pub fn is_admin_key(&self, account: Address, key_id: Address) -> Result<bool> {
         if key_id == account {
             return Ok(true);
@@ -1118,6 +1132,8 @@ impl AccountKeychain {
     }
 
     /// Internal predicate for active key status.
+    #[cold]
+    #[inline(never)]
     pub fn is_active_key(&self, account: Address, key_id: Address) -> Result<bool> {
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         match self.load_active_key(account, key_id, current_timestamp) {
@@ -1220,6 +1236,8 @@ impl AccountKeychain {
     }
 
     /// Computes the effective remaining limit at `current_timestamp` without mutating storage.
+    #[cold]
+    #[inline(never)]
     pub fn effective_remaining_limit(
         &self,
         account: Address,
