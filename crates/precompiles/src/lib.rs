@@ -432,7 +432,7 @@ pub(crate) fn dispatch_call<T>(
     decode: impl FnOnce(&[u8]) -> core::result::Result<T, alloy::sol_types::Error>,
     f: impl FnOnce(T) -> PrecompileResult,
 ) -> PrecompileResult {
-    let storage = StorageCtx::default();
+    let storage = StorageCtx;
 
     if calldata.len() < 4 {
         if storage.spec().is_t1() {
