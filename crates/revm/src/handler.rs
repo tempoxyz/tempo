@@ -1017,9 +1017,8 @@ where
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
+            let mut nonce_manager = NonceManager::new();
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
-                let mut nonce_manager = NonceManager::new();
-
                 let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
                     let ptr = nonce_manager
                         .expiring_nonce_ring_ptr
@@ -1073,9 +1072,8 @@ where
             })?;
         } else if !nonce_key.is_zero() {
             // 2D nonce transaction
+            let mut nonce_manager = NonceManager::new();
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
-                let mut nonce_manager = NonceManager::new();
-
                 if !cfg.is_nonce_check_disabled() {
                     let tx_nonce = tx.nonce();
                     let state = nonce_manager
