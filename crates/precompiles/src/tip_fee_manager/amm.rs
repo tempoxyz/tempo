@@ -109,6 +109,8 @@ impl TipFeeManager {
     }
 
     /// Returns the [`Pool`] reserves for the given user/validator token pair.
+    #[cold]
+    #[inline(never)]
     pub fn get_pool(&self, call: ITIPFeeAMM::getPoolCall) -> Result<Pool> {
         let pool_id = self.pool_id(call.userToken, call.validatorToken);
         self.pools[pool_id].read()
@@ -598,6 +600,8 @@ impl TipFeeManager {
     }
 
     /// Returns the total supply of LP tokens for the given pool.
+    #[cold]
+    #[inline(never)]
     pub fn get_total_supply(&self, pool_id: B256) -> Result<U256> {
         self.total_supply[pool_id].read()
     }
@@ -608,6 +612,8 @@ impl TipFeeManager {
     }
 
     /// Returns the LP token balance for `user` in the given pool.
+    #[cold]
+    #[inline(never)]
     pub fn get_liquidity_balances(&self, pool_id: B256, user: Address) -> Result<U256> {
         self.liquidity_balances[pool_id][user].read()
     }
