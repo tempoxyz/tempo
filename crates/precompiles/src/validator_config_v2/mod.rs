@@ -196,6 +196,8 @@ impl ValidatorConfigV2 {
     // =========================================================================
 
     /// Returns the current owner of the contract.
+    #[cold]
+    #[inline(never)]
     pub fn owner(&self) -> Result<Address> {
         self.config.owner.read()
     }
@@ -203,6 +205,8 @@ impl ValidatorConfigV2 {
     /// Returns the block height at which the contract was initialized.
     ///
     /// Only meaningful when [`is_initialized`](Self::is_initialized) returns `true`.
+    #[cold]
+    #[inline(never)]
     pub fn get_initialized_at_height(&self) -> Result<u64> {
         self.config.init_at_height.read()
     }
@@ -211,12 +215,16 @@ impl ValidatorConfigV2 {
     ///
     /// When `false`, the CL reads from V1 and mutating operations (except
     /// `deactivate_validator` and migration functions) are blocked.
+    #[cold]
+    #[inline(never)]
     pub fn is_initialized(&self) -> Result<bool> {
         self.config.is_init.read()
     }
 
     /// Returns the total number of validators ever added, including deactivated
     /// entries and rotation snapshots.
+    #[cold]
+    #[inline(never)]
     pub fn validator_count(&self) -> Result<u64> {
         Ok(self.validators.len()? as u64)
     }
@@ -234,6 +242,8 @@ impl ValidatorConfigV2 {
         Ok(v)
     }
 
+    #[cold]
+    #[inline(never)]
     fn read_validator_at(&self, index: u64) -> Result<IValidatorConfigV2::Validator> {
         debug_assert!(index < self.validator_count()?, "OOB index");
 
@@ -254,6 +264,8 @@ impl ValidatorConfigV2 {
     ///
     /// # Errors
     /// - `ValidatorNotFound` — `index` is out of bounds
+    #[cold]
+    #[inline(never)]
     pub fn validator_by_index(&self, index: u64) -> Result<IValidatorConfigV2::Validator> {
         if index >= self.validator_count()? {
             Err(ValidatorConfigV2Error::validator_not_found())?
@@ -267,6 +279,8 @@ impl ValidatorConfigV2 {
     ///
     /// # Errors
     /// - `ValidatorNotFound` — the address has never been registered
+    #[cold]
+    #[inline(never)]
     pub fn validator_by_address(&self, addr: Address) -> Result<IValidatorConfigV2::Validator> {
         let idx1 = self.address_to_index[addr].read()?;
         if idx1 == 0 {
@@ -282,6 +296,8 @@ impl ValidatorConfigV2 {
     ///
     /// # Errors
     /// - `ValidatorNotFound` — the public key has never been registered
+    #[cold]
+    #[inline(never)]
     pub fn validator_by_public_key(&self, pubkey: B256) -> Result<IValidatorConfigV2::Validator> {
         let idx1 = self.pubkey_to_index[pubkey].read()?;
         if idx1 == 0 {
@@ -293,6 +309,8 @@ impl ValidatorConfigV2 {
     /// Returns only active validators (where `deactivatedAtHeight == 0`).
     ///
     /// NOTE: the order of returned validator records is NOT stable and should NOT be relied upon.
+    #[cold]
+    #[inline(never)]
     pub fn get_active_validators(&self) -> Result<Vec<IValidatorConfigV2::Validator>> {
         let count = self.active_indices.len()?;
         let mut out = Vec::new();
@@ -306,6 +324,8 @@ impl ValidatorConfigV2 {
     /// Returns the epoch at which a network identity rotation will be triggered.
     ///
     /// See [`set_network_identity_rotation_epoch`](Self::set_network_identity_rotation_epoch).
+    #[cold]
+    #[inline(never)]
     pub fn get_next_network_identity_rotation_epoch(&self) -> Result<u64> {
         self.next_network_identity_rotation_epoch.read()
     }

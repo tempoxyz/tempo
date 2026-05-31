@@ -62,6 +62,8 @@ impl ValidatorConfig {
     }
 
     /// Returns the current contract owner address.
+    #[cold]
+    #[inline(never)]
     pub fn owner(&self) -> Result<Address> {
         self.owner.read()
     }
@@ -89,6 +91,8 @@ impl ValidatorConfig {
     }
 
     /// Returns the total number of registered validators.
+    #[cold]
+    #[inline(never)]
     pub fn validator_count(&self) -> Result<u64> {
         self.validators_array.len().map(|c| c as u64)
     }
@@ -97,6 +101,8 @@ impl ValidatorConfig {
     ///
     /// # Errors
     /// - `Panic(ArrayOutOfBounds)` — if `index` is out of range
+    #[cold]
+    #[inline(never)]
     pub fn validators_array(&self, index: u64) -> Result<Address> {
         match self.validators_array.at(index as usize)? {
             Some(elem) => elem.read(),
@@ -105,6 +111,8 @@ impl ValidatorConfig {
     }
 
     /// Returns the full [`IValidatorConfig::Validator`] record for the given address.
+    #[cold]
+    #[inline(never)]
     pub fn validators(&self, validator: Address) -> Result<IValidatorConfig::Validator> {
         let validator_info = self.validators[validator].read()?;
         Ok(IValidatorConfig::Validator {
@@ -125,6 +133,8 @@ impl ValidatorConfig {
     }
 
     /// Returns all registered validators in index order.
+    #[cold]
+    #[inline(never)]
     pub fn get_validators(&self) -> Result<Vec<IValidatorConfig::Validator>> {
         let count = self.validators_array.len()?;
         let mut validators = Vec::new();
@@ -382,11 +392,15 @@ impl ValidatorConfig {
     /// Returns the epoch at which a fresh DKG ceremony will be triggered.
     ///
     /// The fresh DKG ceremony runs in epoch N, and epoch N+1 uses the new DKG polynomial.
+    #[cold]
+    #[inline(never)]
     pub fn get_next_full_dkg_ceremony(&self) -> Result<u64> {
         self.next_dkg_ceremony.read()
     }
 
     /// Alias for [`Self::get_next_full_dkg_ceremony`].
+    #[cold]
+    #[inline(never)]
     pub fn next_dkg_ceremony(&self) -> Result<u64> {
         self.next_dkg_ceremony.read()
     }
