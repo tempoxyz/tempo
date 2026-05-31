@@ -28,7 +28,7 @@ use std::{
 use tempo_contracts::precompiles::ITIP20;
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN,
-    nonce::NonceManager,
+    nonce::{EXPIRING_NONCE_MAX_PROBES, NonceManager},
     storage::StorageKey,
     tip20::{TIP20Token, tip20_slots},
     tip403_registry::tip403_registry_slots,
@@ -51,8 +51,8 @@ pub struct TempoPooledTransaction {
     expiring_nonce_hash: Option<B256>,
     /// Cached slot of the 2D nonce, if any.
     nonce_key_slot: OnceLock<Option<U256>>,
-    /// Cached `expiring_nonce_seen` storage slot for expiring nonce transactions.
-    expiring_nonce_slot: OnceLock<Option<U256>>,
+    /// Cached replay table storage slots for expiring nonce transactions.
+    expiring_nonce_slots: OnceLock<Option<[U256; EXPIRING_NONCE_MAX_PROBES]>>,
     /// Cached prepared [`TempoTxEnv`] for payload building.
     tx_env: OnceLock<TempoTxEnv>,
     /// Keychain key expiry timestamp (set during validation for keychain-signed txs).
@@ -102,7 +102,7 @@ impl TempoPooledTransaction {
             is_payment,
             expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
-            expiring_nonce_slot: OnceLock::new(),
+            expiring_nonce_slots: OnceLock::new(),
             tx_env: OnceLock::new(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
@@ -393,19 +393,45 @@ impl TempoPooledTransaction {
             .expect("expiring nonce hash must be precomputed")
     }
 
-    /// Returns the cached `expiring_nonce_seen` storage slot for this transaction.
+    /// Returns the transaction's `valid_before` if it is an expiring nonce transaction.
+    fn expiring_nonce_valid_before(&self) -> Option<u64> {
+        let aa_tx = self.inner().as_aa()?;
+        aa_tx.tx().valid_before.map(core::num::NonZeroU64::get)
+    }
+
+    /// Returns the cached replay-table storage slots for this transaction's probe path.
+    pub fn expiring_nonce_slots(&self) -> Option<&[U256; EXPIRING_NONCE_MAX_PROBES]> {
+        self.expiring_nonce_slots
+            .get_or_init(|| {
+                let hash = self.expiring_nonce_hash()?;
+                let valid_before = self.expiring_nonce_valid_before()?;
+                Some(NonceManager::expiring_nonce_cell_slots(hash, valid_before))
+            })
+            .as_ref()
+    }
+
+    /// Returns the cached first replay-table storage slot for this transaction.
     pub fn expiring_nonce_slot(&self) -> Option<U256> {
-        *self.expiring_nonce_slot.get_or_init(|| {
-            let hash = self.expiring_nonce_hash()?;
-            Some(NonceManager::new().expiring_nonce_seen[hash].slot())
-        })
+        self.expiring_nonce_slots().map(|slots| slots[0])
+    }
+
+    /// Returns true if the packed replay cell matches this expiring nonce transaction.
+    pub fn matches_expiring_nonce_cell(&self, word: U256) -> bool {
+        let Some(hash) = self.expiring_nonce_hash() else {
+            return false;
+        };
+        let Some(valid_before) = self.expiring_nonce_valid_before() else {
+            return false;
+        };
+
+        NonceManager::expiring_nonce_cell_matches(word, hash, valid_before)
     }
 
     /// Warms the global keccak cache with storage slot hashes that will be accessed
     /// during payment execution after pool validation.
     ///
     /// Fee-path slots like `balances[fee_payer]`, `user_reward_info[fee_payer]`,
-    /// `user_tokens[fee_payer]`, and `expiring_nonce_seen[hash]` are already cached from
+    /// `user_tokens[fee_payer]`, and the first expiring nonce replay cell are already cached from
     /// `validate_with_evm`. `validator_tokens[beneficiary]` depends on the block producer,
     /// which is unknown at validation time.
     pub fn precalculate_keccak_slots(&self) {

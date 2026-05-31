@@ -554,7 +554,7 @@ where
                 transaction.transaction().fee_balance_slot();
 
                 // Precompute nonce storage slots for this transaction.
-                let _ = transaction.transaction().expiring_nonce_slot();
+                let _ = transaction.transaction().expiring_nonce_slots();
                 let _ = transaction.transaction().nonce_key_slot();
 
                 // Warm the global keccak cache with storage slot hashes for this transaction.
