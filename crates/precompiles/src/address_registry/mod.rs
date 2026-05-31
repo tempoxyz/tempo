@@ -98,6 +98,8 @@ impl AddressRegistry {
     /// - `InvalidMasterAddress` — `msg_sender` is zero, a virtual address, or a TIP-20 token
     /// - `ProofOfWorkFailed` — the first 4 bytes of the registration hash are not zero
     /// - `MasterIdCollision` — the derived `masterId` is already registered
+    #[cold]
+    #[inline(never)]
     pub fn register_virtual_master(
         &mut self,
         msg_sender: Address,
