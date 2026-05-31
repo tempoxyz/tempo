@@ -119,26 +119,31 @@ impl TempoPooledTransaction {
     }
 
     /// Returns a reference to inner [`TempoTxEnvelope`].
+    #[inline]
     pub fn inner(&self) -> &Recovered<TempoTxEnvelope> {
         &self.inner.transaction
     }
 
     /// Resolves the transaction fee payer.
+    #[inline]
     pub fn fee_payer(&self) -> Result<Address, RecoveryError> {
         self.inner().fee_payer(self.inner().signer())
     }
 
     /// Returns true if this is an AA transaction
+    #[inline]
     pub fn is_aa(&self) -> bool {
         self.inner().is_aa()
     }
 
     /// Returns the nonce key of this transaction if it's an [`AASigned`](tempo_primitives::AASigned) transaction.
+    #[inline]
     pub fn nonce_key(&self) -> Option<U256> {
         self.inner.transaction.nonce_key()
     }
 
     /// Returns the storage slot for the nonce key of this transaction.
+    #[inline]
     pub fn nonce_key_slot(&self) -> Option<U256> {
         *self.nonce_key_slot.get_or_init(|| {
             let nonce_key = self.nonce_key()?;
@@ -149,12 +154,14 @@ impl TempoPooledTransaction {
     }
 
     /// Returns whether this is a payment transaction according to the T5+ builder criteria.
+    #[inline]
     pub fn is_payment(&self) -> bool {
         self.is_payment
     }
 
     /// Returns true if this transaction belongs into the 2D nonce pool:
     /// - AA transaction with a `nonce key != 0` (includes expiring nonce txs)
+    #[inline]
     pub fn is_aa_2d(&self) -> bool {
         self.inner
             .transaction
@@ -164,6 +171,7 @@ impl TempoPooledTransaction {
     }
 
     /// Returns true if this is an expiring nonce transaction.
+    #[inline]
     pub fn is_expiring_nonce(&self) -> bool {
         self.expiring_nonce_hash.is_some()
     }
@@ -266,6 +274,7 @@ impl TempoPooledTransaction {
     ///
     /// This should be called during validation to prepare the transaction environment
     /// ahead of time, avoiding it during payload building.
+    #[inline]
     pub fn tx_env(&self) -> &TempoTxEnv {
         self.tx_env.get_or_init(|| self.tx_env_slow())
     }
@@ -274,6 +283,7 @@ impl TempoPooledTransaction {
     ///
     /// This uses the cached value prepared by [`Self::tx_env`] when available,
     /// and computes it on-demand otherwise.
+    #[inline]
     pub fn clone_tx_env(&self) -> TempoTxEnv {
         self.tx_env().clone()
     }
@@ -283,6 +293,7 @@ impl TempoPooledTransaction {
     ///
     /// This avoids cloning the full pooled transaction when the caller only
     /// needs an owned executable transaction.
+    #[inline]
     pub fn clone_into_with_tx_env(&self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
         WithTxEnv {
             tx_env: self.clone_tx_env(),
@@ -333,6 +344,7 @@ impl TempoPooledTransaction {
     /// This is `None` for transactions that have not completed validation through
     /// the pool validator. Prefer [`Self::effective_fee_token`] in maintenance code
     /// that needs the token a transaction will actually use to pay fees.
+    #[inline]
     pub fn resolved_fee_token(&self) -> Option<Address> {
         self.resolved_fee_token.get().copied()
     }
@@ -345,6 +357,7 @@ impl TempoPooledTransaction {
     /// fee token. Use this when checking liquidity, token pause state, balances, or
     /// transfer policies. Use the raw `fee_token` field only when the code
     /// specifically needs to know whether the transaction explicitly supplied a token.
+    #[inline]
     pub fn effective_fee_token(&self) -> Address {
         self.resolved_fee_token()
             .unwrap_or_else(|| self.inner().fee_token().unwrap_or(DEFAULT_FEE_TOKEN))
@@ -352,6 +365,7 @@ impl TempoPooledTransaction {
 
     /// Returns the `(fee_token, balance_slot)` pair for this transaction's fee payer,
     /// lazily computed and cached on first access.
+    #[inline]
     pub fn fee_balance_slot(&self) -> Option<(Address, U256)> {
         *self.fee_balance_slot.get_or_init(|| {
             let fee_token = self
@@ -378,6 +392,7 @@ impl TempoPooledTransaction {
     ///
     /// Expiring nonce transactions use the precomputed value from construction;
     /// other AA transactions compute on demand to preserve the helper's existing behavior.
+    #[inline]
     pub fn expiring_nonce_hash(&self) -> Option<B256> {
         if let Some(hash) = self.expiring_nonce_hash {
             return Some(hash);
@@ -394,6 +409,7 @@ impl TempoPooledTransaction {
     }
 
     /// Returns the cached `expiring_nonce_seen` storage slot for this transaction.
+    #[inline]
     pub fn expiring_nonce_slot(&self) -> Option<U256> {
         *self.expiring_nonce_slot.get_or_init(|| {
             let hash = self.expiring_nonce_hash()?;
