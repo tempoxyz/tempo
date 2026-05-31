@@ -154,6 +154,7 @@ impl TipFeeManager {
     /// - `InvalidToken` — `user_token` does not have a valid TIP-20 prefix
     /// - `PolicyForbids` — TIP-403 policy rejects the fee token transfer
     /// - `InsufficientLiquidity` — AMM pool lacks liquidity for the fee swap (T5+: with two-hop fallback)
+    #[inline(never)]
     pub fn collect_fee_pre_tx(
         &mut self,
         fee_payer: Address,
@@ -226,6 +227,7 @@ impl TipFeeManager {
     /// - `InvalidToken` — `fee_token` does not have a valid TIP-20 prefix
     /// - `InsufficientLiquidity` — AMM pool lacks liquidity for the fee swap
     /// - `UnderOverflow` — collected-fee accumulator overflows
+    #[inline(never)]
     pub fn collect_fee_post_tx(
         &mut self,
         fee_payer: Address,
