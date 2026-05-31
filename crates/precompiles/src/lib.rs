@@ -72,7 +72,7 @@ pub const INPUT_PER_WORD_COST: u64 = 6;
 pub const ECRECOVER_GAS: u64 = 3_000;
 
 /// Returns the gas cost for decoding calldata of the given length, rounded up to word boundaries.
-#[inline]
+#[inline(always)]
 pub fn input_cost(calldata_len: usize) -> u64 {
     calldata_len
         .div_ceil(32)
@@ -330,7 +330,7 @@ fn mutate_void<T: SolCall>(
 }
 
 /// Deducts the calldata input cost, returning an OOG halt result if insufficient gas.
-#[inline]
+#[inline(always)]
 pub(crate) fn charge_input_cost(
     storage: &mut StorageCtx,
     calldata: &[u8],
