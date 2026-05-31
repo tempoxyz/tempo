@@ -41,6 +41,8 @@ impl ReceivePolicyGuard {
     }
 
     /// Returns the unclaimed amount for a receipt, or zero if unknown or already claimed.
+    #[cold]
+    #[inline(never)]
     pub fn balance_of(&self, receipt: Bytes) -> Result<U256> {
         let receipt = ClaimReceiptV1::try_from(receipt)?;
         self.balances[self.receipt_key(&receipt)?].read()
