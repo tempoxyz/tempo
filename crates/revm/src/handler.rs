@@ -422,7 +422,9 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         &self,
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
-        let ctx = evm.ctx_mut();
+        let account_keychain = &mut evm.account_keychain;
+        let ctx = &mut evm.inner.ctx;
+        let tx_caller = ctx.tx.caller();
         let channel_open_context_hash = ctx.tx.channel_open_context_hash();
 
         // Seed transient precompile transaction context for both regular execution and RPC
@@ -433,8 +435,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             &ctx.cfg,
             &ctx.tx,
             || {
-                let mut keychain = AccountKeychain::new();
-                keychain.set_tx_origin(ctx.tx.caller())?;
+                account_keychain.set_tx_origin(tx_caller)?;
 
                 if let Some(channel_open_context_hash) = channel_open_context_hash {
                     let mut channel_reserve = TIP20ChannelReserve::new();

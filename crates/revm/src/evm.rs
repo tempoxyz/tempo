@@ -11,9 +11,38 @@ use revm::{
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::account_keychain::AccountKeychain;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
+
+pub(crate) struct CachedAccountKeychain(AccountKeychain);
+
+impl CachedAccountKeychain {
+    fn new() -> Self {
+        Self(AccountKeychain::new())
+    }
+}
+
+impl core::fmt::Debug for CachedAccountKeychain {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.write_str("CachedAccountKeychain")
+    }
+}
+
+impl core::ops::Deref for CachedAccountKeychain {
+    type Target = AccountKeychain;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl core::ops::DerefMut for CachedAccountKeychain {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
 
 /// TempoEvm extends the Evm with Tempo specific types and logic.
 #[derive(Debug, derive_more::Deref, derive_more::DerefMut)]
@@ -51,6 +80,8 @@ pub struct TempoEvm<DB: Database, I> {
     /// The transaction pool sets this because it performs its own liquidity
     /// validation against a cached view of the AMM state.
     pub skip_liquidity_check: bool,
+    /// Cached AccountKeychain storage handle for per-transaction context seeding.
+    pub(crate) account_keychain: CachedAccountKeychain,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -87,6 +118,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             key_expiry: None,
             skip_valid_after_check: false,
             skip_liquidity_check: false,
+            account_keychain: CachedAccountKeychain::new(),
         }
     }
 
