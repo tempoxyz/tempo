@@ -1192,6 +1192,8 @@ impl StablecoinDEX {
     /// # Errors
     /// - `OrderDoesNotExist` — order ID not found or already fully filled
     /// - `Unauthorized` — only the order maker can cancel their order
+    #[cold]
+    #[inline(never)]
     pub fn cancel(&mut self, sender: Address, order_id: u128) -> Result<()> {
         let order = self.orders[order_id].read()?;
 
@@ -1211,6 +1213,8 @@ impl StablecoinDEX {
     }
 
     /// Cancel an active order (already in the orderbook)
+    #[cold]
+    #[inline(never)]
     fn cancel_active_order(&mut self, order: Order) -> Result<()> {
         let mut level = self.books[order.book_key()]
             .tick_level_handler(order.tick(), order.is_bid())
@@ -1299,6 +1303,8 @@ impl StablecoinDEX {
     /// # Errors
     /// - `OrderDoesNotExist` — order ID not found or already fully filled
     /// - `OrderNotStale` — order maker is still authorized by TIP-403 policy
+    #[cold]
+    #[inline(never)]
     pub fn cancel_stale_order(&mut self, order_id: u128) -> Result<()> {
         let order = self.orders[order_id].read()?;
 
@@ -1317,6 +1323,8 @@ impl StablecoinDEX {
     ///
     /// Checks sender authorization on the escrow token (bid=quote, ask=base).
     /// T4+: also checks recipient authorization on the payout token (bid=base, ask=quote).
+    #[cold]
+    #[inline(never)]
     fn is_maker_authorized(&self, order: &Order) -> Result<bool> {
         let book = self.books[order.book_key()].read()?;
 
@@ -1342,6 +1350,8 @@ impl StablecoinDEX {
     ///
     /// # Errors
     /// - `InsufficientBalance` — DEX balance lower than withdrawal amount
+    #[cold]
+    #[inline(never)]
     pub fn withdraw(&mut self, user: Address, token: Address, amount: u128) -> Result<()> {
         let current_balance = self.balance_of(user, token)?;
         if current_balance < amount {
