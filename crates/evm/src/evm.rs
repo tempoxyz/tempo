@@ -235,6 +235,8 @@ where
         self.inner.system_call_with_caller(caller, contract, data)
     }
 
+    #[cold]
+    #[inline(never)]
     fn finish(self) -> (Self::DB, EvmEnv<Self::Spec, Self::BlockEnv>) {
         let Context {
             block: block_env,
