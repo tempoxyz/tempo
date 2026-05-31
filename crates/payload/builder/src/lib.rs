@@ -486,6 +486,7 @@ where
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
         let system_txs = self.build_seal_block_txs(builder.evm(), &subblocks);
+        let system_txs_count = system_txs.len() as u64;
         for tx in &system_txs {
             block_size_used += tx.inner().length();
         }
@@ -740,11 +741,11 @@ where
         let _subblock_txs_span =
             debug_span!(target: "payload_builder", "execute_subblock_txs").entered();
         let subblocks_count = subblocks.len() as f64;
-        let mut subblock_transactions = 0f64;
+        let mut subblock_transactions = 0u64;
         // Apply subblock transactions
         for subblock in &subblocks {
             let subblock_start = Instant::now();
-            let mut subblock_tx_count = 0f64;
+            let mut subblock_tx_count = 0u64;
 
             for tx in subblock.transactions_recovered() {
                 if let Err(err) = builder.execute_transaction(tx.cloned()) {
@@ -765,7 +766,7 @@ where
                     }
                 }
 
-                subblock_tx_count += 1.0;
+                subblock_tx_count += 1;
             }
 
             self.metrics
@@ -773,7 +774,7 @@ where
                 .record(subblock_start.elapsed());
             self.metrics
                 .subblock_transaction_count
-                .record(subblock_tx_count);
+                .record(subblock_tx_count as f64);
             subblock_transactions += subblock_tx_count;
         }
         drop(_subblock_txs_span);
@@ -785,10 +786,10 @@ where
         self.metrics.subblocks_last.set(subblocks_count);
         self.metrics
             .subblock_transactions
-            .record(subblock_transactions);
+            .record(subblock_transactions as f64);
         self.metrics
             .subblock_transactions_last
-            .set(subblock_transactions);
+            .set(subblock_transactions as f64);
 
         // Apply system transactions
         let system_txs_execution_start = Instant::now();
@@ -885,7 +886,8 @@ where
             .payload_finalization_duration_seconds
             .record(payload_finalization_elapsed);
 
-        let total_transactions = block.transaction_count();
+        let total_transactions =
+            pool_transactions_included + subblock_transactions + system_txs_count;
         self.metrics
             .total_transactions
             .record(total_transactions as f64);
