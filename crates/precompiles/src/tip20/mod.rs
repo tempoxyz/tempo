@@ -1320,37 +1320,36 @@ impl TIP20Token {
             actual_spending,
         ))?;
 
-        // Exit early if there is no refund
-        if refund.is_zero() {
-            return Ok(());
+        if !refund.is_zero() {
+            if self.storage.spec().is_t1c() {
+                AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
+            }
+
+            // Update rewards for the recipient and get their reward recipient
+            let to_flag = self.update_rewards(to)?;
+
+            // If user is opted into rewards, increase opted-in supply by refund amount
+            if to_flag.is_opted_in() {
+                self.increase_opted_in_supply(refund)?;
+            }
+
+            let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
+            let new_from_balance = from_balance.checked_sub(refund).map_err(|_| {
+                TIP20Error::insufficient_balance(from_balance.amount(), refund, self.address)
+            })?;
+            self.set_balance(
+                TIP_FEE_MANAGER_ADDRESS,
+                UserState::new(new_from_balance, from_balance.flag)?,
+            )?;
+
+            let new_to_balance = self
+                .get_balance(to)?
+                .checked_add(refund)
+                .map_err(|_| TIP20Error::supply_cap_exceeded())?;
+            self.set_balance(to, UserState::new(new_to_balance, to_flag)?)?;
         }
 
-        if self.storage.spec().is_t1c() {
-            AccountKeychain::new().refund_spending_limit(to, self.address, refund)?;
-        }
-
-        // Update rewards for the recipient and get their reward recipient
-        let to_flag = self.update_rewards(to)?;
-
-        // If user is opted into rewards, increase opted-in supply by refund amount
-        if to_flag.is_opted_in() {
-            self.increase_opted_in_supply(refund)?;
-        }
-
-        let from_balance = self.get_balance(TIP_FEE_MANAGER_ADDRESS)?;
-        let new_from_balance = from_balance.checked_sub(refund).map_err(|_| {
-            TIP20Error::insufficient_balance(from_balance.amount(), refund, self.address)
-        })?;
-        self.set_balance(
-            TIP_FEE_MANAGER_ADDRESS,
-            UserState::new(new_from_balance, from_balance.flag)?,
-        )?;
-
-        let new_to_balance = self
-            .get_balance(to)?
-            .checked_add(refund)
-            .map_err(|_| TIP20Error::supply_cap_exceeded())?;
-        self.set_balance(to, UserState::new(new_to_balance, to_flag)?)
+        Ok(())
     }
 }
 
