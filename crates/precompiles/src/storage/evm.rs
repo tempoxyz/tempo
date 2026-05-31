@@ -1,7 +1,12 @@
 use alloy::primitives::{Address, Log, LogData, U256};
-use alloy_evm::EvmInternals;
+use alloy_evm::{Database, EvmInternals};
 use revm::{
-    context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
+    context::{
+        Block, CfgEnv, JournalTr,
+        journaled_state::{
+            account::JournaledAccountTr, JournalCheckpoint, JournalLoadError,
+        },
+    },
     context_interface::cfg::{GasParams, gas},
     interpreter::gas::GasTracker,
     state::{AccountInfo, Bytecode},
@@ -352,6 +357,394 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
     }
 }
 
+/// Production [`PrecompileStorageProvider`] backed directly by the live EVM journal.
+///
+/// This mirrors [`EvmPrecompileStorageProvider`] but avoids the `EvmInternals` trait object and
+/// the boxed journaled-account handle on `StorageCtx::enter_evm` hot paths.
+pub struct DirectEvmPrecompileStorageProvider<'a, J> {
+    journal: &'a mut J,
+    block_env: &'a dyn Block,
+    chain_id: u64,
+    gas_tracker: GasTracker,
+    spec: TempoHardfork,
+    amsterdam_eip8037_enabled: bool,
+    is_static: bool,
+    gas_params: GasParams,
+    /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
+    #[cfg(debug_assertions)]
+    checkpoint_stack: Vec<(usize, usize)>,
+}
+
+impl<'a, J> DirectEvmPrecompileStorageProvider<'a, J>
+where
+    J: JournalTr<Database: Database> + std::fmt::Debug,
+{
+    /// Creates a new storage provider with the given gas limit, hardfork, and static flag.
+    pub fn new(
+        journal: &'a mut J,
+        block_env: &'a dyn Block,
+        gas_limit: u64,
+        reservoir: u64,
+        spec: TempoHardfork,
+        chain_id: u64,
+        amsterdam_eip8037_enabled: bool,
+        is_static: bool,
+        gas_params: GasParams,
+    ) -> Self {
+        Self {
+            journal,
+            block_env,
+            chain_id,
+            gas_tracker: GasTracker::new(gas_limit, gas_limit, reservoir),
+            spec,
+            amsterdam_eip8037_enabled,
+            is_static,
+            gas_params,
+            #[cfg(debug_assertions)]
+            checkpoint_stack: Vec::new(),
+        }
+    }
+
+    /// Creates a new storage provider with maximum gas limit and non-static context.
+    pub fn new_max_gas(
+        journal: &'a mut J,
+        block_env: &'a dyn Block,
+        cfg: &CfgEnv<TempoHardfork>,
+    ) -> Self {
+        Self::new(
+            journal,
+            block_env,
+            u64::MAX,
+            0,
+            cfg.spec,
+            cfg.chain_id,
+            cfg.enable_amsterdam_eip8037,
+            false,
+            cfg.gas_params.clone(),
+        )
+    }
+
+    /// Creates a new storage provider with the given gas limit, deriving spec from `cfg`.
+    pub fn new_with_gas_limit(
+        journal: &'a mut J,
+        block_env: &'a dyn Block,
+        cfg: &CfgEnv<TempoHardfork>,
+        gas_limit: u64,
+        reservoir: u64,
+    ) -> Self {
+        Self::new(
+            journal,
+            block_env,
+            gas_limit,
+            reservoir,
+            cfg.spec,
+            cfg.chain_id,
+            cfg.enable_amsterdam_eip8037,
+            false,
+            cfg.gas_params.clone(),
+        )
+    }
+
+    #[inline]
+    fn deduct_state_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
+        if !self.gas_tracker.record_state_cost(gas) {
+            return Err(TempoPrecompileError::OutOfGas);
+        }
+        Ok(())
+    }
+}
+
+impl<J> PrecompileStorageProvider for DirectEvmPrecompileStorageProvider<'_, J>
+where
+    J: JournalTr<Database: Database> + std::fmt::Debug,
+{
+    fn chain_id(&self) -> u64 {
+        self.chain_id
+    }
+
+    fn timestamp(&self) -> U256 {
+        self.block_env.timestamp()
+    }
+
+    fn beneficiary(&self) -> Address {
+        self.block_env.beneficiary()
+    }
+
+    fn block_number(&self) -> u64 {
+        self.block_env.number().to::<u64>()
+    }
+
+    #[inline]
+    fn set_code(&mut self, address: Address, code: Bytecode) -> Result<(), TempoPrecompileError> {
+        let code_len = code.len();
+        self.deduct_gas(self.gas_params.code_deposit_cost(code_len))?;
+
+        // Track state gas for code deposit
+        self.deduct_state_gas(self.gas_params.code_deposit_state_gas(code_len))?;
+
+        let was_empty = {
+            let mut account = self.journal.load_account_mut(address).map_err(db_error)?;
+            let was_empty = account.data.account().info.is_empty();
+            account.set_code_and_hash_slow(code);
+            was_empty
+        };
+
+        // TIP-1016: charge TIP20 deployments as CREATE.
+        if self.amsterdam_eip8037_enabled && was_empty {
+            self.deduct_gas(self.gas_params.create_cost())?;
+            self.deduct_state_gas(self.gas_params.create_state_gas())?;
+            self.deduct_gas(self.gas_params.keccak256_cost(code_len.div_ceil(32)))?;
+        }
+
+        Ok(())
+    }
+
+    #[inline]
+    fn with_account_info(
+        &mut self,
+        address: Address,
+        f: &mut dyn FnMut(&AccountInfo),
+    ) -> Result<(), TempoPrecompileError> {
+        let additional_cost = self.gas_params.cold_account_additional_cost();
+
+        // T4+: pre-charge static gas to avoid cheap useless work.
+        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+            self.gas_tracker.remaining() < additional_cost
+        } else {
+            false
+        };
+
+        let mut account = self
+            .journal
+            .load_account_mut_skip_cold_load(address, insufficient_gas_for_cold_load)
+            .map_err(journal_load_error)?;
+
+        if !self.spec.is_t4() {
+            deduct_gas(
+                &mut self.gas_tracker,
+                self.gas_params.warm_storage_read_cost(),
+            )?;
+        }
+
+        // dynamic gas
+        if account.is_cold {
+            deduct_gas(&mut self.gas_tracker, additional_cost)?;
+        }
+
+        account.load_code()?;
+
+        f(&account.data.account().info);
+        Ok(())
+    }
+
+    #[inline]
+    fn sstore(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        // T4+: pre-charge static gas before loading storage to avoid cheap useless work.
+        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.sstore_static_gas())?;
+            self.gas_tracker.remaining() < self.gas_params.cold_storage_additional_cost()
+        } else {
+            false
+        };
+
+        let result = self
+            .journal
+            .load_account_mut(address)
+            .map_err(db_error)?
+            .sstore(key, value, insufficient_gas_for_cold_load)?;
+
+        if !self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.sstore_static_gas())?;
+        }
+
+        // dynamic gas
+        self.deduct_gas(
+            self.gas_params
+                .sstore_dynamic_gas(true, &result.data, result.is_cold),
+        )?;
+
+        // Track state gas (cold SSTORE zero->non-zero only)
+        self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
+
+        // refund gas.
+        self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
+
+        Ok(())
+    }
+
+    #[inline]
+    fn tstore(
+        &mut self,
+        address: Address,
+        key: U256,
+        value: U256,
+    ) -> Result<(), TempoPrecompileError> {
+        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+        self.journal.tstore(address, key, value);
+        Ok(())
+    }
+
+    #[inline]
+    fn emit_event(&mut self, address: Address, event: LogData) -> Result<(), TempoPrecompileError> {
+        self.deduct_gas(
+            gas::LOG
+                + self
+                    .gas_params
+                    .log_cost(event.topics().len() as u8, event.data.len() as u64),
+        )?;
+
+        self.journal.log(Log {
+            address,
+            data: event,
+        });
+
+        Ok(())
+    }
+
+    #[inline]
+    fn sload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
+        let additional_cost = self.gas_params.cold_storage_additional_cost();
+
+        // T4+: pre-charge static gas to avoid cheap useless work.
+        let insufficient_gas_for_cold_load = if self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+            self.gas_tracker.remaining() < additional_cost
+        } else {
+            false
+        };
+
+        let value;
+        let is_cold;
+        {
+            let mut account = self.journal.load_account_mut(address).map_err(db_error)?;
+            let val = account.sload(key, insufficient_gas_for_cold_load)?;
+
+            value = val.present_value;
+            is_cold = val.is_cold;
+        };
+
+        if !self.spec.is_t4() {
+            self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+        }
+
+        // dynamic gas
+        if is_cold {
+            self.deduct_gas(additional_cost)?;
+        }
+
+        Ok(value)
+    }
+
+    #[inline]
+    fn tload(&mut self, address: Address, key: U256) -> Result<U256, TempoPrecompileError> {
+        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+
+        Ok(self.journal.tload(address, key))
+    }
+
+    #[inline]
+    fn deduct_gas(&mut self, gas: u64) -> Result<(), TempoPrecompileError> {
+        deduct_gas(&mut self.gas_tracker, gas)
+    }
+
+    #[inline]
+    fn refund_gas(&mut self, gas: i64) {
+        self.gas_tracker.record_refund(gas);
+    }
+
+    #[inline]
+    fn gas_limit(&self) -> u64 {
+        self.gas_tracker.limit()
+    }
+
+    #[inline]
+    fn gas_used(&self) -> u64 {
+        self.gas_tracker.limit() - self.gas_tracker.remaining()
+    }
+
+    #[inline]
+    fn state_gas_used(&self) -> u64 {
+        // SAFETY: we never decrement the state gas spent counter
+        self.gas_tracker.state_gas_spent() as u64
+    }
+
+    #[inline]
+    fn gas_refunded(&self) -> i64 {
+        self.gas_tracker.refunded()
+    }
+
+    #[inline]
+    fn reservoir(&self) -> u64 {
+        self.gas_tracker.reservoir()
+    }
+
+    #[inline]
+    fn spec(&self) -> TempoHardfork {
+        self.spec
+    }
+
+    #[inline]
+    fn amsterdam_eip8037_enabled(&self) -> bool {
+        self.amsterdam_eip8037_enabled
+    }
+
+    #[inline]
+    fn is_static(&self) -> bool {
+        self.is_static
+    }
+
+    #[inline]
+    fn checkpoint(&mut self) -> JournalCheckpoint {
+        let cp = self.journal.checkpoint();
+        #[cfg(debug_assertions)]
+        self.track_checkpoint(&cp);
+        cp
+    }
+
+    #[inline]
+    fn checkpoint_commit(&mut self, _checkpoint: JournalCheckpoint) {
+        #[cfg(debug_assertions)]
+        self.assert_lifo(&_checkpoint, "commit");
+        self.journal.checkpoint_commit()
+    }
+
+    #[inline]
+    fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
+        #[cfg(debug_assertions)]
+        self.assert_lifo(&checkpoint, "revert");
+        self.journal.checkpoint_revert(checkpoint)
+    }
+}
+
+/// LIFO checkpoint validation (debug builds only).
+#[cfg(debug_assertions)]
+impl<J> DirectEvmPrecompileStorageProvider<'_, J> {
+    /// Records a newly created checkpoint for later LIFO validation.
+    fn track_checkpoint(&mut self, cp: &JournalCheckpoint) {
+        self.checkpoint_stack.push((cp.journal_i, cp.log_i));
+    }
+
+    /// Panics if `cp` is not the most recently created checkpoint.
+    fn assert_lifo(&mut self, cp: &JournalCheckpoint, op: &str) {
+        let top = self
+            .checkpoint_stack
+            .pop()
+            .unwrap_or_else(|| panic!("checkpoint_{op}: no active checkpoint"));
+
+        assert_eq!(
+            (cp.journal_i, cp.log_i),
+            top,
+            "out-of-order checkpoint {op} (expected top of stack)"
+        );
+    }
+}
+
 /// LIFO checkpoint validation (debug builds only).
 ///
 /// Since `EvmInternals` doesn't expose revm's journal depth, we mirror it by
@@ -389,6 +782,21 @@ pub fn deduct_gas(
         return Err(TempoPrecompileError::OutOfGas);
     }
     Ok(())
+}
+
+#[inline]
+fn db_error(error: impl std::fmt::Display) -> TempoPrecompileError {
+    TempoPrecompileError::Fatal(error.to_string())
+}
+
+#[inline]
+fn journal_load_error<E: std::fmt::Display>(
+    error: JournalLoadError<E>,
+) -> TempoPrecompileError {
+    match error {
+        JournalLoadError::DBError(error) => db_error(error),
+        JournalLoadError::ColdLoadSkipped => TempoPrecompileError::OutOfGas,
+    }
 }
 
 #[cfg(test)]
