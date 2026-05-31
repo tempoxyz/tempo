@@ -839,6 +839,7 @@ fn workload() -> Workload {
 }
 
 fn execute_txs<DB>(
+    factory: &TempoEvmFactory,
     config: &TempoEvmConfig,
     db: DB,
     txs: &[Recovered<TempoTxEnvelope>],
@@ -848,8 +849,7 @@ fn execute_txs<DB>(
 where
     DB: StateDB,
 {
-    let evm: TempoEvm<_, _> =
-        TempoEvmFactory::default().create_evm(db, bench_env(hardfork, block_timestamp));
+    let evm: TempoEvm<_, _> = factory.create_evm(db, bench_env(hardfork, block_timestamp));
     let ctx = TempoBlockExecutionCtx {
         inner: EthBlockExecutionCtx {
             parent_hash: B256::ZERO,
@@ -897,6 +897,7 @@ where
 fn tip20_execution(c: &mut Criterion) {
     let workload = workload();
     let hardfork_cases = hardfork_bench_cases();
+    let factory = TempoEvmFactory::default();
     let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
 
     for &(label, hardfork) in &hardfork_cases {
@@ -907,6 +908,7 @@ fn tip20_execution(c: &mut Criterion) {
             hardfork,
         );
         execute_txs(
+            &factory,
             &config,
             fixture.prewarm_state_db(),
             &workload.transactions,
@@ -921,6 +923,7 @@ fn tip20_execution(c: &mut Criterion) {
                 || fixture.state_db(),
                 |db| {
                     let stats = execute_txs(
+                        &factory,
                         &config,
                         db,
                         &workload.transactions,
@@ -945,6 +948,7 @@ fn tip20_execution(c: &mut Criterion) {
                 hardfork,
             );
             execute_txs(
+                &factory,
                 &config,
                 fixture.prewarm_state_db(),
                 &reward_workload.transactions,
@@ -961,6 +965,7 @@ fn tip20_execution(c: &mut Criterion) {
                     || fixture.state_db(),
                     |db| {
                         let stats = execute_txs(
+                            &factory,
                             &config,
                             db,
                             &reward_workload.transactions,
