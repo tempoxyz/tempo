@@ -351,7 +351,7 @@ pub(crate) fn charge_input_cost(
 /// `TempoPrecompileProvider` wrapper can apply refunds with `record_refund`. Pre-T4
 /// blocks were executed without refund propagation, so we cannot change their gas
 /// accounting.
-#[inline]
+#[inline(always)]
 fn fill_state_gas(output: &mut PrecompileOutput, storage: &StorageCtx) {
     if storage.spec().is_t4() && output.is_success() {
         output.gas_refunded = storage.gas_refunded();
