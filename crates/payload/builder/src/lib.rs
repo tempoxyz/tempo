@@ -449,7 +449,12 @@ where
                         prev_randao: attributes.prev_randao,
                         gas_limit: block_gas_limit,
                         parent_beacon_block_root: attributes.parent_beacon_block_root,
-                        withdrawals: attributes.withdrawals.clone().map(Into::into),
+                        withdrawals: attributes
+                            .withdrawals
+                            .as_ref()
+                            .filter(|withdrawals| !withdrawals.is_empty())
+                            .cloned()
+                            .map(Into::into),
                         extra_data: attributes.extra_data().clone(),
                         slot_number: attributes.slot_number,
                     },

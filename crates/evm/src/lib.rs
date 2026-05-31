@@ -274,10 +274,13 @@ impl ConfigureEvm for TempoEvmConfig {
                 parent_beacon_block_root: attributes.parent_beacon_block_root,
                 slot_number: attributes.slot_number,
                 ommers: &[],
-                withdrawals: attributes
-                    .inner
-                    .withdrawals
-                    .map(|w| Cow::Owned(w.into_inner())),
+                withdrawals: attributes.inner.withdrawals.and_then(|w| {
+                    if w.is_empty() {
+                        None
+                    } else {
+                        Some(Cow::Owned(w.into_inner()))
+                    }
+                }),
                 extra_data: attributes.inner.extra_data,
                 tx_count_hint: None,
             },
