@@ -1544,6 +1544,7 @@ where
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
         let basefee = u128::from(context.block().basefee());
+        let collected_fee = evm.collected_fee;
         let mut effective_gas_price = tx.effective_gas_price(basefee);
         let gas = exec_result.gas();
         let gas_used = gas.used().saturating_sub(gas.reservoir());
@@ -1556,11 +1557,6 @@ where
         }
 
         let actual_spending = calc_gas_balance_spending(gas_used, effective_gas_price);
-        let refund_amount = tx.effective_balance_spending(
-            context.block.basefee.into(),
-            context.block.blob_gasprice().unwrap_or_default(),
-        )? - tx.value
-            - actual_spending;
 
         // Skip `collectFeePostTx` call if the initial fee collected in
         // `collectFeePreTx` was zero, but spending is non-zero.
@@ -1573,6 +1569,17 @@ where
         {
             return Ok(());
         }
+        let refund_amount = if collected_fee.is_zero() {
+            tx.effective_balance_spending(
+                context.block.basefee.into(),
+                context.block.blob_gasprice().unwrap_or_default(),
+            )? - tx.value
+                - actual_spending
+        } else {
+            collected_fee.checked_sub(actual_spending).ok_or_else(|| {
+                EVMError::Custom("actual fee spending exceeds collected fee".to_string())
+            })?
+        };
 
         // Create storage provider and fee manager
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
