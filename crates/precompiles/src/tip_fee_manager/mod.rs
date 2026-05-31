@@ -164,7 +164,25 @@ impl TipFeeManager {
     ) -> Result<Address> {
         // Get the validator's token preference
         let validator_token = self.get_validator_token(beneficiary)?;
+        self.collect_fee_pre_tx_with_validator_token(
+            fee_payer,
+            user_token,
+            max_amount,
+            validator_token,
+            skip_liquidity_check,
+        )
+    }
 
+    /// Same as [`Self::collect_fee_pre_tx`], with the validator fee token supplied by a caller
+    /// that already resolved it for the current block beneficiary.
+    pub fn collect_fee_pre_tx_with_validator_token(
+        &mut self,
+        fee_payer: Address,
+        user_token: Address,
+        max_amount: U256,
+        validator_token: Address,
+        skip_liquidity_check: bool,
+    ) -> Result<Address> {
         let mut tip20_token = TIP20Token::from_address(user_token)?;
 
         // Ensure that user and FeeManager are authorized to interact with the token
@@ -234,13 +252,34 @@ impl TipFeeManager {
         fee_token: Address,
         beneficiary: Address,
     ) -> Result<U256> {
+        let validator_token = self.get_validator_token(beneficiary)?;
+        self.collect_fee_post_tx_with_validator_token(
+            fee_payer,
+            actual_spending,
+            refund_amount,
+            fee_token,
+            beneficiary,
+            validator_token,
+        )
+    }
+
+    /// Same as [`Self::collect_fee_post_tx`], with the validator fee token supplied by a caller
+    /// that already resolved it for the current block beneficiary.
+    pub fn collect_fee_post_tx_with_validator_token(
+        &mut self,
+        fee_payer: Address,
+        actual_spending: U256,
+        refund_amount: U256,
+        fee_token: Address,
+        beneficiary: Address,
+        validator_token: Address,
+    ) -> Result<U256> {
         // Refund unused tokens to user
         let mut tip20_token = TIP20Token::from_address(fee_token)?;
         tip20_token.transfer_fee_post_tx(fee_payer, refund_amount, actual_spending)?;
 
         // Execute fee swap and track collected fees
         let hop_token = self.two_hop_intermediate.t_read()?;
-        let validator_token = self.get_validator_token(beneficiary)?;
 
         let amount = if fee_token == validator_token {
             actual_spending
