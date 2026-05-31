@@ -1298,8 +1298,9 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
+            let mut fee_manager = TipFeeManager::new();
             let result = StorageCtx::enter_evm(journal, &block, cfg, tx, || {
-                TipFeeManager::new().collect_fee_pre_tx(
+                fee_manager.collect_fee_pre_tx(
                     fee_payer,
                     fee_token,
                     gas_balance_spending,
@@ -1577,10 +1578,9 @@ where
         // Create storage provider and fee manager
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
+        let mut fee_manager = TipFeeManager::new();
 
         let credited = StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
-            let mut fee_manager = TipFeeManager::new();
-
             if !actual_spending.is_zero() || !refund_amount.is_zero() {
                 let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
                 let fee_token = evm
