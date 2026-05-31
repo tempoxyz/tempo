@@ -1019,10 +1019,11 @@ impl TIP20Token {
     }
 
     pub fn check_not_paused(&self) -> Result<()> {
-        if self.paused()? {
-            return Err(TIP20Error::contract_paused().into());
+        if !self.paused()? {
+            return Ok(());
         }
-        Ok(())
+
+        Err(TIP20Error::contract_paused().into())
     }
 
     /// Resolves `to`, checks pause state and recipient validity, ensures TIP-403 transfer
