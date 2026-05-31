@@ -271,16 +271,14 @@ impl TipFeeManager {
         token: Address,
         amount: U256,
     ) -> Result<()> {
-        if amount.is_zero() {
-            return Ok(());
+        if !amount.is_zero() {
+            let collected_fees = self.collected_fees[validator][token].read()?;
+            self.collected_fees[validator][token].write(
+                collected_fees
+                    .checked_add(amount)
+                    .ok_or(TempoPrecompileError::under_overflow())?,
+            )?;
         }
-
-        let collected_fees = self.collected_fees[validator][token].read()?;
-        self.collected_fees[validator][token].write(
-            collected_fees
-                .checked_add(amount)
-                .ok_or(TempoPrecompileError::under_overflow())?,
-        )?;
 
         Ok(())
     }
