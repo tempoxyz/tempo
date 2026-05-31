@@ -624,7 +624,7 @@ where
                 // This removes mined 2D nonce transactions and promotes newly
                 // unblocked transactions before later pool scans.
                 let nonce_pool_start = Instant::now();
-                let _mined_aa_txs = pool.notify_aa_pool_on_state_updates(bundle_state);
+                pool.notify_aa_pool_on_state_updates(bundle_state);
                 metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
 
                 // 2. Update AMM liquidity cache before revalidation/invalidation scans.

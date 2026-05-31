@@ -922,12 +922,36 @@ impl AA2dPool {
     ///
     /// This will prune mined transactions and promote unblocked transactions if any, returns `(promoted, mined)`
     #[allow(clippy::type_complexity)]
+    #[cfg(test)]
     pub(crate) fn on_nonce_changes(
         &mut self,
         on_chain_ids: HashMap<AASequenceId, u64>,
     ) -> (
         Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
         Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    ) {
+        let (promoted, mined, _) = self.on_nonce_changes_inner(on_chain_ids, true);
+        (promoted, mined)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn on_nonce_changes_without_mined(
+        &mut self,
+        on_chain_ids: HashMap<AASequenceId, u64>,
+    ) -> (Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>, usize) {
+        let (promoted, _, mined_count) = self.on_nonce_changes_inner(on_chain_ids, false);
+        (promoted, mined_count)
+    }
+
+    #[allow(clippy::type_complexity)]
+    fn on_nonce_changes_inner(
+        &mut self,
+        on_chain_ids: HashMap<AASequenceId, u64>,
+        collect_mined: bool,
+    ) -> (
+        Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+        Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+        usize,
     ) {
         trace!(target: "txpool::2d", ?on_chain_ids, "processing nonce changes");
 
@@ -1000,14 +1024,22 @@ impl AA2dPool {
         }
 
         // actually remove mined transactions
-        let mut mined = Vec::with_capacity(mined_ids.len());
+        let mut mined = if collect_mined {
+            Vec::with_capacity(mined_ids.len())
+        } else {
+            Vec::new()
+        };
+        let mut mined_count = 0;
         for id in mined_ids {
             if let Some(removed) = self.remove_transaction_by_id(&id) {
-                mined.push(removed);
+                mined_count += 1;
+                if collect_mined {
+                    mined.push(removed);
+                }
             }
         }
 
-        (promoted, mined)
+        (promoted, mined, mined_count)
     }
 
     /// Removes lowest-priority transactions if the pool is above capacity.
@@ -1243,6 +1275,7 @@ impl AA2dPool {
 
     /// Processes nonce-precompile storage updates and updates internal state accordingly.
     #[expect(clippy::type_complexity)]
+    #[cfg(test)]
     pub(crate) fn on_state_updates(
         &mut self,
         state: &AddressMap<BundleAccount>,
@@ -1254,22 +1287,8 @@ impl AA2dPool {
             return (Vec::new(), Vec::new());
         };
 
-        let mut changes = HashMap::default();
-        let mut included_expiring_nonce_hashes = Vec::new();
-
-        // Process known 2D nonce slot changes.
-        for (slot, value) in nonce_state.storage.iter() {
-            if let Some(seq_id) = self.slot_to_seq_id.get(slot) {
-                changes.insert(*seq_id, value.present_value.saturating_to());
-            }
-            // Detect included expiring nonce transactions via their
-            // `expiring_nonce_seen` slot being set to a non-zero value.
-            if !value.present_value.is_zero()
-                && let Some(expiring_nonce_hash) = self.slot_to_expiring_nonce_hash.get(slot)
-            {
-                included_expiring_nonce_hashes.push(*expiring_nonce_hash);
-            }
-        }
+        let (changes, included_expiring_nonce_hashes) =
+            self.state_update_nonce_changes(nonce_state);
 
         let (promoted, mut mined) = self.on_nonce_changes(changes);
 
@@ -1290,6 +1309,65 @@ impl AA2dPool {
         self.update_metrics();
 
         (promoted, mined)
+    }
+
+    pub(crate) fn on_state_updates_without_mined(
+        &mut self,
+        state: &AddressMap<BundleAccount>,
+    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        let Some(nonce_state) = state.get(&NONCE_PRECOMPILE_ADDRESS) else {
+            return Vec::new();
+        };
+
+        let (changes, included_expiring_nonce_hashes) =
+            self.state_update_nonce_changes(nonce_state);
+
+        let (promoted, mut mined_count) = self.on_nonce_changes_without_mined(changes);
+
+        // Remove included expiring nonce transactions without materializing them for the caller.
+        for expiring_nonce_hash in included_expiring_nonce_hashes {
+            if self
+                .remove_expiring_nonce_tx(&expiring_nonce_hash)
+                .is_some()
+            {
+                mined_count += 1;
+            }
+        }
+
+        // Record metrics for all changes
+        if !promoted.is_empty() {
+            self.metrics.inc_promoted(promoted.len());
+        }
+        if mined_count != 0 {
+            self.metrics.inc_removed(mined_count);
+        }
+        self.update_metrics();
+
+        promoted
+    }
+
+    fn state_update_nonce_changes(
+        &self,
+        nonce_state: &BundleAccount,
+    ) -> (HashMap<AASequenceId, u64>, Vec<B256>) {
+        let mut changes = HashMap::default();
+        let mut included_expiring_nonce_hashes = Vec::new();
+
+        // Process known 2D nonce slot changes.
+        for (slot, value) in nonce_state.storage.iter() {
+            if let Some(seq_id) = self.slot_to_seq_id.get(slot) {
+                changes.insert(*seq_id, value.present_value.saturating_to());
+            }
+            // Detect included expiring nonce transactions via their
+            // `expiring_nonce_seen` slot being set to a non-zero value.
+            if !value.present_value.is_zero()
+                && let Some(expiring_nonce_hash) = self.slot_to_expiring_nonce_hash.get(slot)
+            {
+                included_expiring_nonce_hashes.push(*expiring_nonce_hash);
+            }
+        }
+
+        (changes, included_expiring_nonce_hashes)
     }
 
     /// Asserts that all assumptions are valid.

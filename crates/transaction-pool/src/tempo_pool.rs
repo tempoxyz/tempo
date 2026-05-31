@@ -89,18 +89,17 @@ where
     }
 
     /// Updates the 2d nonce pool with the given state changes.
-    ///
-    /// Returns mined AA transactions.
     pub(crate) fn notify_aa_pool_on_state_updates(
         &self,
         state: &AddressMap<BundleAccount>,
-    ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let (promoted, mined) = self.aa_2d_pool.write().on_state_updates(state);
-        // Note: mined transactions are notified via the vanilla pool updates
+    ) {
+        let promoted = self
+            .aa_2d_pool
+            .write()
+            .on_state_updates_without_mined(state);
         self.protocol_pool
             .inner()
             .notify_on_transaction_updates(promoted, Vec::new());
-        mined
     }
 
     /// Evicts transactions that are no longer valid due to on-chain events.
