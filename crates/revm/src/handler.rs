@@ -1628,13 +1628,17 @@ where
         // Reset per-tx validator fee.
         evm.validator_fee = U256::ZERO;
 
+        let spec = evm.inner.cfg.spec;
+        let is_t1c = spec.is_t1c();
+        let is_t2 = spec.is_t2();
+        let is_t3 = spec.is_t3();
+        let is_t5 = spec.is_t5();
+        let is_t6 = spec.is_t6();
+
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;
 
-        if evm.ctx.cfg.spec.is_t2()
-            && evm.ctx.tx.has_fee_payer_signature()
-            && fee_payer == evm.ctx.tx.caller()
-        {
+        if is_t2 && evm.ctx.tx.has_fee_payer_signature() && fee_payer == evm.ctx.tx.caller() {
             return Err(TempoInvalidTransaction::SelfSponsoredFeePayer.into());
         }
 
@@ -1664,7 +1668,7 @@ where
             // per-call scope walk or state mutation. Rejecting it here keeps validation work
             // constant and avoids entering CREATE execution paths that require special protocol-
             // nonce preservation on failure.
-            if cfg.spec().is_t3()
+            if is_t3
                 && aa_env.signature.is_keychain()
                 && aa_env
                     .aa_calls
@@ -1680,11 +1684,11 @@ where
             // Validate keychain signature version (outer + authorization list).
             aa_env
                 .signature
-                .validate_version(cfg.spec().is_t1c())
+                .validate_version(is_t1c)
                 .map_err(TempoInvalidTransaction::from)?;
             for auth in &aa_env.tempo_authorization_list {
                 auth.signature()
-                    .validate_version(cfg.spec().is_t1c())
+                    .validate_version(is_t1c)
                     .map_err(TempoInvalidTransaction::from)?;
             }
 
@@ -1711,14 +1715,14 @@ where
                     };
 
                     same_tx_auth_use = access_key_addr == key_auth.key_id;
-                    if !same_tx_auth_use && !cfg.spec.is_t6() {
+                    if !same_tx_auth_use && !is_t6 {
                         return Err(
                             TempoInvalidTransaction::AccessKeyCannotAuthorizeOtherKeys.into()
                         );
                     }
 
                     if same_tx_auth_use
-                        && cfg.spec.is_t3()
+                        && is_t3
                         && key_auth.key_type != keychain_sig.signature.signature_type()
                     {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
@@ -1729,15 +1733,14 @@ where
                     }
                 }
 
-                if (key_auth.is_admin || key_auth.account.is_some()) && !cfg.spec.is_t6() {
+                if (key_auth.is_admin || key_auth.account.is_some()) && !is_t6 {
                     return Err(TempoInvalidTransaction::KeychainValidationFailed {
                         reason: "T6 key authorization fields are not active before T6".to_string(),
                     }
                     .into());
                 }
 
-                if cfg.spec.is_t6() && key_auth.account.is_some_and(|account| account != tx.caller)
-                {
+                if is_t6 && key_auth.account.is_some_and(|account| account != tx.caller) {
                     // T6 allows existing admin keys to sign `KeyAuthorization`s for an
                     // account. Any named account must match the transaction caller so the
                     // signed payload cannot be replayed against another account where the
@@ -1767,7 +1770,7 @@ where
                     .into());
                 }
 
-                if !cfg.spec.is_t6() {
+                if !is_t6 {
                     let auth_signer = key_auth.recover_signer().map_err(|_| {
                         TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
                     })?;
@@ -1785,10 +1788,10 @@ where
                 // T1C+: chain_id must exactly match (wildcard 0 is no longer allowed).
                 // Pre-T1C: chain_id == 0 allows replay on any chain (wildcard).
                 key_auth
-                    .validate_chain_id(cfg.chain_id(), cfg.spec.is_t1c())
+                    .validate_chain_id(cfg.chain_id(), is_t1c)
                     .map_err(TempoInvalidTransaction::from)?;
 
-                if key_auth.has_witness() && !cfg.spec.is_t5() {
+                if key_auth.has_witness() && !is_t5 {
                     return Err(TempoInvalidTransaction::KeychainValidationFailed {
                         reason: "key authorization witnesses are not active before T5".to_string(),
                     }
@@ -1797,7 +1800,7 @@ where
 
                 // T3 gates all TIP-1011 fields. Before activation, transaction semantics must stay
                 // unchanged, so periodic limits and call scopes are rejected.
-                if !cfg.spec.is_t3() {
+                if !is_t3 {
                     if key_auth.has_periodic_limits() {
                         return Err(TempoInvalidTransaction::KeychainValidationFailed {
                             reason: "periodic token limits are not active before T3".to_string(),
@@ -1813,7 +1816,7 @@ where
                     }
                 }
 
-                if cfg.spec.is_t6() {
+                if is_t6 {
                     let auth_signer = key_auth.recover_signer().map_err(|_| {
                         TempoInvalidTransaction::KeyAuthorizationSignatureRecoveryFailed
                     })?;
