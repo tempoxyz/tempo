@@ -329,7 +329,8 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         self.is_static
     }
 
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn checkpoint(&mut self) -> JournalCheckpoint {
         let cp = self.internals.checkpoint();
         #[cfg(debug_assertions)]
@@ -337,14 +338,16 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         cp
     }
 
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn checkpoint_commit(&mut self, _checkpoint: JournalCheckpoint) {
         #[cfg(debug_assertions)]
         self.assert_lifo(&_checkpoint, "commit");
         self.internals.checkpoint_commit()
     }
 
-    #[inline]
+    #[cold]
+    #[inline(never)]
     fn checkpoint_revert(&mut self, checkpoint: JournalCheckpoint) {
         #[cfg(debug_assertions)]
         self.assert_lifo(&checkpoint, "revert");
