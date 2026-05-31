@@ -838,6 +838,12 @@ fn workload() -> Workload {
     }
 }
 
+#[cold]
+#[inline(never)]
+fn panic_non_aa_bench_tx() -> ! {
+    panic!("tip20 execution bench expects Tempo AA transactions")
+}
+
 fn execute_txs<DB>(
     config: &TempoEvmConfig,
     db: DB,
@@ -874,10 +880,9 @@ where
 
     let mut stats = ExecutionStats::default();
     for tx in txs {
-        assert!(
-            tx.inner().is_aa(),
-            "tip20 execution bench expects Tempo AA transactions"
-        );
+        if !tx.inner().is_aa() {
+            panic_non_aa_bench_tx();
+        }
         let output = executor
             .execute_transaction_without_commit(tx)
             .expect("TIP20 transaction execution failed");
