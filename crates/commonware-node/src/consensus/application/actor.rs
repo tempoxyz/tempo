@@ -1111,9 +1111,7 @@ impl Inner<Init> {
 
         let trie_handle = Some(tempo_node::speculative_bal_state_root_handle(
             &self.execution_node,
-            block.parent_hash(),
-            block.block_hash(),
-            block.state_root(),
+            block.block(),
             &block_access_list,
         )?);
         debug!(

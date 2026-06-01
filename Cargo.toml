@@ -141,6 +141,7 @@ tempo-transaction-pool = { path = "crates/transaction-pool", default-features = 
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
 
 reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "03d9691e7e8b26897bd4f32a053bab46ee84fd11" }
+reth-chain-state = { git = "https://github.com/paradigmxyz/reth", rev = "03d9691e7e8b26897bd4f32a053bab46ee84fd11" }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "03d9691e7e8b26897bd4f32a053bab46ee84fd11", default-features = false }
 reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "03d9691e7e8b26897bd4f32a053bab46ee84fd11" }
 reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "03d9691e7e8b26897bd4f32a053bab46ee84fd11" }

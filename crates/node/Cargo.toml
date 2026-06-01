@@ -24,9 +24,11 @@ tempo-primitives = { workspace = true, features = ["default"] }
 thiserror.workspace = true
 
 reth-chainspec.workspace = true
+reth-chain-state = { workspace = true, optional = true }
 reth-errors.workspace = true
 reth-engine-tree = { workspace = true, optional = true }
 reth-ethereum = { workspace = true, features = ["node", "rpc"] }
+reth-execution-types = { workspace = true, optional = true }
 reth-primitives-traits = { workspace = true, features = ["secp256k1", "rayon"] }
 reth-node-builder.workspace = true
 reth-node-core.workspace = true
@@ -105,7 +107,9 @@ vergen-git2.workspace = true
 default = []
 bal = [
 	"tempo-payload-builder/bal",
+	"dep:reth-chain-state",
 	"dep:reth-engine-tree",
+	"dep:reth-execution-types",
 	"dep:reth-payload-builder",
 	"dep:reth-trie-db",
 	"dep:reth-trie-parallel",
