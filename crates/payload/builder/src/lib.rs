@@ -773,6 +773,11 @@ where
                 executor.receipts().last().unwrap().clone(),
             ));
         };
+
+        // Cancel pre-warming, if any, by dropping the iterator before block
+        // finalization begins.
+        drop(best_txs);
+
         let elapsed_at_tx_cutoff = payload_build_control
             .as_ref()
             .map(|control| control.snapshot().builder_elapsed())
