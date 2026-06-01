@@ -229,7 +229,7 @@ impl TempoPooledTransaction {
         })
     }
 
-    /// Extracts the TIP-1053 key-authorization witness carried by this transaction, if any.
+    /// Extracts the TIP-1069 key-authorization witness carried by this transaction, if any.
     pub fn key_authorization_witness_subject(&self) -> Option<KeyAuthorizationWitnessSubject> {
         let aa_tx = self.inner().as_aa()?;
         let witness = aa_tx
@@ -1409,7 +1409,7 @@ impl KeychainSubject {
 pub struct KeyAuthorizationWitnessSubject {
     /// The account whose key-authorization witness is carried or burned.
     pub account: Address,
-    /// The TIP-1053 witness.
+    /// The TIP-1069 witness.
     pub witness: B256,
 }
 

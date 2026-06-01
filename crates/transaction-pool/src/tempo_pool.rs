@@ -281,7 +281,7 @@ where
                 }
             }
 
-            // Check 2c: TIP-1053 key-authorization witness burns
+            // Check 2c: TIP-1069 key-authorization witness burns
             if !updates.key_authorization_witness_burns.is_empty()
                 && let Some(subject) = tx.transaction.key_authorization_witness_subject()
                 && updates

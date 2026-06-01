@@ -764,7 +764,7 @@ pub(crate) enum AuthKind {
         num_limits: usize,
         allowed_calls: AllowedCallsMode,
     },
-    /// Inline key authorization carrying a TIP-1053 witness.
+    /// Inline key authorization carrying a TIP-1069 witness.
     KeyAuthWitness {
         key_type: SignatureType,
         num_limits: usize,

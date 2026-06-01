@@ -93,7 +93,7 @@ pub struct TempoPoolUpdates {
     /// with the runtime's actual spending-limit decrements instead of inferring them from
     /// the mined transaction body.
     pub spending_limit_spends: SpendingLimitUpdates,
-    /// TIP-1053 key-authorization witness burns.
+    /// TIP-1069 key-authorization witness burns.
     ///
     /// Pending AA transactions carrying the same `(account, witness)` key authorization are no
     /// longer executable once the account explicitly burns that witness.

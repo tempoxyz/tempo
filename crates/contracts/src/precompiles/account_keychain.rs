@@ -96,10 +96,10 @@ crate::sol! {
             uint256 remainingLimit
         );
 
-        /// Emitted when a key authorization carries a TIP-1053 witness.
+        /// Emitted when a key authorization carries a TIP-1069 witness.
         event KeyAuthorizationWitness(address indexed account, bytes32 indexed witness);
 
-        /// Emitted when a TIP-1053 key-authorization witness is manually burned.
+        /// Emitted when a TIP-1069 key-authorization witness is manually burned.
         event KeyAuthorizationWitnessBurned(address indexed account, bytes32 indexed witness);
 
         /// Legacy authorize-key entrypoint used before T3.
@@ -121,7 +121,7 @@ crate::sol! {
             KeyRestrictions calldata config
         ) external;
 
-        /// Authorize a new key with a TIP-1053 witness.
+        /// Authorize a new key with a TIP-1069 witness.
         /// @dev The witness must not be burned for the caller's account. bytes32(0) is valid.
         function authorizeKey(
             address keyId,
@@ -138,7 +138,7 @@ crate::sol! {
             bytes32 witness
         ) external;
 
-        /// Burn a TIP-1053 key-authorization witness without authorizing a key.
+        /// Burn a TIP-1069 key-authorization witness without authorizing a key.
         /// @dev Callable only by the account admin key.
         function burnKeyAuthorizationWitness(bytes32 witness) external;
 
@@ -207,7 +207,7 @@ crate::sol! {
             address keyId
         ) external view returns (bool isScoped, CallScope[] memory scopes);
 
-        /// Returns whether a TIP-1053 key-authorization witness has been manually burned.
+        /// Returns whether a TIP-1069 key-authorization witness has been manually burned.
         function isKeyAuthorizationWitnessBurned(address account, bytes32 witness) external view returns (bool);
 
         /// Returns true if `keyId` is the root key or an active admin key for `account`.

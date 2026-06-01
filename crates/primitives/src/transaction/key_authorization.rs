@@ -180,7 +180,7 @@ impl From<SelectorRule> for AbiSelectorRule {
 /// - `limits`: `None` (omitted or 0x80) = unlimited spending, `Some([])` = no spending, `Some([...])` = specific limits
 /// - `allowed_calls`: `None` (canonically omitted, explicit 0x80 accepted) = unrestricted,
 ///   `Some([])` = scoped with no allowed calls, `Some([...])` = scoped calls
-/// - `witness`: `None` (canonically omitted) = no TIP-1053 witness,
+/// - `witness`: `None` (canonically omitted) = no TIP-1069 witness,
 ///   `Some(bytes32)` = arbitrary signed witness checked against the account's burned set.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -219,7 +219,7 @@ pub struct KeyAuthorization {
     /// - `Some([CallScope{...}])` = explicit target/selector scope list
     pub allowed_calls: Option<Vec<CallScope>>,
 
-    /// Optional TIP-1053 witness for offchain context binding and manual revocation.
+    /// Optional TIP-1069 witness for offchain context binding and manual revocation.
     ///
     /// `None` means no witness. `Some(witness)` means the witness field is present, including when
     /// `witness == B256::ZERO`.
@@ -283,13 +283,13 @@ impl KeyAuthorization {
         self
     }
 
-    /// Attach a TIP-1053 witness to this authorization.
+    /// Attach a TIP-1069 witness to this authorization.
     pub fn with_witness(mut self, witness: B256) -> Self {
         self.witness = Some(witness);
         self
     }
 
-    /// Returns this authorization's TIP-1053 witness, if present.
+    /// Returns this authorization's TIP-1069 witness, if present.
     pub fn witness(&self) -> Option<B256> {
         self.witness
     }
@@ -331,7 +331,7 @@ impl KeyAuthorization {
         self.allowed_calls.is_some()
     }
 
-    /// Returns whether this authorization carries a TIP-1053 witness field.
+    /// Returns whether this authorization carries a TIP-1069 witness field.
     pub fn has_witness(&self) -> bool {
         self.witness.is_some()
     }

@@ -401,7 +401,7 @@ impl AccountKeychain {
         ))
     }
 
-    /// Burns a TIP-1053 witness without authorizing a key.
+    /// Burns a TIP-1069 witness without authorizing a key.
     pub fn burn_key_authorization_witness(
         &mut self,
         msg_sender: Address,
@@ -692,7 +692,7 @@ impl AccountKeychain {
         })
     }
 
-    /// Returns whether a TIP-1053 key-authorization witness has been manually burned.
+    /// Returns whether a TIP-1069 key-authorization witness has been manually burned.
     pub fn is_key_authorization_witness_burned(
         &self,
         call: isKeyAuthorizationWitnessBurnedCall,
