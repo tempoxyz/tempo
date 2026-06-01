@@ -61,13 +61,9 @@ impl BlockAccessListError {
 // to hold the trait implementations required by commonwarexyz. Uses
 // Sealed because of the frequent accesses to the hash.
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[repr(transparent)]
-pub(crate) struct Block(Arc<BlockInner>);
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-struct BlockInner {
+pub(crate) struct Block {
     /// The execution-layer block.
-    execution_block: SealedBlock<tempo_primitives::Block>,
+    execution_block: Arc<SealedBlock<tempo_primitives::Block>>,
     /// Optional block access list. Only provided if the network supports BALs.
     #[cfg(feature = "bal")]
     block_access_list: Option<Bytes>,
@@ -102,8 +98,8 @@ impl Block {
         #[cfg(not(feature = "bal"))]
         let _ = block_access_list;
 
-        Self(Arc::new(BlockInner {
-            execution_block,
+        Self {
+            execution_block: Arc::new(execution_block),
             #[cfg(feature = "bal")]
             block_access_list,
         }))
@@ -111,14 +107,14 @@ impl Block {
 
     /// Consumes the block and returns only the execution-layer block.
     pub(crate) fn into_inner(self) -> SealedBlock<tempo_primitives::Block> {
-        Arc::unwrap_or_clone(self.0).execution_block
+        Arc::unwrap_or_clone(self.execution_block)
     }
 
     /// Consumes the block and returns the execution-layer block plus optional BAL.
     pub(crate) fn into_parts(self) -> (SealedBlock<tempo_primitives::Block>, Option<Bytes>) {
         let inner = Arc::unwrap_or_clone(self.0);
         (
-            inner.execution_block,
+            Arc::unwrap_or_clone(self.execution_block),
             #[cfg(feature = "bal")]
             {
                 inner.block_access_list
@@ -172,7 +168,7 @@ impl std::ops::Deref for Block {
     type Target = SealedBlock<tempo_primitives::Block>;
 
     fn deref(&self) -> &Self::Target {
-        &self.0.execution_block
+        self.execution_block.as_ref()
     }
 }
 
