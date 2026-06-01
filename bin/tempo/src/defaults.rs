@@ -187,13 +187,13 @@ fn init_txpool_defaults() {
         .with_max_queued_lifetime(Duration::from_secs(120))
         .with_max_new_pending_txs_notifications(150000)
         .with_max_account_slots(150000)
-        .with_pending_tx_listener_buffer_size(200000)
-        .with_new_tx_listener_buffer_size(200000)
+        .with_pending_tx_listener_buffer_size(50000)
+        .with_new_tx_listener_buffer_size(50000)
         .with_disable_transactions_backup(true)
         .with_additional_validation_tasks(8)
         .with_minimal_protocol_basefee(TempoHardfork::default().base_fee())
         .with_minimum_priority_fee(Some(0))
-        .with_max_batch_size(200000)
+        .with_max_batch_size(50000)
         .try_init()
         .expect("failed to initialize txpool defaults");
 }
