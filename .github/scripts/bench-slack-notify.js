@@ -65,7 +65,6 @@ function cell(text) {
 
 function fmtMs(v) { return v != null ? v.toFixed(2) + 'ms' : '-'; }
 function fmtVal(v, suffix = '', precision = 2) { return v != null ? v.toFixed(precision) + suffix : '-'; }
-function fmtBytesPerTx(v) { return v != null ? v.toFixed(1) + ' B/tx' : '-'; }
 function fmtS(v) { return v != null ? v.toFixed(2) + 's' : '-'; }
 
 function classifyPctChange(pct, lowerIsBetter) {
@@ -102,7 +101,12 @@ function hasImprovement(changes) {
 }
 
 function e2eChanges(summary) {
-  if (summary.results?.changes) return summary.results.changes;
+  if (summary.results?.changes) {
+    return Object.fromEntries(
+      Object.entries(summary.results.changes)
+        .filter(([key]) => !key.startsWith('serialized_block_size')),
+    );
+  }
   const deltas = summary.results.deltas;
   return {
     tps: changeFromPct(deltas.tps, false),
@@ -111,9 +115,6 @@ function e2eChanges(summary) {
     block_time_p50: changeFromPct(deltas.block_time_p50, true),
     block_time_p90: changeFromPct(deltas.block_time_p90, true),
     block_time_p99: changeFromPct(deltas.block_time_p99, true),
-    serialized_block_size_per_tx_p50: changeFromPct(deltas.serialized_block_size_per_tx_p50, true),
-    serialized_block_size_per_tx_p90: changeFromPct(deltas.serialized_block_size_per_tx_p90, true),
-    serialized_block_size_per_tx_p99: changeFromPct(deltas.serialized_block_size_per_tx_p99, true),
   };
 }
 
@@ -145,9 +146,6 @@ function buildMetricRows(summary) {
     { label: 'Block P50',       baseline: fmtMs(b.block_time_p50),  feature: fmtMs(f.block_time_p50),  change: fmtChange(c.block_time_p50) },
     { label: 'Block P90',       baseline: fmtMs(b.block_time_p90),  feature: fmtMs(f.block_time_p90),  change: fmtChange(c.block_time_p90) },
     { label: 'Block P99',       baseline: fmtMs(b.block_time_p99),  feature: fmtMs(f.block_time_p99),  change: fmtChange(c.block_time_p99) },
-    { label: 'Size/Tx P50',     baseline: fmtBytesPerTx(b.serialized_block_size_per_tx_p50), feature: fmtBytesPerTx(f.serialized_block_size_per_tx_p50), change: fmtChange(c.serialized_block_size_per_tx_p50) },
-    { label: 'Size/Tx P90',     baseline: fmtBytesPerTx(b.serialized_block_size_per_tx_p90), feature: fmtBytesPerTx(f.serialized_block_size_per_tx_p90), change: fmtChange(c.serialized_block_size_per_tx_p90) },
-    { label: 'Size/Tx P99',     baseline: fmtBytesPerTx(b.serialized_block_size_per_tx_p99), feature: fmtBytesPerTx(f.serialized_block_size_per_tx_p99), change: fmtChange(c.serialized_block_size_per_tx_p99) },
   ];
 }
 
@@ -155,7 +153,7 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
   const b = summary.results.baseline;
   const f = summary.results.feature;
   const changes = e2eChanges(summary);
-  const classified = summary.classification || verdictFromChanges(changes, 'No Significant Change');
+  const classified = verdictFromChanges(changes, 'No Significant Change');
   const emoji = classified.slack_emoji || classified.emoji || ':white_circle:';
   const label = classified.label || 'No Significant Change';
 
