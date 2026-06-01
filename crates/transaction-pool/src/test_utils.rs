@@ -214,6 +214,7 @@ impl TxBuilder {
             access_list: self.access_list,
             tempo_authorization_list: self.authorization_list.unwrap_or_default(),
             key_authorization: self.key_authorization,
+            multisig_init: None,
         };
 
         let signature =
@@ -270,6 +271,7 @@ impl TxBuilder {
             access_list: self.access_list,
             tempo_authorization_list: self.authorization_list.unwrap_or_default(),
             key_authorization: self.key_authorization,
+            multisig_init: None,
         };
 
         // Create a temp AASigned to get the signature hash

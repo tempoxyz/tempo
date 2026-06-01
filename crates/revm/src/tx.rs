@@ -18,6 +18,14 @@ use tempo_primitives::{
     },
 };
 
+/// Non-zero transaction identifier used only for RPC simulations.
+///
+/// RPC requests are not final signed transactions, so gas filling and other request normalization
+/// can make a simulated signing payload differ from the eventual submitted transaction. Use a
+/// fixed sentinel instead of deriving a misleading future channel id from the simulated payload.
+pub const RPC_SIMULATION_UNIQUE_TX_IDENTIFIER: B256 =
+    B256::new(*b"TEMPO_RPC_SIMULATION_MPP_CONTEXT");
+
 /// Tempo transaction environment for AA features.
 #[derive(Debug, Clone, Default)]
 pub struct TempoBatchCallEnv {
