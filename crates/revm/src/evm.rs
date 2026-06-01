@@ -1,6 +1,9 @@
 use crate::{TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
-use alloy_primitives::{Address, B256, U256, map::B256Set};
+use alloy_primitives::{
+    Address, B256, U256,
+    map::{B256Set, HashMap},
+};
 use revm::{
     Context, Inspector,
     context::{Cfg, CfgEnv, ContextError, Evm, FrameStack, result::EVMError},
@@ -69,6 +72,8 @@ pub struct TempoEvm<DB: Database, I> {
     pending_expiring_nonces: Vec<PendingExpiringNonce>,
     /// Replay hashes already included in this block.
     seen_expiring_nonce_hashes: B256Set,
+    /// Replay cells already chosen by transactions included in this block.
+    pub(crate) pending_expiring_nonce_cells: HashMap<u32, U256>,
     /// Expiring nonce replay marker validated for the current transaction.
     current_expiring_nonce: Option<PendingExpiringNonce>,
 }
@@ -109,6 +114,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             skip_liquidity_check: false,
             pending_expiring_nonces: Vec::new(),
             seen_expiring_nonce_hashes: B256Set::default(),
+            pending_expiring_nonce_cells: HashMap::default(),
             current_expiring_nonce: None,
         }
     }
@@ -160,6 +166,13 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Queues an expiring nonce replay marker for block finalization.
     pub fn queue_expiring_nonce(&mut self, pending: PendingExpiringNonce) {
         self.seen_expiring_nonce_hashes.insert(pending.replay_hash);
+        let previous = self
+            .pending_expiring_nonce_cells
+            .insert(pending.cell_id, pending.cell);
+        debug_assert!(
+            previous.is_none() || previous == Some(pending.cell),
+            "expiring nonce replay cell collision should be resolved during validation"
+        );
         self.pending_expiring_nonces.push(pending);
     }
 
@@ -184,14 +197,15 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
         if self.pending_expiring_nonces.is_empty() {
             self.seen_expiring_nonce_hashes.clear();
+            self.pending_expiring_nonce_cells.clear();
             return Ok(());
         }
 
-        let pending_expiring_nonces = core::mem::take(&mut self.pending_expiring_nonces);
+        let pending_expiring_nonces = self.pending_expiring_nonces.clone();
         StorageCtx::enter_ctx(&mut self.inner.ctx, || {
             let mut nonce_manager = NonceManager::new();
 
-            for pending in pending_expiring_nonces {
+            for pending in &pending_expiring_nonces {
                 nonce_manager
                     .write_expiring_nonce_cell(pending.cell_id, pending.cell)
                     .map_err(|err| match err {
@@ -203,7 +217,9 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
         })?;
 
+        self.pending_expiring_nonces.clear();
         self.seen_expiring_nonce_hashes.clear();
+        self.pending_expiring_nonce_cells.clear();
         Ok(())
     }
 }
@@ -302,7 +318,7 @@ mod tests {
     use crate::gas_params::tempo_gas_params;
     use alloy_eips::eip7702::Authorization;
     use alloy_evm::FromRecoveredTx;
-    use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
+    use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex, keccak256};
     use alloy_sol_types::SolCall;
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::{
@@ -519,6 +535,62 @@ mod tests {
         StorageCtx::enter_ctx(&mut evm.ctx, || {
             let nonce_manager = NonceManager::new();
             assert!(nonce_manager.is_expiring_nonce_seen_at(replay_hash, valid_before)?);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_finalize_expiring_nonces_preserves_same_block_cell_collisions() -> eyre::Result<()> {
+        let now = 1000;
+        let mut evm = create_evm_with_timestamp(now);
+        evm.ctx.cfg.spec = TempoHardfork::T1C;
+
+        let valid_before = now + 20;
+        let first_hash = keccak256(0u64.to_be_bytes());
+        let (first_cell_id, first_cell) = StorageCtx::enter_ctx(&mut evm.ctx, || {
+            NonceManager::new().checked_expiring_nonce_cell(first_hash, valid_before)
+        })?;
+
+        let second_hash = (1u64..1_000_000)
+            .find_map(|i| {
+                let hash = keccak256(i.to_be_bytes());
+                let (cell_id, _) = StorageCtx::enter_ctx(&mut evm.ctx, || {
+                    NonceManager::new().checked_expiring_nonce_cell(hash, valid_before)
+                })
+                .ok()?;
+                (cell_id == first_cell_id && hash != first_hash).then_some(hash)
+            })
+            .expect("test setup must find two hashes with the same first cell");
+
+        evm.queue_expiring_nonce(PendingExpiringNonce {
+            replay_hash: first_hash,
+            valid_before,
+            cell_id: first_cell_id,
+            cell: first_cell,
+        });
+
+        let pending_cells = evm.pending_expiring_nonce_cells.clone();
+        let (second_cell_id, second_cell) = StorageCtx::enter_ctx(&mut evm.ctx, || {
+            NonceManager::new().checked_expiring_nonce_cell_with_pending(
+                second_hash,
+                valid_before,
+                |cell_id| pending_cells.get(&cell_id).copied(),
+            )
+        })?;
+        assert_ne!(second_cell_id, first_cell_id);
+
+        evm.queue_expiring_nonce(PendingExpiringNonce {
+            replay_hash: second_hash,
+            valid_before,
+            cell_id: second_cell_id,
+            cell: second_cell,
+        });
+        evm.finalize_expiring_nonces()?;
+
+        StorageCtx::enter_ctx(&mut evm.ctx, || {
+            let nonce_manager = NonceManager::new();
+            assert!(nonce_manager.is_expiring_nonce_seen_at(first_hash, valid_before)?);
+            assert!(nonce_manager.is_expiring_nonce_seen_at(second_hash, valid_before)?);
             Ok(())
         })
     }

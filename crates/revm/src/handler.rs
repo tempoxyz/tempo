@@ -896,6 +896,7 @@ where
     ) -> Result<(), Self::Error> {
         self.seed_precompile_tx_context(evm)?;
 
+        let pending_expiring_nonce_cells = &evm.pending_expiring_nonce_cells;
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
@@ -1012,7 +1013,11 @@ where
                 let nonce_manager = NonceManager::new();
 
                 nonce_manager
-                    .checked_expiring_nonce_cell(replay_hash, valid_before)
+                    .checked_expiring_nonce_cell_with_pending(
+                        replay_hash,
+                        valid_before,
+                        |cell_id| pending_expiring_nonce_cells.get(&cell_id).copied(),
+                    )
                     .map_err(|err| match err {
                         TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                         TempoPrecompileError::NonceError(

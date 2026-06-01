@@ -176,8 +176,23 @@ impl NonceManager {
         expiring_nonce_hash: B256,
         valid_before: u64,
     ) -> Result<(u32, U256)> {
+        self.checked_expiring_nonce_cell_with_pending(expiring_nonce_hash, valid_before, |_| None)
+    }
+
+    /// Returns the replay-cell write for a valid expiring nonce transaction,
+    /// treating `pending_cell` as a block-local overlay of replay cells that
+    /// have been validated but not yet written to state.
+    pub fn checked_expiring_nonce_cell_with_pending<F>(
+        &self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+        pending_cell: F,
+    ) -> Result<(u32, U256)>
+    where
+        F: Fn(u32) -> Option<U256>,
+    {
         let (cell_id, fingerprint) =
-            self.expiring_nonce_insert_cell(expiring_nonce_hash, valid_before)?;
+            self.expiring_nonce_insert_cell(expiring_nonce_hash, valid_before, pending_cell)?;
         Ok((
             cell_id,
             Self::pack_expiring_nonce_cell(valid_before, fingerprint),
@@ -193,6 +208,7 @@ impl NonceManager {
         &self,
         expiring_nonce_hash: B256,
         valid_before: u64,
+        pending_cell: impl Fn(u32) -> Option<U256>,
     ) -> Result<(u32, U256)> {
         let now: u64 = self.storage.timestamp().saturating_to();
 
@@ -206,7 +222,10 @@ impl NonceManager {
 
         for probe in 0..EXPIRING_NONCE_MAX_PROBES {
             let cell_id = Self::expiring_nonce_cell_id(expiring_nonce_hash, valid_before, probe);
-            let word = self.expiring_nonce_cells[cell_id].read()?;
+            let word = match pending_cell(cell_id) {
+                Some(word) => word,
+                None => self.expiring_nonce_cells[cell_id].read()?,
+            };
             let (stored_v, stored_fingerprint) = Self::unpack_expiring_nonce_cell(word);
 
             if stored_v != valid_before {
@@ -490,6 +509,54 @@ mod tests {
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_pending_overlay_resolves_same_block_cell_collision() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let now = 1000u64;
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mgr = NonceManager::new();
+
+            let valid_before = now + 20;
+            let first_hash = keccak256(0u64.to_be_bytes());
+            let (first_cell_id, first_cell) =
+                mgr.checked_expiring_nonce_cell(first_hash, valid_before)?;
+
+            let (second_hash, second_cell_without_overlay) = (1u64..1_000_000)
+                .map(|i| keccak256(i.to_be_bytes()))
+                .find_map(|hash| {
+                    let (cell_id, _) = mgr.checked_expiring_nonce_cell(hash, valid_before).ok()?;
+                    (cell_id == first_cell_id
+                        && NonceManager::expiring_nonce_fingerprint(hash)
+                            != NonceManager::expiring_nonce_fingerprint(first_hash))
+                    .then_some((hash, cell_id))
+                })
+                .expect("test setup must find two hashes with the same first cell");
+            assert_eq!(second_cell_without_overlay, first_cell_id);
+
+            let replay_result =
+                mgr.checked_expiring_nonce_cell_with_pending(first_hash, valid_before, |cell_id| {
+                    (cell_id == first_cell_id).then_some(first_cell)
+                });
+            assert_eq!(
+                replay_result.unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())
+            );
+
+            let (second_cell_with_overlay, _) = mgr.checked_expiring_nonce_cell_with_pending(
+                second_hash,
+                valid_before,
+                |cell_id| (cell_id == first_cell_id).then_some(first_cell),
+            )?;
+            assert_ne!(
+                second_cell_with_overlay, first_cell_id,
+                "pending in-block cells must be treated as occupied"
             );
 
             Ok(())
