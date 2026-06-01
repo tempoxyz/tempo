@@ -804,6 +804,7 @@ pub(crate) fn create_basic_aa_tx(
         access_list: Default::default(),
         key_authorization: None,
         tempo_authorization_list: vec![],
+        multisig_init: None,
     }
 }
 
