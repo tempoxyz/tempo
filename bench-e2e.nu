@@ -20,8 +20,6 @@ const E2E_GAS_LIMIT = "1000000000"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
-const E2E_LOCALNET_SIGNING_KEY_SECRET = "tempo-localnet-signing-key-secret"
-const E2E_LOCALNET_SIGNING_KEY_SECRET_FILE = "signing.key.secret"
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
     "--disable-discovery"
@@ -272,7 +270,6 @@ def e2e-snapshot-required-files [datadir: string] {
         $"($meta_dir)/trusted-peers.txt"
         $"($meta_dir)/marker.json"
         $"($datadir)/signing.key"
-        $"($datadir)/($E2E_LOCALNET_SIGNING_KEY_SECRET_FILE)"
         $"($datadir)/signing.share"
         $"($datadir)/enode.key"
         $"($datadir)/enode.identity"
@@ -538,14 +535,8 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
     }
     let ip = if $consensus_ip != "" { $consensus_ip } else { $inferred_ip }
     let signing_key = $"($node_dir)/signing.key"
-    let signing_key_secret = $"($node_dir)/($E2E_LOCALNET_SIGNING_KEY_SECRET_FILE)"
     let signing_share = $"($node_dir)/signing.share"
     let enode_key = $"($node_dir)/enode.key"
-    let signing_key_secret_args = if ($signing_key_secret | path exists) {
-        ["--consensus.secret" $signing_key_secret]
-    } else {
-        []
-    }
 
     let execution_p2p_port = $port + 1
     let metrics_port = $port + 2
@@ -554,7 +545,6 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
 
     [
         "--consensus.signing-key" $signing_key
-        ...$signing_key_secret_args
         "--consensus.signing-share" $signing_share
         "--consensus.listen-address" $"($ip):($port)"
         "--consensus.metrics-address" $"($ip):($metrics_port)"
@@ -779,7 +769,6 @@ def init-local-e2e-side [
     for file in ["signing.key" "signing.share" "enode.key" "enode.identity"] {
         cp $"($generated_node_dir)/($file)" $"($node_dir)/($file)"
     }
-    $E2E_LOCALNET_SIGNING_KEY_SECRET | save -f $"($node_dir)/($E2E_LOCALNET_SIGNING_KEY_SECRET_FILE)"
     $trusted_peers | save -f $generated_trusted_peers
 
     bench-save-e2e-meta $datadir $meta_dir ($marker | insert validator_role $role) [[$generated_genesis "genesis.json"] [$generated_trusted_peers "trusted-peers.txt"]]
@@ -886,7 +875,7 @@ def run-local-e2e-phase [run: record, ctx: record] {
         { role: "a", node_dir: $ctx.a.node_dir }
         { role: "b", node_dir: $ctx.b.node_dir }
     ] {
-        for required_file in ["signing.key" $E2E_LOCALNET_SIGNING_KEY_SECRET_FILE "signing.share" "enode.key"] {
+        for required_file in ["signing.key" "signing.share" "enode.key"] {
             let path = $"($role_info.node_dir)/($required_file)"
             if not ($path | path exists) {
                 print $"Error: missing ($role_info.role) validator file after snapshot recovery: ($path)"
