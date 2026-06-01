@@ -107,6 +107,36 @@ impl NonceManager {
         Ok(expiry != 0 && expiry > now)
     }
 
+    /// Validates an expiring nonce transaction against the current block timestamp
+    /// and parent/current replay state without mutating replay storage.
+    ///
+    /// Block executors use this during transaction execution and defer the ring
+    /// insertion to a block-finalization pass. This keeps per-transaction
+    /// execution independent from the global expiring nonce ring pointer.
+    ///
+    /// # Errors
+    /// - `InvalidExpiringNonceExpiry` — `valid_before` not in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
+    /// - `ExpiringNonceReplay` — transaction hash is already recorded and has not yet expired
+    pub fn validate_expiring_nonce(
+        &self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+    ) -> Result<()> {
+        let now: u64 = self.storage.timestamp().saturating_to();
+
+        if valid_before <= now || valid_before > now.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
+        {
+            return Err(NonceError::invalid_expiring_nonce_expiry().into());
+        }
+
+        let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
+        if seen_expiry != 0 && seen_expiry > now {
+            return Err(NonceError::expiring_nonce_replay().into());
+        }
+
+        Ok(())
+    }
+
     /// Validates and records an expiring nonce transaction. Uses a
     /// circular buffer that overwrites expired entries as the pointer
     /// advances. The hash is `keccak256(encode_for_signing || sender)`,
@@ -132,19 +162,8 @@ impl NonceManager {
         expiring_nonce_hash: B256,
         valid_before: u64,
     ) -> Result<()> {
+        self.validate_expiring_nonce(expiring_nonce_hash, valid_before)?;
         let now: u64 = self.storage.timestamp().saturating_to();
-
-        // 1. Validate expiry window: must be in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
-        if valid_before <= now || valid_before > now.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
-        {
-            return Err(NonceError::invalid_expiring_nonce_expiry().into());
-        }
-
-        // 2. Replay check: reject if hash is already seen and not expired
-        let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
-        if seen_expiry != 0 && seen_expiry > now {
-            return Err(NonceError::expiring_nonce_replay().into());
-        }
 
         // 3. Get current pointer (bounded in [0, CAPACITY)) and use directly as index
         let ptr = self.expiring_nonce_ring_ptr.read()?;
@@ -314,6 +333,25 @@ mod tests {
                 TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())
             );
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_validate_expiring_nonce_does_not_mark_replay_state() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let now = 1000u64;
+        storage.set_timestamp(U256::from(now));
+
+        StorageCtx::enter(&mut storage, || {
+            let mgr = NonceManager::new();
+            let tx_hash = B256::from([1u8; 32]);
+            let valid_before = now + 10;
+
+            mgr.validate_expiring_nonce(tx_hash, valid_before)?;
+
+            assert!(!mgr.is_expiring_nonce_seen(tx_hash, now)?);
+            assert_eq!(mgr.expiring_nonce_ring_ptr.read()?, 0);
             Ok(())
         })
     }

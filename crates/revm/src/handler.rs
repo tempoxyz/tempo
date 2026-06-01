@@ -44,13 +44,8 @@ use tempo_precompiles::{
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
-    nonce::{
-        EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, INonce::getNonceCall,
-        NonceManager,
-    },
-    storage::{
-        Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
-    },
+    nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, INonce::getNonceCall, NonceManager},
+    storage::{PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider},
     tip_fee_manager::TipFeeManager,
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, decode_tip20_balance},
     tip20_channel_reserve::TIP20ChannelReserve,
@@ -1018,28 +1013,10 @@ where
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
-                let mut nonce_manager = NonceManager::new();
-
-                let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
-                    let ptr = nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .read()
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
-
-                    let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
-
-                    nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(next)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
-
-                    Some(ptr)
-                } else {
-                    None
-                };
+                let nonce_manager = NonceManager::new();
 
                 nonce_manager
-                    .check_and_mark_expiring_nonce(replay_hash, valid_before)
+                    .validate_expiring_nonce(replay_hash, valid_before)
                     .map_err(|err| match err {
                         TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                         TempoPrecompileError::NonceError(
@@ -1061,13 +1038,6 @@ where
                         }
                         err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
                     })?;
-
-                if let Some(prev_ptr) = prev_ptr {
-                    nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(prev_ptr)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
-                }
 
                 Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
             })?;

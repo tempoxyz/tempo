@@ -30,11 +30,12 @@ use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
+use tempo_precompiles::{nonce::NonceManager, storage::StorageCtx};
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
 };
-use tempo_revm::{TempoHaltReason, evm::TempoContext};
+use tempo_revm::{TempoHaltReason, TempoInvalidTransaction, evm::TempoContext};
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -103,6 +104,8 @@ pub struct TempoTxResult {
     /// Used by the payload builder to score blocks by actual proposer revenue. The value is the
     /// post-feeAMM amount, regardless of route shape — absorbs any number of pool haircuts.
     validator_fee: U256,
+    /// Expiring nonce replay mark to commit at block finalization.
+    expiring_nonce_mark: Option<ExpiringNonceMark>,
 }
 
 impl TempoTxResult {
@@ -152,6 +155,15 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
     incentive_gas_used: u64,
+    expiring_nonce_marks: Vec<ExpiringNonceMark>,
+    expiring_nonce_hashes: HashSet<B256>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ExpiringNonceMark {
+    tx_hash: B256,
+    replay_hash: B256,
+    valid_before: u64,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -179,6 +191,8 @@ where
             section: BlockSection::StartOfBlock,
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
+            expiring_nonce_marks: Vec::new(),
+            expiring_nonce_hashes: HashSet::new(),
         }
     }
 
@@ -454,6 +468,65 @@ where
             }
         }
     }
+
+    fn expiring_nonce_mark(
+        &self,
+        tx: &TempoTxEnvelope,
+        sender: Address,
+    ) -> Option<ExpiringNonceMark> {
+        let spec = self.evm().cfg.spec;
+        if !spec.is_t1() || !tx.is_expiring_nonce() {
+            return None;
+        }
+
+        let aa = tx.as_aa()?;
+        let valid_before = aa.tx().valid_before?.get();
+        let replay_hash = if spec.is_t1b() {
+            aa.expiring_nonce_hash(sender)
+        } else {
+            *tx.tx_hash()
+        };
+
+        Some(ExpiringNonceMark {
+            tx_hash: *tx.tx_hash(),
+            replay_hash,
+            valid_before,
+        })
+    }
+
+    fn duplicate_expiring_nonce_error(tx_hash: B256) -> BlockExecutionError {
+        BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+            hash: tx_hash,
+            error: Box::new(TempoInvalidTransaction::NonceManagerError(
+                "expiring nonce replayed in block".to_string(),
+            )),
+        })
+    }
+
+    fn commit_expiring_nonce_marks(&mut self) -> Result<(), BlockExecutionError> {
+        if self.expiring_nonce_marks.is_empty() {
+            return Ok(());
+        }
+
+        let marks = core::mem::take(&mut self.expiring_nonce_marks);
+        StorageCtx::enter_ctx(self.inner.evm_mut().ctx_mut(), || {
+            let mut nonce_manager = NonceManager::new();
+            for mark in marks {
+                nonce_manager
+                    .check_and_mark_expiring_nonce(mark.replay_hash, mark.valid_before)
+                    .map_err(|err| {
+                        BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                            hash: mark.tx_hash,
+                            error: Box::new(TempoInvalidTransaction::NonceManagerError(
+                                err.to_string(),
+                            )),
+                        })
+                    })?;
+            }
+
+            Ok(())
+        })
+    }
 }
 
 impl<'a, DB, I> BlockExecutor for TempoBlockExecutor<'a, DB, I>
@@ -506,12 +579,14 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
-        let (mut tx_env, recovered) = tx.into_parts();
-        // Remove any prewarming-specific context that was added to the tx env.
-        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-            tempo_tx_env.expiring_nonce_idx = None;
-        }
+        let (tx_env, recovered) = tx.into_parts();
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
+        let expiring_nonce_mark = self.expiring_nonce_mark(recovered.tx(), *recovered.signer());
+        if let Some(mark) = expiring_nonce_mark
+            && self.expiring_nonce_hashes.contains(&mark.replay_hash)
+        {
+            return Err(Self::duplicate_expiring_nonce_error(mark.tx_hash));
+        }
 
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
@@ -555,6 +630,7 @@ where
                 .then(|| recovered.tx().clone()),
             block_gas_used,
             validator_fee,
+            expiring_nonce_mark,
         })
     }
 
@@ -566,9 +642,15 @@ where
             tx,
             block_gas_used,
             validator_fee: _,
+            expiring_nonce_mark,
         } = output;
 
         let gas_output = self.inner.commit_transaction(inner);
+
+        if let Some(mark) = expiring_nonce_mark {
+            self.expiring_nonce_hashes.insert(mark.replay_hash);
+            self.expiring_nonce_marks.push(mark);
+        }
 
         self.section = next_section;
 
@@ -610,7 +692,7 @@ where
     }
 
     fn finish(
-        self,
+        mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         let seen_subblock_signatures = match self.section {
             BlockSection::System {
@@ -627,6 +709,7 @@ where
         let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
 
         let regular_gas_used = self.inner.block_regular_gas_used;
+        self.commit_expiring_nonce_marks()?;
         let (evm, mut result) = self.inner.finish()?;
 
         // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
@@ -1318,6 +1401,7 @@ mod tests {
             tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
+            expiring_nonce_mark: None,
         };
 
         let gas_output = executor.commit_transaction(output);
@@ -1401,6 +1485,7 @@ mod tests {
             tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
+            expiring_nonce_mark: None,
         };
 
         let gas_output = executor.commit_transaction(output);
@@ -1441,6 +1526,7 @@ mod tests {
             tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
+            expiring_nonce_mark: None,
         };
         executor.commit_transaction(output1);
 
@@ -1465,6 +1551,7 @@ mod tests {
             tx: None,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
+            expiring_nonce_mark: None,
         };
         executor.commit_transaction(output2);
 
@@ -1528,6 +1615,7 @@ mod tests {
             tx: None,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
+            expiring_nonce_mark: None,
         };
         executor.commit_transaction(output);
 
@@ -1574,6 +1662,7 @@ mod tests {
             tx: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
+            expiring_nonce_mark: None,
         };
         executor.commit_transaction(output);
 
@@ -1623,6 +1712,7 @@ mod tests {
             tx: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
+            expiring_nonce_mark: None,
         };
         executor.commit_transaction(output);
 
