@@ -10,6 +10,7 @@ pub mod thread_local;
 use alloy::primitives::keccak256;
 pub use thread_local::{CheckpointGuard, StorageCtx};
 
+mod gas_state;
 mod types;
 pub use types::*;
 
@@ -157,6 +158,11 @@ pub trait PrecompileStorageProvider {
         let recovered = alloy::consensus::crypto::secp256k1::recover_signer(&sig, digest);
 
         Ok(recovered.ok().filter(|addr| !addr.is_zero()))
+    }
+
+    fn read_gas_token_balance(&mut self, address: Address) -> Result<GasState> {
+        self.sload(address, *GAS_TOKEN_BALANCE_SLOT)
+            .map(|value| GasState::from(value))
     }
 }
 
