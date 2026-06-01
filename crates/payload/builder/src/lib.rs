@@ -108,6 +108,27 @@ where
     best_txs
 }
 
+const EMPTY_POOL_INITIAL_IDLE_LIMIT: Duration = Duration::from_millis(25);
+
+fn should_wait_for_more_pool_transactions(
+    build_once_with_shared_trie: bool,
+    has_payload_build_budget: bool,
+    cumulative_gas_used: u64,
+    non_shared_gas_limit: u64,
+    pool_transactions_yielded: u64,
+    normal_transaction_fill_idle_elapsed: Duration,
+) -> bool {
+    if !build_once_with_shared_trie
+        || !has_payload_build_budget
+        || cumulative_gas_used >= non_shared_gas_limit
+    {
+        return false;
+    }
+
+    pool_transactions_yielded > 0
+        || normal_transaction_fill_idle_elapsed < EMPTY_POOL_INITIAL_IDLE_LIMIT
+}
+
 #[derive(Debug, Clone)]
 pub struct TempoPayloadBuilder<Provider> {
     pool: TempoTransactionPool<Provider>,
@@ -644,10 +665,14 @@ where
             }
 
             let Some(pool_tx) = best_txs.next() else {
-                if build_once_with_shared_trie
-                    && payload_build_budget.is_some()
-                    && cumulative_gas_used < non_shared_gas_limit
-                {
+                if should_wait_for_more_pool_transactions(
+                    build_once_with_shared_trie,
+                    payload_build_budget.is_some(),
+                    cumulative_gas_used,
+                    non_shared_gas_limit,
+                    pool_transactions_yielded,
+                    normal_transaction_fill_idle_elapsed,
+                ) {
                     std::thread::sleep(Duration::from_millis(1));
                     normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
@@ -1387,6 +1412,34 @@ mod tests {
         );
 
         assert!(!no_updates_called.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn shared_trie_builds_do_not_spend_full_budget_on_initial_empty_pool() {
+        assert!(should_wait_for_more_pool_transactions(
+            true,
+            true,
+            0,
+            1_000_000,
+            0,
+            Duration::ZERO,
+        ));
+        assert!(!should_wait_for_more_pool_transactions(
+            true,
+            true,
+            0,
+            1_000_000,
+            0,
+            EMPTY_POOL_INITIAL_IDLE_LIMIT,
+        ));
+        assert!(should_wait_for_more_pool_transactions(
+            true,
+            true,
+            0,
+            1_000_000,
+            1,
+            EMPTY_POOL_INITIAL_IDLE_LIMIT,
+        ));
     }
 
     trait TestExt {
