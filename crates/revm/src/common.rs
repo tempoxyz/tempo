@@ -1,6 +1,6 @@
 use crate::{TempoInvalidTransaction, TempoTxEnv};
 use alloy_consensus::transaction::{Either, Recovered};
-use alloy_primitives::{Address, Bytes, LogData, TxKind, U256};
+use alloy_primitives::{Address, Bytes, LogData, TxKind, U256, uint};
 use alloy_sol_types::SolCall;
 use core::marker::PhantomData;
 use revm::{
@@ -15,12 +15,15 @@ use tempo_contracts::precompiles::{
 use tempo_precompiles::{
     TIP_FEE_MANAGER_ADDRESS,
     error::{Result as TempoResult, TempoPrecompileError},
-    storage::{Handler, PrecompileStorageProvider, StorageCtx},
+    storage::{Handler, PrecompileStorageProvider, Slot, StorageCtx},
     tip_fee_manager::TipFeeManager,
-    tip20::{ITIP20, TIP20Token},
+    tip20::{ITIP20, TIP20Token, tip20_slots},
     tip403_registry::{AuthRole, TIP403Registry},
 };
 use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
+
+const USD_CURRENCY_SLOT_VALUE: U256 =
+    uint!(0x5553440000000000000000000000000000000000000000000000000000000006_U256);
 
 /// Returns true if the calldata is for a TIP-20 function that should trigger fee token inference.
 /// Only `transfer`, `transferWithMemo`, and `distributeReward` qualify.
@@ -32,6 +35,37 @@ fn is_tip20_fee_inference_call(input: &[u8]) -> bool {
                 | ITIP20::transferWithMemoCall::SELECTOR
                 | ITIP20::distributeRewardCall::SELECTOR
         )
+    })
+}
+
+#[inline]
+fn is_long_string_slot(slot_value: U256) -> bool {
+    (slot_value.byte(0) & 1) != 0
+}
+
+#[inline]
+fn string_len_from_slot(slot_value: U256, is_long: bool) -> TempoResult<usize> {
+    if is_long {
+        let length_u256: U256 = (slot_value - U256::ONE) >> 1;
+        if length_u256 > U256::from(u32::MAX) {
+            return Err(TempoPrecompileError::under_overflow());
+        }
+        Ok(length_u256.to::<usize>())
+    } else {
+        let length = (slot_value.to_be_bytes::<32>()[31] / 2) as usize;
+        if length > 31 {
+            return Err(TempoPrecompileError::Fatal(format!(
+                "short string length {length} exceeds maximum of 31 bytes"
+            )));
+        }
+        Ok(length)
+    }
+}
+
+#[inline]
+fn short_string_from_slot(slot_value: U256, len: usize) -> TempoResult<String> {
+    String::from_utf8(slot_value.to_be_bytes::<32>()[..len].to_vec()).map_err(|err| {
+        TempoPrecompileError::Fatal(format!("Invalid UTF-8 in stored string: {err}"))
     })
 }
 
@@ -112,6 +146,20 @@ pub trait TempoStateAccess<M = ()> {
         Self: Sized,
     {
         StorageCtx::enter(&mut ReadOnlyStorageProvider::new(self, spec), f)
+    }
+
+    /// Reads the TIP20 `currency` storage slot as a raw Solidity short-string word.
+    fn read_tip20_currency_slot(
+        &mut self,
+        spec: TempoHardfork,
+        fee_token: Address,
+    ) -> TempoResult<U256>
+    where
+        Self: Sized,
+    {
+        self.with_read_only_storage_ctx(spec, || {
+            Slot::<U256>::new(tip20_slots::CURRENCY, fee_token).read()
+        })
     }
 
     /// Resolves user-level or transaction-level fee token preference.
@@ -201,6 +249,21 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
+        let currency_slot = self.read_tip20_currency_slot(spec, fee_token)?;
+        if currency_slot == USD_CURRENCY_SLOT_VALUE {
+            return Ok(true);
+        }
+
+        let is_long = is_long_string_slot(currency_slot);
+        let len = string_len_from_slot(currency_slot, is_long)?;
+        if len != 3 {
+            return Ok(false);
+        }
+
+        if !is_long {
+            return Ok(short_string_from_slot(currency_slot, len)?.as_str() == "USD");
+        }
+
         self.with_read_only_storage_ctx(spec, || {
             // SAFETY: caller must ensure prefix is already checked
             let token = TIP20Token::from_address_unchecked(fee_token);
@@ -219,29 +282,41 @@ pub trait TempoStateAccess<M = ()> {
     where
         Self: Sized,
     {
-        self.with_read_only_storage_ctx(spec, || {
-            // SAFETY: caller must ensure prefix is already checked
-            let token = TIP20Token::from_address_unchecked(fee_token);
-            let len = token.currency.len()?;
+        let currency_slot = self
+            .read_tip20_currency_slot(spec, fee_token)
+            .map_err(|err: TempoPrecompileError| EVMError::Custom(err.to_string()))?;
+        if currency_slot == USD_CURRENCY_SLOT_VALUE {
+            return Ok(());
+        }
 
-            let currency = if len > 31 {
-                format!("<{len} bytes>")
-            } else {
-                token.currency.read()?
-            };
+        let is_long = is_long_string_slot(currency_slot);
+        let len = string_len_from_slot(currency_slot, is_long)
+            .map_err(|err: TempoPrecompileError| EVMError::Custom(err.to_string()))?;
 
-            if currency.as_str() != "USD" {
-                return Ok(Err(EVMError::Transaction(
-                    TempoInvalidTransaction::FeeTokenNotUsdCurrency {
-                        address: fee_token,
-                        currency,
-                    },
-                )));
-            }
+        let currency = if len > 31 {
+            format!("<{len} bytes>")
+        } else if is_long {
+            self.with_read_only_storage_ctx(spec, || {
+                // SAFETY: caller must ensure prefix is already checked
+                let token = TIP20Token::from_address_unchecked(fee_token);
+                token.currency.read()
+            })
+            .map_err(|err: TempoPrecompileError| EVMError::Custom(err.to_string()))?
+        } else {
+            short_string_from_slot(currency_slot, len)
+                .map_err(|err: TempoPrecompileError| EVMError::Custom(err.to_string()))?
+        };
 
-            Ok(Ok(()))
-        })
-        .map_err(|err: TempoPrecompileError| EVMError::Custom(err.to_string()))?
+        if currency.as_str() != "USD" {
+            return Err(EVMError::Transaction(
+                TempoInvalidTransaction::FeeTokenNotUsdCurrency {
+                    address: fee_token,
+                    currency,
+                },
+            ));
+        }
+
+        Ok(())
     }
 
     /// Checks if the given token can be used as a fee token.
