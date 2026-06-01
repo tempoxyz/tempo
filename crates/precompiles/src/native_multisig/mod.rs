@@ -308,7 +308,7 @@ fn validate_abi_config_shape(
         prev_owner = Some(owner.owner);
         total_weight = total_weight
             .checked_add(u64::from(owner.weight))
-            .ok_or_else(|| NativeMultisigError::invalid_weight())?;
+            .ok_or_else(NativeMultisigError::invalid_weight)?;
     }
 
     if total_weight > u64::from(u32::MAX) {
