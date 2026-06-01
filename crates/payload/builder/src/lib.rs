@@ -927,6 +927,10 @@ where
         self.metrics
             .system_transactions_execution_duration_seconds
             .record(system_txs_execution_elapsed);
+        if trie_handle.is_some() {
+            // Dropping the hook sends FinishedStateUpdates to the shared trie before we wait on it.
+            executor.evm_mut().db_mut().set_state_hook(None);
+        }
 
         let total_transaction_execution_elapsed = normal_transaction_fill_elapsed
             + total_subblock_transaction_execution_elapsed

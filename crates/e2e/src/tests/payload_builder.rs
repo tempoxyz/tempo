@@ -29,6 +29,8 @@ const POOL_TRANSACTIONS_INCLUSION_RATIO_COUNT_METRIC: &str =
     "reth_tempo_payload_builder_pool_transactions_inclusion_ratio_count";
 const POOL_TRANSACTIONS_INCLUSION_RATIO_LAST_METRIC: &str =
     "reth_tempo_payload_builder_pool_transactions_inclusion_ratio_last";
+const NORMAL_TX_FILL_IDLE_SUM_METRIC: &str =
+    "reth_tempo_payload_builder_normal_transaction_fill_idle_duration_seconds_sum";
 const NULLIFICATIONS_PER_LEADER_METRIC_SUFFIX: &str = "_nullifications_per_leader";
 
 // These tests compute deltas from the process-global Prometheus recorder, so
@@ -71,6 +73,25 @@ fn mixed_validators_build_blocks_with_and_without_shared_sparse_trie_payload_bui
     );
 }
 
+#[test_traced]
+fn shared_sparse_trie_empty_pool_does_not_idle_until_budget() {
+    let _guard = payload_builder_test_lock();
+    let deltas = run_payload_builder_test_with_setup(&[true], 5, |setup| {
+        setup.proposal_return_budget(Duration::from_millis(300))
+    });
+
+    assert!(
+        deltas.normal_transaction_fill_idle_duration_seconds_sum < 0.5,
+        "expected shared sparse-trie empty-pool builds to stop idling before the full \
+         proposal budget; idle sum was {:.3}s",
+        deltas.normal_transaction_fill_idle_duration_seconds_sum
+    );
+    assert_eq!(
+        deltas.nullification_count, 0,
+        "expected empty-pool shared sparse-trie startup to build without consensus nullifications"
+    );
+}
+
 fn payload_builder_test_lock() -> MutexGuard<'static, ()> {
     PAYLOAD_BUILDER_TEST_LOCK
         .lock()
@@ -80,6 +101,18 @@ fn payload_builder_test_lock() -> MutexGuard<'static, ()> {
 fn run_payload_builder_test(
     share_sparse_trie_with_payload_builder: &[bool],
     target_height: u64,
+) -> MetricDelta {
+    run_payload_builder_test_with_setup(
+        share_sparse_trie_with_payload_builder,
+        target_height,
+        core::convert::identity,
+    )
+}
+
+fn run_payload_builder_test_with_setup(
+    share_sparse_trie_with_payload_builder: &[bool],
+    target_height: u64,
+    configure_setup: impl FnOnce(Setup) -> Setup,
 ) -> MetricDelta {
     let _ = tempo_eyre::install();
     let metrics_recorder = install_prometheus_recorder();
@@ -99,12 +132,16 @@ fn run_payload_builder_test(
         metrics_recorder,
         POOL_TRANSACTIONS_INCLUSION_RATIO_COUNT_METRIC,
     );
+    let initial_normal_transaction_fill_idle_duration_seconds_sum =
+        prometheus_metric_value(metrics_recorder, NORMAL_TX_FILL_IDLE_SUM_METRIC).unwrap_or(0.0);
+    let setup = configure_setup(
+        Setup::new()
+            .how_many_signers(share_sparse_trie_with_payload_builder.len() as u32)
+            .epoch_length(100),
+    );
 
     let nullification_count =
         Runner::from(Config::default().with_seed(0)).start(|mut context| async move {
-            let setup = Setup::new()
-                .how_many_signers(share_sparse_trie_with_payload_builder.len() as u32)
-                .epoch_length(100);
             let (mut nodes, _execution_runtime) = setup_validators(&mut context, setup).await;
 
             for (node, share_sparse_trie) in nodes
@@ -149,6 +186,8 @@ fn run_payload_builder_test(
         metrics_recorder,
         POOL_TRANSACTIONS_INCLUSION_RATIO_LAST_METRIC,
     );
+    let final_normal_transaction_fill_idle_duration_seconds_sum =
+        prometheus_metric_value(metrics_recorder, NORMAL_TX_FILL_IDLE_SUM_METRIC).unwrap_or(0.0);
 
     MetricDelta {
         finalization_count: final_finalization_count - initial_finalization_count,
@@ -163,6 +202,9 @@ fn run_payload_builder_test(
         pool_transactions_inclusion_ratio_count: final_pool_transactions_inclusion_ratio_count
             - initial_pool_transactions_inclusion_ratio_count,
         pool_transactions_inclusion_ratio_last,
+        normal_transaction_fill_idle_duration_seconds_sum:
+            final_normal_transaction_fill_idle_duration_seconds_sum
+                - initial_normal_transaction_fill_idle_duration_seconds_sum,
         nullification_count,
     }
 }
@@ -176,6 +218,7 @@ struct MetricDelta {
     pool_transactions_included_count: u64,
     pool_transactions_inclusion_ratio_count: u64,
     pool_transactions_inclusion_ratio_last: Option<f64>,
+    normal_transaction_fill_idle_duration_seconds_sum: f64,
     nullification_count: u64,
 }
 
@@ -203,7 +246,9 @@ fn assert_pool_inclusion_metrics(deltas: &MetricDelta) {
 }
 
 async fn wait_for_height(context: &Context, expected_validators: u32, target_height: u64) {
-    loop {
+    const MAX_HEIGHT_WAIT_SECONDS: u64 = 60;
+
+    for elapsed_seconds in 0..=MAX_HEIGHT_WAIT_SECONDS {
         let validators_at_height = context
             .encode()
             .lines()
@@ -220,7 +265,14 @@ async fn wait_for_height(context: &Context, expected_validators: u32, target_hei
             .count() as u32;
 
         if validators_at_height == expected_validators {
-            break;
+            return;
+        }
+
+        if elapsed_seconds == MAX_HEIGHT_WAIT_SECONDS {
+            panic!(
+                "timed out waiting for {expected_validators} validators to reach height \
+                 {target_height}; {validators_at_height} validators reached it"
+            );
         }
 
         context.sleep(Duration::from_secs(1)).await;
