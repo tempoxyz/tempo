@@ -25,7 +25,7 @@ use reth_revm::{
     state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
 use std::{
-    collections::{BTreeMap, HashMap, HashSet},
+    collections::{HashMap, HashSet},
     time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
@@ -66,7 +66,7 @@ fn collected_fee_slot(recipient: Address, token: Address) -> U256 {
 }
 
 fn collected_fee_state<DB>(
-    increments: &BTreeMap<(Address, Address), U256>,
+    increments: &HashMap<(Address, Address), U256>,
     state: &mut DB,
 ) -> Result<EvmState, BlockExecutionError>
 where
@@ -285,7 +285,7 @@ where
         }
 
         let aggregate_start = Instant::now();
-        let mut increments = BTreeMap::<(Address, Address), U256>::new();
+        let mut increments = HashMap::<(Address, Address), U256>::new();
         for credit in &self.pending_collected_fee_credits {
             if credit.amount.is_zero() {
                 continue;
