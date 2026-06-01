@@ -13289,7 +13289,6 @@ dependencies = [
  "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
- "alloy-sol-types",
  "crossbeam-channel",
  "metrics",
  "parking_lot",
