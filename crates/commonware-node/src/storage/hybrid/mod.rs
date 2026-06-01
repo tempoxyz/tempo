@@ -88,7 +88,7 @@ use reth_provider::{
     BlockReader, BlockSource, ProviderError, ProviderResult,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
@@ -142,6 +142,7 @@ where
             .map(|nh| nh.number)
     }
 
+    #[instrument(skip_all, fields(height), err)]
     fn block_by_height(&self, height: u64) -> ProviderResult<Option<Block>> {
         // Gate the lookup on reth's finalized watermark so the marshal can
         // never be served a block that reth has not yet marked as
@@ -162,13 +163,14 @@ where
                 Block::from_execution_block_unchecked(SealedBlock::seal_slow(block), None)
             })),
             Err(err @ ProviderError::BlockExpired { .. }) => {
-                warn!(error = %eyre::Report::new(err), "cannot find block");
+                info!(error = %eyre::Report::new(err), "cannot find block");
                 Ok(None)
             }
             Err(bad_error) => Err(bad_error),
         }
     }
 
+    #[instrument(skip_all, fields(hash), err)]
     fn block_by_hash(&self, hash: B256) -> ProviderResult<Option<Block>> {
         // `Canonical` (not `Any`) so the marshal can never be served a
         // block that lives only in reth's pending in-memory tree — see
@@ -178,7 +180,7 @@ where
                 Block::from_execution_block_unchecked(SealedBlock::seal_slow(block), None)
             })),
             Err(err @ ProviderError::BlockExpired { .. }) => {
-                warn!(error = %eyre::Report::new(err), "cannot find block");
+                info!(error = %eyre::Report::new(err), "cannot find block");
                 Ok(None)
             }
             Err(bad_error) => Err(bad_error),
