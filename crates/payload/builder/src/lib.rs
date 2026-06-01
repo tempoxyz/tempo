@@ -921,7 +921,11 @@ where
             }
             .unzip();
 
-        let block_access_list = db.take_built_alloy_bal();
+        let block_access_list = if self.enable_bal {
+            db.take_built_alloy_bal()
+        } else {
+            None
+        };
         let block_access_list_hash = block_access_list
             .as_ref()
             .map(|bal| compute_block_access_list_hash(bal.as_slice()));
