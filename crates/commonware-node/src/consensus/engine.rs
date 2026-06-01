@@ -306,6 +306,7 @@ where
             dkg_manager_mailbox,
 
             application,
+            application_mailbox,
 
             executor,
             executor_mailbox,
@@ -354,6 +355,7 @@ where
     /// Acts as the glue between the consensus and execution layers implementing
     /// the `[commonware_consensus::Automaton]` trait.
     application: application::Actor<TContext>,
+    application_mailbox: application::Mailbox,
 
     /// Responsible for keeping the consensus layer state and execution layer
     /// states in sync. Drives the chain state of the execution layer by sending
@@ -492,7 +494,13 @@ where
                 self.epoch_manager_mailbox,
                 Reporters::from((
                     self.executor_mailbox,
-                    Reporters::from((self.dkg_manager_mailbox.clone(), self.peer_manager_mailbox)),
+                    Reporters::from((
+                        self.application_mailbox,
+                        Reporters::from((
+                            self.dkg_manager_mailbox.clone(),
+                            self.peer_manager_mailbox,
+                        )),
+                    )),
                 )),
             )),
             self.broadcast_mailbox,

@@ -198,6 +198,7 @@ reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "03
 reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "03d9691e7e8b26897bd4f32a053bab46ee84fd11" }
 reth-trie-common = { git = "https://github.com/paradigmxyz/reth", rev = "03d9691e7e8b26897bd4f32a053bab46ee84fd11" }
 reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "03d9691e7e8b26897bd4f32a053bab46ee84fd11" }
+reth-trie-parallel = { git = "https://github.com/paradigmxyz/reth", rev = "03d9691e7e8b26897bd4f32a053bab46ee84fd11" }
 
 reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "03d9691e7e8b26897bd4f32a053bab46ee84fd11", features = [
   "std",

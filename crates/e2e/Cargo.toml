@@ -77,5 +77,9 @@ alloy-network.workspace = true
 
 rand_08.workspace = true
 
+[features]
+default = []
+bal = ["tempo-commonware-node/bal", "tempo-node/bal"]
+
 [lints]
 workspace = true

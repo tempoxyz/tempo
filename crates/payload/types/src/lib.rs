@@ -7,7 +7,11 @@ mod attrs;
 mod budget;
 
 use alloy_primitives::{B256, Bytes};
-pub use attrs::TempoPayloadAttributes;
+pub use attrs::{
+    PayloadBuildControl, PayloadBuildControlSnapshot, PayloadProposalContext,
+    PayloadProposalContextCancelled, ProposalTimingAlreadyAttached, SpeculativePayloadParent,
+    TempoPayloadAttributes,
+};
 pub use budget::{MarshalPersistEstimator, marshal_persist_estimate, observe_marshal_persist};
 use std::{sync::Arc, time::Duration};
 

@@ -145,11 +145,13 @@ impl Block {
     }
 
     /// Returns the wrapped block.
+    #[cfg(feature = "bal")]
     pub(crate) fn block(&self) -> &SealedBlock<tempo_primitives::Block> {
         &self.execution_block
     }
 
     /// Returns the block access list of the wrapped block.
+    #[cfg_attr(not(feature = "bal"), allow(dead_code))]
     pub(crate) fn block_access_list(&self) -> Option<&Bytes> {
         #[cfg(feature = "bal")]
         {
@@ -159,6 +161,21 @@ impl Block {
         {
             None
         }
+    }
+
+    /// Returns a validated BAL sidecar, panicking if the BAL invariant is broken.
+    #[cfg(feature = "bal")]
+    pub(crate) fn required_block_access_list(&self) -> &Bytes {
+        let block_access_list = self
+            .block_access_list
+            .as_ref()
+            .expect("BAL feature requires verified blocks to carry a block access list sidecar");
+        validate_block_access_list_hash(
+            self.execution_block.block_access_list_hash(),
+            Some(block_access_list),
+        )
+        .expect("BAL feature requires block access list sidecar to match the block header");
+        block_access_list
     }
 }
 
@@ -670,6 +687,31 @@ mod tests {
             decoded.block_access_list().map(|bytes| bytes.as_ref()),
             Some(block_access_list.as_ref())
         );
+    }
+
+    #[cfg(feature = "bal")]
+    #[test]
+    fn required_block_access_list_returns_valid_sidecar() {
+        let block_access_list = bytes!("0xc0");
+        let execution_block =
+            execution_block_with_block_access_list_hash(keccak256(block_access_list.as_ref()));
+        let block =
+            Block::from_execution_block(execution_block, Some(block_access_list.clone())).unwrap();
+
+        assert_eq!(
+            block.required_block_access_list().as_ref(),
+            block_access_list.as_ref()
+        );
+    }
+
+    #[cfg(feature = "bal")]
+    #[test]
+    #[should_panic(expected = "BAL feature requires verified blocks to carry a block access list")]
+    fn required_block_access_list_panics_without_sidecar() {
+        let execution_block = execution_block_with_block_access_list_hash(B256::ZERO);
+        let block = Block::from_execution_block_unchecked(execution_block, None);
+
+        let _ = block.required_block_access_list();
     }
 
     #[cfg(feature = "bal")]

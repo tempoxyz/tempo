@@ -3,12 +3,16 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+#[cfg(feature = "bal")]
+pub mod bal_overlay;
 mod budget;
+pub mod job;
 mod metrics;
 mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;
+pub use job::TempoPayloadJobGenerator;
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
@@ -352,7 +356,34 @@ where
 
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
-        let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        #[cfg(feature = "bal")]
+        let mut state_provider = if let Some(speculative_parent) = attributes.speculative_parent() {
+            if speculative_parent.parent_hash() != parent_header.hash() {
+                return Err(PayloadBuilderError::other(
+                    ProviderError::StateForHashNotFound(parent_header.hash()),
+                ));
+            }
+
+            let base_provider = self
+                .provider
+                .state_by_block_hash(speculative_parent.base_parent_hash())?;
+            Box::new(bal_overlay::BalOverlayStateProvider::new(
+                base_provider,
+                speculative_parent.parent_header(),
+                speculative_parent.block_access_list().clone(),
+            )?) as reth_storage_api::StateProviderBox
+        } else {
+            self.provider.state_by_block_hash(parent_header.hash())?
+        };
+        #[cfg(not(feature = "bal"))]
+        let mut state_provider = {
+            if attributes.speculative_parent().is_some() {
+                return Err(PayloadBuilderError::other(
+                    ProviderError::UnsupportedProvider,
+                ));
+            }
+            self.provider.state_by_block_hash(parent_header.hash())?
+        };
         if let Some(execution_cache) = &execution_cache {
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
@@ -472,7 +503,7 @@ where
             .evm_config
             .next_evm_env(&parent_header, &next_attributes)
             .map_err(PayloadBuilderError::other)?;
-        let ctx = self
+        let mut ctx = self
             .evm_config
             .context_for_next_block(&parent_header, next_attributes)
             .map_err(PayloadBuilderError::other)?;
@@ -550,13 +581,25 @@ where
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
         let payload_build_budget = attributes.payload_build_budget();
+        let payload_build_control = attributes.payload_build_control().cloned();
+        let is_budgeted_build = payload_build_budget.is_some() || payload_build_control.is_some();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let block_build_stop_reason = loop {
             check_cancel!();
 
-            if let Some(build_budget) = payload_build_budget {
-                let elapsed = start.elapsed();
+            let build_budget_snapshot = payload_build_control
+                .as_ref()
+                .map(|control| control.snapshot());
+            let active_build_budget = build_budget_snapshot
+                .as_ref()
+                .map(|snapshot| snapshot.proposal_return_budget())
+                .or(payload_build_budget);
+            if let Some(build_budget) = active_build_budget {
+                let elapsed = build_budget_snapshot
+                    .as_ref()
+                    .map(|snapshot| snapshot.builder_elapsed())
+                    .unwrap_or_else(|| start.elapsed());
                 if payload_budget_exhausted(
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
@@ -582,12 +625,17 @@ where
             }
 
             let Some(pool_tx) = best_txs.next() else {
-                if build_once_with_shared_trie
-                    && payload_build_budget.is_some()
-                    && cumulative_gas_used < non_shared_gas_limit
-                {
+                let control_pending_proposal = payload_build_control
+                    .as_ref()
+                    .is_some_and(|control| !control.proposal_timing_attached());
+                let can_wait_for_pool = cumulative_gas_used < non_shared_gas_limit
+                    && is_budgeted_build
+                    && (build_once_with_shared_trie || control_pending_proposal);
+                if can_wait_for_pool {
                     std::thread::sleep(Duration::from_millis(1));
-                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                    if !control_pending_proposal {
+                        normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                    }
                     continue;
                 }
                 let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
@@ -725,7 +773,10 @@ where
                 executor.receipts().last().unwrap().clone(),
             ));
         };
-        let elapsed_at_tx_cutoff = start.elapsed();
+        let elapsed_at_tx_cutoff = payload_build_control
+            .as_ref()
+            .map(|control| control.snapshot().builder_elapsed())
+            .unwrap_or_else(|| start.elapsed());
         let validation_work_at_tx_cutoff =
             elapsed_at_tx_cutoff.saturating_sub(normal_transaction_fill_idle_elapsed);
         drop(_block_fill_span);
@@ -929,6 +980,19 @@ where
             .blocking_recv()
             .map_err(PayloadBuilderError::other)?;
 
+        if attributes.consensus_context().is_none()
+            && let Some(control) = attributes.payload_build_control()
+        {
+            match control.wait_for_proposal_context_while(|| cancel.is_cancelled()) {
+                Ok(proposal_context) => {
+                    ctx.inner.extra_data = proposal_context.extra_data().clone();
+                    ctx.consensus_context = Some(proposal_context.consensus_context());
+                }
+                Err(_) if cancel.is_cancelled() => return Ok(BuildOutcome::Cancelled),
+                Err(error) => return Err(PayloadBuilderError::other(error)),
+            }
+        }
+
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
                 evm_env,
@@ -1031,9 +1095,12 @@ where
             .pool_transactions_inclusion_ratio_last
             .set(pool_transactions_inclusion_ratio);
 
-        let elapsed = start.elapsed();
+        let elapsed = payload_build_control
+            .as_ref()
+            .map(|control| control.snapshot().builder_elapsed())
+            .unwrap_or_else(|| start.elapsed());
         let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
-        if payload_build_budget.is_some() {
+        if is_budgeted_build {
             self.update_build_time_multiplier(
                 validation_work_duration,
                 validation_work_at_tx_cutoff,

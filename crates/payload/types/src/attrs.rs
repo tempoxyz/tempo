@@ -3,9 +3,15 @@ use alloy_rpc_types_engine::PayloadId;
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
 use reth_node_api::PayloadAttributes;
+use reth_primitives_traits::{AlloyBlockHeader as _, SealedHeader};
 use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
-use tempo_primitives::{RecoveredSubBlock, TempoConsensusContext};
+use std::{
+    error::Error,
+    fmt,
+    sync::{Arc, Condvar, Mutex, MutexGuard},
+    time::{Duration, Instant},
+};
+use tempo_primitives::{RecoveredSubBlock, TempoConsensusContext, TempoHeader};
 
 /// Container type for all components required to build a payload.
 ///
@@ -27,6 +33,16 @@ pub struct TempoPayloadAttributes {
     /// builder should not stop early for block pacing.
     #[serde(skip)]
     payload_build_budget: Option<Duration>,
+    /// Shared build-control state for consensus payloads.
+    ///
+    /// This lets consensus start replayable build work before the proposal
+    /// context exists, then attach proposer timing later without resetting
+    /// elapsed build accounting.
+    #[serde(skip)]
+    payload_build_control: Option<PayloadBuildControl>,
+    /// Noncanonical BAL-backed parent state for speculative child builds.
+    #[serde(skip)]
+    speculative_parent: Option<SpeculativePayloadParent>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -76,6 +92,8 @@ impl TempoPayloadAttributes {
                 slot_number: None,
             },
             payload_build_budget: None,
+            payload_build_control: None,
+            speculative_parent: None,
             timestamp_millis_part,
             extra_data,
             proposer_public_key,
@@ -104,6 +122,18 @@ impl TempoPayloadAttributes {
         self
     }
 
+    /// Sets the shared build-control handle for this payload build.
+    pub fn with_payload_build_control(mut self, control: PayloadBuildControl) -> Self {
+        self.payload_build_control = Some(control);
+        self
+    }
+
+    /// Sets the BAL-backed speculative parent for this payload build.
+    pub fn with_speculative_parent(mut self, parent: SpeculativePayloadParent) -> Self {
+        self.speculative_parent = Some(parent);
+        self
+    }
+
     /// Returns the consensus-provided build budget, if this is a paced build.
     ///
     /// `None` is intentional for non-consensus builds such as dev or external
@@ -111,6 +141,16 @@ impl TempoPayloadAttributes {
     /// block-time budget.
     pub fn payload_build_budget(&self) -> Option<Duration> {
         self.payload_build_budget
+    }
+
+    /// Returns the shared build-control handle, if this is a controlled build.
+    pub fn payload_build_control(&self) -> Option<&PayloadBuildControl> {
+        self.payload_build_control.as_ref()
+    }
+
+    /// Returns the BAL-backed speculative parent, if any.
+    pub fn speculative_parent(&self) -> Option<&SpeculativePayloadParent> {
+        self.speculative_parent.as_ref()
     }
 
     /// Returns the milliseconds portion of the timestamp.
@@ -145,6 +185,8 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
         Self {
             inner,
             payload_build_budget: None,
+            payload_build_control: None,
+            speculative_parent: None,
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
             proposer_public_key: None,
@@ -153,6 +195,272 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
         }
     }
 }
+
+/// Parent data used when a speculative child is built before its parent block is canonical.
+#[derive(Clone, Debug)]
+pub struct SpeculativePayloadParent {
+    /// Header of the block this payload builds on.
+    parent_header: Arc<SealedHeader<TempoHeader>>,
+    /// RLP-encoded BAL sidecar for the parent block.
+    block_access_list: Bytes,
+}
+
+impl SpeculativePayloadParent {
+    /// Creates a speculative parent descriptor.
+    pub fn new(parent_header: SealedHeader<TempoHeader>, block_access_list: Bytes) -> Self {
+        Self {
+            parent_header: Arc::new(parent_header),
+            block_access_list,
+        }
+    }
+
+    /// Returns the parent header.
+    pub fn parent_header(&self) -> Arc<SealedHeader<TempoHeader>> {
+        self.parent_header.clone()
+    }
+
+    /// Returns the parent block hash.
+    pub fn parent_hash(&self) -> B256 {
+        self.parent_header.hash()
+    }
+
+    /// Returns the parent-of-parent block hash used as the base state.
+    pub fn base_parent_hash(&self) -> B256 {
+        self.parent_header.parent_hash()
+    }
+
+    /// Returns the RLP-encoded BAL sidecar for the parent block.
+    pub fn block_access_list(&self) -> &Bytes {
+        &self.block_access_list
+    }
+}
+
+/// Shared control state for a consensus payload build.
+///
+/// The handle is intentionally cloneable and internally synchronized so the
+/// consensus actor can attach proposer timing while the payload builder is
+/// already running on a blocking worker.
+#[derive(Clone, Debug)]
+pub struct PayloadBuildControl {
+    inner: Arc<PayloadBuildControlInner>,
+}
+
+#[derive(Debug)]
+struct PayloadBuildControlInner {
+    proposal_return_budget: Duration,
+    builder_start: Instant,
+    proposal_timing: Mutex<Option<ProposalTiming>>,
+    proposal_timing_changed: Condvar,
+}
+
+#[derive(Clone, Debug)]
+struct ProposalTiming {
+    propose_start: Instant,
+    payload_context: Option<PayloadProposalContext>,
+}
+
+/// Consensus payload fields that may be attached after speculative execution starts.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PayloadProposalContext {
+    extra_data: Bytes,
+    consensus_context: TempoConsensusContext,
+}
+
+impl PayloadProposalContext {
+    /// Creates proposal sealing context from the final consensus fields.
+    pub fn new(extra_data: Bytes, consensus_context: TempoConsensusContext) -> Self {
+        Self {
+            extra_data,
+            consensus_context,
+        }
+    }
+
+    /// Returns the extra data to seal into the header.
+    pub fn extra_data(&self) -> &Bytes {
+        &self.extra_data
+    }
+
+    /// Returns the final consensus context to seal into the header.
+    pub fn consensus_context(&self) -> TempoConsensusContext {
+        self.consensus_context
+    }
+}
+
+/// Immutable view of the current build-control state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PayloadBuildControlSnapshot {
+    proposal_return_budget: Duration,
+    builder_elapsed: Duration,
+    proposal_elapsed: Option<Duration>,
+}
+
+impl PayloadBuildControl {
+    /// Creates a build-control handle whose replayable work budget starts now.
+    pub fn new(proposal_return_budget: Duration) -> Self {
+        Self::new_at(proposal_return_budget, Instant::now())
+    }
+
+    /// Creates a build-control handle with an explicit builder start time.
+    pub fn new_at(proposal_return_budget: Duration, builder_start: Instant) -> Self {
+        Self {
+            inner: Arc::new(PayloadBuildControlInner {
+                proposal_return_budget,
+                builder_start,
+                proposal_timing: Mutex::new(None),
+                proposal_timing_changed: Condvar::new(),
+            }),
+        }
+    }
+
+    /// Attaches the proposal start time once `handle_propose` reaches this build.
+    pub fn attach_proposal_timing(
+        &self,
+        propose_start: Instant,
+    ) -> Result<(), ProposalTimingAlreadyAttached> {
+        let mut proposal_timing = self.proposal_timing();
+        if proposal_timing.is_some() {
+            return Err(ProposalTimingAlreadyAttached);
+        }
+
+        *proposal_timing = Some(ProposalTiming {
+            propose_start,
+            payload_context: None,
+        });
+        self.inner.proposal_timing_changed.notify_all();
+        Ok(())
+    }
+
+    /// Attaches proposal timing and the consensus fields needed to seal this payload.
+    pub fn attach_proposal_context(
+        &self,
+        propose_start: Instant,
+        extra_data: Bytes,
+        consensus_context: TempoConsensusContext,
+    ) -> Result<(), ProposalTimingAlreadyAttached> {
+        let mut proposal_timing = self.proposal_timing();
+        if proposal_timing.is_some() {
+            return Err(ProposalTimingAlreadyAttached);
+        }
+
+        *proposal_timing = Some(ProposalTiming {
+            propose_start,
+            payload_context: Some(PayloadProposalContext {
+                extra_data,
+                consensus_context,
+            }),
+        });
+        self.inner.proposal_timing_changed.notify_all();
+        Ok(())
+    }
+
+    /// Returns true once proposer timing has been attached.
+    pub fn proposal_timing_attached(&self) -> bool {
+        self.proposal_timing().is_some()
+    }
+
+    /// Returns the attached proposal context, if one has been provided.
+    pub fn proposal_context(&self) -> Option<PayloadProposalContext> {
+        self.proposal_timing()
+            .as_ref()
+            .and_then(|timing| timing.payload_context.clone())
+    }
+
+    /// Waits until proposal context is attached or `should_cancel` returns true.
+    pub fn wait_for_proposal_context_while(
+        &self,
+        should_cancel: impl Fn() -> bool,
+    ) -> Result<PayloadProposalContext, PayloadProposalContextCancelled> {
+        let mut proposal_timing = self.proposal_timing();
+        loop {
+            if let Some(payload_context) = proposal_timing
+                .as_ref()
+                .and_then(|timing| timing.payload_context.clone())
+            {
+                return Ok(payload_context);
+            }
+            if should_cancel() {
+                return Err(PayloadProposalContextCancelled);
+            }
+
+            let (guard, _) = self
+                .inner
+                .proposal_timing_changed
+                .wait_timeout(proposal_timing, Duration::from_millis(1))
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            proposal_timing = guard;
+        }
+    }
+
+    /// Returns a consistent snapshot of the control state at `Instant::now()`.
+    pub fn snapshot(&self) -> PayloadBuildControlSnapshot {
+        self.snapshot_at(Instant::now())
+    }
+
+    /// Returns a consistent snapshot of the control state at `now`.
+    pub fn snapshot_at(&self, now: Instant) -> PayloadBuildControlSnapshot {
+        let proposal_timing = self.proposal_timing();
+        PayloadBuildControlSnapshot {
+            proposal_return_budget: self.inner.proposal_return_budget,
+            builder_elapsed: now.saturating_duration_since(self.inner.builder_start),
+            proposal_elapsed: proposal_timing
+                .as_ref()
+                .map(|timing| now.saturating_duration_since(timing.propose_start)),
+        }
+    }
+
+    fn proposal_timing(&self) -> MutexGuard<'_, Option<ProposalTiming>> {
+        self.inner
+            .proposal_timing
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
+}
+
+impl PayloadBuildControlSnapshot {
+    /// Returns the full proposal return budget for this build.
+    pub fn proposal_return_budget(&self) -> Duration {
+        self.proposal_return_budget
+    }
+
+    /// Returns elapsed replayable build work time since verify-time dispatch.
+    pub fn builder_elapsed(&self) -> Duration {
+        self.builder_elapsed
+    }
+
+    /// Returns elapsed proposer time if `handle_propose` has attached.
+    pub fn proposal_elapsed(&self) -> Option<Duration> {
+        self.proposal_elapsed
+    }
+
+    /// Returns true once proposer timing has been attached.
+    pub fn proposal_timing_attached(&self) -> bool {
+        self.proposal_elapsed.is_some()
+    }
+}
+
+/// Error returned when proposal timing is attached more than once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ProposalTimingAlreadyAttached;
+
+impl fmt::Display for ProposalTimingAlreadyAttached {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("proposal timing is already attached to this payload build")
+    }
+}
+
+impl Error for ProposalTimingAlreadyAttached {}
+
+/// Error returned when a speculative payload is cancelled before proposal context is attached.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PayloadProposalContextCancelled;
+
+impl fmt::Display for PayloadProposalContextCancelled {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("payload build was cancelled before proposal context was attached")
+    }
+}
+
+impl Error for PayloadProposalContextCancelled {}
 
 impl PayloadAttributes for TempoPayloadAttributes {
     fn payload_id(&self, parent_hash: &B256) -> PayloadId {
@@ -427,6 +735,78 @@ mod tests {
         let mut attrs = attrs;
         attrs.timestamp = 123;
         assert_eq!(attrs.inner.timestamp, 123);
+    }
+
+    #[test]
+    fn payload_build_control_tracks_verify_time_and_late_proposal_attach() {
+        let builder_start = Instant::now();
+        let control = PayloadBuildControl::new_at(Duration::from_millis(300), builder_start);
+
+        let before_attach = control.snapshot_at(builder_start + Duration::from_millis(25));
+        assert_eq!(
+            before_attach.proposal_return_budget(),
+            Duration::from_millis(300)
+        );
+        assert_eq!(before_attach.builder_elapsed(), Duration::from_millis(25));
+        assert_eq!(before_attach.proposal_elapsed(), None);
+        assert!(!before_attach.proposal_timing_attached());
+        assert!(!control.proposal_timing_attached());
+
+        let propose_start = builder_start + Duration::from_millis(40);
+        control.attach_proposal_timing(propose_start).unwrap();
+
+        let after_attach = control.snapshot_at(builder_start + Duration::from_millis(75));
+        assert_eq!(after_attach.builder_elapsed(), Duration::from_millis(75));
+        assert_eq!(
+            after_attach.proposal_elapsed(),
+            Some(Duration::from_millis(35))
+        );
+        assert!(after_attach.proposal_timing_attached());
+        assert!(control.proposal_timing_attached());
+    }
+
+    #[test]
+    fn payload_build_control_attaches_and_waits_for_proposal_context() {
+        let control = PayloadBuildControl::new(Duration::from_millis(300));
+        let consensus_context = TempoConsensusContext {
+            epoch: 1,
+            view: 2,
+            parent_view: 1,
+            proposer: PublicKey::from_seed([0xab; 32]),
+        };
+        let extra_data = Bytes::from_static(b"dkg");
+
+        control
+            .attach_proposal_context(Instant::now(), extra_data.clone(), consensus_context)
+            .unwrap();
+
+        let context = control
+            .wait_for_proposal_context_while(|| false)
+            .expect("proposal context should be attached");
+        assert_eq!(context.extra_data(), &extra_data);
+        assert_eq!(context.consensus_context(), consensus_context);
+        assert_eq!(control.proposal_context(), Some(context));
+    }
+
+    #[test]
+    fn payload_build_control_wait_cancel_is_observable() {
+        let control = PayloadBuildControl::new(Duration::from_millis(300));
+
+        assert_eq!(
+            control.wait_for_proposal_context_while(|| true),
+            Err(PayloadProposalContextCancelled)
+        );
+    }
+
+    #[test]
+    fn payload_build_control_rejects_double_attach() {
+        let control = PayloadBuildControl::new(Duration::from_millis(300));
+        control.attach_proposal_timing(Instant::now()).unwrap();
+
+        assert_eq!(
+            control.attach_proposal_timing(Instant::now()),
+            Err(ProposalTimingAlreadyAttached)
+        );
     }
 
     #[test]
