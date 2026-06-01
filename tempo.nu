@@ -355,7 +355,7 @@ def resolve-git-ref-label [sha: string, fallback: string] {
 }
 
 def bench-cache-key [commit_sha: string, features: string, no_default_features: bool] {
-    if not $no_default_features {
+    if (not $no_default_features) and $features == $DEFAULT_FEATURES {
         return $commit_sha
     }
 
@@ -368,7 +368,8 @@ def bench-cache-key [commit_sha: string, features: string, no_default_features: 
         | str replace -a " " "_"
     }
 
-    $"($commit_sha)-no-default-($feature_key)"
+    let mode_key = if $no_default_features { "no-default" } else { "features" }
+    $"($commit_sha)-($mode_key)-($feature_key)"
 }
 
 # Try to download cached binaries from MinIO for a given commit SHA.
