@@ -51,7 +51,7 @@ use reth_primitives_traits::{
     Recovered, RecoveredBlock, transaction::error::InvalidTransactionError,
 };
 use reth_revm::{
-    State, context::Block, database::StateProviderDatabase,
+    State, cancelled::CancelOnDrop, context::Block, database::StateProviderDatabase,
     db::states::bundle_state::BundleRetention,
 };
 use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
@@ -64,6 +64,7 @@ use std::{
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
+        mpsc::{Receiver, RecvTimeoutError},
     },
     time::{Duration, Instant},
 };
@@ -92,6 +93,28 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
                 .is_some_and(|valid| valid.get() <= timestamp)
         })
     })
+}
+
+const SPARSE_TRIE_CANCEL_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+enum CancelableRecv<T> {
+    Received(T),
+    Cancelled,
+    Disconnected,
+}
+
+fn recv_sparse_trie_with_cancel<T>(rx: Receiver<T>, cancel: &CancelOnDrop) -> CancelableRecv<T> {
+    loop {
+        if cancel.is_cancelled() {
+            return CancelableRecv::Cancelled;
+        }
+
+        match rx.recv_timeout(SPARSE_TRIE_CANCEL_POLL_INTERVAL) {
+            Ok(value) => return CancelableRecv::Received(value),
+            Err(RecvTimeoutError::Timeout) => {}
+            Err(RecvTimeoutError::Disconnected) => return CancelableRecv::Disconnected,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -927,17 +950,27 @@ where
         drop(roots_tx);
 
         let (evm, execution_result) = executor.finish()?;
+        check_cancel!();
         let evm_env = evm.into_env();
 
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
+        check_cancel!();
 
-        let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
+        let hashed_state = if let Some(hashed_state_rx) = trie_handle
             .as_mut()
-            .map(|handle| handle.take_hashed_state_rx().recv())
+            .map(|handle| handle.take_hashed_state_rx())
         {
-            hashed_state
+            match recv_sparse_trie_with_cancel(hashed_state_rx, &cancel) {
+                CancelableRecv::Received(hashed_state) => hashed_state,
+                CancelableRecv::Cancelled => return Ok(BuildOutcome::Cancelled),
+                CancelableRecv::Disconnected => {
+                    check_cancel!();
+                    finish_provider.hashed_post_state(&db.bundle_state)
+                }
+            }
         } else {
+            check_cancel!();
             finish_provider.hashed_post_state(&db.bundle_state)
         };
 
@@ -945,8 +978,8 @@ where
             if let Some(mut handle) = trie_handle {
                 let state_root_wait_start = Instant::now();
                 let _span = debug_span!(target: "payload_builder", "await_state_root").entered();
-                match handle.state_root() {
-                    Ok(outcome) => {
+                match recv_sparse_trie_with_cancel(handle.take_state_root_rx(), &cancel) {
+                    CancelableRecv::Received(Ok(outcome)) => {
                         let elapsed = state_root_wait_start.elapsed();
                         self.metrics
                             .sparse_trie_state_root_wait_duration_seconds
@@ -959,12 +992,21 @@ where
                         );
                         Some((outcome, elapsed))
                     }
-                    Err(err) => {
+                    CancelableRecv::Received(Err(err)) => {
                         warn!(
                             target: "payload_builder",
                             id = %payload_id,
                             %err,
                             "sparse trie failed, falling back to sync state root"
+                        );
+                        None
+                    }
+                    CancelableRecv::Cancelled => return Ok(BuildOutcome::Cancelled),
+                    CancelableRecv::Disconnected => {
+                        warn!(
+                            target: "payload_builder",
+                            id = %payload_id,
+                            "sparse trie state root channel disconnected, falling back to sync state root"
                         );
                         None
                     }
@@ -974,6 +1016,8 @@ where
             }
             .unzip();
 
+        check_cancel!();
+
         let block_access_list = db.take_built_alloy_bal();
         let block_access_list_hash = block_access_list
             .as_ref()
@@ -982,6 +1026,7 @@ where
         let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
             (outcome.state_root, outcome.trie_updates)
         } else {
+            check_cancel!();
             let (state_root, trie_updates) = finish_provider
                 .state_root_with_updates(hashed_state.clone())
                 .map_err(BlockExecutionError::other)?;
@@ -989,9 +1034,12 @@ where
             (state_root, Arc::new(trie_updates))
         };
 
+        check_cancel!();
+
         let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
             .blocking_recv()
             .map_err(PayloadBuilderError::other)?;
+        check_cancel!();
 
         if attributes.consensus_context().is_none()
             && let Some(control) = attributes.payload_build_control()
@@ -1350,6 +1398,44 @@ mod tests {
 
     fn nz(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test valid_before must be non-zero")
+    }
+
+    #[test]
+    fn recv_sparse_trie_with_cancel_receives_value() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        tx.send(7u64).unwrap();
+
+        let cancel = CancelOnDrop::default();
+
+        assert!(matches!(
+            recv_sparse_trie_with_cancel(rx, &cancel),
+            CancelableRecv::Received(7)
+        ));
+    }
+
+    #[test]
+    fn recv_sparse_trie_with_cancel_reports_disconnect() {
+        let (tx, rx) = std::sync::mpsc::channel::<u64>();
+        drop(tx);
+
+        let cancel = CancelOnDrop::default();
+
+        assert!(matches!(
+            recv_sparse_trie_with_cancel(rx, &cancel),
+            CancelableRecv::Disconnected
+        ));
+    }
+
+    #[test]
+    fn recv_sparse_trie_with_cancel_stops_on_cancel() {
+        let (_tx, rx) = std::sync::mpsc::channel::<u64>();
+        let cancel = CancelOnDrop::default();
+        drop(cancel.clone());
+
+        assert!(matches!(
+            recv_sparse_trie_with_cancel(rx, &cancel),
+            CancelableRecv::Cancelled
+        ));
     }
 
     trait TestExt {
