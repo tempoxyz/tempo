@@ -278,6 +278,11 @@ impl TempoPooledTransaction {
         self.tx_env().clone()
     }
 
+    /// Returns a tuple that can be passed to block executor.
+    pub fn executable(&self) -> (TempoTxEnv, &Recovered<TempoTxEnvelope>) {
+        (self.tx_env().clone(), &self.inner.transaction)
+    }
+
     /// Returns a [`WithTxEnv`] wrapper by cloning the cached [`TempoTxEnv`] and
     /// recovered transaction.
     ///

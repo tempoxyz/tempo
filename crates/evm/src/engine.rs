@@ -25,6 +25,7 @@ impl ConfigureEngineEvm<TempoExecutionData> for TempoEvmConfig {
     ) -> Result<ExecutionCtxFor<'a, Self>, Self::Error> {
         let TempoExecutionData {
             block,
+            block_access_list: _,
             validator_set,
         } = payload;
         let mut context = self.context_for_block(block)?;
@@ -179,6 +180,7 @@ mod tests {
 
         let payload = TempoExecutionData {
             block,
+            block_access_list: None,
             validator_set: None,
         };
 
@@ -210,6 +212,7 @@ mod tests {
 
         let payload = TempoExecutionData {
             block,
+            block_access_list: None,
             validator_set: validator_set.clone(),
         };
 
@@ -235,6 +238,7 @@ mod tests {
 
         let payload = TempoExecutionData {
             block: block.clone(),
+            block_access_list: None,
             validator_set: None,
         };
 
