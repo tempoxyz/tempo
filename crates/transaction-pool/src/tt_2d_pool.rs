@@ -4,7 +4,7 @@ use crate::{
 };
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, B256Map, HashMap, HashSet, U256Map},
+    map::{AddressMap, B256Map, HashMap, HashSet, U256Map, hash_map},
 };
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_tracing::tracing::trace;
@@ -22,7 +22,6 @@ use std::{
         BTreeMap, BTreeSet,
         Bound::{Excluded, Unbounded},
         btree_map::Entry,
-        hash_map,
     },
     sync::{
         Arc,
@@ -387,10 +386,12 @@ impl AA2dPool {
         let tx_hash = *transaction.hash();
         let expiring_nonce_hash = transaction.transaction.precomputed_expiring_nonce_hash();
 
-        // Check if already exists (by expiring nonce hash)
-        if self.expiring_nonce_txs.contains_key(&expiring_nonce_hash) {
-            return Err(PoolError::new(tx_hash, PoolErrorKind::AlreadyImported));
-        }
+        let expiring_nonce_entry = match self.expiring_nonce_txs.entry(expiring_nonce_hash) {
+            hash_map::Entry::Occupied(_) => {
+                return Err(PoolError::new(tx_hash, PoolErrorKind::AlreadyImported));
+            }
+            hash_map::Entry::Vacant(entry) => entry,
+        };
 
         // Check per-sender limit
         let sender = transaction.sender();
@@ -404,19 +405,24 @@ impl AA2dPool {
 
         // Create pending transaction
         let pending_tx = PendingTransaction {
-            submission_id: self.next_id(),
+            submission_id: {
+                let id = self.submission_id;
+                self.submission_id = self.submission_id.wrapping_add(1);
+                id
+            },
             priority: TempoTipOrdering::default()
                 .priority(&transaction.transaction, hardfork.base_fee()),
             transaction: transaction.clone(),
         };
         let eviction_key = ExpiringNonceEvictionKey::from_pending(&pending_tx);
-
-        // Notify active BestAA2dTransactions iterators about the new pending transaction
-        self.notify_new_pending(&pending_tx);
+        let pending_tx_update = if self.new_transaction_notifier.receiver_count() > 0 {
+            Some(pending_tx.clone())
+        } else {
+            None
+        };
 
         // Insert into expiring nonce map and by_hash
-        self.expiring_nonce_txs
-            .insert(expiring_nonce_hash, pending_tx);
+        expiring_nonce_entry.insert(pending_tx);
         self.expiring_nonce_eviction_order.insert(eviction_key);
         if let Some(slot) = transaction.transaction.expiring_nonce_slot() {
             self.slot_to_expiring_nonce_hash
@@ -431,6 +437,11 @@ impl AA2dPool {
         trace!(target: "txpool", hash = %tx_hash, "Added expiring nonce transaction");
 
         self.update_metrics();
+
+        // Notify active BestAA2dTransactions iterators about the new pending transaction
+        if let Some(pending_tx) = pending_tx_update {
+            let _ = self.new_transaction_notifier.send(pending_tx);
+        }
 
         // Expiring nonce transactions are always immediately pending
         Ok(AddedTransaction::Pending(AddedPendingTransaction {

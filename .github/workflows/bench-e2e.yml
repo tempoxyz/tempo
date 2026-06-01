@@ -80,7 +80,7 @@ on:
         description: Target transactions per second.
         type: string
         required: true
-        default: "20000"
+        default: "50000"
       accounts:
         description: Number of benchmark accounts.
         type: string
@@ -188,7 +188,7 @@ on:
       tps:
         type: string
         required: false
-        default: "20000"
+        default: "50000"
       accounts:
         type: string
         required: false
