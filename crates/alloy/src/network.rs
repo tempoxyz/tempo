@@ -169,6 +169,7 @@ impl NetworkTransactionBuilder<TempoNetwork> for TempoTransactionRequest {
             || self.key_id.is_some()
             || self.key_type.is_some()
             || self.key_data.is_some()
+            || self.multisig_init.is_some()
             || self.valid_before.is_some()
             || self.valid_after.is_some()
             || self.fee_payer_signature.is_some()
@@ -316,8 +317,8 @@ mod tests {
     use tempo_primitives::{
         SignatureType, TempoSignature,
         transaction::{
-            FEE_PAYER_SIGNATURE_MARKER, KeyAuthorization, PrimitiveSignature,
-            TempoSignedAuthorization,
+            FEE_PAYER_SIGNATURE_MARKER, InitMultisig, KeyAuthorization, MultisigOwner,
+            PrimitiveSignature, TempoSignedAuthorization,
         },
     };
 
@@ -525,6 +526,22 @@ mod tests {
     fn output_tx_type_fee_payer_signature_is_aa() {
         let req = TempoTransactionRequest {
             fee_payer_signature: Some(FEE_PAYER_SIGNATURE_MARKER),
+            ..Default::default()
+        };
+        assert_eq!(req.output_tx_type(), TempoTxType::AA);
+    }
+
+    #[test]
+    fn output_tx_type_multisig_init_is_aa() {
+        let req = TempoTransactionRequest {
+            multisig_init: Some(InitMultisig {
+                threshold: 1,
+                owners: vec![MultisigOwner {
+                    signature_type: SignatureType::Secp256k1,
+                    owner: Address::repeat_byte(0x11),
+                    weight: 1,
+                }],
+            }),
             ..Default::default()
         };
         assert_eq!(req.output_tx_type(), TempoTxType::AA);

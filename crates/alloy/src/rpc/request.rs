@@ -9,8 +9,8 @@ use serde::{Deserialize, Serialize};
 use tempo_primitives::{
     AASigned, SignatureType, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        Call, SignedKeyAuthorization, TempoSignedAuthorization, TempoTypedTransaction,
-        key_authorization::serde_nonzero_quantity_opt,
+        Call, InitMultisig, SignedKeyAuthorization, TempoSignedAuthorization,
+        TempoTypedTransaction, key_authorization::serde_nonzero_quantity_opt,
     },
 };
 
@@ -79,6 +79,10 @@ pub struct TempoTransactionRequest {
     /// Provide a signed KeyAuthorization when the transaction provisions an access key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub key_authorization: Option<SignedKeyAuthorization>,
+
+    /// Initial native multisig config for bootstrapping a derived account.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multisig_init: Option<InitMultisig>,
 
     /// Transaction valid before timestamp in seconds (for expiring nonces, [TIP-1009]).
     /// Transaction can only be included in a block before this timestamp.
@@ -191,6 +195,17 @@ impl TempoTransactionRequest {
         self
     }
 
+    /// Set the native multisig initialization config attached to this transaction.
+    pub fn set_multisig_init(&mut self, multisig_init: InitMultisig) {
+        self.multisig_init = Some(multisig_init);
+    }
+
+    /// Builder-pattern method for setting the native multisig initialization config.
+    pub fn with_multisig_init(mut self, multisig_init: InitMultisig) -> Self {
+        self.multisig_init = Some(multisig_init);
+        self
+    }
+
     /// Set the valid_before timestamp for expiring nonces ([TIP-1009]).
     ///
     /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
@@ -286,6 +301,7 @@ impl TempoTransactionRequest {
             tempo_authorization_list: self.tempo_authorization_list,
             nonce_key: self.nonce_key.unwrap_or_default(),
             key_authorization: self.key_authorization,
+            multisig_init: self.multisig_init,
         })
     }
 }
@@ -412,6 +428,7 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_id: None,
             nonce_key: Some(tx.nonce_key),
             key_authorization: tx.key_authorization,
+            multisig_init: tx.multisig_init,
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,
@@ -478,6 +495,9 @@ pub trait TempoCallBuilderExt {
 
     /// Sets the `key_authorization` field in the [`TempoTransaction`] transaction.
     fn key_authorization(self, key_authorization: SignedKeyAuthorization) -> Self;
+
+    /// Sets the `multisig_init` field in the [`TempoTransaction`] transaction.
+    fn multisig_init(self, multisig_init: InitMultisig) -> Self;
 }
 
 impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
@@ -513,6 +533,10 @@ impl<P: Provider<TempoNetwork>, D: CallDecoder> TempoCallBuilderExt
 
     fn key_authorization(self, key_authorization: SignedKeyAuthorization) -> Self {
         self.map(|request| request.with_key_authorization(key_authorization))
+    }
+
+    fn multisig_init(self, multisig_init: InitMultisig) -> Self {
+        self.map(|request| request.with_multisig_init(multisig_init))
     }
 }
 
@@ -612,6 +636,7 @@ mod tests {
             tempo_authorization_list: vec![],
             nonce_key: TEMPO_EXPIRING_NONCE_KEY,
             key_authorization: None,
+            multisig_init: None,
         };
 
         let request: TempoTransactionRequest = tx.into();
@@ -691,6 +716,7 @@ mod tests {
             tempo_authorization_list: vec![],
             nonce_key: Default::default(),
             key_authorization: None,
+            multisig_init: None,
         };
 
         let request: TempoTransactionRequest = tx.into();

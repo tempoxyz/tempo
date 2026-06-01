@@ -1973,6 +1973,7 @@ mod tests {
             access_list: Default::default(),
             tempo_authorization_list: authorizations,
             key_authorization: None,
+            multisig_init: None,
         };
 
         let signed_tx = AASigned::new_unhashed(

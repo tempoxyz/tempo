@@ -20,10 +20,10 @@ use revm::{
     precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
 use tempo_contracts::precompiles::{
-    AccountKeychainError, AddrRegistryError, FeeManagerError, NonceError, ReceivePolicyGuardError,
-    RolesAuthError, SignatureVerifierError, StablecoinDEXError, TIP20ChannelReserveError,
-    TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
-    ValidatorConfigError, ValidatorConfigV2Error,
+    AccountKeychainError, AddrRegistryError, FeeManagerError, NativeMultisigError, NonceError,
+    ReceivePolicyGuardError, RolesAuthError, SignatureVerifierError, StablecoinDEXError,
+    TIP20ChannelReserveError, TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError,
+    UnknownFunctionSelector, ValidatorConfigError, ValidatorConfigV2Error,
 };
 
 /// Top-level error type for all Tempo precompile operations
@@ -86,6 +86,10 @@ pub enum TempoPrecompileError {
     /// Error from account keychain precompile
     #[error("Account keychain error: {0:?}")]
     AccountKeychainError(AccountKeychainError),
+
+    /// Error from native multisig precompile
+    #[error("Native multisig error: {0:?}")]
+    NativeMultisigError(NativeMultisigError),
 
     /// Error from signature verifier precompile
     #[error("Signature verifier error: {0:?}")]
@@ -155,6 +159,7 @@ impl TempoPrecompileError {
             Self::ValidatorConfigError(e) => e.selector(),
             Self::ValidatorConfigV2Error(e) => e.selector(),
             Self::AccountKeychainError(e) => e.selector(),
+            Self::NativeMultisigError(e) => e.selector(),
             Self::SignatureVerifierError(e) => e.selector(),
             Self::ReceivePolicyGuardError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
@@ -182,6 +187,7 @@ impl TempoPrecompileError {
             | Self::ValidatorConfigError(_)
             | Self::ValidatorConfigV2Error(_)
             | Self::AccountKeychainError(_)
+            | Self::NativeMultisigError(_)
             | Self::SignatureVerifierError(_)
             | Self::ReceivePolicyGuardError(_)
             | Self::UnknownFunctionSelector(_) => false,
@@ -230,6 +236,7 @@ impl TempoPrecompileError {
             Self::ValidatorConfigError(e) => e.abi_encode().into(),
             Self::ValidatorConfigV2Error(e) => e.abi_encode().into(),
             Self::AccountKeychainError(e) => e.abi_encode().into(),
+            Self::NativeMultisigError(e) => e.abi_encode().into(),
             Self::SignatureVerifierError(e) => e.abi_encode().into(),
             Self::ReceivePolicyGuardError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
@@ -302,6 +309,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ValidatorConfigV2Error);
     add_errors_to_registry(&mut registry, TempoPrecompileError::AccountKeychainError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::NativeMultisigError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::SignatureVerifierError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ReceivePolicyGuardError);
 

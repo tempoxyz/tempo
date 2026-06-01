@@ -11,6 +11,7 @@ pub(crate) mod ip_validation;
 
 pub mod account_keychain;
 pub mod address_registry;
+pub mod native_multisig;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -27,12 +28,12 @@ pub mod validator_config_v2;
 pub mod test_util;
 
 use crate::{
-    account_keychain::AccountKeychain, address_registry::AddressRegistry, nonce::NonceManager,
-    receive_policy_guard::ReceivePolicyGuard, signature_verifier::SignatureVerifier,
-    stablecoin_dex::StablecoinDEX, storage::StorageCtx, tip_fee_manager::TipFeeManager,
-    tip20::TIP20Token, tip20_channel_reserve::TIP20ChannelReserve, tip20_factory::TIP20Factory,
-    tip403_registry::TIP403Registry, validator_config::ValidatorConfig,
-    validator_config_v2::ValidatorConfigV2,
+    account_keychain::AccountKeychain, address_registry::AddressRegistry,
+    native_multisig::NativeMultisig, nonce::NonceManager, receive_policy_guard::ReceivePolicyGuard,
+    signature_verifier::SignatureVerifier, stablecoin_dex::StablecoinDEX, storage::StorageCtx,
+    tip_fee_manager::TipFeeManager, tip20::TIP20Token, tip20_channel_reserve::TIP20ChannelReserve,
+    tip20_factory::TIP20Factory, tip403_registry::TIP403Registry,
+    validator_config::ValidatorConfig, validator_config_v2::ValidatorConfigV2,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
@@ -53,7 +54,7 @@ use revm::{
 };
 
 pub use tempo_contracts::precompiles::{
-    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, DEFAULT_FEE_TOKEN,
+    ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, DEFAULT_FEE_TOKEN, NATIVE_MULTISIG_ADDRESS,
     NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
     SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
@@ -140,6 +141,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(ValidatorConfig::create_precompile(&cfg))
         } else if *address == ACCOUNT_KEYCHAIN_ADDRESS {
             Some(AccountKeychain::create_precompile(&cfg))
+        } else if *address == NATIVE_MULTISIG_ADDRESS && cfg.spec.is_t6() {
+            Some(NativeMultisig::create_precompile(&cfg))
         } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
             Some(ValidatorConfigV2::create_precompile(&cfg))
         } else if *address == SIGNATURE_VERIFIER_ADDRESS && cfg.spec.is_t3() {
@@ -241,6 +244,13 @@ impl AccountKeychain {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
         tempo_precompile!("AccountKeychain", cfg, |input| { Self::new() })
+    }
+}
+
+impl NativeMultisig {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("NativeMultisig", cfg, |input| { Self::new() })
     }
 }
 
