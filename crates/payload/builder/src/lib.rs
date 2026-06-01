@@ -8,7 +8,7 @@ mod metrics;
 mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Sender, bounded};
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
@@ -78,6 +78,8 @@ use tempo_transaction_pool::{
 };
 use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
+
+const ROOTS_CHANNEL_BOUND: usize = 16 * 1024;
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
@@ -1137,7 +1139,7 @@ where
         oneshot::Receiver<(B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>)>,
     ) {
         let (transactions_tx, transactions_rx) =
-            crossbeam_channel::unbounded::<(BuilderTx, TempoReceipt)>();
+            bounded::<(BuilderTx, TempoReceipt)>(ROOTS_CHANNEL_BOUND);
         let (result_tx, result_rx) = oneshot::channel();
 
         self.executor
