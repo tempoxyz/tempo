@@ -1,11 +1,14 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    collections::HashSet,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
-use alloy_sol_types::SolInterface;
+use alloy_primitives::{Address, B256};
+use parking_lot::Mutex;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Database, Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
@@ -16,14 +19,13 @@ use reth_transaction_pool::{
 };
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::{
-    DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    nonce::slots as nonce_slots,
-    storage::StorageKey as _,
-    tip_fee_manager::slots as fee_manager_slots,
-    tip20::{ITIP20, tip20_slots},
+    NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, nonce::slots as nonce_slots,
+    storage::StorageKey as _, tip_fee_manager::slots as fee_manager_slots,
 };
-use tempo_primitives::TempoAddressExt;
-use tempo_transaction_pool::best::BestTransaction;
+use tempo_transaction_pool::{
+    best::BestTransaction,
+    tip20_info::{Tip20StaticInfo, Tip20StorageSlot},
+};
 use tracing::trace;
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
@@ -61,6 +63,7 @@ impl BestTransactionsPrewarming {
             cache,
             evm_env,
             stop: stop.clone(),
+            dedup: Arc::new(PrewarmDedup::default()),
         };
 
         let this = Self {
@@ -181,15 +184,16 @@ impl BestTransactionsPrewarming {
 
             let tx_hash = *tx.hash();
 
-            let touched = if is_tip20_transfer_transaction(&tx) {
-                let touches =
-                    storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary);
-
-                for touch in &touches {
-                    if prewarm.is_stopped() {
-                        return;
-                    }
-                    if let Err(err) = touch.warm(evm) {
+            let touched = if let Some(static_info) = tx.transaction.tip20_static_info() {
+                match prewarm_static_tip20_transaction(
+                    evm,
+                    &prewarm,
+                    static_info,
+                    &tx,
+                    prewarm.evm_env.block_env.beneficiary,
+                ) {
+                    Ok(touched) => Some(touched),
+                    Err(err) => {
                         trace!(
                             target: "payload_builder",
                             %err,
@@ -199,8 +203,6 @@ impl BestTransactionsPrewarming {
                         return;
                     }
                 }
-
-                Some(touches.len())
             } else {
                 if prewarm.is_stopped() {
                     return;
@@ -292,6 +294,7 @@ struct PrewarmingExecutionContext<Provider> {
     cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
+    dedup: Arc<PrewarmDedup>,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -326,7 +329,9 @@ where
 
         Some(TempoEvm::new(state_provider, evm_env))
     }
+}
 
+impl<Provider> PrewarmingExecutionContext<Provider> {
     fn is_stopped(&self) -> bool {
         self.stop.load(Ordering::Relaxed)
     }
@@ -336,240 +341,201 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StorageTouch {
-    Account(Address),
-    Storage { address: Address, slot: U256 },
+#[derive(Debug, Default)]
+struct PrewarmDedup {
+    accounts: Mutex<HashSet<Address>>,
+    shared_storage_slots: Mutex<HashSet<Tip20StorageSlot>>,
+    tip20_token_info: Mutex<HashSet<Address>>,
 }
 
-impl StorageTouch {
-    fn warm<DB: Database>(&self, evm: &mut TempoEvm<DB>) -> Result<(), DB::Error> {
-        match *self {
-            Self::Account(address) => {
-                let _ = evm.db_mut().basic(address)?;
-            }
-            Self::Storage { address, slot } => {
-                let _ = evm.db_mut().storage(address, slot)?;
-            }
-        }
-
-        Ok(())
-    }
-}
-
-fn is_tip20_transfer_transaction(tx: &BestTransaction) -> bool {
-    tx.transaction.is_payment() && is_tip20_transfer_calls(tx.transaction.inner().calls())
-}
-
-fn is_tip20_transfer_calls<'a>(calls: impl IntoIterator<Item = (TxKind, &'a Bytes)>) -> bool {
-    let mut has_call = false;
-    for (kind, input) in calls {
-        has_call = true;
-        if !is_tip20_transfer_call(kind, input) {
-            return false;
-        }
-    }
-    has_call
-}
-
-fn is_tip20_transfer_call(kind: TxKind, input: &[u8]) -> bool {
-    let Some(token) = kind.to().copied() else {
-        return false;
-    };
-    if !token.is_tip20() {
-        return false;
-    }
-
-    matches!(
-        ITIP20::ITIP20Calls::abi_decode(input),
-        Ok(ITIP20::ITIP20Calls::transfer(_)
-            | ITIP20::ITIP20Calls::transferWithMemo(_)
-            | ITIP20::ITIP20Calls::transferFrom(_)
-            | ITIP20::ITIP20Calls::transferFromWithMemo(_))
-    )
-}
-
-fn storage_touches_for_transaction(
+fn prewarm_static_tip20_transaction<DB, Provider>(
+    evm: &mut TempoEvm<DB>,
+    prewarm: &PrewarmingExecutionContext<Provider>,
+    info: &Tip20StaticInfo,
     tx: &BestTransaction,
     fee_recipient: Address,
-) -> Vec<StorageTouch> {
-    let mut touches = Vec::new();
-    let sender = tx.transaction.sender();
-    let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
-    let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
-        tx.transaction
-            .inner()
-            .fee_token()
-            .unwrap_or(DEFAULT_FEE_TOKEN)
-    });
+) -> Result<usize, DB::Error>
+where
+    DB: Database,
+{
+    let mut touched = 0;
 
-    add_tip20_fee_touches(&mut touches, fee_token, fee_payer);
-    add_fee_manager_touches(&mut touches, fee_recipient, fee_token);
-
-    if tx.transaction.is_payment() {
-        for (kind, input) in tx.transaction.inner().calls() {
-            add_tip20_call_touches(&mut touches, sender, kind, input);
+    for token in info.token_info() {
+        if prewarm.is_stopped() {
+            return Ok(touched);
         }
+        touched += warm_tip20_token_info_once(evm, prewarm, *token)?;
     }
 
-    add_expiring_nonce_touches(&mut touches, tx);
-
-    touches
-}
-
-fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
-    if !fee_token.is_tip20() {
-        return;
+    for slot in info.balance_slots() {
+        if prewarm.is_stopped() {
+            return Ok(touched);
+        }
+        touched += warm_storage_slot(evm, prewarm, *slot)?;
     }
 
-    add_tip20_common_touches(touches, fee_token);
-    add_tip20_balance_touch(touches, fee_token, fee_payer);
-    add_tip20_balance_touch(touches, fee_token, TIP_FEE_MANAGER_ADDRESS);
-    add_tip20_reward_touches(touches, fee_token, fee_payer);
-}
-
-fn add_tip20_call_touches(
-    touches: &mut Vec<StorageTouch>,
-    sender: Address,
-    kind: TxKind,
-    input: &[u8],
-) {
-    let Some(token) = kind.to().copied() else {
-        return;
-    };
-    if !token.is_tip20() {
-        return;
+    for slot in info.reward_slots() {
+        if prewarm.is_stopped() {
+            return Ok(touched);
+        }
+        touched += warm_storage_slot(evm, prewarm, *slot)?;
     }
 
-    add_tip20_common_touches(touches, token);
-    let Ok(call) = ITIP20::ITIP20Calls::abi_decode(input) else {
-        return;
-    };
-
-    match call {
-        ITIP20::ITIP20Calls::transfer(call) => {
-            add_tip20_balance_touch(touches, token, sender);
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_reward_touches(touches, token, sender);
-            add_tip20_reward_touches(touches, token, call.to);
+    for slot in info.allowance_slots() {
+        if prewarm.is_stopped() {
+            return Ok(touched);
         }
-        ITIP20::ITIP20Calls::transferWithMemo(call) => {
-            add_tip20_balance_touch(touches, token, sender);
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_reward_touches(touches, token, sender);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::transferFrom(call) => {
-            add_tip20_balance_touch(touches, token, call.from);
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_allowance_touch(touches, token, call.from, sender);
-            add_tip20_reward_touches(touches, token, call.from);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::transferFromWithMemo(call) => {
-            add_tip20_balance_touch(touches, token, call.from);
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_allowance_touch(touches, token, call.from, sender);
-            add_tip20_reward_touches(touches, token, call.from);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::approve(call) => {
-            add_tip20_allowance_touch(touches, token, sender, call.spender);
-        }
-        ITIP20::ITIP20Calls::mint(call) => {
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::mintWithMemo(call) => {
-            add_tip20_balance_touch(touches, token, call.to);
-            add_tip20_reward_touches(touches, token, call.to);
-        }
-        ITIP20::ITIP20Calls::burn(_) | ITIP20::ITIP20Calls::burnWithMemo(_) => {
-            add_tip20_balance_touch(touches, token, sender);
-            add_tip20_reward_touches(touches, token, sender);
-        }
-        _ => {}
+        touched += warm_storage_slot(evm, prewarm, *slot)?;
     }
+
+    if prewarm.is_stopped() {
+        return Ok(touched);
+    }
+    touched += prewarm_fee_manager_touches_once(
+        evm,
+        prewarm,
+        fee_recipient,
+        tx.transaction.effective_fee_token(),
+    )?;
+
+    if prewarm.is_stopped() {
+        return Ok(touched);
+    }
+    touched += prewarm_expiring_nonce_touches_once(evm, prewarm, tx)?;
+
+    Ok(touched)
 }
 
-fn add_tip20_common_touches(touches: &mut Vec<StorageTouch>, token: Address) {
-    add_account_touch(touches, token);
-    add_storage_touch(touches, token, tip20_slots::CURRENCY);
-    add_storage_touch(touches, token, tip20_slots::PAUSED);
-    add_storage_touch(touches, token, tip20_slots::TRANSFER_POLICY_ID);
-    add_storage_touch(touches, token, tip20_slots::GLOBAL_REWARD_PER_TOKEN);
-    add_storage_touch(touches, token, tip20_slots::OPTED_IN_SUPPLY);
-}
-
-fn add_tip20_balance_touch(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
-    add_storage_touch(touches, token, account.mapping_slot(tip20_slots::BALANCES));
-}
-
-fn add_tip20_allowance_touch(
-    touches: &mut Vec<StorageTouch>,
+fn warm_tip20_token_info_once<DB, Provider>(
+    evm: &mut TempoEvm<DB>,
+    prewarm: &PrewarmingExecutionContext<Provider>,
     token: Address,
-    owner: Address,
-    spender: Address,
-) {
-    add_storage_touch(
-        touches,
-        token,
-        spender.mapping_slot(owner.mapping_slot(tip20_slots::ALLOWANCES)),
-    );
+) -> Result<usize, DB::Error>
+where
+    DB: Database,
+{
+    let should_warm = prewarm.dedup.tip20_token_info.lock().insert(token);
+
+    if !should_warm {
+        return Ok(0);
+    }
+
+    let mut touched = warm_account_once(evm, prewarm, token)?;
+    for slot in Tip20StaticInfo::token_info_slots(token) {
+        touched += warm_shared_storage_slot_once(evm, prewarm, slot)?;
+    }
+    Ok(touched)
 }
 
-fn add_tip20_reward_touches(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
-    let base_slot = account.mapping_slot(tip20_slots::USER_REWARD_INFO);
-    add_storage_touch(touches, token, base_slot);
-    add_storage_touch(touches, token, base_slot + U256::from(1));
-    add_storage_touch(touches, token, base_slot + U256::from(2));
-}
-
-fn add_fee_manager_touches(
-    touches: &mut Vec<StorageTouch>,
+fn prewarm_fee_manager_touches_once<DB, Provider>(
+    evm: &mut TempoEvm<DB>,
+    prewarm: &PrewarmingExecutionContext<Provider>,
     fee_recipient: Address,
     fee_token: Address,
-) {
-    add_account_touch(touches, TIP_FEE_MANAGER_ADDRESS);
-    add_storage_touch(
-        touches,
-        TIP_FEE_MANAGER_ADDRESS,
-        fee_recipient.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS),
-    );
-    add_storage_touch(
-        touches,
-        TIP_FEE_MANAGER_ADDRESS,
-        fee_token.mapping_slot(fee_recipient.mapping_slot(fee_manager_slots::COLLECTED_FEES)),
-    );
+) -> Result<usize, DB::Error>
+where
+    DB: Database,
+{
+    let mut touched = 0;
+    touched += warm_shared_storage_slot_once(
+        evm,
+        prewarm,
+        Tip20StorageSlot {
+            address: TIP_FEE_MANAGER_ADDRESS,
+            slot: fee_recipient.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS),
+        },
+    )?;
+    touched += warm_shared_storage_slot_once(
+        evm,
+        prewarm,
+        Tip20StorageSlot {
+            address: TIP_FEE_MANAGER_ADDRESS,
+            slot: fee_token
+                .mapping_slot(fee_recipient.mapping_slot(fee_manager_slots::COLLECTED_FEES)),
+        },
+    )?;
+    Ok(touched)
 }
 
-fn add_expiring_nonce_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransaction) {
+fn prewarm_expiring_nonce_touches_once<DB, Provider>(
+    evm: &mut TempoEvm<DB>,
+    prewarm: &PrewarmingExecutionContext<Provider>,
+    tx: &BestTransaction,
+) -> Result<usize, DB::Error>
+where
+    DB: Database,
+{
     let Some(expiring_nonce_slot) = tx.transaction.expiring_nonce_slot() else {
-        return;
+        return Ok(0);
     };
 
-    add_account_touch(touches, NONCE_PRECOMPILE_ADDRESS);
-    add_storage_touch(touches, NONCE_PRECOMPILE_ADDRESS, expiring_nonce_slot);
-    add_storage_touch(
-        touches,
-        NONCE_PRECOMPILE_ADDRESS,
-        nonce_slots::EXPIRING_NONCE_RING_PTR,
-    );
+    let mut touched = 0;
+    touched += warm_storage_slot(
+        evm,
+        prewarm,
+        Tip20StorageSlot {
+            address: NONCE_PRECOMPILE_ADDRESS,
+            slot: expiring_nonce_slot,
+        },
+    )?;
+    touched += warm_shared_storage_slot_once(
+        evm,
+        prewarm,
+        Tip20StorageSlot {
+            address: NONCE_PRECOMPILE_ADDRESS,
+            slot: nonce_slots::EXPIRING_NONCE_RING_PTR,
+        },
+    )?;
+    Ok(touched)
 }
 
-fn add_account_touch(touches: &mut Vec<StorageTouch>, address: Address) {
-    add_unique_touch(touches, StorageTouch::Account(address));
-}
+fn warm_account_once<DB, Provider>(
+    evm: &mut TempoEvm<DB>,
+    prewarm: &PrewarmingExecutionContext<Provider>,
+    address: Address,
+) -> Result<usize, DB::Error>
+where
+    DB: Database,
+{
+    let should_warm = prewarm.dedup.accounts.lock().insert(address);
 
-fn add_storage_touch(touches: &mut Vec<StorageTouch>, address: Address, slot: U256) {
-    add_account_touch(touches, address);
-    add_unique_touch(touches, StorageTouch::Storage { address, slot });
-}
-
-fn add_unique_touch(touches: &mut Vec<StorageTouch>, touch: StorageTouch) {
-    if !touches.contains(&touch) {
-        touches.push(touch);
+    if should_warm {
+        let _ = evm.db_mut().basic(address)?;
+        Ok(1)
+    } else {
+        Ok(0)
     }
+}
+
+fn warm_shared_storage_slot_once<DB, Provider>(
+    evm: &mut TempoEvm<DB>,
+    prewarm: &PrewarmingExecutionContext<Provider>,
+    slot: Tip20StorageSlot,
+) -> Result<usize, DB::Error>
+where
+    DB: Database,
+{
+    let should_warm = prewarm.dedup.shared_storage_slots.lock().insert(slot);
+
+    if should_warm {
+        warm_storage_slot(evm, prewarm, slot)
+    } else {
+        Ok(0)
+    }
+}
+
+fn warm_storage_slot<DB, Provider>(
+    evm: &mut TempoEvm<DB>,
+    prewarm: &PrewarmingExecutionContext<Provider>,
+    slot: Tip20StorageSlot,
+) -> Result<usize, DB::Error>
+where
+    DB: Database,
+{
+    let mut touched = warm_account_once(evm, prewarm, slot.address)?;
+    let _ = evm.db_mut().storage(slot.address, slot.slot)?;
+    touched += 1;
+    Ok(touched)
 }
 
 /// Command sent by [`BestTransactionsPrewarming`] consumer.
@@ -620,7 +586,6 @@ mod tests {
     use super::*;
     use alloy_consensus::{BlockHeader, Header, Signed, TxLegacy};
     use alloy_primitives::{Address, Bytes, Signature, TxKind, U256};
-    use alloy_sol_types::SolCall;
     use reth_evm::{ConfigureEvm, NextBlockEnvAttributes};
     use reth_primitives_traits::{
         Recovered, SealedHeader, transaction::error::InvalidTransactionError,
@@ -826,83 +791,6 @@ mod tests {
     }
 
     #[test]
-    fn tip20_touch_collection_dedups_overlapping_fee_and_call_slots() {
-        let sender = Address::random();
-        let recipient = Address::random();
-        let token = DEFAULT_FEE_TOKEN;
-        let mut touches = Vec::new();
-
-        add_tip20_fee_touches(&mut touches, token, sender);
-        add_tip20_call_touches(
-            &mut touches,
-            sender,
-            TxKind::Call(token),
-            &ITIP20::transferCall {
-                to: recipient,
-                amount: U256::from(1),
-            }
-            .abi_encode(),
-        );
-
-        for (index, touch) in touches.iter().enumerate() {
-            assert!(
-                !touches[index + 1..].contains(touch),
-                "duplicate storage prewarm touch: {touch:?}"
-            );
-        }
-
-        assert!(touches.contains(&StorageTouch::Account(token)));
-        assert!(touches.contains(&StorageTouch::Storage {
-            address: token,
-            slot: sender.mapping_slot(tip20_slots::BALANCES)
-        }));
-        assert!(touches.contains(&StorageTouch::Storage {
-            address: token,
-            slot: recipient.mapping_slot(tip20_slots::BALANCES)
-        }));
-    }
-
-    #[test]
-    fn tip20_fast_path_is_limited_to_transfers() {
-        let token = DEFAULT_FEE_TOKEN;
-        let transfer = Bytes::from(
-            ITIP20::transferCall {
-                to: Address::random(),
-                amount: U256::from(1),
-            }
-            .abi_encode(),
-        );
-        let transfer_from = Bytes::from(
-            ITIP20::transferFromCall {
-                from: Address::random(),
-                to: Address::random(),
-                amount: U256::from(1),
-            }
-            .abi_encode(),
-        );
-        let approve = Bytes::from(
-            ITIP20::approveCall {
-                spender: Address::random(),
-                amount: U256::from(1),
-            }
-            .abi_encode(),
-        );
-
-        assert!(is_tip20_transfer_call(TxKind::Call(token), &transfer));
-        assert!(is_tip20_transfer_calls(
-            [&transfer, &transfer_from]
-                .into_iter()
-                .map(|input| (TxKind::Call(token), input)),
-        ));
-        assert!(!is_tip20_transfer_call(TxKind::Call(token), &approve));
-        assert!(!is_tip20_transfer_calls(
-            [&transfer, &approve]
-                .into_iter()
-                .map(|input| (TxKind::Call(token), input)),
-        ));
-    }
-
-    #[test]
     fn source_ordering_is_unchanged_when_prewarming_is_enabled() {
         let sender = Address::random();
         let txs = vec![test_tx(sender, 0), test_tx(sender, 1), test_tx(sender, 2)];
@@ -993,24 +881,6 @@ mod tests {
         wait_until(|| {
             let log = log.lock().unwrap();
             log.no_updates == 1 && log.skip_blobs == vec![true]
-        });
-    }
-
-    #[test]
-    fn prewarming_does_not_use_shared_worker_state_slot() {
-        let executor = TaskExecutor::test();
-        let pool = executor.prewarming_pool();
-        pool.init::<usize>(|existing| existing.map(|value| *value).unwrap_or(1));
-
-        let sender = Address::random();
-        let txs = vec![test_tx(sender, 0)];
-        let log = Arc::new(Mutex::new(TestLog::default()));
-        let mut prewarming = prewarming_with_executor(executor.clone(), txs, log);
-
-        assert!(prewarming.next().is_some());
-
-        pool.broadcast(pool.current_num_threads(), |worker| {
-            assert_eq!(*worker.get::<usize>(), 1);
         });
     }
 }

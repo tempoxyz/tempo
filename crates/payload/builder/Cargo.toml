@@ -43,6 +43,7 @@ alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
 
 metrics.workspace = true
+parking_lot.workspace = true
 tracing.workspace = true
 crossbeam-channel.workspace = true
 tokio.workspace = true

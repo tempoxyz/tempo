@@ -1,4 +1,7 @@
-use crate::tt_2d_pool::{AA2dTransactionId, AASequenceId};
+use crate::{
+    tip20_info::Tip20StaticInfo,
+    tt_2d_pool::{AA2dTransactionId, AASequenceId},
+};
 use alloy_consensus::{
     BlobTransactionValidationError, Transaction, crypto::RecoveryError, transaction::TxHashRef,
 };
@@ -74,6 +77,8 @@ pub struct TempoPooledTransaction {
     /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
     /// can check if the fee payer's balance was modified without recomputing the keccak.
     fee_balance_slot: OnceLock<Option<(Address, U256)>>,
+    /// Static TIP-20 storage prewarm plan for transfer-only payment transactions.
+    tip20_static_info: OnceLock<Option<Tip20StaticInfo>>,
 }
 
 impl TempoPooledTransaction {
@@ -109,6 +114,7 @@ impl TempoPooledTransaction {
             key_authorization_signer_subject: OnceLock::new(),
             key_authorization_target_subject: OnceLock::new(),
             fee_balance_slot: OnceLock::new(),
+            tip20_static_info: OnceLock::new(),
         }
     }
 
@@ -367,6 +373,26 @@ impl TempoPooledTransaction {
                 TIP20Token::from_address_unchecked(fee_token).balances[fee_payer].base_slot();
             Some((fee_token, slot))
         })
+    }
+
+    /// Returns the cached static TIP-20 storage prewarm plan for transfer-only
+    /// payment transactions, computing it on first access.
+    pub fn tip20_static_info(&self) -> Option<&Tip20StaticInfo> {
+        if self.tip20_static_info.get().is_none()
+            && self.inner().as_aa().is_some()
+            && self.inner().fee_token().is_none()
+            && self.resolved_fee_token().is_none()
+        {
+            return None;
+        }
+
+        self.tip20_static_info
+            .get_or_init(|| self.compute_tip20_static_info())
+            .as_ref()
+    }
+
+    fn compute_tip20_static_info(&self) -> Option<Tip20StaticInfo> {
+        Tip20StaticInfo::for_transaction(self)
     }
 
     /// Returns true when the transaction fee is paid by the transaction sender.
@@ -860,9 +886,9 @@ impl EthPoolTransaction for TempoPooledTransaction {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_utils::TxBuilder;
+    use crate::{test_utils::TxBuilder, tip20_info::Tip20StorageSlot};
     use alloy_consensus::TxEip1559;
-    use alloy_primitives::{Address, Signature, TxKind, address};
+    use alloy_primitives::{Address, Bytes, Signature, TxKind, address};
     use alloy_sol_types::SolCall;
     use tempo_contracts::precompiles::ITIP20;
     use tempo_precompiles::{PATH_USD_ADDRESS, nonce::NonceManager};
@@ -927,6 +953,145 @@ mod tests {
 
         let pooled_tx = TempoPooledTransaction::new(recovered);
         assert!(!pooled_tx.is_payment());
+    }
+
+    fn pooled_tip20_eip1559(
+        sender: Address,
+        token: Address,
+        input: Bytes,
+    ) -> TempoPooledTransaction {
+        let tx = TxEip1559 {
+            to: TxKind::Call(token),
+            gas_limit: 21_000,
+            input,
+            ..Default::default()
+        };
+
+        let envelope = TempoTxEnvelope::Eip1559(alloy_consensus::Signed::new_unchecked(
+            tx,
+            Signature::test_signature(),
+            B256::ZERO,
+        ));
+
+        TempoPooledTransaction::new(Recovered::new_unchecked(envelope, sender))
+    }
+
+    #[test]
+    fn tip20_static_info_dedups_overlapping_fee_and_call_slots() {
+        let sender = Address::random();
+        let recipient = Address::random();
+        let token = DEFAULT_FEE_TOKEN;
+        let pooled_tx = pooled_tip20_eip1559(
+            sender,
+            token,
+            Bytes::from(
+                ITIP20::transferCall {
+                    to: recipient,
+                    amount: U256::from(1),
+                }
+                .abi_encode(),
+            ),
+        );
+
+        let info = pooled_tx
+            .tip20_static_info()
+            .expect("transfer payment has static TIP20 info");
+
+        assert_eq!(info.token_info(), &[token]);
+
+        let sender_balance = Tip20StorageSlot {
+            address: token,
+            slot: sender.mapping_slot(tip20_slots::BALANCES),
+        };
+        let recipient_balance = Tip20StorageSlot {
+            address: token,
+            slot: recipient.mapping_slot(tip20_slots::BALANCES),
+        };
+        assert!(info.balance_slots().contains(&sender_balance));
+        assert!(info.balance_slots().contains(&recipient_balance));
+
+        for (index, slot) in info.balance_slots().iter().enumerate() {
+            assert!(
+                !info.balance_slots()[index + 1..].contains(slot),
+                "duplicate TIP20 balance prewarm slot: {slot:?}"
+            );
+        }
+        for (index, slot) in info.reward_slots().iter().enumerate() {
+            assert!(
+                !info.reward_slots()[index + 1..].contains(slot),
+                "duplicate TIP20 reward prewarm slot: {slot:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn tip20_static_info_is_limited_to_transfers() {
+        let sender = Address::random();
+        let token = DEFAULT_FEE_TOKEN;
+        let transfer = pooled_tip20_eip1559(
+            sender,
+            token,
+            Bytes::from(
+                ITIP20::transferCall {
+                    to: Address::random(),
+                    amount: U256::from(1),
+                }
+                .abi_encode(),
+            ),
+        );
+        let transfer_from = pooled_tip20_eip1559(
+            sender,
+            token,
+            Bytes::from(
+                ITIP20::transferFromCall {
+                    from: Address::random(),
+                    to: Address::random(),
+                    amount: U256::from(1),
+                }
+                .abi_encode(),
+            ),
+        );
+        let approve = pooled_tip20_eip1559(
+            sender,
+            token,
+            Bytes::from(
+                ITIP20::approveCall {
+                    spender: Address::random(),
+                    amount: U256::from(1),
+                }
+                .abi_encode(),
+            ),
+        );
+
+        assert!(transfer.tip20_static_info().is_some());
+        assert!(transfer_from.tip20_static_info().is_some());
+        assert!(approve.is_payment());
+        assert!(approve.tip20_static_info().is_none());
+    }
+
+    #[test]
+    fn tip20_static_info_waits_for_implicit_fee_token_resolution() {
+        let sender = Address::random();
+        let token = DEFAULT_FEE_TOKEN;
+        let tx = TxBuilder::aa(sender)
+            .calls(vec![Call {
+                to: TxKind::Call(token),
+                value: U256::ZERO,
+                input: Bytes::from(
+                    ITIP20::transferCall {
+                        to: Address::random(),
+                        amount: U256::from(1),
+                    }
+                    .abi_encode(),
+                ),
+            }])
+            .build();
+
+        assert!(tx.is_payment());
+        assert!(tx.tip20_static_info().is_none());
+
+        tx.set_resolved_fee_token(token);
+        assert!(tx.tip20_static_info().is_some());
     }
 
     #[test]
