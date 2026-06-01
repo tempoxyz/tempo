@@ -1,8 +1,13 @@
-use super::tempo_transaction::{
-    MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH, SignatureType,
+use super::{
+    multisig::{MultisigSignature, SIGNATURE_TYPE_MULTISIG},
+    tempo_transaction::{
+        MAX_WEBAUTHN_SIGNATURE_LENGTH, P256_SIGNATURE_LENGTH, SECP256K1_SIGNATURE_LENGTH,
+        SignatureType,
+    },
 };
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, Signature, U256, keccak256, uint};
+use alloy_rlp::{Decodable, Encodable};
 use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use sha2::{Digest, Sha256};
 
@@ -542,6 +547,9 @@ pub enum TempoSignature {
     /// IMP: The inner signature MUST NOT be another Keychain (validated at runtime)
     /// Note: Recursion is prevented by KeychainSignature's custom Arbitrary impl
     Keychain(KeychainSignature),
+
+    /// Native multisig signature.
+    Multisig(MultisigSignature),
 }
 
 impl TempoSignature {
@@ -555,8 +563,9 @@ impl TempoSignature {
             return Err("Signature data is empty");
         }
 
-        // Check if this is a Keychain signature (type identifier 0x03 or 0x04)
-        // We need to handle this specially before delegating to PrimitiveSignature
+        // Check if this is a Keychain or Multisig signature before delegating to
+        // PrimitiveSignature. The exact 65-byte secp256k1 path remains untyped for
+        // backwards compatibility.
         if data.len() > 1
             && data.len() != SECP256K1_SIGNATURE_LENGTH
             && (data[0] == SIGNATURE_TYPE_KEYCHAIN || data[0] == SIGNATURE_TYPE_KEYCHAIN_V2)
@@ -587,6 +596,18 @@ impl TempoSignature {
                 cached_key_id: OnceLock::new(),
             }));
         }
+        if data.len() > 1
+            && data.len() != SECP256K1_SIGNATURE_LENGTH
+            && data[0] == SIGNATURE_TYPE_MULTISIG
+        {
+            let mut sig_data = &data[1..];
+            let signature = MultisigSignature::decode(&mut sig_data)
+                .map_err(|_| "Invalid Multisig signature RLP")?;
+            if !sig_data.is_empty() {
+                return Err("Invalid Multisig signature: trailing bytes");
+            }
+            return Ok(Self::Multisig(signature));
+        }
 
         // For all non-Keychain signatures, delegate to PrimitiveSignature
         let primitive = PrimitiveSignature::from_bytes(data)?;
@@ -614,6 +635,12 @@ impl TempoSignature {
                 bytes.extend_from_slice(&inner_bytes);
                 Bytes::from(bytes)
             }
+            Self::Multisig(multisig_sig) => {
+                let mut bytes = Vec::with_capacity(1 + multisig_sig.length());
+                bytes.push(SIGNATURE_TYPE_MULTISIG);
+                multisig_sig.encode(&mut bytes);
+                Bytes::from(bytes)
+            }
         }
     }
 
@@ -626,15 +653,26 @@ impl TempoSignature {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.encoded_length(),
             Self::Keychain(keychain_sig) => 1 + 20 + keychain_sig.signature.encoded_length(),
+            Self::Multisig(multisig_sig) => 1 + multisig_sig.length(),
         }
     }
 
-    /// Get signature type
-    pub fn signature_type(&self) -> SignatureType {
+    /// Get the primitive signature type, if the outer signature has one.
+    pub fn primitive_signature_type(&self) -> Option<SignatureType> {
         match self {
-            Self::Primitive(primitive_sig) => primitive_sig.signature_type(),
-            Self::Keychain(keychain_sig) => keychain_sig.signature.signature_type(),
+            Self::Primitive(primitive_sig) => Some(primitive_sig.signature_type()),
+            Self::Keychain(keychain_sig) => Some(keychain_sig.signature.signature_type()),
+            Self::Multisig(_) => None,
         }
+    }
+
+    /// Get signature type.
+    ///
+    /// Native multisig signatures do not have a primitive key type; callers that may
+    /// receive multisig should use [`TempoSignature::primitive_signature_type`].
+    pub fn signature_type(&self) -> SignatureType {
+        self.primitive_signature_type()
+            .expect("native multisig has no primitive signature type")
     }
 
     /// Get the in-memory size of the signature
@@ -642,6 +680,7 @@ impl TempoSignature {
         match self {
             Self::Primitive(primitive_sig) => primitive_sig.size(),
             Self::Keychain(keychain_sig) => 1 + 20 + keychain_sig.signature.size(),
+            Self::Multisig(multisig_sig) => 1 + multisig_sig.size(),
         }
     }
 
@@ -672,12 +711,20 @@ impl TempoSignature {
                 // Return the user_address - the root account this transaction is for
                 Ok(keychain_sig.user_address)
             }
+            Self::Multisig(multisig_sig) => multisig_sig
+                .recover_account()
+                .map_err(|_| alloy_consensus::crypto::RecoveryError::new()),
         }
     }
 
     /// Check if this is a Keychain signature
     pub fn is_keychain(&self) -> bool {
         matches!(self, Self::Keychain(_))
+    }
+
+    /// Check if this is a native multisig signature.
+    pub fn is_multisig(&self) -> bool {
+        matches!(self, Self::Multisig(_))
     }
 
     /// Check if this is a legacy V1 Keychain signature (deprecated at T1C).
@@ -714,6 +761,14 @@ impl TempoSignature {
     pub fn as_keychain(&self) -> Option<&KeychainSignature> {
         match self {
             Self::Keychain(keychain_sig) => Some(keychain_sig),
+            _ => None,
+        }
+    }
+
+    /// Get the native multisig signature if this is a multisig signature.
+    pub fn as_multisig(&self) -> Option<&MultisigSignature> {
+        match self {
+            Self::Multisig(multisig_sig) => Some(multisig_sig),
             _ => None,
         }
     }

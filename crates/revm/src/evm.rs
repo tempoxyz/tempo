@@ -831,6 +831,7 @@ mod tests {
                 valid_before: self.valid_before.and_then(core::num::NonZeroU64::new),
                 valid_after: self.valid_after.and_then(core::num::NonZeroU64::new),
                 key_authorization: self.key_authorization,
+                multisig_init: None,
                 tempo_authorization_list: self.authorization_list,
             }
         }

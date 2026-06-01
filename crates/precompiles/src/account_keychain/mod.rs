@@ -28,6 +28,7 @@ use tempo_primitives::TempoAddressExt;
 use crate::{
     ACCOUNT_KEYCHAIN_ADDRESS,
     error::Result,
+    native_multisig::NativeMultisig,
     storage::{Handler, Mapping, Set},
     tip20_factory::TIP20Factory,
 };
@@ -48,6 +49,23 @@ pub fn is_constrained_tip20_selector(selector: [u8; 4]) -> bool {
         selector,
         TIP20_TRANSFER_SELECTOR | TIP20_APPROVE_SELECTOR | TIP20_TRANSFER_WITH_MEMO_SELECTOR
     )
+}
+
+fn inactive_key_info(is_revoked: bool) -> KeyInfo {
+    KeyInfo {
+        signatureType: SignatureType::Secp256k1,
+        keyId: Address::ZERO,
+        expiry: 0,
+        enforceLimits: false,
+        isRevoked: is_revoked,
+    }
+}
+
+fn inactive_allowed_calls() -> getAllowedCallsReturn {
+    getAllowedCallsReturn {
+        isScoped: true,
+        scopes: Vec::new(),
+    }
 }
 
 /// Key information stored in the precompile
@@ -501,17 +519,15 @@ impl AccountKeychain {
 
     /// Returns key info for the given account-key pair, or a blank entry if inexistent or revoked.
     pub fn get_key(&self, call: getKeyCall) -> Result<KeyInfo> {
+        if self.is_native_multisig_account(call.account)? {
+            return Ok(inactive_key_info(false));
+        }
+
         let key = self.keys[call.account][call.keyId].read()?;
 
         // Key doesn't exist if expiry == 0, or key has been revoked
         if key.expiry == 0 || key.is_revoked {
-            return Ok(KeyInfo {
-                signatureType: SignatureType::Secp256k1,
-                keyId: Address::ZERO,
-                expiry: 0,
-                enforceLimits: false,
-                isRevoked: key.is_revoked,
-            });
+            return Ok(inactive_key_info(key.is_revoked));
         }
 
         Ok(KeyInfo {
@@ -528,6 +544,10 @@ impl AccountKeychain {
     /// T2+ returns zero for missing, revoked, or expired keys. Pre-T2 preserves the historical
     /// behavior of reading the raw stored remaining amount so old blocks reexecute identically.
     pub fn get_remaining_limit(&self, call: getRemainingLimitCall) -> Result<U256> {
+        if self.is_native_multisig_account(call.account)? {
+            return Ok(U256::ZERO);
+        }
+
         if !self.storage.spec().is_t2() {
             let limit_key = Self::spending_limit_key(call.account, call.keyId);
             return self.spending_limits[limit_key][call.token].remaining.read();
@@ -548,6 +568,13 @@ impl AccountKeychain {
         &self,
         call: getRemainingLimitWithPeriodCall,
     ) -> Result<getRemainingLimitReturn> {
+        if self.is_native_multisig_account(call.account)? {
+            return Ok(getRemainingLimitReturn {
+                remaining: U256::ZERO,
+                periodEnd: 0,
+            });
+        }
+
         let (remaining, period_end) = self.effective_limit_state(
             call.account,
             call.keyId,
@@ -626,6 +653,10 @@ impl AccountKeychain {
     /// the key is scoped but currently allows no targets. Missing, revoked, or expired access
     /// keys also report scoped deny-all so this getter never exposes stale persisted scope state.
     pub fn get_allowed_calls(&self, call: getAllowedCallsCall) -> Result<getAllowedCallsReturn> {
+        if self.is_native_multisig_account(call.account)? {
+            return Ok(inactive_allowed_calls());
+        }
+
         if call.keyId.is_zero() {
             return Ok(getAllowedCallsReturn {
                 isScoped: false,
@@ -636,10 +667,7 @@ impl AccountKeychain {
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         let key = self.keys[call.account][call.keyId].read()?;
         if key.expiry == 0 || key.is_revoked || current_timestamp >= key.expiry {
-            return Ok(getAllowedCallsReturn {
-                isScoped: true,
-                scopes: Vec::new(),
-            });
+            return Ok(inactive_allowed_calls());
         }
 
         let key_hash = Self::spending_limit_key(call.account, call.keyId);
@@ -1086,6 +1114,10 @@ impl AccountKeychain {
     /// `tx_origin` is seeded by the handler before validation/execution.
     /// If origin is not seeded (zero), admin ops are rejected.
     fn ensure_admin_caller(&self, msg_sender: Address) -> Result<()> {
+        if self.is_native_multisig_account(msg_sender)? {
+            return Err(AccountKeychainError::unauthorized_caller().into());
+        }
+
         let transaction_key = self.transaction_key.t_read()?;
         if !transaction_key.is_zero()
             && (!self.storage.spec().is_t6() || !self.is_admin_key(msg_sender, transaction_key)?)
@@ -1108,6 +1140,10 @@ impl AccountKeychain {
     /// Warning: this returns true when `key_id == account`, because the root key
     /// is implicitly admin even when it is not stored as an access key.
     pub fn is_admin_key(&self, account: Address, key_id: Address) -> Result<bool> {
+        if self.is_native_multisig_account(account)? {
+            return Ok(false);
+        }
+
         if key_id == account {
             return Ok(true);
         }
@@ -1124,6 +1160,10 @@ impl AccountKeychain {
 
     /// Internal predicate for active key status.
     pub fn is_active_key(&self, account: Address, key_id: Address) -> Result<bool> {
+        if self.is_native_multisig_account(account)? {
+            return Ok(false);
+        }
+
         let current_timestamp = self.storage.timestamp().saturating_to::<u64>();
         match self.load_active_key(account, key_id, current_timestamp) {
             Ok(_) => Ok(true),
@@ -1169,6 +1209,10 @@ impl AccountKeychain {
         key_id: Address,
         current_timestamp: u64,
     ) -> Result<AuthorizedKey> {
+        if self.is_native_multisig_account(account)? {
+            return Err(AccountKeychainError::key_not_found().into());
+        }
+
         let key = self.keys[account][key_id].read()?;
 
         if key.is_revoked {
@@ -1184,6 +1228,14 @@ impl AccountKeychain {
         }
 
         Ok(key)
+    }
+
+    fn is_native_multisig_account(&self, account: Address) -> Result<bool> {
+        if !self.storage.spec().is_t6() {
+            return Ok(false);
+        }
+
+        NativeMultisig::new().is_multisig_account(account)
     }
 
     /// Validate keychain authorization (existence, revocation, expiry, and optionally signature type).
@@ -1538,6 +1590,7 @@ mod tests {
     use super::*;
     use crate::{
         error::TempoPrecompileError,
+        native_multisig::NativeMultisig,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
@@ -1545,6 +1598,9 @@ mod tests {
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
+    use tempo_primitives::transaction::{
+        InitMultisig, MultisigOwner, SignatureType as PrimitiveSignatureType,
+    };
 
     fn authorize_key(
         keychain: &mut AccountKeychain,
@@ -1641,6 +1697,24 @@ mod tests {
         tempo_alloy::provider::keychain::KeyRestrictions::default().into()
     }
 
+    fn native_multisig_config() -> InitMultisig {
+        InitMultisig {
+            threshold: 1,
+            owners: vec![
+                MultisigOwner {
+                    signature_type: PrimitiveSignatureType::Secp256k1,
+                    owner: Address::from([0x11; 20]),
+                    weight: 1,
+                },
+                MultisigOwner {
+                    signature_type: PrimitiveSignatureType::Secp256k1,
+                    owner: Address::from([0x22; 20]),
+                    weight: 1,
+                },
+            ],
+        }
+    }
+
     #[test]
     fn test_t6_root_authorizes_admin_key() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
@@ -1662,6 +1736,81 @@ mod tests {
             assert!(key.is_admin);
             assert!(keychain.is_admin_key(account, account)?);
             assert!(keychain.is_admin_key(account, admin_key)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t6_native_multisig_accounts_cannot_use_keychain_state() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let config = native_multisig_config();
+        let config_id = config.config_id().unwrap();
+        let account = config.account().unwrap();
+        let key_id = Address::from([0x33; 20]);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut multisig = NativeMultisig::new();
+            multisig.initialize()?;
+            multisig.store_initial_config(account, config_id, &config)?;
+
+            let mut keychain = AccountKeychain::new();
+            keychain.initialize()?;
+            keychain.set_tx_origin(account)?;
+            keychain.set_transaction_key(Address::ZERO)?;
+
+            keychain.keys[account][key_id].write(AuthorizedKey {
+                signature_type: StoredSignatureType::Secp256k1,
+                expiry: u64::MAX,
+                enforce_limits: true,
+                is_revoked: false,
+                is_admin: true,
+            })?;
+            let limit_key = AccountKeychain::spending_limit_key(account, key_id);
+            keychain.spending_limits[limit_key][DEFAULT_FEE_TOKEN].write(SpendingLimitState {
+                remaining: U256::from(123u64),
+                max: 123,
+                period: 60,
+                period_end: 160,
+            })?;
+
+            assert_unauthorized_error(
+                keychain
+                    .authorize_admin_key(
+                        account,
+                        Address::from([0x44; 20]),
+                        SignatureType::P256,
+                        None,
+                    )
+                    .unwrap_err(),
+            );
+            assert!(!keychain.is_admin_key(account, account)?);
+            assert!(!keychain.is_admin_key(account, key_id)?);
+            assert!(!keychain.is_active_key(account, key_id)?);
+
+            let key = keychain.get_key(getKeyCall {
+                account,
+                keyId: key_id,
+            })?;
+            assert_eq!(key.keyId, Address::ZERO);
+            assert_eq!(key.expiry, 0);
+            assert!(!key.enforceLimits);
+
+            let remaining =
+                keychain.get_remaining_limit_with_period(getRemainingLimitWithPeriodCall {
+                    account,
+                    keyId: key_id,
+                    token: DEFAULT_FEE_TOKEN,
+                })?;
+            assert_eq!(remaining.remaining, U256::ZERO);
+            assert_eq!(remaining.periodEnd, 0);
+
+            let allowed = keychain.get_allowed_calls(getAllowedCallsCall {
+                account,
+                keyId: Address::ZERO,
+            })?;
+            assert!(allowed.isScoped);
+            assert!(allowed.scopes.is_empty());
 
             Ok(())
         })
