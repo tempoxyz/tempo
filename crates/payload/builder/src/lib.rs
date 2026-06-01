@@ -1046,14 +1046,19 @@ where
                 validation_work_at_tx_cutoff,
             );
         }
+        let recorded_block_size_bytes =
+            rlp_length + block_access_list.as_ref().map_or(0, Encodable::length);
+
         self.metrics.payload_build_duration_seconds.record(elapsed);
         let gas_per_second = block.gas_used() as f64 / elapsed.as_secs_f64();
         self.metrics.gas_per_second.record(gas_per_second);
         self.metrics.gas_per_second_last.set(gas_per_second);
-        self.metrics.rlp_block_size_bytes.record(rlp_length as f64);
+        self.metrics
+            .rlp_block_size_bytes
+            .record(recorded_block_size_bytes as f64);
         self.metrics
             .rlp_block_size_bytes_last
-            .set(rlp_length as f64);
+            .set(recorded_block_size_bytes as f64);
 
         info!(
             parent_hash = ?block.parent_hash(),

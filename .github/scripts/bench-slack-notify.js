@@ -101,7 +101,12 @@ function hasImprovement(changes) {
 }
 
 function e2eChanges(summary) {
-  if (summary.results?.changes) return summary.results.changes;
+  if (summary.results?.changes) {
+    return Object.fromEntries(
+      Object.entries(summary.results.changes)
+        .filter(([key]) => !key.startsWith('serialized_block_size')),
+    );
+  }
   const deltas = summary.results.deltas;
   return {
     tps: changeFromPct(deltas.tps, false),
@@ -148,7 +153,7 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
   const b = summary.results.baseline;
   const f = summary.results.feature;
   const changes = e2eChanges(summary);
-  const classified = summary.classification || verdictFromChanges(changes, 'No Significant Change');
+  const classified = verdictFromChanges(changes, 'No Significant Change');
   const emoji = classified.slack_emoji || classified.emoji || ':white_circle:';
   const label = classified.label || 'No Significant Change';
 
