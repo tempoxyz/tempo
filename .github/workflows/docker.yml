@@ -17,9 +17,9 @@ on:
         type: boolean
         default: false
   workflow_call:
+  # We're building nightly only once a day to let the rollout cook for 24h without interruptions
   schedule:
     - cron: "5 9 * * *"
-    - cron: "30 20 * * *"
 
 env:
   REGISTRY: ghcr.io/tempoxyz

@@ -3,8 +3,9 @@
 // Routes user nonces (nonce_key>0) to minimal 2D nonce pool
 
 use crate::{
-    amm::AmmLiquidityCache, best::MergeBestTransactions, transaction::TempoPooledTransaction,
-    tt_2d_pool::AA2dPool, validator::TempoTransactionValidator,
+    amm::AmmLiquidityCache, best::MergeBestTransactions, ordering::TempoTipOrdering,
+    transaction::TempoPooledTransaction, tt_2d_pool::AA2dPool,
+    validator::TempoTransactionValidator,
 };
 use alloy_consensus::Transaction;
 use alloy_primitives::{
@@ -18,11 +19,10 @@ use reth_provider::{ChangedAccount, StateProviderFactory};
 use reth_storage_api::StateProvider;
 use reth_transaction_pool::{
     AddedTransactionOutcome, AllPoolTransactions, BestTransactions, BestTransactionsAttributes,
-    BlockInfo, CanonicalStateUpdate, CoinbaseTipOrdering, GetPooledTransactionLimit,
-    NewBlobSidecar, Pool, PoolResult, PoolSize, PoolTransaction, PropagatedTransactions,
-    TransactionEvents, TransactionOrigin, TransactionPool, TransactionPoolExt,
-    TransactionValidationOutcome, TransactionValidationTaskExecutor, TransactionValidator,
-    ValidPoolTransaction,
+    BlockInfo, CanonicalStateUpdate, GetPooledTransactionLimit, NewBlobSidecar, Pool, PoolResult,
+    PoolSize, PoolTransaction, PropagatedTransactions, TransactionEvents, TransactionOrigin,
+    TransactionPool, TransactionPoolExt, TransactionValidationOutcome,
+    TransactionValidationTaskExecutor, TransactionValidator, ValidPoolTransaction,
     blobstore::InMemoryBlobStore,
     error::{PoolError, PoolErrorKind},
     identifier::TransactionId,
@@ -49,7 +49,7 @@ pub struct TempoTransactionPool<Client> {
     /// Vanilla pool for all standard transactions and AA transactions with regular nonce.
     protocol_pool: Pool<
         TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
-        CoinbaseTipOrdering<TempoPooledTransaction>,
+        TempoTipOrdering<TempoPooledTransaction>,
         InMemoryBlobStore,
     >,
     /// Minimal pool for 2D nonces (nonce_key > 0)
@@ -60,7 +60,7 @@ impl<Client> TempoTransactionPool<Client> {
     pub fn new(
         protocol_pool: Pool<
             TransactionValidationTaskExecutor<TempoTransactionValidator<Client>>,
-            CoinbaseTipOrdering<TempoPooledTransaction>,
+            TempoTipOrdering<TempoPooledTransaction>,
             InMemoryBlobStore,
         >,
         aa_2d_pool: AA2dPool,
@@ -1504,7 +1504,7 @@ mod tests {
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
-            CoinbaseTipOrdering::default(),
+            TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
@@ -1770,7 +1770,7 @@ mod tests {
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
-            CoinbaseTipOrdering::default(),
+            TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
@@ -1929,7 +1929,7 @@ mod tests {
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
-            CoinbaseTipOrdering::default(),
+            TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
@@ -2010,7 +2010,7 @@ mod tests {
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
-            CoinbaseTipOrdering::default(),
+            TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
@@ -2101,7 +2101,7 @@ mod tests {
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
-            CoinbaseTipOrdering::default(),
+            TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
@@ -2188,7 +2188,7 @@ mod tests {
         let (executor, _task) = TransactionValidationTaskExecutor::new(validator);
         let protocol_pool = Pool::new(
             executor,
-            CoinbaseTipOrdering::default(),
+            TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
