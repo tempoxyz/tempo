@@ -28,8 +28,9 @@ use alloy_evm::{
 };
 pub use evm::TempoEvmFactory;
 use reth_chainspec::EthChainSpec;
-use reth_evm::{self, ConfigureEvm, EvmEnvFor, block::StateDB};
+use reth_evm::{self, ConfigureEvm, Database, EvmEnvFor, block::StateDB};
 use reth_primitives_traits::{SealedBlock, SealedHeader};
+use reth_revm::{db::StateBuilder, state::bal::Bal as RevmBal};
 use tempo_primitives::{
     Block, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
@@ -289,6 +290,21 @@ impl ConfigureEvm for TempoEvmConfig {
             subblock_fee_recipients: attributes.subblock_fee_recipients,
         })
     }
+
+    fn configure_bal_worker_state<DB>(
+        &self,
+        builder: StateBuilder<DB>,
+        bal: Arc<RevmBal>,
+        _evm_env: &EvmEnvFor<Self>,
+    ) -> StateBuilder<DB>
+    where
+        DB: Database,
+    {
+        builder
+            .with_bal(bal)
+            .with_missing_storage_reads_allowed()
+            .with_bundle_update()
+    }
 }
 
 #[cfg(test)]
@@ -313,6 +329,32 @@ mod tests {
             .chain_spec()
             .tempo_fork_activation(TempoHardfork::Genesis);
         assert_eq!(activation, reth_chainspec::ForkCondition::Timestamp(0));
+    }
+
+    #[test]
+    fn test_bal_worker_state_allows_missing_storage_reads() {
+        let evm_config = TempoEvmConfig::new(test_chainspec());
+        let evm_env = evm_config
+            .evm_env(&TempoHeader {
+                inner: alloy_consensus::Header {
+                    gas_limit: 30_000_000,
+                    ..Default::default()
+                },
+                ..Default::default()
+            })
+            .unwrap();
+
+        let state = evm_config
+            .configure_bal_worker_state(
+                reth_revm::State::builder(),
+                Arc::new(reth_revm::state::bal::Bal::new()),
+                &evm_env,
+            )
+            .build();
+
+        assert!(state.bal_state.allow_missing_storage_reads);
+        assert!(state.bal_state.bal.is_some());
+        assert!(state.transition_state.is_some());
     }
 
     #[test]
