@@ -407,9 +407,8 @@ mod tests {
             Some(B256::repeat_byte(0x42)),
         );
 
-        let block = assembler
-            .assemble_block(input)
-            .expect("should assemble block");
+        let block =
+            BlockAssembler::assemble_block(&assembler, input).expect("should assemble block");
 
         assert_eq!(
             block.header.inner.block_access_list_hash,
