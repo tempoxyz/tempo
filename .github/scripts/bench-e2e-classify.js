@@ -17,6 +17,9 @@ const AXES = {
   block_time_p50: { floor: 0.70, lower: true },
   block_time_p90: { floor: 0.70, lower: true },
   block_time_p99: { floor: 1.60, lower: true },
+  serialized_block_size_p50: { floor: 0.70, lower: true },
+  serialized_block_size_p90: { floor: 0.70, lower: true },
+  serialized_block_size_p99: { floor: 0.70, lower: true },
   validation_latency_p50: { floor: 1.55, lower: true },
   validation_latency_p90: { floor: 1.55, lower: true },
   validation_latency_p99: { floor: 2.05, lower: true },
@@ -33,6 +36,9 @@ const SECTIONS = [
       ['Block Time P50 [ms]', 'block_time_p50', v => fmtVal(v, 1)],
       ['Block Time P90 [ms]', 'block_time_p90', v => fmtVal(v, 1)],
       ['Block Time P99 [ms]', 'block_time_p99', v => fmtVal(v, 1)],
+      ['Serialized Block Size P50 [KiB]', 'serialized_block_size_p50', fmtKiB],
+      ['Serialized Block Size P90 [KiB]', 'serialized_block_size_p90', fmtKiB],
+      ['Serialized Block Size P99 [KiB]', 'serialized_block_size_p99', fmtKiB],
     ],
   },
   {
@@ -167,6 +173,10 @@ function verdict(changes) {
 
 function fmtVal(value, precision) {
   return Number.isFinite(value) ? value.toFixed(precision) : '-';
+}
+
+function fmtKiB(value) {
+  return Number.isFinite(value) ? (value / 1024).toFixed(1) : '-';
 }
 
 function fmtChange(change) {

@@ -897,6 +897,8 @@ def generate-summary [
     mut feature_builder_gas_values = []
     mut baseline_validation_gas_values = []
     mut feature_validation_gas_values = []
+    mut baseline_serialized_block_size_values = []
+    mut feature_serialized_block_size_values = []
 
     let compute_block_time_stats = { |intervals: list<any>|
         let sorted_intervals = ($intervals | sort)
@@ -1019,6 +1021,8 @@ def generate-summary [
         "reth_tempo_payload_builder_gas_per_second_count"
         "reth_consensus_engine_beacon_new_payload_gas_per_second_sum"
         "reth_consensus_engine_beacon_new_payload_gas_per_second_count"
+        "reth_tempo_payload_builder_rlp_block_size_bytes_sum"
+        "reth_tempo_payload_builder_rlp_block_size_bytes_count"
     ]
     let metric_sample_match_args = ($metric_sample_names | each { |name| ["-e" $name] } | flatten)
     let has_rg = ((which rg | length) > 0)
@@ -1088,6 +1092,7 @@ def generate-summary [
         let validation_latency_values = (do $optional_counter_metric_values "reth_consensus_engine_beacon_new_payload_latency" 1000.0)
         let builder_gas_values = (do $optional_counter_metric_values "reth_tempo_payload_builder_gas_per_second" 1.0)
         let validation_gas_values = (do $optional_counter_metric_values "reth_consensus_engine_beacon_new_payload_gas_per_second" 1.0)
+        let serialized_block_size_values = (do $optional_counter_metric_values "reth_tempo_payload_builder_rlp_block_size_bytes" 1.0)
         let blocks = ($report | get blocks | each { |b|
             let tx_count = ($b | get tx_count)
             let timestamp = if (($b | get -o timestamp | default null) != null) {
@@ -1130,6 +1135,7 @@ def generate-summary [
             $baseline_validation_latency_values = ($baseline_validation_latency_values | append $validation_latency_values)
             $baseline_builder_gas_values = ($baseline_builder_gas_values | append $builder_gas_values)
             $baseline_validation_gas_values = ($baseline_validation_gas_values | append $validation_gas_values)
+            $baseline_serialized_block_size_values = ($baseline_serialized_block_size_values | append $serialized_block_size_values)
         } else {
             $feature_blocks = ($feature_blocks | append $blocks)
             $feature_intervals = ($feature_intervals | append $block_intervals)
@@ -1143,6 +1149,7 @@ def generate-summary [
             $feature_validation_latency_values = ($feature_validation_latency_values | append $validation_latency_values)
             $feature_builder_gas_values = ($feature_builder_gas_values | append $builder_gas_values)
             $feature_validation_gas_values = ($feature_validation_gas_values | append $validation_gas_values)
+            $feature_serialized_block_size_values = ($feature_serialized_block_size_values | append $serialized_block_size_values)
         }
 
         let total_tx = ($blocks | get tx_count | math sum)
@@ -1155,6 +1162,7 @@ def generate-summary [
         let run_validation = do $compute_value_stats $validation_latency_values
         let run_builder_gas = do $compute_value_mean $builder_gas_values
         let run_validation_gas = do $compute_value_mean $validation_gas_values
+        let run_serialized_block_size = do $compute_value_stats $serialized_block_size_values
 
         # Compute TPS from block timestamps (timestamps are in milliseconds)
         let time_span_ms = if ($timestamps | length) > 1 {
@@ -1189,6 +1197,9 @@ def generate-summary [
             block_time_p50: $run_bt.p50
             block_time_p90: $run_bt.p90
             block_time_p99: $run_bt.p99
+            serialized_block_size_p50: $run_serialized_block_size.p50
+            serialized_block_size_p90: $run_serialized_block_size.p90
+            serialized_block_size_p99: $run_serialized_block_size.p99
             validation_latency_p50: $run_validation.p50
             validation_latency_p90: $run_validation.p90
             validation_latency_p99: $run_validation.p99
@@ -1237,6 +1248,8 @@ def generate-summary [
     let f_builder_gas = do $compute_value_mean $feature_builder_gas_values
     let b_validation_gas = do $compute_value_mean $baseline_validation_gas_values
     let f_validation_gas = do $compute_value_mean $feature_validation_gas_values
+    let b_serialized_block_size = do $compute_value_stats $baseline_serialized_block_size_values
+    let f_serialized_block_size = do $compute_value_stats $feature_serialized_block_size_values
 
     let b_bt = do $compute_block_time_stats $baseline_intervals
     let f_bt = do $compute_block_time_stats $feature_intervals
@@ -1298,6 +1311,7 @@ def generate-summary [
     let f_builder_mgas = do $to_mgas_s $f_builder_gas
     let b_validation_mgas = do $to_mgas_s $b_validation_gas
     let f_validation_mgas = do $to_mgas_s $f_validation_gas
+    let to_kib = { |value: float| ($value / 1024.0) | math round --precision 1 }
 
     let observability_padding_ms = 5000
     let observability_duration_ms = $duration * ($run_labels | length) * 1000
@@ -1367,6 +1381,9 @@ def generate-summary [
         $"| Block Time P50 [ms] | ($b_bt.p50) | ($f_bt.p50) | (do $delta $b_bt.p50 $f_bt.p50)% |"
         $"| Block Time P90 [ms] | ($b_bt.p90) | ($f_bt.p90) | (do $delta $b_bt.p90 $f_bt.p90)% |"
         $"| Block Time P99 [ms] | ($b_bt.p99) | ($f_bt.p99) | (do $delta $b_bt.p99 $f_bt.p99)% |"
+        $"| Serialized Block Size P50 [KiB] | (do $to_kib $b_serialized_block_size.p50) | (do $to_kib $f_serialized_block_size.p50) | (do $delta $b_serialized_block_size.p50 $f_serialized_block_size.p50)% |"
+        $"| Serialized Block Size P90 [KiB] | (do $to_kib $b_serialized_block_size.p90) | (do $to_kib $f_serialized_block_size.p90) | (do $delta $b_serialized_block_size.p90 $f_serialized_block_size.p90)% |"
+        $"| Serialized Block Size P99 [KiB] | (do $to_kib $b_serialized_block_size.p99) | (do $to_kib $f_serialized_block_size.p99) | (do $delta $b_serialized_block_size.p99 $f_serialized_block_size.p99)% |"
         ""
         "## Builder"
         ""
@@ -1460,6 +1477,9 @@ def generate-summary [
                 block_time_p50: $b_bt.p50
                 block_time_p90: $b_bt.p90
                 block_time_p99: $b_bt.p99
+                serialized_block_size_p50: $b_serialized_block_size.p50
+                serialized_block_size_p90: $b_serialized_block_size.p90
+                serialized_block_size_p99: $b_serialized_block_size.p99
                 validation_latency_p50: $b_validation.p50
                 validation_latency_p90: $b_validation.p90
                 validation_latency_p99: $b_validation.p99
@@ -1491,6 +1511,9 @@ def generate-summary [
                 block_time_p50: $f_bt.p50
                 block_time_p90: $f_bt.p90
                 block_time_p99: $f_bt.p99
+                serialized_block_size_p50: $f_serialized_block_size.p50
+                serialized_block_size_p90: $f_serialized_block_size.p90
+                serialized_block_size_p99: $f_serialized_block_size.p99
                 validation_latency_p50: $f_validation.p50
                 validation_latency_p90: $f_validation.p90
                 validation_latency_p99: $f_validation.p99
@@ -1522,6 +1545,9 @@ def generate-summary [
                 block_time_p50: (do $delta $b_bt.p50 $f_bt.p50)
                 block_time_p90: (do $delta $b_bt.p90 $f_bt.p90)
                 block_time_p99: (do $delta $b_bt.p99 $f_bt.p99)
+                serialized_block_size_p50: (do $delta $b_serialized_block_size.p50 $f_serialized_block_size.p50)
+                serialized_block_size_p90: (do $delta $b_serialized_block_size.p90 $f_serialized_block_size.p90)
+                serialized_block_size_p99: (do $delta $b_serialized_block_size.p99 $f_serialized_block_size.p99)
                 validation_latency_p50: (do $delta $b_validation.p50 $f_validation.p50)
                 validation_latency_p90: (do $delta $b_validation.p90 $f_validation.p90)
                 validation_latency_p99: (do $delta $b_validation.p99 $f_validation.p99)
