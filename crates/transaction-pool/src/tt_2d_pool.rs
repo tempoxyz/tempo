@@ -255,23 +255,9 @@ impl AA2dPool {
             is_pending: AtomicBool::new(false),
         });
 
+        // Use entry API once to both check for replacement and insert.
+        // This avoids a separate contains_key lookup.
         let sender = transaction.sender();
-        if !self.by_id.contains_key(&tx_id) {
-            // Check per-sender limit for new (non-replacement) transactions.
-            let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
-            if sender_count >= self.config.max_txs_per_sender {
-                self.gc_expiring_nonce_tombstones_for_sender(sender);
-            }
-            let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
-            if sender_count >= self.config.max_txs_per_sender {
-                return Err(PoolError::new(
-                    *transaction.hash(),
-                    PoolErrorKind::SpammerExceededCapacity(sender),
-                ));
-            }
-        }
-
-        // Use entry API to both check for replacement and insert.
         let replaced = match self.by_id.entry(tx_id) {
             Entry::Occupied(mut entry) => {
                 // Ensure the replacement transaction is not underpriced
@@ -293,6 +279,15 @@ impl AA2dPool {
                 Some(replaced)
             }
             Entry::Vacant(entry) => {
+                // Check per-sender limit for new (non-replacement) transactions
+                let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
+                if sender_count >= self.config.max_txs_per_sender {
+                    return Err(PoolError::new(
+                        *transaction.hash(),
+                        PoolErrorKind::SpammerExceededCapacity(sender),
+                    ));
+                }
+
                 entry.insert(Arc::clone(&tx));
                 // Increment sender count for new transactions
                 *self.txs_by_sender.entry(sender).or_insert(0) += 1;
