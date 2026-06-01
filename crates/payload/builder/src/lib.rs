@@ -487,7 +487,10 @@ where
         maybe_override_fee_recipient(&mut executor, &attributes);
 
         if let Some(ref handle) = trie_handle {
-            executor.set_state_hook(Some(Box::new(handle.state_hook())));
+            executor
+                .evm_mut()
+                .db_mut()
+                .set_state_hook(Some(Box::new(handle.state_hook())));
         }
 
         executor.apply_pre_execution_changes().map_err(|err| {
@@ -871,6 +874,10 @@ where
 
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
+
+        // Drop the state hook to signal that execution is complete and the sparse trie task can
+        // finalize the state root.
+        db.set_state_hook(None);
 
         let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
             .as_mut()
