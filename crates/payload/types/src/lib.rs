@@ -43,10 +43,8 @@ pub struct TempoBuiltPayload {
     /// This excludes proposer-only idle waiting, but includes replayable work
     /// such as transaction execution and non-interruptible `builder_finish`.
     validation_work_duration: Duration,
-    /// Serialized payload size used for proposal return marshal estimates and
+    /// RLP-encoded block size used for proposal return marshal estimates and
     /// learning the rate used by future builder budgets.
-    ///
-    /// This includes the execution block RLP plus optional RLP-encoded BAL sidecar bytes.
     rlp_block_size_bytes: usize,
 }
 
@@ -81,7 +79,7 @@ impl TempoBuiltPayload {
         self.validation_work_duration
     }
 
-    /// Returns the serialized payload size in bytes.
+    /// Returns the RLP-encoded block size in bytes.
     ///
     /// Consensus uses this with the learned marshal persistence rate to reserve
     /// time for validators to persist similarly sized proposals.
