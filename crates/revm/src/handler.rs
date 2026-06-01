@@ -6,7 +6,7 @@ use std::{
     sync::{Arc, OnceLock},
 };
 
-use alloy_primitives::{Address, TxKind, U256};
+use alloy_primitives::{Address, B256, TxKind, U256};
 use reth_evm::{EvmError, EvmInternals};
 use revm::{
     Database,
@@ -61,7 +61,7 @@ use tempo_precompiles::{
 use tempo_primitives::{
     TempoAddressExt,
     transaction::{
-        PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
+        InitMultisig, PrimitiveSignature, SignatureType, TEMPO_EXPIRING_NONCE_KEY, TempoSignature,
         calc_gas_balance_spending, multisig_digest, validate_calls,
         verify_multisig_owner_signatures,
     },
@@ -1052,6 +1052,7 @@ where
             .unwrap_or_default();
 
         let spec = cfg.spec();
+        let mut native_multisig_bootstrap: Option<(Address, B256, InitMultisig)> = None;
 
         if spec.is_t6() {
             let tempo_tx_env = tx.tempo_tx_env.as_ref();
@@ -1067,7 +1068,7 @@ where
                 block,
                 cfg,
                 tx,
-                |mut multisig: NativeMultisig| -> Result<
+                |multisig: NativeMultisig| -> Result<
                     (),
                     EVMError<DB::Error, TempoInvalidTransaction>,
                 > {
@@ -1258,13 +1259,11 @@ where
                                 reason: reason.to_string(),
                             }
                         })?;
-                        multisig
-                            .store_initial_config(
-                                multisig_signature.account,
-                                multisig_signature.config_id,
-                                init_config,
-                            )
-                            .map_err(map_native_multisig_error::<DB>)?;
+                        native_multisig_bootstrap = Some((
+                            multisig_signature.account,
+                            multisig_signature.config_id,
+                            init_config.clone(),
+                        ));
                     }
 
                     Ok(())
@@ -1716,6 +1715,23 @@ where
 
             journal.checkpoint_commit();
             evm.collected_fee = gas_balance_spending;
+        }
+
+        // Native multisig bootstrap is validated before fee collection, but the config write must
+        // happen in the committed pre-execution phase. This also seeds the transient
+        // bootstrapped-account guard before user calls can reach the multisig precompile.
+        if let Some((account, config_id, config)) = native_multisig_bootstrap {
+            StorageCtx::enter_precompile(
+                journal,
+                block,
+                cfg,
+                tx,
+                |mut multisig: NativeMultisig| {
+                    multisig
+                        .store_initial_config(account, config_id, &config)
+                        .map_err(map_native_multisig_error::<DB>)
+                },
+            )?;
         }
 
         // If the transaction includes a KeyAuthorization, validate and authorize the key
@@ -3192,6 +3208,77 @@ mod tests {
             ),
             "bootstrap multisig account cannot be an authorization-list authority"
         );
+    }
+
+    #[test]
+    fn test_t6_bootstrap_multisig_persists_initial_config() {
+        use alloy_signer::SignerSync;
+        use alloy_signer_local::PrivateKeySigner;
+        use tempo_primitives::transaction::{PrimitiveSignature, multisig_digest};
+
+        let mut signers = [
+            PrivateKeySigner::from_bytes(&B256::from([0x11; 32])).unwrap(),
+            PrivateKeySigner::from_bytes(&B256::from([0x22; 32])).unwrap(),
+        ];
+        signers.sort_by_key(|signer| signer.address());
+
+        let config = InitMultisig {
+            threshold: 1,
+            owners: signers
+                .iter()
+                .map(|signer| MultisigOwner {
+                    signature_type: PrimitiveSignatureType::Secp256k1,
+                    owner: signer.address(),
+                    weight: 1,
+                })
+                .collect(),
+        };
+        let config_id = config.config_id().unwrap();
+        let account = config.account().unwrap();
+        let signature_hash = B256::repeat_byte(0x42);
+        let digest = multisig_digest(signature_hash, account, config_id);
+        let owner_signature = PrimitiveSignature::Secp256k1(
+            signers[0]
+                .sign_hash_sync(&digest)
+                .expect("owner signing succeeds"),
+        )
+        .to_bytes();
+
+        let aa_env = TempoBatchCallEnv {
+            signature: TempoSignature::Multisig(MultisigSignature {
+                account,
+                config_id,
+                signatures: vec![owner_signature],
+            }),
+            aa_calls: vec![Call {
+                to: TxKind::Call(Address::random()),
+                value: U256::ZERO,
+                input: Bytes::new(),
+            }],
+            multisig_init: Some(config.clone()),
+            signature_hash,
+            tx_hash: B256::repeat_byte(0x24),
+            ..Default::default()
+        };
+        let mut test = TestHandlerEvm::aa(TempoHardfork::T6, aa_env, |tx_env| {
+            tx_env.inner.caller = account;
+            tx_env.inner.kind = TxKind::Call(Address::random());
+        });
+
+        test.validate_against_state_and_deduct_caller()
+            .expect("valid bootstrap transaction should pass");
+
+        StorageCtx::enter_ctx(&mut test.evm.inner.ctx, || {
+            let multisig = NativeMultisig::new();
+            assert!(multisig.is_multisig_account(account)?);
+            assert_eq!(multisig.get_multisig_config_id(account)?, config_id);
+            assert_eq!(
+                multisig.get_multisig_config(account, config_id)?.threshold,
+                config.threshold
+            );
+            Ok::<_, TempoPrecompileError>(())
+        })
+        .expect("stored native multisig config should be readable");
     }
 
     #[test]
