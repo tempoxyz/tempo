@@ -39,6 +39,10 @@ For features that do not introduce a precompile, this section should define the 
 
 Where a feature involves multiple processes, state diagrams / flowcharts should be considered when helpful.
 
+# Observability
+
+Describe the events needed to monitor and debug this TIP in production. List each event that MUST be emitted, its fields, and the operational question it answers. If no new events are required, write `N/A` and explain why existing observability is sufficient.
+
 # Invariants
 
 This section should describe invariants that must always hold, and outline the critical cases that the test suite must cover. 
