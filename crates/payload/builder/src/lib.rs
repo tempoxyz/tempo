@@ -2247,46 +2247,13 @@ where
                         ..
                     } = output;
 
-                    let direct_attempt = execution_result.is_none();
-                    let mut result = match execution_result {
-                        Some(Ok(result)) => result,
-                        Some(Err(err)) => {
-                            if let BlockExecutionError::Validation(
-                                BlockValidationError::InvalidTx { error, .. },
-                            ) = &err
-                            {
-                                invalid_pool_transaction_execution_attempts += 1;
-
-                                if error.is_nonce_too_low() {
-                                    trace!(%error, tx = %candidate.tx_debug_repr, "skipping nonce too low transaction");
-                                    self.metrics.inc_pool_tx_skipped("nonce_too_low");
-                                } else {
-                                    trace!(%error, tx = %candidate.tx_debug_repr, "skipping invalid transaction and its descendants");
-                                    best_txs.mark_invalid(
-                                        &candidate.pool_tx,
-                                        InvalidPoolTransactionError::Consensus(
-                                            InvalidTransactionError::TxTypeNotSupported,
-                                        ),
-                                    );
-                                    self.metrics.inc_pool_tx_skipped("invalid_tx");
-                                    invalidated.push(candidate.pool_tx.clone());
-                                    pending_candidates.retain(|pending| {
-                                        !is_blockstm_invalidated_buffered_transaction(
-                                            &candidate.pool_tx,
-                                            &pending.pool_tx,
-                                        )
-                                    });
-                                }
-                                continue;
-                            } else {
-                                return Err(PayloadBuilderError::evm(err));
-                            }
-                        }
-                        None => {
+                    let direct_attempt = matches!(execution_result, None | Some(Err(_)));
+                    let mut execute_against_committed_prefix =
+                        || -> Result<Option<tempo_evm::TempoTxResult>, PayloadBuilderError> {
                             match executor
                                 .execute_transaction_without_commit(candidate.tx_with_env.clone())
                             {
-                                Ok(result) => result,
+                                Ok(result) => Ok(Some(result)),
                                 Err(err) => {
                                     if let BlockExecutionError::Validation(
                                         BlockValidationError::InvalidTx { error, .. },
@@ -2314,12 +2281,28 @@ where
                                                 )
                                             });
                                         }
-                                        continue;
+
+                                        Ok(None)
                                     } else {
-                                        return Err(PayloadBuilderError::evm(err));
+                                        Err(PayloadBuilderError::evm(err))
                                     }
                                 }
                             }
+                        };
+                    let mut result = match execution_result {
+                        Some(Ok(result)) => result,
+                        Some(Err(err)) => {
+                            trace!(%err, tx = %candidate.tx_debug_repr, "re-executing speculative invalid Block-STM transaction against committed prefix");
+                            let Some(result) = execute_against_committed_prefix()? else {
+                                continue;
+                            };
+                            result
+                        }
+                        None => {
+                            let Some(result) = execute_against_committed_prefix()? else {
+                                continue;
+                            };
+                            result
                         }
                     };
                     if direct_attempt {
