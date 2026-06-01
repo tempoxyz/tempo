@@ -7,6 +7,7 @@ name: bench-e2e
 
 on:
   workflow_dispatch:
+    # GitHub Actions supports at most 25 workflow_dispatch inputs; keep this UI-only list capped.
     inputs:
       baseline:
         description: Git ref for the baseline run. Empty = merge-base with main.
@@ -147,21 +148,6 @@ on:
         default: true
       bench-args:
         description: Extra bench args.
-        type: string
-        required: false
-        default: ""
-      bench-env:
-        description: Extra env vars for the bench sender process.
-        type: string
-        required: false
-        default: ""
-      baseline-env:
-        description: Extra env vars for the baseline node process.
-        type: string
-        required: false
-        default: ""
-      feature-env:
-        description: Extra env vars for the feature node process.
         type: string
         required: false
         default: ""
