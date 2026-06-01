@@ -4,6 +4,7 @@
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
 mod budget;
+mod lattice_hash;
 mod metrics;
 mod prewarming;
 
@@ -11,6 +12,7 @@ pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
+use crate::lattice_hash::calculate_lattice_state_root;
 use crate::{
     budget::{
         BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
@@ -927,13 +929,19 @@ where
             .map(|bal| compute_block_access_list_hash(bal.as_slice()));
 
         let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
-            (outcome.state_root, outcome.trie_updates)
+            (
+                calculate_lattice_state_root(&hashed_state),
+                outcome.trie_updates,
+            )
         } else {
-            let (state_root, trie_updates) = finish_provider
+            let (_trie_state_root, trie_updates) = finish_provider
                 .state_root_with_updates(hashed_state.clone())
                 .map_err(BlockExecutionError::other)?;
 
-            (state_root, Arc::new(trie_updates))
+            (
+                calculate_lattice_state_root(&hashed_state),
+                Arc::new(trie_updates),
+            )
         };
 
         let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx

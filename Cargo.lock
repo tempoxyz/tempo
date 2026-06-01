@@ -13290,6 +13290,7 @@ dependencies = [
  "alloy-primitives",
  "alloy-rlp",
  "alloy-sol-types",
+ "commonware-cryptography",
  "crossbeam-channel",
  "metrics",
  "reth-basic-payload-builder",
