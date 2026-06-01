@@ -65,7 +65,7 @@ function cell(text) {
 
 function fmtMs(v) { return v != null ? v.toFixed(2) + 'ms' : '-'; }
 function fmtVal(v, suffix = '', precision = 2) { return v != null ? v.toFixed(precision) + suffix : '-'; }
-function fmtKiB(v) { return v != null ? (v / 1024).toFixed(1) + ' KiB' : '-'; }
+function fmtBytesPerTx(v) { return v != null ? v.toFixed(1) + ' B/tx' : '-'; }
 function fmtS(v) { return v != null ? v.toFixed(2) + 's' : '-'; }
 
 function classifyPctChange(pct, lowerIsBetter) {
@@ -111,9 +111,9 @@ function e2eChanges(summary) {
     block_time_p50: changeFromPct(deltas.block_time_p50, true),
     block_time_p90: changeFromPct(deltas.block_time_p90, true),
     block_time_p99: changeFromPct(deltas.block_time_p99, true),
-    serialized_block_size_p50: changeFromPct(deltas.serialized_block_size_p50, true),
-    serialized_block_size_p90: changeFromPct(deltas.serialized_block_size_p90, true),
-    serialized_block_size_p99: changeFromPct(deltas.serialized_block_size_p99, true),
+    serialized_block_size_per_tx_p50: changeFromPct(deltas.serialized_block_size_per_tx_p50, true),
+    serialized_block_size_per_tx_p90: changeFromPct(deltas.serialized_block_size_per_tx_p90, true),
+    serialized_block_size_per_tx_p99: changeFromPct(deltas.serialized_block_size_per_tx_p99, true),
   };
 }
 
@@ -145,9 +145,9 @@ function buildMetricRows(summary) {
     { label: 'Block P50',       baseline: fmtMs(b.block_time_p50),  feature: fmtMs(f.block_time_p50),  change: fmtChange(c.block_time_p50) },
     { label: 'Block P90',       baseline: fmtMs(b.block_time_p90),  feature: fmtMs(f.block_time_p90),  change: fmtChange(c.block_time_p90) },
     { label: 'Block P99',       baseline: fmtMs(b.block_time_p99),  feature: fmtMs(f.block_time_p99),  change: fmtChange(c.block_time_p99) },
-    { label: 'Serialized P50',  baseline: fmtKiB(b.serialized_block_size_p50), feature: fmtKiB(f.serialized_block_size_p50), change: fmtChange(c.serialized_block_size_p50) },
-    { label: 'Serialized P90',  baseline: fmtKiB(b.serialized_block_size_p90), feature: fmtKiB(f.serialized_block_size_p90), change: fmtChange(c.serialized_block_size_p90) },
-    { label: 'Serialized P99',  baseline: fmtKiB(b.serialized_block_size_p99), feature: fmtKiB(f.serialized_block_size_p99), change: fmtChange(c.serialized_block_size_p99) },
+    { label: 'Size/Tx P50',     baseline: fmtBytesPerTx(b.serialized_block_size_per_tx_p50), feature: fmtBytesPerTx(f.serialized_block_size_per_tx_p50), change: fmtChange(c.serialized_block_size_per_tx_p50) },
+    { label: 'Size/Tx P90',     baseline: fmtBytesPerTx(b.serialized_block_size_per_tx_p90), feature: fmtBytesPerTx(f.serialized_block_size_per_tx_p90), change: fmtChange(c.serialized_block_size_per_tx_p90) },
+    { label: 'Size/Tx P99',     baseline: fmtBytesPerTx(b.serialized_block_size_per_tx_p99), feature: fmtBytesPerTx(f.serialized_block_size_per_tx_p99), change: fmtChange(c.serialized_block_size_per_tx_p99) },
   ];
 }
 
