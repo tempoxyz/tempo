@@ -71,9 +71,6 @@ pub struct TempoEvm<DB: Database, I> {
     seen_expiring_nonce_hashes: B256Set,
     /// Expiring nonce replay marker validated for the current transaction.
     current_expiring_nonce: Option<PendingExpiringNonce>,
-    /// When true, expiring nonce writes are queued by the block executor and written at block
-    /// finalization instead of at transaction finalization.
-    defer_expiring_nonce_finalization: bool,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -113,7 +110,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             pending_expiring_nonces: Vec::new(),
             seen_expiring_nonce_hashes: B256Set::default(),
             current_expiring_nonce: None,
-            defer_expiring_nonce_finalization: false,
         }
     }
 
@@ -137,64 +133,12 @@ impl<DB: Database, I> TempoEvm<DB, I> {
 impl<DB: Database, I> TempoEvm<DB, I> {
     /// Consumed self and returns a new Evm type with given Inspector.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
-        let Self {
-            inner,
-            collected_fee,
-            validator_fee,
-            fee_token,
-            key_expiry,
-            skip_valid_after_check,
-            skip_liquidity_check,
-            pending_expiring_nonces,
-            seen_expiring_nonce_hashes,
-            current_expiring_nonce,
-            defer_expiring_nonce_finalization,
-        } = self;
-
-        TempoEvm {
-            inner: inner.with_inspector(inspector),
-            collected_fee,
-            validator_fee,
-            fee_token,
-            key_expiry,
-            skip_valid_after_check,
-            skip_liquidity_check,
-            pending_expiring_nonces,
-            seen_expiring_nonce_hashes,
-            current_expiring_nonce,
-            defer_expiring_nonce_finalization,
-        }
+        TempoEvm::new_inner(self.inner.with_inspector(inspector))
     }
 
     /// Consumes self and returns a new Evm type with given Precompiles.
     pub fn with_precompiles(self, precompiles: PrecompilesMap) -> Self {
-        let Self {
-            inner,
-            collected_fee,
-            validator_fee,
-            fee_token,
-            key_expiry,
-            skip_valid_after_check,
-            skip_liquidity_check,
-            pending_expiring_nonces,
-            seen_expiring_nonce_hashes,
-            current_expiring_nonce,
-            defer_expiring_nonce_finalization,
-        } = self;
-
-        Self {
-            inner: inner.with_precompiles(precompiles),
-            collected_fee,
-            validator_fee,
-            fee_token,
-            key_expiry,
-            skip_valid_after_check,
-            skip_liquidity_check,
-            pending_expiring_nonces,
-            seen_expiring_nonce_hashes,
-            current_expiring_nonce,
-            defer_expiring_nonce_finalization,
-        }
+        Self::new_inner(self.inner.with_precompiles(precompiles))
     }
 
     /// Consumes self and returns the inner Inspector.
@@ -232,27 +176,6 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// Takes the expiring nonce replay marker validated for the current transaction.
     pub fn take_current_expiring_nonce(&mut self) -> Option<PendingExpiringNonce> {
         self.current_expiring_nonce.take()
-    }
-
-    /// Defers expiring nonce writes to the block executor's finalization step.
-    pub fn defer_expiring_nonce_finalization(&mut self) {
-        self.defer_expiring_nonce_finalization = true;
-    }
-
-    /// Writes the current transaction's expiring nonce marker when standalone execution finalizes.
-    pub fn finalize_current_expiring_nonce(
-        &mut self,
-    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
-        if self.defer_expiring_nonce_finalization {
-            return Ok(());
-        }
-
-        let Some(pending) = self.take_current_expiring_nonce() else {
-            return Ok(());
-        };
-
-        self.queue_expiring_nonce(pending);
-        self.finalize_expiring_nonces()
     }
 
     /// Writes all expiring nonce replay markers accumulated during this block.

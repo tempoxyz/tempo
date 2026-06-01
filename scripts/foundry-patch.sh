@@ -106,47 +106,6 @@ while IFS=$'\t' read -r crate path; do
   mv "$tmp_cargo" "$FOUNDRY_CARGO"
 done <<< "$PATCHES"
 
-# ── 3.5. Align Foundry's alloy-evm dependency with Tempo ───────────────────
-# Tempo's local crates expose types implementing `alloy_evm` traits. Foundry's
-# Tempo adapter also bounds those types by `alloy_evm` traits, so both checkouts
-# must resolve the same `alloy-evm` package version. If they diverge, Rust sees
-# two distinct `EvmFactory` traits with the same name.
-tempo_alloy_evm_line="$(
-  awk '
-    /^\[workspace.dependencies\]/ { in_section = 1; next }
-    in_section && /^\[/ { exit }
-    in_section && /^alloy-evm[[:space:]]*=/ { print; exit }
-  ' "$TEMPO_CARGO"
-)"
-tempo_alloy_evm_version="$(
-  printf '%s\n' "$tempo_alloy_evm_line" \
-    | sed -nE 's/.*version[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' \
-    | head -n1
-)"
-if [[ -z "$tempo_alloy_evm_version" ]]; then
-  tempo_alloy_evm_version="$(
-    printf '%s\n' "$tempo_alloy_evm_line" \
-      | sed -nE 's/.*=[[:space:]]*"([^"]+)".*/\1/p' \
-      | head -n1
-  )"
-fi
-foundry_alloy_evm_version="$(
-  sed -nE 's/^alloy-evm[[:space:]]*=[[:space:]]*"([^"]+)".*/\1/p' "$FOUNDRY_CARGO" \
-    | head -n1
-)"
-if [[ -n "$tempo_alloy_evm_version" && -n "$foundry_alloy_evm_version" && "$tempo_alloy_evm_version" != "$foundry_alloy_evm_version" ]]; then
-  echo "Aligning Foundry alloy-evm $foundry_alloy_evm_version -> $tempo_alloy_evm_version"
-  tmp_cargo="$(mktemp "${FOUNDRY_CARGO}.XXXXXX")"
-  awk -v version="$tempo_alloy_evm_version" '
-    /^alloy-evm[[:space:]]*=/ && !done {
-      sub(/"[^"]+"/, "\"" version "\"")
-      done = 1
-    }
-    { print }
-  ' "$FOUNDRY_CARGO" > "$tmp_cargo"
-  mv "$tmp_cargo" "$FOUNDRY_CARGO"
-fi
-
 echo "Updated Cargo.toml patch sections:"
 sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
 

@@ -162,12 +162,10 @@ where
     I: Inspector<TempoContext<DB>>,
 {
     pub(crate) fn new(
-        mut evm: TempoEvm<DB, I>,
+        evm: TempoEvm<DB, I>,
         ctx: TempoBlockExecutionCtx<'a>,
         chain_spec: &'a TempoChainSpec,
     ) -> Self {
-        evm.defer_expiring_nonce_finalization();
-
         Self {
             incentive_gas_used: 0,
             validator_set: ctx.validator_set,
