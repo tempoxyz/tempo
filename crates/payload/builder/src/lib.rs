@@ -503,7 +503,7 @@ where
 
         debug!("building new payload");
 
-        let (roots_tx, roots_rx) = self.spawn_roots_task();
+        let mut roots_task = None;
 
         // Prepare system transactions before actual block building and account for their size.
         let prepare_system_txs_start = Instant::now();
@@ -723,6 +723,7 @@ where
 
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
+            let (roots_tx, _) = roots_task.get_or_insert_with(|| self.spawn_roots_task());
             let _ = roots_tx.send((
                 BuilderTx::Pooled(pool_tx),
                 executor.receipts().last().unwrap().clone(),
@@ -799,6 +800,7 @@ where
                 executor.evm_mut().db_mut().bump_bal_index();
 
                 subblock_tx_count += 1.0;
+                let (roots_tx, _) = roots_task.get_or_insert_with(|| self.spawn_roots_task());
                 let _ = roots_tx.send((
                     BuilderTx::Owned(Box::new(tx)),
                     executor.receipts().last().unwrap().clone(),
@@ -837,6 +839,7 @@ where
                 .map_err(PayloadBuilderError::evm)?;
             executor.evm_mut().db_mut().bump_bal_index();
 
+            let (roots_tx, _) = roots_task.get_or_insert_with(|| self.spawn_roots_task());
             let _ = roots_tx.send((
                 BuilderTx::Owned(Box::new(system_tx)),
                 executor.receipts().last().unwrap().clone(),
@@ -866,8 +869,11 @@ where
 
         let builder_finish_start = Instant::now();
 
-        // Drop the roots task handle to trigger finalization
-        drop(roots_tx);
+        // Drop the roots task handle to trigger finalization.
+        let roots_rx = roots_task.take().map(|(roots_tx, roots_rx)| {
+            drop(roots_tx);
+            roots_rx
+        });
 
         let (evm, execution_result) = executor.finish()?;
         let evm_env = evm.into_env();
@@ -936,9 +942,12 @@ where
             (state_root, Arc::new(trie_updates))
         };
 
-        let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
-            .blocking_recv()
-            .map_err(PayloadBuilderError::other)?;
+        let (transactions_root, receipts_root, receipts_bloom, transactions, senders) =
+            if let Some(roots_rx) = roots_rx {
+                roots_rx.blocking_recv().map_err(PayloadBuilderError::other)?
+            } else {
+                empty_roots_task_result()
+            };
 
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
@@ -1179,6 +1188,16 @@ where
 
         (transactions_tx, result_rx)
     }
+}
+
+fn empty_roots_task_result() -> (B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>) {
+    (
+        OrderedTrieRootEncodedBuilder::new().finalize(),
+        OrderedTrieRootEncodedBuilder::new().finalize(),
+        Bloom::ZERO,
+        Vec::new(),
+        Vec::new(),
+    )
 }
 
 pub fn is_more_subblocks(
