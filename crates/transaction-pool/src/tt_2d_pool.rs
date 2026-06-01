@@ -1,7 +1,8 @@
-/// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
+// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
 use crate::{
     metrics::AA2dPoolMetrics, ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
 };
+use alloy_consensus::Transaction;
 use alloy_primitives::{
     Address, B256, TxHash, U256,
     map::{AddressMap, B256Map, HashMap, HashSet, U256Map, hash_map},
@@ -97,6 +98,10 @@ pub struct AA2dPool {
     ///
     /// This identifies the account and nonce key based on the slot in the `NonceManager`.
     slot_to_seq_id: U256Map<AASequenceId>,
+    /// Last known on-chain nonce for each 2D nonce sequence.
+    on_chain_nonces: HashMap<AASequenceId, u64>,
+    /// Base fee used for the latest pending/queued classification.
+    current_base_fee: u64,
     /// Settings for this sub-pool.
     config: AA2dPoolConfig,
     /// Metrics for tracking pool statistics
@@ -141,6 +146,8 @@ impl AA2dPool {
             state_update_nonce_changes: Default::default(),
             state_update_included_expiring_nonce_hashes: Default::default(),
             slot_to_seq_id: Default::default(),
+            on_chain_nonces: Default::default(),
+            current_base_fee: 0,
             config,
             metrics: AA2dPoolMetrics::default(),
             by_eviction_order: Default::default(),
@@ -152,7 +159,7 @@ impl AA2dPool {
     }
 
     /// Broadcasts a new pending transaction to all active [`BestAA2dTransactions`] iterators.
-    fn notify_new_pending(&self, tx: &PendingTransaction<TxOrdering>) {
+    pub(crate) fn notify_new_pending(&self, tx: &PendingTransaction<TxOrdering>) {
         if self.new_transaction_notifier.receiver_count() > 0 {
             let _ = self.new_transaction_notifier.send(tx.clone());
         }
@@ -201,6 +208,13 @@ impl AA2dPool {
             .transaction
             .aa_transaction_id()
             .expect("Transaction added to AA2D pool must be an AA transaction");
+        let base_fee = if self.current_base_fee == 0 {
+            hardfork.base_fee()
+        } else {
+            self.current_base_fee
+        };
+        self.current_base_fee = base_fee;
+        self.on_chain_nonces.insert(tx_id.seq_id, on_chain_nonce);
 
         if transaction.nonce() < on_chain_nonce {
             // outdated transaction
@@ -219,11 +233,14 @@ impl AA2dPool {
         let tx = Arc::new(AA2dInternalTransaction {
             inner: PendingTransaction {
                 submission_id: self.next_id(),
-                priority: TempoTipOrdering::default()
-                    .priority(&transaction.transaction, hardfork.base_fee()),
+                priority: TempoTipOrdering::default().priority(&transaction.transaction, base_fee),
                 transaction: transaction.clone(),
             },
             is_pending: AtomicBool::new(false),
+            is_base_fee_blocked: AtomicBool::new(!Self::transaction_pays_base_fee(
+                &transaction.transaction,
+                base_fee,
+            )),
         });
 
         // Use entry API once to both check for replacement and insert.
@@ -291,45 +308,16 @@ impl AA2dPool {
         // contains transactions directly impacted by the new transaction (filled nonce gap)
         let mut promoted = Vec::new();
         // Track whether this transaction was inserted as pending
-        let mut inserted_as_pending = false;
-        let mut newly_pending = 0usize;
-        // now we need to scan the range and mark transactions as pending, if any
-        let on_chain_id = AA2dTransactionId::new(tx_id.seq_id, on_chain_nonce);
-        // track the next nonce we expect if the transactions are gapless
-        let mut next_nonce = on_chain_id.nonce;
-
-        // scan all the transactions with the same nonce key starting with the on chain nonce
-        // to check if our new transaction was inserted as pending and perhaps promoted more transactions
-        for (existing_id, existing_tx) in self.descendant_txs(&on_chain_id) {
-            if existing_id.nonce == next_nonce {
-                match existing_id.nonce.cmp(&tx_id.nonce) {
-                    std::cmp::Ordering::Less => {
-                        // unaffected by our transaction
-                    }
-                    std::cmp::Ordering::Equal => {
-                        if !existing_tx.set_pending(true) {
-                            newly_pending += 1;
-                        }
-                        inserted_as_pending = true;
-                    }
-                    std::cmp::Ordering::Greater => {
-                        // if this was previously not pending we need to promote the transaction
-                        let was_pending = existing_tx.set_pending(true);
-                        if !was_pending {
-                            newly_pending += 1;
-                            promoted.push(existing_tx.inner.clone());
-                        }
-                    }
-                }
-                // continue ungapped sequence
-                next_nonce = existing_id.nonce.saturating_add(1);
-            } else {
-                // can exit early here because we hit a nonce gap
-                break;
-            }
-        }
-        self.pending_count += newly_pending;
-        self.queued_count -= newly_pending;
+        let reclassified = self.reclassify_sequence(tx_id.seq_id, on_chain_nonce, base_fee);
+        let inserted_as_pending = self
+            .by_id
+            .get(&tx_id)
+            .is_some_and(|existing_tx| existing_tx.is_pending());
+        promoted.extend(
+            reclassified
+                .into_iter()
+                .filter(|pending_tx| pending_tx.transaction.hash() != transaction.hash()),
+        );
 
         // Record metrics
         self.metrics.inc_inserted();
@@ -455,6 +443,32 @@ impl AA2dPool {
     /// Returns how many pending and queued transactions are in the pool.
     pub(crate) fn pending_and_queued_txn_count(&self) -> (usize, usize) {
         (self.pending_count, self.queued_count)
+    }
+
+    /// Returns how many regular 2D transactions are blocked by the current base fee.
+    pub fn base_fee_blocked_txn_count(&self) -> usize {
+        self.by_id
+            .values()
+            .filter(|tx| tx.is_base_fee_blocked())
+            .count()
+    }
+
+    /// Reclassifies pending and queued transactions against a new base fee.
+    ///
+    /// Returns transactions newly promoted to pending.
+    pub(crate) fn update_base_fee(&mut self, base_fee: u64) -> Vec<PendingTransaction<TxOrdering>> {
+        if self.current_base_fee == base_fee {
+            return Vec::new();
+        }
+
+        self.current_base_fee = base_fee;
+        let on_chain_nonces = self.on_chain_nonces.clone();
+        let mut promoted = Vec::new();
+        for (seq_id, on_chain_nonce) in on_chain_nonces {
+            promoted.extend(self.reclassify_sequence(seq_id, on_chain_nonce, base_fee));
+        }
+        self.update_metrics();
+        promoted
     }
 
     /// Scans the pool to recompute counts for invariant checks.
@@ -673,19 +687,6 @@ impl AA2dPool {
         regular.chain(expiring)
     }
 
-    /// Returns all transactions that _follow_ after the given id but have the same sender.
-    ///
-    /// NOTE: The range is _inclusive_: if the transaction that belongs to `id` it will be the
-    /// first value.
-    fn descendant_txs<'a, 'b: 'a>(
-        &'a self,
-        id: &'b AA2dTransactionId,
-    ) -> impl Iterator<Item = (&'a AA2dTransactionId, &'a Arc<AA2dInternalTransaction>)> + 'a {
-        self.by_id
-            .range(id..)
-            .take_while(|(other, _)| id.seq_id == other.seq_id)
-    }
-
     /// Returns all transactions that _follow_ after the given id and have the same sender.
     ///
     /// NOTE: The range is _exclusive_
@@ -869,6 +870,62 @@ impl AA2dPool {
         }
     }
 
+    fn transaction_pays_base_fee(transaction: &TempoPooledTransaction, base_fee: u64) -> bool {
+        transaction.max_fee_per_gas() >= u128::from(base_fee)
+    }
+
+    fn reclassify_sequence(
+        &mut self,
+        seq_id: AASequenceId,
+        on_chain_nonce: u64,
+        base_fee: u64,
+    ) -> Vec<PendingTransaction<TxOrdering>> {
+        let start_id = AA2dTransactionId::new(seq_id, on_chain_nonce);
+        let mut next_nonce = on_chain_nonce;
+        let mut promoted = Vec::new();
+        let mut independent = None;
+
+        for (existing_id, existing_tx) in self
+            .by_id
+            .range((start_id.seq_id.start_bound(), Unbounded))
+            .take_while(|(other, _)| seq_id == other.seq_id)
+        {
+            let pays_base_fee = Self::transaction_pays_base_fee(
+                &existing_tx.inner.transaction.transaction,
+                base_fee,
+            );
+            existing_tx.set_base_fee_blocked(!pays_base_fee);
+
+            let should_be_pending = existing_id.nonce == next_nonce && pays_base_fee;
+            if should_be_pending {
+                if !existing_tx.set_pending(true) {
+                    self.pending_count += 1;
+                    self.queued_count -= 1;
+                    promoted.push(existing_tx.inner.clone());
+                }
+                if existing_id.nonce == on_chain_nonce {
+                    independent = Some(existing_tx.inner.clone());
+                }
+                next_nonce = next_nonce.saturating_add(1);
+            } else if existing_tx.set_pending(false) {
+                self.pending_count -= 1;
+                self.queued_count += 1;
+            }
+
+            if existing_id.nonce == next_nonce && !pays_base_fee {
+                break;
+            }
+        }
+
+        if let Some(independent) = independent {
+            self.independent_transactions.insert(seq_id, independent);
+        } else {
+            self.independent_transactions.remove(&seq_id);
+        }
+
+        promoted
+    }
+
     /// Removes and returns all matching transactions and their dependent transactions from the
     /// pool.
     pub(crate) fn remove_transactions_and_descendants<'a, I>(
@@ -965,68 +1022,22 @@ impl AA2dPool {
         let mut mined_ids = Vec::new();
 
         // we assume the set of changed senders is smaller than the individual accounts
-        'changes: for (sender_id, on_chain_nonce) in on_chain_ids {
-            let mut iter = self
+        for (sender_id, on_chain_nonce) in on_chain_ids {
+            self.on_chain_nonces.insert(sender_id, on_chain_nonce);
+            let sequence_mined_ids: Vec<_> = self
                 .by_id
-                .range_mut((sender_id.start_bound(), Unbounded))
+                .range((sender_id.start_bound(), Unbounded))
                 .take_while(move |(other, _)| sender_id == other.seq_id)
-                .peekable();
+                .take_while(|(id, _)| id.nonce < on_chain_nonce)
+                .map(|(id, _)| *id)
+                .collect();
+            mined_ids.extend(sequence_mined_ids);
 
-            let Some(mut current) = iter.next() else {
-                continue;
-            };
-
-            // track mined transactions
-            'mined: loop {
-                if current.0.nonce < on_chain_nonce {
-                    mined_ids.push(*current.0);
-                    let Some(next) = iter.next() else {
-                        continue 'changes;
-                    };
-                    current = next;
-                } else {
-                    break 'mined;
-                }
-            }
-
-            // Process remaining transactions starting from `current` (which is >= on_chain_nonce)
-            let mut next_nonce = on_chain_nonce;
-            let mut newly_pending = 0usize;
-            let mut newly_queued = 0usize;
-            for (existing_id, existing_tx) in std::iter::once(current).chain(iter) {
-                if existing_id.nonce == next_nonce {
-                    // Promote if transaction was previously queued (not pending)
-                    let was_pending = existing_tx.set_pending(true);
-                    if !was_pending {
-                        newly_pending += 1;
-                        promoted.push(existing_tx.inner.transaction.clone());
-                    }
-
-                    if existing_id.nonce == on_chain_nonce {
-                        // if this is the on chain nonce we can mark it as the next independent transaction
-                        self.independent_transactions
-                            .insert(existing_id.seq_id, existing_tx.inner.clone());
-                    }
-
-                    next_nonce = next_nonce.saturating_add(1);
-                } else {
-                    // Gap detected - mark this and all remaining transactions as non-pending
-                    if existing_tx.set_pending(false) {
-                        newly_queued += 1;
-                    }
-                }
-            }
-            self.pending_count += newly_pending;
-            self.queued_count -= newly_pending;
-            self.pending_count -= newly_queued;
-            self.queued_count += newly_queued;
-
-            // If no transaction was found at the on-chain nonce (next_nonce unchanged),
-            // remove any stale independent transaction entry for this seq_id.
-            // This handles reorgs where the on-chain nonce decreases.
-            if next_nonce == on_chain_nonce {
-                self.independent_transactions.remove(&sender_id);
-            }
+            promoted.extend(
+                self.reclassify_sequence(sender_id, on_chain_nonce, self.current_base_fee)
+                    .into_iter()
+                    .map(|tx| tx.transaction),
+            );
         }
 
         // actually remove mined transactions
@@ -1579,6 +1590,8 @@ struct AA2dInternalTransaction {
     /// the transaction from the eviction set. This allows a single eviction set for
     /// all transactions, with pending/queued filtering done at eviction time.
     is_pending: AtomicBool,
+    /// Whether this transaction's own max fee is below the current base fee.
+    is_base_fee_blocked: AtomicBool,
 }
 
 impl AA2dInternalTransaction {
@@ -1590,6 +1603,14 @@ impl AA2dInternalTransaction {
     /// Sets the pending status of this transaction, returning the previous value.
     fn set_pending(&self, pending: bool) -> bool {
         self.is_pending.swap(pending, Ordering::Relaxed)
+    }
+
+    fn is_base_fee_blocked(&self) -> bool {
+        self.is_base_fee_blocked.load(Ordering::Relaxed)
+    }
+
+    fn set_base_fee_blocked(&self, blocked: bool) -> bool {
+        self.is_base_fee_blocked.swap(blocked, Ordering::Relaxed)
     }
 }
 
@@ -2084,6 +2105,80 @@ mod tests {
         let (pending_count, queued_count) = pool.pending_and_queued_txn_count();
         assert_eq!(pending_count, 1, "Should have 1 pending transaction");
         assert_eq!(queued_count, 0, "Should have 0 queued transactions");
+
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn base_fee_update_demotes_and_tracks_underpriced_tx() {
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx = TxBuilder::aa(sender)
+            .nonce_key(U256::from(1))
+            .max_fee(20_000_000_000)
+            .build();
+        let valid_tx = Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local));
+
+        let added = pool
+            .add_transaction(valid_tx, 0, TempoHardfork::T1)
+            .unwrap();
+        assert!(matches!(added, AddedTransaction::Pending(_)));
+        assert_eq!(pool.pending_and_queued_txn_count(), (1, 0));
+
+        let promoted = pool.update_base_fee(21_000_000_000);
+        assert!(promoted.is_empty());
+        assert_eq!(pool.pending_and_queued_txn_count(), (0, 1));
+        assert_eq!(pool.base_fee_blocked_txn_count(), 1);
+        assert!(pool.best_transactions().next().is_none());
+
+        let promoted = pool.update_base_fee(20_000_000_000);
+        assert_eq!(promoted.len(), 1);
+        assert_eq!(pool.pending_and_queued_txn_count(), (1, 0));
+        assert_eq!(pool.base_fee_blocked_txn_count(), 0);
+
+        pool.assert_invariants();
+    }
+
+    #[test]
+    fn base_fee_blocked_nonce_head_keeps_descendants_queued() {
+        let mut pool = AA2dPool::default();
+        pool.update_base_fee(21_000_000_000);
+        let sender = Address::random();
+        let nonce_key = U256::from(1);
+
+        let tx0 = Arc::new(wrap_valid_tx(
+            TxBuilder::aa(sender)
+                .nonce_key(nonce_key)
+                .nonce(0)
+                .max_fee(20_000_000_000)
+                .build(),
+            TransactionOrigin::Local,
+        ));
+        let tx1 = Arc::new(wrap_valid_tx(
+            TxBuilder::aa(sender)
+                .nonce_key(nonce_key)
+                .nonce(1)
+                .max_fee(30_000_000_000)
+                .build(),
+            TransactionOrigin::Local,
+        ));
+
+        assert!(matches!(
+            pool.add_transaction(tx0, 0, TempoHardfork::T1).unwrap(),
+            AddedTransaction::Parked { .. }
+        ));
+        assert!(matches!(
+            pool.add_transaction(tx1, 0, TempoHardfork::T1).unwrap(),
+            AddedTransaction::Parked { .. }
+        ));
+        assert_eq!(pool.pending_and_queued_txn_count(), (0, 2));
+        assert_eq!(pool.base_fee_blocked_txn_count(), 1);
+
+        let promoted = pool.update_base_fee(20_000_000_000);
+        assert_eq!(promoted.len(), 2);
+        assert_eq!(pool.pending_and_queued_txn_count(), (2, 0));
+        assert_eq!(pool.base_fee_blocked_txn_count(), 0);
 
         pool.assert_invariants();
     }

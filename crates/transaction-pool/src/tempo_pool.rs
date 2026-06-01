@@ -848,9 +848,16 @@ where
 
     fn best_transactions_with_attributes(
         &self,
-        _attributes: BestTransactionsAttributes,
+        attributes: BestTransactionsAttributes,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
-        self.best_transactions()
+        let left = self.protocol_pool.inner().best_transactions();
+        let mut aa_2d_pool = self.aa_2d_pool.write();
+        let promoted = aa_2d_pool.update_base_fee(attributes.basefee);
+        for promoted_tx in &promoted {
+            aa_2d_pool.notify_new_pending(promoted_tx);
+        }
+        let right = aa_2d_pool.best_transactions();
+        Box::new(MergeBestTransactions::new(left, right))
     }
 
     fn pending_transactions(&self) -> Vec<Arc<ValidPoolTransaction<Self::Transaction>>> {
