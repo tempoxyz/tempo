@@ -3,7 +3,7 @@ use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
 use revm::{
     Context, Inspector,
-    context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
+    context::{Cfg, CfgEnv, ContextError, Evm, FrameStack, GasStateOutcome, Host},
     handler::{
         EthFrame, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult, instructions::EthInstructions,
     },
@@ -217,6 +217,40 @@ where
         &mut Self::Inspector,
     ) {
         self.inner.all_mut_inspector()
+    }
+}
+
+/// Tempo SSTORE gas-state policy.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(crate) struct TempoGasState;
+
+impl<DB> GasStateTr<TempoContext<DB>> for TempoGasState
+where
+    DB: Database,
+{
+    fn sstore_gas_state(
+        host: &mut TempoContext<DB>,
+        owner: Address,
+        vals: &SStoreResult,
+    ) -> Result<GasStateOutcome, LoadError> {
+        if vals.is_new_eq_present() {
+            return Ok(GasStateOutcome::default());
+        }
+
+        if vals.is_original_zero() && vals.is_present_zero() && !vals.is_new_zero() {
+            host.sstore(address, key, value)
+            // TODO: consume storage gas token balance for `_owner` and return the
+            // corresponding `GasStateOutcome`.
+            return Ok(GasStateOutcome::default());
+        }
+
+        if !vals.is_present_zero() && vals.is_new_zero() {
+            // TODO: mint/refill storage gas token balance for `_owner` and return the
+            // corresponding `GasStateOutcome`.
+            return Ok(GasStateOutcome::default());
+        }
+
+        Ok(GasStateOutcome::default())
     }
 }
 
