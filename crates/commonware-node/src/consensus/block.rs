@@ -60,7 +60,7 @@ impl BlockAccessListError {
 // XXX: This is a refinement type around a reth [`SealedBlock`]
 // to hold the trait implementations required by commonwarexyz. Uses
 // Sealed because of the frequent accesses to the hash.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub(crate) struct Block {
     /// The execution-layer block.
     execution_block: SealedBlock<tempo_primitives::Block>,
@@ -178,6 +178,23 @@ impl Block {
         }
     }
 }
+
+impl PartialEq for Block {
+    fn eq(&self, other: &Self) -> bool {
+        self.execution_block == other.execution_block && {
+            #[cfg(feature = "bal")]
+            {
+                self.block_access_list == other.block_access_list
+            }
+            #[cfg(not(feature = "bal"))]
+            {
+                true
+            }
+        }
+    }
+}
+
+impl Eq for Block {}
 
 impl std::ops::Deref for Block {
     type Target = SealedBlock<tempo_primitives::Block>;
