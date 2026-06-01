@@ -576,7 +576,9 @@ where
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
+        let mut excluded_pool_transaction_skips = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let excluded_pool_transaction_hashes = attributes.excluded_pool_transaction_hashes();
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -648,6 +650,12 @@ where
                 break stop_reason;
             };
             pool_transactions_yielded += 1;
+
+            if excluded_pool_transaction_hashes.contains(pool_tx.hash()) {
+                excluded_pool_transaction_skips += 1;
+                self.metrics.inc_pool_tx_skipped("parent_block_tx");
+                continue;
+            }
 
             let max_regular_gas_used = core::cmp::min(
                 pool_tx.gas_limit(),
@@ -1133,6 +1141,7 @@ where
             payment_transactions,
             pool_transactions_yielded,
             pool_transactions_included,
+            excluded_pool_transaction_skips,
             invalid_pool_transaction_execution_attempts,
             pool_transactions_inclusion_ratio,
             subblock_transactions,

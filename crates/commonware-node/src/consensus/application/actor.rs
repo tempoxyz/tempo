@@ -16,6 +16,8 @@ use std::{
 };
 
 use alloy_consensus::BlockHeader;
+#[cfg(feature = "bal")]
+use alloy_consensus::transaction::TxHashRef as _;
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_engine::PayloadId;
 use commonware_codec::{Encode as _, ReadExt as _};
@@ -1108,6 +1110,11 @@ impl Inner<Init> {
         let (timestamp, timestamp_millis_part) = (epoch_millis / 1000, epoch_millis % 1000);
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let parent_hash = block.block_hash();
+        let parent_transaction_hashes = block
+            .body()
+            .transactions()
+            .map(|tx| *tx.tx_hash())
+            .collect::<Vec<_>>();
 
         let trie_handle = Some(
             tempo_node::speculative_bal_state_root_handle(
@@ -1138,7 +1145,8 @@ impl Inner<Init> {
         .with_speculative_parent(SpeculativePayloadParent::new(
             block.sealed_header().clone(),
             block_access_list,
-        ));
+        ))
+        .with_excluded_pool_transaction_hashes(parent_transaction_hashes);
 
         let payload_id_rx =
             self.execution_node

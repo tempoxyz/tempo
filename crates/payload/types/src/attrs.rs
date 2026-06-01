@@ -6,6 +6,7 @@ use reth_node_api::PayloadAttributes;
 use reth_primitives_traits::{AlloyBlockHeader as _, SealedHeader};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashSet,
     error::Error,
     fmt,
     sync::{Arc, Condvar, Mutex, MutexGuard},
@@ -43,6 +44,10 @@ pub struct TempoPayloadAttributes {
     /// Noncanonical BAL-backed parent state for speculative child builds.
     #[serde(skip)]
     speculative_parent: Option<SpeculativePayloadParent>,
+    /// Pool transactions already mined in the parent block and ineligible for this child payload.
+    #[debug(skip)]
+    #[serde(skip)]
+    excluded_pool_transaction_hashes: Arc<HashSet<B256>>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -94,6 +99,7 @@ impl TempoPayloadAttributes {
             payload_build_budget: None,
             payload_build_control: None,
             speculative_parent: None,
+            excluded_pool_transaction_hashes: Arc::default(),
             timestamp_millis_part,
             extra_data,
             proposer_public_key,
@@ -134,6 +140,15 @@ impl TempoPayloadAttributes {
         self
     }
 
+    /// Sets pool transaction hashes that must not be considered for this payload.
+    pub fn with_excluded_pool_transaction_hashes(
+        mut self,
+        hashes: impl IntoIterator<Item = B256>,
+    ) -> Self {
+        self.excluded_pool_transaction_hashes = Arc::new(hashes.into_iter().collect());
+        self
+    }
+
     /// Returns the consensus-provided build budget, if this is a paced build.
     ///
     /// `None` is intentional for non-consensus builds such as dev or external
@@ -151,6 +166,11 @@ impl TempoPayloadAttributes {
     /// Returns the BAL-backed speculative parent, if any.
     pub fn speculative_parent(&self) -> Option<&SpeculativePayloadParent> {
         self.speculative_parent.as_ref()
+    }
+
+    /// Returns pool transaction hashes that must not be considered for this payload.
+    pub fn excluded_pool_transaction_hashes(&self) -> &HashSet<B256> {
+        self.excluded_pool_transaction_hashes.as_ref()
     }
 
     /// Returns the milliseconds portion of the timestamp.
@@ -187,6 +207,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
             payload_build_budget: None,
             payload_build_control: None,
             speculative_parent: None,
+            excluded_pool_transaction_hashes: Arc::default(),
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
             proposer_public_key: None,
@@ -599,6 +620,7 @@ mod tests {
         );
         assert_eq!(attrs.timestamp(), 1);
         assert_eq!(attrs.timestamp_millis_part(), 500);
+        assert!(attrs.excluded_pool_transaction_hashes().is_empty());
 
         // Hardcoded in ::new()
         assert_eq!(attrs.prev_randao, B256::ZERO);
@@ -617,6 +639,18 @@ mod tests {
         assert_eq!(attrs2.extra_data(), &Bytes::default());
         assert_eq!(attrs2.timestamp(), 2);
         assert_eq!(attrs2.timestamp_millis_part(), 0);
+    }
+
+    #[test]
+    fn test_builder_attributes_excluded_pool_transaction_hashes() {
+        let hash_a = B256::random();
+        let hash_b = B256::random();
+        let attrs = TempoPayloadAttributes::random()
+            .with_excluded_pool_transaction_hashes([hash_a, hash_b, hash_a]);
+
+        assert_eq!(attrs.excluded_pool_transaction_hashes().len(), 2);
+        assert!(attrs.excluded_pool_transaction_hashes().contains(&hash_a));
+        assert!(attrs.excluded_pool_transaction_hashes().contains(&hash_b));
     }
 
     #[test]
