@@ -28,10 +28,14 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
     fn try_into_sim_tx(self) -> Result<TempoTxEnvelope, ValueError<Self>> {
         match self.output_tx_type() {
             TempoTxType::AA => {
+                // Create a mock signature for the simulated transaction.
+                let signature = if let Some(init) = self.multisig_init.as_ref() {
+                    create_mock_native_multisig_sig(init)
+                        .map_err(|err| ValueError::new(self.clone(), err))?
+                } else {
+                    TempoSignature::default()
+                };
                 let tx = self.build_aa()?;
-
-                // Create an empty signature for the transaction.
-                let signature = TempoSignature::default();
 
                 Ok(tx.into_signed(signature).into())
             }
@@ -49,6 +53,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                     key_id,
                     tempo_authorization_list,
                     key_authorization,
+                    multisig_init,
                     valid_before,
                     valid_after,
                     fee_payer_signature,
@@ -68,6 +73,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_id,
                             tempo_authorization_list,
                             key_authorization,
+                            multisig_init,
                             valid_before,
                             valid_after,
                             fee_payer_signature,
@@ -87,6 +93,7 @@ impl TryIntoSimTx<TempoTxEnvelope> for TempoTransactionRequest {
                             key_id,
                             tempo_authorization_list,
                             key_authorization,
+                            multisig_init,
                             valid_before,
                             valid_after,
                             fee_payer_signature,
@@ -131,6 +138,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
             tempo_authorization_list,
             nonce_key,
             key_authorization,
+            multisig_init,
             valid_before,
             valid_after,
             fee_payer_signature: _,
@@ -145,6 +153,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                 || !tempo_authorization_list.is_empty()
                 || nonce_key.is_some()
                 || key_authorization.is_some()
+                || multisig_init.is_some()
                 || key_id.is_some()
                 || fee_payer.is_some()
                 || valid_before.is_some()
@@ -154,13 +163,18 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                 // If key_type is not provided, default to secp256k1
                 // For Keychain signatures, use the caller's address as the root key address
                 let key_type = key_type.unwrap_or(SignatureType::Secp256k1);
-                let mock_signature = create_mock_tempo_sig(
-                    &key_type,
-                    key_data.as_ref(),
-                    key_id,
-                    caller_addr,
-                    evm_env.spec_id().is_t1c(),
-                );
+                let mock_signature = if let Some(init) = multisig_init.as_ref() {
+                    create_mock_native_multisig_sig(init)
+                        .map_err(|err| EthApiError::InvalidParams(err.to_string()))?
+                } else {
+                    create_mock_tempo_sig(
+                        &key_type,
+                        key_data.as_ref(),
+                        key_id,
+                        caller_addr,
+                        evm_env.spec_id().is_t1c(),
+                    )
+                };
 
                 let mut calls = calls;
                 if let Some(to) = &inner.to {
@@ -183,6 +197,7 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                         .collect(),
                     nonce_key: nonce_key.unwrap_or_default(),
                     key_authorization,
+                    multisig_init,
                     signature_hash: B256::ZERO,
                     tx_hash: B256::ZERO,
                     valid_before: valid_before.map(NonZeroU64::get),
@@ -197,6 +212,37 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
             inner: inner.try_into_tx_env(evm_env)?,
         })
     }
+}
+
+fn create_mock_native_multisig_sig(
+    init: &tempo_primitives::transaction::InitMultisig,
+) -> Result<TempoSignature, &'static str> {
+    use tempo_primitives::transaction::{MultisigSignature, derive_multisig_account};
+
+    let config_id = init.config_id()?;
+    let mut signed_weight = 0u64;
+    let mut signatures = Vec::new();
+
+    for owner in &init.owners {
+        if signed_weight >= u64::from(init.threshold) {
+            break;
+        }
+        let signature = create_mock_primitive_signature(&owner.signature_type, None);
+        signatures.push(signature.to_bytes());
+        signed_weight = signed_weight
+            .checked_add(u64::from(owner.weight))
+            .ok_or("multisig mock signature weight overflow")?;
+    }
+
+    if signatures.is_empty() {
+        return Err("multisig mock signature requires at least one owner");
+    }
+
+    Ok(TempoSignature::Multisig(MultisigSignature {
+        account: derive_multisig_account(config_id),
+        config_id,
+        signatures,
+    }))
 }
 
 /// Creates a mock AA signature for gas estimation based on key type hints
@@ -352,7 +398,10 @@ mod tests {
     use reth_rpc_convert::TryIntoTxEnv;
     use tempo_primitives::{
         TempoTransaction,
-        transaction::{Call, FEE_PAYER_SIGNATURE_MARKER, tt_signature::PrimitiveSignature},
+        transaction::{
+            Call, FEE_PAYER_SIGNATURE_MARKER, InitMultisig, MultisigOwner, derive_multisig_account,
+            tt_signature::PrimitiveSignature,
+        },
     };
 
     #[test]
@@ -388,6 +437,49 @@ mod tests {
         let estimated_calls = tx_env.tempo_tx_env.expect("tempo_tx_env").aa_calls;
 
         assert_eq!(estimated_calls, built_calls);
+    }
+
+    #[test]
+    fn test_try_into_tx_env_preserves_multisig_init() {
+        let init = InitMultisig {
+            threshold: 1,
+            owners: vec![MultisigOwner {
+                signature_type: SignatureType::Secp256k1,
+                owner: address!("0x1111111111111111111111111111111111111111"),
+                weight: 1,
+            }],
+        };
+        let config_id = init.config_id().expect("valid config");
+        let account = derive_multisig_account(config_id);
+        let target = address!("0x2222222222222222222222222222222222222222");
+
+        let req = TempoTransactionRequest {
+            inner: TransactionRequest {
+                from: Some(account),
+                to: Some(TxKind::Call(target)),
+                nonce: Some(0),
+                gas: Some(100_000),
+                max_fee_per_gas: Some(1_000_000_000),
+                max_priority_fee_per_gas: Some(1_000_000),
+                chain_id: Some(4217),
+                ..Default::default()
+            },
+            multisig_init: Some(init.clone()),
+            ..Default::default()
+        };
+
+        let evm_env = EvmEnv::default();
+        let tx_env = req.try_into_tx_env(&evm_env).expect("try_into_tx_env");
+        let aa_env = tx_env.tempo_tx_env.expect("tempo_tx_env");
+        let multisig_sig = aa_env
+            .signature
+            .as_multisig()
+            .expect("mock native multisig signature");
+
+        assert_eq!(aa_env.multisig_init, Some(init));
+        assert_eq!(multisig_sig.account, account);
+        assert_eq!(multisig_sig.config_id, config_id);
+        assert_eq!(multisig_sig.signatures.len(), 1);
     }
 
     #[test]
@@ -500,6 +592,7 @@ mod tests {
             tempo_authorization_list: vec![],
             nonce_key: Default::default(),
             key_authorization: None,
+            multisig_init: None,
         };
         let hash = tx.fee_payer_signature_hash(sender);
         let fee_payer_sig = sponsor.sign_hash_sync(&hash).expect("sign");

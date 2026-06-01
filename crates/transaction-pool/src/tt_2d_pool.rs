@@ -6201,6 +6201,7 @@ mod tests {
                 access_list: AccessList::default(),
                 tempo_authorization_list: Vec::new(),
                 key_authorization: None,
+                multisig_init: None,
             };
 
             let signature = TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
@@ -6286,6 +6287,7 @@ mod tests {
             access_list: AccessList::default(),
             tempo_authorization_list: Vec::new(),
             key_authorization: None,
+            multisig_init: None,
             valid_after: None,
         };
 
