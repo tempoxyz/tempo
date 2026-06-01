@@ -28,6 +28,9 @@ const E2E_LOCAL_RETH_ARGS = [
     "--consensus.no-legacy-archive"
     "--engine.share-execution-cache-with-payload-builder"
     "--builder.enable-prewarming"
+    "--txpool.pending-max-count" "200000"
+    "--txpool.basefee-max-count" "200000"
+    "--txpool.queued-max-count" "200000"
 ]
 
 def merge-e2e-features [...features: string] {
