@@ -4,7 +4,7 @@ use crate::{
 };
 use alloy_primitives::{
     Address, B256, TxHash, U256,
-    map::{AddressMap, B256Map, HashMap, HashSet, U256Map},
+    map::{AddressMap, B256Map, HashMap, HashSet, U256Map, hash_map},
 };
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_tracing::tracing::trace;
@@ -22,7 +22,6 @@ use std::{
         BTreeMap, BTreeSet,
         Bound::{Excluded, Unbounded},
         btree_map::Entry,
-        hash_map,
     },
     sync::{
         Arc,
@@ -421,7 +420,6 @@ impl AA2dPool {
         let tx_hash = *transaction.hash();
         let expiring_nonce_hash = transaction.transaction.precomputed_expiring_nonce_hash();
 
-        // Check if already exists (by expiring nonce hash)
         if let Some(existing) = self.expiring_nonce_txs.get(&expiring_nonce_hash).cloned() {
             if existing.is_live() {
                 return Err(PoolError::new(tx_hash, PoolErrorKind::AlreadyImported));
@@ -454,8 +452,14 @@ impl AA2dPool {
         let eviction_key = ExpiringNonceEvictionKey::from_entry(Arc::clone(&entry));
 
         // Insert into expiring nonce map and by_hash
-        self.expiring_nonce_txs
-            .insert(expiring_nonce_hash, Arc::clone(&entry));
+        match self.expiring_nonce_txs.entry(expiring_nonce_hash) {
+            hash_map::Entry::Occupied(_) => {
+                return Err(PoolError::new(tx_hash, PoolErrorKind::AlreadyImported));
+            }
+            hash_map::Entry::Vacant(expiring_nonce_entry) => {
+                expiring_nonce_entry.insert(Arc::clone(&entry));
+            }
+        }
         self.expiring_nonce_eviction_order.insert(eviction_key);
         if let Some(slot) = entry.slot {
             self.slot_to_expiring_nonce.insert(slot, Arc::clone(&entry));
