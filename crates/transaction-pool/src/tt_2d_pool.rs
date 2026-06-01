@@ -1,5 +1,7 @@
 /// Basic 2D nonce pool for user nonces (nonce_key > 0) that are tracked on chain.
-use crate::{metrics::AA2dPoolMetrics, transaction::TempoPooledTransaction};
+use crate::{
+    metrics::AA2dPoolMetrics, ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
+};
 use alloy_primitives::{
     Address, B256, TxHash, U256,
     map::{AddressMap, B256Map, HashMap, HashSet, U256Map},
@@ -7,9 +9,9 @@ use alloy_primitives::{
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_tracing::tracing::trace;
 use reth_transaction_pool::{
-    AllPoolTransactions, BestTransactions, CoinbaseTipOrdering, GetPooledTransactionLimit,
-    PoolResult, PoolTransaction, PriceBumpConfig, Priority, SubPool, SubPoolLimit,
-    TransactionOrdering, TransactionOrigin, ValidPoolTransaction,
+    AllPoolTransactions, BestTransactions, GetPooledTransactionLimit, PoolResult, PoolTransaction,
+    PriceBumpConfig, Priority, SubPool, SubPoolLimit, TransactionOrdering, TransactionOrigin,
+    ValidPoolTransaction,
     error::{InvalidPoolTransactionError, PoolError, PoolErrorKind},
     pool::{AddedPendingTransaction, AddedTransaction, QueuedReason, pending::PendingTransaction},
 };
@@ -31,7 +33,7 @@ use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tokio::sync::broadcast;
 
-type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
+type TxOrdering = TempoTipOrdering<TempoPooledTransaction>;
 /// A sub-pool that keeps track of 2D nonce transactions.
 ///
 /// It maintains both pending and queued transactions.
@@ -208,7 +210,7 @@ impl AA2dPool {
         let tx = Arc::new(AA2dInternalTransaction {
             inner: PendingTransaction {
                 submission_id: self.next_id(),
-                priority: CoinbaseTipOrdering::default()
+                priority: TempoTipOrdering::default()
                     .priority(&transaction.transaction, hardfork.base_fee()),
                 transaction: transaction.clone(),
             },
@@ -393,7 +395,7 @@ impl AA2dPool {
         // Create pending transaction
         let pending_tx = PendingTransaction {
             submission_id: self.next_id(),
-            priority: CoinbaseTipOrdering::default()
+            priority: TempoTipOrdering::default()
                 .priority(&transaction.transaction, hardfork.base_fee()),
             transaction: transaction.clone(),
         };
@@ -1015,7 +1017,7 @@ impl AA2dPool {
 
     /// Removes lowest-priority transactions if the pool is above capacity.
     ///
-    /// This evicts transactions with the lowest priority (based on [`CoinbaseTipOrdering`])
+    /// This evicts transactions with the lowest priority (based on [`TempoTipOrdering`])
     /// to prevent DoS attacks where adversaries use vanity addresses with many leading zeroes
     /// to avoid eviction.
     ///
@@ -1541,7 +1543,7 @@ struct AA2dInternalTransaction {
     /// Keeps track of the transaction
     ///
     /// We can use [`PendingTransaction`] here because the priority remains unchanged.
-    inner: PendingTransaction<CoinbaseTipOrdering<TempoPooledTransaction>>,
+    inner: PendingTransaction<TxOrdering>,
     /// Whether this transaction is pending/executable.
     ///
     /// If it's not pending, it is queued.
@@ -1571,12 +1573,12 @@ impl AA2dInternalTransaction {
 /// cloned transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ExpiringNonceEvictionOrderKey {
-    priority: Priority<u128>,
+    priority: Priority<u64>,
     submission_id: u64,
 }
 
 impl ExpiringNonceEvictionOrderKey {
-    fn new(priority: Priority<u128>, submission_id: u64) -> Self {
+    fn new(priority: Priority<u64>, submission_id: u64) -> Self {
         Self {
             priority,
             submission_id,
@@ -1643,7 +1645,7 @@ impl ExpiringNonceEvictionKey {
         }
     }
 
-    fn priority(&self) -> &Priority<u128> {
+    fn priority(&self) -> &Priority<u64> {
         &self.order.priority
     }
 
@@ -1709,7 +1711,7 @@ impl EvictionKey {
     }
 
     /// Returns the transaction's priority.
-    fn priority(&self) -> &Priority<u128> {
+    fn priority(&self) -> &Priority<u64> {
         &self.tx.inner.priority
     }
 
@@ -1789,7 +1791,7 @@ pub(crate) struct BestAA2dTransactions {
     /// Live feed of new pending transactions arriving after this iterator was created.
     new_transaction_receiver: Option<broadcast::Receiver<PendingTransaction<TxOrdering>>>,
     /// Priority of the most recently yielded transaction, used to maintain ordering invariant.
-    last_priority: Option<Priority<u128>>,
+    last_priority: Option<Priority<u64>>,
 }
 
 impl BestAA2dTransactions {
@@ -1899,7 +1901,7 @@ impl BestAA2dTransactions {
         &mut self,
     ) -> Option<(
         Arc<ValidPoolTransaction<TempoPooledTransaction>>,
-        Priority<u128>,
+        Priority<u64>,
     )> {
         loop {
             self.add_new_transactions();
