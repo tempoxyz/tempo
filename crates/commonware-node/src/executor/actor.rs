@@ -494,11 +494,12 @@ where
             validity_token.clone(),
         )?;
         let (state_anchor, cache, trie_handle) = resources.into_payload_builder_parts();
+        let parent_header = Arc::new(parent.block().sealed_header().clone());
 
         Ok(self
             .execution_node
             .payload_builder_handle
-            .send_new_payload_with_state_anchor(
+            .send_new_payload_with_state_anchor_and_parent_header(
                 BuildNewPayload {
                     attributes,
                     parent_hash,
@@ -506,6 +507,7 @@ where
                     trie_handle,
                 },
                 state_anchor,
+                parent_header,
             ))
     }
 
