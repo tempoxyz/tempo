@@ -4,8 +4,7 @@ use alloy_evm::{
     Database, Evm, RecoveredTx,
     block::{
         BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
-        ExecutableTx, GasOutput, OnStateHook, StateChangePreBlockSource, StateChangeSource,
-        TxResult,
+        ExecutableTx, GasOutput, TxResult,
     },
     eth::{
         EthBlockExecutor, EthTxResult,
@@ -207,10 +206,6 @@ where
             account.info.code = Some(code);
             account.mark_touch();
             let state = EvmState::from_iter([(address, account)]);
-            self.inner.system_caller.on_state(
-                StateChangeSource::PreBlock(StateChangePreBlockSource::BlockHashesContract),
-                &state,
-            );
             self.inner.evm.db_mut().commit(state);
         }
         Ok(())
@@ -681,10 +676,6 @@ where
         }
 
         Ok((evm, result))
-    }
-
-    fn set_state_hook(&mut self, hook: Option<Box<dyn OnStateHook>>) {
-        self.inner.set_state_hook(hook)
     }
 
     fn evm_mut(&mut self) -> &mut Self::Evm {
@@ -1757,17 +1748,14 @@ mod tests {
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
-        let hook_calls: Arc<Mutex<Vec<(StateChangeSource, EvmState)>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
-        executor.set_state_hook(Some(Box::new(
-            move |source: StateChangeSource, state: &EvmState| {
-                hook_calls_clone
-                    .lock()
-                    .unwrap()
-                    .push((source, state.clone()));
-            },
-        )));
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state: &EvmState| {
+                hook_calls_clone.lock().unwrap().push(state.clone());
+            })));
 
         let addr = Address::with_last_byte(0xff);
         executor.deploy_precompile_at_boundary(addr).unwrap();
@@ -1781,11 +1769,11 @@ mod tests {
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert!(
-            calls[0].1.contains_key(&addr),
+            calls[0].contains_key(&addr),
             "state hook should contain the deployed address"
         );
         assert_eq!(
-            calls[0].1[&addr].original_info(),
+            calls[0][&addr].original_info(),
             Default::default(),
             "state hook account should preserve original_info"
         );
@@ -1809,24 +1797,21 @@ mod tests {
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
-        let hook_calls: Arc<Mutex<Vec<(StateChangeSource, EvmState)>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
-        executor.set_state_hook(Some(Box::new(
-            move |source: StateChangeSource, state: &EvmState| {
-                hook_calls_clone
-                    .lock()
-                    .unwrap()
-                    .push((source, state.clone()));
-            },
-        )));
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state: &EvmState| {
+                hook_calls_clone.lock().unwrap().push(state.clone());
+            })));
 
         executor.deploy_precompile_at_boundary(addr).unwrap();
 
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert_eq!(
-            calls[0].1[&addr].original_info(),
+            calls[0][&addr].original_info(),
             original_info,
             "state hook account should preserve existing original_info"
         );
