@@ -929,6 +929,18 @@ where
                     }
                 }
 
+                // Clean physical expiring-nonce indexes only after the block's
+                // main pool updates have run, giving builders a chance to
+                // snapshot best transactions before cleanup takes the lock.
+                let cleaned = pool.gc_aa_expiring_nonce_tombstones();
+                if cleaned > 0 {
+                    debug!(
+                        target: "txpool::2d",
+                        cleaned,
+                        "Cleaned tombstoned expiring nonce transactions"
+                    );
+                }
+
                 // Record total block update duration
                 metrics.block_update_duration_seconds.record(block_update_start.elapsed());
             }

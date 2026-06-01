@@ -70,7 +70,13 @@ impl<Client> TempoTransactionPool<Client> {
             aa_2d_pool: Arc::new(RwLock::new(aa_2d_pool)),
         }
     }
+
+    /// Physical cleanup for lazily tombstoned expiring nonce transactions.
+    pub(crate) fn gc_aa_expiring_nonce_tombstones(&self) -> usize {
+        self.aa_2d_pool.write().gc_expiring_nonce_tombstones()
+    }
 }
+
 impl<Client> TempoTransactionPool<Client>
 where
     Client: StateProviderFactory + ChainSpecProvider<ChainSpec = TempoChainSpec> + 'static,
@@ -95,7 +101,11 @@ where
         &self,
         state: &AddressMap<BundleAccount>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let (promoted, mined) = self.aa_2d_pool.write().on_state_updates(state);
+        let delta = self.aa_2d_pool.read().collect_state_update_delta(state);
+        if delta.is_empty() {
+            return Vec::new();
+        }
+        let (promoted, mined) = self.aa_2d_pool.write().apply_state_update_delta(delta);
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
             .inner()
@@ -842,7 +852,25 @@ where
         &self,
     ) -> Box<dyn BestTransactions<Item = Arc<ValidPoolTransaction<Self::Transaction>>>> {
         let left = self.protocol_pool.inner().best_transactions();
-        let right = self.aa_2d_pool.read().best_transactions();
+
+        let lock_start = Instant::now();
+        let aa_2d_pool = self.aa_2d_pool.read();
+        let lock_elapsed = lock_start.elapsed();
+        tracing::debug!(
+            target: "txpool::2d",
+            ?lock_elapsed,
+            "Acquired AA 2D pool read lock for best transactions"
+        );
+
+        let best_start = Instant::now();
+        let right = aa_2d_pool.best_transactions();
+        let best_elapsed = best_start.elapsed();
+        tracing::debug!(
+            target: "txpool::2d",
+            ?best_elapsed,
+            "Built AA 2D best transactions snapshot"
+        );
+
         Box::new(MergeBestTransactions::new(left, right))
     }
 

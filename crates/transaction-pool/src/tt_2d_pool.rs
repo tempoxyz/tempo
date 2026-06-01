@@ -26,7 +26,7 @@ use std::{
     },
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU8, Ordering as AtomicOrdering},
     },
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -38,6 +38,7 @@ type PoolUpdateResult = (
     Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
 );
+
 /// A sub-pool that keeps track of 2D nonce transactions.
 ///
 /// It maintains both pending and queued transactions.
@@ -71,24 +72,26 @@ pub struct AA2dPool {
     by_hash: B256Map<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
     /// Expiring nonce transactions, keyed by expiring nonce hash (always pending/independent).
     /// These use expiring nonce replay protection instead of sequential nonces.
-    expiring_nonce_txs: B256Map<PendingTransaction<TxOrdering>>,
+    expiring_nonce_txs: B256Map<Arc<ExpiringNonceEntry>>,
     /// Expiring nonce transactions in eviction order.
     ///
     /// Regular 2D transactions use `by_eviction_order`, which is keyed by
     /// `AA2dTransactionId`. Expiring nonce transactions are always pending but
     /// are not stored in `by_id`, so they need a separate ordered index. Each
-    /// key carries the transaction and its ordering fields, allowing
-    /// best-transaction snapshots to clone only this ordered index. The first
+    /// key carries the shared entry and its ordering fields, allowing
+    /// best-transaction snapshots to observe tombstones. The first
     /// entry is the expiring nonce transaction that should be evicted next:
     /// lowest priority first, then newest submission first when priorities tie.
     expiring_nonce_eviction_order: BTreeSet<ExpiringNonceEvictionKey>,
-    /// A mapping of `expiring_nonce_seen` slot to expiring nonce hash.
+    /// A mapping of `expiring_nonce_seen` slot to expiring nonce entry.
     ///
     /// Used to track inclusion of expiring nonce transactions.
-    slot_to_expiring_nonce_hash: U256Map<B256>,
+    slot_to_expiring_nonce: U256Map<Arc<ExpiringNonceEntry>>,
     /// Scratch buffer reused while processing nonce state updates.
+    #[cfg(test)]
     state_update_nonce_changes: HashMap<AASequenceId, u64>,
     /// Scratch buffer reused while processing included expiring nonce transactions.
+    #[cfg(test)]
     state_update_included_expiring_nonce_hashes: Vec<B256>,
     /// Reverse index for the storage slot of an account's nonce
     ///
@@ -118,7 +121,7 @@ pub struct AA2dPool {
     /// Number of queued regular 2D nonce transactions.
     queued_count: usize,
     /// Used to broadcast new pending transactions to active [`BestAA2dTransactions`] iterators.
-    new_transaction_notifier: broadcast::Sender<PendingTransaction<TxOrdering>>,
+    new_transaction_notifier: broadcast::Sender<BestAA2dPendingTransaction>,
 }
 
 impl Default for AA2dPool {
@@ -138,8 +141,10 @@ impl AA2dPool {
             by_hash: Default::default(),
             expiring_nonce_txs: Default::default(),
             expiring_nonce_eviction_order: Default::default(),
-            slot_to_expiring_nonce_hash: Default::default(),
+            slot_to_expiring_nonce: Default::default(),
+            #[cfg(test)]
             state_update_nonce_changes: Default::default(),
+            #[cfg(test)]
             state_update_included_expiring_nonce_hashes: Default::default(),
             slot_to_seq_id: Default::default(),
             config,
@@ -153,9 +158,9 @@ impl AA2dPool {
     }
 
     /// Broadcasts a new pending transaction to all active [`BestAA2dTransactions`] iterators.
-    fn notify_new_pending(&self, tx: &PendingTransaction<TxOrdering>) {
+    fn notify_new_pending(&self, tx: BestAA2dPendingTransaction) {
         if self.new_transaction_notifier.receiver_count() > 0 {
-            let _ = self.new_transaction_notifier.send(tx.clone());
+            let _ = self.new_transaction_notifier.send(tx);
         }
     }
 
@@ -164,6 +169,30 @@ impl AA2dPool {
         let (pending, queued) = self.pending_and_queued_txn_count();
         let total = self.by_id.len() + self.expiring_nonce_txs.len();
         self.metrics.set_transaction_counts(total, pending, queued);
+    }
+
+    fn dead_expiring_nonce_count(&self) -> usize {
+        self.expiring_nonce_txs
+            .values()
+            .filter(|entry| entry.is_dead())
+            .count()
+    }
+
+    #[cfg(test)]
+    fn live_expiring_nonce_count(&self) -> usize {
+        self.expiring_nonce_txs
+            .len()
+            .saturating_sub(self.dead_expiring_nonce_count())
+    }
+
+    fn mark_expiring_nonce_included(
+        &self,
+        entry: &Arc<ExpiringNonceEntry>,
+    ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
+        if entry.mark_included() {
+            return Some(entry.transaction());
+        }
+        None
     }
 
     /// Entrypoint for adding a 2d AA transaction.
@@ -227,9 +256,23 @@ impl AA2dPool {
             is_pending: AtomicBool::new(false),
         });
 
-        // Use entry API once to both check for replacement and insert.
-        // This avoids a separate contains_key lookup.
         let sender = transaction.sender();
+        if !self.by_id.contains_key(&tx_id) {
+            // Check per-sender limit for new (non-replacement) transactions.
+            let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
+            if sender_count >= self.config.max_txs_per_sender {
+                self.gc_expiring_nonce_tombstones_for_sender(sender);
+            }
+            let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
+            if sender_count >= self.config.max_txs_per_sender {
+                return Err(PoolError::new(
+                    *transaction.hash(),
+                    PoolErrorKind::SpammerExceededCapacity(sender),
+                ));
+            }
+        }
+
+        // Use entry API to both check for replacement and insert.
         let replaced = match self.by_id.entry(tx_id) {
             Entry::Occupied(mut entry) => {
                 // Ensure the replacement transaction is not underpriced
@@ -251,15 +294,6 @@ impl AA2dPool {
                 Some(replaced)
             }
             Entry::Vacant(entry) => {
-                // Check per-sender limit for new (non-replacement) transactions
-                let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
-                if sender_count >= self.config.max_txs_per_sender {
-                    return Err(PoolError::new(
-                        *transaction.hash(),
-                        PoolErrorKind::SpammerExceededCapacity(sender),
-                    ));
-                }
-
                 entry.insert(Arc::clone(&tx));
                 // Increment sender count for new transactions
                 *self.txs_by_sender.entry(sender).or_insert(0) += 1;
@@ -350,9 +384,9 @@ impl AA2dPool {
             }
 
             // Notify active BestAA2dTransactions iterators about new pending transactions.
-            self.notify_new_pending(&tx.inner);
+            self.notify_new_pending(BestAA2dPendingTransaction::Regular(tx.inner.clone()));
             for promoted_tx in &promoted {
-                self.notify_new_pending(promoted_tx);
+                self.notify_new_pending(BestAA2dPendingTransaction::Regular(promoted_tx.clone()));
             }
 
             return Ok(AddedTransaction::Pending(AddedPendingTransaction {
@@ -388,12 +422,19 @@ impl AA2dPool {
         let expiring_nonce_hash = transaction.transaction.precomputed_expiring_nonce_hash();
 
         // Check if already exists (by expiring nonce hash)
-        if self.expiring_nonce_txs.contains_key(&expiring_nonce_hash) {
-            return Err(PoolError::new(tx_hash, PoolErrorKind::AlreadyImported));
+        if let Some(existing) = self.expiring_nonce_txs.get(&expiring_nonce_hash).cloned() {
+            if existing.is_live() {
+                return Err(PoolError::new(tx_hash, PoolErrorKind::AlreadyImported));
+            }
+            self.remove_expiring_nonce_entry(existing, true);
         }
 
         // Check per-sender limit
         let sender = transaction.sender();
+        let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
+        if sender_count >= self.config.max_txs_per_sender {
+            self.gc_expiring_nonce_tombstones_for_sender(sender);
+        }
         let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
         if sender_count >= self.config.max_txs_per_sender {
             return Err(PoolError::new(
@@ -409,20 +450,20 @@ impl AA2dPool {
                 .priority(&transaction.transaction, hardfork.base_fee()),
             transaction: transaction.clone(),
         };
-        let eviction_key = ExpiringNonceEvictionKey::from_pending(&pending_tx);
-
-        // Notify active BestAA2dTransactions iterators about the new pending transaction
-        self.notify_new_pending(&pending_tx);
+        let entry = Arc::new(ExpiringNonceEntry::new(pending_tx));
+        let eviction_key = ExpiringNonceEvictionKey::from_entry(Arc::clone(&entry));
 
         // Insert into expiring nonce map and by_hash
         self.expiring_nonce_txs
-            .insert(expiring_nonce_hash, pending_tx);
+            .insert(expiring_nonce_hash, Arc::clone(&entry));
         self.expiring_nonce_eviction_order.insert(eviction_key);
-        if let Some(slot) = transaction.transaction.expiring_nonce_slot() {
-            self.slot_to_expiring_nonce_hash
-                .insert(slot, expiring_nonce_hash);
+        if let Some(slot) = entry.slot {
+            self.slot_to_expiring_nonce.insert(slot, Arc::clone(&entry));
         }
         self.by_hash.insert(tx_hash, transaction.clone());
+
+        // Notify active BestAA2dTransactions iterators about the new pending transaction.
+        self.notify_new_pending(BestAA2dPendingTransaction::Expiring(Arc::clone(&entry)));
 
         // Increment sender count
         *self.txs_by_sender.entry(sender).or_insert(0) += 1;
@@ -443,7 +484,11 @@ impl AA2dPool {
 
     /// Returns how many pending and queued transactions are in the pool.
     pub(crate) fn pending_and_queued_txn_count(&self) -> (usize, usize) {
-        (self.pending_count, self.queued_count)
+        (
+            self.pending_count
+                .saturating_sub(self.dead_expiring_nonce_count()),
+            self.queued_count,
+        )
     }
 
     /// Scans the pool to recompute counts for invariant checks.
@@ -457,8 +502,12 @@ impl AA2dPool {
             }
             acc
         });
-        // Expiring nonce txs are always pending
-        let expiring_pending = self.expiring_nonce_txs.len();
+        // Live expiring nonce txs are always pending.
+        let expiring_pending = self
+            .expiring_nonce_txs
+            .values()
+            .filter(|entry| entry.is_live())
+            .count();
         (pending_2d + expiring_pending, queued_2d)
     }
 
@@ -475,8 +524,8 @@ impl AA2dPool {
         let expiring = self
             .expiring_nonce_txs
             .values()
-            .filter(move |tx| tx.transaction.origin == origin)
-            .map(|tx| tx.transaction.clone());
+            .filter(move |entry| entry.is_live() && entry.pending.transaction.origin == origin)
+            .map(|entry| entry.transaction());
         regular.chain(expiring)
     }
 
@@ -490,12 +539,12 @@ impl AA2dPool {
             .values()
             .filter(move |tx| tx.is_pending() && tx.inner.transaction.origin == origin)
             .map(|tx| tx.inner.transaction.clone());
-        // Expiring nonce txs are always pending
+        // Live expiring nonce txs are always pending.
         let expiring = self
             .expiring_nonce_txs
             .values()
-            .filter(move |tx| tx.transaction.origin == origin)
-            .map(|tx| tx.transaction.clone());
+            .filter(move |entry| entry.is_live() && entry.pending.transaction.origin == origin)
+            .map(|entry| entry.transaction());
         regular.chain(expiring)
     }
 
@@ -512,14 +561,17 @@ impl AA2dPool {
         let expiring = self
             .expiring_nonce_txs
             .values()
-            .filter(move |tx| tx.transaction.sender() == sender)
-            .map(|tx| tx.transaction.clone());
+            .filter(move |entry| entry.is_live() && entry.pending.transaction.sender() == sender)
+            .map(|entry| entry.transaction());
         regular.chain(expiring)
     }
 
     /// Returns an iterator over all transaction hashes in this pool
     pub(crate) fn all_transaction_hashes_iter(&self) -> impl Iterator<Item = TxHash> {
-        self.by_hash.keys().copied()
+        self.by_hash
+            .values()
+            .filter(|tx| self.is_live_transaction(tx))
+            .map(|tx| *tx.hash())
     }
 
     /// Returns all transactions from that are queued.
@@ -545,7 +597,8 @@ impl AA2dPool {
         let expiring_pending = self
             .expiring_nonce_txs
             .values()
-            .map(|tx| tx.transaction.clone());
+            .filter(|entry| entry.is_live())
+            .map(|entry| entry.transaction());
         regular_pending.chain(expiring_pending)
     }
 
@@ -554,8 +607,9 @@ impl AA2dPool {
         &self,
         transactions: &mut AllPoolTransactions<TempoPooledTransaction>,
     ) {
-        transactions.pending.reserve(self.pending_count);
-        transactions.queued.reserve(self.queued_count);
+        let (pending, queued) = self.pending_and_queued_txn_count();
+        transactions.pending.reserve(pending);
+        transactions.queued.reserve(queued);
 
         for tx in self.by_id.values() {
             if tx.is_pending() {
@@ -568,7 +622,8 @@ impl AA2dPool {
         transactions.pending.extend(
             self.expiring_nonce_txs
                 .values()
-                .map(|tx| tx.transaction.clone()),
+                .filter(|entry| entry.is_live())
+                .map(|entry| entry.transaction()),
         );
     }
 
@@ -597,7 +652,10 @@ impl AA2dPool {
         &self,
         tx_hash: &TxHash,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        self.by_hash.get(tx_hash).cloned()
+        self.by_hash
+            .get(tx_hash)
+            .filter(|tx| self.is_live_transaction(tx))
+            .cloned()
     }
 
     /// Returns the transaction by hash.
@@ -634,6 +692,9 @@ impl AA2dPool {
             let Some(tx) = self.by_hash.get(tx_hash) else {
                 continue;
             };
+            if !self.is_live_transaction(tx) {
+                continue;
+            }
 
             let encoded_len = tx.transaction.encoded_length();
             let Some(pooled) = tx.transaction.clone_into_pooled().ok() else {
@@ -658,7 +719,8 @@ impl AA2dPool {
         let expiring = self
             .expiring_nonce_txs
             .values()
-            .map(|tx| tx.transaction.sender_ref());
+            .filter(|entry| entry.is_live())
+            .map(|entry| entry.pending.transaction.sender_ref());
         regular.chain(expiring)
     }
 
@@ -813,7 +875,7 @@ impl AA2dPool {
         Arc<ValidPoolTransaction<TempoPooledTransaction>>,
         Option<AA2dTransactionId>,
     )> {
-        let tx = self.by_hash.remove(tx_hash)?;
+        let tx = self.by_hash.get(tx_hash)?.clone();
 
         // Check if this is an expiring nonce transaction
         if tx.transaction.is_expiring_nonce() {
@@ -904,6 +966,7 @@ impl AA2dPool {
                 removed.push(tx);
             }
         }
+        self.gc_expiring_nonce_tombstones_for_sender(sender_id);
         removed
     }
 
@@ -1118,6 +1181,7 @@ impl AA2dPool {
             .find(|key| key.is_pending())
             .map(|key| (key.tx_id, key.priority().clone(), key.submission_id()));
 
+        self.gc_dead_expiring_nonce_eviction_prefix();
         let worst_expiring = self
             .expiring_nonce_eviction_order
             .first()
@@ -1160,12 +1224,16 @@ impl AA2dPool {
     fn evict_worst_expiring_nonce_tx(
         &mut self,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let eviction_key = self.expiring_nonce_eviction_order.pop_first()?;
-        let pending_tx = self
-            .expiring_nonce_txs
-            .remove(&eviction_key.expiring_hash())?;
-
-        Some(self.remove_expiring_nonce_pending_tx(pending_tx))
+        loop {
+            let eviction_key = self.expiring_nonce_eviction_order.pop_first()?;
+            let entry = eviction_key.entry;
+            let Some((state, tx)) = self.remove_expiring_nonce_entry(entry, false) else {
+                continue;
+            };
+            if state == ExpiringNonceState::Live {
+                return Some(tx);
+            }
+        }
     }
 
     /// Removes an expiring nonce transaction by hash.
@@ -1177,28 +1245,90 @@ impl AA2dPool {
         &mut self,
         expiring_hash: &B256,
     ) -> Option<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let pending_tx = self.expiring_nonce_txs.remove(expiring_hash)?;
-        let eviction_key = ExpiringNonceEvictionOrderKey::from_pending(&pending_tx);
-        self.expiring_nonce_eviction_order.remove(&eviction_key);
-        Some(self.remove_expiring_nonce_pending_tx(pending_tx))
+        let entry = self.expiring_nonce_txs.get(expiring_hash).cloned()?;
+        self.remove_expiring_nonce_entry(entry, true)
+            .and_then(|(state, tx)| (state == ExpiringNonceState::Live).then_some(tx))
     }
 
-    /// Removes secondary state for an already-detached expiring nonce transaction.
-    ///
-    /// Call only after removing the transaction from `expiring_nonce_txs` and
-    /// handling its eviction-order entry. Shared by the pop-first eviction path
-    /// and the hash-based removal path.
-    fn remove_expiring_nonce_pending_tx(
+    fn remove_expiring_nonce_entry(
         &mut self,
-        pending_tx: PendingTransaction<TxOrdering>,
-    ) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
-        self.by_hash.remove(pending_tx.transaction.hash());
-        if let Some(slot) = pending_tx.transaction.transaction.expiring_nonce_slot() {
-            self.slot_to_expiring_nonce_hash.remove(&slot);
+        entry: Arc<ExpiringNonceEntry>,
+        remove_eviction_key: bool,
+    ) -> Option<(
+        ExpiringNonceState,
+        Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+    )> {
+        let hash_entry = self.expiring_nonce_txs.get(&entry.expiring_hash)?;
+        if !Arc::ptr_eq(hash_entry, &entry) {
+            return None;
         }
-        self.decrement_sender_count(pending_tx.transaction.sender());
+
+        self.expiring_nonce_txs.remove(&entry.expiring_hash);
+        if remove_eviction_key {
+            self.expiring_nonce_eviction_order
+                .remove(&ExpiringNonceEvictionOrderKey::from_entry(&entry));
+        }
+        if let Some(slot) = entry.slot
+            && self
+                .slot_to_expiring_nonce
+                .get(&slot)
+                .is_some_and(|slot_entry| Arc::ptr_eq(slot_entry, &entry))
+        {
+            self.slot_to_expiring_nonce.remove(&slot);
+        }
+
+        let previous_state = entry.mark_removed();
+        let tx = entry.transaction();
+        self.by_hash.remove(tx.hash());
+        self.decrement_sender_count(tx.sender());
         self.pending_count -= 1;
-        pending_tx.transaction
+
+        Some((previous_state, tx))
+    }
+
+    pub(crate) fn gc_expiring_nonce_tombstones(&mut self) -> usize {
+        let entries = self
+            .expiring_nonce_txs
+            .values()
+            .filter(|entry| entry.is_dead())
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut removed = 0;
+        for entry in entries {
+            if self.remove_expiring_nonce_entry(entry, true).is_some() {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
+    fn gc_expiring_nonce_tombstones_for_sender(&mut self, sender: Address) -> usize {
+        let entries = self
+            .expiring_nonce_txs
+            .values()
+            .filter(|entry| entry.is_dead() && entry.pending.transaction.sender() == sender)
+            .cloned()
+            .collect::<Vec<_>>();
+        let mut removed = 0;
+        for entry in entries {
+            if self.remove_expiring_nonce_entry(entry, true).is_some() {
+                removed += 1;
+            }
+        }
+        removed
+    }
+
+    fn gc_dead_expiring_nonce_eviction_prefix(&mut self) {
+        while self
+            .expiring_nonce_eviction_order
+            .first()
+            .is_some_and(|key| !key.is_live())
+        {
+            let Some(key) = self.expiring_nonce_eviction_order.pop_first() else {
+                return;
+            };
+            self.remove_expiring_nonce_entry(key.entry, false);
+        }
     }
 
     fn remove_from_counts(&mut self, pending: bool) {
@@ -1216,14 +1346,26 @@ impl AA2dPool {
 
     /// Returns `true` if the transaction with the given hash is already included in this pool.
     pub(crate) fn contains(&self, tx_hash: &TxHash) -> bool {
-        self.by_hash.contains_key(tx_hash)
+        self.by_hash
+            .get(tx_hash)
+            .is_some_and(|tx| self.is_live_transaction(tx))
+    }
+
+    fn is_live_transaction(&self, tx: &ValidPoolTransaction<TempoPooledTransaction>) -> bool {
+        if !tx.transaction.is_expiring_nonce() {
+            return true;
+        }
+
+        self.expiring_nonce_txs
+            .get(&tx.transaction.precomputed_expiring_nonce_hash())
+            .is_some_and(|entry| entry.is_live() && entry.pending.transaction.hash() == tx.hash())
     }
 
     /// Returns hashes of transactions in the pool that can be propagated.
     pub(crate) fn pooled_transactions_hashes_iter(&self) -> impl Iterator<Item = TxHash> {
         self.by_hash
             .values()
-            .filter(|tx| tx.propagate)
+            .filter(|tx| tx.propagate && self.is_live_transaction(tx))
             .map(|tx| *tx.hash())
     }
 
@@ -1231,7 +1373,10 @@ impl AA2dPool {
     pub(crate) fn pooled_transactions_iter(
         &self,
     ) -> impl Iterator<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        self.by_hash.values().filter(|tx| tx.propagate).cloned()
+        self.by_hash
+            .values()
+            .filter(|tx| tx.propagate && self.is_live_transaction(tx))
+            .cloned()
     }
 
     const fn next_id(&mut self) -> u64 {
@@ -1257,6 +1402,7 @@ impl AA2dPool {
     }
 
     /// Processes nonce-precompile storage updates and updates internal state accordingly.
+    #[cfg(test)]
     pub(crate) fn on_state_updates(
         &mut self,
         state: &AddressMap<BundleAccount>,
@@ -1264,38 +1410,57 @@ impl AA2dPool {
         self.state_update_nonce_changes.clear();
         self.state_update_included_expiring_nonce_hashes.clear();
 
+        let delta = self.collect_state_update_delta(state);
+        let result = self.apply_state_update_delta(delta);
+        self.gc_expiring_nonce_tombstones();
+
+        result
+    }
+
+    /// Collects nonce-precompile storage updates. Expiring nonce inclusions are
+    /// tombstoned immediately so existing best-transaction snapshots skip them.
+    pub(crate) fn collect_state_update_delta(
+        &self,
+        state: &AddressMap<BundleAccount>,
+    ) -> AA2dStateUpdateDelta {
         let Some(nonce_state) = state.get(&NONCE_PRECOMPILE_ADDRESS) else {
-            return (Vec::new(), Vec::new());
+            return AA2dStateUpdateDelta::default();
         };
 
-        let mut changes = std::mem::take(&mut self.state_update_nonce_changes);
-        let mut included_expiring_nonce_hashes =
-            std::mem::take(&mut self.state_update_included_expiring_nonce_hashes);
+        let mut delta = AA2dStateUpdateDelta::default();
 
         // Process known 2D nonce slot changes.
         for (slot, value) in nonce_state.storage.iter() {
             if let Some(seq_id) = self.slot_to_seq_id.get(slot) {
-                changes.insert(*seq_id, value.present_value.saturating_to());
+                delta
+                    .nonce_changes
+                    .insert(*seq_id, value.present_value.saturating_to());
             }
             // Detect included expiring nonce transactions via their
             // `expiring_nonce_seen` slot being set to a non-zero value.
             if !value.present_value.is_zero()
-                && let Some(expiring_nonce_hash) = self.slot_to_expiring_nonce_hash.get(slot)
+                && let Some(entry) = self.slot_to_expiring_nonce.get(slot)
+                && let Some(tx) = self.mark_expiring_nonce_included(entry)
             {
-                included_expiring_nonce_hashes.push(*expiring_nonce_hash);
+                delta.included_expiring_nonce_txs.push(tx);
             }
         }
 
-        let (promoted, mut mined) = self.on_nonce_changes_iter(changes.drain());
+        delta
+    }
 
-        // Remove included expiring nonce transactions
-        for expiring_nonce_hash in included_expiring_nonce_hashes.drain(..) {
-            if let Some(tx) = self.remove_expiring_nonce_tx(&expiring_nonce_hash) {
-                mined.push(tx);
-            }
+    /// Applies already-collected state update effects that require exclusive
+    /// mutation of the regular 2D nonce indexes.
+    pub(crate) fn apply_state_update_delta(
+        &mut self,
+        delta: AA2dStateUpdateDelta,
+    ) -> PoolUpdateResult {
+        if delta.is_empty() {
+            return (Vec::new(), Vec::new());
         }
-        self.state_update_nonce_changes = changes;
-        self.state_update_included_expiring_nonce_hashes = included_expiring_nonce_hashes;
+
+        let (promoted, mut mined) = self.on_nonce_changes_iter(delta.nonce_changes);
+        mined.extend(delta.included_expiring_nonce_txs);
 
         // Record metrics for all changes
         if !promoted.is_empty() {
@@ -1459,12 +1624,12 @@ impl AA2dPool {
         );
         assert_eq!(
             pending_count + queued_count,
-            self.by_id.len() + self.expiring_nonce_txs.len(),
-            "Pending ({}) + queued ({}) != total transactions (by_id: {} + expiring: {})",
+            self.by_id.len() + self.live_expiring_nonce_count(),
+            "Pending ({}) + queued ({}) != live transactions (by_id: {} + live expiring: {})",
             pending_count,
             queued_count,
             self.by_id.len(),
-            self.expiring_nonce_txs.len()
+            self.live_expiring_nonce_count()
         );
 
         // Verify quota compliance - counts don't exceed limits
@@ -1482,41 +1647,64 @@ impl AA2dPool {
         );
 
         // Verify expiring nonce txs integrity
-        for (hash, pending_tx) in &self.expiring_nonce_txs {
-            let tx_hash = *pending_tx.transaction.hash();
+        let scanned_dead_expiring = self
+            .expiring_nonce_txs
+            .values()
+            .filter(|entry| entry.is_dead())
+            .count();
+        assert_eq!(
+            self.dead_expiring_nonce_count(),
+            scanned_dead_expiring,
+            "dead expiring nonce count mismatch"
+        );
+
+        for (hash, entry) in &self.expiring_nonce_txs {
+            let tx_hash = *entry.pending.transaction.hash();
             assert!(
                 self.by_hash.contains_key(&tx_hash),
                 "Expiring nonce tx {tx_hash:?} not in by_hash (expiring hash {hash:?})"
             );
             assert!(
                 self.expiring_nonce_eviction_order
-                    .contains(&ExpiringNonceEvictionOrderKey::from_pending(pending_tx)),
+                    .contains(&ExpiringNonceEvictionOrderKey::from_entry(entry)),
                 "Expiring nonce tx {tx_hash:?} not in expiring_nonce_eviction_order"
             );
             assert!(
-                pending_tx.transaction.transaction.is_expiring_nonce(),
+                entry.pending.transaction.transaction.is_expiring_nonce(),
                 "Transaction in expiring_nonce_txs is not an expiring nonce tx"
             );
+            if let Some(slot) = entry.slot {
+                assert!(
+                    self.slot_to_expiring_nonce
+                        .get(&slot)
+                        .is_some_and(|slot_entry| Arc::ptr_eq(slot_entry, entry)),
+                    "Expiring nonce tx {tx_hash:?} not in slot_to_expiring_nonce"
+                );
+            }
         }
 
         for key in &self.expiring_nonce_eviction_order {
             let expiring_hash = key.expiring_hash();
-            let Some(pending_tx) = self.expiring_nonce_txs.get(&expiring_hash) else {
+            let Some(entry) = self.expiring_nonce_txs.get(&expiring_hash) else {
                 panic!("Expiring nonce eviction key {expiring_hash:?} not in expiring_nonce_txs");
             };
+            assert!(
+                Arc::ptr_eq(&key.entry, entry),
+                "Expiring nonce eviction key {expiring_hash:?} has mismatched entry"
+            );
             assert_eq!(
                 key.submission_id(),
-                pending_tx.submission_id,
+                entry.pending.submission_id,
                 "Expiring nonce eviction key {expiring_hash:?} has mismatched submission id"
             );
             assert_eq!(
                 key.priority(),
-                &pending_tx.priority,
+                &entry.pending.priority,
                 "Expiring nonce eviction key {expiring_hash:?} has mismatched priority"
             );
             assert_eq!(
-                key.transaction.hash(),
-                pending_tx.transaction.hash(),
+                key.transaction().hash(),
+                entry.pending.transaction.hash(),
                 "Expiring nonce eviction key {expiring_hash:?} has mismatched transaction hash"
             );
         }
@@ -1554,6 +1742,18 @@ impl Default for AA2dPoolConfig {
     }
 }
 
+#[derive(Debug, Default)]
+pub(crate) struct AA2dStateUpdateDelta {
+    nonce_changes: HashMap<AASequenceId, u64>,
+    included_expiring_nonce_txs: Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+}
+
+impl AA2dStateUpdateDelta {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.nonce_changes.is_empty() && self.included_expiring_nonce_txs.is_empty()
+    }
+}
+
 #[derive(Debug)]
 struct AA2dInternalTransaction {
     /// Keeps track of the transaction
@@ -1573,12 +1773,97 @@ struct AA2dInternalTransaction {
 impl AA2dInternalTransaction {
     /// Returns whether this transaction is pending/executable.
     fn is_pending(&self) -> bool {
-        self.is_pending.load(Ordering::Relaxed)
+        self.is_pending.load(AtomicOrdering::Relaxed)
     }
 
     /// Sets the pending status of this transaction, returning the previous value.
     fn set_pending(&self, pending: bool) -> bool {
-        self.is_pending.swap(pending, Ordering::Relaxed)
+        self.is_pending.swap(pending, AtomicOrdering::Relaxed)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExpiringNonceState {
+    Live,
+    Included,
+    Removed,
+}
+
+impl ExpiringNonceState {
+    const fn as_u8(self) -> u8 {
+        match self {
+            Self::Live => 0,
+            Self::Included => 1,
+            Self::Removed => 2,
+        }
+    }
+
+    const fn from_u8(value: u8) -> Self {
+        match value {
+            0 => Self::Live,
+            1 => Self::Included,
+            _ => Self::Removed,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct ExpiringNonceEntry {
+    pending: PendingTransaction<TxOrdering>,
+    expiring_hash: B256,
+    slot: Option<U256>,
+    state: AtomicU8,
+}
+
+impl ExpiringNonceEntry {
+    fn new(pending: PendingTransaction<TxOrdering>) -> Self {
+        Self {
+            expiring_hash: pending
+                .transaction
+                .transaction
+                .precomputed_expiring_nonce_hash(),
+            slot: pending.transaction.transaction.expiring_nonce_slot(),
+            pending,
+            state: AtomicU8::new(ExpiringNonceState::Live.as_u8()),
+        }
+    }
+
+    fn is_live(&self) -> bool {
+        self.state.load(AtomicOrdering::Acquire) == ExpiringNonceState::Live.as_u8()
+    }
+
+    fn is_dead(&self) -> bool {
+        !self.is_live()
+    }
+
+    fn mark_included(&self) -> bool {
+        self.state
+            .compare_exchange(
+                ExpiringNonceState::Live.as_u8(),
+                ExpiringNonceState::Included.as_u8(),
+                AtomicOrdering::AcqRel,
+                AtomicOrdering::Acquire,
+            )
+            .is_ok()
+    }
+
+    fn mark_removed(&self) -> ExpiringNonceState {
+        ExpiringNonceState::from_u8(
+            self.state
+                .swap(ExpiringNonceState::Removed.as_u8(), AtomicOrdering::AcqRel),
+        )
+    }
+
+    fn transaction(&self) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
+        self.pending.transaction.clone()
+    }
+
+    fn priority(&self) -> &Priority<u64> {
+        &self.pending.priority
+    }
+
+    fn submission_id(&self) -> u64 {
+        self.pending.submission_id
     }
 }
 
@@ -1601,8 +1886,8 @@ impl ExpiringNonceEvictionOrderKey {
         }
     }
 
-    fn from_pending(tx: &PendingTransaction<TxOrdering>) -> Self {
-        Self::new(tx.priority.clone(), tx.submission_id)
+    fn from_entry(entry: &ExpiringNonceEntry) -> Self {
+        Self::new(entry.pending.priority.clone(), entry.pending.submission_id)
     }
 }
 
@@ -1624,8 +1909,8 @@ impl PartialOrd for ExpiringNonceEvictionOrderKey {
 ///
 /// This mirrors `EvictionKey` for expiring nonce transactions, which are not
 /// stored in `by_id` and therefore cannot use `AA2dTransactionId`. The key
-/// carries the transaction so `BestAA2dTransactions` can clone only the ordered
-/// index and pop expiring nonce transactions directly from it.
+/// carries the shared expiring nonce entry so snapshots can observe lazy
+/// tombstones without taking the pool write lock.
 ///
 /// Order:
 /// 1. Priority ascending (lowest priority evicted first)
@@ -1635,44 +1920,37 @@ impl PartialOrd for ExpiringNonceEvictionOrderKey {
 #[derive(Debug, Clone)]
 struct ExpiringNonceEvictionKey {
     order: ExpiringNonceEvictionOrderKey,
-    transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+    entry: Arc<ExpiringNonceEntry>,
 }
 
 impl ExpiringNonceEvictionKey {
-    fn from_pending(tx: &PendingTransaction<TxOrdering>) -> Self {
+    fn from_entry(entry: Arc<ExpiringNonceEntry>) -> Self {
         Self {
-            order: ExpiringNonceEvictionOrderKey::from_pending(tx),
-            transaction: tx.transaction.clone(),
+            order: ExpiringNonceEvictionOrderKey::from_entry(&entry),
+            entry,
         }
     }
 
-    fn from_pending_owned(tx: PendingTransaction<TxOrdering>) -> Self {
-        Self {
-            order: ExpiringNonceEvictionOrderKey::new(tx.priority, tx.submission_id),
-            transaction: tx.transaction,
-        }
-    }
-
-    fn into_transaction(self) -> PendingTransaction<TxOrdering> {
-        PendingTransaction {
-            submission_id: self.order.submission_id,
-            priority: self.order.priority,
-            transaction: self.transaction,
-        }
+    #[cfg(test)]
+    fn transaction(&self) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
+        self.entry.transaction()
     }
 
     fn priority(&self) -> &Priority<u64> {
-        &self.order.priority
+        self.entry.priority()
     }
 
     fn submission_id(&self) -> u64 {
-        self.order.submission_id
+        self.entry.submission_id()
     }
 
+    #[cfg(test)]
     fn expiring_hash(&self) -> B256 {
-        self.transaction
-            .transaction
-            .precomputed_expiring_nonce_hash()
+        self.entry.expiring_hash
+    }
+
+    fn is_live(&self) -> bool {
+        self.entry.is_live()
     }
 }
 
@@ -1770,18 +2048,33 @@ impl PartialOrd for EvictionKey {
 /// Maximum number of new transactions to drain from the channel per `next()` call.
 const MAX_NEW_TRANSACTIONS_PER_BATCH: usize = 16;
 
+#[derive(Clone, Debug)]
+enum BestAA2dPendingTransaction {
+    Regular(PendingTransaction<TxOrdering>),
+    Expiring(Arc<ExpiringNonceEntry>),
+}
+
+impl BestAA2dPendingTransaction {
+    fn priority(&self) -> &Priority<u64> {
+        match self {
+            Self::Regular(tx) => &tx.priority,
+            Self::Expiring(entry) => entry.priority(),
+        }
+    }
+}
+
 /// Determines how a newly received transaction should be handled based on its priority
 /// relative to transactions already yielded by the iterator.
 enum IncomingAA2dTransaction {
     /// Priority ≤ last yielded — safe to add to both `by_id` and `independent`.
-    Process(PendingTransaction<TxOrdering>),
+    Process(BestAA2dPendingTransaction),
     /// Priority > last yielded — add only to `by_id` for nonce chain lookups, not `independent`.
-    Stash(PendingTransaction<TxOrdering>),
+    Stash(BestAA2dPendingTransaction),
 }
 
 enum PoppedAA2dTransaction {
     Regular(AA2dTransactionId, PendingTransaction<TxOrdering>),
-    Expiring(PendingTransaction<TxOrdering>),
+    Expiring(Arc<ExpiringNonceEntry>),
 }
 
 /// A snapshot of the sub-pool containing all executable transactions.
@@ -1805,7 +2098,7 @@ pub(crate) struct BestAA2dTransactions {
     /// There might be the case where a yielded transactions is invalid, this will track it.
     invalid: HashSet<AASequenceId>,
     /// Live feed of new pending transactions arriving after this iterator was created.
-    new_transaction_receiver: Option<broadcast::Receiver<PendingTransaction<TxOrdering>>>,
+    new_transaction_receiver: Option<broadcast::Receiver<BestAA2dPendingTransaction>>,
     /// Priority of the most recently yielded transaction, used to maintain ordering invariant.
     last_priority: Option<Priority<u64>>,
 }
@@ -1824,13 +2117,24 @@ impl BestAA2dTransactions {
     }
 
     /// Removes the best expiring nonce transaction from the set.
-    fn pop_best_expiring_nonce(&mut self) -> Option<PendingTransaction<TxOrdering>> {
-        let key = self.expiring_nonce_order.pop_last()?;
-        Some(key.into_transaction())
+    fn pop_best_expiring_nonce(&mut self) -> Option<Arc<ExpiringNonceEntry>> {
+        loop {
+            let key = self.expiring_nonce_order.pop_last()?;
+            if key.is_live() {
+                return Some(key.entry);
+            }
+        }
     }
 
     /// Removes the best regular or expiring nonce transaction.
     fn pop_best(&mut self) -> Option<PoppedAA2dTransaction> {
+        while self
+            .expiring_nonce_order
+            .last()
+            .is_some_and(|key| !key.is_live())
+        {
+            self.expiring_nonce_order.pop_last();
+        }
         match (self.independent.last(), self.expiring_nonce_order.last()) {
             (Some(regular), Some(expiring)) => {
                 if regular
@@ -1863,7 +2167,7 @@ impl BestAA2dTransactions {
             match self.new_transaction_receiver.as_mut()?.try_recv() {
                 Ok(tx) => {
                     if let Some(last_priority) = &self.last_priority
-                        && &tx.priority > last_priority
+                        && tx.priority() > last_priority
                     {
                         // Higher priority than what we already yielded — stash in `by_id`
                         // only (not `independent`) to preserve nonce chain lookups.
@@ -1887,24 +2191,29 @@ impl BestAA2dTransactions {
                     IncomingAA2dTransaction::Process(tx) => (tx, true),
                     IncomingAA2dTransaction::Stash(tx) => (tx, false),
                 };
-                if tx.transaction.transaction.is_expiring_nonce() {
-                    if process {
+                match tx {
+                    BestAA2dPendingTransaction::Expiring(entry) => {
                         // Expiring nonce transactions are always independent
-                        self.expiring_nonce_order
-                            .insert(ExpiringNonceEvictionKey::from_pending_owned(tx));
-                    }
-                } else if let Some(id) = tx.transaction.transaction.aa_transaction_id() {
-                    if process {
-                        // Only mark as independent if no ancestor is already tracked
-                        if !self.by_id.contains_key(&AA2dTransactionId::new(
-                            id.seq_id,
-                            id.nonce.saturating_sub(1),
-                        )) || id.nonce == 0
-                        {
-                            self.independent.insert(tx.clone());
+                        if process && entry.is_live() {
+                            self.expiring_nonce_order
+                                .insert(ExpiringNonceEvictionKey::from_entry(entry));
                         }
                     }
-                    self.by_id.insert(id, tx);
+                    BestAA2dPendingTransaction::Regular(tx) => {
+                        if let Some(id) = tx.transaction.transaction.aa_transaction_id() {
+                            if process {
+                                // Only mark as independent if no ancestor is already tracked
+                                if !self.by_id.contains_key(&AA2dTransactionId::new(
+                                    id.seq_id,
+                                    id.nonce.saturating_sub(1),
+                                )) || id.nonce == 0
+                                {
+                                    self.independent.insert(tx.clone());
+                                }
+                            }
+                            self.by_id.insert(id, tx);
+                        }
+                    }
                 }
             } else {
                 break;
@@ -1932,7 +2241,16 @@ impl BestAA2dTransactions {
                     }
                     best
                 }
-                PoppedAA2dTransaction::Expiring(best) => best,
+                PoppedAA2dTransaction::Expiring(best) => {
+                    if !best.is_live() {
+                        continue;
+                    }
+                    PendingTransaction {
+                        submission_id: best.submission_id(),
+                        priority: best.priority().clone(),
+                        transaction: best.transaction(),
+                    }
+                }
             };
             if self.new_transaction_receiver.is_some() {
                 self.last_priority = Some(best.priority.clone());
@@ -6006,11 +6324,81 @@ mod tests {
         assert_eq!(mined[0].hash(), &tx_hash);
         assert!(!pool.contains(&tx_hash));
         assert!(pool.expiring_nonce_txs.is_empty());
-        assert!(pool.slot_to_expiring_nonce_hash.is_empty());
+        assert!(pool.slot_to_expiring_nonce.is_empty());
         assert_expiring_eviction_index_len(&pool, 0);
         pool.assert_invariants();
         assert!(pool.state_update_nonce_changes.is_empty());
         assert!(pool.state_update_included_expiring_nonce_hashes.is_empty());
+    }
+
+    #[test]
+    fn expiring_nonce_state_update_tombstones_existing_best_snapshot() {
+        use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
+
+        let mut pool = AA2dPool::default();
+        let sender = Address::random();
+
+        let tx = TxBuilder::aa(sender)
+            .nonce_key(U256::MAX)
+            .valid_before(123)
+            .max_fee(30_000_000_000)
+            .build();
+        let tx_hash = *tx.hash();
+        let slot = tx
+            .expiring_nonce_slot()
+            .expect("expiring nonce tx must have storage slot");
+
+        pool.add_transaction(
+            Arc::new(wrap_valid_tx(tx, TransactionOrigin::Local)),
+            0,
+            TempoHardfork::T1,
+        )
+        .unwrap();
+
+        let mut best = pool.best_transactions();
+
+        let mut storage = HashMap::default();
+        storage.insert(
+            slot,
+            StorageSlot::new_changed(U256::ZERO, U256::from(123u64)),
+        );
+        let mut state = AddressMap::default();
+        state.insert(
+            NONCE_PRECOMPILE_ADDRESS,
+            BundleAccount::new(None, None, storage, AccountStatus::Changed),
+        );
+
+        let delta = pool.collect_state_update_delta(&state);
+
+        assert_eq!(delta.included_expiring_nonce_txs.len(), 1);
+        assert_eq!(delta.included_expiring_nonce_txs[0].hash(), &tx_hash);
+        assert!(!pool.contains(&tx_hash));
+        assert!(pool.pending_transactions().next().is_none());
+        assert!(
+            best.next().is_none(),
+            "stale best snapshot must skip tombstone"
+        );
+        assert_eq!(
+            pool.expiring_nonce_txs.len(),
+            1,
+            "physical cleanup is intentionally lazy"
+        );
+        assert_expiring_eviction_index_len(&pool, 1);
+
+        let (promoted, mined) = pool.apply_state_update_delta(delta);
+        assert!(promoted.is_empty());
+        assert_eq!(mined.len(), 1);
+        assert_eq!(mined[0].hash(), &tx_hash);
+        assert_eq!(
+            pool.expiring_nonce_txs.len(),
+            1,
+            "apply should not synchronously clean tombstones"
+        );
+
+        assert_eq!(pool.gc_expiring_nonce_tombstones(), 1);
+        assert!(pool.expiring_nonce_txs.is_empty());
+        assert!(pool.slot_to_expiring_nonce.is_empty());
+        assert_expiring_eviction_index_len(&pool, 0);
     }
 
     /// Pool with pending limit of 2 for eviction tests.
