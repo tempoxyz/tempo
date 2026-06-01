@@ -1,6 +1,6 @@
 use crate::{TempoBlockEnv, TempoInvalidTransaction, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, U256, map::B256Set};
 use revm::{
     Context, Inspector,
     context::{Cfg, CfgEnv, ContextError, Evm, FrameStack, result::EVMError},
@@ -10,7 +10,6 @@ use revm::{
     inspector::InspectorEvmTr,
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
-use std::collections::HashSet;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{error::TempoPrecompileError, nonce::NonceManager, storage::StorageCtx};
 
@@ -69,7 +68,7 @@ pub struct TempoEvm<DB: Database, I> {
     /// Expiring nonce replay markers to write during block finalization.
     pending_expiring_nonces: Vec<PendingExpiringNonce>,
     /// Replay hashes already included in this block.
-    seen_expiring_nonce_hashes: HashSet<B256>,
+    seen_expiring_nonce_hashes: B256Set,
     /// Expiring nonce replay marker validated for the current transaction.
     current_expiring_nonce: Option<PendingExpiringNonce>,
 }
@@ -109,7 +108,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             skip_valid_after_check: false,
             skip_liquidity_check: false,
             pending_expiring_nonces: Vec::new(),
-            seen_expiring_nonce_hashes: HashSet::new(),
+            seen_expiring_nonce_hashes: B256Set::default(),
             current_expiring_nonce: None,
         }
     }

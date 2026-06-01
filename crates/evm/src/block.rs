@@ -33,9 +33,9 @@ use tempo_contracts::precompiles::{
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
-    subblock::PartialValidatorKey,
+    subblock::PartialValidatorKey, transaction::TEMPO_EXPIRING_NONCE_KEY,
 };
-use tempo_revm::{PendingExpiringNonce, TempoHaltReason, evm::TempoContext};
+use tempo_revm::{PendingExpiringNonce, TempoHaltReason, TempoTxEnv, evm::TempoContext};
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -216,15 +216,20 @@ where
         Ok(())
     }
 
-    fn pending_expiring_nonce_hash(&self, tx: &TempoTxEnvelope, signer: Address) -> Option<B256> {
-        if !self.evm().cfg.spec.is_t1() || !tx.is_expiring_nonce() {
+    fn pending_expiring_nonce_hash(&self, tx_env: &TempoTxEnv) -> Option<B256> {
+        if !self.evm().cfg.spec.is_t1() {
+            return None;
+        }
+
+        let tempo_tx_env = tx_env.tempo_tx_env.as_ref()?;
+        if tempo_tx_env.nonce_key != TEMPO_EXPIRING_NONCE_KEY {
             return None;
         }
 
         Some(if self.evm().cfg.spec.is_t1b() {
-            tx.unique_tx_identifier(signer)
+            tx_env.unique_tx_identifier()?
         } else {
-            *tx.tx_hash()
+            tempo_tx_env.tx_hash
         })
     }
 
@@ -527,8 +532,7 @@ where
     ) -> Result<Self::Result, BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
-        let pending_expiring_nonce_hash =
-            self.pending_expiring_nonce_hash(recovered.tx(), *recovered.signer());
+        let pending_expiring_nonce_hash = self.pending_expiring_nonce_hash(&tx_env);
 
         if let Some(replay_hash) = pending_expiring_nonce_hash
             && self.evm().has_pending_expiring_nonce_hash(replay_hash)
