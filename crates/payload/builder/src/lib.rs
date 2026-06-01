@@ -487,10 +487,7 @@ where
         maybe_override_fee_recipient(&mut executor, &attributes);
 
         if let Some(ref handle) = trie_handle {
-            executor
-                .evm_mut()
-                .db_mut()
-                .set_state_hook(Some(Box::new(handle.state_hook())));
+            executor.set_state_hook(Some(Box::new(handle.state_hook())));
         }
 
         executor.apply_pre_execution_changes().map_err(|err| {

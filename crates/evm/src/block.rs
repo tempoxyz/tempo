@@ -18,7 +18,7 @@ use commonware_cryptography::{
     Verifier,
     ed25519::{PublicKey, Signature},
 };
-use reth_evm::block::StateDB;
+use reth_evm::{block::StateDB, OnStateHook};
 use reth_revm::{
     Inspector,
     context::result::ResultAndState,
@@ -465,6 +465,10 @@ where
     type Receipt = TempoReceipt;
     type Evm = TempoEvm<DB, I>;
     type Result = TempoTxResult;
+
+    fn set_state_hook(&mut self, state_hook: Option<Box<dyn OnStateHook>>) {
+        self.inner.set_state_hook(state_hook);
+    }
 
     fn apply_pre_execution_changes(&mut self) -> Result<(), alloy_evm::block::BlockExecutionError> {
         if self

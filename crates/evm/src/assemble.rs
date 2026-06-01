@@ -2,7 +2,6 @@ use crate::{
     TempoEvmConfig, TempoEvmFactory, block::TempoReceiptBuilder, context::TempoBlockExecutionCtx,
 };
 use alloy_evm::{block::BlockExecutionError, eth::EthBlockExecutorFactory};
-use alloy_primitives::{B256, Bloom};
 use reth_evm::execute::{BlockAssembler, BlockAssemblerInput};
 use reth_evm_ethereum::EthBlockAssembler;
 use reth_primitives_traits::SealedHeader;
@@ -26,9 +25,9 @@ impl TempoBlockAssembler {
     pub fn assemble_block(
         &self,
         input: BlockAssemblerInput<'_, '_, TempoEvmConfig, TempoHeader>,
-        transactions_root: Option<B256>,
-        receipts_root: Option<B256>,
-        receipts_bloom: Option<Bloom>,
+        _transactions_root: Option<alloy_primitives::B256>,
+        _receipts_root: Option<alloy_primitives::B256>,
+        _receipts_bloom: Option<alloy_primitives::Bloom>,
     ) -> Result<tempo_primitives::Block, BlockExecutionError> {
         let BlockAssemblerInput {
             evm_env,
@@ -70,9 +69,6 @@ impl TempoBlockAssembler {
                 state_root,
                 block_access_list_hash,
             ),
-            transactions_root,
-            receipts_root,
-            receipts_bloom,
         )?;
 
         Ok(block.map_header(|inner| TempoHeader {
