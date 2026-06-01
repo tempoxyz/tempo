@@ -85,10 +85,10 @@ use commonware_storage::{
 };
 use reth_node_core::primitives::SealedBlock;
 use reth_provider::{
-    BlockReader, BlockSource, ProviderResult,
+    BlockReader, BlockSource, ProviderError, ProviderResult,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
-use tracing::{debug, instrument, warn};
+use tracing::{debug, info, instrument, warn};
 
 use crate::consensus::{Digest, block::Block};
 
@@ -142,6 +142,7 @@ where
             .map(|nh| nh.number)
     }
 
+    #[instrument(skip_all, fields(height), err)]
     fn block_by_height(&self, height: u64) -> ProviderResult<Option<Block>> {
         // Gate the lookup on reth's finalized watermark so the marshal can
         // never be served a block that reth has not yet marked as
@@ -157,20 +158,33 @@ where
         if height > finalized {
             return Ok(None);
         }
-        Ok(self.block_by_number(height)?.map(|block| {
-            Block::from_execution_block_unchecked(SealedBlock::seal_slow(block), None)
-        }))
+        match self.block_by_number(height) {
+            Ok(maybe_block) => Ok(maybe_block.map(|block| {
+                Block::from_execution_block_unchecked(SealedBlock::seal_slow(block), None)
+            })),
+            Err(err @ ProviderError::BlockExpired { .. }) => {
+                info!(error = %eyre::Report::new(err), "cannot find block");
+                Ok(None)
+            }
+            Err(bad_error) => Err(bad_error),
+        }
     }
 
+    #[instrument(skip_all, fields(hash), err)]
     fn block_by_hash(&self, hash: B256) -> ProviderResult<Option<Block>> {
         // `Canonical` (not `Any`) so the marshal can never be served a
         // block that lives only in reth's pending in-memory tree — see
         // [`Blocks::get`] on [`Hybrid`].
-        Ok(self
-            .find_block_by_hash(hash, BlockSource::Canonical)?
-            .map(|block| {
+        match self.find_block_by_hash(hash, BlockSource::Canonical) {
+            Ok(maybe_block) => Ok(maybe_block.map(|block| {
                 Block::from_execution_block_unchecked(SealedBlock::seal_slow(block), None)
-            }))
+            })),
+            Err(err @ ProviderError::BlockExpired { .. }) => {
+                info!(error = %eyre::Report::new(err), "cannot find block");
+                Ok(None)
+            }
+            Err(bad_error) => Err(bad_error),
+        }
     }
 }
 
