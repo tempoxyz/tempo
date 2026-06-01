@@ -602,7 +602,16 @@ where
                 };
                 break stop_reason;
             };
+            let tx_index = pool_transactions_yielded;
             pool_transactions_yielded += 1;
+            let tx_hash = *pool_tx.hash();
+            let _tx_span = debug_span!(
+                target: "payload_builder",
+                "execute_pool_transaction",
+                tx_index,
+                ?tx_hash
+            )
+            .entered();
 
             let max_regular_gas_used = core::cmp::min(
                 pool_tx.gas_limit(),

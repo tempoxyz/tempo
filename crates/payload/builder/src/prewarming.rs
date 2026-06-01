@@ -24,7 +24,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
-use tracing::trace;
+use tracing::{debug_span, trace};
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
@@ -79,6 +79,7 @@ impl BestTransactionsPrewarming {
                     commands_rx,
                     commands_tx,
                     prewarm,
+                    next_tx_index: 0,
                 },
             );
         });
@@ -111,10 +112,12 @@ impl BestTransactionsPrewarming {
                 };
                 let _ = ctx.transactions_tx.send(Some(tx.clone()));
 
+                let tx_index = ctx.next_tx_index;
+                ctx.next_tx_index += 1;
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
                 scope.spawn(move |_| {
-                    Self::prewarm_transaction(prewarm, tx.clone());
+                    Self::prewarm_transaction(prewarm, tx_index, tx.clone());
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
             };
@@ -166,6 +169,7 @@ impl BestTransactionsPrewarming {
 
     fn prewarm_transaction<Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
+        tx_index: u64,
         tx: BestTransaction,
     ) where
         Provider: StateProviderFactory + Clone + 'static,
@@ -174,12 +178,19 @@ impl BestTransactionsPrewarming {
             return;
         }
 
+        let tx_hash = *tx.hash();
+        let _tx_span = debug_span!(
+            target: "payload_builder",
+            "prewarm_transaction",
+            tx_index,
+            ?tx_hash
+        )
+        .entered();
+
         WorkerPool::with_worker_mut(|worker| {
             let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
                 return;
             };
-
-            let tx_hash = *tx.hash();
 
             let touched = if is_tip20_transfer_transaction(&tx) {
                 let touches =
@@ -282,6 +293,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
+    next_tx_index: u64,
 }
 
 /// Context needed to prewarm transaction storage independently of the real builder.
