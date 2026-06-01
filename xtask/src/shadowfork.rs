@@ -1,7 +1,4 @@
-use std::{
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
-    path::Path,
-};
+use std::path::Path;
 
 use eyre::{OptionExt as _, WrapErr as _, eyre};
 
@@ -101,95 +98,6 @@ fn source_genesis_json(
     serde_json::from_str(genesis).wrap_err("failed parsing bundled source genesis JSON")
 }
 
-pub(crate) fn consensus_listen_addr(advertised_addr: SocketAddr, listen_port: u16) -> SocketAddr {
-    if advertised_addr.ip().is_loopback() {
-        return SocketAddr::new(advertised_addr.ip(), listen_port);
-    }
-
-    match advertised_addr {
-        SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), listen_port),
-        SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), listen_port),
-    }
-}
-
-pub(crate) fn should_allow_private_ips(ips: impl IntoIterator<Item = IpAddr>) -> bool {
-    ips.into_iter().any(is_private_or_loopback)
-}
-
-fn is_private_or_loopback(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
-        IpAddr::V6(ip) => {
-            ip.is_loopback()
-                || (ip.segments()[0] & 0xfe00) == 0xfc00
-                || (ip.segments()[0] & 0xffc0) == 0xfe80
-        }
-    }
-}
-
-pub(crate) fn render_script_header() -> String {
-    r#"#!/usr/bin/env bash
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-if [[ -n "${TEMPO_BIN:-}" ]]; then
-  TEMPO_CMD=("$TEMPO_BIN")
-else
-  TEMPO_CMD=(cargo run --bin tempo --)
-fi
-
-run_tempo() {
-  "${TEMPO_CMD[@]}" "$@"
-}
-
-PIDS=()
-
-shutdown_nodes() {
-  local status="$1"
-  trap - INT TERM
-  if ((${#PIDS[@]})); then
-    kill "${PIDS[@]}" 2>/dev/null || true
-    wait "${PIDS[@]}" 2>/dev/null || true
-  fi
-  exit "$status"
-}
-
-trap 'shutdown_nodes 130' INT
-trap 'shutdown_nodes 143' TERM
-
-"#
-    .to_string()
-}
-
-pub(crate) fn render_script_footer() -> String {
-    r#"echo "started ${#PIDS[@]} nodes; press Ctrl-C to stop"
-wait "${PIDS[@]}"
-"#
-    .to_string()
-}
-
-pub(crate) fn shell_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
-#[cfg(unix)]
-pub(crate) fn mark_executable(path: &Path) -> eyre::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    let mut permissions = std::fs::metadata(path)
-        .wrap_err_with(|| format!("failed reading metadata for `{}`", path.display()))?
-        .permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(path, permissions)
-        .wrap_err_with(|| format!("failed marking `{}` executable", path.display()))
-}
-
-#[cfg(not(unix))]
-pub(crate) fn mark_executable(_path: &Path) -> eyre::Result<()> {
-    Ok(())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -220,18 +128,6 @@ mod tests {
         assert_eq!(
             parse_snapshot_manifest_url("https://example.com/manifest.json"),
             None
-        );
-    }
-
-    #[test]
-    fn binds_non_loopback_consensus_on_unspecified_interface() {
-        assert_eq!(
-            consensus_listen_addr("10.0.1.10:7000".parse().unwrap(), 7000),
-            "0.0.0.0:7000".parse().unwrap(),
-        );
-        assert_eq!(
-            consensus_listen_addr("[fd00::1]:7000".parse().unwrap(), 7000),
-            "[::]:7000".parse().unwrap(),
         );
     }
 }

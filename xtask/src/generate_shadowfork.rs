@@ -25,9 +25,8 @@ use tempo_validator_config::ValidatorConfig;
 use crate::{
     genesis_args::GenesisArgs,
     shadowfork::{
-        SHADOW_CHAINSPEC_FILE, SHADOW_EPOCH, SHADOWFORK_SIGNING_KEY_SECRET, consensus_listen_addr,
-        mark_executable, parse_snapshot_manifest_url, render_script_footer, render_script_header,
-        shell_single_quote, should_allow_private_ips, source_chain_cli_arg,
+        SHADOW_CHAINSPEC_FILE, SHADOW_EPOCH, SHADOWFORK_SIGNING_KEY_SECRET,
+        parse_snapshot_manifest_url, source_chain_cli_arg,
         write_shadow_chainspec as write_shadow_chainspec_file,
     },
 };
@@ -64,9 +63,7 @@ pub(crate) struct GenerateShadowfork {
 
     /// Snapshot v2 manifest URL for the source block state.
     ///
-    /// RPC can provide block metadata, but it cannot reconstruct a complete state snapshot. The
-    /// generated artifacts include a prepare-state script that downloads the files referenced by
-    /// this manifest into each node datadir.
+    /// RPC can provide block metadata, but it cannot reconstruct a complete state snapshot.
     #[arg(long = "snapshot-url", alias = "snapshot-manifest-url")]
     snapshot_manifest_url: Option<String>,
 
@@ -143,8 +140,6 @@ impl GenerateShadowfork {
 
         let mut rng =
             rand_08::rngs::StdRng::seed_from_u64(seed.unwrap_or_else(rand_08::random::<u64>));
-        let mut trusted_peers = vec![];
-
         let mut node_outputs = vec![];
         for (idx, validator) in consensus_config.validators.iter().enumerate() {
             let (execution_p2p_signing_key, execution_p2p_identity) = {
@@ -179,11 +174,6 @@ impl GenerateShadowfork {
                     .encode(),
             );
 
-            trusted_peers.push(format!(
-                "enode://{execution_p2p_identity:x}@{}",
-                SocketAddr::new(validator.addr.ip(), execution_p2p_port),
-            ));
-
             node_outputs.push(NodeOutput {
                 index: idx,
                 validator_addr: validator.addr,
@@ -199,8 +189,6 @@ impl GenerateShadowfork {
                 execution_p2p_identity: format!("{execution_p2p_identity:x}"),
             });
         }
-        let allow_private_ips =
-            should_allow_private_ips(node_outputs.iter().map(|node| node.validator_addr.ip()));
 
         let genesis_dst = output.join("genesis.json");
         let genesis_ser = serde_json::to_string_pretty(&genesis)
@@ -235,16 +223,10 @@ impl GenerateShadowfork {
         } else {
             None
         };
-        let execution_chain = if snapshot_manifest_url.is_some() {
-            format!("\"${{SCRIPT_DIR}}/{SHADOW_CHAINSPEC_FILE}\"")
-        } else {
-            "\"${SCRIPT_DIR}/genesis.json\"".to_string()
-        };
         let mut shadow_dkg_outcome = consensus_config.to_genesis_dkg_outcome();
         shadow_dkg_outcome.epoch = Epoch::new(SHADOW_EPOCH);
         let shadow_dkg_outcome = const_hex::encode_prefixed(shadow_dkg_outcome.encode());
 
-        let mut commands = render_script_header();
         for (validator, node) in consensus_config.validators.iter().zip(node_outputs.iter()) {
             let target_dir = node.dir(&output);
             std::fs::create_dir(&target_dir).wrap_err_with(|| {
@@ -294,70 +276,7 @@ impl GenerateShadowfork {
                     )
                 },
             )?;
-
-            let script_datadir = format!("\"${{SCRIPT_DIR}}/node-{}\"", node.index);
-            let script_consensus_datadir =
-                format!("\"${{SCRIPT_DIR}}/node-{}/consensus\"", node.index);
-            let script_signing_key = format!("\"${{SCRIPT_DIR}}/node-{}/signing.key\"", node.index);
-            let script_signing_share =
-                format!("\"${{SCRIPT_DIR}}/node-{}/signing.share\"", node.index);
-            let script_enode_key = format!("\"${{SCRIPT_DIR}}/node-{}/enode.key\"", node.index);
-
-            let command = render_run_command(RunCommand {
-                chain: &execution_chain,
-                datadir: &script_datadir,
-                consensus_datadir: &script_consensus_datadir,
-                trusted_peers: &trusted_peers,
-                allow_private_ips,
-                signing_key: &script_signing_key,
-                signing_share: &script_signing_share,
-                execution_p2p_secret_key: &script_enode_key,
-                node,
-            });
-            commands.push_str(&format!("# node-{}\n{command}\n\n", node.index));
         }
-        commands.push_str(&render_script_footer());
-
-        let commands_dst = output.join("run.sh");
-        std::fs::write(&commands_dst, commands)
-            .wrap_err_with(|| format!("failed writing commands to `{}`", commands_dst.display()))?;
-        mark_executable(&commands_dst)?;
-
-        let prepare_state_script = if let Some(snapshot_manifest_url) = &snapshot_manifest_url {
-            let script_dst = output.join("prepare-state.sh");
-            let script = render_prepare_state_script(
-                snapshot_manifest_url,
-                source_execution_chain
-                    .as_deref()
-                    .expect("source execution chain must be set for snapshot-backed artifacts"),
-                &node_outputs,
-            );
-            std::fs::write(&script_dst, script).wrap_err_with(|| {
-                format!(
-                    "failed writing state preparation script to `{}`",
-                    script_dst.display()
-                )
-            })?;
-            mark_executable(&script_dst)?;
-            Some("prepare-state.sh".to_string())
-        } else {
-            None
-        };
-
-        let bootstrap_script = if snapshot_manifest_url.is_some() {
-            let script_dst = output.join("bootstrap-shadowfork.sh");
-            let script = render_bootstrap_script();
-            std::fs::write(&script_dst, script).wrap_err_with(|| {
-                format!(
-                    "failed writing shadow fork bootstrap script to `{}`",
-                    script_dst.display()
-                )
-            })?;
-            mark_executable(&script_dst)?;
-            Some("bootstrap-shadowfork.sh".to_string())
-        } else {
-            None
-        };
 
         let manifest = ShadowForkManifest {
             source_chain,
@@ -365,7 +284,6 @@ impl GenerateShadowfork {
             shadow_chain_id,
             source_rpc_url: rpc_url,
             source_execution_chain,
-            execution_chain,
             fork_block_number: source_block.number,
             fork_block_hash: source_block.hash,
             fork_parent_hash: source_block.parent_hash,
@@ -379,8 +297,6 @@ impl GenerateShadowfork {
                 .as_ref()
                 .map(|_| SHADOW_CHAINSPEC_FILE.to_string()),
             snapshot_manifest_url,
-            prepare_state_script,
-            bootstrap_script,
             created_at_unix_secs: SystemTime::now()
                 .duration_since(UNIX_EPOCH)
                 .wrap_err("system clock is before UNIX epoch")?
@@ -392,9 +308,7 @@ impl GenerateShadowfork {
                     .to_string(),
                 "Snapshot-backed runs use the source chainspec for execution because the downloaded database keeps the source genesis hash."
                     .to_string(),
-                "On each node host, run prepare-state.sh for that node index, then run bootstrap-shadowfork.sh --node-index <index>; bootstrap writes a shadow chainspec whose epochLength makes the fork block the epoch-0 boundary, patches ValidatorConfigV2 in the local execution DB, and seeds private DKG state for epoch 1."
-                    .to_string(),
-                "Generated run commands disable public bootnode discovery with --tempo.bootnodes-endpoint none."
+                "For snapshot-backed runs, download the snapshot into each node datadir before running bootstrap-shadowfork for that node; bootstrap writes a shadow chainspec whose epochLength makes the fork block the epoch-0 boundary, patches ValidatorConfigV2 in the local execution DB, and seeds private DKG state for epoch 1."
                     .to_string(),
             ],
         };
@@ -414,19 +328,6 @@ impl GenerateShadowfork {
             println!("wrote shadow chainspec to `{}`", path.display());
         }
         println!("wrote shadow fork manifest to `{}`", manifest_dst.display());
-        println!("wrote run commands to `{}`", commands_dst.display());
-        if let Some(script) = &manifest.prepare_state_script {
-            println!(
-                "wrote state preparation script to `{}`",
-                output.join(script).display()
-            );
-        }
-        if let Some(script) = &manifest.bootstrap_script {
-            println!(
-                "wrote shadow fork bootstrap script to `{}`",
-                output.join(script).display()
-            );
-        }
         if manifest.snapshot_manifest_url.is_none() {
             println!(
                 "warning: no --snapshot-url provided; RPC metadata alone is not enough to materialize full fork state"
@@ -602,7 +503,6 @@ struct ShadowForkManifest {
     shadow_chain_id: u64,
     source_rpc_url: String,
     source_execution_chain: Option<String>,
-    execution_chain: String,
     fork_block_number: u64,
     fork_block_hash: B256,
     fork_parent_hash: B256,
@@ -614,8 +514,6 @@ struct ShadowForkManifest {
     shadow_validator_config_v2_storage: BTreeMap<String, String>,
     shadow_chainspec: Option<String>,
     snapshot_manifest_url: Option<String>,
-    prepare_state_script: Option<String>,
-    bootstrap_script: Option<String>,
     created_at_unix_secs: u64,
     validator_count: usize,
     validators: Vec<NodeOutput>,
@@ -644,133 +542,6 @@ impl NodeOutput {
     }
 }
 
-struct RunCommand<'a> {
-    chain: &'a str,
-    datadir: &'a str,
-    consensus_datadir: &'a str,
-    trusted_peers: &'a [String],
-    allow_private_ips: bool,
-    signing_key: &'a str,
-    signing_share: &'a str,
-    execution_p2p_secret_key: &'a str,
-    node: &'a NodeOutput,
-}
-
-fn render_run_command(args: RunCommand<'_>) -> String {
-    let consensus_listen_addr =
-        consensus_listen_addr(args.node.validator_addr, args.node.consensus_p2p_port);
-    let allow_private_ips = if args.allow_private_ips {
-        "\\\n--consensus.allow-private-ips "
-    } else {
-        ""
-    };
-    format!(
-        "run_tempo node \
-        \\\n--consensus.signing-key {signing_key} \
-        \\\n--consensus.secret <(printf '%s\\n' '{signing_key_secret}') \
-        \\\n--consensus.signing-share {signing_share} \
-        \\\n--consensus.listen-address {consensus_listen_addr} \
-        {allow_private_ips}\
-        \\\n--consensus.metrics-address 127.0.0.1:{metrics_port} \
-        \\\n--consensus.datadir {consensus_datadir} \
-        \\\n--chain {chain} \
-        \\\n--datadir {datadir} \
-        \\\n--trusted-peers {trusted_peers} \
-        \\\n--port {execution_p2p_port} \
-        \\\n--discovery.port {execution_p2p_port} \
-        \\\n--p2p-secret-key {execution_p2p_secret_key} \
-        \\\n--authrpc.port {authrpc_port} \
-        \\\n--tempo.bootnodes-endpoint none &\nPIDS+=(\"$!\")",
-        signing_key = args.signing_key,
-        signing_key_secret = SHADOWFORK_SIGNING_KEY_SECRET,
-        signing_share = args.signing_share,
-        consensus_listen_addr = consensus_listen_addr,
-        allow_private_ips = allow_private_ips,
-        metrics_port = args.node.consensus_metrics_port,
-        consensus_datadir = args.consensus_datadir,
-        chain = args.chain,
-        datadir = args.datadir,
-        trusted_peers = args.trusted_peers.join(","),
-        execution_p2p_port = args.node.execution_p2p_port,
-        execution_p2p_secret_key = args.execution_p2p_secret_key,
-        authrpc_port = args.node.authrpc_port,
-    )
-}
-
-fn render_prepare_state_script(
-    snapshot_manifest_url: &str,
-    source_execution_chain: &str,
-    nodes: &[NodeOutput],
-) -> String {
-    let mut script = String::new();
-    script.push_str("#!/usr/bin/env bash\n");
-    script.push_str("set -euo pipefail\n\n");
-    script.push_str(&format!(
-        "SNAPSHOT_MANIFEST_URL={}\n",
-        shell_single_quote(snapshot_manifest_url)
-    ));
-    script.push_str(&format!(
-        "SOURCE_EXECUTION_CHAIN={}\n",
-        shell_single_quote(source_execution_chain)
-    ));
-    script.push_str("SCRIPT_DIR=\"$(cd \"$(dirname \"${BASH_SOURCE[0]}\")\" && pwd)\"\n");
-    script.push_str(
-        r#"if [[ -n "${TEMPO_BIN:-}" ]]; then
-  TEMPO_CMD=("$TEMPO_BIN")
-else
-  TEMPO_CMD=(cargo run --bin tempo --)
-fi
-
-"#,
-    );
-    script.push_str("NODES=(\n");
-    for node in nodes {
-        script.push_str(&format!(
-            "  {}\n",
-            shell_single_quote(&format!("node-{}", node.index))
-        ));
-    }
-    script.push_str(")\n\n");
-    script.push_str(
-        r#"if (($#)); then
-  NODES=()
-  for node in "$@"; do
-    if [[ "$node" == node-* ]]; then
-      NODES+=("$node")
-    else
-      NODES+=("node-$node")
-    fi
-  done
-fi
-
-"#,
-    );
-    script.push_str("CHAIN_ARGS=(--chain \"$SOURCE_EXECUTION_CHAIN\")\n\n");
-    script.push_str("for node in \"${NODES[@]}\"; do\n");
-    script.push_str("  mkdir -p \"$SCRIPT_DIR/$node\"\n");
-    script.push_str("  \"${TEMPO_CMD[@]}\" download \\\n");
-    script.push_str("    --datadir \"$SCRIPT_DIR/$node\" \\\n");
-    script.push_str("    \"${CHAIN_ARGS[@]}\" \\\n");
-    script.push_str("    --manifest-url \"$SNAPSHOT_MANIFEST_URL\" \\\n");
-    script.push_str("    --archive \\\n");
-    script.push_str("    --non-interactive \\\n");
-    script.push_str("    --force\n");
-    script.push_str("done\n\n");
-    script.push_str("echo \"snapshot v2 downloaded into ${#NODES[@]} node datadirs\"\n");
-    script
-}
-
-fn render_bootstrap_script() -> String {
-    r#"#!/usr/bin/env bash
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-cargo run -p tempo-xtask -- bootstrap-shadowfork --manifest "$SCRIPT_DIR/manifest.json" "$@"
-"#
-    .to_string()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -791,132 +562,5 @@ mod tests {
                 .is_ok()
         );
         assert!("finalized".parse::<BlockTarget>().is_err());
-    }
-
-    #[test]
-    fn run_command_disables_public_bootnodes() {
-        let node = NodeOutput {
-            index: 0,
-            validator_addr: "127.0.0.1:7000".parse().unwrap(),
-            validator_public_key: B256::ZERO,
-            validator_address: Address::ZERO,
-            fee_recipient: Address::ZERO,
-            validator_add_signature: "0x".into(),
-            consensus_p2p_port: 7000,
-            consensus_metrics_port: 7002,
-            execution_p2p_port: 7001,
-            authrpc_port: 7003,
-            execution_p2p_disc_key: "abc".into(),
-            execution_p2p_identity: "def".into(),
-        };
-        let command = render_run_command(RunCommand {
-            chain: "mainnet",
-            datadir: "node-0",
-            consensus_datadir: "node-0/consensus",
-            trusted_peers: &["enode://peer@127.0.0.1:7001".into()],
-            allow_private_ips: true,
-            signing_key: "node-0/signing.key",
-            signing_share: "node-0/signing.share",
-            execution_p2p_secret_key: "node-0/enode.key",
-            node: &node,
-        });
-
-        assert!(render_script_header().contains("TEMPO_CMD=(cargo run --bin tempo --)"));
-        assert!(command.starts_with("run_tempo node"));
-        assert!(command.contains("--chain mainnet"));
-        assert!(command.contains("--consensus.listen-address 127.0.0.1:7000"));
-        assert!(command.contains("--consensus.allow-private-ips"));
-        assert!(command.contains("--consensus.datadir node-0/consensus"));
-        assert!(command.contains("--tempo.bootnodes-endpoint none &"));
-        assert!(command.contains("PIDS+=(\"$!\")"));
-        assert!(render_script_header().contains("PIDS=()"));
-        assert!(render_script_header().contains("trap 'shutdown_nodes 130' INT"));
-        assert!(render_script_footer().contains("wait \"${PIDS[@]}\""));
-        assert!(!command.contains("$TEMPO_BIN node"));
-        assert!(!command.contains("--follow"));
-    }
-
-    #[test]
-    fn run_command_binds_non_loopback_validators_on_unspecified_interface() {
-        let node = NodeOutput {
-            index: 0,
-            validator_addr: "10.0.1.10:7000".parse().unwrap(),
-            validator_public_key: B256::ZERO,
-            validator_address: Address::ZERO,
-            fee_recipient: Address::ZERO,
-            validator_add_signature: "0x".into(),
-            consensus_p2p_port: 7000,
-            consensus_metrics_port: 7002,
-            execution_p2p_port: 7001,
-            authrpc_port: 7003,
-            execution_p2p_disc_key: "abc".into(),
-            execution_p2p_identity: "def".into(),
-        };
-        let command = render_run_command(RunCommand {
-            chain: "mainnet",
-            datadir: "node-0",
-            consensus_datadir: "node-0/consensus",
-            trusted_peers: &["enode://peer@10.0.1.10:7001".into()],
-            allow_private_ips: true,
-            signing_key: "node-0/signing.key",
-            signing_share: "node-0/signing.share",
-            execution_p2p_secret_key: "node-0/enode.key",
-            node: &node,
-        });
-
-        assert!(command.contains("--consensus.listen-address 0.0.0.0:7000"));
-        assert!(command.contains("--consensus.allow-private-ips"));
-    }
-
-    #[test]
-    fn prepare_state_script_uses_tempo_download_per_node() {
-        let nodes = vec![
-            NodeOutput {
-                index: 0,
-                validator_addr: "127.0.0.1:7000".parse().unwrap(),
-                validator_public_key: B256::ZERO,
-                validator_address: Address::ZERO,
-                fee_recipient: Address::ZERO,
-                validator_add_signature: "0x".into(),
-                consensus_p2p_port: 7000,
-                consensus_metrics_port: 7002,
-                execution_p2p_port: 7001,
-                authrpc_port: 7003,
-                execution_p2p_disc_key: "abc".into(),
-                execution_p2p_identity: "def".into(),
-            },
-            NodeOutput {
-                index: 1,
-                validator_addr: "127.0.0.1:7100".parse().unwrap(),
-                validator_public_key: B256::ZERO,
-                validator_address: Address::ZERO,
-                fee_recipient: Address::ZERO,
-                validator_add_signature: "0x".into(),
-                consensus_p2p_port: 7100,
-                consensus_metrics_port: 7102,
-                execution_p2p_port: 7101,
-                authrpc_port: 7103,
-                execution_p2p_disc_key: "abc".into(),
-                execution_p2p_identity: "def".into(),
-            },
-        ];
-        let script = render_prepare_state_script(
-            "https://example.com/a'b/manifest.json",
-            "moderato",
-            &nodes,
-        );
-
-        assert!(
-            script.contains("SNAPSHOT_MANIFEST_URL='https://example.com/a'\"'\"'b/manifest.json'")
-        );
-        assert!(script.contains("'node-0'"));
-        assert!(script.contains("'node-1'"));
-        assert!(script.contains("SOURCE_EXECUTION_CHAIN='moderato'"));
-        assert!(script.contains("CHAIN_ARGS=(--chain \"$SOURCE_EXECUTION_CHAIN\")"));
-        assert!(script.contains("TEMPO_CMD=(cargo run --bin tempo --)"));
-        assert!(script.contains("\"${TEMPO_CMD[@]}\" download"));
-        assert!(script.contains("--manifest-url \"$SNAPSHOT_MANIFEST_URL\""));
-        assert!(script.contains("--datadir \"$SCRIPT_DIR/$node\""));
-        assert!(script.contains("--archive"));
     }
 }

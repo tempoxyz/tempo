@@ -53,13 +53,11 @@ use tempo_precompiles::{
 use tempo_primitives::TempoPrimitives;
 
 use crate::shadowfork::{
-    SHADOW_CHAINSPEC_FILE, SHADOW_EPOCH, SHADOWFORK_SIGNING_KEY_SECRET, consensus_listen_addr,
-    mark_executable, parse_snapshot_manifest_url, render_script_footer, render_script_header,
-    shell_single_quote, should_allow_private_ips, source_chain_cli_arg,
+    SHADOW_CHAINSPEC_FILE, SHADOW_EPOCH, SHADOWFORK_SIGNING_KEY_SECRET,
+    parse_snapshot_manifest_url, source_chain_cli_arg,
     write_shadow_chainspec as write_shadow_chainspec_file,
 };
 
-const RUN_SCRIPT_FILE: &str = "run-shadowfork.sh";
 const DKG_STATES_METADATA_PARTITION: &str = "engine_dkg_manager_states_metadata";
 const MAXIMUM_VALIDATORS: NonZeroU32 = NZU32!(u16::MAX as u32);
 
@@ -234,33 +232,7 @@ impl BootstrapShadowfork {
             })?;
         }
 
-        let run_nodes = manifest.validators.iter().collect::<Vec<_>>();
-        let run_script_path = write_run_script(
-            &manifest,
-            manifest_dir,
-            None,
-            &run_nodes,
-            RUN_SCRIPT_FILE,
-            force,
-        )?;
-        let node_run_script_path = if let Some(index) = node_index {
-            Some(write_run_script(
-                &manifest,
-                manifest_dir,
-                node_dir.as_deref(),
-                &target_nodes,
-                &format!("run-shadowfork-node-{index}.sh"),
-                force,
-            )?)
-        } else {
-            None
-        };
-
         println!("wrote shadow chainspec to `{}`", chainspec_path.display());
-        println!("wrote run commands to `{}`", run_script_path.display());
-        if let Some(path) = node_run_script_path {
-            println!("wrote per-node run commands to `{}`", path.display());
-        }
         println!(
             "seeded DKG state for {} validators at epoch {SHADOW_EPOCH}",
             target_nodes.len()
@@ -838,7 +810,7 @@ fn patch_execution_validator_registry(
 ) -> eyre::Result<()> {
     ensure!(
         db_path.exists(),
-        "execution database `{}` does not exist; run prepare-state.sh before bootstrap-shadowfork",
+        "execution database `{}` does not exist; download the snapshot into this node datadir before running bootstrap-shadowfork",
         db_path.display(),
     );
 
@@ -973,7 +945,7 @@ where
     let static_files_path = execution_static_files_path(db_path)?;
     ensure!(
         static_files_path.exists(),
-        "execution static files directory `{}` does not exist; run prepare-state.sh before bootstrap-shadowfork",
+        "execution static files directory `{}` does not exist; download the snapshot into this node datadir before running bootstrap-shadowfork",
         static_files_path.display(),
     );
 
@@ -1224,109 +1196,6 @@ fn seed_consensus_state(
         .map_err(|_| eyre!("commonware bootstrap thread panicked"))?
 }
 
-fn write_run_script(
-    manifest: &ShadowForkManifest,
-    manifest_dir: &Path,
-    node_dir: Option<&Path>,
-    nodes: &[&NodeManifest],
-    file_name: &str,
-    force: bool,
-) -> eyre::Result<PathBuf> {
-    let run_script_path = manifest_dir.join(file_name);
-    ensure!(
-        force || !run_script_path.exists(),
-        "run script `{}` already exists; rerun with --force to overwrite",
-        run_script_path.display(),
-    );
-
-    let trusted_peers = manifest
-        .validators
-        .iter()
-        .map(|validator| {
-            format!(
-                "enode://{}@{}",
-                validator.execution_p2p_identity,
-                SocketAddr::new(validator.validator_addr.ip(), validator.execution_p2p_port),
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(",");
-    let allow_private_ips = should_allow_private_ips(
-        manifest
-            .validators
-            .iter()
-            .map(|node| node.validator_addr.ip()),
-    );
-
-    let mut script = render_script_header();
-
-    for validator in nodes {
-        let node = node_script_dir(manifest_dir, validator, node_dir);
-        let signing_key = format!("{node}/signing.key");
-        let signing_share = format!("{node}/signing.share");
-        let consensus_datadir = format!("{node}/consensus");
-        let enode_key = format!("{node}/enode.key");
-        let consensus_listen_addr =
-            consensus_listen_addr(validator.validator_addr, validator.consensus_p2p_port);
-        let allow_private_ips = if allow_private_ips {
-            "\\\n--consensus.allow-private-ips "
-        } else {
-            ""
-        };
-        script.push_str(&format!(
-            "# node-{index}\nrun_tempo node \\\n\
---consensus.signing-key {signing_key} \\\n\
---consensus.secret <(printf '%s\\n' '{secret}') \\\n\
---consensus.signing-share {signing_share} \\\n\
---consensus.listen-address {consensus_listen_addr} {allow_private_ips}\\\n\
---consensus.metrics-address 127.0.0.1:{consensus_metrics_port} \\\n\
---consensus.datadir {consensus_datadir} \\\n\
---chain \"$SCRIPT_DIR/{shadow_chainspec}\" \\\n\
---datadir {node} \\\n\
---trusted-peers {trusted_peers} \\\n\
---port {execution_p2p_port} \\\n\
---discovery.port {execution_p2p_port} \\\n\
---p2p-secret-key {enode_key} \\\n\
---authrpc.port {authrpc_port} \\\n\
---tempo.bootnodes-endpoint none &\n\
-PIDS+=(\"$!\")\n\n",
-            index = validator.index,
-            node = node,
-            signing_key = signing_key,
-            signing_share = signing_share,
-            consensus_datadir = consensus_datadir,
-            enode_key = enode_key,
-            secret = SHADOWFORK_SIGNING_KEY_SECRET,
-            consensus_listen_addr = consensus_listen_addr,
-            allow_private_ips = allow_private_ips,
-            consensus_metrics_port = validator.consensus_metrics_port,
-            shadow_chainspec = SHADOW_CHAINSPEC_FILE,
-            trusted_peers = trusted_peers,
-            execution_p2p_port = validator.execution_p2p_port,
-            authrpc_port = validator.authrpc_port,
-        ));
-    }
-    script.push_str(&render_script_footer());
-
-    std::fs::write(&run_script_path, script).wrap_err_with(|| {
-        format!(
-            "failed writing run script to `{}`",
-            run_script_path.display()
-        )
-    })?;
-    mark_executable(&run_script_path)?;
-    Ok(run_script_path)
-}
-
-fn node_script_dir(manifest_dir: &Path, node: &NodeManifest, node_dir: Option<&Path>) -> String {
-    if node_dir.is_none() {
-        return format!("\"${{SCRIPT_DIR}}/node-{}\"", node.index);
-    }
-
-    let path = node_artifact_dir(manifest_dir, node, node_dir);
-    shell_single_quote(&path.display().to_string())
-}
-
 #[derive(Debug, Deserialize)]
 struct ShadowForkManifest {
     source_chain: String,
@@ -1349,11 +1218,6 @@ struct NodeManifest {
     validator_address: Address,
     fee_recipient: Address,
     validator_add_signature: String,
-    consensus_p2p_port: u16,
-    consensus_metrics_port: u16,
-    execution_p2p_port: u16,
-    authrpc_port: u16,
-    execution_p2p_identity: String,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
