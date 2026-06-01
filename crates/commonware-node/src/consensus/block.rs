@@ -60,7 +60,7 @@ impl BlockAccessListError {
 // XXX: This is a refinement type around a reth [`SealedBlock`]
 // to hold the trait implementations required by commonwarexyz. Uses
 // Sealed because of the frequent accesses to the hash.
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub(crate) struct Block {
     /// The execution-layer block.
     execution_block: SealedBlock<tempo_primitives::Block>,
@@ -175,22 +175,6 @@ impl Block {
         #[cfg(not(feature = "bal"))]
         {
             None
-        }
-    }
-}
-
-impl Clone for Block {
-    fn clone(&self) -> Self {
-        let execution_block_encoded_size = OnceLock::new();
-        if let Some(size) = self.execution_block_encoded_size.get() {
-            let _ = execution_block_encoded_size.set(*size);
-        }
-
-        Self {
-            execution_block: self.execution_block.clone(),
-            execution_block_encoded_size,
-            #[cfg(feature = "bal")]
-            block_access_list: self.block_access_list.clone(),
         }
     }
 }
