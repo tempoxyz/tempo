@@ -161,7 +161,7 @@ impl BestTransactionsPrewarming {
             }
         });
 
-        pool.clear();
+        pool.clear_type::<PrewarmEvmState>();
     }
 
     fn prewarm_transaction<Provider>(
