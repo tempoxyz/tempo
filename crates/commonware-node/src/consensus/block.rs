@@ -102,7 +102,7 @@ impl Block {
             execution_block: Arc::new(execution_block),
             #[cfg(feature = "bal")]
             block_access_list,
-        }))
+        }
     }
 
     /// Consumes the block and returns only the execution-layer block.
@@ -112,12 +112,11 @@ impl Block {
 
     /// Consumes the block and returns the execution-layer block plus optional BAL.
     pub(crate) fn into_parts(self) -> (SealedBlock<tempo_primitives::Block>, Option<Bytes>) {
-        let inner = Arc::unwrap_or_clone(self.0);
         (
             Arc::unwrap_or_clone(self.execution_block),
             #[cfg(feature = "bal")]
             {
-                inner.block_access_list
+                self.block_access_list
             },
             #[cfg(not(feature = "bal"))]
             {
@@ -128,7 +127,7 @@ impl Block {
 
     /// Returns the (eth) hash of the wrapped block.
     pub(crate) fn block_hash(&self) -> B256 {
-        self.0.execution_block.hash()
+        self.execution_block.hash()
     }
 
     /// Returns the hash of the wrapped block as a commonware [`Digest`].
@@ -138,24 +137,24 @@ impl Block {
 
     /// Returns the parent hash of the wrapped block as a commonware [`Digest`].
     pub(crate) fn parent_digest(&self) -> Digest {
-        Digest(self.0.execution_block.parent_hash())
+        Digest(self.execution_block.parent_hash())
     }
 
     /// Returns the timestamp of the wrapped block.
     pub(crate) fn timestamp(&self) -> u64 {
-        self.0.execution_block.timestamp()
+        self.execution_block.timestamp()
     }
 
     /// Returns the wrapped block.
     pub(crate) fn block(&self) -> &SealedBlock<tempo_primitives::Block> {
-        &self.0.execution_block
+        &self.execution_block
     }
 
     /// Returns the block access list of the wrapped block.
     pub(crate) fn block_access_list(&self) -> Option<&Bytes> {
         #[cfg(feature = "bal")]
         {
-            self.0.block_access_list.as_ref()
+            self.block_access_list.as_ref()
         }
         #[cfg(not(feature = "bal"))]
         {
@@ -174,14 +173,13 @@ impl std::ops::Deref for Block {
 
 impl Write for Block {
     fn write(&self, buf: &mut impl BufMut) {
-        self.0.execution_block.encode(buf);
+        self.execution_block.encode(buf);
         #[cfg(feature = "bal")]
-        if self.0.execution_block.block_access_list_hash().is_some() {
+        if self.execution_block.block_access_list_hash().is_some() {
             // FIXME: Blocks reconstructed from persisted EL data can carry a BAL hash
             // without the commonware BAL sidecar. Encoding one will panic here, which
             // can crash follower nodes and validators that request blocks over p2p.
             let block_access_list = self
-                .0
                 .block_access_list
                 .as_ref()
                 .expect("BAL bytes must be present when header contains a BAL hash");
@@ -244,10 +242,9 @@ impl EncodeSize for Block {
     fn encode_size(&self) -> usize {
         #[cfg(feature = "bal")]
         {
-            let mut size = self.0.execution_block.length();
-            size += if self.0.execution_block.block_access_list_hash().is_some() {
-                self.0
-                    .block_access_list
+            let mut size = self.execution_block.length();
+            size += if self.execution_block.block_access_list_hash().is_some() {
+                self.block_access_list
                     .as_ref()
                     .expect("BAL bytes must be present when header contains a BAL hash")
                     .encode_size()
@@ -258,7 +255,7 @@ impl EncodeSize for Block {
         }
         #[cfg(not(feature = "bal"))]
         {
-            self.0.execution_block.length()
+            self.execution_block.length()
         }
     }
 }
@@ -281,7 +278,7 @@ impl Digestible for Block {
 
 impl Heightable for Block {
     fn height(&self) -> Height {
-        Height::new(self.0.execution_block.number())
+        Height::new(self.execution_block.number())
     }
 }
 
