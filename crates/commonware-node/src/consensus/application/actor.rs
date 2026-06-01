@@ -1109,11 +1109,14 @@ impl Inner<Init> {
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let parent_hash = block.block_hash();
 
-        let trie_handle = Some(tempo_node::speculative_bal_state_root_handle(
-            &self.execution_node,
-            block.block(),
-            &block_access_list,
-        )?);
+        let trie_handle = Some(
+            tempo_node::speculative_bal_state_root_handle(
+                &self.execution_node,
+                block.block(),
+                &block_access_list,
+            )
+            .await?,
+        );
         debug!(
             parent.digest = %block.digest(),
             parent.height = %block.height(),
