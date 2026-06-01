@@ -13284,6 +13284,7 @@ name = "tempo-payload-builder"
 version = "1.8.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-eip7928 0.4.1",
  "alloy-eips",
  "alloy-evm",
  "alloy-primitives",
@@ -13292,6 +13293,7 @@ dependencies = [
  "alloy-signer-local",
  "alloy-sol-types",
  "codspeed-criterion-compat",
+ "crossbeam-channel",
  "metrics",
  "rayon",
  "reth-basic-payload-builder",

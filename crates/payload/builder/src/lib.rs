@@ -33,9 +33,11 @@ use crate::{
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
 };
-use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy};
+use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
+use alloy_eip7928::compute_block_access_list_hash;
+use alloy_eips::eip2718::Encodable2718;
 use alloy_primitives::{
-    Address, U256,
+    Address, B256, Bloom, Bytes, U256,
     map::{AddressMap, HashSet},
 };
 use alloy_rlp::{Decodable, Encodable};
@@ -56,19 +58,24 @@ use reth_evm::{
     block::{
         BlockExecutionError, BlockExecutor, BlockExecutorFactory, BlockValidationError, TxResult,
     },
-    execute::{BlockBuilder, BlockBuilderOutcome, WithTxEnv},
+    execute::{BlockAssemblerInput, WithTxEnv},
 };
 use reth_execution_types::BlockExecutionOutput;
 use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
-use reth_primitives_traits::{Recovered, transaction::error::InvalidTransactionError};
+use reth_primitives_traits::{
+    Recovered, RecoveredBlock, transaction::error::InvalidTransactionError,
+};
 use reth_revm::{
     State,
     context::Block,
     database::StateProviderDatabase,
+    db::states::bundle_state::BundleRetention,
     state::{Account, EvmState, EvmStorageSlot, TransactionId},
 };
-use reth_storage_api::{StateProviderBox, StateProviderFactory};
+use reth_storage_api::{
+    HashedPostStateProvider, StateProviderBox, StateProviderFactory, StateRootProvider,
+};
 use reth_tasks::TaskExecutor;
 use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
@@ -91,7 +98,7 @@ use tempo_evm::{
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
-    RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoPrimitives, TempoTxEnvelope,
+    RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
     subblock::PartialValidatorKey,
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
@@ -1126,13 +1133,8 @@ where
             .context_for_next_block(&parent_header, next_block_attrs)
             .map_err(PayloadBuilderError::other)?;
         let evm = self.evm_config.evm_with_env(&mut db, evm_env);
-        let mut builder = reth_evm::execute::BasicBlockBuilder {
-            executor: ConfigureEvm::create_executor(&self.evm_config, evm, execution_ctx.clone()),
-            ctx: execution_ctx,
-            assembler: self.evm_config.block_assembler(),
-            parent: &parent_header,
-            transactions: Vec::<Recovered<TempoTxEnvelope>>::new(),
-        };
+        let mut executor =
+            ConfigureEvm::create_executor(&self.evm_config, evm, execution_ctx.clone());
 
         check_cancel!();
 
@@ -1290,7 +1292,7 @@ where
 
                         let max_regular_gas_used = core::cmp::min(
                             pool_tx.gas_limit(),
-                            builder.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+                            executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
                         );
                         let is_payment = if hardfork.is_t5() {
                             pool_tx.transaction.is_payment()
@@ -1417,13 +1419,12 @@ where
 
                 let batch_setup_started = Instant::now();
                 let prefix_cache_clone_started = Instant::now();
-                let prefix_cache =
-                    Arc::new(builder.executor_mut().evm_mut().db_mut().cache.clone());
+                let prefix_cache = Arc::new(executor.evm_mut().db_mut().cache.clone());
                 blockstm_prefix_cache_clone_elapsed += prefix_cache_clone_started.elapsed();
                 let parent_read_cache = Arc::new(BlockStmParentReadCache::default());
-                let evm_env = builder.evm().evm_env();
-                let execution_ctx = builder.ctx.clone();
-                let beneficiary = builder.evm().block().beneficiary;
+                let evm_env = executor.evm().evm_env();
+                let execution_ctx = execution_ctx.clone();
+                let beneficiary = executor.evm().block().beneficiary;
                 let batch_first_tx_index = batch[0].tx_index;
                 let worker_count = self.blockstm_config.workers.max(1);
                 let tip20_actions = self.blockstm_config.tip20_actions;
@@ -1911,7 +1912,7 @@ where
                 let fast_semantic_started = Instant::now();
                 let mut fast_attempt_indices = Vec::with_capacity(batch.len());
                 let fast_semantic_reduction = {
-                    let block_timestamp = builder.evm().block().timestamp.to::<u64>();
+                    let block_timestamp = executor.evm().block().timestamp.to::<u64>();
                     let mut fast_gas_used = cumulative_gas_used;
                     let mut fast_non_payment_gas_used = non_payment_gas_used;
                     let mut fast_block_size_used = block_size_used;
@@ -1997,7 +1998,7 @@ where
                                     .cloned()
                                     .collect::<Vec<_>>();
                                 let reduction = match reduce_tip20_semantic_records(
-                                    builder.executor_mut().evm_mut().db_mut(),
+                                    executor.evm_mut().db_mut(),
                                     &active_records,
                                     block_timestamp,
                                     worker_count,
@@ -2049,8 +2050,7 @@ where
                 if let Some((semantic_reduction, semantic_invalid_tx_indexes)) =
                     fast_semantic_reduction
                 {
-                    builder.executor_mut().reserve_receipts(batch.len());
-                    builder.transactions.reserve(batch.len());
+                    executor.reserve_receipts(batch.len());
 
                     let fast_commit_started = Instant::now();
                     for (batch_index, candidate) in batch.iter().enumerate() {
@@ -2131,13 +2131,12 @@ where
                         }
                         total_fees += validator_fee;
 
-                        builder
-                            .executor_mut()
-                            .commit_prepared_stripped_transaction(commit);
-                        builder
-                            .transactions
-                            .push(candidate.pool_tx.transaction.inner().clone());
-                        builder.executor_mut().evm_mut().db_mut().bump_bal_index();
+                        executor.commit_prepared_stripped_transaction(commit);
+                        executor.evm_mut().db_mut().bump_bal_index();
+                        let _ = roots_tx.send((
+                            BuilderTx::Pooled(candidate.pool_tx.clone()),
+                            executor.receipts().last().unwrap().clone(),
+                        ));
 
                         pool_transactions_included += 1;
                         block_size_used += candidate.tx_rlp_length;
@@ -2146,7 +2145,7 @@ where
 
                     let semantic_materialize_started = Instant::now();
                     let semantic_changes = materialize_blockstm_semantic_reduction(
-                        builder.executor_mut().evm_mut().db_mut(),
+                        executor.evm_mut().db_mut(),
                         &semantic_reduction,
                         worker_count,
                     )
@@ -2156,9 +2155,7 @@ where
                     best_txs.on_state_changes(&semantic_changes);
                     if !semantic_changes.is_empty() {
                         let semantic_commit_started = Instant::now();
-                        builder
-                            .executor_mut()
-                            .commit_semantic_state_changes(semantic_changes);
+                        executor.commit_semantic_state_changes(semantic_changes);
                         blockstm_semantic_commit_elapsed += semantic_commit_started.elapsed();
                     }
 
@@ -2285,44 +2282,45 @@ where
                                 return Err(PayloadBuilderError::evm(err));
                             }
                         }
-                        None => match builder
-                            .executor_mut()
-                            .execute_transaction_without_commit(candidate.tx_with_env.clone())
-                        {
-                            Ok(result) => result,
-                            Err(err) => {
-                                if let BlockExecutionError::Validation(
-                                    BlockValidationError::InvalidTx { error, .. },
-                                ) = &err
-                                {
-                                    invalid_pool_transaction_execution_attempts += 1;
+                        None => {
+                            match executor
+                                .execute_transaction_without_commit(candidate.tx_with_env.clone())
+                            {
+                                Ok(result) => result,
+                                Err(err) => {
+                                    if let BlockExecutionError::Validation(
+                                        BlockValidationError::InvalidTx { error, .. },
+                                    ) = &err
+                                    {
+                                        invalid_pool_transaction_execution_attempts += 1;
 
-                                    if error.is_nonce_too_low() {
-                                        trace!(%error, tx = %candidate.tx_debug_repr, "skipping nonce too low transaction");
-                                        self.metrics.inc_pool_tx_skipped("nonce_too_low");
-                                    } else {
-                                        trace!(%error, tx = %candidate.tx_debug_repr, "skipping invalid transaction and its descendants");
-                                        best_txs.mark_invalid(
-                                            &candidate.pool_tx,
-                                            InvalidPoolTransactionError::Consensus(
-                                                InvalidTransactionError::TxTypeNotSupported,
-                                            ),
-                                        );
-                                        self.metrics.inc_pool_tx_skipped("invalid_tx");
-                                        invalidated.push(candidate.pool_tx.clone());
-                                        pending_candidates.retain(|pending| {
-                                            !is_blockstm_invalidated_buffered_transaction(
+                                        if error.is_nonce_too_low() {
+                                            trace!(%error, tx = %candidate.tx_debug_repr, "skipping nonce too low transaction");
+                                            self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                                        } else {
+                                            trace!(%error, tx = %candidate.tx_debug_repr, "skipping invalid transaction and its descendants");
+                                            best_txs.mark_invalid(
                                                 &candidate.pool_tx,
-                                                &pending.pool_tx,
-                                            )
-                                        });
+                                                InvalidPoolTransactionError::Consensus(
+                                                    InvalidTransactionError::TxTypeNotSupported,
+                                                ),
+                                            );
+                                            self.metrics.inc_pool_tx_skipped("invalid_tx");
+                                            invalidated.push(candidate.pool_tx.clone());
+                                            pending_candidates.retain(|pending| {
+                                                !is_blockstm_invalidated_buffered_transaction(
+                                                    &candidate.pool_tx,
+                                                    &pending.pool_tx,
+                                                )
+                                            });
+                                        }
+                                        continue;
+                                    } else {
+                                        return Err(PayloadBuilderError::evm(err));
                                     }
-                                    continue;
-                                } else {
-                                    return Err(PayloadBuilderError::evm(err));
                                 }
                             }
-                        },
+                        }
                     };
                     if direct_attempt {
                         let write_set = write_set_from_evm_state(&result.result().state);
@@ -2337,9 +2335,9 @@ where
                     }
 
                     if let Some(semantic_plan) = semantic_plan {
-                        let block_timestamp = builder.evm().block().timestamp.to::<u64>();
+                        let block_timestamp = executor.evm().block().timestamp.to::<u64>();
                         match semantic_state.apply_plan(
-                            builder.executor_mut().evm_mut().db_mut(),
+                            executor.evm_mut().db_mut(),
                             &semantic_plan,
                             &mut result,
                             block_timestamp,
@@ -2383,16 +2381,14 @@ where
                     total_fees += result.validator_fee();
                     best_txs.on_new_result(&result);
 
-                    hydrate_blockstm_commit_cache(
-                        builder.executor_mut().evm_mut().db_mut(),
-                        &result,
-                    )
-                    .map_err(|err| PayloadBuilderError::evm(BlockExecutionError::other(err)))?;
-                    builder.executor_mut().commit_transaction(result);
-                    builder
-                        .transactions
-                        .push(candidate.pool_tx.transaction.inner().clone());
-                    builder.executor_mut().evm_mut().db_mut().bump_bal_index();
+                    hydrate_blockstm_commit_cache(executor.evm_mut().db_mut(), &result)
+                        .map_err(|err| PayloadBuilderError::evm(BlockExecutionError::other(err)))?;
+                    executor.commit_transaction(result);
+                    executor.evm_mut().db_mut().bump_bal_index();
+                    let _ = roots_tx.send((
+                        BuilderTx::Pooled(candidate.pool_tx.clone()),
+                        executor.receipts().last().unwrap().clone(),
+                    ));
 
                     pool_transactions_included += 1;
                     block_size_used += candidate.tx_rlp_length;
@@ -2450,7 +2446,7 @@ where
 
                 let max_regular_gas_used = core::cmp::min(
                     pool_tx.gas_limit(),
-                    builder.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+                    executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
                 );
 
                 // Ensure we still have capacity for this transaction within the non-shared gas limit.
@@ -2518,7 +2514,7 @@ where
 
                 let tx_with_env = pool_tx.transaction.clone_into_with_tx_env();
                 let execution_result =
-                    builder.execute_transaction_with_result_closure(tx_with_env, |result| {
+                    executor.execute_transaction_with_result_closure(tx_with_env, |result| {
                         cumulative_gas_used += result.block_gas_used();
                         cumulative_state_gas_used += result.state_gas_used();
                         if !is_payment {
@@ -2563,6 +2559,11 @@ where
                     }
                 };
                 trace!("Transaction executed");
+                executor.evm_mut().db_mut().bump_bal_index();
+                let _ = roots_tx.send((
+                    BuilderTx::Pooled(pool_tx.clone()),
+                    executor.receipts().last().unwrap().clone(),
+                ));
 
                 pool_transactions_included += 1;
                 block_size_used += tx_rlp_length;
@@ -2792,26 +2793,43 @@ where
             }
             .unzip();
 
-        let builder_finish_start = Instant::now();
-        let builder_outcome: BlockBuilderOutcome<TempoPrimitives> =
-            if let Some(outcome) = state_root_outcome {
-                builder.finish(
-                    finish_provider(),
-                    Some((
-                        outcome.state_root,
-                        Arc::unwrap_or_clone(outcome.trie_updates),
-                    )),
-                )
-            } else {
-                builder.finish(finish_provider(), None)
-            }?;
-        let BlockBuilderOutcome {
-            execution_result,
-            block,
-            hashed_state,
-            trie_updates,
-            ..
-        } = builder_outcome;
+        let block_access_list = db.take_built_alloy_bal();
+        let block_access_list_hash = block_access_list
+            .as_ref()
+            .map(|bal| compute_block_access_list_hash(bal.as_slice()));
+
+        let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
+            (outcome.state_root, outcome.trie_updates)
+        } else {
+            let (state_root, trie_updates) = finish_provider
+                .state_root_with_updates(hashed_state.clone())
+                .map_err(BlockExecutionError::other)?;
+
+            (state_root, Arc::new(trie_updates))
+        };
+
+        let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
+            .blocking_recv()
+            .map_err(PayloadBuilderError::other)?;
+
+        let block = self.evm_config.block_assembler.assemble_block(
+            BlockAssemblerInput::new(
+                evm_env,
+                execution_ctx,
+                &parent_header,
+                transactions,
+                &execution_result,
+                &db.bundle_state,
+                &finish_provider,
+                state_root,
+                block_access_list_hash,
+            ),
+            Some(transactions_root),
+            Some(receipts_root),
+            Some(receipts_bloom),
+        )?;
+
+        let block = RecoveredBlock::new_unhashed(block, senders);
         let builder_finish_elapsed = builder_finish_start.elapsed();
         self.metrics
             .builder_finish_duration_seconds
