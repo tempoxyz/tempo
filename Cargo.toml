@@ -155,6 +155,7 @@ reth-discv5 = { git = "https://github.com/paradigmxyz/reth", branch = "dan/bal-o
 reth-db-api = { git = "https://github.com/paradigmxyz/reth", branch = "dan/bal-overlay-concurrent-build" }
 reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", branch = "dan/bal-overlay-concurrent-build" }
 reth-engine-local = { git = "https://github.com/paradigmxyz/reth", branch = "dan/bal-overlay-concurrent-build" }
+reth-engine-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "dan/bal-overlay-concurrent-build" }
 reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", branch = "dan/bal-overlay-concurrent-build" }
 reth-errors = { git = "https://github.com/paradigmxyz/reth", branch = "dan/bal-overlay-concurrent-build" }
 reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", branch = "dan/bal-overlay-concurrent-build" }

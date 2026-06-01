@@ -24,14 +24,18 @@ use futures::{
     stream::FuturesOrdered,
 };
 use prometheus_client::metrics::counter::Counter;
-use reth_chain_state::BalStateOverlay;
-use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
-use reth_payload_builder::{
-    BuildNewPayload, PayloadBuilderError, PayloadStateAnchor, PayloadValidityToken,
-    SpeculativePayloadState, SpeculativeStateProvider,
+use reth_chain_state::{BalStateOverlay, ComputedTrieData};
+use reth_engine_primitives::NoopInvalidBlockHook;
+use reth_engine_tree::tree::{
+    BasicEngineValidator, SpeculativeBalPayloadBuildRequest, SpeculativePayloadBuildResources,
 };
-use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use tempo_node::{TempoExecutionData, TempoFullNode};
+use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
+use reth_payload_builder::{BuildNewPayload, PayloadBuilderError, PayloadValidityToken};
+use reth_storage_api::{StateProviderFactory, StateRootProvider};
+use reth_trie_db::ChangesetCache;
+use tempo_node::{
+    TempoExecutionData, TempoFullNode, consensus::TempoConsensus, engine::TempoEngineValidator,
+};
 use tempo_payload_types::TempoPayloadAttributes;
 use tokio::select;
 use tracing::{
@@ -484,11 +488,12 @@ where
         tokio::sync::oneshot::Receiver<std::result::Result<PayloadId, PayloadBuilderError>>,
     > {
         let parent_hash = parent.block_hash();
-        let state_anchor = speculative_state_anchor_for_parent(
+        let resources = speculative_build_resources_for_parent(
             &parent,
-            self.execution_node.provider.clone(),
-            validity_token,
+            &self.execution_node,
+            validity_token.clone(),
         )?;
+        let (state_anchor, cache, trie_handle) = resources.into_payload_builder_parts();
 
         Ok(self
             .execution_node
@@ -497,8 +502,8 @@ where
                 BuildNewPayload {
                     attributes,
                     parent_hash,
-                    cache: None,
-                    trie_handle: None,
+                    cache,
+                    trie_handle,
                 },
                 state_anchor,
             ))
@@ -676,14 +681,32 @@ where
     }
 }
 
+#[cfg(test)]
 fn speculative_state_anchor_for_parent<Provider>(
     parent: &Block,
     provider: Provider,
     validity_token: PayloadValidityToken,
-) -> eyre::Result<PayloadStateAnchor>
+) -> eyre::Result<reth_payload_builder::PayloadStateAnchor>
 where
     Provider: StateProviderFactory + Clone + Send + Sync + 'static,
 {
+    let overlay = parent_bal_overlay(parent)?;
+    let base_parent_hash = parent.parent_hash();
+    let state_provider = reth_payload_builder::SpeculativeStateProvider::new(
+        "tempo-parent-bal-overlay",
+        move || {
+            let fallback = provider.state_by_block_hash(base_parent_hash)?;
+            Ok(Box::new(overlay.clone().provider(fallback)) as reth_storage_api::StateProviderBox)
+        },
+    );
+
+    Ok(reth_payload_builder::PayloadStateAnchor::Speculative(
+        reth_payload_builder::SpeculativePayloadState::new(validity_token)
+            .with_state_provider(state_provider),
+    ))
+}
+
+fn parent_bal_overlay(parent: &Block) -> eyre::Result<BalStateOverlay> {
     let block_access_list = parent
         .block_access_list()
         .cloned()
@@ -697,17 +720,67 @@ where
             .wrap_err("parent BAL sidecar hash does not match header")?;
     }
 
-    let overlay = BalStateOverlay::from_bal(decoded.as_bal())
-        .wrap_err("failed constructing parent BAL final-write overlay")?;
-    let base_parent_hash = parent.parent_hash();
-    let state_provider = SpeculativeStateProvider::new("tempo-parent-bal-overlay", move || {
-        let fallback = provider.state_by_block_hash(base_parent_hash)?;
-        Ok(Box::new(overlay.clone().provider(fallback)) as StateProviderBox)
-    });
+    BalStateOverlay::from_bal(decoded.as_bal())
+        .wrap_err("failed constructing parent BAL final-write overlay")
+}
 
-    Ok(PayloadStateAnchor::Speculative(
-        SpeculativePayloadState::new(validity_token).with_state_provider(state_provider),
-    ))
+fn speculative_build_resources_for_parent(
+    parent: &Block,
+    execution_node: &TempoFullNode,
+    validity_token: PayloadValidityToken,
+) -> eyre::Result<SpeculativePayloadBuildResources> {
+    let parent_hash = parent.block_hash();
+    let parent_state_anchor = parent.parent_hash();
+    let parent_state_root = parent.block().header().state_root();
+    let bal_overlay = parent_bal_overlay(parent)?;
+
+    let fallback = execution_node
+        .provider
+        .state_by_block_hash(parent_state_anchor)
+        .wrap_err("failed opening parent state anchor for BAL overlay")?;
+    let hashed_overlay = bal_overlay
+        .clone()
+        .provider(fallback)
+        .hashed_overlay_state()
+        .wrap_err("failed hashing parent BAL overlay")?;
+
+    let fallback = execution_node
+        .provider
+        .state_by_block_hash(parent_state_anchor)
+        .wrap_err("failed reopening parent state anchor for BAL trie updates")?;
+    let (validated_parent_state_root, parent_trie_updates) = fallback
+        .state_root_with_updates(hashed_overlay.clone())
+        .wrap_err("failed computing parent BAL overlay trie updates")?;
+
+    let parent_trie_data = ComputedTrieData::new(
+        Arc::new(hashed_overlay.into_sorted()),
+        Arc::new(parent_trie_updates.into_sorted()),
+    );
+
+    let validator = BasicEngineValidator::new(
+        execution_node.provider.clone(),
+        Arc::new(TempoConsensus::new(execution_node.chain_spec())),
+        execution_node.evm_config.clone(),
+        TempoEngineValidator::new(),
+        execution_node.config.engine.tree_config(),
+        Box::<NoopInvalidBlockHook>::default(),
+        ChangesetCache::default(),
+        execution_node.task_executor.clone(),
+    );
+
+    let resources = validator
+        .speculative_bal_payload_build_resources(SpeculativeBalPayloadBuildRequest {
+            parent_hash,
+            parent_state_root,
+            validated_parent_state_root,
+            parent_state_anchor,
+            bal_overlay,
+            parent_trie_data,
+            validity_dependency: Some(validity_token),
+        })
+        .wrap_err("failed creating speculative BAL payload build resources")?;
+
+    Ok(resources)
 }
 
 /// Controls canonicalization: if attributes are sent, the FCU also builds a payload.

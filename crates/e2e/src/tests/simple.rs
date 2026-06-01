@@ -2,7 +2,7 @@
 use std::{
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::Duration,
 };
@@ -10,6 +10,10 @@ use std::{
 use crate::{Setup, run};
 use commonware_macros::test_traced;
 use commonware_p2p::simulated::Link;
+use reth_node_metrics::recorder::{PrometheusRecorder, install_prometheus_recorder};
+
+const SPARSE_TRIE_STATE_ROOT_WAIT_COUNT_METRIC: &str =
+    "reth_tempo_payload_builder_sparse_trie_state_root_wait_duration_seconds_count";
 
 #[test_traced]
 fn single_node() {
@@ -29,11 +33,14 @@ fn single_node() {
 #[test_traced]
 fn speculative_bal_build_uses_parent_bal_sidecar() {
     let _ = tempo_eyre::install();
+    let metrics_recorder = install_prometheus_recorder();
+    let initial_sparse_trie_state_root_wait_count =
+        prometheus_histogram_count(metrics_recorder, SPARSE_TRIE_STATE_ROOT_WAIT_COUNT_METRIC);
 
     let saw_use = Arc::new(AtomicBool::new(false));
     let stop_saw_use = saw_use.clone();
-    let saw_fallback = Arc::new(AtomicBool::new(false));
-    let stop_saw_fallback = saw_fallback.clone();
+    let fallback_count = Arc::new(AtomicU64::new(0));
+    let stop_fallback_count = fallback_count.clone();
     let setup = Setup::new()
         .how_many_signers(1)
         .epoch_length(100)
@@ -49,9 +56,7 @@ fn speculative_bal_build_uses_parent_bal_sidecar() {
             false
         } else if metric.contains("_speculative_bal_build_fallbacks") {
             let value = value.parse::<u64>().unwrap();
-            if value > 0 {
-                stop_saw_fallback.store(true, Ordering::Relaxed);
-            }
+            stop_fallback_count.store(value, Ordering::Relaxed);
             false
         } else if metric.ends_with("_marshal_processed_height") {
             let value = value.parse::<u64>().unwrap();
@@ -60,8 +65,31 @@ fn speculative_bal_build_uses_parent_bal_sidecar() {
             false
         }
     });
+    let final_sparse_trie_state_root_wait_count =
+        prometheus_histogram_count(metrics_recorder, SPARSE_TRIE_STATE_ROOT_WAIT_COUNT_METRIC);
+
     assert!(saw_use.load(Ordering::Relaxed));
-    assert!(!saw_fallback.load(Ordering::Relaxed));
+    assert!(
+        final_sparse_trie_state_root_wait_count > initial_sparse_trie_state_root_wait_count,
+        "expected sparse trie state-root wait metric to increase"
+    );
+    assert!(
+        fallback_count.load(Ordering::Relaxed) <= 1,
+        "expected at most one bootstrap fallback before BAL sidecars are available"
+    );
+}
+
+fn prometheus_histogram_count(recorder: &PrometheusRecorder, metric: &str) -> u64 {
+    recorder.handle().run_upkeep();
+    recorder
+        .handle()
+        .render()
+        .lines()
+        .find_map(|line| {
+            let mut parts = line.split_whitespace();
+            (parts.next()? == metric).then(|| parts.next()?.parse().ok())?
+        })
+        .unwrap_or(0)
 }
 
 #[test_traced]

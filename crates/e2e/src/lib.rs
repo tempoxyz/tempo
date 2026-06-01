@@ -297,6 +297,10 @@ pub async fn setup_validators(
     for ((public_key, consensus_node_config), mut execution_config) in
         validators.into_iter().zip_eq(execution_configs)
     {
+        if speculative_bal_build {
+            execution_config.share_sparse_trie_with_payload_builder = true;
+        }
+
         let ConsensusNodeConfig {
             address,
             ingress,

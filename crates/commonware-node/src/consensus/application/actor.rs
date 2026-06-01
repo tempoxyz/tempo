@@ -726,108 +726,6 @@ impl Inner<Init> {
                     validity_token.clone(),
                 )?);
 
-                let payload_id_result = {
-                    let rx = payload_id_rx.as_mut().expect("just set");
-                    tokio::select! {
-                        result = rx => Some(
-                            result
-                                .wrap_err("executor dropped response")
-                                .and_then(|res| res.wrap_err("failed starting speculative payload build"))
-                        ),
-                        _ = context.sleep(SPECULATIVE_PAYLOAD_ID_TIMEOUT) => None,
-                    }
-                };
-
-                let payload_id = match payload_id_result {
-                    Some(Ok(payload_id)) => payload_id,
-                    Some(Err(error)) => {
-                        self.metrics.speculative_build_fallbacks.inc();
-                        warn!(
-                            %error,
-                            parent.height = %parent.height(),
-                            parent.digest = %parent.digest(),
-                            "falling back to serial proposal build because speculative build could not start",
-                        );
-                        *payload_id_rx = None;
-                        // Fall through to the existing serial validate-then-build path.
-                        if should_verify_parent
-                            && !verify_block(
-                                context.clone(),
-                                parent_epoch_info.epoch(),
-                                &self.epoch_strategy,
-                                self.execution_node
-                                    .add_ons_handle
-                                    .beacon_engine_handle
-                                    .clone(),
-                                &parent,
-                                parent.parent_digest(),
-                                &self.scheme_provider,
-                            )
-                            .await
-                            .wrap_err("failed verifying block against execution layer")?
-                        {
-                            bail!("the proposal parent block is not valid");
-                        }
-
-                        return self
-                            .build_payload_after_parent_validation(
-                                context,
-                                propose_start,
-                                parent,
-                                attrs,
-                                marshal_persist,
-                                payload_id_rx,
-                            )
-                            .await;
-                    }
-                    None => {
-                        validity_token.mark_invalid();
-                        self.metrics.speculative_build_cancelled.inc();
-                        self.metrics.speculative_build_fallbacks.inc();
-                        warn!(
-                            timeout = ?SPECULATIVE_PAYLOAD_ID_TIMEOUT,
-                            parent.height = %parent.height(),
-                            parent.digest = %parent.digest(),
-                            "falling back to serial proposal build because speculative build did not register in time",
-                        );
-                        self.cancel_payload_build(&context, payload_id_rx).await;
-                        if should_verify_parent
-                            && !verify_block(
-                                context.clone(),
-                                parent_epoch_info.epoch(),
-                                &self.epoch_strategy,
-                                self.execution_node
-                                    .add_ons_handle
-                                    .beacon_engine_handle
-                                    .clone(),
-                                &parent,
-                                parent.parent_digest(),
-                                &self.scheme_provider,
-                            )
-                            .await
-                            .wrap_err("failed verifying block against execution layer")?
-                        {
-                            bail!("the proposal parent block is not valid");
-                        }
-
-                        return self
-                            .build_payload_after_parent_validation(
-                                context,
-                                propose_start,
-                                parent,
-                                attrs,
-                                marshal_persist,
-                                payload_id_rx,
-                            )
-                            .await;
-                    }
-                };
-
-                self.metrics.speculative_build_started.inc();
-                let (tx, rx) = oneshot::channel();
-                let _ = tx.send(Ok(payload_id));
-                *payload_id_rx = Some(rx);
-
                 let validation_start = Instant::now();
                 let is_good = verify_block(
                     context.clone(),
@@ -854,6 +752,53 @@ impl Inner<Init> {
                 }
 
                 validity_token.mark_valid();
+
+                let payload_id_timeout = self
+                    .proposal_return_budget
+                    .saturating_sub(propose_start.elapsed())
+                    .max(Duration::from_millis(1));
+                let payload_id_result = {
+                    let rx = payload_id_rx.as_mut().expect("just set");
+                    tokio::select! {
+                        result = rx => result
+                            .wrap_err("executor dropped response")
+                            .and_then(|res| res.wrap_err("failed starting speculative payload build")),
+                        _ = context.sleep(payload_id_timeout) => Err(eyre!(
+                            "timed out waiting {payload_id_timeout:?} for speculative payload build to register"
+                        )),
+                    }
+                };
+
+                let payload_id = match payload_id_result {
+                    Ok(payload_id) => payload_id,
+                    Err(error) => {
+                        validity_token.mark_invalid();
+                        self.metrics.speculative_build_cancelled.inc();
+                        self.metrics.speculative_build_fallbacks.inc();
+                        warn!(
+                            %error,
+                            parent.height = %parent.height(),
+                            parent.digest = %parent.digest(),
+                            "falling back to serial proposal build because speculative build could not start",
+                        );
+                        self.cancel_payload_build(&context, payload_id_rx).await;
+                        return self
+                            .build_payload_after_parent_validation(
+                                context,
+                                propose_start,
+                                parent,
+                                attrs,
+                                marshal_persist,
+                                payload_id_rx,
+                            )
+                            .await;
+                    }
+                };
+
+                self.metrics.speculative_build_started.inc();
+                let (tx, rx) = oneshot::channel();
+                let _ = tx.send(Ok(payload_id));
+                *payload_id_rx = Some(rx);
 
                 if let Err(error) = self
                     .state
