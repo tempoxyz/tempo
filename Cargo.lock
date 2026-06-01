@@ -13327,6 +13327,7 @@ dependencies = [
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
  "derive_more",
+ "either",
  "reth-ethereum-engine-primitives",
  "reth-node-api",
  "reth-payload-primitives",

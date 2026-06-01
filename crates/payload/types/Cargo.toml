@@ -24,6 +24,7 @@ alloy-rpc-types-eth.workspace = true
 alloy-rpc-types-engine.workspace = true
 
 derive_more.workspace = true
+either.workspace = true
 serde.workspace = true
 tracing.workspace = true
 

@@ -577,7 +577,7 @@ where
             .add_ons_handle
             .beacon_engine_handle
             .new_payload(TempoExecutionData {
-                block: Arc::new(block),
+                block: block.into(),
                 block_access_list,
                 // can be omitted for finalized blocks
                 validator_set: None,

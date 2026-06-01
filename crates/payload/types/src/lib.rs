@@ -9,16 +9,19 @@ mod budget;
 use alloy_primitives::{B256, Bytes};
 pub use attrs::TempoPayloadAttributes;
 pub use budget::{MarshalPersistEstimator, marshal_persist_estimate, observe_marshal_persist};
-use std::{sync::Arc, time::Duration};
+use std::{ops::Deref, sync::Arc, time::Duration};
 
 use alloy_eips::eip7685::Requests;
 use alloy_primitives::U256;
 use alloy_rpc_types_eth::Withdrawal;
+use either::Either;
 use reth_ethereum_engine_primitives::EthBuiltPayload;
 use reth_node_api::{BlockBody, ExecutionPayload, PayloadTypes};
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
-use reth_primitives_traits::{AlloyBlockHeader as _, SealedBlock};
-use serde::{Deserialize, Serialize};
+use reth_primitives_traits::{
+    AlloyBlockHeader as _, RecoveredBlock, SealedBlock, transaction::signed::RecoveryError,
+};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use tempo_primitives::{Block, TempoPrimitives};
 
 /// Payload types for Tempo node.
@@ -68,10 +71,20 @@ impl TempoBuiltPayload {
 
     /// Converts the built payload into owned execution payload parts.
     pub fn into_execution_payload(self) -> (SealedBlock<Block>, Option<Bytes>) {
-        (
-            Arc::unwrap_or_clone(self.inner.block_arc().clone()).into_sealed_block(),
-            self.block_access_list,
-        )
+        let Self {
+            inner,
+            block_access_list,
+            executed_block,
+            ..
+        } = self;
+        let block = inner.block_arc().clone();
+        drop(inner);
+        drop(executed_block);
+        let block = match Arc::try_unwrap(block) {
+            Ok(block) => block.into_sealed_block(),
+            Err(block) => block.clone_sealed_block(),
+        };
+        (block, block_access_list)
     }
 
     /// Returns the time validators are expected to spend reproducing this payload's build work.
@@ -89,9 +102,17 @@ impl TempoBuiltPayload {
 
     /// Converts the built payload into [`TempoExecutionData`].
     pub fn into_execution_data(self) -> TempoExecutionData {
-        let (block, block_access_list) = self.into_execution_payload();
+        let Self {
+            inner,
+            block_access_list,
+            executed_block,
+            ..
+        } = self;
+        let block = inner.block_arc().clone();
+        drop(inner);
+        drop(executed_block);
         TempoExecutionData {
-            block: Arc::new(block),
+            block: TempoExecutionBlock::recovered(block),
             block_access_list,
             validator_set: None,
         }
@@ -122,11 +143,11 @@ impl BuiltPayload for TempoBuiltPayload {
     }
 }
 
-/// Execution data for Tempo node. Simply wraps a sealed block.
+/// Execution data for Tempo node.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TempoExecutionData {
-    /// The built block.
-    pub block: Arc<SealedBlock<Block>>,
+    /// The built block, optionally with recovered transaction senders.
+    pub block: TempoExecutionBlock,
     /// RLP-encoded EIP-7928 block access list, when supplied with the payload.
     pub block_access_list: Option<Bytes>,
     /// Validator set active at the time this block was built.
@@ -196,9 +217,105 @@ impl PayloadTypes for TempoPayloadTypes {
 
     fn block_to_payload(block: SealedBlock<Block>, bal: Option<Bytes>) -> Self::ExecutionData {
         TempoExecutionData {
-            block: Arc::new(block),
+            block: block.into(),
             block_access_list: bal,
             validator_set: None,
         }
+    }
+}
+
+/// A Tempo execution block, optionally retaining recovered transaction senders.
+#[derive(Debug, Clone)]
+pub struct TempoExecutionBlock(Either<Arc<SealedBlock<Block>>, Arc<RecoveredBlock<Block>>>);
+
+impl TempoExecutionBlock {
+    /// Creates an execution block from a sealed block.
+    pub fn sealed(block: SealedBlock<Block>) -> Self {
+        Self(Either::Left(Arc::new(block)))
+    }
+
+    /// Creates an execution block from a shared sealed block.
+    pub fn sealed_arc(block: Arc<SealedBlock<Block>>) -> Self {
+        Self(Either::Left(block))
+    }
+
+    /// Creates an execution block from a shared recovered block.
+    pub fn recovered(block: Arc<RecoveredBlock<Block>>) -> Self {
+        Self(Either::Right(block))
+    }
+
+    /// Returns the sealed block view.
+    pub fn sealed_block(&self) -> &SealedBlock<Block> {
+        match &self.0 {
+            Either::Left(block) => block,
+            Either::Right(block) => block.sealed_block(),
+        }
+    }
+
+    /// Returns the recovered block when this payload retained recovered senders.
+    pub fn recovered_block(&self) -> Option<&RecoveredBlock<Block>> {
+        match &self.0 {
+            Either::Left(_) => None,
+            Either::Right(block) => Some(block),
+        }
+    }
+
+    /// Consumes this block and returns the sealed block.
+    pub fn into_sealed_block(self) -> SealedBlock<Block> {
+        match self.0 {
+            Either::Left(block) => Arc::unwrap_or_clone(block),
+            Either::Right(block) => match Arc::try_unwrap(block) {
+                Ok(block) => block.into_sealed_block(),
+                Err(block) => block.clone_sealed_block(),
+            },
+        }
+    }
+
+    /// Consumes this block and returns the recovered block, recovering sealed-only blocks as needed.
+    pub fn into_recovered_block(self) -> Result<RecoveredBlock<Block>, RecoveryError> {
+        match self.0 {
+            Either::Left(block) => Arc::unwrap_or_clone(block)
+                .try_recover()
+                .map_err(Into::into),
+            Either::Right(block) => Ok(Arc::unwrap_or_clone(block)),
+        }
+    }
+}
+
+impl From<SealedBlock<Block>> for TempoExecutionBlock {
+    fn from(block: SealedBlock<Block>) -> Self {
+        Self::sealed(block)
+    }
+}
+
+impl From<Arc<SealedBlock<Block>>> for TempoExecutionBlock {
+    fn from(block: Arc<SealedBlock<Block>>) -> Self {
+        Self::sealed_arc(block)
+    }
+}
+
+impl From<Arc<RecoveredBlock<Block>>> for TempoExecutionBlock {
+    fn from(block: Arc<RecoveredBlock<Block>>) -> Self {
+        Self::recovered(block)
+    }
+}
+
+impl Deref for TempoExecutionBlock {
+    type Target = SealedBlock<Block>;
+
+    fn deref(&self) -> &Self::Target {
+        self.sealed_block()
+    }
+}
+
+impl Serialize for TempoExecutionBlock {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        self.sealed_block().serialize(serializer)
+    }
+}
+
+impl<'de> Deserialize<'de> for TempoExecutionBlock {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        SealedBlock::<Block>::deserialize(deserializer).map(Self::sealed)
     }
 }

@@ -1009,7 +1009,7 @@ async fn verify_block<TContext: Pacer>(
     );
     let (block, block_access_list) = block.clone().into_parts();
     let execution_data = TempoExecutionData {
-        block: Arc::new(block),
+        block: block.into(),
         block_access_list,
         validator_set,
     };
