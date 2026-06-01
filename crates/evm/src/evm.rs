@@ -17,6 +17,7 @@ use reth_revm::{
 };
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::tip_fee_manager::CollectedFeeCredit;
 use tempo_revm::{
     TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
     handler::TempoEvmHandler,
@@ -119,6 +120,12 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// recent `collectFeePostTx`. Reset per-tx in the handler's `validate_env`.
     pub fn validator_fee(&self) -> alloy_primitives::U256 {
         self.inner.validator_fee
+    }
+
+    /// Returns the deferred collected-fee ledger increment recorded by the most recent
+    /// `collectFeePostTx`. Reset per-tx in the handler's `validate_env`.
+    pub fn validator_fee_credit(&self) -> Option<CollectedFeeCredit> {
+        self.inner.validator_fee_credit
     }
 
     /// Sets the inspector for the EVM.

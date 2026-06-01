@@ -11,6 +11,7 @@ use revm::{
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::tip_fee_manager::CollectedFeeCredit;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
@@ -36,6 +37,10 @@ pub struct TempoEvm<DB: Database, I> {
     ///
     /// Reset to zero before each transaction so it reflects only the current tx.
     pub validator_fee: U256,
+    /// Deferred collected-fee ledger increment returned by the most recent `collectFeePostTx` call.
+    ///
+    /// Reset before each transaction so the block executor can batch committed transaction credits.
+    pub validator_fee_credit: Option<CollectedFeeCredit>,
     /// The fee token used to pay fees for the current transaction.
     pub(crate) fee_token: Option<Address>,
     /// The expiry timestamp of the access key used by the current transaction.
@@ -83,6 +88,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             inner,
             collected_fee: U256::ZERO,
             validator_fee: U256::ZERO,
+            validator_fee_credit: None,
             fee_token: None,
             key_expiry: None,
             skip_valid_after_check: false,

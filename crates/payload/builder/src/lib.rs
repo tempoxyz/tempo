@@ -825,6 +825,11 @@ where
 
         check_cancel!();
 
+        builder
+            .executor_mut()
+            .apply_deferred_collected_fees()
+            .map_err(PayloadBuilderError::evm)?;
+
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
             if let Some(mut handle) = trie_handle {
                 // Dropping the hook signals that execution is complete and the sparse trie task can

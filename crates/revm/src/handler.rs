@@ -51,7 +51,7 @@ use tempo_precompiles::{
     storage::{
         Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
     },
-    tip_fee_manager::TipFeeManager,
+    tip_fee_manager::{CollectedFeeCredit, TipFeeManager},
     tip20::{ITIP20::InsufficientBalance, TIP20Error, TIP20Token, decode_tip20_balance},
     tip20_channel_reserve::TIP20ChannelReserve,
 };
@@ -1578,32 +1578,38 @@ where
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
 
-        let credited = StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
-            let mut fee_manager = TipFeeManager::new();
+        let credit: Option<CollectedFeeCredit> =
+            StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, || {
+                let mut fee_manager = TipFeeManager::new();
 
-            if !actual_spending.is_zero() || !refund_amount.is_zero() {
-                let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
-                let fee_token = evm
-                    .fee_token
-                    .expect("set in `validate_against_state_and_deduct_caller`");
-                // Call collectFeePostTx (handles both refund and fee queuing)
-                fee_manager
-                    .collect_fee_post_tx(
-                        fee_payer,
-                        actual_spending,
-                        refund_amount,
-                        fee_token,
-                        beneficiary,
-                    )
-                    .map_err(|e| EVMError::Custom(format!("{e:?}")))
-            } else {
-                Ok(U256::ZERO)
-            }
-        })?;
+                if !actual_spending.is_zero() || !refund_amount.is_zero() {
+                    let fee_payer = tx.fee_payer().expect("pre-validated in `validate_env`");
+                    let fee_token = evm
+                        .fee_token
+                        .expect("set in `validate_against_state_and_deduct_caller`");
+                    // Call collectFeePostTx (handles refunds and fee swap settlement).
+                    fee_manager
+                        .collect_fee_post_tx(
+                            fee_payer,
+                            actual_spending,
+                            refund_amount,
+                            fee_token,
+                            beneficiary,
+                        )
+                        .map(Some)
+                        .map_err(|e| EVMError::Custom(format!("{e:?}")))
+                } else {
+                    Ok(None)
+                }
+            })?;
 
         // Stash the per-tx credit so `TempoBlockExecutor` can surface it on `TempoTxResult`
-        // for payload scoring. Reset to zero on every tx entry below in `validate_env`.
-        evm.validator_fee = credited;
+        // for payload scoring and batch `collected_fees` updates after tx execution.
+        // Reset on every tx entry below in `validate_env`.
+        if let Some(credit) = credit.filter(|credit| !credit.amount.is_zero()) {
+            evm.validator_fee = credit.amount;
+            evm.validator_fee_credit = Some(credit);
+        }
         Ok(())
     }
 
@@ -1627,6 +1633,7 @@ where
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
         // Reset per-tx validator fee.
         evm.validator_fee = U256::ZERO;
+        evm.validator_fee_credit = None;
 
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;
