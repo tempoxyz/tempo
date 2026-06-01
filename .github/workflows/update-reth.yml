@@ -114,17 +114,28 @@ jobs:
           cat > /usr/local/bin/amp-run <<'WRAPPER'
           #!/usr/bin/env bash
           set -euo pipefail
+          set +e
           OUTPUT=$(amp "$@" --stream-json --take-me-back 2>&1)
+          AMP_EXIT=$?
+          set -e
           FIRST_LINE=$(echo "$OUTPUT" | head -1 || true)
           THREAD_ID=$(echo "$FIRST_LINE" | jq -r '.session_id // empty' 2>/dev/null || true)
           if [ -n "$THREAD_ID" ]; then
             echo "🔗 Amp thread: https://ampcode.com/threads/${THREAD_ID}"
           fi
           # Print the final result text
-          echo "$OUTPUT" | jq -r 'select(.type=="result") | .result // empty' 2>/dev/null || true
+          RESULT_TEXT=$(echo "$OUTPUT" | jq -r 'select(.type=="result") | .result // empty' 2>/dev/null || true)
+          if [ -n "$RESULT_TEXT" ]; then
+            echo "$RESULT_TEXT"
+          else
+            echo "$OUTPUT"
+          fi
           # Propagate error if amp failed
-          IS_ERROR=$(echo "$OUTPUT" | jq -r 'select(.type=="result") | .is_error // false' 2>/dev/null || true)
-          if [ "$IS_ERROR" = "true" ]; then
+          IS_ERROR=$(echo "$OUTPUT" | jq -e 'select(.type=="result" and .is_error == true)' >/dev/null 2>&1; echo $?)
+          if [ "$AMP_EXIT" -ne 0 ]; then
+            exit "$AMP_EXIT"
+          fi
+          if [ "$IS_ERROR" -eq 0 ]; then
             exit 1
           fi
           WRAPPER
