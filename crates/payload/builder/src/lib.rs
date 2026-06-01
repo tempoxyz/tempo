@@ -16,10 +16,7 @@ use crate::{
         BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
         payload_budget_exhausted, scaled_build_time_multiplier,
     },
-    metrics::{
-        BlockBuildStopReason, FinishInstrumentation, InstrumentedFinishProvider,
-        TempoPayloadBuilderMetrics,
-    },
+    metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
@@ -860,23 +857,16 @@ where
 
         let payload_finalization_start = Instant::now();
         let _finish_span = debug_span!(target: "payload_builder", "finish_block").entered();
-        let finish_instrumentation = FinishInstrumentation::default();
         let finish_provider = InstrumentedFinishProvider {
             inner: &*state_provider,
             metrics: self.metrics.clone(),
-            instrumentation: finish_instrumentation.clone(),
         };
 
         check_cancel!();
 
-        let deferred_collected_fees_start = Instant::now();
-        let deferred_collected_fees_stats = executor
+        executor
             .apply_deferred_collected_fees()
             .map_err(PayloadBuilderError::evm)?;
-        let deferred_collected_fees_elapsed = deferred_collected_fees_start.elapsed();
-        self.metrics
-            .deferred_collected_fees_duration_seconds
-            .record(deferred_collected_fees_elapsed);
 
         let builder_finish_start = Instant::now();
 
@@ -977,7 +967,6 @@ where
         self.metrics
             .builder_finish_duration_seconds
             .record(builder_finish_elapsed);
-        let finish_instrumentation = finish_instrumentation.snapshot();
         drop(_finish_span);
         let payload_finalization_elapsed = payload_finalization_start.elapsed();
         self.metrics
@@ -1103,38 +1092,8 @@ where
             ?total_subblock_transaction_execution_elapsed,
             ?system_txs_execution_elapsed,
             ?total_transaction_execution_elapsed,
-            ?deferred_collected_fees_elapsed,
-            deferred_collected_fee_pending_credits =
-                deferred_collected_fees_stats.pending_credits,
-            deferred_collected_fee_unique_increments =
-                deferred_collected_fees_stats.unique_increments,
-            deferred_collected_fee_state_accounts =
-                deferred_collected_fees_stats.state_accounts,
-            deferred_collected_fee_state_storage_slots =
-                deferred_collected_fees_stats.state_storage_slots,
-            deferred_collected_fee_aggregate_elapsed =
-                ?deferred_collected_fees_stats.aggregate_elapsed,
-            deferred_collected_fee_state_build_elapsed =
-                ?deferred_collected_fees_stats.state_build_elapsed,
-            deferred_collected_fee_state_hook_elapsed =
-                ?deferred_collected_fees_stats.state_hook_elapsed,
-            deferred_collected_fee_commit_elapsed =
-                ?deferred_collected_fees_stats.commit_elapsed,
-            deferred_collected_fee_total_elapsed =
-                ?deferred_collected_fees_stats.total_elapsed,
             ?sparse_trie_state_root_wait_elapsed,
             ?builder_finish_elapsed,
-            builder_finish_hashed_post_state_elapsed =
-                ?finish_instrumentation.hashed_post_state_elapsed,
-            builder_finish_state_root_with_updates_elapsed =
-                ?finish_instrumentation.state_root_with_updates_elapsed,
-            builder_finish_bundle_state_accounts =
-                finish_instrumentation.bundle_state_accounts,
-            builder_finish_bundle_state_storage_slots =
-                finish_instrumentation.bundle_state_storage_slots,
-            builder_finish_bundle_state_size_hint =
-                finish_instrumentation.bundle_state_size_hint,
-            ?payload_finalization_elapsed,
             "Built payload"
         );
 

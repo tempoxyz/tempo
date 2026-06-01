@@ -11,14 +11,8 @@ use reth_trie_common::{
     AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, MultiProof,
     MultiProofTargets, StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
 };
-use std::{
-    sync::{
-        Arc,
-        atomic::{AtomicU64, AtomicUsize, Ordering},
-    },
-    time::{Duration, Instant},
-};
-use tracing::{debug, debug_span};
+use std::time::Instant;
+use tracing::debug_span;
 
 #[derive(Metrics, Clone)]
 #[metrics(scope = "tempo_payload_builder")]
@@ -97,8 +91,6 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) system_transactions_execution_duration_seconds: Histogram,
     /// The time it took to finalize the payload in seconds. Includes merging transitions and calculating the state root.
     pub(crate) payload_finalization_duration_seconds: Histogram,
-    /// Wall-clock time spent applying deferred collected-fee credits before state root finalization.
-    pub(crate) deferred_collected_fees_duration_seconds: Histogram,
     /// Wall-clock time spent waiting for the shared sparse trie state root.
     pub(crate) sparse_trie_state_root_wait_duration_seconds: Histogram,
     /// Wall-clock time spent in `builder.finish()`.
@@ -117,64 +109,6 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) hashed_post_state_duration_seconds: Histogram,
     /// Time to compute the state root and trie updates via `state_root_with_updates`.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
-}
-
-#[derive(Clone, Default)]
-pub(crate) struct FinishInstrumentation {
-    hashed_post_state_nanos: Arc<AtomicU64>,
-    state_root_with_updates_nanos: Arc<AtomicU64>,
-    bundle_state_accounts: Arc<AtomicUsize>,
-    bundle_state_storage_slots: Arc<AtomicUsize>,
-    bundle_state_size_hint: Arc<AtomicUsize>,
-}
-
-#[derive(Debug, Clone, Copy, Default)]
-pub(crate) struct FinishInstrumentationSnapshot {
-    pub(crate) hashed_post_state_elapsed: Option<Duration>,
-    pub(crate) state_root_with_updates_elapsed: Option<Duration>,
-    pub(crate) bundle_state_accounts: usize,
-    pub(crate) bundle_state_storage_slots: usize,
-    pub(crate) bundle_state_size_hint: usize,
-}
-
-impl FinishInstrumentation {
-    fn record_hashed_post_state(
-        &self,
-        elapsed: Duration,
-        bundle_state_accounts: usize,
-        bundle_state_storage_slots: usize,
-        bundle_state_size_hint: usize,
-    ) {
-        self.hashed_post_state_nanos
-            .store(elapsed.as_nanos() as u64, Ordering::Relaxed);
-        self.bundle_state_accounts
-            .store(bundle_state_accounts, Ordering::Relaxed);
-        self.bundle_state_storage_slots
-            .store(bundle_state_storage_slots, Ordering::Relaxed);
-        self.bundle_state_size_hint
-            .store(bundle_state_size_hint, Ordering::Relaxed);
-    }
-
-    fn record_state_root_with_updates(&self, elapsed: Duration) {
-        self.state_root_with_updates_nanos
-            .store(elapsed.as_nanos() as u64, Ordering::Relaxed);
-    }
-
-    pub(crate) fn snapshot(&self) -> FinishInstrumentationSnapshot {
-        let hashed_post_state_nanos = self.hashed_post_state_nanos.load(Ordering::Relaxed);
-        let state_root_with_updates_nanos =
-            self.state_root_with_updates_nanos.load(Ordering::Relaxed);
-
-        FinishInstrumentationSnapshot {
-            hashed_post_state_elapsed: (hashed_post_state_nanos > 0)
-                .then(|| Duration::from_nanos(hashed_post_state_nanos)),
-            state_root_with_updates_elapsed: (state_root_with_updates_nanos > 0)
-                .then(|| Duration::from_nanos(state_root_with_updates_nanos)),
-            bundle_state_accounts: self.bundle_state_accounts.load(Ordering::Relaxed),
-            bundle_state_storage_slots: self.bundle_state_storage_slots.load(Ordering::Relaxed),
-            bundle_state_size_hint: self.bundle_state_size_hint.load(Ordering::Relaxed),
-        }
-    }
 }
 
 /// Reason the payload builder stopped adding pool transactions to the block.
@@ -233,7 +167,6 @@ impl TempoPayloadBuilderMetrics {
 pub(crate) struct InstrumentedFinishProvider<'a> {
     pub(crate) inner: &'a dyn StateProvider,
     pub(crate) metrics: TempoPayloadBuilderMetrics,
-    pub(crate) instrumentation: FinishInstrumentation,
 }
 
 impl<'a> AsRef<dyn StateProvider + 'a> for InstrumentedFinishProvider<'a> {
@@ -273,33 +206,11 @@ impl HashedPostStateProvider for InstrumentedFinishProvider<'_> {
     fn hashed_post_state(&self, bundle_state: &reth_revm::db::BundleState) -> HashedPostState {
         let start = Instant::now();
         let _span = debug_span!(target: "payload_builder", "hashed_post_state").entered();
-        let bundle_state_accounts = bundle_state.len();
-        let bundle_state_storage_slots = bundle_state
-            .state()
-            .values()
-            .map(|account| account.storage.len())
-            .sum::<usize>();
-        let bundle_state_size_hint = bundle_state.size_hint();
         let result = self.inner.hashed_post_state(bundle_state);
         drop(_span);
-        let elapsed = start.elapsed();
         self.metrics
             .hashed_post_state_duration_seconds
-            .record(elapsed);
-        self.instrumentation.record_hashed_post_state(
-            elapsed,
-            bundle_state_accounts,
-            bundle_state_storage_slots,
-            bundle_state_size_hint,
-        );
-        debug!(
-            target: "payload_builder",
-            bundle_state_accounts,
-            bundle_state_storage_slots,
-            bundle_state_size_hint,
-            ?elapsed,
-            "hashed post state"
-        );
+            .record(start.elapsed());
         result
     }
 }
@@ -328,11 +239,9 @@ impl StateRootProvider for InstrumentedFinishProvider<'_> {
         let _span = debug_span!(target: "payload_builder", "state_root_with_updates").entered();
         let result = self.inner.state_root_with_updates(hashed_state);
         drop(_span);
-        let elapsed = start.elapsed();
         self.metrics
             .state_root_with_updates_duration_seconds
-            .record(elapsed);
-        self.instrumentation.record_state_root_with_updates(elapsed);
+            .record(start.elapsed());
         result
     }
 
