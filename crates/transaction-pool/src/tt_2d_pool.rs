@@ -34,6 +34,10 @@ use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tokio::sync::broadcast;
 
 type TxOrdering = TempoTipOrdering<TempoPooledTransaction>;
+type PoolUpdateResult = (
+    Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+);
 /// A sub-pool that keeps track of 2D nonce transactions.
 ///
 /// It maintains both pending and queued transactions.
@@ -82,6 +86,10 @@ pub struct AA2dPool {
     ///
     /// Used to track inclusion of expiring nonce transactions.
     slot_to_expiring_nonce_hash: U256Map<B256>,
+    /// Scratch buffer reused while processing nonce state updates.
+    state_update_nonce_changes: HashMap<AASequenceId, u64>,
+    /// Scratch buffer reused while processing included expiring nonce transactions.
+    state_update_included_expiring_nonce_hashes: Vec<B256>,
     /// Reverse index for the storage slot of an account's nonce
     ///
     /// ```solidity
@@ -131,6 +139,8 @@ impl AA2dPool {
             expiring_nonce_txs: Default::default(),
             expiring_nonce_eviction_order: Default::default(),
             slot_to_expiring_nonce_hash: Default::default(),
+            state_update_nonce_changes: Default::default(),
+            state_update_included_expiring_nonce_hashes: Default::default(),
             slot_to_seq_id: Default::default(),
             config,
             metrics: AA2dPoolMetrics::default(),
@@ -923,19 +933,23 @@ impl AA2dPool {
 
     /// Updates the internal state based on the state changes of the `NonceManager` [`NONCE_PRECOMPILE_ADDRESS`].
     ///
-    /// This takes a vec of changed [`AASequenceId`] with their current on chain nonce.
+    /// This takes changed [`AASequenceId`]s with their current on-chain nonce.
     ///
     /// This will prune mined transactions and promote unblocked transactions if any, returns `(promoted, mined)`
-    #[allow(clippy::type_complexity)]
+    #[cfg(test)]
     pub(crate) fn on_nonce_changes(
         &mut self,
         on_chain_ids: HashMap<AASequenceId, u64>,
-    ) -> (
-        Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-        Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-    ) {
+    ) -> PoolUpdateResult {
         trace!(target: "txpool::2d", ?on_chain_ids, "processing nonce changes");
 
+        self.on_nonce_changes_iter(on_chain_ids)
+    }
+
+    fn on_nonce_changes_iter(
+        &mut self,
+        on_chain_ids: impl IntoIterator<Item = (AASequenceId, u64)>,
+    ) -> PoolUpdateResult {
         let mut promoted = Vec::new();
         let mut mined_ids = Vec::new();
 
@@ -1243,20 +1257,20 @@ impl AA2dPool {
     }
 
     /// Processes nonce-precompile storage updates and updates internal state accordingly.
-    #[expect(clippy::type_complexity)]
     pub(crate) fn on_state_updates(
         &mut self,
         state: &AddressMap<BundleAccount>,
-    ) -> (
-        Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-        Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
-    ) {
+    ) -> PoolUpdateResult {
+        self.state_update_nonce_changes.clear();
+        self.state_update_included_expiring_nonce_hashes.clear();
+
         let Some(nonce_state) = state.get(&NONCE_PRECOMPILE_ADDRESS) else {
             return (Vec::new(), Vec::new());
         };
 
-        let mut changes = HashMap::default();
-        let mut included_expiring_nonce_hashes = Vec::new();
+        let mut changes = std::mem::take(&mut self.state_update_nonce_changes);
+        let mut included_expiring_nonce_hashes =
+            std::mem::take(&mut self.state_update_included_expiring_nonce_hashes);
 
         // Process known 2D nonce slot changes.
         for (slot, value) in nonce_state.storage.iter() {
@@ -1272,14 +1286,16 @@ impl AA2dPool {
             }
         }
 
-        let (promoted, mut mined) = self.on_nonce_changes(changes);
+        let (promoted, mut mined) = self.on_nonce_changes_iter(changes.drain());
 
         // Remove included expiring nonce transactions
-        for expiring_nonce_hash in included_expiring_nonce_hashes {
+        for expiring_nonce_hash in included_expiring_nonce_hashes.drain(..) {
             if let Some(tx) = self.remove_expiring_nonce_tx(&expiring_nonce_hash) {
                 mined.push(tx);
             }
         }
+        self.state_update_nonce_changes = changes;
+        self.state_update_included_expiring_nonce_hashes = included_expiring_nonce_hashes;
 
         // Record metrics for all changes
         if !promoted.is_empty() {
@@ -5197,6 +5213,23 @@ mod tests {
     // ============================================
 
     #[test]
+    fn on_state_updates_clears_scratch_buffers_without_nonce_state() {
+        let mut pool = AA2dPool::default();
+        pool.state_update_nonce_changes
+            .insert(AASequenceId::new(Address::random(), U256::from(1)), 1);
+        pool.state_update_included_expiring_nonce_hashes
+            .push(B256::random());
+
+        let state = AddressMap::default();
+        let (promoted, mined) = pool.on_state_updates(&state);
+
+        assert!(promoted.is_empty());
+        assert!(mined.is_empty());
+        assert!(pool.state_update_nonce_changes.is_empty());
+        assert!(pool.state_update_included_expiring_nonce_hashes.is_empty());
+    }
+
+    #[test]
     fn test_on_state_updates_with_nonce_precompile_slot() {
         use revm::database::{AccountStatus, BundleAccount, states::StorageSlot};
 
@@ -5255,6 +5288,8 @@ mod tests {
         assert_eq!(queued, 0);
 
         pool.assert_invariants();
+        assert!(pool.state_update_nonce_changes.is_empty());
+        assert!(pool.state_update_included_expiring_nonce_hashes.is_empty());
     }
 
     #[test]
@@ -5974,6 +6009,8 @@ mod tests {
         assert!(pool.slot_to_expiring_nonce_hash.is_empty());
         assert_expiring_eviction_index_len(&pool, 0);
         pool.assert_invariants();
+        assert!(pool.state_update_nonce_changes.is_empty());
+        assert!(pool.state_update_included_expiring_nonce_hashes.is_empty());
     }
 
     /// Pool with pending limit of 2 for eviction tests.
