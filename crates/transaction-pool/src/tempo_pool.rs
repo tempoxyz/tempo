@@ -862,7 +862,7 @@ where
         let lock_start = Instant::now();
         let aa_2d_pool = self.aa_2d_pool.read();
         let lock_elapsed = lock_start.elapsed();
-        tracing::debug!(
+        tracing::info!(
             target: "txpool::2d",
             ?lock_elapsed,
             "Acquired AA 2D pool read lock for best transactions"
@@ -871,7 +871,7 @@ where
         let best_start = Instant::now();
         let right = aa_2d_pool.best_transactions();
         let best_elapsed = best_start.elapsed();
-        tracing::debug!(
+        tracing::info!(
             target: "txpool::2d",
             ?best_elapsed,
             "Built AA 2D best transactions snapshot"

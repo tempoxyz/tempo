@@ -20,7 +20,7 @@ use reth_storage_api::StateProviderFactory;
 use reth_transaction_pool::{PoolTransaction, TransactionPool};
 use std::{
     collections::{BTreeMap, btree_map::Entry},
-    time::Instant,
+    time::{Duration, Instant},
 };
 use tempo_chainspec::TempoChainSpec;
 use tempo_contracts::precompiles::{IAccountKeychain, IFeeManager, ITIP20, ITIP403Registry};
@@ -639,6 +639,8 @@ where
 
                 // 3. Collect all block-level invalidation events
                 let mut updates = TempoPoolUpdates::from_chain(tip);
+
+                tokio::time::sleep(Duration::from_millis(100)).await;
 
                 // Remove expiry tracking for mined transactions.
                 state.untrack_many(tip.transaction_hashes());
