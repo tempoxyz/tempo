@@ -6,7 +6,7 @@
 mod attrs;
 mod budget;
 
-use alloy_primitives::B256;
+use alloy_primitives::{B256, Bytes};
 pub use attrs::TempoPayloadAttributes;
 pub use budget::{MarshalPersistEstimator, marshal_persist_estimate, observe_marshal_persist};
 use std::{sync::Arc, time::Duration};
@@ -34,11 +34,17 @@ pub struct TempoPayloadTypes;
 pub struct TempoBuiltPayload {
     /// The inner built payload.
     inner: EthBuiltPayload<TempoPrimitives>,
+    /// RLP-encoded EIP-7928 block access list, when generated for this payload.
+    block_access_list: Option<Bytes>,
     /// The executed block data, used to skip re-execution in the engine tree.
     executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
-    /// Estimated time validators spend reproducing the build work.
+    /// Time validators are expected to spend reproducing this payload's build work.
+    ///
+    /// This excludes proposer-only idle waiting, but includes replayable work
+    /// such as transaction execution and non-interruptible `builder_finish`.
     validation_work_duration: Duration,
-    /// RLP-encoded block size in bytes.
+    /// RLP-encoded block size used for proposal return marshal estimates and
+    /// learning the rate used by future builder budgets.
     rlp_block_size_bytes: usize,
 }
 
@@ -46,32 +52,47 @@ impl TempoBuiltPayload {
     /// Creates a new [`TempoBuiltPayload`].
     pub fn new(
         inner: EthBuiltPayload<TempoPrimitives>,
+        block_access_list: Option<Bytes>,
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
         validation_work_duration: Duration,
         rlp_block_size_bytes: usize,
     ) -> Self {
         Self {
             inner,
+            block_access_list,
             executed_block,
             validation_work_duration,
             rlp_block_size_bytes,
         }
     }
 
-    /// Returns the estimated validation work duration for this payload.
+    /// Converts the built payload into owned execution payload parts.
+    pub fn into_execution_payload(self) -> (SealedBlock<Block>, Option<Bytes>) {
+        (
+            Arc::unwrap_or_clone(self.inner.block_arc().clone()).into_sealed_block(),
+            self.block_access_list,
+        )
+    }
+
+    /// Returns the time validators are expected to spend reproducing this payload's build work.
     pub fn validation_work_duration(&self) -> Duration {
         self.validation_work_duration
     }
 
     /// Returns the RLP-encoded block size in bytes.
+    ///
+    /// Consensus uses this with the learned marshal persistence rate to reserve
+    /// time for validators to persist similarly sized proposals.
     pub fn rlp_block_size_bytes(&self) -> usize {
         self.rlp_block_size_bytes
     }
 
     /// Converts the built payload into [`TempoExecutionData`].
     pub fn into_execution_data(self) -> TempoExecutionData {
+        let (block, block_access_list) = self.into_execution_payload();
         TempoExecutionData {
-            block: Arc::new(self.inner.block().clone()),
+            block: Arc::new(block),
+            block_access_list,
             validator_set: None,
         }
     }
@@ -95,6 +116,10 @@ impl BuiltPayload for TempoBuiltPayload {
     fn requests(&self) -> Option<Requests> {
         self.inner.requests()
     }
+
+    fn block_access_list(&self) -> Option<&Bytes> {
+        self.block_access_list.as_ref()
+    }
 }
 
 /// Execution data for Tempo node. Simply wraps a sealed block.
@@ -102,6 +127,8 @@ impl BuiltPayload for TempoBuiltPayload {
 pub struct TempoExecutionData {
     /// The built block.
     pub block: Arc<SealedBlock<Block>>,
+    /// RLP-encoded EIP-7928 block access list, when supplied with the payload.
+    pub block_access_list: Option<Bytes>,
     /// Validator set active at the time this block was built.
     pub validator_set: Option<Vec<B256>>,
 }
@@ -151,8 +178,8 @@ impl ExecutionPayload for TempoExecutionData {
         self.block.slot_number()
     }
 
-    fn block_access_list(&self) -> Option<&alloy_primitives::Bytes> {
-        None
+    fn block_access_list(&self) -> Option<&Bytes> {
+        self.block_access_list.as_ref()
     }
 }
 
@@ -167,12 +194,10 @@ impl PayloadTypes for TempoPayloadTypes {
     type BuiltPayload = TempoBuiltPayload;
     type PayloadAttributes = TempoPayloadAttributes;
 
-    fn block_to_payload(
-        block: SealedBlock<Block>,
-        _bal: Option<alloy_primitives::Bytes>,
-    ) -> Self::ExecutionData {
+    fn block_to_payload(block: SealedBlock<Block>, bal: Option<Bytes>) -> Self::ExecutionData {
         TempoExecutionData {
             block: Arc::new(block),
+            block_access_list: bal,
             validator_set: None,
         }
     }

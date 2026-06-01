@@ -106,7 +106,10 @@ pub struct Args {
     #[arg(long = "consensus.wait-for-notarizations", default_value = "2s")]
     pub wait_for_notarizations: PositiveDuration,
 
-    /// Target wall-clock time between blocks.
+    /// Target wall-clock time between blocks in healthy network conditions.
+    ///
+    /// Local proposal work is paced against this value minus
+    /// `--consensus.network-budget`.
     #[arg(long = "consensus.target-block-time", default_value = "550ms")]
     pub target_block_time: PositiveDuration,
 
@@ -135,6 +138,9 @@ pub struct Args {
     pub inactive_views_until_leader_skip: u64,
 
     /// Time reserved for proposal propagation before the target block boundary.
+    ///
+    /// The remaining `target-block-time - network-budget` is the local proposal
+    /// return budget used by consensus and the payload builder.
     #[arg(long = "consensus.network-budget", default_value = "50ms")]
     pub network_budget: PositiveDuration,
 
