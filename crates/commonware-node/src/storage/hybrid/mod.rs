@@ -85,7 +85,7 @@ use commonware_storage::{
 };
 use reth_node_core::primitives::SealedBlock;
 use reth_provider::{
-    BlockReader, BlockSource, ProviderResult,
+    BlockReader, BlockSource, ProviderError, ProviderResult,
     providers::{BlockchainProvider, ProviderNodeTypes},
 };
 use tracing::{debug, instrument, warn};
@@ -157,9 +157,16 @@ where
         if height > finalized {
             return Ok(None);
         }
-        Ok(self.block_by_number(height)?.map(|block| {
-            Block::from_execution_block_unchecked(SealedBlock::seal_slow(block), None)
-        }))
+        match self.block_by_number(height) {
+            Ok(maybe_block) => Ok(maybe_block.map(|block| {
+                Block::from_execution_block_unchecked(SealedBlock::seal_slow(block), None)
+            })),
+            Err(err @ ProviderError::BlockExpired { .. }) => {
+                warn!(error = %eyre::Report::new(err), "cannot find block");
+                Ok(None)
+            }
+            Err(bad_error) => Err(bad_error),
+        }
     }
 
     fn block_by_hash(&self, hash: B256) -> ProviderResult<Option<Block>> {
