@@ -13496,6 +13496,7 @@ dependencies = [
  "alloy-signer",
  "alloy-signer-local",
  "alloy-sol-types",
+ "codspeed-criterion-compat",
  "futures",
  "itertools 0.14.0",
  "metrics",
