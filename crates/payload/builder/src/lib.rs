@@ -869,6 +869,13 @@ where
         // Drop the roots task handle to trigger finalization
         drop(roots_tx);
 
+        // Dropping the state hook signals the sparse trie pipeline that no more
+        // state updates are coming. The hook is stored on the revm State, so it
+        // must be cleared explicitly before waiting for trie finalization.
+        if trie_handle.is_some() {
+            executor.evm_mut().db_mut().set_state_hook(None);
+        }
+
         let (evm, execution_result) = executor.finish()?;
         let evm_env = evm.into_env();
 
