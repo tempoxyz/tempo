@@ -14,6 +14,7 @@ use alloy_primitives::{
     Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
 };
 use alloy_sol_types::SolInterface;
+use parking_lot::{Mutex, MutexGuard};
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered};
 use reth_transaction_pool::{
@@ -22,7 +23,7 @@ use reth_transaction_pool::{
 };
 use std::{
     convert::Infallible,
-    fmt::Debug,
+    fmt::{self, Debug},
     sync::{Arc, OnceLock},
 };
 use tempo_contracts::precompiles::ITIP20;
@@ -54,7 +55,7 @@ pub struct TempoPooledTransaction {
     /// Cached `expiring_nonce_seen` storage slot for expiring nonce transactions.
     expiring_nonce_slot: OnceLock<Option<U256>>,
     /// Cached prepared [`TempoTxEnv`] for payload building.
-    tx_env: OnceLock<TempoTxEnv>,
+    tx_env: TxEnvCache,
     /// Keychain key expiry timestamp (set during validation for keychain-signed txs).
     ///
     /// `Some(expiry)` for keychain transactions where expiry < u64::MAX (finite expiry).
@@ -74,6 +75,40 @@ pub struct TempoPooledTransaction {
     /// Stores `(fee_token, balance_slot)` so the payload builder's state-aware iterator
     /// can check if the fee payer's balance was modified without recomputing the keccak.
     fee_balance_slot: OnceLock<Option<(Address, U256)>>,
+}
+
+#[derive(Debug, Default)]
+struct TxEnvCache {
+    inner: Mutex<Option<TempoTxEnv>>,
+}
+
+impl Clone for TxEnvCache {
+    fn clone(&self) -> Self {
+        Self {
+            inner: Mutex::new(self.inner.lock().clone()),
+        }
+    }
+}
+
+/// Guard returned by [`TempoPooledTransaction::tx_env`].
+pub struct TxEnvGuard<'a> {
+    inner: MutexGuard<'a, Option<TempoTxEnv>>,
+}
+
+impl Debug for TxEnvGuard<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.inner.as_ref().fmt(f)
+    }
+}
+
+impl core::ops::Deref for TxEnvGuard<'_> {
+    type Target = TempoTxEnv;
+
+    fn deref(&self) -> &Self::Target {
+        self.inner
+            .as_ref()
+            .expect("tx env guard must hold an initialized tx env")
+    }
 }
 
 impl TempoPooledTransaction {
@@ -103,7 +138,7 @@ impl TempoPooledTransaction {
             expiring_nonce_hash,
             nonce_key_slot: OnceLock::new(),
             expiring_nonce_slot: OnceLock::new(),
-            tx_env: OnceLock::new(),
+            tx_env: TxEnvCache::default(),
             key_expiry: OnceLock::new(),
             resolved_fee_token: OnceLock::new(),
             key_authorization_signer_subject: OnceLock::new(),
@@ -266,8 +301,12 @@ impl TempoPooledTransaction {
     ///
     /// This should be called during validation to prepare the transaction environment
     /// ahead of time, avoiding it during payload building.
-    pub fn tx_env(&self) -> &TempoTxEnv {
-        self.tx_env.get_or_init(|| self.tx_env_slow())
+    pub fn tx_env(&self) -> TxEnvGuard<'_> {
+        let mut tx_env = self.tx_env.inner.lock();
+        if tx_env.is_none() {
+            *tx_env = Some(self.tx_env_slow());
+        }
+        TxEnvGuard { inner: tx_env }
     }
 
     /// Returns a cloned [`TempoTxEnv`] for this transaction.
@@ -278,9 +317,43 @@ impl TempoPooledTransaction {
         self.tx_env().clone()
     }
 
+    /// Takes the cached [`TempoTxEnv`] for this transaction.
+    ///
+    /// This uses the cached value prepared by [`Self::tx_env`] when available,
+    /// and computes it on-demand otherwise.
+    pub fn take_tx_env(&self) -> TempoTxEnv {
+        self.tx_env
+            .inner
+            .lock()
+            .take()
+            .unwrap_or_else(|| self.tx_env_slow())
+    }
+
+    /// Restores a [`TempoTxEnv`] that was previously taken with [`Self::take_tx_env`].
+    ///
+    /// If another thread already repopulated the cache, the restored environment is dropped.
+    pub fn restore_tx_env(&self, restored_tx_env: TempoTxEnv) {
+        let mut tx_env = self.tx_env.inner.lock();
+        if tx_env.is_none() {
+            *tx_env = Some(restored_tx_env);
+        }
+    }
+
+    /// Ensures this transaction has a cached [`TempoTxEnv`].
+    pub fn ensure_tx_env(&self) {
+        let mut tx_env = self.tx_env.inner.lock();
+        if tx_env.is_none() {
+            *tx_env = Some(self.tx_env_slow());
+        }
+    }
+
     /// Returns a tuple that can be passed to block executor.
+    ///
+    /// This moves the cached [`TempoTxEnv`] out when available. Callers that do
+    /// not commit the transaction should restore the environment via
+    /// [`Self::restore_tx_env`].
     pub fn executable(&self) -> (TempoTxEnv, &Recovered<TempoTxEnvelope>) {
-        (self.tx_env().clone(), &self.inner.transaction)
+        (self.take_tx_env(), &self.inner.transaction)
     }
 
     /// Returns a [`WithTxEnv`] wrapper by cloning the cached [`TempoTxEnv`] and
@@ -299,8 +372,8 @@ impl TempoPooledTransaction {
     ///
     /// If the [`TempoTxEnv`] was pre-computed via [`Self::tx_env`], the cached
     /// value is used. Otherwise, it is computed on-demand.
-    pub fn into_with_tx_env(mut self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
-        let tx_env = self.tx_env.take().unwrap_or_else(|| self.tx_env_slow());
+    pub fn into_with_tx_env(self) -> WithTxEnv<TempoTxEnv, Recovered<TempoTxEnvelope>> {
+        let tx_env = self.take_tx_env();
         WithTxEnv {
             tx_env,
             tx: Arc::new(self.inner.transaction),
@@ -955,6 +1028,36 @@ mod tests {
         assert_eq!(tx.fee_token_cost(), expected_fee_cost);
         assert_eq!(tx.fee_token_cost, expected_fee_cost);
         assert_eq!(tx.inner.cost, expected_fee_cost + value);
+    }
+
+    #[test]
+    fn executable_takes_cached_tx_env() {
+        let tx = TxBuilder::aa(Address::random())
+            .gas_limit(1_000_000)
+            .build();
+
+        let mut tx_env = tx.take_tx_env();
+        tx_env.inner.gas_limit = 123;
+        tx.restore_tx_env(tx_env);
+
+        let (taken_tx_env, _) = tx.executable();
+        assert_eq!(taken_tx_env.inner.gas_limit, 123);
+
+        let recomputed_tx_env = tx.clone_tx_env();
+        assert_eq!(recomputed_tx_env.inner.gas_limit, 1_000_000);
+    }
+
+    #[test]
+    fn restore_tx_env_reuses_taken_env() {
+        let tx = TxBuilder::aa(Address::random())
+            .gas_limit(1_000_000)
+            .build();
+
+        let (mut tx_env, _) = tx.executable();
+        tx_env.inner.gas_limit = 456;
+        tx.restore_tx_env(tx_env);
+
+        assert_eq!(tx.clone_tx_env().inner.gas_limit, 456);
     }
 
     #[test]

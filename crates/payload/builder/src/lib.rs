@@ -672,9 +672,10 @@ where
                 .then(|| format!("{:?}", pool_tx.transaction))
                 .unwrap_or_default();
 
-            let execution_result = executor.execute_transaction_with_result_closure(
-                pool_tx.transaction.executable(),
-                |result| {
+            let (tx_env, recovered) = pool_tx.transaction.executable();
+            let tx_env_identifier = tx_env.unique_tx_identifier();
+            let execution_result =
+                executor.execute_transaction_with_result_closure((tx_env, recovered), |result| {
                     cumulative_gas_used += result.block_gas_used();
                     cumulative_state_gas_used += result.state_gas_used();
                     if !is_payment {
@@ -687,9 +688,18 @@ where
 
                     // Notify transactions iterator about the new state.
                     best_txs.on_new_result(result);
-                },
-            );
+                });
             if let Err(err) = execution_result {
+                if tx_env_identifier.is_some()
+                    && executor.evm().tx.unique_tx_identifier() == tx_env_identifier
+                {
+                    pool_tx
+                        .transaction
+                        .restore_tx_env(std::mem::take(&mut executor.evm_mut().tx));
+                } else {
+                    pool_tx.transaction.ensure_tx_env();
+                }
+
                 if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,
                     ..
