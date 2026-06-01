@@ -30,6 +30,16 @@ const E2E_LOCAL_RETH_ARGS = [
     "--builder.enable-prewarming"
 ]
 
+def merge-e2e-features [...features: string] {
+    $features
+    | each { |f| $f | split row "," }
+    | flatten
+    | each { |f| $f | str trim }
+    | where { |f| $f != "" }
+    | uniq
+    | str join ","
+}
+
 def tempo-node-help [tempo_bin: string] {
     let result = (run-external $tempo_bin "node" "--help" | complete)
     if $result.exit_code != 0 {
@@ -1139,9 +1149,9 @@ def "main e2e" [
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
-    --features: string = $DEFAULT_FEATURES              # Cargo features
-    --baseline-features: string = ""                    # Cargo features for baseline build (defaults to --features)
-    --feature-features: string = ""                     # Cargo features for feature build (defaults to --features)
+    --features: string = ""                             # Additional Cargo features appended to the e2e defaults
+    --baseline-features: string = ""                    # Additional Cargo features for baseline build (defaults to --features)
+    --feature-features: string = ""                     # Additional Cargo features for feature build (defaults to --features)
     --no-default-features                               # Disable Cargo default features
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
@@ -1278,7 +1288,8 @@ def "main e2e" [
         if ($E2E_BLOAT_TMP_DIR | path exists) { rm -rf $E2E_BLOAT_TMP_DIR }
         mkdir $E2E_BLOAT_TMP_DIR
 
-        build-tempo --no-default-features=$no_default_features ["tempo"] $profile $features
+        let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
+        build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
         let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
         let genesis_accounts = ([$accounts 3] | math max) + 1
         print $"Generating local e2e localnet config for validators: ($E2E_VALIDATORS)"
@@ -1367,11 +1378,13 @@ def "main e2e" [
         git worktree add $regenesis_wt origin/main
     }
 
-    let baseline_build_features = if $baseline_features != "" { $baseline_features } else { $features }
-    let feature_build_features = if $feature_features != "" { $feature_features } else { $features }
+    let global_build_features = (merge-e2e-features $DEFAULT_FEATURES $features)
+    let baseline_build_features = if $baseline_features != "" { merge-e2e-features $global_build_features $baseline_features } else { $global_build_features }
+    let feature_build_features = if $feature_features != "" { merge-e2e-features $global_build_features $feature_features } else { $global_build_features }
     let baseline_tbc = (tracy-build-config $baseline_build_features $tracy)
     let feature_tbc = (tracy-build-config $feature_build_features $tracy)
-    let regenesis_tbc = (tracy-build-config $features $tracy)
+    let regenesis_build_features = $global_build_features
+    let regenesis_tbc = (tracy-build-config $regenesis_build_features $tracy)
     let effective_no_cache = $no_cache or ($tracy != "off")
     # Build benchmark binaries in parallel. Regenesis uses latest origin/main so
     # snapshot rewriting is independent of either side being benchmarked.
@@ -1382,7 +1395,7 @@ def "main e2e" [
     ]
     let regenesis_sha = if $regenesis_needed { git rev-parse origin/main | str trim } else { "" }
     if $regenesis_needed {
-        $builds = ($builds | append { wt: $regenesis_wt, ref_name: "origin/main", sha: $regenesis_sha, label: "regenesis-main", features: $regenesis_tbc.features, extra_rustflags: $regenesis_tbc.extra_rustflags, bench_features: $features })
+        $builds = ($builds | append { wt: $regenesis_wt, ref_name: "origin/main", sha: $regenesis_sha, label: "regenesis-main", features: $regenesis_tbc.features, extra_rustflags: $regenesis_tbc.extra_rustflags, bench_features: $regenesis_build_features })
     }
     $builds | par-each { |b|
         if $effective_no_cache {
