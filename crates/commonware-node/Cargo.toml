@@ -79,3 +79,7 @@ tempfile.workspace = true
 
 # `commonware_macros::test_traced` requires `tracing_subscriber` to be in scope.
 tracing-subscriber.workspace = true
+
+[features]
+default = []
+bal = []
