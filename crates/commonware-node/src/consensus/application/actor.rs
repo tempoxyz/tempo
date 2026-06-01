@@ -894,6 +894,9 @@ impl Inner<Init> {
                 .build_control
                 .attach_proposal_context(propose_start, extra_data, consensus_context)
                 .map_err(|error| eyre!("failed attaching speculative proposal context: {error}"))?;
+            self.metrics
+                .speculative_payload_builds_reused_by_propose
+                .inc();
             debug!(
                 parent.digest = %parent_digest,
                 parent.height = %parent.height(),
@@ -945,6 +948,9 @@ impl Inner<Init> {
                 parent.height = %parent.height(),
                 "started speculative BAL payload build from handle_propose after missing verify slot"
             );
+            self.metrics
+                .speculative_payload_builds_started_from_propose_fallback
+                .inc();
 
             let (proposal, proposal_return) = self
                 .resolve_speculative_proposal_payload(
@@ -1277,6 +1283,9 @@ impl Inner<Init> {
             .speculative_builds
             .replace(&self.execution_node, build)
             .await;
+        self.metrics
+            .speculative_payload_builds_started_from_verify
+            .inc();
 
         debug!(
             parent.digest = %block.digest(),
@@ -1687,6 +1696,12 @@ async fn get_parent(
 #[derive(Clone)]
 struct Metrics {
     parent_ahead_of_local_time: Counter,
+    #[cfg(feature = "bal")]
+    speculative_payload_builds_started_from_verify: Counter,
+    #[cfg(feature = "bal")]
+    speculative_payload_builds_reused_by_propose: Counter,
+    #[cfg(feature = "bal")]
+    speculative_payload_builds_started_from_propose_fallback: Counter,
 }
 
 impl Metrics {
@@ -1700,9 +1715,45 @@ impl Metrics {
             "number of times the parent block timestamp was ahead of local time",
             parent_ahead_of_local_time.clone(),
         );
+        #[cfg(feature = "bal")]
+        let speculative_payload_builds_started_from_verify = {
+            let counter = Counter::default();
+            context.register(
+                "speculative_payload_builds_started_from_verify",
+                "number of BAL speculative payload builds started from block verification",
+                counter.clone(),
+            );
+            counter
+        };
+        #[cfg(feature = "bal")]
+        let speculative_payload_builds_reused_by_propose = {
+            let counter = Counter::default();
+            context.register(
+                "speculative_payload_builds_reused_by_propose",
+                "number of BAL speculative payload builds started by verification and reused by proposal",
+                counter.clone(),
+            );
+            counter
+        };
+        #[cfg(feature = "bal")]
+        let speculative_payload_builds_started_from_propose_fallback = {
+            let counter = Counter::default();
+            context.register(
+                "speculative_payload_builds_started_from_propose_fallback",
+                "number of BAL speculative payload builds started from proposal because no verify-started build was available",
+                counter.clone(),
+            );
+            counter
+        };
 
         Self {
             parent_ahead_of_local_time,
+            #[cfg(feature = "bal")]
+            speculative_payload_builds_started_from_verify,
+            #[cfg(feature = "bal")]
+            speculative_payload_builds_reused_by_propose,
+            #[cfg(feature = "bal")]
+            speculative_payload_builds_started_from_propose_fallback,
         }
     }
 }
