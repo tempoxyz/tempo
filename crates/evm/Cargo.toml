@@ -35,6 +35,7 @@ alloy-rlp.workspace = true
 alloy-evm.workspace = true
 alloy-consensus.workspace = true
 alloy-primitives.workspace = true
+alloy-rpc-types-eth = { workspace = true, optional = true }
 
 derive_more.workspace = true
 thiserror.workspace = true
@@ -56,7 +57,7 @@ tempo-primitives = { workspace = true, features = ["arbitrary"] }
 
 [features]
 default = ["rpc", "engine"]
-rpc = ["dep:reth-rpc-eth-api", "tempo-revm/rpc", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
+rpc = ["dep:alloy-rpc-types-eth", "dep:reth-rpc-eth-api", "tempo-revm/rpc", "tempo-primitives/serde", "tempo-primitives/reth-codec"]
 engine = ["dep:tempo-payload-types", "dep:rayon"]
 
 [[bench]]

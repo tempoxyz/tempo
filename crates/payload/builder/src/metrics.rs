@@ -109,9 +109,9 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) gas_per_second: Histogram,
     /// Gas per second for the last payload calculated as gas_used / payload_build_duration.
     pub(crate) gas_per_second_last: Gauge,
-    /// RLP-encoded block size in bytes.
+    /// Serialized payload size in bytes, including optional RLP-encoded BAL sidecar bytes.
     pub(crate) rlp_block_size_bytes: Histogram,
-    /// RLP-encoded block size in bytes for the last payload.
+    /// Serialized payload size in bytes for the last payload.
     pub(crate) rlp_block_size_bytes_last: Gauge,
     /// Time to compute the hashed post-state from the bundle state.
     pub(crate) hashed_post_state_duration_seconds: Histogram,

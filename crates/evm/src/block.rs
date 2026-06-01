@@ -4,8 +4,7 @@ use alloy_evm::{
     Database, Evm, RecoveredTx,
     block::{
         BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
-        ExecutableTx, GasOutput, OnStateHook, StateChangePostBlockSource,
-        StateChangePreBlockSource, StateChangeSource, TxResult,
+        ExecutableTx, GasOutput, TxResult,
     },
     eth::{
         EthBlockExecutor, EthTxResult,
@@ -331,16 +330,11 @@ where
             .map(|account| account.storage.len())
             .sum::<usize>();
 
-        let state_hook_start = Instant::now();
-        self.inner.system_caller.on_state(
-            StateChangeSource::PostBlock(StateChangePostBlockSource::Other("tempo_collected_fees")),
-            &state,
-        );
-        let state_hook_elapsed = state_hook_start.elapsed();
-
         let commit_start = Instant::now();
+        // `State::commit` invokes the configured state hook in the current Reth/revm version.
         self.inner.evm.db_mut().commit(state);
         let commit_elapsed = commit_start.elapsed();
+        let state_hook_elapsed = Duration::ZERO;
         self.pending_collected_fee_credits.clear();
 
         let stats = DeferredCollectedFeesStats {
@@ -393,10 +387,6 @@ where
             account.info.code = Some(code);
             account.mark_touch();
             let state = EvmState::from_iter([(address, account)]);
-            self.inner.system_caller.on_state(
-                StateChangeSource::PreBlock(StateChangePreBlockSource::BlockHashesContract),
-                &state,
-            );
             self.inner.evm.db_mut().commit(state);
         }
         Ok(())
@@ -844,10 +834,6 @@ where
         }
 
         Ok((evm, result))
-    }
-
-    fn set_state_hook(&mut self, hook: Option<Box<dyn OnStateHook>>) {
-        self.inner.set_state_hook(hook)
     }
 
     fn evm_mut(&mut self) -> &mut Self::Evm {
@@ -1546,18 +1532,6 @@ mod tests {
 
         executor.apply_pre_execution_changes().unwrap();
 
-        let hook_calls: Arc<Mutex<Vec<(StateChangeSource, EvmState)>>> =
-            Arc::new(Mutex::new(Vec::new()));
-        let hook_calls_clone = hook_calls.clone();
-        executor.set_state_hook(Some(Box::new(
-            move |source: StateChangeSource, state: &EvmState| {
-                hook_calls_clone
-                    .lock()
-                    .unwrap()
-                    .push((source, state.clone()));
-            },
-        )));
-
         let recipient = Address::with_last_byte(0x42);
         let token = Address::with_last_byte(0x20);
         let make_output = |amount| {
@@ -1591,6 +1565,16 @@ mod tests {
 
         executor.commit_transaction(make_output(U256::from(5)));
         executor.commit_transaction(make_output(U256::from(7)));
+
+        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls_clone = hook_calls.clone();
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state: &EvmState| {
+                hook_calls_clone.lock().unwrap().push(state.clone());
+            })));
+
         executor.apply_deferred_collected_fees().unwrap();
 
         let slot = collected_fee_slot(recipient, token);
@@ -1600,23 +1584,12 @@ mod tests {
         );
 
         let calls = hook_calls.lock().unwrap();
-        let collected_fee_calls = calls
-            .iter()
-            .filter(|(source, _)| {
-                matches!(
-                    source,
-                    StateChangeSource::PostBlock(StateChangePostBlockSource::Other(
-                        "tempo_collected_fees"
-                    ))
-                )
-            })
-            .collect::<Vec<_>>();
         assert_eq!(
-            collected_fee_calls.len(),
+            calls.len(),
             1,
             "state hook should receive one collected fee post-block update"
         );
-        let account = &collected_fee_calls[0].1[&TIP_FEE_MANAGER_ADDRESS];
+        let account = &calls[0][&TIP_FEE_MANAGER_ADDRESS];
         assert_eq!(account.storage[&slot].present_value, U256::from(12));
     }
 
@@ -2007,17 +1980,14 @@ mod tests {
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
-        let hook_calls: Arc<Mutex<Vec<(StateChangeSource, EvmState)>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
-        executor.set_state_hook(Some(Box::new(
-            move |source: StateChangeSource, state: &EvmState| {
-                hook_calls_clone
-                    .lock()
-                    .unwrap()
-                    .push((source, state.clone()));
-            },
-        )));
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state: &EvmState| {
+                hook_calls_clone.lock().unwrap().push(state.clone());
+            })));
 
         let addr = Address::with_last_byte(0xff);
         executor.deploy_precompile_at_boundary(addr).unwrap();
@@ -2031,11 +2001,11 @@ mod tests {
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert!(
-            calls[0].1.contains_key(&addr),
+            calls[0].contains_key(&addr),
             "state hook should contain the deployed address"
         );
         assert_eq!(
-            calls[0].1[&addr].original_info(),
+            calls[0][&addr].original_info(),
             Default::default(),
             "state hook account should preserve original_info"
         );
@@ -2059,24 +2029,21 @@ mod tests {
             .with_parent_beacon_block_root(B256::ZERO)
             .build(&mut db, &chainspec);
 
-        let hook_calls: Arc<Mutex<Vec<(StateChangeSource, EvmState)>>> =
-            Arc::new(Mutex::new(Vec::new()));
+        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
         let hook_calls_clone = hook_calls.clone();
-        executor.set_state_hook(Some(Box::new(
-            move |source: StateChangeSource, state: &EvmState| {
-                hook_calls_clone
-                    .lock()
-                    .unwrap()
-                    .push((source, state.clone()));
-            },
-        )));
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state: &EvmState| {
+                hook_calls_clone.lock().unwrap().push(state.clone());
+            })));
 
         executor.deploy_precompile_at_boundary(addr).unwrap();
 
         let calls = hook_calls.lock().unwrap();
         assert_eq!(calls.len(), 1, "state hook should be called exactly once");
         assert_eq!(
-            calls[0].1[&addr].original_info(),
+            calls[0][&addr].original_info(),
             original_info,
             "state hook account should preserve existing original_info"
         );
