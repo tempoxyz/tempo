@@ -170,20 +170,6 @@ impl AA2dPool {
         self.metrics.set_transaction_counts(total, pending, queued);
     }
 
-    fn dead_expiring_nonce_count(&self) -> usize {
-        self.expiring_nonce_txs
-            .values()
-            .filter(|entry| entry.is_dead())
-            .count()
-    }
-
-    #[cfg(test)]
-    fn live_expiring_nonce_count(&self) -> usize {
-        self.expiring_nonce_txs
-            .len()
-            .saturating_sub(self.dead_expiring_nonce_count())
-    }
-
     fn mark_expiring_nonce_included(
         &self,
         entry: &Arc<ExpiringNonceEntry>,
@@ -476,11 +462,7 @@ impl AA2dPool {
 
     /// Returns how many pending and queued transactions are in the pool.
     pub(crate) fn pending_and_queued_txn_count(&self) -> (usize, usize) {
-        (
-            self.pending_count
-                .saturating_sub(self.dead_expiring_nonce_count()),
-            self.queued_count,
-        )
+        (self.pending_count, self.queued_count)
     }
 
     /// Scans the pool to recompute counts for invariant checks.
@@ -494,12 +476,8 @@ impl AA2dPool {
             }
             acc
         });
-        // Live expiring nonce txs are always pending.
-        let expiring_pending = self
-            .expiring_nonce_txs
-            .values()
-            .filter(|entry| entry.is_live())
-            .count();
+        // Expiring nonce txs are always pending
+        let expiring_pending = self.expiring_nonce_txs.len();
         (pending_2d + expiring_pending, queued_2d)
     }
 
@@ -1616,12 +1594,12 @@ impl AA2dPool {
         );
         assert_eq!(
             pending_count + queued_count,
-            self.by_id.len() + self.live_expiring_nonce_count(),
-            "Pending ({}) + queued ({}) != live transactions (by_id: {} + live expiring: {})",
+            self.by_id.len() + self.expiring_nonce_txs.len(),
+            "Pending ({}) + queued ({}) != transactions (by_id: {} + expiring: {})",
             pending_count,
             queued_count,
             self.by_id.len(),
-            self.live_expiring_nonce_count()
+            self.expiring_nonce_txs.len()
         );
 
         // Verify quota compliance - counts don't exceed limits
@@ -1636,18 +1614,6 @@ impl AA2dPool {
             "queued_count {} exceeds limit {}",
             queued_count,
             self.config.queued_limit.max_txs
-        );
-
-        // Verify expiring nonce txs integrity
-        let scanned_dead_expiring = self
-            .expiring_nonce_txs
-            .values()
-            .filter(|entry| entry.is_dead())
-            .count();
-        assert_eq!(
-            self.dead_expiring_nonce_count(),
-            scanned_dead_expiring,
-            "dead expiring nonce count mismatch"
         );
 
         for (hash, entry) in &self.expiring_nonce_txs {
