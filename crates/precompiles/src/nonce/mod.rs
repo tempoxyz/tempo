@@ -139,7 +139,7 @@ impl NonceManager {
         Ok(false)
     }
 
-    /// Validates and records an expiring nonce transaction. Uses a fixed time wheel where
+    /// Validates an expiring nonce transaction without recording it. Uses a fixed time wheel where
     /// `valid_before` selects the reusable bucket and the replay hash selects a deterministic
     /// probe path inside that bucket.
     ///
@@ -149,17 +149,33 @@ impl NonceManager {
     /// This is called during transaction execution to:
     /// 1. Validate the expiry is within the allowed window
     /// 2. Probe the `valid_before` bucket for an empty/expired cell or matching fingerprint
-    /// 3. Mark the hash as seen by storing `valid_before || fingerprint_192`
     ///
     /// # Errors
     /// - `InvalidExpiringNonceExpiry` — `valid_before` not in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
     /// - `ExpiringNonceReplay` — transaction hash is already recorded and has not yet expired
     /// - `ExpiringNonceProbeExhausted` — all cells on the deterministic probe path are occupied
+    pub fn check_expiring_nonce(&self, expiring_nonce_hash: B256, valid_before: u64) -> Result<()> {
+        self.expiring_nonce_insert_cell(expiring_nonce_hash, valid_before)
+            .map(|_| ())
+    }
+
+    /// Validates and records an expiring nonce transaction.
     pub fn check_and_mark_expiring_nonce(
         &mut self,
         expiring_nonce_hash: B256,
         valid_before: u64,
     ) -> Result<()> {
+        let (cell_id, fingerprint) =
+            self.expiring_nonce_insert_cell(expiring_nonce_hash, valid_before)?;
+        let cell = Self::pack_expiring_nonce_cell(valid_before, fingerprint);
+        self.expiring_nonce_cells[cell_id].write(cell)
+    }
+
+    fn expiring_nonce_insert_cell(
+        &self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+    ) -> Result<(u32, U256)> {
         let now: u64 = self.storage.timestamp().saturating_to();
 
         // 1. Validate expiry window: must be in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
@@ -176,9 +192,7 @@ impl NonceManager {
             let (stored_v, stored_fingerprint) = Self::unpack_expiring_nonce_cell(word);
 
             if stored_v != valid_before {
-                let cell = Self::pack_expiring_nonce_cell(valid_before, fingerprint);
-                self.expiring_nonce_cells[cell_id].write(cell)?;
-                return Ok(());
+                return Ok((cell_id, fingerprint));
             }
 
             if stored_fingerprint == fingerprint {
@@ -411,6 +425,50 @@ mod tests {
 
             // Same tx hash should fail (replay)
             let result = mgr.check_and_mark_expiring_nonce(tx_hash, valid_before);
+            assert_eq!(
+                result.unwrap_err(),
+                TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_check_expiring_nonce_does_not_mark() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let now = 1000u64;
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+
+            let tx_hash = B256::repeat_byte(0x12);
+            let valid_before = now + 20;
+
+            mgr.check_expiring_nonce(tx_hash, valid_before)?;
+            assert!(!mgr.is_expiring_nonce_seen_at(tx_hash, valid_before)?);
+
+            mgr.check_and_mark_expiring_nonce(tx_hash, valid_before)?;
+            assert!(mgr.is_expiring_nonce_seen_at(tx_hash, valid_before)?);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_check_expiring_nonce_rejects_replay() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let now = 1000u64;
+        storage.set_timestamp(U256::from(now));
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+
+            let tx_hash = B256::repeat_byte(0x13);
+            let valid_before = now + 20;
+
+            mgr.check_and_mark_expiring_nonce(tx_hash, valid_before)?;
+
+            let result = mgr.check_expiring_nonce(tx_hash, valid_before);
             assert_eq!(
                 result.unwrap_err(),
                 TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())

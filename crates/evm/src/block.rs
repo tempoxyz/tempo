@@ -35,7 +35,7 @@ use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
 };
-use tempo_revm::{TempoHaltReason, evm::TempoContext};
+use tempo_revm::{PendingExpiringNonce, TempoHaltReason, evm::TempoContext};
 use tracing::trace;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -97,6 +97,8 @@ pub struct TempoTxResult {
     /// This is only populated for subblock transactions for which we need to store
     /// the full transaction encoding for later validation of subblock hash.
     tx: Option<TempoTxEnvelope>,
+    /// Expiring nonce replay marker to write if this transaction is committed.
+    pending_expiring_nonce: Option<PendingExpiringNonce>,
     /// Block gas consumed by this transaction. The block `gas_used` field will be incremented by this value.
     block_gas_used: u64,
     /// Validator-credited fee (in the validator's fee token) reported by `collectFeePostTx`.
@@ -212,6 +214,28 @@ where
             self.inner.evm.db_mut().commit(state);
         }
         Ok(())
+    }
+
+    fn pending_expiring_nonce(
+        &self,
+        tx: &TempoTxEnvelope,
+        signer: Address,
+    ) -> Option<PendingExpiringNonce> {
+        if !self.evm().cfg.spec.is_t1() || !tx.is_expiring_nonce() {
+            return None;
+        }
+
+        let valid_before = tx.as_aa()?.tx().valid_before?.get();
+        let replay_hash = if self.evm().cfg.spec.is_t1b() {
+            tx.unique_tx_identifier(signer)
+        } else {
+            *tx.tx_hash()
+        };
+
+        Some(PendingExpiringNonce {
+            replay_hash,
+            valid_before,
+        })
     }
 
     /// Validates a system transaction.
@@ -513,6 +537,18 @@ where
     ) -> Result<Self::Result, BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
+        let pending_expiring_nonce =
+            self.pending_expiring_nonce(recovered.tx(), *recovered.signer());
+
+        if let Some(pending) = pending_expiring_nonce
+            && self
+                .evm()
+                .has_pending_expiring_nonce_hash(pending.replay_hash)
+        {
+            return Err(
+                BlockValidationError::msg("duplicate expiring nonce replay hash in block").into(),
+            );
+        }
 
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
@@ -554,6 +590,7 @@ where
             is_payment: self.is_payment(recovered.tx()),
             tx: matches!(next_section, BlockSection::SubBlock { .. })
                 .then(|| recovered.tx().clone()),
+            pending_expiring_nonce,
             block_gas_used,
             validator_fee,
         })
@@ -565,11 +602,16 @@ where
             next_section,
             is_payment,
             tx,
+            pending_expiring_nonce,
             block_gas_used,
             validator_fee: _,
         } = output;
 
         let gas_output = self.inner.commit_transaction(inner);
+
+        if let Some(pending) = pending_expiring_nonce {
+            self.evm_mut().queue_expiring_nonce(pending);
+        }
 
         self.section = next_section;
 
@@ -611,7 +653,7 @@ where
     }
 
     fn finish(
-        self,
+        mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         let seen_subblock_signatures = match self.section {
             BlockSection::System {
@@ -628,6 +670,9 @@ where
         let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
 
         let regular_gas_used = self.inner.block_regular_gas_used;
+        self.evm_mut().finalize_expiring_nonces().map_err(|err| {
+            BlockExecutionError::msg(format!("failed to finalize expiring nonces: {err}"))
+        })?;
         let (evm, mut result) = self.inner.finish()?;
 
         // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
@@ -1321,6 +1366,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            pending_expiring_nonce: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
@@ -1404,6 +1450,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            pending_expiring_nonce: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
@@ -1444,6 +1491,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            pending_expiring_nonce: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
         };
@@ -1468,6 +1516,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            pending_expiring_nonce: None,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
         };
@@ -1531,6 +1580,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            pending_expiring_nonce: None,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
         };
@@ -1577,6 +1627,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            pending_expiring_nonce: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
         };
@@ -1626,6 +1677,7 @@ mod tests {
             next_section: BlockSection::GasIncentive,
             is_payment: false,
             tx: None,
+            pending_expiring_nonce: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
         };

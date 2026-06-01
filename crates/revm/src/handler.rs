@@ -82,7 +82,7 @@ const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
 /// Rounded buffer for each extra LOG3/no-data event emitted by key authorizations.
 const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 
-/// Gas cost for expiring nonce transactions (replay check + insert).
+/// Gas cost for expiring nonce transactions (replay check + deferred insert).
 ///
 /// See [TIP-1009] for full specification.
 ///
@@ -90,7 +90,7 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 ///
 /// Operations charged for the common first-cell path:
 /// - 1 cold SLOAD: `cell[cell_id]`
-/// - 1 SSTORE at RESET price: `cell[cell_id]=valid_before || fingerprint_192`
+/// - 1 deferred SSTORE at RESET price: `cell[cell_id]=valid_before || fingerprint_192`
 ///
 /// Why SSTORE_RESET (2,900) instead of SSTORE_SET (20,000):
 /// - SSTORE_SET cost exists to penalize permanent state growth
@@ -1008,10 +1008,10 @@ where
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
-                let mut nonce_manager = NonceManager::new();
+                let nonce_manager = NonceManager::new();
 
                 nonce_manager
-                    .check_and_mark_expiring_nonce(replay_hash, valid_before)
+                    .check_expiring_nonce(replay_hash, valid_before)
                     .map_err(|err| match err {
                         TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                         TempoPrecompileError::NonceError(

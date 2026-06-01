@@ -18,8 +18,8 @@ use reth_revm::{
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_revm::{
-    TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
-    handler::TempoEvmHandler,
+    PendingExpiringNonce, TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext,
+    evm::TempoContext, handler::TempoEvmHandler,
 };
 
 use crate::TempoBlockEnv;
@@ -119,6 +119,23 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     /// recent `collectFeePostTx`. Reset per-tx in the handler's `validate_env`.
     pub fn validator_fee(&self) -> alloy_primitives::U256 {
         self.inner.validator_fee
+    }
+
+    /// Returns true if the replay hash has already been included in this block.
+    pub fn has_pending_expiring_nonce_hash(&self, replay_hash: alloy_primitives::B256) -> bool {
+        self.inner.has_pending_expiring_nonce_hash(replay_hash)
+    }
+
+    /// Queues an expiring nonce replay marker for block finalization.
+    pub fn queue_expiring_nonce(&mut self, pending: PendingExpiringNonce) {
+        self.inner.queue_expiring_nonce(pending);
+    }
+
+    /// Writes all expiring nonce replay markers accumulated during this block.
+    pub fn finalize_expiring_nonces(
+        &mut self,
+    ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+        self.inner.finalize_expiring_nonces()
     }
 
     /// Sets the inspector for the EVM.
