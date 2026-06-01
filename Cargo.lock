@@ -13284,9 +13284,12 @@ name = "tempo-payload-builder"
 version = "1.8.0"
 dependencies = [
  "alloy-consensus",
+ "alloy-eip7928 0.4.1",
+ "alloy-eips",
  "alloy-primitives",
  "alloy-rlp",
  "alloy-sol-types",
+ "crossbeam-channel",
  "metrics",
  "reth-basic-payload-builder",
  "reth-chainspec",
@@ -13310,6 +13313,7 @@ dependencies = [
  "tempo-precompiles",
  "tempo-primitives",
  "tempo-transaction-pool",
+ "tokio",
  "tracing",
 ]
 

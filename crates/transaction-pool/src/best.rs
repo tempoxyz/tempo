@@ -1,20 +1,23 @@
 //! An iterator over the best transactions in the tempo pool.
 
-use crate::{transaction::TempoPooledTransaction, tt_2d_pool::BestAA2dTransactions};
+use crate::{
+    ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
+    tt_2d_pool::BestAA2dTransactions,
+};
 use alloy_primitives::{Address, U256, map::HashMap};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    BestTransactions, CoinbaseTipOrdering, Priority, ValidPoolTransaction,
-    error::InvalidPoolTransactionError, pool::BestTransactions as BestProtocolTransactions,
+    BestTransactions, Priority, ValidPoolTransaction, error::InvalidPoolTransactionError,
+    pool::BestTransactions as BestProtocolTransactions,
 };
 use std::sync::Arc;
 use tempo_evm::TempoTxResult;
 use tempo_precompiles::tip20::{decode_tip20_balance, is_tip20_prefix};
 
-type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
+type TxOrdering = TempoTipOrdering<TempoPooledTransaction>;
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
-type BestTransactionWithPriority = (BestTransaction, Priority<u128>);
+type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
 
 /// A best-transaction iterator that merges the protocol pool and the 2D nonces pool,
 /// always yielding the next best item from either iterator.
@@ -255,7 +258,7 @@ mod tests {
     fn protocol_best_transactions(txs: Vec<TestTx>) -> BestProtocolTransactions<TxOrdering> {
         let pool = Pool::new(
             OkValidator::<TempoPooledTransaction>::default(),
-            CoinbaseTipOrdering::default(),
+            TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );
