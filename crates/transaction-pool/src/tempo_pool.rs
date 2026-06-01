@@ -101,11 +101,17 @@ where
         &self,
         state: &AddressMap<BundleAccount>,
     ) -> Vec<Arc<ValidPoolTransaction<TempoPooledTransaction>>> {
-        let delta = self.aa_2d_pool.read().collect_state_update_delta(state);
+        // Logical expiry must be exclusive: builders/prewarming lose the
+        // expiring-entry liveness check once a tx has been yielded as a plain
+        // pool transaction. Physical tombstone cleanup is still delayed.
+        let mut aa_2d_pool = self.aa_2d_pool.write();
+        let delta = aa_2d_pool.collect_state_update_delta(state);
         if delta.is_empty() {
             return Vec::new();
         }
-        let (promoted, mined) = self.aa_2d_pool.write().apply_state_update_delta(delta);
+        let (promoted, mined) = aa_2d_pool.apply_state_update_delta(delta);
+        drop(aa_2d_pool);
+
         // Note: mined transactions are notified via the vanilla pool updates
         self.protocol_pool
             .inner()
