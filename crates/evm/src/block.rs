@@ -25,7 +25,10 @@ use reth_revm::{
     context::result::ResultAndState,
     state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, HashMap, HashSet},
+    time::{Duration, Instant},
+};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
@@ -41,7 +44,7 @@ use tempo_primitives::{
     subblock::PartialValidatorKey,
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
-use tracing::trace;
+use tracing::{debug, trace};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BlockSection {
@@ -106,6 +109,29 @@ where
     account.mark_touch();
 
     Ok(EvmState::from_iter([(TIP_FEE_MANAGER_ADDRESS, account)]))
+}
+
+/// Diagnostics for post-block `collected_fees` ledger updates.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DeferredCollectedFeesStats {
+    /// Number of queued per-transaction credits before aggregation.
+    pub pending_credits: usize,
+    /// Number of unique `(recipient, token)` ledger entries after aggregation.
+    pub unique_increments: usize,
+    /// Number of accounts touched by the synthesized post-block state.
+    pub state_accounts: usize,
+    /// Number of storage slots touched by the synthesized post-block state.
+    pub state_storage_slots: usize,
+    /// Time spent aggregating queued credits.
+    pub aggregate_elapsed: Duration,
+    /// Time spent reading current fee-manager storage and building the state update.
+    pub state_build_elapsed: Duration,
+    /// Time spent dispatching the post-block state hook.
+    pub state_hook_elapsed: Duration,
+    /// Time spent committing the synthesized state into the EVM state DB.
+    pub commit_elapsed: Duration,
+    /// Total time spent in `apply_deferred_collected_fees`.
+    pub total_elapsed: Duration,
 }
 
 /// Builder for [`TempoReceipt`].
@@ -247,11 +273,19 @@ where
     }
 
     /// Applies deferred `collected_fees` ledger increments as a post-block state update.
-    pub fn apply_deferred_collected_fees(&mut self) -> Result<(), BlockExecutionError> {
+    pub fn apply_deferred_collected_fees(
+        &mut self,
+    ) -> Result<DeferredCollectedFeesStats, BlockExecutionError> {
+        let total_start = Instant::now();
+        let pending_credits = self.pending_collected_fee_credits.len();
         if self.pending_collected_fee_credits.is_empty() {
-            return Ok(());
+            return Ok(DeferredCollectedFeesStats {
+                total_elapsed: total_start.elapsed(),
+                ..Default::default()
+            });
         }
 
+        let aggregate_start = Instant::now();
         let mut increments = BTreeMap::<(Address, Address), U256>::new();
         for credit in &self.pending_collected_fee_credits {
             if credit.amount.is_zero() {
@@ -265,21 +299,76 @@ where
                 .checked_add(credit.amount)
                 .ok_or_else(|| BlockExecutionError::msg("collected fee credit overflow"))?;
         }
+        let aggregate_elapsed = aggregate_start.elapsed();
 
+        let unique_increments = increments.len();
         if increments.is_empty() {
             self.pending_collected_fee_credits.clear();
-            return Ok(());
+            let stats = DeferredCollectedFeesStats {
+                pending_credits,
+                unique_increments,
+                aggregate_elapsed,
+                total_elapsed: total_start.elapsed(),
+                ..Default::default()
+            };
+            debug!(
+                target: "evm",
+                pending_credits = stats.pending_credits,
+                unique_increments = stats.unique_increments,
+                aggregate_elapsed = ?stats.aggregate_elapsed,
+                total_elapsed = ?stats.total_elapsed,
+                "skipped deferred collected fee credits"
+            );
+            return Ok(stats);
         }
 
+        let state_build_start = Instant::now();
         let state = collected_fee_state(&increments, self.inner.evm.db_mut())?;
+        let state_build_elapsed = state_build_start.elapsed();
+        let state_accounts = state.len();
+        let state_storage_slots = state
+            .values()
+            .map(|account| account.storage.len())
+            .sum::<usize>();
+
+        let state_hook_start = Instant::now();
         self.inner.system_caller.on_state(
             StateChangeSource::PostBlock(StateChangePostBlockSource::Other("tempo_collected_fees")),
             &state,
         );
+        let state_hook_elapsed = state_hook_start.elapsed();
+
+        let commit_start = Instant::now();
         self.inner.evm.db_mut().commit(state);
+        let commit_elapsed = commit_start.elapsed();
         self.pending_collected_fee_credits.clear();
 
-        Ok(())
+        let stats = DeferredCollectedFeesStats {
+            pending_credits,
+            unique_increments,
+            state_accounts,
+            state_storage_slots,
+            aggregate_elapsed,
+            state_build_elapsed,
+            state_hook_elapsed,
+            commit_elapsed,
+            total_elapsed: total_start.elapsed(),
+        };
+        debug!(
+            target: "evm",
+            pending_credits = stats.pending_credits,
+            unique_increments = stats.unique_increments,
+            state_accounts = stats.state_accounts,
+            state_storage_slots = stats.state_storage_slots,
+            aggregate_elapsed = ?stats.aggregate_elapsed,
+            state_build_elapsed = ?stats.state_build_elapsed,
+            state_hook_elapsed = ?stats.state_hook_elapsed,
+            commit_elapsed = ?stats.commit_elapsed,
+            total_elapsed = ?stats.total_elapsed,
+            "applied deferred collected fee credits"
+        );
+
+        Ok(stats)
     }
 
     /// Deploys `0xEF` marker bytecode to a precompile address if it doesn't already have code.

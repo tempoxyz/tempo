@@ -8,7 +8,9 @@ use alloy_consensus::{BlockHeader as _, Transaction};
 use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
 mod block;
-pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
+pub use block::{
+    DeferredCollectedFeesStats, TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult,
+};
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 #[cfg(feature = "engine")]
