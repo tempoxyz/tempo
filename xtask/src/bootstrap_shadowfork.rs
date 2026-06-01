@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, HashMap},
-    net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr},
+    net::{IpAddr, SocketAddr},
     num::NonZeroU32,
     path::{Path, PathBuf},
 };
@@ -52,12 +52,16 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoPrimitives;
 
-const SHADOW_EPOCH: u64 = 1;
-const SHADOW_CHAINSPEC_FILE: &str = "shadowfork-chain.json";
+use crate::shadowfork::{
+    SHADOW_CHAINSPEC_FILE, SHADOW_EPOCH, SHADOWFORK_SIGNING_KEY_SECRET, consensus_listen_addr,
+    mark_executable, parse_snapshot_manifest_url, render_script_footer, render_script_header,
+    shell_single_quote, should_allow_private_ips, source_chain_cli_arg,
+    write_shadow_chainspec as write_shadow_chainspec_file,
+};
+
 const RUN_SCRIPT_FILE: &str = "run-shadowfork.sh";
 const DKG_STATES_METADATA_PARTITION: &str = "engine_dkg_manager_states_metadata";
 const MAXIMUM_VALIDATORS: NonZeroU32 = NZU32!(u16::MAX as u32);
-const SHADOWFORK_SIGNING_KEY_SECRET: &str = "tempo-shadowfork-signing-key-secret";
 
 /// Reanchors generated shadow-fork artifacts onto a downloaded source snapshot.
 #[derive(Debug, clap::Parser)]
@@ -137,13 +141,12 @@ impl BootstrapShadowfork {
             .checked_add(1)
             .ok_or_eyre("fork block number overflowed shadow epoch length")?;
         let shadow_epoch_length = fallback_shadow_epoch_length;
-        if let Some(manifest_shadow_epoch_length) = manifest.shadow_epoch_length {
-            if manifest_shadow_epoch_length != shadow_epoch_length {
-                eprintln!(
-                    "warning: manifest shadow_epoch_length is `{}`, but bootstrap needs `{}` for the selected boundary block",
-                    manifest_shadow_epoch_length, shadow_epoch_length,
-                );
-            }
+        if let Some(manifest_shadow_epoch_length) = manifest.shadow_epoch_length
+            && manifest_shadow_epoch_length != shadow_epoch_length
+        {
+            eprintln!(
+                "warning: manifest shadow_epoch_length is `{manifest_shadow_epoch_length}`, but bootstrap needs `{shadow_epoch_length}` for the selected boundary block",
+            );
         }
 
         let chainspec_path =
@@ -164,14 +167,16 @@ impl BootstrapShadowfork {
         let shadow_validator_config_v2_storage =
             shadow_validator_config_v2_storage(&manifest, manifest_dir)?;
         let patched_execution_datadirs = patch_execution_validator_registries(
-            &manifest,
-            manifest_dir,
-            node_dir.as_deref(),
             &target_nodes,
-            reanchor_block_number,
-            &shadow_validator_config_v2_storage,
-            &shadow_validators,
-            &outcome,
+            ExecutionRegistryPatch {
+                manifest: &manifest,
+                manifest_dir,
+                node_dir: node_dir.as_deref(),
+                reanchor_block_number,
+                validator_config_storage: &shadow_validator_config_v2_storage,
+                validators: &shadow_validators,
+                outcome: &outcome,
+            },
         )?;
 
         for validator in &target_nodes {
@@ -312,82 +317,13 @@ fn write_shadow_chainspec(
         "shadow chainspec `{}` already exists; rerun with --force to overwrite",
         chainspec_path.display(),
     );
-
-    let mut genesis = source_genesis_json(&manifest.source_chain, manifest.source_chain_id)?;
-    let config = genesis
-        .get_mut("config")
-        .and_then(serde_json::Value::as_object_mut)
-        .ok_or_eyre("source genesis JSON does not contain an object at `config`")?;
-    config.insert(
-        "epochLength".to_string(),
-        serde_json::Value::from(shadow_epoch_length),
-    );
-
-    let json = serde_json::to_string_pretty(&genesis)
-        .wrap_err("failed serializing shadow chainspec JSON")?;
-    std::fs::write(&chainspec_path, json).wrap_err_with(|| {
-        format!(
-            "failed writing shadow chainspec to `{}`",
-            chainspec_path.display()
-        )
-    })?;
+    write_shadow_chainspec_file(
+        &chainspec_path,
+        &manifest.source_chain,
+        manifest.source_chain_id,
+        shadow_epoch_length,
+    )?;
     Ok(chainspec_path)
-}
-
-fn source_genesis_json(
-    source_chain: &str,
-    source_chain_id: u64,
-) -> eyre::Result<serde_json::Value> {
-    let genesis = match source_chain.to_ascii_lowercase().as_str() {
-        "mainnet" | "presto" => include_str!("../../crates/chainspec/src/genesis/presto.json"),
-        "moderato" | "testnet" => include_str!("../../crates/chainspec/src/genesis/moderato.json"),
-        "dev" => include_str!("../../crates/chainspec/src/genesis/dev.json"),
-        _ if source_chain_id == 4217 => {
-            include_str!("../../crates/chainspec/src/genesis/presto.json")
-        }
-        _ if source_chain_id == 42431 => {
-            include_str!("../../crates/chainspec/src/genesis/moderato.json")
-        }
-        _ => {
-            return Err(eyre!(
-                "cannot infer source chainspec for source_chain `{source_chain}` and chain id `{source_chain_id}`"
-            ));
-        }
-    };
-
-    serde_json::from_str(genesis).wrap_err("failed parsing bundled source genesis JSON")
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SnapshotManifestInfo {
-    chain_id: u64,
-    block_number: u64,
-}
-
-fn parse_snapshot_manifest_url(url: &str) -> Option<SnapshotManifestInfo> {
-    let path = url.split_once('?').map_or(url, |(path, _)| path);
-    for segment in path
-        .split('/')
-        .filter(|segment| segment.starts_with("tempo-"))
-    {
-        let mut parts = segment.split('-');
-        if parts.next()? != "tempo" {
-            continue;
-        }
-
-        let (Some(chain_id), Some(block_number)) = (parts.next(), parts.next()) else {
-            continue;
-        };
-        let (Ok(chain_id), Ok(block_number)) = (chain_id.parse(), block_number.parse()) else {
-            continue;
-        };
-
-        return Some(SnapshotManifestInfo {
-            chain_id,
-            block_number,
-        });
-    }
-    None
 }
 
 fn execution_db_path(
@@ -431,17 +367,6 @@ fn execution_db_path(
         })
 }
 
-fn source_chain_cli_arg(source_chain: &str, source_chain_id: u64) -> Option<&'static str> {
-    match source_chain.to_ascii_lowercase().as_str() {
-        "mainnet" | "presto" => Some("mainnet"),
-        "moderato" | "testnet" => Some("moderato"),
-        "dev" => Some("dev"),
-        _ if source_chain_id == 4217 => Some("mainnet"),
-        _ if source_chain_id == 42431 => Some("moderato"),
-        _ => None,
-    }
-}
-
 fn storage_key(slot: U256) -> B256 {
     B256::from(slot.to_be_bytes::<32>())
 }
@@ -466,14 +391,19 @@ fn read_storage_settings<TX: DbTx>(tx: &TX) -> eyre::Result<StorageSettings> {
         .unwrap_or_else(StorageSettings::v1))
 }
 
+type StorageSlot = (Address, U256);
+type StorageOverlay = HashMap<StorageSlot, U256>;
+type EmittedEvents = Vec<(Address, LogData)>;
+type StorageSnapshot = (StorageOverlay, EmittedEvents);
+
 struct DbStorageOverlay<'tx, TX> {
     tx: &'tx TX,
     chain_id: u64,
     block_number: u64,
     storage_settings: StorageSettings,
-    overlay: HashMap<(Address, U256), U256>,
-    events: Vec<(Address, LogData)>,
-    snapshots: Vec<(HashMap<(Address, U256), U256>, Vec<(Address, LogData)>)>,
+    overlay: StorageOverlay,
+    events: EmittedEvents,
+    snapshots: Vec<StorageSnapshot>,
 }
 
 impl<'tx, TX> DbStorageOverlay<'tx, TX>
@@ -861,26 +791,30 @@ fn read_generated_validator_config_v2_storage(
         .collect()
 }
 
-fn patch_execution_validator_registries(
-    manifest: &ShadowForkManifest,
-    manifest_dir: &Path,
-    node_dir: Option<&Path>,
-    nodes: &[&NodeManifest],
+struct ExecutionRegistryPatch<'a> {
+    manifest: &'a ShadowForkManifest,
+    manifest_dir: &'a Path,
+    node_dir: Option<&'a Path>,
     reanchor_block_number: u64,
-    validator_config_storage: &[(U256, U256)],
-    validators: &[ShadowValidatorRegistration],
-    outcome: &OnchainDkgOutcome,
+    validator_config_storage: &'a [(U256, U256)],
+    validators: &'a [ShadowValidatorRegistration],
+    outcome: &'a OnchainDkgOutcome,
+}
+
+fn patch_execution_validator_registries(
+    nodes: &[&NodeManifest],
+    patch: ExecutionRegistryPatch<'_>,
 ) -> eyre::Result<usize> {
     let mut patched = 0;
     for node in nodes {
-        let db_path = execution_db_path(manifest, manifest_dir, node, node_dir)?;
+        let db_path = execution_db_path(patch.manifest, patch.manifest_dir, node, patch.node_dir)?;
         patch_execution_validator_registry(
             &db_path,
-            manifest.source_chain_id,
-            reanchor_block_number,
-            validator_config_storage,
-            validators,
-            outcome,
+            patch.manifest.source_chain_id,
+            patch.reanchor_block_number,
+            patch.validator_config_storage,
+            patch.validators,
+            patch.outcome,
         )
         .wrap_err_with(|| {
             format!(
@@ -1324,40 +1258,7 @@ fn write_run_script(
             .map(|node| node.validator_addr.ip()),
     );
 
-    let mut script = String::new();
-    script.push_str(
-        r#"#!/usr/bin/env bash
-set -euo pipefail
-
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-
-if [[ -n "${TEMPO_BIN:-}" ]]; then
-  TEMPO_CMD=("$TEMPO_BIN")
-else
-  TEMPO_CMD=(cargo run --bin tempo --)
-fi
-
-run_tempo() {
-  "${TEMPO_CMD[@]}" "$@"
-}
-
-PIDS=()
-
-shutdown_nodes() {
-  local status="$1"
-  trap - INT TERM
-  if ((${#PIDS[@]})); then
-    kill "${PIDS[@]}" 2>/dev/null || true
-    wait "${PIDS[@]}" 2>/dev/null || true
-  fi
-  exit "$status"
-}
-
-trap 'shutdown_nodes 130' INT
-trap 'shutdown_nodes 143' TERM
-
-"#,
-    );
+    let mut script = render_script_header();
 
     for validator in nodes {
         let node = node_script_dir(manifest_dir, validator, node_dir);
@@ -1405,11 +1306,7 @@ PIDS+=(\"$!\")\n\n",
             authrpc_port = validator.authrpc_port,
         ));
     }
-    script.push_str(
-        r#"echo "started ${#PIDS[@]} nodes; press Ctrl-C to stop"
-wait "${PIDS[@]}"
-"#,
-    );
+    script.push_str(&render_script_footer());
 
     std::fs::write(&run_script_path, script).wrap_err_with(|| {
         format!(
@@ -1421,32 +1318,6 @@ wait "${PIDS[@]}"
     Ok(run_script_path)
 }
 
-fn consensus_listen_addr(advertised_addr: SocketAddr, listen_port: u16) -> SocketAddr {
-    if advertised_addr.ip().is_loopback() {
-        return SocketAddr::new(advertised_addr.ip(), listen_port);
-    }
-
-    match advertised_addr {
-        SocketAddr::V4(_) => SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), listen_port),
-        SocketAddr::V6(_) => SocketAddr::new(IpAddr::V6(Ipv6Addr::UNSPECIFIED), listen_port),
-    }
-}
-
-fn should_allow_private_ips(ips: impl IntoIterator<Item = IpAddr>) -> bool {
-    ips.into_iter().any(is_private_or_loopback)
-}
-
-fn is_private_or_loopback(ip: IpAddr) -> bool {
-    match ip {
-        IpAddr::V4(ip) => ip.is_private() || ip.is_loopback() || ip.is_link_local(),
-        IpAddr::V6(ip) => {
-            ip.is_loopback()
-                || (ip.segments()[0] & 0xfe00) == 0xfc00
-                || (ip.segments()[0] & 0xffc0) == 0xfe80
-        }
-    }
-}
-
 fn node_script_dir(manifest_dir: &Path, node: &NodeManifest, node_dir: Option<&Path>) -> String {
     if node_dir.is_none() {
         return format!("\"${{SCRIPT_DIR}}/node-{}\"", node.index);
@@ -1454,27 +1325,6 @@ fn node_script_dir(manifest_dir: &Path, node: &NodeManifest, node_dir: Option<&P
 
     let path = node_artifact_dir(manifest_dir, node, node_dir);
     shell_single_quote(&path.display().to_string())
-}
-
-fn shell_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
-#[cfg(unix)]
-fn mark_executable(path: &Path) -> eyre::Result<()> {
-    use std::os::unix::fs::PermissionsExt as _;
-
-    let mut permissions = std::fs::metadata(path)
-        .wrap_err_with(|| format!("failed reading metadata for `{}`", path.display()))?
-        .permissions();
-    permissions.set_mode(0o755);
-    std::fs::set_permissions(path, permissions)
-        .wrap_err_with(|| format!("failed marking `{}` executable", path.display()))
-}
-
-#[cfg(not(unix))]
-fn mark_executable(_path: &Path) -> eyre::Result<()> {
-    Ok(())
 }
 
 #[derive(Debug, Deserialize)]

@@ -22,6 +22,7 @@ mod generate_shadowfork;
 mod generate_state_bloat;
 mod genesis_args;
 mod get_dkg_outcome;
+mod shadowfork;
 
 #[tokio::main]
 async fn main() -> eyre::Result<()> {
