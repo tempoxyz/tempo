@@ -3,27 +3,40 @@ use alloy_evm::{
     Evm, RecoveredTx,
     block::{BlockExecutionError, BlockExecutor},
 };
-use alloy_primitives::{Address, B256, TxKind, U256};
+use alloy_primitives::{Address, B256, IntoLogData, Log, TxKind, U256};
 use alloy_sol_types::SolInterface;
 use rayon::prelude::*;
 use reth_evm::block::StateDB;
 use reth_primitives_traits::Recovered;
 use reth_revm::{
     Inspector,
-    context::{Block as _, Transaction as _},
+    context::{Block as _, Cfg as _, CfgEnv, Transaction as _, result::ResultGas},
+    context_interface::{
+        cfg::{GasId, GasParams, gas},
+        context::SStoreResult,
+    },
+    interpreter::InitialAndFloorGas,
     state::{Account, AccountInfo, EvmState, EvmStorageSlot, TransactionId},
 };
 use std::collections::{HashMap, HashSet};
-use tempo_contracts::precompiles::ITIP20;
+use tempo_chainspec::{
+    constants::gas::tempo_t6_discounted_payment_effective_gas_price, hardfork::TempoHardfork,
+};
+use tempo_contracts::precompiles::{ITIP20, NonceEvent, TIP20Event};
 use tempo_precompiles::{
-    TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS,
+    NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP403_REGISTRY_ADDRESS, input_cost,
     storage::StorageKey as _,
     tip_fee_manager::TipFeeManager,
     tip20::{U128_MAX, decode_tip20_balance, tip20_slots},
     tip403_registry::{ALLOW_ALL_POLICY_ID, tip403_registry_slots},
 };
-use tempo_primitives::{TempoAddressExt, TempoTxEnvelope};
-use tempo_revm::{TempoTxEnv, evm::TempoContext};
+use tempo_primitives::{
+    TempoAddressExt, TempoTxEnvelope,
+    transaction::{TEMPO_EXPIRING_NONCE_KEY, calc_gas_balance_spending},
+};
+use tempo_revm::{
+    TempoTxEnv, calculate_aa_batch_intrinsic_gas, evm::TempoContext, gas_params::SSTORE_SET_COST,
+};
 
 /// One payload-builder candidate for the BlockSTM TIP-20 transfer path.
 #[derive(Debug)]
@@ -66,6 +79,10 @@ pub enum Tip20TransferBlockstmFallback {
     KeychainSignature,
     InvalidFeePayer,
     InvalidFeeCharge,
+    InvalidNonce,
+    AccountHasCode,
+    GasLimit,
+    GasOverflow,
     InsufficientBalance,
     BalanceOverflow,
     StmValidation,
@@ -99,6 +116,10 @@ impl Tip20TransferBlockstmFallback {
             Self::KeychainSignature => "keychain_signature",
             Self::InvalidFeePayer => "invalid_fee_payer",
             Self::InvalidFeeCharge => "invalid_fee_charge",
+            Self::InvalidNonce => "invalid_nonce",
+            Self::AccountHasCode => "account_has_code",
+            Self::GasLimit => "gas_limit",
+            Self::GasOverflow => "gas_overflow",
             Self::InsufficientBalance => "insufficient_balance",
             Self::BalanceOverflow => "balance_overflow",
             Self::StmValidation => "stm_validation",
@@ -123,12 +144,12 @@ impl Tip20TransferBlockstmFallback {
 pub enum Tip20TransferBlockstmBatchError {
     /// The batch is not eligible for BlockSTM execution; no transaction was executed.
     Fallback(Tip20TransferBlockstmFallback),
-    /// The canonical executor rejected a transaction. Previous transactions in the batch were
-    /// already committed exactly as normal block execution would commit them.
+    /// Synthetic validation/execution rejected a transaction. Previous transactions in the batch
+    /// were already committed through the normal block executor commit path.
     Execution {
         /// Index of the failed transaction in the attempted batch.
         transaction_index: usize,
-        /// Execution error returned by the canonical block executor.
+        /// Execution error returned by synthetic result construction or block validation.
         error: BlockExecutionError,
     },
     /// The batch preflight failed while reading state; no transaction was executed.
@@ -147,6 +168,12 @@ struct Tip20BlockstmExecution {
     retry_count: usize,
 }
 
+#[derive(Debug, Clone, Default)]
+struct Tip20BlockstmBaseState {
+    storage: HashMap<StorageKey, U256>,
+    accounts: HashMap<Address, AccountInfo>,
+}
+
 #[derive(Debug, Clone)]
 struct Tip20BlockstmTxExecution {
     reads: HashMap<StorageKey, VersionedValue>,
@@ -161,6 +188,7 @@ struct VersionedValue {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct Tip20TransferBlockstmPlan {
+    nonce: Tip20BlockstmNonceAction,
     fee_payer: Address,
     max_fee: U256,
     actions: Vec<Tip20BlockstmAction>,
@@ -168,17 +196,64 @@ struct Tip20TransferBlockstmPlan {
 
 impl Tip20TransferBlockstmPlan {
     fn read_set(&self) -> HashSet<StorageKey> {
-        self.actions
-            .iter()
-            .flat_map(Tip20BlockstmAction::read_set)
+        core::iter::once(self.nonce.read_key())
+            .chain(self.actions.iter().flat_map(Tip20BlockstmAction::read_set))
             .collect()
     }
 
     fn write_set(&self) -> HashSet<StorageKey> {
-        self.actions
-            .iter()
-            .flat_map(Tip20BlockstmAction::write_set)
+        core::iter::once(self.nonce.write_key())
+            .chain(self.actions.iter().flat_map(Tip20BlockstmAction::write_set))
             .collect()
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Tip20BlockstmNonceAction {
+    Protocol {
+        caller: Address,
+        nonce: u64,
+    },
+    TwoDimensional {
+        caller: Address,
+        nonce_key: U256,
+        nonce: u64,
+    },
+}
+
+impl Tip20BlockstmNonceAction {
+    fn caller(self) -> Address {
+        match self {
+            Self::Protocol { caller, .. } | Self::TwoDimensional { caller, .. } => caller,
+        }
+    }
+
+    fn read_key(self) -> StorageKey {
+        match self {
+            Self::Protocol { caller, .. } => protocol_nonce_key(caller),
+            Self::TwoDimensional {
+                caller, nonce_key, ..
+            } => two_dimensional_nonce_key(caller, nonce_key),
+        }
+    }
+
+    fn write_key(self) -> StorageKey {
+        self.read_key()
+    }
+
+    fn log(self) -> Option<Log> {
+        match self {
+            Self::Protocol { .. } => None,
+            Self::TwoDimensional {
+                caller,
+                nonce_key,
+                nonce,
+            } => Some(Log {
+                address: NONCE_PRECOMPILE_ADDRESS,
+                data: NonceEvent::nonce_incremented(caller, nonce_key, nonce.saturating_add(1))
+                    .into_log_data(),
+            }),
+        }
     }
 }
 
@@ -250,9 +325,14 @@ struct Tip20TransferAction {
     to: Address,
     amount: U256,
     memo: Option<B256>,
+    calldata_len: usize,
 }
 
 impl Tip20TransferAction {
+    fn calldata_len(&self) -> usize {
+        self.calldata_len
+    }
+
     fn write_set(&self) -> [StorageKey; 2] {
         [
             balance_key(self.token, self.from),
@@ -297,15 +377,19 @@ where
             .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
         self.validate_tip20_transfer_state(&decoded)?;
 
-        let base_storage = self.read_plan_storage(&decoded)?;
+        let base_state = self.read_plan_base_state(&decoded)?;
         let execution = execute_tip20_transfer_plans_blockstm(
             &decoded,
-            &base_storage,
+            &base_state.storage,
             self.inner.evm.cfg.spec.is_t6(),
         )
         .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
 
-        let action_count = decoded.iter().map(|plan| plan.actions.len()).sum();
+        let action_count = decoded
+            .iter()
+            .flat_map(|plan| &plan.actions)
+            .filter(|action| matches!(action, Tip20BlockstmAction::Transfer(_)))
+            .count();
         let read_set_count = execution.txs.iter().map(|tx| tx.reads.len()).sum();
         let write_set_count = execution.txs.iter().map(|tx| tx.writes.len()).sum();
 
@@ -315,21 +399,50 @@ where
             .zip(&decoded)
             .enumerate()
         {
-            let result = self
-                .execute_transaction_without_commit((tx.tx_env, tx.recovered))
-                .map_err(|error| Tip20TransferBlockstmBatchError::Execution {
-                    transaction_index: index,
-                    error,
-                })?;
             let mut tx_execution = tx_execution.clone();
+            let gas = synthetic_tip20_result_gas(
+                &tx.tx_env,
+                plan,
+                &tx_execution,
+                &base_state,
+                &self.inner.evm.cfg,
+            )
+            .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
+            let tx_gas_used = gas.tx_gas_used();
+            let actual_fee = synthetic_actual_fee(
+                &tx.tx_env,
+                tx_gas_used,
+                basefee,
+                self.inner.evm.cfg.spec.is_t6(),
+            );
             settle_actual_fee(
                 plan,
                 &mut tx_execution,
-                result.validator_fee(),
+                actual_fee,
                 self.inner.evm.cfg.spec.is_t6(),
             )
             .map_err(Tip20TransferBlockstmBatchError::Fallback)?;
-            let result = result.with_blockstm_storage_overlay(execution_state(&tx_execution));
+            let block_gas_used = if self.inner.evm.cfg.enable_amsterdam_eip8037 {
+                gas.block_regular_gas_used()
+            } else {
+                tx_gas_used
+            };
+            let next_section = self
+                .validate_tx(tx.recovered.tx(), block_gas_used)
+                .map_err(|error| Tip20TransferBlockstmBatchError::Execution {
+                    transaction_index: index,
+                    error: error.into(),
+                })?;
+            let result = TempoTxResult::new_blockstm_tip20_success(
+                tx.recovered.tx(),
+                execution_state(&tx_execution, &base_state),
+                synthetic_tip20_logs(plan, actual_fee),
+                gas,
+                next_section,
+                self.is_payment(tx.recovered.tx()),
+                block_gas_used,
+                actual_fee,
+            );
             on_result(index, &result);
             self.commit_transaction(result);
         }
@@ -464,23 +577,65 @@ where
             .map_err(Tip20TransferBlockstmBatchError::Database)
     }
 
-    fn read_plan_storage(
+    fn read_plan_base_state(
         &mut self,
         plans: &[Tip20TransferBlockstmPlan],
-    ) -> Result<HashMap<StorageKey, U256>, Tip20TransferBlockstmBatchError> {
+    ) -> Result<Tip20BlockstmBaseState, Tip20TransferBlockstmBatchError> {
         let mut keys = HashSet::new();
+        let mut caller_accounts = HashSet::new();
         for plan in plans {
             keys.extend(plan.read_set());
             keys.extend(plan.write_set());
+            caller_accounts.insert(plan.nonce.caller());
         }
+        let accounts = keys.iter().map(|key| key.address).collect::<HashSet<_>>();
 
         let mut storage = HashMap::with_capacity(keys.len());
         for key in keys {
-            let value = self.read_storage(key.address, key.slot)?;
+            let value = if is_protocol_nonce_key(key) {
+                let info = self.read_account_info(key.address)?;
+                U256::from(info.nonce)
+            } else {
+                self.read_storage(key.address, key.slot)?
+            };
             storage.insert(key, value);
         }
 
-        Ok(storage)
+        let mut account_infos = HashMap::with_capacity(accounts.len());
+        for account in accounts {
+            let info = self.read_account_info(account)?;
+            account_infos.insert(account, info);
+        }
+        for caller in caller_accounts {
+            let Some(info) = account_infos.get(&caller) else {
+                return Err(Tip20TransferBlockstmBatchError::Fallback(
+                    Tip20TransferBlockstmFallback::StmValidation,
+                ));
+            };
+            if !info.is_empty_code_hash() {
+                return Err(Tip20TransferBlockstmBatchError::Fallback(
+                    Tip20TransferBlockstmFallback::AccountHasCode,
+                ));
+            }
+        }
+
+        Ok(Tip20BlockstmBaseState {
+            storage,
+            accounts: account_infos,
+        })
+    }
+
+    fn read_account_info(
+        &mut self,
+        address: Address,
+    ) -> Result<AccountInfo, Tip20TransferBlockstmBatchError> {
+        self.inner
+            .evm
+            .db_mut()
+            .basic(address)
+            .map_err(BlockExecutionError::other)
+            .map_err(Tip20TransferBlockstmBatchError::Database)
+            .map(|account| account.unwrap_or_default())
     }
 }
 
@@ -559,6 +714,7 @@ fn build_tip20_transfer_plan(
     blob_gasprice: u128,
 ) -> Result<Tip20TransferBlockstmPlan, Tip20TransferBlockstmFallback> {
     let transfers = decode_tip20_transfer_actions(tx, validator_token)?;
+    let nonce = decode_nonce_action(&tx.tx_env)?;
     let fee_payer = tx
         .tx_env
         .fee_payer()
@@ -592,6 +748,7 @@ fn build_tip20_transfer_plan(
     }
 
     Ok(Tip20TransferBlockstmPlan {
+        nonce,
         fee_payer,
         max_fee,
         actions,
@@ -613,31 +770,44 @@ fn execute_tip20_transfer_plans_blockstm(
         let attempts = pending
             .par_iter()
             .map(|&index| {
-                execute_tip20_transfer_plan(
+                (
                     index,
-                    &plans[index],
-                    base_storage,
-                    &version_snapshot,
-                    is_t6,
+                    execute_tip20_transfer_plan(
+                        index,
+                        &plans[index],
+                        base_storage,
+                        &version_snapshot,
+                        is_t6,
+                    ),
                 )
-                .map(|execution| (index, execution))
             })
-            .collect::<Result<Vec<_>, _>>()?;
+            .collect::<Vec<_>>();
 
         let mut next_pending = Vec::new();
+        let mut committed = 0;
         for (index, execution) in attempts {
+            let execution = match execution {
+                Ok(execution) => execution,
+                Err(Tip20TransferBlockstmFallback::InvalidNonce) => {
+                    retry_count += 1;
+                    next_pending.push(index);
+                    continue;
+                }
+                Err(err) => return Err(err),
+            };
             if validate_tip20_execution_reads(index, &execution, base_storage, &versions) {
                 for (key, value) in &execution.writes {
                     versions.entry(*key).or_default().push((index, *value));
                 }
                 executions[index] = Some(execution);
+                committed += 1;
             } else {
                 retry_count += 1;
                 next_pending.push(index);
             }
         }
 
-        if next_pending.len() == pending.len() {
+        if committed == 0 {
             return Err(Tip20TransferBlockstmFallback::StmValidation);
         }
         pending = next_pending;
@@ -667,6 +837,8 @@ fn execute_tip20_transfer_plan(
         let value = read_versioned(base_storage, versions, tx_index, key);
         execution.reads.insert(key, value);
     }
+
+    apply_nonce_action(plan.nonce, &mut execution, base_storage, versions, tx_index)?;
 
     for action in &plan.actions {
         match action {
@@ -713,6 +885,30 @@ fn execute_tip20_transfer_plan(
     }
 
     Ok(execution)
+}
+
+fn apply_nonce_action(
+    action: Tip20BlockstmNonceAction,
+    execution: &mut Tip20BlockstmTxExecution,
+    base_storage: &HashMap<StorageKey, U256>,
+    versions: &HashMap<StorageKey, Vec<(usize, U256)>>,
+    tx_index: usize,
+) -> Result<(), Tip20TransferBlockstmFallback> {
+    let key = action.write_key();
+    let current = read_for_write(execution, base_storage, versions, tx_index, key);
+    let expected = match action {
+        Tip20BlockstmNonceAction::Protocol { nonce, .. }
+        | Tip20BlockstmNonceAction::TwoDimensional { nonce, .. } => nonce,
+    };
+    if current != U256::from(expected) {
+        return Err(Tip20TransferBlockstmFallback::InvalidNonce);
+    }
+    let next = expected
+        .checked_add(1)
+        .ok_or(Tip20TransferBlockstmFallback::InvalidNonce)?;
+    execution.writes.insert(key, U256::from(next));
+
+    Ok(())
 }
 
 fn settle_actual_fee(
@@ -800,12 +996,38 @@ fn settle_actual_fee(
     Ok(())
 }
 
-fn execution_state(execution: &Tip20BlockstmTxExecution) -> EvmState {
+fn execution_state(
+    execution: &Tip20BlockstmTxExecution,
+    base_state: &Tip20BlockstmBaseState,
+) -> EvmState {
     let mut state = EvmState::default();
 
     for (key, value) in &execution.writes {
+        if is_protocol_nonce_key(*key) {
+            let account = state.entry(key.address).or_insert_with(|| {
+                let mut account = Account::from(
+                    base_state
+                        .accounts
+                        .get(&key.address)
+                        .cloned()
+                        .unwrap_or_default(),
+                );
+                account.mark_touch();
+                account
+            });
+            account.info.nonce = value.to::<u64>();
+            account.mark_touch();
+            continue;
+        }
+
         let account = state.entry(key.address).or_insert_with(|| {
-            let mut account = Account::from(AccountInfo::default());
+            let mut account = Account::from(
+                base_state
+                    .accounts
+                    .get(&key.address)
+                    .cloned()
+                    .unwrap_or_default(),
+            );
             account.mark_touch();
             account
         });
@@ -931,6 +1153,361 @@ fn read_versioned(
         })
 }
 
+fn synthetic_tip20_result_gas(
+    tx: &TempoTxEnv,
+    plan: &Tip20TransferBlockstmPlan,
+    execution: &Tip20BlockstmTxExecution,
+    base_state: &Tip20BlockstmBaseState,
+    cfg: &CfgEnv<TempoHardfork>,
+) -> Result<ResultGas, Tip20TransferBlockstmFallback> {
+    let initial = synthetic_initial_gas(tx, cfg)?;
+    let mut meter = SyntheticTip20GasMeter::default();
+    let mut original_values = HashMap::<StorageKey, U256>::new();
+    let mut present_values = HashMap::<StorageKey, U256>::new();
+
+    for action in plan.actions.iter().filter_map(|action| match action {
+        Tip20BlockstmAction::Transfer(action) => Some(action),
+        _ => None,
+    }) {
+        meter.add_regular(input_cost(action.calldata_len()))?;
+        for key in Tip20BlockstmAction::Transfer(action.clone()).read_set() {
+            meter.sload(key, cfg.gas_params())?;
+            original_values
+                .entry(key)
+                .or_insert_with(|| tx_storage_value(execution, base_state, key));
+            present_values
+                .entry(key)
+                .or_insert_with(|| tx_storage_value(execution, base_state, key));
+        }
+
+        if !action.amount.is_zero() {
+            let from_key = balance_key(action.token, action.from);
+            let to_key = balance_key(action.token, action.to);
+            let from_balance = decode_balance_state(
+                *present_values
+                    .entry(from_key)
+                    .or_insert_with(|| tx_storage_value(execution, base_state, from_key)),
+            )?;
+            let to_balance = decode_balance_state(
+                *present_values
+                    .entry(to_key)
+                    .or_insert_with(|| tx_storage_value(execution, base_state, to_key)),
+            )?;
+            let new_from = from_balance
+                .amount
+                .checked_sub(action.amount)
+                .ok_or(Tip20TransferBlockstmFallback::InsufficientBalance)?;
+            let new_to = to_balance
+                .amount
+                .checked_add(action.amount)
+                .ok_or(Tip20TransferBlockstmFallback::BalanceOverflow)?;
+            let new_from_raw = encode_balance(
+                new_from,
+                from_balance.inactive_write_flag(),
+                cfg.spec.is_t6(),
+            );
+            let new_to_raw =
+                encode_balance(new_to, to_balance.inactive_write_flag(), cfg.spec.is_t6());
+
+            meter.sstore(
+                from_key,
+                *original_values
+                    .entry(from_key)
+                    .or_insert_with(|| tx_storage_value(execution, base_state, from_key)),
+                present_values[&from_key],
+                new_from_raw,
+                cfg.gas_params(),
+            )?;
+            present_values.insert(from_key, new_from_raw);
+            meter.sstore(
+                to_key,
+                *original_values
+                    .entry(to_key)
+                    .or_insert_with(|| tx_storage_value(execution, base_state, to_key)),
+                present_values[&to_key],
+                new_to_raw,
+                cfg.gas_params(),
+            )?;
+            present_values.insert(to_key, new_to_raw);
+        }
+
+        meter.log(
+            &tip20_transfer_log(action.token, action.from, action.to, action.amount),
+            cfg.gas_params(),
+        )?;
+        if let Some(memo) = action.memo {
+            meter.log(
+                &tip20_transfer_with_memo_log(
+                    action.token,
+                    action.from,
+                    action.to,
+                    action.amount,
+                    memo,
+                ),
+                cfg.gas_params(),
+            )?;
+        }
+    }
+
+    let regular_gas = initial
+        .initial_regular_gas()
+        .checked_add(meter.regular_gas)
+        .ok_or(Tip20TransferBlockstmFallback::GasOverflow)?;
+    let state_gas = initial
+        .initial_state_gas_final()
+        .checked_add(meter.state_gas)
+        .ok_or(Tip20TransferBlockstmFallback::GasOverflow)?;
+    let total_spent = regular_gas
+        .checked_add(state_gas)
+        .ok_or(Tip20TransferBlockstmFallback::GasOverflow)?;
+    if tx.gas_limit() < total_spent {
+        return Err(Tip20TransferBlockstmFallback::GasLimit);
+    }
+
+    Ok(ResultGas::new_with_state_gas(
+        total_spent,
+        meter.refund.max(0) as u64,
+        initial.floor_gas(),
+        state_gas,
+    ))
+}
+
+fn synthetic_initial_gas(
+    tx: &TempoTxEnv,
+    cfg: &CfgEnv<TempoHardfork>,
+) -> Result<InitialAndFloorGas, Tip20TransferBlockstmFallback> {
+    let gas_params = cfg.gas_params();
+    let spec = cfg.spec();
+    let gas_limit = tx.gas_limit();
+
+    let mut gas = if let Some(aa_env) = tx.tempo_tx_env.as_ref() {
+        let mut batch_gas =
+            calculate_aa_batch_intrinsic_gas(aa_env, gas_params, tx.access_list(), *spec)
+                .map_err(|_| Tip20TransferBlockstmFallback::GasLimit)?;
+
+        let mut nonce_2d_gas = 0;
+        if spec.is_t1() {
+            if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+                return Err(Tip20TransferBlockstmFallback::ExpiringNonce);
+            } else if tx.nonce() == 0 {
+                batch_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
+                batch_gas.initial_state_gas += gas_params.new_account_state_gas();
+            } else if !aa_env.nonce_key.is_zero() {
+                batch_gas.initial_regular_gas += spec.gas_existing_nonce_key();
+            }
+        } else if !aa_env.nonce_key.is_zero() {
+            nonce_2d_gas = if tx.nonce() == 0 {
+                spec.gas_new_nonce_key()
+            } else {
+                spec.gas_existing_nonce_key()
+            };
+        }
+
+        if spec.is_t0() {
+            batch_gas.initial_regular_gas += nonce_2d_gas;
+        }
+        if gas_limit < batch_gas.initial_total_gas() {
+            return Err(Tip20TransferBlockstmFallback::GasLimit);
+        }
+        if !spec.is_t0() {
+            batch_gas.initial_regular_gas += nonce_2d_gas;
+        }
+
+        batch_gas
+    } else {
+        let mut initial = gas_params.initial_tx_gas(tx.input(), false, 0, 0, 0);
+        if spec.is_t1() && tx.nonce() == 0 {
+            initial.initial_regular_gas += gas_params.get(GasId::new_account_cost());
+            initial.initial_state_gas += gas_params.new_account_state_gas();
+        }
+        if gas_limit < initial.initial_total_gas() {
+            return Err(Tip20TransferBlockstmFallback::GasLimit);
+        }
+        initial
+    };
+
+    if cfg.is_eip7623_disabled() {
+        gas.floor_gas = 0;
+    }
+    if gas_limit < gas.floor_gas() {
+        return Err(Tip20TransferBlockstmFallback::GasLimit);
+    }
+    if cfg.is_amsterdam_eip8037_enabled()
+        && gas.initial_regular_gas().max(gas.floor_gas()) > cfg.tx_gas_limit_cap()
+    {
+        return Err(Tip20TransferBlockstmFallback::GasLimit);
+    }
+
+    Ok(gas)
+}
+
+#[derive(Debug, Default)]
+struct SyntheticTip20GasMeter {
+    regular_gas: u64,
+    state_gas: u64,
+    refund: i64,
+    warm_storage: HashSet<StorageKey>,
+}
+
+impl SyntheticTip20GasMeter {
+    fn add_regular(&mut self, amount: u64) -> Result<(), Tip20TransferBlockstmFallback> {
+        self.regular_gas = self
+            .regular_gas
+            .checked_add(amount)
+            .ok_or(Tip20TransferBlockstmFallback::GasOverflow)?;
+        Ok(())
+    }
+
+    fn add_state(&mut self, amount: u64) -> Result<(), Tip20TransferBlockstmFallback> {
+        self.state_gas = self
+            .state_gas
+            .checked_add(amount)
+            .ok_or(Tip20TransferBlockstmFallback::GasOverflow)?;
+        Ok(())
+    }
+
+    fn sload(
+        &mut self,
+        key: StorageKey,
+        gas_params: &GasParams,
+    ) -> Result<(), Tip20TransferBlockstmFallback> {
+        self.add_regular(gas_params.warm_storage_read_cost())?;
+        if self.warm_storage.insert(key) {
+            self.add_regular(gas_params.cold_storage_additional_cost())?;
+        }
+        Ok(())
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn sstore(
+        &mut self,
+        key: StorageKey,
+        original_value: U256,
+        present_value: U256,
+        new_value: U256,
+        gas_params: &GasParams,
+    ) -> Result<(), Tip20TransferBlockstmFallback> {
+        let is_cold = self.warm_storage.insert(key);
+        let values = SStoreResult {
+            original_value,
+            present_value,
+            new_value,
+        };
+
+        self.add_regular(gas_params.sstore_static_gas())?;
+        self.add_regular(gas_params.sstore_dynamic_gas(true, &values, is_cold))?;
+        self.add_state(gas_params.sstore_state_gas(&values))?;
+        self.refund = self
+            .refund
+            .saturating_add(gas_params.sstore_refund(true, &values));
+
+        Ok(())
+    }
+
+    fn log(
+        &mut self,
+        log: &Log,
+        gas_params: &GasParams,
+    ) -> Result<(), Tip20TransferBlockstmFallback> {
+        self.add_regular(
+            gas::LOG + gas_params.log_cost(log.topics().len() as u8, log.data.data.len() as u64),
+        )
+    }
+}
+
+fn tx_storage_value(
+    execution: &Tip20BlockstmTxExecution,
+    base_state: &Tip20BlockstmBaseState,
+    key: StorageKey,
+) -> U256 {
+    execution
+        .reads
+        .get(&key)
+        .map(|read| read.value)
+        .or_else(|| base_state.storage.get(&key).copied())
+        .unwrap_or_default()
+}
+
+fn synthetic_actual_fee(tx: &TempoTxEnv, tx_gas_used: u64, basefee: u128, is_t6: bool) -> U256 {
+    let mut effective_gas_price = tx.effective_gas_price(basefee);
+    if is_t6 && tx.is_discounted_payment() && tx_gas_used <= SSTORE_SET_COST {
+        effective_gas_price = tempo_t6_discounted_payment_effective_gas_price(effective_gas_price);
+    }
+    calc_gas_balance_spending(tx_gas_used, effective_gas_price)
+}
+
+fn synthetic_tip20_logs(plan: &Tip20TransferBlockstmPlan, actual_fee: U256) -> Vec<Log> {
+    let mut logs = Vec::new();
+    if let Some(log) = plan.nonce.log() {
+        logs.push(log);
+    }
+
+    for action in &plan.actions {
+        let Tip20BlockstmAction::Transfer(action) = action else {
+            continue;
+        };
+        logs.push(tip20_transfer_log(
+            action.token,
+            action.from,
+            action.to,
+            action.amount,
+        ));
+        if let Some(memo) = action.memo {
+            logs.push(tip20_transfer_with_memo_log(
+                action.token,
+                action.from,
+                action.to,
+                action.amount,
+                memo,
+            ));
+        }
+    }
+
+    if let Some((token, fee_payer, max_amount)) = plan.actions.iter().find_map(|action| {
+        if let Tip20BlockstmAction::FeeSettle {
+            token,
+            fee_payer,
+            max_amount,
+            ..
+        } = action
+        {
+            Some((*token, *fee_payer, *max_amount))
+        } else {
+            None
+        }
+    }) && (!actual_fee.is_zero() || max_amount > actual_fee)
+    {
+        logs.push(tip20_transfer_log(
+            token,
+            fee_payer,
+            TIP_FEE_MANAGER_ADDRESS,
+            actual_fee,
+        ));
+    }
+
+    logs
+}
+
+fn tip20_transfer_log(token: Address, from: Address, to: Address, amount: U256) -> Log {
+    Log {
+        address: token,
+        data: TIP20Event::transfer(from, to, amount).into_log_data(),
+    }
+}
+
+fn tip20_transfer_with_memo_log(
+    token: Address,
+    from: Address,
+    to: Address,
+    amount: U256,
+    memo: B256,
+) -> Log {
+    Log {
+        address: token,
+        data: TIP20Event::transfer_with_memo(from, to, amount, memo).into_log_data(),
+    }
+}
+
 fn decode_tip20_transfer_actions(
     tx: &Tip20TransferBlockstmTx<'_>,
     validator_token: Address,
@@ -991,6 +1568,31 @@ fn decode_tip20_transfer_actions(
     Ok(actions)
 }
 
+fn decode_nonce_action(
+    tx: &TempoTxEnv,
+) -> Result<Tip20BlockstmNonceAction, Tip20TransferBlockstmFallback> {
+    let caller = tx.caller();
+    let nonce = tx.nonce();
+
+    let Some(aa) = tx.tempo_tx_env.as_ref() else {
+        return Ok(Tip20BlockstmNonceAction::Protocol { caller, nonce });
+    };
+
+    if aa.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+        return Err(Tip20TransferBlockstmFallback::ExpiringNonce);
+    }
+
+    if aa.nonce_key.is_zero() {
+        Ok(Tip20BlockstmNonceAction::Protocol { caller, nonce })
+    } else {
+        Ok(Tip20BlockstmNonceAction::TwoDimensional {
+            caller,
+            nonce_key: aa.nonce_key,
+            nonce,
+        })
+    }
+}
+
 fn decode_tip20_transfer_call(
     from: Address,
     kind: TxKind,
@@ -1012,6 +1614,7 @@ fn decode_tip20_transfer_call(
             to: call.to,
             amount: call.amount,
             memo: None,
+            calldata_len: input.len(),
         }),
         ITIP20::ITIP20Calls::transferWithMemo(call) => Ok(Tip20TransferAction {
             token,
@@ -1019,6 +1622,7 @@ fn decode_tip20_transfer_call(
             to: call.to,
             amount: call.amount,
             memo: Some(call.memo),
+            calldata_len: input.len(),
         }),
         ITIP20::ITIP20Calls::transferFrom(_) | ITIP20::ITIP20Calls::transferFromWithMemo(_) => {
             Err(Tip20TransferBlockstmFallback::TransferFrom)
@@ -1039,6 +1643,27 @@ fn count_write_conflicts(plans: &[Tip20TransferBlockstmPlan]) -> usize {
         }
     }
     conflicts
+}
+
+const PROTOCOL_NONCE_SLOT: U256 = U256::MAX;
+const NONCE_MANAGER_NONCES_SLOT: U256 = U256::ZERO;
+
+fn protocol_nonce_key(caller: Address) -> StorageKey {
+    StorageKey {
+        address: caller,
+        slot: PROTOCOL_NONCE_SLOT,
+    }
+}
+
+fn is_protocol_nonce_key(key: StorageKey) -> bool {
+    key.slot == PROTOCOL_NONCE_SLOT
+}
+
+fn two_dimensional_nonce_key(caller: Address, nonce_key: U256) -> StorageKey {
+    StorageKey {
+        address: NONCE_PRECOMPILE_ADDRESS,
+        slot: nonce_key.mapping_slot(caller.mapping_slot(NONCE_MANAGER_NONCES_SLOT)),
+    }
 }
 
 fn balance_key(token: Address, account: Address) -> StorageKey {
@@ -1460,6 +2085,7 @@ mod tests {
                 to,
                 amount,
                 memo: None,
+                ..
             }) if *to == recipient && *amount == U256::from(7)
         ));
         assert!(matches!(
@@ -1620,8 +2246,9 @@ mod tests {
         let recipient_b = address!("10000000000000000000000000000000000000b1");
         let beneficiary = address!("10000000000000000000000000000000000000d2");
 
-        let make_plan = |to, amount| {
-            let (recovered, tx_env) = blockstm_tx(ITIP20::transferCall { to, amount }.abi_encode());
+        let make_plan = |to, amount, nonce_key| {
+            let (recovered, tx_env) =
+                aa_blockstm_tx(vec![transfer_call(to, amount)], U256::from(nonce_key));
             let tx = Tip20TransferBlockstmTx {
                 tx_env,
                 recovered: &recovered,
@@ -1629,8 +2256,8 @@ mod tests {
             };
             build_tip20_transfer_plan(&tx, TOKEN, beneficiary, 1, 0).unwrap()
         };
-        let plan_a = make_plan(recipient_a, U256::from(10));
-        let plan_b = make_plan(recipient_b, U256::from(20));
+        let plan_a = make_plan(recipient_a, U256::from(10), 1);
+        let plan_b = make_plan(recipient_b, U256::from(20), 2);
         let base_storage = HashMap::from([(
             balance_key(TOKEN, SENDER),
             encode_balance(U256::from(100), REWARD_FLAG_OPTED_OUT, true),
@@ -1641,12 +2268,76 @@ mod tests {
         assert_eq!(execution.retry_count, 1);
         assert_eq!(
             execution.txs[1].writes[&balance_key(TOKEN, SENDER)],
-            encode_balance(U256::from(70), REWARD_FLAG_OPTED_OUT, true)
+            encode_balance(U256::from(68), REWARD_FLAG_OPTED_OUT, true)
         );
         assert_eq!(
             execution.txs[1].writes[&balance_key(TOKEN, recipient_b)],
             encode_balance(U256::from(20), REWARD_FLAG_OPTED_OUT, true)
         );
+    }
+
+    #[test]
+    fn speculative_execution_retries_protocol_nonce_successor() {
+        let recipient_a = address!("10000000000000000000000000000000000000a2");
+        let recipient_b = address!("10000000000000000000000000000000000000b2");
+        let beneficiary = address!("10000000000000000000000000000000000000d4");
+
+        let make_plan = |to, amount, nonce| {
+            let (recovered, mut tx_env) =
+                blockstm_tx(ITIP20::transferCall { to, amount }.abi_encode());
+            tx_env.inner.nonce = nonce;
+            let tx = Tip20TransferBlockstmTx {
+                tx_env,
+                recovered: &recovered,
+                fee_token: TOKEN,
+            };
+            build_tip20_transfer_plan(&tx, TOKEN, beneficiary, 1, 0).unwrap()
+        };
+        let plan_a = make_plan(recipient_a, U256::from(10), 0);
+        let plan_b = make_plan(recipient_b, U256::from(20), 1);
+        let base_storage = HashMap::from([(
+            balance_key(TOKEN, SENDER),
+            encode_balance(U256::from(100), REWARD_FLAG_OPTED_OUT, true),
+        )]);
+
+        let execution =
+            execute_tip20_transfer_plans_blockstm(&[plan_a, plan_b], &base_storage, true).unwrap();
+        assert_eq!(execution.retry_count, 1);
+        assert_eq!(
+            execution.txs[1].writes[&protocol_nonce_key(SENDER)],
+            U256::from(2)
+        );
+        assert_eq!(
+            execution.txs[1].writes[&balance_key(TOKEN, SENDER)],
+            encode_balance(U256::from(70), REWARD_FLAG_OPTED_OUT, true)
+        );
+    }
+
+    #[test]
+    fn non_expiring_2d_nonce_writes_nonce_slot_and_emits_first_log() {
+        let recipient = address!("10000000000000000000000000000000000000a3");
+        let beneficiary = address!("10000000000000000000000000000000000000d5");
+        let nonce_key = U256::from(7);
+        let (recovered, tx_env) =
+            aa_blockstm_tx(vec![transfer_call(recipient, U256::from(5))], nonce_key);
+        let tx = Tip20TransferBlockstmTx {
+            tx_env,
+            recovered: &recovered,
+            fee_token: TOKEN,
+        };
+        let plan = build_tip20_transfer_plan(&tx, TOKEN, beneficiary, 1, 0).unwrap();
+        let base_storage = HashMap::from([(
+            balance_key(TOKEN, SENDER),
+            encode_balance(U256::from(100), REWARD_FLAG_OPTED_OUT, true),
+        )]);
+
+        let execution =
+            execute_tip20_transfer_plans_blockstm(&[plan.clone()], &base_storage, true).unwrap();
+        let nonce_storage_key = two_dimensional_nonce_key(SENDER, nonce_key);
+        assert_eq!(execution.txs[0].writes[&nonce_storage_key], U256::ONE);
+
+        let logs = synthetic_tip20_logs(&plan, U256::ZERO);
+        assert_eq!(logs[0].address, NONCE_PRECOMPILE_ADDRESS);
     }
 
     #[test]
