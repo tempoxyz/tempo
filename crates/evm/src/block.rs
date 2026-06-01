@@ -1712,7 +1712,7 @@ mod tests {
         executor
             .evm_mut()
             .db_mut()
-            .set_state_hook(Some(Box::new(move |state: &EvmState| {
+            .set_state_hook(Some(Box::new(move |state: EvmState| {
                 hook_calls_clone.lock().unwrap().push(state.clone());
             })));
 
@@ -1761,7 +1761,7 @@ mod tests {
         executor
             .evm_mut()
             .db_mut()
-            .set_state_hook(Some(Box::new(move |state: &EvmState| {
+            .set_state_hook(Some(Box::new(move |state: EvmState| {
                 hook_calls_clone.lock().unwrap().push(state.clone());
             })));
 
