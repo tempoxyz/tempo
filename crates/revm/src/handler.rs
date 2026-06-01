@@ -59,7 +59,7 @@ use tempo_primitives::{
 };
 
 use crate::{
-    TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
+    PendingExpiringNonce, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
@@ -936,6 +936,7 @@ where
 
         // Only treat as expiring nonce if T1 is active, otherwise treat as regular 2D nonce
         let is_expiring_nonce = nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1();
+        let mut current_expiring_nonce = None;
 
         // Validate account nonce and code (EIP-3607) using upstream helper
         pre_execution::validate_account_nonce_and_code(
@@ -1007,11 +1008,11 @@ where
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
-            StorageCtx::enter_evm(journal, block, cfg, tx, || {
+            let (cell_id, cell) = StorageCtx::enter_evm(journal, block, cfg, tx, || {
                 let nonce_manager = NonceManager::new();
 
                 nonce_manager
-                    .check_expiring_nonce(replay_hash, valid_before)
+                    .checked_expiring_nonce_cell(replay_hash, valid_before)
                     .map_err(|err| match err {
                         TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                         TempoPrecompileError::NonceError(
@@ -1032,10 +1033,14 @@ where
                             }
                         }
                         err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
-                    })?;
-
-                Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
+                    })
             })?;
+            current_expiring_nonce = Some(PendingExpiringNonce {
+                replay_hash,
+                valid_before,
+                cell_id,
+                cell,
+            });
         } else if !nonce_key.is_zero() {
             // 2D nonce transaction
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
@@ -1497,6 +1502,10 @@ where
             }
         }
 
+        if let Some(pending) = current_expiring_nonce {
+            evm.set_current_expiring_nonce(pending);
+        }
+
         Ok(())
     }
 
@@ -1592,6 +1601,7 @@ where
     fn validate_env(&self, evm: &mut Self::Evm) -> Result<(), Self::Error> {
         // Reset per-tx validator fee.
         evm.validator_fee = U256::ZERO;
+        evm.clear_current_expiring_nonce();
 
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;
@@ -2031,6 +2041,7 @@ where
                 .expect("set in `validate_against_state_and_deduct_caller`"),
             key_expiry: evm.key_expiry,
         };
+        evm.clear_current_expiring_nonce();
         evm.clear();
         Ok(result)
     }

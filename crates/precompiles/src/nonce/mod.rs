@@ -155,7 +155,7 @@ impl NonceManager {
     /// - `ExpiringNonceReplay` — transaction hash is already recorded and has not yet expired
     /// - `ExpiringNonceProbeExhausted` — all cells on the deterministic probe path are occupied
     pub fn check_expiring_nonce(&self, expiring_nonce_hash: B256, valid_before: u64) -> Result<()> {
-        self.expiring_nonce_insert_cell(expiring_nonce_hash, valid_before)
+        self.checked_expiring_nonce_cell(expiring_nonce_hash, valid_before)
             .map(|_| ())
     }
 
@@ -165,9 +165,27 @@ impl NonceManager {
         expiring_nonce_hash: B256,
         valid_before: u64,
     ) -> Result<()> {
+        let (cell_id, cell) =
+            self.checked_expiring_nonce_cell(expiring_nonce_hash, valid_before)?;
+        self.write_expiring_nonce_cell(cell_id, cell)
+    }
+
+    /// Returns the replay-cell write for a valid expiring nonce transaction.
+    pub fn checked_expiring_nonce_cell(
+        &self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+    ) -> Result<(u32, U256)> {
         let (cell_id, fingerprint) =
             self.expiring_nonce_insert_cell(expiring_nonce_hash, valid_before)?;
-        let cell = Self::pack_expiring_nonce_cell(valid_before, fingerprint);
+        Ok((
+            cell_id,
+            Self::pack_expiring_nonce_cell(valid_before, fingerprint),
+        ))
+    }
+
+    /// Writes a previously validated expiring nonce replay cell.
+    pub fn write_expiring_nonce_cell(&mut self, cell_id: u32, cell: U256) -> Result<()> {
         self.expiring_nonce_cells[cell_id].write(cell)
     }
 

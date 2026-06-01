@@ -216,25 +216,15 @@ where
         Ok(())
     }
 
-    fn pending_expiring_nonce(
-        &self,
-        tx: &TempoTxEnvelope,
-        signer: Address,
-    ) -> Option<PendingExpiringNonce> {
+    fn pending_expiring_nonce_hash(&self, tx: &TempoTxEnvelope, signer: Address) -> Option<B256> {
         if !self.evm().cfg.spec.is_t1() || !tx.is_expiring_nonce() {
             return None;
         }
 
-        let valid_before = tx.as_aa()?.tx().valid_before?.get();
-        let replay_hash = if self.evm().cfg.spec.is_t1b() {
+        Some(if self.evm().cfg.spec.is_t1b() {
             tx.unique_tx_identifier(signer)
         } else {
             *tx.tx_hash()
-        };
-
-        Some(PendingExpiringNonce {
-            replay_hash,
-            valid_before,
         })
     }
 
@@ -537,13 +527,11 @@ where
     ) -> Result<Self::Result, BlockExecutionError> {
         let (tx_env, recovered) = tx.into_parts();
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
-        let pending_expiring_nonce =
-            self.pending_expiring_nonce(recovered.tx(), *recovered.signer());
+        let pending_expiring_nonce_hash =
+            self.pending_expiring_nonce_hash(recovered.tx(), *recovered.signer());
 
-        if let Some(pending) = pending_expiring_nonce
-            && self
-                .evm()
-                .has_pending_expiring_nonce_hash(pending.replay_hash)
+        if let Some(replay_hash) = pending_expiring_nonce_hash
+            && self.evm().has_pending_expiring_nonce_hash(replay_hash)
         {
             return Err(
                 BlockValidationError::msg("duplicate expiring nonce replay hash in block").into(),
@@ -567,6 +555,7 @@ where
         self.evm_mut().ctx_mut().block.beneficiary = beneficiary;
 
         let inner = result?;
+        let pending_expiring_nonce = self.evm_mut().take_current_expiring_nonce();
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.

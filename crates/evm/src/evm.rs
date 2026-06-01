@@ -131,6 +131,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.inner.queue_expiring_nonce(pending);
     }
 
+    /// Takes the expiring nonce replay marker validated for the current transaction.
+    pub fn take_current_expiring_nonce(&mut self) -> Option<PendingExpiringNonce> {
+        self.inner.take_current_expiring_nonce()
+    }
+
     /// Writes all expiring nonce replay markers accumulated during this block.
     pub fn finalize_expiring_nonces(
         &mut self,
