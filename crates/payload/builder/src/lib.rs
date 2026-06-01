@@ -541,7 +541,10 @@ where
         maybe_override_fee_recipient(&mut executor, &attributes);
 
         if let Some(ref handle) = trie_handle {
-            executor.set_state_hook(Some(Box::new(handle.state_hook())));
+            executor
+                .evm_mut()
+                .db_mut()
+                .set_state_hook(Some(Box::new(handle.state_hook())));
         }
 
         executor.apply_pre_execution_changes().map_err(|err| {
@@ -955,6 +958,10 @@ where
 
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
+
+        // Drop the state hook to signal that execution is complete and the sparse trie task can
+        // finalize the state root.
+        db.set_state_hook(None);
         check_cancel!();
 
         let hashed_state = if let Some(hashed_state_rx) = trie_handle
@@ -1167,14 +1174,19 @@ where
                 validation_work_at_tx_cutoff,
             );
         }
+        let recorded_block_size_bytes =
+            rlp_length + block_access_list.as_ref().map_or(0, Encodable::length);
+
         self.metrics.payload_build_duration_seconds.record(elapsed);
         let gas_per_second = block.gas_used() as f64 / elapsed.as_secs_f64();
         self.metrics.gas_per_second.record(gas_per_second);
         self.metrics.gas_per_second_last.set(gas_per_second);
-        self.metrics.rlp_block_size_bytes.record(rlp_length as f64);
+        self.metrics
+            .rlp_block_size_bytes
+            .record(recorded_block_size_bytes as f64);
         self.metrics
             .rlp_block_size_bytes_last
-            .set(rlp_length as f64);
+            .set(recorded_block_size_bytes as f64);
 
         info!(
             parent_hash = ?block.parent_hash(),

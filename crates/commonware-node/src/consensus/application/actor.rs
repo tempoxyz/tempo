@@ -1056,8 +1056,12 @@ impl Inner<Init> {
         let proposal_return_time = context.current() + return_delay;
 
         let (block, block_access_list) = payload.into_execution_payload();
-        let proposal = Block::from_execution_block(block, block_access_list)
-            .wrap_err("payload builder produced an invalid block access list")?;
+        let proposal = Block::from_execution_block_with_encoded_size(
+            block,
+            block_access_list,
+            block_size_bytes,
+        )
+        .wrap_err("payload builder produced an invalid block access list")?;
 
         Ok((
             proposal,
