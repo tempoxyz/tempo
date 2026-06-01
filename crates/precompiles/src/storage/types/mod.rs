@@ -23,7 +23,8 @@ use crate::{
     storage::{StorageOps, packing},
 };
 use alloy::primitives::{Address, U256, keccak256};
-use std::{cell::RefCell, collections::HashMap, hash::Hash};
+use smallvec::SmallVec;
+use std::{cell::RefCell, hash::Hash};
 
 /// Describes how a type is laid out in EVM storage.
 ///
@@ -378,7 +379,7 @@ pub trait StorageKey: sealed::OnlyPrimitives {
 /// Re-entrant access will panic rather than cause undefined behavior.
 #[derive(Debug, Default)]
 pub(super) struct HandlerCache<K, H> {
-    inner: RefCell<HashMap<K, Box<H>>>,
+    inner: RefCell<SmallVec<[(K, Box<H>); 4]>>,
 }
 
 impl<K, H> HandlerCache<K, H> {
@@ -386,7 +387,7 @@ impl<K, H> HandlerCache<K, H> {
     #[inline]
     pub(super) fn new() -> Self {
         Self {
-            inner: RefCell::new(HashMap::new()),
+            inner: RefCell::new(SmallVec::new()),
         }
     }
 }
@@ -404,11 +405,12 @@ impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
     pub(super) fn get_or_insert(&self, key: &K, f: impl FnOnce() -> H) -> &H {
         let mut cache = self.inner.borrow_mut();
         // Lookup first to avoid cloning on cache hit
-        if let Some(boxed) = cache.get(key) {
+        if let Some((_, boxed)) = cache.iter().find(|(cached_key, _)| cached_key == key) {
             // SAFETY: Box provides stable heap address. Cache is append-only.
             return unsafe { &*(boxed.as_ref() as *const H) };
         }
-        let boxed = cache.entry(key.clone()).or_insert_with(|| Box::new(f()));
+        cache.push((key.clone(), Box::new(f())));
+        let boxed = &cache.last().expect("just inserted").1;
         // SAFETY: Box provides stable heap address. Cache is append-only.
         unsafe { &*(boxed.as_ref() as *const H) }
     }
@@ -418,11 +420,12 @@ impl<K: Hash + Eq + Clone, H> HandlerCache<K, H> {
     pub(super) fn get_or_insert_mut(&mut self, key: &K, f: impl FnOnce() -> H) -> &mut H {
         let mut cache = self.inner.borrow_mut();
         // Lookup first to avoid cloning on cache hit
-        if let Some(boxed) = cache.get_mut(key) {
+        if let Some((_, boxed)) = cache.iter_mut().find(|(cached_key, _)| cached_key == key) {
             // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
             return unsafe { &mut *(boxed.as_mut() as *mut H) };
         }
-        let boxed = cache.entry(key.clone()).or_insert_with(|| Box::new(f()));
+        cache.push((key.clone(), Box::new(f())));
+        let boxed = &mut cache.last_mut().expect("just inserted").1;
         // SAFETY: Box provides stable heap address. Cache is append-only. `&mut self` ensures exclusive access.
         unsafe { &mut *(boxed.as_mut() as *mut H) }
     }
