@@ -16,6 +16,7 @@ use reth_transaction_pool::{
 use revm::database::BundleAccount;
 use std::{
     borrow::Borrow,
+    cmp::Reverse,
     collections::{
         BTreeMap, BTreeSet,
         Bound::{Excluded, Unbounded},
@@ -32,6 +33,7 @@ use tempo_precompiles::NONCE_PRECOMPILE_ADDRESS;
 use tokio::sync::broadcast;
 
 type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
+
 /// A sub-pool that keeps track of 2D nonce transactions.
 ///
 /// It maintains both pending and queued transactions.
@@ -1497,7 +1499,7 @@ impl AA2dPool {
                 "Expiring nonce eviction key {expiring_hash:?} has mismatched priority"
             );
             assert_eq!(
-                key.transaction.hash(),
+                key.pending_tx.transaction.hash(),
                 pending_tx.transaction.hash(),
                 "Expiring nonce eviction key {expiring_hash:?} has mismatched transaction hash"
             );
@@ -1564,95 +1566,84 @@ impl AA2dInternalTransaction {
     }
 }
 
-/// Minimal ordering key for expiring nonce eviction lookups.
-///
-/// `ExpiringNonceEvictionKey` borrows as this type so BTreeSet lookup APIs like
-/// `remove`, `contains`, and `get` do not need to construct a full key with a
-/// cloned transaction.
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct ExpiringNonceEvictionOrderKey {
-    priority: Priority<u128>,
-    submission_id: u64,
-}
-
-impl ExpiringNonceEvictionOrderKey {
-    fn new(priority: Priority<u128>, submission_id: u64) -> Self {
-        Self {
-            priority,
-            submission_id,
-        }
-    }
-
-    fn from_pending(tx: &PendingTransaction<TxOrdering>) -> Self {
-        Self::new(tx.priority.clone(), tx.submission_id)
-    }
-}
-
-impl Ord for ExpiringNonceEvictionOrderKey {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.priority
-            .cmp(&other.priority)
-            .then_with(|| other.submission_id.cmp(&self.submission_id))
-    }
-}
-
-impl PartialOrd for ExpiringNonceEvictionOrderKey {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
-    }
-}
-
 /// Ordering key for `AA2dPool::expiring_nonce_eviction_order`.
 ///
-/// This mirrors `EvictionKey` for expiring nonce transactions, which are not
-/// stored in `by_id` and therefore cannot use `AA2dTransactionId`. The key
-/// carries the transaction so `BestAA2dTransactions` can clone only the ordered
-/// index and pop expiring nonce transactions directly from it.
+/// Expiring nonce transactions are not stored in `by_id` and therefore cannot
+/// use `AA2dTransactionId`. The key stores only the immutable eviction fields;
+/// `ExpiringNonceEvictionKey` carries the transaction payload.
 ///
 /// Order:
 /// 1. Priority ascending (lowest priority evicted first)
 /// 2. Submission ID descending (newer transactions evicted first among equal priority)
 ///
 /// `submission_id` is unique for live entries.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+struct ExpiringNonceEvictionOrderKey {
+    priority: Priority<u128>,
+    submission_id: Reverse<u64>,
+}
+
+impl ExpiringNonceEvictionOrderKey {
+    fn new(priority: Priority<u128>, submission_id: u64) -> Self {
+        Self {
+            priority,
+            submission_id: Reverse(submission_id),
+        }
+    }
+
+    fn from_pending(tx: &PendingTransaction<TxOrdering>) -> Self {
+        Self::new(tx.priority.clone(), tx.submission_id)
+    }
+
+    fn priority(&self) -> &Priority<u128> {
+        &self.priority
+    }
+
+    fn submission_id(&self) -> u64 {
+        self.submission_id.0
+    }
+}
+
+/// Ordering key plus transaction payload for expiring nonce eviction.
+///
+/// The derived ordering is driven by `order`. The `pending_tx` field has the
+/// same priority and submission id, so it does not change comparisons.
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ExpiringNonceEvictionKey {
     order: ExpiringNonceEvictionOrderKey,
-    transaction: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+    pending_tx: PendingTransaction<TxOrdering>,
 }
 
 impl ExpiringNonceEvictionKey {
     fn from_pending(tx: &PendingTransaction<TxOrdering>) -> Self {
         Self {
             order: ExpiringNonceEvictionOrderKey::from_pending(tx),
-            transaction: tx.transaction.clone(),
+            pending_tx: tx.clone(),
         }
     }
 
     fn from_pending_owned(tx: PendingTransaction<TxOrdering>) -> Self {
         Self {
-            order: ExpiringNonceEvictionOrderKey::new(tx.priority, tx.submission_id),
-            transaction: tx.transaction,
+            order: ExpiringNonceEvictionOrderKey::from_pending(&tx),
+            pending_tx: tx,
         }
     }
 
     fn into_transaction(self) -> PendingTransaction<TxOrdering> {
-        PendingTransaction {
-            submission_id: self.order.submission_id,
-            priority: self.order.priority,
-            transaction: self.transaction,
-        }
+        self.pending_tx
     }
 
     fn priority(&self) -> &Priority<u128> {
-        &self.order.priority
+        self.order.priority()
     }
 
     fn submission_id(&self) -> u64 {
-        self.order.submission_id
+        self.order.submission_id()
     }
 
     fn expiring_hash(&self) -> B256 {
-        self.transaction
+        self.pending_tx
+            .transaction
             .transaction
             .precomputed_expiring_nonce_hash()
     }
@@ -1661,26 +1652,6 @@ impl ExpiringNonceEvictionKey {
 impl Borrow<ExpiringNonceEvictionOrderKey> for ExpiringNonceEvictionKey {
     fn borrow(&self) -> &ExpiringNonceEvictionOrderKey {
         &self.order
-    }
-}
-
-impl PartialEq for ExpiringNonceEvictionKey {
-    fn eq(&self, other: &Self) -> bool {
-        self.order == other.order
-    }
-}
-
-impl Eq for ExpiringNonceEvictionKey {}
-
-impl Ord for ExpiringNonceEvictionKey {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
-        self.order.cmp(&other.order)
-    }
-}
-
-impl PartialOrd for ExpiringNonceEvictionKey {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
-        Some(self.cmp(other))
     }
 }
 
