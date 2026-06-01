@@ -198,14 +198,14 @@ impl NonceManager {
     ) -> [U256; EXPIRING_NONCE_MAX_PROBES] {
         std::array::from_fn(|probe| {
             let cell_id = Self::expiring_nonce_cell_id(expiring_nonce_hash, valid_before, probe);
-            NonceManager::new().expiring_nonce_cells[cell_id].slot()
+            Self::new().expiring_nonce_cells[cell_id].slot()
         })
     }
 
     /// Returns the first replay-table storage slot touched by an expiring nonce transaction.
     pub fn expiring_nonce_first_cell_slot(expiring_nonce_hash: B256, valid_before: u64) -> U256 {
         let cell_id = Self::expiring_nonce_cell_id(expiring_nonce_hash, valid_before, 0);
-        NonceManager::new().expiring_nonce_cells[cell_id].slot()
+        Self::new().expiring_nonce_cells[cell_id].slot()
     }
 
     /// Returns true if a packed replay cell is the record for this transaction.
@@ -228,11 +228,11 @@ impl NonceManager {
     }
 
     fn expiring_nonce_cell_id(expiring_nonce_hash: B256, valid_before: u64, probe: usize) -> u32 {
-        debug_assert!(EXPIRING_NONCE_BUCKET_COUNT as u64 > EXPIRING_NONCE_MAX_EXPIRY_SECS);
+        debug_assert!(u64::from(EXPIRING_NONCE_BUCKET_COUNT) > EXPIRING_NONCE_MAX_EXPIRY_SECS);
         debug_assert!(EXPIRING_NONCE_BUCKET_CAPACITY.is_power_of_two());
         debug_assert!(probe < EXPIRING_NONCE_MAX_PROBES);
 
-        let bucket = (valid_before % EXPIRING_NONCE_BUCKET_COUNT as u64) as u32;
+        let bucket = (valid_before % u64::from(EXPIRING_NONCE_BUCKET_COUNT)) as u32;
         let (home, step) = Self::expiring_nonce_probe(expiring_nonce_hash);
         let position =
             home.wrapping_add((probe as u32).wrapping_mul(step)) % EXPIRING_NONCE_BUCKET_CAPACITY;
@@ -263,7 +263,7 @@ impl NonceManager {
     }
 
     fn expiring_nonce_domain_hash(domain: &[u8], expiring_nonce_hash: B256) -> B256 {
-        let mut input = Vec::with_capacity(domain.len() + 32);
+        let mut input = Vec::new();
         input.extend_from_slice(domain);
         input.extend_from_slice(expiring_nonce_hash.as_slice());
         keccak256(input)
@@ -512,11 +512,9 @@ mod tests {
         })?;
 
         let new_now = valid_before + 2;
-        let new_valid_before = valid_before + EXPIRING_NONCE_BUCKET_COUNT as u64;
-        assert_eq!(
-            valid_before % EXPIRING_NONCE_BUCKET_COUNT as u64,
-            new_valid_before % EXPIRING_NONCE_BUCKET_COUNT as u64
-        );
+        let bucket_count = u64::from(EXPIRING_NONCE_BUCKET_COUNT);
+        let new_valid_before = valid_before + bucket_count;
+        assert_eq!(valid_before % bucket_count, new_valid_before % bucket_count);
         storage.set_timestamp(U256::from(new_now));
         StorageCtx::enter(&mut storage, || {
             let mut mgr = NonceManager::new();
