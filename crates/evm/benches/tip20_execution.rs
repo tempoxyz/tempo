@@ -608,6 +608,7 @@ fn sign_tip20_call(signer: &PrivateKeySigner, input: Bytes) -> Recovered<TempoTx
         valid_after: None,
         key_authorization: None,
         tempo_authorization_list: Vec::new(),
+        multisig_init: None,
     };
     let signature = signer
         .sign_hash_sync(&tx.signature_hash())
