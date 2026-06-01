@@ -41,7 +41,7 @@ use reth_evm::{
     execute::BlockAssemblerInput,
 };
 use reth_execution_types::BlockExecutionOutput;
-use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError};
+use reth_payload_builder::{EthBuiltPayload, PayloadBuilderError, PayloadStateAnchor};
 use reth_payload_primitives::{BuiltPayload, BuiltPayloadExecutedBlock};
 use reth_primitives_traits::{
     Recovered, RecoveredBlock, transaction::error::InvalidTransactionError,
@@ -73,7 +73,7 @@ use tempo_primitives::{
     transaction::envelope::{TEMPO_SYSTEM_TX_SENDER, TEMPO_SYSTEM_TX_SIGNATURE},
 };
 use tempo_transaction_pool::{
-    StateAwareBestTransactions, TempoTransactionPool,
+    ExcludingBestTransactions, StateAwareBestTransactions, TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
 use tokio::sync::oneshot;
@@ -88,6 +88,24 @@ fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> boo
                 .is_some_and(|valid| valid.get() <= timestamp)
         })
     })
+}
+
+fn should_prewarm_best_transactions(enable_prewarming: bool, is_speculative: bool) -> bool {
+    enable_prewarming && !is_speculative
+}
+
+fn state_aware_best_transactions_for_build<Txs>(
+    best_txs: Txs,
+    is_speculative: bool,
+) -> StateAwareBestTransactions<Txs>
+where
+    Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
+{
+    let mut best_txs = StateAwareBestTransactions::new(best_txs);
+    if is_speculative {
+        best_txs.no_updates();
+    }
+    best_txs
 }
 
 #[derive(Debug, Clone)]
@@ -253,10 +271,19 @@ where
         &self,
         args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
     ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
+        self.try_build_with_state_anchor(args, PayloadStateAnchor::Canonical)
+    }
+
+    fn try_build_with_state_anchor(
+        &self,
+        args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
+        state_anchor: PayloadStateAnchor,
+    ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
         self.build_payload(
             args,
             |attributes| self.pool.best_transactions_with_attributes(attributes),
             false,
+            state_anchor,
         )
     }
 
@@ -271,6 +298,14 @@ where
         &self,
         config: PayloadConfig<Self::Attributes, TempoHeader>,
     ) -> Result<Self::BuiltPayload, PayloadBuilderError> {
+        self.build_empty_payload_with_state_anchor(config, PayloadStateAnchor::Canonical)
+    }
+
+    fn build_empty_payload_with_state_anchor(
+        &self,
+        config: PayloadConfig<Self::Attributes, TempoHeader>,
+        state_anchor: PayloadStateAnchor,
+    ) -> Result<Self::BuiltPayload, PayloadBuilderError> {
         self.build_payload(
             BuildArguments::new(
                 Default::default(),
@@ -282,6 +317,7 @@ where
             ),
             |_| core::iter::empty(),
             true,
+            state_anchor,
         )?
         .into_payload()
         .ok_or_else(|| PayloadBuilderError::MissingPayload)
@@ -307,6 +343,7 @@ where
         args: BuildArguments<TempoPayloadAttributes, TempoBuiltPayload>,
         best_txs: impl FnOnce(BestTransactionsAttributes) -> Txs,
         empty: bool,
+        state_anchor: PayloadStateAnchor,
     ) -> Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>
     where
         Txs: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>
@@ -327,6 +364,7 @@ where
             attributes,
             payload_id,
         } = config;
+        let is_speculative = state_anchor.is_speculative();
         let build_once_with_shared_trie =
             // When trie handle is provided, we build the payload once so the shared trie can be reused.
             trie_handle.is_some()
@@ -335,7 +373,11 @@ where
 
         macro_rules! check_cancel {
             () => {
-                if cancel.is_cancelled() {
+                if cancel.is_cancelled()
+                    || state_anchor
+                        .validity_dependency()
+                        .is_some_and(|token| token.should_discard())
+                {
                     return Ok(BuildOutcome::Cancelled);
                 }
             };
@@ -352,7 +394,17 @@ where
 
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
-        let mut state_provider = self.provider.state_by_block_hash(parent_header.hash())?;
+        let mut state_provider = if let Some(provider) = state_anchor.state_provider() {
+            trace!(
+                target: "payload_builder",
+                id = %payload_id,
+                label = %provider.label(),
+                "opening speculative payload state provider"
+            );
+            provider.open()?
+        } else {
+            self.provider.state_by_block_hash(parent_header.hash())?
+        };
         if let Some(execution_cache) = &execution_cache {
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
@@ -487,7 +539,10 @@ where
         maybe_override_fee_recipient(&mut executor, &attributes);
 
         if let Some(ref handle) = trie_handle {
-            executor.set_state_hook(Some(Box::new(handle.state_hook())));
+            executor
+                .evm_mut()
+                .db_mut()
+                .set_state_hook(Some(Box::new(handle.state_hook())));
         }
 
         executor.apply_pre_execution_changes().map_err(|err| {
@@ -523,20 +578,27 @@ where
                 .blob_gasprice()
                 .map(|gasprice| gasprice as u64),
         ));
+        let best_txs = ExcludingBestTransactions::new(
+            best_txs,
+            attributes.excluded_transaction_hashes().iter().copied(),
+        );
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
-        let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
-            Box::new(BestTransactionsPrewarming::new(
-                self.executor.clone(),
-                self.provider.clone(),
-                execution_cache,
-                parent_header.hash(),
-                executor.evm().evm_env(),
-                best_txs,
-            )) as Box<dyn BestTransactions<Item = _>>
-        } else {
-            Box::new(best_txs)
-        });
+        let mut best_txs = state_aware_best_transactions_for_build(
+            if should_prewarm_best_transactions(self.enable_prewarming, is_speculative) {
+                Box::new(BestTransactionsPrewarming::new(
+                    self.executor.clone(),
+                    self.provider.clone(),
+                    execution_cache,
+                    parent_header.hash(),
+                    executor.evm().evm_env(),
+                    best_txs,
+                )) as Box<dyn BestTransactions<Item = _>>
+            } else {
+                Box::new(best_txs)
+            },
+            is_speculative,
+        );
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
@@ -1262,6 +1324,7 @@ mod tests {
     use alloy_primitives::{Address, B256, Bytes};
     use core::num::NonZeroU64;
     use reth_primitives_traits::Block as _;
+    use std::sync::atomic::AtomicBool;
     use tempo_primitives::{
         AASigned, Block, SignedSubBlock, SubBlock, SubBlockVersion, TempoSignature,
         TempoTransaction,
@@ -1269,6 +1332,61 @@ mod tests {
 
     fn nz(value: u64) -> NonZeroU64 {
         NonZeroU64::new(value).expect("test valid_before must be non-zero")
+    }
+
+    struct RecordingBestTransactions {
+        no_updates_called: Arc<AtomicBool>,
+    }
+
+    impl Iterator for RecordingBestTransactions {
+        type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            None
+        }
+    }
+
+    impl BestTransactions for RecordingBestTransactions {
+        fn mark_invalid(&mut self, _: &Self::Item, _: InvalidPoolTransactionError) {}
+
+        fn no_updates(&mut self) {
+            self.no_updates_called.store(true, Ordering::Relaxed);
+        }
+
+        fn set_skip_blobs(&mut self, _: bool) {}
+    }
+
+    #[test]
+    fn prewarming_is_disabled_for_speculative_builds() {
+        assert!(should_prewarm_best_transactions(true, false));
+        assert!(!should_prewarm_best_transactions(true, true));
+        assert!(!should_prewarm_best_transactions(false, false));
+    }
+
+    #[test]
+    fn speculative_best_transactions_suppress_live_pool_updates() {
+        let no_updates_called = Arc::new(AtomicBool::new(false));
+        let _best_txs = state_aware_best_transactions_for_build(
+            RecordingBestTransactions {
+                no_updates_called: no_updates_called.clone(),
+            },
+            true,
+        );
+
+        assert!(no_updates_called.load(Ordering::Relaxed));
+    }
+
+    #[test]
+    fn canonical_best_transactions_keep_live_pool_updates() {
+        let no_updates_called = Arc::new(AtomicBool::new(false));
+        let _best_txs = state_aware_best_transactions_for_build(
+            RecordingBestTransactions {
+                no_updates_called: no_updates_called.clone(),
+            },
+            false,
+        );
+
+        assert!(!no_updates_called.load(Ordering::Relaxed));
     }
 
     trait TestExt {

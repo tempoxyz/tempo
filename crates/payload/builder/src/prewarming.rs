@@ -97,13 +97,10 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        let prewarm = ctx.prewarm.clone();
+        pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
 
         pool.in_place_scope(|scope| {
-            let prewarm = ctx.prewarm.clone();
-            scope.spawn(move |_| {
-                pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
-            });
-
             let advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
                 let Some(tx) = ctx.best_txs.next() else {
                     let _ = ctx.transactions_tx.send(None);
@@ -997,7 +994,7 @@ mod tests {
     }
 
     #[test]
-    fn prewarming_does_not_use_shared_worker_state_slot() {
+    fn prewarming_replaces_stale_worker_state_before_tasks() {
         let executor = TaskExecutor::test();
         let pool = executor.prewarming_pool();
         pool.init::<usize>(|existing| existing.map(|value| *value).unwrap_or(1));
@@ -1008,8 +1005,13 @@ mod tests {
         let mut prewarming = prewarming_with_executor(executor.clone(), txs, log);
 
         assert!(prewarming.next().is_some());
+        drop(prewarming);
 
         pool.broadcast(pool.current_num_threads(), |worker| {
+            worker.init::<usize>(|existing| {
+                assert!(existing.is_none());
+                1
+            });
             assert_eq!(*worker.get::<usize>(), 1);
         });
     }

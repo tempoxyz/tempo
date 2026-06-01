@@ -79,6 +79,7 @@ pub struct Builder<TBlocker, TPeerManager> {
     pub time_to_build_subblock: Duration,
     pub subblock_broadcast_interval: Duration,
     pub fcu_heartbeat_interval: Duration,
+    pub speculative_bal_build: bool,
     pub with_subblocks: bool,
 
     pub feed_state: crate::feed::FeedStateHandle,
@@ -250,6 +251,7 @@ where
             execution_node: execution_node.clone(),
             executor: executor_mailbox.clone(),
             proposal_return_budget: self.proposal_return_budget,
+            speculative_bal_build: self.speculative_bal_build,
             subblocks: subblocks.as_ref().map(|s| s.mailbox()),
             scheme_provider: scheme_provider.clone(),
             epoch_strategy: epoch_strategy.clone(),

@@ -64,6 +64,10 @@ pub(super) struct Config<TContext> {
     /// budget to the payload builder.
     pub(super) proposal_return_budget: Duration,
 
+    /// Whether proposals may build a child payload speculatively over the
+    /// candidate parent's BAL while parent validation is still in flight.
+    pub(super) speculative_bal_build: bool,
+
     /// The epoch strategy used by tempo, to map block heights to epochs.
     pub(super) epoch_strategy: FixedEpocher,
 

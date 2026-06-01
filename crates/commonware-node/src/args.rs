@@ -289,6 +289,11 @@ pub struct Args {
     #[arg(long = "consensus.fcu-heartbeat-interval", default_value = "5m")]
     pub fcu_heartbeat_interval: PositiveDuration,
 
+    /// Build the next proposal speculatively over the parent BAL while parent
+    /// validation is still running.
+    #[arg(long = "consensus.speculative-bal-build", default_value_t = false)]
+    pub speculative_bal_build: bool,
+
     /// Cache for the signing key loaded from CLI-provided file.
     #[clap(skip)]
     loaded_signing_key: Arc<tokio::sync::OnceCell<Option<SigningKey>>>,

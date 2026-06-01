@@ -6,6 +6,8 @@
 
 use std::{ops::RangeInclusive, pin::Pin, sync::Arc, time::Duration};
 
+use alloy_consensus::BlockHeader as _;
+use alloy_eip7928::bal::DecodedBal;
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
 use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
 use commonware_cryptography::ed25519::PublicKey;
@@ -22,7 +24,13 @@ use futures::{
     stream::FuturesOrdered,
 };
 use prometheus_client::metrics::counter::Counter;
+use reth_chain_state::BalStateOverlay;
 use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
+use reth_payload_builder::{
+    BuildNewPayload, PayloadBuilderError, PayloadStateAnchor, PayloadValidityToken,
+    SpeculativePayloadState, SpeculativeStateProvider,
+};
+use reth_storage_api::{StateProviderBox, StateProviderFactory};
 use tempo_node::{TempoExecutionData, TempoFullNode};
 use tempo_payload_types::TempoPayloadAttributes;
 use tokio::select;
@@ -32,7 +40,7 @@ use tracing::{
 
 use super::{
     Config,
-    ingress::{CanonicalizeHead, Command, Message},
+    ingress::{CanonicalizeHead, Command, Message, SpeculativeBuild},
 };
 use crate::{
     consensus::{Digest, block::Block},
@@ -387,7 +395,11 @@ where
         let is_backfilling =
             self.pending_backfill.is_some() || !self.finalized_heights_to_backfill.is_empty();
         match message.command {
-            Command::CanonicalizeHead(..) | Command::CanonicalizeAndBuild(..) if is_backfilling => {
+            Command::CanonicalizeHead(..)
+            | Command::CanonicalizeAndBuild(..)
+            | Command::SpeculativeBuild(..)
+                if is_backfilling =>
+            {
                 info_span!("handle_message")
                     .in_scope(|| info!("request to canonicalize dropped while backfilling"));
             }
@@ -423,6 +435,25 @@ where
                 )
                 .await;
             }
+            Command::SpeculativeBuild(SpeculativeBuild {
+                parent,
+                attributes,
+                validity_token,
+                response,
+            }) => {
+                let rx = match self.start_speculative_build(*parent, *attributes, validity_token) {
+                    Ok(rx) => rx,
+                    Err(error) => {
+                        let _ = response.send(Err(error));
+                        return Ok(());
+                    }
+                };
+                let payload_id = rx
+                    .await
+                    .map_err(|_| eyre!("payload builder dropped speculative build response"))
+                    .and_then(|res| res.map_err(Report::new));
+                let _ = response.send(payload_id);
+            }
             Command::Finalize(finalized) => match *finalized {
                 Update::Tip(_, height, digest) => {
                     self.latest_observed_finalized_tip.replace((height, digest));
@@ -434,6 +465,43 @@ where
             },
         }
         Ok(())
+    }
+
+    /// Starts a child payload build over the speculative state `parent.parent + parent.BAL`.
+    #[instrument(
+        skip_all,
+        fields(
+            parent.height = %parent.height(),
+            parent.digest = %parent.digest(),
+        ),
+    )]
+    fn start_speculative_build(
+        &self,
+        parent: Block,
+        attributes: TempoPayloadAttributes,
+        validity_token: PayloadValidityToken,
+    ) -> eyre::Result<
+        tokio::sync::oneshot::Receiver<std::result::Result<PayloadId, PayloadBuilderError>>,
+    > {
+        let parent_hash = parent.block_hash();
+        let state_anchor = speculative_state_anchor_for_parent(
+            &parent,
+            self.execution_node.provider.clone(),
+            validity_token,
+        )?;
+
+        Ok(self
+            .execution_node
+            .payload_builder_handle
+            .send_new_payload_with_state_anchor(
+                BuildNewPayload {
+                    attributes,
+                    parent_hash,
+                    cache: None,
+                    trie_handle: None,
+                },
+                state_anchor,
+            ))
     }
 
     /// Canonicalizes `digest` by sending a forkchoice update to the execution layer.
@@ -608,6 +676,40 @@ where
     }
 }
 
+fn speculative_state_anchor_for_parent<Provider>(
+    parent: &Block,
+    provider: Provider,
+    validity_token: PayloadValidityToken,
+) -> eyre::Result<PayloadStateAnchor>
+where
+    Provider: StateProviderFactory + Clone + Send + Sync + 'static,
+{
+    let block_access_list = parent
+        .block_access_list()
+        .cloned()
+        .ok_or_else(|| eyre!("parent block has no BAL sidecar"))?;
+    let decoded = DecodedBal::from_rlp_bytes(block_access_list)
+        .wrap_err("failed decoding parent BAL sidecar")?;
+
+    if let Some(expected) = parent.block().block_access_list_hash() {
+        decoded
+            .ensure_hash(expected)
+            .wrap_err("parent BAL sidecar hash does not match header")?;
+    }
+
+    let overlay = BalStateOverlay::from_bal(decoded.as_bal())
+        .wrap_err("failed constructing parent BAL final-write overlay")?;
+    let base_parent_hash = parent.parent_hash();
+    let state_provider = SpeculativeStateProvider::new("tempo-parent-bal-overlay", move || {
+        let fallback = provider.state_by_block_hash(base_parent_hash)?;
+        Ok(Box::new(overlay.clone().provider(fallback)) as StateProviderBox)
+    });
+
+    Ok(PayloadStateAnchor::Speculative(
+        SpeculativePayloadState::new(validity_token).with_state_provider(state_provider),
+    ))
+}
+
 /// Controls canonicalization: if attributes are sent, the FCU also builds a payload.
 enum JustCanonicalizeOrAlsoBuild {
     JustCanonicalize {
@@ -652,5 +754,160 @@ impl std::fmt::Display for HeadOrFinalized {
             Self::Finalized => "finalized",
         };
         f.write_str(msg)
+    }
+}
+
+#[cfg(all(test, feature = "bal"))]
+mod tests {
+    use super::*;
+    use alloy_consensus::Header;
+    use alloy_eip7928::{
+        AccountChanges, BalanceChange, BlockAccessIndex, SlotChanges, StorageChange, bal::Bal,
+    };
+    use alloy_primitives::{Address, B256, Bytes, U256, keccak256};
+    use reth_node_core::primitives::SealedBlock;
+    use reth_storage_api::{AccountReader as _, StateProvider as _, noop::NoopProvider};
+    use std::sync::Arc;
+    use tempo_chainspec::{TempoChainSpec, spec::DEV};
+    use tempo_primitives::{Block as TempoBlock, TempoHeader, TempoPrimitives};
+
+    fn test_provider() -> NoopProvider<TempoChainSpec, TempoPrimitives> {
+        NoopProvider::new(Arc::new(TempoChainSpec::from_genesis(
+            DEV.genesis().clone(),
+        )))
+    }
+
+    fn execution_block_with_bal_hash(block_access_list_hash: B256) -> SealedBlock<TempoBlock> {
+        SealedBlock::seal_slow(TempoBlock {
+            header: TempoHeader {
+                inner: Header {
+                    base_fee_per_gas: Some(0),
+                    withdrawals_root: Some(B256::ZERO),
+                    blob_gas_used: Some(0),
+                    excess_blob_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    requests_hash: Some(B256::ZERO),
+                    block_access_list_hash: Some(block_access_list_hash),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: Default::default(),
+        })
+    }
+
+    fn execution_block_without_bal_hash() -> SealedBlock<TempoBlock> {
+        SealedBlock::seal_slow(TempoBlock {
+            header: TempoHeader {
+                inner: Header {
+                    base_fee_per_gas: Some(0),
+                    withdrawals_root: Some(B256::ZERO),
+                    blob_gas_used: Some(0),
+                    excess_blob_gas: Some(0),
+                    parent_beacon_block_root: Some(B256::ZERO),
+                    requests_hash: Some(B256::ZERO),
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            body: Default::default(),
+        })
+    }
+
+    fn encode_bal(bal: &Bal) -> Bytes {
+        Bytes::from(alloy_rlp::encode(bal))
+    }
+
+    fn bal_with_final_writes(address: Address, slot: U256) -> Bal {
+        Bal::new(vec![
+            AccountChanges::new(address)
+                .with_balance_change(BalanceChange::new(BlockAccessIndex::new(1), U256::from(7)))
+                .with_storage_change(SlotChanges::new(
+                    slot,
+                    vec![StorageChange::new(BlockAccessIndex::new(1), U256::from(3))],
+                )),
+        ])
+    }
+
+    #[test]
+    fn speculative_state_anchor_rejects_parent_without_bal_sidecar() {
+        let parent = Block::from_execution_block(execution_block_without_bal_hash(), None)
+            .expect("block without BAL sidecar");
+        let token = PayloadValidityToken::pending(parent.block_hash());
+
+        let err = speculative_state_anchor_for_parent(&parent, test_provider(), token).unwrap_err();
+
+        assert!(err.to_string().contains("no BAL sidecar"));
+    }
+
+    #[test]
+    fn speculative_state_anchor_rejects_malformed_bal_sidecar() {
+        let block_access_list = Bytes::from_static(b"not-rlp");
+        let parent = Block::from_execution_block(
+            execution_block_with_bal_hash(keccak256(block_access_list.as_ref())),
+            Some(block_access_list),
+        )
+        .expect("header commits to malformed BAL bytes");
+        let token = PayloadValidityToken::pending(parent.block_hash());
+
+        let err = speculative_state_anchor_for_parent(&parent, test_provider(), token).unwrap_err();
+
+        assert!(err.to_string().contains("decoding parent BAL"));
+    }
+
+    #[test]
+    fn speculative_state_anchor_rejects_mismatched_bal_hash() {
+        let block_access_list = encode_bal(&Bal::default());
+        let parent = Block::from_execution_block_unchecked(
+            execution_block_with_bal_hash(B256::ZERO),
+            Some(block_access_list),
+        );
+        let token = PayloadValidityToken::pending(parent.block_hash());
+
+        let err = speculative_state_anchor_for_parent(&parent, test_provider(), token).unwrap_err();
+
+        assert!(err.to_string().contains("hash does not match"));
+    }
+
+    #[test]
+    fn speculative_state_anchor_exposes_parent_bal_overlay() {
+        let address = Address::from([0x11; 20]);
+        let slot = U256::from(2);
+        let block_access_list = encode_bal(&bal_with_final_writes(address, slot));
+        let parent = Block::from_execution_block(
+            execution_block_with_bal_hash(keccak256(block_access_list.as_ref())),
+            Some(block_access_list),
+        )
+        .expect("valid BAL sidecar");
+        let token = PayloadValidityToken::pending(parent.block_hash());
+
+        let anchor = speculative_state_anchor_for_parent(&parent, test_provider(), token.clone())
+            .expect("speculative state anchor");
+
+        assert!(anchor.is_speculative());
+        let dependency = anchor
+            .validity_dependency()
+            .expect("anchor carries parent validity dependency");
+        assert_eq!(dependency.parent_hash(), parent.block_hash());
+        assert!(!dependency.should_discard());
+        token.mark_invalid();
+        assert!(dependency.should_discard());
+
+        let provider = anchor
+            .state_provider()
+            .expect("anchor carries state provider")
+            .open()
+            .expect("overlay provider opens");
+        let account = provider
+            .basic_account(&address)
+            .expect("account lookup")
+            .expect("BAL overlay account");
+        assert_eq!(account.balance, U256::from(7));
+        assert_eq!(
+            provider
+                .storage(address, slot.into())
+                .expect("storage lookup"),
+            Some(U256::from(3))
+        );
     }
 }

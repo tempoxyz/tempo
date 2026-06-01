@@ -5,6 +5,7 @@ use futures::{
     SinkExt as _,
     channel::{mpsc, oneshot},
 };
+use reth_payload_builder::PayloadValidityToken;
 use tempo_payload_types::TempoPayloadAttributes;
 use tracing::Span;
 
@@ -55,6 +56,25 @@ impl Mailbox {
             )?;
         Ok(rx)
     }
+
+    /// Starts a speculative build for the child of `parent` without canonicalizing `parent`.
+    pub(crate) fn speculatively_build(
+        &self,
+        parent: Block,
+        attributes: TempoPayloadAttributes,
+        validity_token: PayloadValidityToken,
+    ) -> eyre::Result<oneshot::Receiver<eyre::Result<PayloadId>>> {
+        let (response, rx) = oneshot::channel();
+        self.inner
+            .unbounded_send(Message::in_current_span(SpeculativeBuild {
+                parent: Box::new(parent),
+                attributes: Box::new(attributes),
+                validity_token,
+                response,
+            }))
+            .wrap_err("failed sending speculative build request to agent, this means it exited")?;
+        Ok(rx)
+    }
 }
 
 #[derive(Debug)]
@@ -78,6 +98,8 @@ pub(super) enum Command {
     CanonicalizeHead(CanonicalizeHead),
     /// Requests the agent to canonicalize the head and build a new payload.
     CanonicalizeAndBuild(CanonicalizeAndBuild),
+    /// Requests the agent to build a child payload against a speculative parent state.
+    SpeculativeBuild(SpeculativeBuild),
     /// Requests the agent to forward a finalization event to the execution layer.
     Finalize(Box<Update<Block>>),
 }
@@ -97,6 +119,14 @@ pub(super) struct CanonicalizeAndBuild {
     pub(super) response: oneshot::Sender<eyre::Result<PayloadId>>,
 }
 
+#[derive(Debug)]
+pub(super) struct SpeculativeBuild {
+    pub(super) parent: Box<Block>,
+    pub(super) attributes: Box<TempoPayloadAttributes>,
+    pub(super) validity_token: PayloadValidityToken,
+    pub(super) response: oneshot::Sender<eyre::Result<PayloadId>>,
+}
+
 impl From<CanonicalizeHead> for Command {
     fn from(value: CanonicalizeHead) -> Self {
         Self::CanonicalizeHead(value)
@@ -106,6 +136,12 @@ impl From<CanonicalizeHead> for Command {
 impl From<CanonicalizeAndBuild> for Command {
     fn from(value: CanonicalizeAndBuild) -> Self {
         Self::CanonicalizeAndBuild(value)
+    }
+}
+
+impl From<SpeculativeBuild> for Command {
+    fn from(value: SpeculativeBuild) -> Self {
+        Self::SpeculativeBuild(value)
     }
 }
 

@@ -1,5 +1,11 @@
 //! Simple tests: just start and build a few blocks.
-use std::time::Duration;
+use std::{
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+    },
+    time::Duration,
+};
 
 use crate::{Setup, run};
 use commonware_macros::test_traced;
@@ -18,6 +24,66 @@ fn single_node() {
             false
         }
     });
+}
+
+#[cfg(not(feature = "bal"))]
+#[test_traced]
+fn speculative_bal_build_falls_back_without_bal_sidecars() {
+    let _ = tempo_eyre::install();
+
+    let saw_fallback = Arc::new(AtomicBool::new(false));
+    let stop_saw_fallback = saw_fallback.clone();
+    let setup = Setup::new()
+        .how_many_signers(1)
+        .epoch_length(100)
+        .seed(0)
+        .speculative_bal_build(true);
+    let _state = run(setup, |metric, value| {
+        if metric.contains("_speculative_bal_build_fallbacks") {
+            let value = value.parse::<u64>().unwrap();
+            let reached = value >= 1;
+            if reached {
+                stop_saw_fallback.store(true, Ordering::Relaxed);
+            }
+            reached
+        } else if metric.ends_with("_marshal_processed_height") {
+            let value = value.parse::<u64>().unwrap();
+            value >= 20
+        } else {
+            false
+        }
+    });
+    assert!(saw_fallback.load(Ordering::Relaxed));
+}
+
+#[cfg(feature = "bal")]
+#[test_traced]
+fn speculative_bal_build_uses_parent_bal_sidecar() {
+    let _ = tempo_eyre::install();
+
+    let saw_use = Arc::new(AtomicBool::new(false));
+    let stop_saw_use = saw_use.clone();
+    let setup = Setup::new()
+        .how_many_signers(1)
+        .epoch_length(100)
+        .seed(0)
+        .speculative_bal_build(true);
+    let _state = run(setup, |metric, value| {
+        if metric.contains("_speculative_bal_build_used") {
+            let value = value.parse::<u64>().unwrap();
+            let reached = value >= 1;
+            if reached {
+                stop_saw_use.store(true, Ordering::Relaxed);
+            }
+            reached
+        } else if metric.ends_with("_marshal_processed_height") {
+            let value = value.parse::<u64>().unwrap();
+            value >= 20
+        } else {
+            false
+        }
+    });
+    assert!(saw_use.load(Ordering::Relaxed));
 }
 
 #[test_traced]

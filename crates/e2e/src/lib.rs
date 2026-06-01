@@ -140,6 +140,9 @@ pub struct Setup {
     /// Whether to activate subblocks building.
     pub with_subblocks: bool,
 
+    /// Whether to enable the opt-in speculative BAL payload build path.
+    pub speculative_bal_build: bool,
+
     /// The fee recipient written into the V2 contract for each validator.
     pub fee_recipient: Address,
 
@@ -163,6 +166,7 @@ impl Setup {
             epoch_length: 20,
             proposal_return_budget: Duration::from_millis(300),
             with_subblocks: false,
+            speculative_bal_build: false,
             fee_recipient: Address::ZERO,
             no_legacy_archive: false,
         }
@@ -211,6 +215,13 @@ impl Setup {
         }
     }
 
+    pub fn speculative_bal_build(self, speculative_bal_build: bool) -> Self {
+        Self {
+            speculative_bal_build,
+            ..self
+        }
+    }
+
     pub fn fee_recipient(self, fee_recipient: Address) -> Self {
         Self {
             fee_recipient,
@@ -247,6 +258,7 @@ pub async fn setup_validators(
         linkage,
         proposal_return_budget,
         with_subblocks,
+        speculative_bal_build,
         fee_recipient,
         no_legacy_archive,
         ..
@@ -320,6 +332,7 @@ pub async fn setup_validators(
             fcu_heartbeat_interval: Duration::from_secs(3),
             feed_state,
             with_subblocks,
+            speculative_bal_build,
             // Plenty of headroom for any test; the marshal will fall back to
             // reth past this depth via the hybrid finalized blocks store.
             finalized_blocks_retention: 1024,

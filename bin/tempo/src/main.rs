@@ -785,6 +785,7 @@ mod tests {
             node_cmd.ext.consensus.network_budget.into_duration(),
             Duration::from_millis(50)
         );
+        assert!(!node_cmd.ext.consensus.speculative_bal_build);
         assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.35);
 
         let cli = TempoCli::try_parse_from([
@@ -809,5 +810,17 @@ mod tests {
             node_cmd.ext.consensus.network_budget.into_duration(),
             Duration::from_millis(50)
         );
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--consensus.speculative-bal-build",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(node_cmd.ext.consensus.speculative_bal_build);
     }
 }

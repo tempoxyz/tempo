@@ -27,6 +27,10 @@ pub struct TempoPayloadAttributes {
     /// builder should not stop early for block pacing.
     #[serde(skip)]
     payload_build_budget: Option<Duration>,
+    /// Transactions that should be treated as already consumed for this local
+    /// payload build without mutating the live pool.
+    #[serde(skip, default = "default_excluded_transaction_hashes")]
+    excluded_transaction_hashes: Arc<[B256]>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -76,6 +80,7 @@ impl TempoPayloadAttributes {
                 slot_number: None,
             },
             payload_build_budget: None,
+            excluded_transaction_hashes: Arc::from([]),
             timestamp_millis_part,
             extra_data,
             proposer_public_key,
@@ -113,6 +118,21 @@ impl TempoPayloadAttributes {
         self.payload_build_budget
     }
 
+    /// Sets transaction hashes that should be skipped by this payload build's
+    /// local best-transaction iterator.
+    pub fn with_excluded_transaction_hashes(
+        mut self,
+        hashes: impl IntoIterator<Item = B256>,
+    ) -> Self {
+        self.excluded_transaction_hashes = hashes.into_iter().collect::<Vec<_>>().into();
+        self
+    }
+
+    /// Returns the transaction hashes excluded from this local payload build.
+    pub fn excluded_transaction_hashes(&self) -> &[B256] {
+        &self.excluded_transaction_hashes
+    }
+
     /// Returns the milliseconds portion of the timestamp.
     pub fn timestamp_millis_part(&self) -> u64 {
         self.timestamp_millis_part
@@ -145,6 +165,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
         Self {
             inner,
             payload_build_budget: None,
+            excluded_transaction_hashes: Arc::from([]),
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
             proposer_public_key: None,
@@ -225,6 +246,10 @@ fn payload_id_from_parent_and_context(
 
 fn default_subblocks() -> Arc<dyn Fn() -> Vec<RecoveredSubBlock> + Send + Sync + 'static> {
     Arc::new(Vec::new)
+}
+
+fn default_excluded_transaction_hashes() -> Arc<[B256]> {
+    Arc::from([])
 }
 
 #[cfg(test)]
@@ -427,6 +452,20 @@ mod tests {
         let mut attrs = attrs;
         attrs.timestamp = 123;
         assert_eq!(attrs.inner.timestamp, 123);
+    }
+
+    #[test]
+    fn excluded_transaction_hashes_are_local_build_state() {
+        let excluded = B256::random();
+        let attrs = TempoPayloadAttributes::random().with_excluded_transaction_hashes([excluded]);
+
+        assert_eq!(attrs.excluded_transaction_hashes(), &[excluded]);
+
+        let json = serde_json::to_string(&attrs).unwrap();
+        assert!(!json.contains("excludedTransactionHashes"));
+
+        let deserialized: TempoPayloadAttributes = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.excluded_transaction_hashes().is_empty());
     }
 
     #[test]

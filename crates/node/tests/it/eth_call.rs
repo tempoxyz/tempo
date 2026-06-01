@@ -510,13 +510,20 @@ async fn test_eth_estimate_gas_validator_fee_token_mismatch() -> eyre::Result<()
 
     *dynamic_validator.lock().unwrap() = wallet_address;
 
-    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-
-    let block = provider
-        .get_block(BlockId::latest())
-        .await?
-        .expect("Could not get latest block");
-    assert_eq!(block.header.beneficiary, wallet_address);
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(5);
+    loop {
+        let block = provider
+            .get_block(BlockId::latest())
+            .await?
+            .expect("Could not get latest block");
+        if block.header.beneficiary == wallet_address {
+            break;
+        }
+        if tokio::time::Instant::now() >= deadline {
+            assert_eq!(block.header.beneficiary, wallet_address);
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
 
     let recipient = Address::random();
     let calldata = user_fee_token

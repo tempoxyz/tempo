@@ -4,7 +4,10 @@ use crate::{
     ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
     tt_2d_pool::BestAA2dTransactions,
 };
-use alloy_primitives::{Address, U256, map::HashMap};
+use alloy_primitives::{
+    Address, B256, U256,
+    map::{B256Set, HashMap},
+};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
@@ -108,6 +111,60 @@ impl BestTransactions for MergeBestTransactions {
     fn set_skip_blobs(&mut self, skip_blobs: bool) {
         self.protocol_pool.set_skip_blobs(skip_blobs);
         self.aa_2d_pool.set_skip_blobs(skip_blobs);
+    }
+}
+
+/// A best-transaction iterator that consumes, but does not return, excluded transactions.
+///
+/// This is useful for branch-local block building: the skipped transaction is
+/// treated like a mined transaction for this iterator view, so nonce descendants
+/// can still be unlocked without mutating the live pool.
+pub struct ExcludingBestTransactions<I> {
+    inner: I,
+    excluded: B256Set,
+}
+
+impl<I> ExcludingBestTransactions<I> {
+    /// Creates a wrapper that skips any transaction whose hash is in `excluded`.
+    pub fn new(inner: I, excluded: impl IntoIterator<Item = B256>) -> Self {
+        Self {
+            inner,
+            excluded: excluded.into_iter().collect(),
+        }
+    }
+}
+
+impl<I> Iterator for ExcludingBestTransactions<I>
+where
+    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+{
+    type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+
+    fn next(&mut self) -> Option<Self::Item> {
+        loop {
+            let tx = self.inner.next()?;
+            if self.excluded.contains(tx.hash()) {
+                continue;
+            }
+            return Some(tx);
+        }
+    }
+}
+
+impl<I> BestTransactions for ExcludingBestTransactions<I>
+where
+    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+{
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
+        self.inner.mark_invalid(transaction, kind);
+    }
+
+    fn no_updates(&mut self) {
+        self.inner.no_updates();
+    }
+
+    fn set_skip_blobs(&mut self, skip_blobs: bool) {
+        self.inner.set_skip_blobs(skip_blobs);
     }
 }
 
@@ -308,6 +365,34 @@ mod tests {
             protocol_best_transactions(protocol_txs),
             aa_2d_best_transactions(aa_2d_txs),
         )
+    }
+
+    #[test]
+    fn excluded_best_transactions_skip_protocol_tx_and_unlock_descendant() {
+        let sender = Address::random();
+        let tx0 = protocol_tx_for_sender(sender, 0, 10);
+        let tx1 = protocol_tx_for_sender(sender, 1, 9);
+        let mut best = ExcludingBestTransactions::new(
+            protocol_best_transactions(vec![tx0.clone(), tx1.clone()]),
+            [*tx0.hash()],
+        );
+
+        assert_eq!(best.next().map(|tx| *tx.hash()), Some(*tx1.hash()));
+        assert!(best.next().is_none());
+    }
+
+    #[test]
+    fn excluded_best_transactions_skip_aa_2d_tx_and_unlock_descendant() {
+        let sender = Address::random();
+        let tx0 = aa_2d_tx_for_sequence(sender, 0, 10);
+        let tx1 = aa_2d_tx_for_sequence(sender, 1, 9);
+        let mut best = ExcludingBestTransactions::new(
+            aa_2d_best_transactions(vec![tx0.clone(), tx1.clone()]),
+            [*tx0.hash()],
+        );
+
+        assert_eq!(best.next().map(|tx| *tx.hash()), Some(*tx1.hash()));
+        assert!(best.next().is_none());
     }
 
     #[test]
