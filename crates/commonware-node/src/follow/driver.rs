@@ -256,19 +256,17 @@ where
                 .epoch_strategy
                 .last(previous)
                 .expect("strategy is valid for all heights and epochs");
-            let boundary_block = self
-                .config
-                .marshal
-                .get_block(last_consensus_boundary)
-                .await
-                .ok_or_else(|| {
-                    eyre::eyre!(
-                        "cannot heal finalization gap; consensus layer is \
-                        ahead of execution layer, but consensus layer does not \
-                        have boundary block at height \
-                        `{last_consensus_boundary}`"
-                    )
-                })?;
+
+            let Some(boundary_block) = self.config.marshal.get_block(last_consensus_boundary).await
+            else {
+                warn!(
+                    "cannot heal finalization gap; consensus layer is ahead of execution layer, \
+                   but consensus layer does not have the boundary block at height `{last_consensus_boundary}`. \
+                   the node likely skipped epoch boundaries via the network identity"
+                );
+
+                return Ok(());
+            };
 
             let onchain_outcome = tempo_dkg_onchain_artifacts::OnchainDkgOutcome::read(
                 &mut boundary_block.header().extra_data().as_ref(),
