@@ -12,10 +12,10 @@ use crate::TempoFullNode;
 
 /// Requests a private Reth sparse-trie state-root pipeline for a BAL speculative child build.
 ///
-/// Reth owns the live sparse-trie and state-trie-overlay state, so the snapshot must be prepared by
-/// the engine tree before consensus submits the parent block for validation. The returned handle is
-/// backed by private cloned state and can be passed to the payload builder without mutating
-/// validation caches.
+/// Reth owns the live sparse-trie and state-trie-overlay state. For an unvalidated parent, Reth
+/// returns a deferred handle immediately and attaches a private sparse-trie snapshot after parent
+/// validation produces trie updates. The handle can be passed to the payload builder without
+/// mutating validation caches.
 pub async fn speculative_bal_state_root_handle(
     node: &TempoFullNode,
     speculative_parent_block: &SealedBlock<TempoBlock>,
@@ -40,7 +40,7 @@ pub async fn speculative_bal_state_root_handle(
         parent_number = speculative_parent_block.number(),
         parent_state_root = %speculative_parent_block.state_root(),
         prepare_elapsed = ?prepare_start.elapsed(),
-        "prepared speculative BAL sparse-trie handle from Reth snapshot",
+        "received speculative BAL sparse-trie handle from Reth",
     );
 
     Ok(handle)
