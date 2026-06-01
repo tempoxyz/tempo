@@ -829,6 +829,7 @@ where
         result_gas: ResultGas,
     ) -> Result<ExecutionResult<Self::HaltReason>, Self::Error> {
         evm.clear();
+        evm.finalize_current_expiring_nonce()?;
 
         MainnetHandler::default()
             .execution_result(evm, result, result_gas)

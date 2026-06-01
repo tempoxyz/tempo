@@ -143,6 +143,11 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.inner.finalize_expiring_nonces()
     }
 
+    /// Defers expiring nonce writes to the block executor's finalization step.
+    pub(crate) fn defer_expiring_nonce_finalization(&mut self) {
+        self.inner.defer_expiring_nonce_finalization();
+    }
+
     /// Sets the inspector for the EVM.
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
         TempoEvm {
