@@ -415,19 +415,15 @@ impl AA2dPool {
         let tx_hash = *transaction.hash();
         let expiring_nonce_hash = transaction.transaction.precomputed_expiring_nonce_hash();
 
-        if let Some(existing) = self.expiring_nonce_txs.get(&expiring_nonce_hash).cloned() {
-            if existing.is_live() {
+        let expiring_nonce_entry = match self.expiring_nonce_txs.entry(expiring_nonce_hash) {
+            hash_map::Entry::Occupied(_) => {
                 return Err(PoolError::new(tx_hash, PoolErrorKind::AlreadyImported));
             }
-            self.remove_expiring_nonce_entry(existing, true);
-        }
+            hash_map::Entry::Vacant(entry) => entry,
+        };
 
         // Check per-sender limit
         let sender = transaction.sender();
-        let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
-        if sender_count >= self.config.max_txs_per_sender {
-            self.gc_expiring_nonce_tombstones_for_sender(sender);
-        }
         let sender_count = self.txs_by_sender.get(&sender).copied().unwrap_or(0);
         if sender_count >= self.config.max_txs_per_sender {
             return Err(PoolError::new(
@@ -438,7 +434,11 @@ impl AA2dPool {
 
         // Create pending transaction
         let pending_tx = PendingTransaction {
-            submission_id: self.next_id(),
+            submission_id: {
+                let id = self.submission_id;
+                self.submission_id = self.submission_id.wrapping_add(1);
+                id
+            },
             priority: TempoTipOrdering::default()
                 .priority(&transaction.transaction, hardfork.base_fee()),
             transaction: transaction.clone(),
@@ -447,14 +447,7 @@ impl AA2dPool {
         let eviction_key = ExpiringNonceEvictionKey::from_entry(Arc::clone(&entry));
 
         // Insert into expiring nonce map and by_hash
-        match self.expiring_nonce_txs.entry(expiring_nonce_hash) {
-            hash_map::Entry::Occupied(_) => {
-                return Err(PoolError::new(tx_hash, PoolErrorKind::AlreadyImported));
-            }
-            hash_map::Entry::Vacant(expiring_nonce_entry) => {
-                expiring_nonce_entry.insert(Arc::clone(&entry));
-            }
-        }
+        expiring_nonce_entry.insert(Arc::clone(&entry));
         self.expiring_nonce_eviction_order.insert(eviction_key);
         if let Some(slot) = entry.slot {
             self.slot_to_expiring_nonce.insert(slot, Arc::clone(&entry));
