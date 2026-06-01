@@ -1149,7 +1149,7 @@ def "main e2e" [
     --tps: int = 50000                                  # Target TPS
     --duration: int = 90                                # Duration in seconds
     --accounts: int = 1000                              # Number of accounts
-    --max-concurrent-requests: int = 100                # Max concurrent requests
+    --max-concurrent-requests: int = 500                # Max concurrent requests
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 1, 10, or 100
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
