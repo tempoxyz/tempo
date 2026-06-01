@@ -724,7 +724,10 @@ where
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
             let _ = roots_tx.send((
-                BuilderTx::Pooled(pool_tx),
+                BuilderTx::Pooled {
+                    tx: pool_tx,
+                    encoded_len: tx_rlp_length,
+                },
                 executor.receipts().last().unwrap().clone(),
             ));
         };
@@ -799,8 +802,12 @@ where
                 executor.evm_mut().db_mut().bump_bal_index();
 
                 subblock_tx_count += 1.0;
+                let tx_encoded_len = tx.inner().length();
                 let _ = roots_tx.send((
-                    BuilderTx::Owned(Box::new(tx)),
+                    BuilderTx::Owned {
+                        tx: Box::new(tx),
+                        encoded_len: tx_encoded_len,
+                    },
                     executor.receipts().last().unwrap().clone(),
                 ));
             }
@@ -837,8 +844,12 @@ where
                 .map_err(PayloadBuilderError::evm)?;
             executor.evm_mut().db_mut().bump_bal_index();
 
+            let tx_encoded_len = system_tx.inner().length();
             let _ = roots_tx.send((
-                BuilderTx::Owned(Box::new(system_tx)),
+                BuilderTx::Owned {
+                    tx: Box::new(system_tx),
+                    encoded_len: tx_encoded_len,
+                },
                 executor.receipts().last().unwrap().clone(),
             ));
         }
@@ -1152,8 +1163,10 @@ where
                 let mut buf = Vec::new();
 
                 for (tx, receipt) in transactions_rx.into_iter() {
+                    let tx_encoded_len = tx.encoded_len();
                     let (tx, sender) = tx.into_parts();
                     buf.clear();
+                    buf.reserve(tx_encoded_len);
                     tx.encode_2718(&mut buf);
                     transactions_root.push_next(&buf);
                     transactions.push(tx);
@@ -1162,6 +1175,7 @@ where
                     let receipt = receipt.with_bloom_ref();
 
                     buf.clear();
+                    buf.reserve(receipt.encode_2718_len());
                     receipt.encode_2718(&mut buf);
                     receipts_root.push_next(&buf);
                     receipts_bloom |= receipt.bloom();
@@ -1258,15 +1272,27 @@ fn maybe_override_fee_recipient<DB: Database>(
 
 #[derive(Debug)]
 enum BuilderTx {
-    Pooled(Arc<ValidPoolTransaction<TempoPooledTransaction>>),
-    Owned(Box<Recovered<TempoTxEnvelope>>),
+    Pooled {
+        tx: Arc<ValidPoolTransaction<TempoPooledTransaction>>,
+        encoded_len: usize,
+    },
+    Owned {
+        tx: Box<Recovered<TempoTxEnvelope>>,
+        encoded_len: usize,
+    },
 }
 
 impl BuilderTx {
+    fn encoded_len(&self) -> usize {
+        match self {
+            Self::Pooled { encoded_len, .. } | Self::Owned { encoded_len, .. } => *encoded_len,
+        }
+    }
+
     fn into_parts(self) -> (TempoTxEnvelope, Address) {
         match self {
-            Self::Pooled(tx) => tx.transaction.inner().clone().into_parts(),
-            Self::Owned(tx) => tx.into_parts(),
+            Self::Pooled { tx, .. } => tx.transaction.inner().clone().into_parts(),
+            Self::Owned { tx, .. } => tx.into_parts(),
         }
     }
 }
