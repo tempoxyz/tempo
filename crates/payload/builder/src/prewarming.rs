@@ -17,7 +17,6 @@ use reth_transaction_pool::{
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    nonce::slots as nonce_slots,
     storage::StorageKey as _,
     tip_fee_manager::slots as fee_manager_slots,
     tip20::{ITIP20, tip20_slots},
@@ -412,7 +411,7 @@ fn storage_touches_for_transaction(
         }
     }
 
-    add_expiring_nonce_touches(&mut touches, tx);
+    add_expiring_nonce_seen_touch(&mut touches, tx);
 
     touches
 }
@@ -543,18 +542,12 @@ fn add_fee_manager_touches(
     );
 }
 
-fn add_expiring_nonce_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransaction) {
+fn add_expiring_nonce_seen_touch(touches: &mut Vec<StorageTouch>, tx: &BestTransaction) {
     let Some(expiring_nonce_slot) = tx.transaction.expiring_nonce_slot() else {
         return;
     };
 
-    add_account_touch(touches, NONCE_PRECOMPILE_ADDRESS);
     add_storage_touch(touches, NONCE_PRECOMPILE_ADDRESS, expiring_nonce_slot);
-    add_storage_touch(
-        touches,
-        NONCE_PRECOMPILE_ADDRESS,
-        nonce_slots::EXPIRING_NONCE_RING_PTR,
-    );
 }
 
 fn add_account_touch(touches: &mut Vec<StorageTouch>, address: Address) {

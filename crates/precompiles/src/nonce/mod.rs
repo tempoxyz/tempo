@@ -11,7 +11,7 @@ use tempo_precompiles_macros::contract;
 
 use crate::{
     NONCE_PRECOMPILE_ADDRESS,
-    error::Result,
+    error::{Result, TempoPrecompileError},
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, B256, U256};
@@ -53,6 +53,25 @@ pub struct NonceManager {
     expiring_nonce_seen: Mapping<B256, u64>,
     expiring_nonce_ring: Mapping<u32, B256>,
     expiring_nonce_ring_ptr: u32,
+}
+
+/// Replay mark that has already passed expiring nonce validation during transaction execution.
+pub trait ValidatedExpiringNonceMark {
+    /// Replay hash to write into the expiring nonce ring and seen set.
+    fn replay_hash(&self) -> B256;
+
+    /// Expiry timestamp already checked against the current block timestamp.
+    fn valid_before(&self) -> u64;
+}
+
+impl ValidatedExpiringNonceMark for (B256, u64) {
+    fn replay_hash(&self) -> B256 {
+        self.0
+    }
+
+    fn valid_before(&self) -> u64 {
+        self.1
+    }
 }
 
 impl NonceManager {
@@ -107,6 +126,36 @@ impl NonceManager {
         Ok(expiry != 0 && expiry > now)
     }
 
+    /// Validates an expiring nonce transaction against the current block timestamp
+    /// and parent/current replay state without mutating replay storage.
+    ///
+    /// Block executors use this during transaction execution and defer the ring
+    /// insertion to a block-finalization pass. This keeps per-transaction
+    /// execution independent from the global expiring nonce ring pointer.
+    ///
+    /// # Errors
+    /// - `InvalidExpiringNonceExpiry` — `valid_before` not in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
+    /// - `ExpiringNonceReplay` — transaction hash is already recorded and has not yet expired
+    pub fn validate_expiring_nonce(
+        &self,
+        expiring_nonce_hash: B256,
+        valid_before: u64,
+    ) -> Result<()> {
+        let now: u64 = self.storage.timestamp().saturating_to();
+
+        if valid_before <= now || valid_before > now.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
+        {
+            return Err(NonceError::invalid_expiring_nonce_expiry().into());
+        }
+
+        let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
+        if seen_expiry != 0 && seen_expiry > now {
+            return Err(NonceError::expiring_nonce_replay().into());
+        }
+
+        Ok(())
+    }
+
     /// Validates and records an expiring nonce transaction. Uses a
     /// circular buffer that overwrites expired entries as the pointer
     /// advances. The hash is `keccak256(encode_for_signing || sender)`,
@@ -132,19 +181,8 @@ impl NonceManager {
         expiring_nonce_hash: B256,
         valid_before: u64,
     ) -> Result<()> {
+        self.validate_expiring_nonce(expiring_nonce_hash, valid_before)?;
         let now: u64 = self.storage.timestamp().saturating_to();
-
-        // 1. Validate expiry window: must be in (now, now + EXPIRING_NONCE_MAX_EXPIRY_SECS]
-        if valid_before <= now || valid_before > now.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS)
-        {
-            return Err(NonceError::invalid_expiring_nonce_expiry().into());
-        }
-
-        // 2. Replay check: reject if hash is already seen and not expired
-        let seen_expiry = self.expiring_nonce_seen[expiring_nonce_hash].read()?;
-        if seen_expiry != 0 && seen_expiry > now {
-            return Err(NonceError::expiring_nonce_replay().into());
-        }
 
         // 3. Get current pointer (bounded in [0, CAPACITY)) and use directly as index
         let ptr = self.expiring_nonce_ring_ptr.read()?;
@@ -169,14 +207,84 @@ impl NonceManager {
         self.expiring_nonce_seen[expiring_nonce_hash].write(valid_before)?;
 
         // 6. Advance pointer (wraps at CAPACITY, not u32::MAX)
-        let next = if ptr + 1 >= EXPIRING_NONCE_SET_CAPACITY {
-            0
-        } else {
-            ptr + 1
-        };
+        let next = Self::next_expiring_nonce_ring_idx(ptr);
         self.expiring_nonce_ring_ptr.write(next)?;
 
         Ok(())
+    }
+
+    /// Records expiring nonce marks that were already validated during transaction execution.
+    ///
+    /// This batch path is used by block finalization after all transactions have executed. It
+    /// intentionally does not repeat expiry or replay validation for each mark. Instead, it only
+    /// checks that each ring slot to be overwritten is empty or expired, writes all marks, and
+    /// advances the ring pointer once.
+    ///
+    /// Returns the failing mark index with the precompile error so callers can attach the error to
+    /// the transaction that produced the mark.
+    pub fn mark_validated_expiring_nonces<T: ValidatedExpiringNonceMark>(
+        &mut self,
+        marks: &[T],
+    ) -> core::result::Result<(), (usize, TempoPrecompileError)> {
+        if marks.is_empty() {
+            return Ok(());
+        }
+
+        let now: u64 = self.storage.timestamp().saturating_to();
+        let ptr = self
+            .expiring_nonce_ring_ptr
+            .read()
+            .map_err(|err| (0, err))?;
+        let mut idx = ptr;
+        let mut old_hashes = Vec::with_capacity(marks.len());
+
+        for mark_idx in 0..marks.len() {
+            let old_hash = self.expiring_nonce_ring[idx]
+                .read()
+                .map_err(|err| (mark_idx, err))?;
+
+            if old_hash != B256::ZERO {
+                let old_expiry = self.expiring_nonce_seen[old_hash]
+                    .read()
+                    .map_err(|err| (mark_idx, err))?;
+                if old_expiry != 0 && old_expiry > now {
+                    return Err((mark_idx, NonceError::expiring_nonce_set_full().into()));
+                }
+            }
+
+            old_hashes.push((idx, old_hash));
+            idx = Self::next_expiring_nonce_ring_idx(idx);
+        }
+
+        for (mark_idx, (mark, (idx, old_hash))) in marks.iter().zip(old_hashes).enumerate() {
+            if old_hash != B256::ZERO {
+                self.expiring_nonce_seen[old_hash]
+                    .write(0)
+                    .map_err(|err| (mark_idx, err))?;
+            }
+
+            let replay_hash = mark.replay_hash();
+            self.expiring_nonce_ring[idx]
+                .write(replay_hash)
+                .map_err(|err| (mark_idx, err))?;
+            self.expiring_nonce_seen[replay_hash]
+                .write(mark.valid_before())
+                .map_err(|err| (mark_idx, err))?;
+        }
+
+        self.expiring_nonce_ring_ptr
+            .write(idx)
+            .map_err(|err| (marks.len() - 1, err))?;
+
+        Ok(())
+    }
+
+    fn next_expiring_nonce_ring_idx(idx: u32) -> u32 {
+        if idx >= EXPIRING_NONCE_SET_CAPACITY - 1 {
+            0
+        } else {
+            idx + 1
+        }
     }
 }
 
@@ -313,6 +421,80 @@ mod tests {
                 result.unwrap_err(),
                 TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())
             );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_validate_expiring_nonce_does_not_mark_replay_state() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let now = 1000u64;
+        storage.set_timestamp(U256::from(now));
+
+        StorageCtx::enter(&mut storage, || {
+            let mgr = NonceManager::new();
+            let tx_hash = B256::from([1u8; 32]);
+            let valid_before = now + 10;
+
+            mgr.validate_expiring_nonce(tx_hash, valid_before)?;
+
+            assert!(!mgr.is_expiring_nonce_seen(tx_hash, now)?);
+            assert_eq!(mgr.expiring_nonce_ring_ptr.read()?, 0);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_mark_validated_expiring_nonces_batch() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let now = 1000u64;
+        storage.set_timestamp(U256::from(now));
+
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+            let tx_hash1 = B256::repeat_byte(0x12);
+            let tx_hash2 = B256::repeat_byte(0x13);
+            let marks = [(tx_hash1, now + 10), (tx_hash2, now + 20)];
+
+            mgr.mark_validated_expiring_nonces(&marks)
+                .map_err(|(idx, err)| eyre::eyre!("mark {idx}: {err}"))?;
+
+            assert!(mgr.is_expiring_nonce_seen(tx_hash1, now)?);
+            assert!(mgr.is_expiring_nonce_seen(tx_hash2, now)?);
+            assert_eq!(mgr.expiring_nonce_ring[0].read()?, tx_hash1);
+            assert_eq!(mgr.expiring_nonce_ring[1].read()?, tx_hash2);
+            assert_eq!(mgr.expiring_nonce_ring_ptr.read()?, 2);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_mark_validated_expiring_nonces_rejects_live_ring_slot() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        let now = 1000u64;
+        storage.set_timestamp(U256::from(now));
+
+        StorageCtx::enter(&mut storage, || {
+            let mut mgr = NonceManager::new();
+            let old_hash = B256::repeat_byte(0x14);
+            let tx_hash = B256::repeat_byte(0x15);
+
+            mgr.expiring_nonce_ring[0].write(old_hash)?;
+            mgr.expiring_nonce_seen[old_hash].write(now + 10)?;
+
+            let result = mgr.mark_validated_expiring_nonces(&[(tx_hash, now + 20)]);
+            assert_eq!(
+                result.unwrap_err(),
+                (
+                    0,
+                    TempoPrecompileError::NonceError(NonceError::expiring_nonce_set_full())
+                )
+            );
+            assert_eq!(mgr.expiring_nonce_ring[0].read()?, old_hash);
+            assert!(!mgr.is_expiring_nonce_seen(tx_hash, now)?);
+            assert_eq!(mgr.expiring_nonce_ring_ptr.read()?, 0);
 
             Ok(())
         })
