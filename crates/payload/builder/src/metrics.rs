@@ -109,6 +109,12 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) hashed_post_state_duration_seconds: Histogram,
     /// Time to compute the state root and trie updates via `state_root_with_updates`.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
+    /// Wall-clock time spent in the BlockSTM TIP-20 transfer fast path.
+    pub(crate) blockstm_tip20_duration_seconds: Histogram,
+    /// Number of transactions attempted through the BlockSTM TIP-20 transfer fast path.
+    pub(crate) blockstm_tip20_transaction_count: Histogram,
+    /// Number of conflict retries observed by the BlockSTM TIP-20 transfer fast path.
+    pub(crate) blockstm_tip20_retry_count: Histogram,
 }
 
 /// Reason the payload builder stopped adding pool transactions to the block.
@@ -159,6 +165,25 @@ impl TempoPayloadBuilderMetrics {
     #[inline]
     pub(crate) fn inc_subblocks_expired(&self) {
         metrics::counter!("tempo_payload_builder_subblocks_expired_total").increment(1);
+    }
+
+    /// Increments the BlockSTM TIP-20 transfer attempt counter.
+    #[inline]
+    pub(crate) fn inc_blockstm_tip20_attempted(&self) {
+        metrics::counter!("tempo_payload_builder_blockstm_tip20_attempted_total").increment(1);
+    }
+
+    /// Increments the BlockSTM TIP-20 transfer success counter.
+    #[inline]
+    pub(crate) fn inc_blockstm_tip20_succeeded(&self) {
+        metrics::counter!("tempo_payload_builder_blockstm_tip20_succeeded_total").increment(1);
+    }
+
+    /// Increments the BlockSTM TIP-20 transfer fallback counter.
+    #[inline]
+    pub(crate) fn inc_blockstm_tip20_fallback(&self, reason: &'static str) {
+        metrics::counter!("tempo_payload_builder_blockstm_tip20_fallback_total", "reason" => reason)
+            .increment(1);
     }
 }
 

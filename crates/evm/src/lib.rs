@@ -9,6 +9,13 @@ use alloy_rlp::Decodable;
 pub use assemble::TempoBlockAssembler;
 mod block;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
+#[cfg(feature = "engine")]
+mod blockstm;
+#[cfg(feature = "engine")]
+pub use blockstm::{
+    Tip20TransferBlockstmBatchError, Tip20TransferBlockstmBatchStats,
+    Tip20TransferBlockstmFallback, Tip20TransferBlockstmTx,
+};
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};
 #[cfg(feature = "engine")]

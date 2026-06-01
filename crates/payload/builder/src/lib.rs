@@ -3,6 +3,7 @@
 #![cfg_attr(not(test), warn(unused_crate_dependencies))]
 #![cfg_attr(docsrs, feature(doc_cfg))]
 
+mod blockstm;
 mod budget;
 mod metrics;
 mod prewarming;
@@ -57,6 +58,7 @@ use reth_transaction_pool::{
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::{
+    collections::VecDeque,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -64,7 +66,10 @@ use std::{
     time::{Duration, Instant},
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
-use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
+use tempo_evm::{
+    TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, Tip20TransferBlockstmBatchError,
+    evm::TempoEvm,
+};
 use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
@@ -114,6 +119,8 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     enable_prewarming: bool,
+    /// Whether to enable the experimental BlockSTM fast path for direct TIP-20 transfers.
+    enable_blockstm_tip20_transfers: bool,
     /// Whether to include block access lists in built execution payloads.
     enable_bal: bool,
     /// Learned estimate of total replayable build work divided by work at tx cutoff.
@@ -132,6 +139,8 @@ pub struct TempoPayloadBuilderConfig {
     pub state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     pub enable_prewarming: bool,
+    /// Whether to enable the experimental BlockSTM fast path for direct TIP-20 transfers.
+    pub enable_blockstm_tip20_transfers: bool,
     /// Initial estimate of total replayable build work divided by work at tx cutoff.
     ///
     /// `1.0` means no finish-work headroom beyond observed work so far. Values
@@ -146,6 +155,7 @@ impl Default for TempoPayloadBuilderConfig {
             is_dev: false,
             state_provider_metrics: false,
             enable_prewarming: false,
+            enable_blockstm_tip20_transfers: false,
             build_time_multiplier: DEFAULT_BUILD_TIME_MULTIPLIER,
         }
     }
@@ -170,6 +180,7 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             is_dev: config.is_dev,
             state_provider_metrics: config.state_provider_metrics,
             enable_prewarming: config.enable_prewarming,
+            enable_blockstm_tip20_transfers: config.enable_blockstm_tip20_transfers,
             enable_bal: cfg!(feature = "bal"),
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
@@ -545,9 +556,244 @@ where
             .record(pool_fetch_start.elapsed());
 
         let execution_start = Instant::now();
-        let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
+        let mut blockstm_buffer = VecDeque::new();
+        let mut blockstm_completed_stop_reason = None;
+        if self.enable_blockstm_tip20_transfers {
+            if self.enable_bal {
+                self.metrics.inc_blockstm_tip20_fallback("bal_enabled");
+            } else if !subblocks.is_empty() {
+                self.metrics.inc_blockstm_tip20_fallback("subblocks");
+            } else {
+                self.metrics.inc_blockstm_tip20_attempted();
+
+                let beneficiary = executor.evm().block().beneficiary;
+                let validator_token =
+                    blockstm::validator_token(executor.evm_mut().db_mut(), beneficiary)
+                        .map_err(BlockExecutionError::other)
+                        .map_err(PayloadBuilderError::evm)?;
+
+                let collect_start = Instant::now();
+                let mut candidates = Vec::new();
+                let mut projected_cumulative_gas_used = cumulative_gas_used;
+                let mut projected_non_payment_gas_used = non_payment_gas_used;
+                let mut projected_block_size_used = block_size_used;
+                let blockstm_collection_stop_reason = loop {
+                    check_cancel!();
+
+                    if let Some(build_budget) = attributes.payload_build_budget() {
+                        let elapsed = start.elapsed();
+                        if payload_budget_exhausted(
+                            elapsed,
+                            Duration::ZERO,
+                            self.build_time_multiplier(),
+                            build_budget,
+                            marshal_persist_estimate(),
+                            projected_block_size_used,
+                        ) {
+                            break BlockBuildStopReason::BuildBudget;
+                        }
+                    }
+
+                    let Some(pool_tx) = best_txs.next() else {
+                        break if cumulative_gas_used >= non_shared_gas_limit {
+                            BlockBuildStopReason::GasLimit
+                        } else if skipped_oversized_block {
+                            BlockBuildStopReason::RlpBlockSizeLimit
+                        } else {
+                            BlockBuildStopReason::TxPoolEmpty
+                        };
+                    };
+                    pool_transactions_yielded += 1;
+
+                    let max_regular_gas_used = core::cmp::min(
+                        pool_tx.gas_limit(),
+                        executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+                    );
+                    if projected_cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
+                        best_txs.mark_invalid(
+                            &pool_tx,
+                            InvalidPoolTransactionError::ExceedsGasLimit(
+                                pool_tx.gas_limit(),
+                                non_shared_gas_limit - projected_cumulative_gas_used,
+                            ),
+                        );
+                        self.metrics
+                            .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
+                        continue;
+                    }
+
+                    let is_payment = if hardfork.is_t5() {
+                        pool_tx.transaction.is_payment()
+                    } else {
+                        pool_tx.transaction.inner().is_payment_v1()
+                    };
+                    if !is_payment
+                        && projected_non_payment_gas_used + max_regular_gas_used > general_gas_limit
+                    {
+                        best_txs.mark_invalid(
+                            &pool_tx,
+                            InvalidPoolTransactionError::Other(Box::new(
+                                TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                            )),
+                        );
+                        self.metrics
+                            .inc_pool_tx_skipped("exceeds_general_gas_limit");
+                        continue;
+                    }
+
+                    let tx_rlp_length = pool_tx.transaction.encoded_length();
+                    let estimated_block_size_with_tx = projected_block_size_used + tx_rlp_length;
+                    if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                        best_txs.mark_invalid(
+                            &pool_tx,
+                            InvalidPoolTransactionError::OversizedData {
+                                size: estimated_block_size_with_tx,
+                                limit: MAX_RLP_BLOCK_SIZE,
+                            },
+                        );
+                        self.metrics.inc_pool_tx_skipped("oversized_block");
+                        skipped_oversized_block = true;
+                        continue;
+                    }
+
+                    projected_cumulative_gas_used += max_regular_gas_used;
+                    if !is_payment {
+                        projected_non_payment_gas_used += max_regular_gas_used;
+                    }
+                    projected_block_size_used = estimated_block_size_with_tx;
+                    candidates.push(pool_tx);
+
+                    if projected_cumulative_gas_used >= non_shared_gas_limit {
+                        break BlockBuildStopReason::GasLimit;
+                    }
+                };
+
+                if candidates.is_empty() {
+                    self.metrics.inc_blockstm_tip20_fallback("empty_batch");
+                } else {
+                    let receipt_start = executor.receipts().len();
+                    let payment_flags = candidates
+                        .iter()
+                        .map(|pool_tx| {
+                            if hardfork.is_t5() {
+                                pool_tx.transaction.is_payment()
+                            } else {
+                                pool_tx.transaction.inner().is_payment_v1()
+                            }
+                        })
+                        .collect::<Vec<_>>();
+                    let batch = candidates.iter().map(blockstm::candidate).collect();
+                    match executor.execute_tip20_transfer_blockstm_batch(
+                        batch,
+                        validator_token,
+                        |index, result| {
+                            cumulative_gas_used += result.block_gas_used();
+                            cumulative_state_gas_used += result.state_gas_used();
+                            if !payment_flags[index] {
+                                non_payment_gas_used += result.block_gas_used();
+                            }
+                            total_fees += result.validator_fee();
+                            best_txs.on_new_result(result);
+                        },
+                    ) {
+                        Ok(stats) => {
+                            self.metrics.inc_blockstm_tip20_succeeded();
+                            self.metrics
+                                .blockstm_tip20_duration_seconds
+                                .record(collect_start.elapsed());
+                            self.metrics
+                                .blockstm_tip20_transaction_count
+                                .record(stats.transaction_count as f64);
+                            self.metrics
+                                .blockstm_tip20_retry_count
+                                .record(stats.retry_count as f64);
+
+                            for (pool_tx, receipt) in candidates
+                                .into_iter()
+                                .zip(&executor.receipts()[receipt_start..])
+                            {
+                                if hardfork.is_t5() {
+                                    if pool_tx.transaction.is_payment() {
+                                        payment_transactions += 1;
+                                    }
+                                } else if pool_tx.transaction.inner().is_payment_v1() {
+                                    payment_transactions += 1;
+                                }
+                                pool_transactions_included += 1;
+                                block_size_used += pool_tx.transaction.encoded_length();
+                                let _ =
+                                    roots_tx.send((BuilderTx::Pooled(pool_tx), receipt.clone()));
+                            }
+
+                            if !matches!(
+                                blockstm_collection_stop_reason,
+                                BlockBuildStopReason::GasLimit
+                            ) {
+                                blockstm_completed_stop_reason =
+                                    Some(blockstm_collection_stop_reason);
+                            }
+                        }
+                        Err(Tip20TransferBlockstmBatchError::Fallback(reason)) => {
+                            self.metrics.inc_blockstm_tip20_fallback(reason.as_str());
+                            blockstm_buffer = candidates.into();
+                        }
+                        Err(Tip20TransferBlockstmBatchError::Execution {
+                            transaction_index,
+                            error,
+                        }) => {
+                            for (pool_tx, receipt) in candidates
+                                .iter()
+                                .take(transaction_index)
+                                .cloned()
+                                .zip(&executor.receipts()[receipt_start..])
+                            {
+                                if hardfork.is_t5() {
+                                    if pool_tx.transaction.is_payment() {
+                                        payment_transactions += 1;
+                                    }
+                                } else if pool_tx.transaction.inner().is_payment_v1() {
+                                    payment_transactions += 1;
+                                }
+                                pool_transactions_included += 1;
+                                block_size_used += pool_tx.transaction.encoded_length();
+                                let _ =
+                                    roots_tx.send((BuilderTx::Pooled(pool_tx), receipt.clone()));
+                            }
+
+                            let failed = candidates[transaction_index].clone();
+                            blockstm_buffer =
+                                candidates.into_iter().skip(transaction_index + 1).collect();
+                            if let BlockExecutionError::Validation(
+                                BlockValidationError::InvalidTx { error, .. },
+                            ) = &error
+                            {
+                                invalid_pool_transaction_execution_attempts += 1;
+                                if error.is_nonce_too_low() {
+                                    self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                                } else {
+                                    best_txs.mark_invalid(
+                                        &failed,
+                                        InvalidPoolTransactionError::Consensus(
+                                            InvalidTransactionError::TxTypeNotSupported,
+                                        ),
+                                    );
+                                    self.metrics.inc_pool_tx_skipped("invalid_tx");
+                                }
+                            } else {
+                                return Err(PayloadBuilderError::evm(error));
+                            }
+                        }
+                        Err(Tip20TransferBlockstmBatchError::Database(error)) => {
+                            return Err(PayloadBuilderError::evm(error));
+                        }
+                    }
+                }
+            }
+        }
+
+        let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
@@ -555,178 +801,186 @@ where
         let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
-        let block_build_stop_reason = loop {
-            check_cancel!();
+        let block_build_stop_reason = if let Some(stop_reason) = blockstm_completed_stop_reason {
+            stop_reason
+        } else {
+            loop {
+                check_cancel!();
 
-            if let Some(build_budget) = payload_build_budget {
-                let elapsed = start.elapsed();
-                if payload_budget_exhausted(
-                    elapsed,
-                    normal_transaction_fill_idle_elapsed,
-                    build_time_multiplier,
-                    build_budget,
-                    marshal_persist,
-                    block_size_used,
-                ) {
-                    let estimated_marshal_persist = marshal_persist.estimate(block_size_used);
-                    debug!(
-                        target: "payload_builder",
-                        ?elapsed,
-                        ?normal_transaction_fill_idle_elapsed,
-                        ?build_budget,
-                        ?estimated_marshal_persist,
+                if let Some(build_budget) = payload_build_budget {
+                    let elapsed = start.elapsed();
+                    if payload_budget_exhausted(
+                        elapsed,
+                        normal_transaction_fill_idle_elapsed,
+                        build_time_multiplier,
+                        build_budget,
+                        marshal_persist,
                         block_size_used,
-                        build_time_multiplier = build_time_multiplier as f64
-                            / BUILD_TIME_MULTIPLIER_SCALE as f64,
-                        "stopping pool transaction execution before payload build budget is exhausted"
-                    );
-                    break BlockBuildStopReason::BuildBudget;
+                    ) {
+                        let estimated_marshal_persist = marshal_persist.estimate(block_size_used);
+                        debug!(
+                            target: "payload_builder",
+                            ?elapsed,
+                            ?normal_transaction_fill_idle_elapsed,
+                            ?build_budget,
+                            ?estimated_marshal_persist,
+                            block_size_used,
+                            build_time_multiplier = build_time_multiplier as f64
+                                / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                            "stopping pool transaction execution before payload build budget is exhausted"
+                        );
+                        break BlockBuildStopReason::BuildBudget;
+                    }
                 }
-            }
 
-            let Some(pool_tx) = best_txs.next() else {
-                if build_once_with_shared_trie
-                    && payload_build_budget.is_some()
-                    && cumulative_gas_used < non_shared_gas_limit
-                {
-                    std::thread::sleep(Duration::from_millis(1));
-                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                let pool_tx = if let Some(pool_tx) = blockstm_buffer.pop_front() {
+                    pool_tx
+                } else if let Some(pool_tx) = best_txs.next() {
+                    pool_transactions_yielded += 1;
+                    pool_tx
+                } else {
+                    if build_once_with_shared_trie
+                        && payload_build_budget.is_some()
+                        && cumulative_gas_used < non_shared_gas_limit
+                    {
+                        std::thread::sleep(Duration::from_millis(1));
+                        normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                        continue;
+                    }
+                    let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
+                        BlockBuildStopReason::GasLimit
+                    } else if skipped_oversized_block {
+                        BlockBuildStopReason::RlpBlockSizeLimit
+                    } else {
+                        BlockBuildStopReason::TxPoolEmpty
+                    };
+                    break stop_reason;
+                };
+
+                let max_regular_gas_used = core::cmp::min(
+                    pool_tx.gas_limit(),
+                    executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
+                );
+
+                // Ensure we still have capacity for this transaction within the non-shared gas limit.
+                // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
+                // be consumed by proposer's pool transactions.
+                if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
+                    // Mark this transaction as invalid since it doesn't fit
+                    // The iterator will handle lane switching internally when appropriate
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        InvalidPoolTransactionError::ExceedsGasLimit(
+                            pool_tx.gas_limit(),
+                            non_shared_gas_limit - cumulative_gas_used,
+                        ),
+                    );
+                    self.metrics
+                        .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
                     continue;
                 }
-                let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
-                    BlockBuildStopReason::GasLimit
-                } else if skipped_oversized_block {
-                    BlockBuildStopReason::RlpBlockSizeLimit
+
+                let is_payment = if hardfork.is_t5() {
+                    pool_tx.transaction.is_payment()
                 } else {
-                    BlockBuildStopReason::TxPoolEmpty
+                    pool_tx.transaction.inner().is_payment_v1()
                 };
-                break stop_reason;
-            };
-            pool_transactions_yielded += 1;
 
-            let max_regular_gas_used = core::cmp::min(
-                pool_tx.gas_limit(),
-                executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
-            );
+                // If the tx is not a payment and will exceed the general gas limit
+                // mark the tx as invalid and continue
+                if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        InvalidPoolTransactionError::Other(Box::new(
+                            TempoPoolTransactionError::ExceedsNonPaymentLimit,
+                        )),
+                    );
+                    self.metrics
+                        .inc_pool_tx_skipped("exceeds_general_gas_limit");
+                    continue;
+                }
 
-            // Ensure we still have capacity for this transaction within the non-shared gas limit.
-            // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
-            // be consumed by proposer's pool transactions.
-            if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
-                // Mark this transaction as invalid since it doesn't fit
-                // The iterator will handle lane switching internally when appropriate
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::ExceedsGasLimit(
-                        pool_tx.gas_limit(),
-                        non_shared_gas_limit - cumulative_gas_used,
-                    ),
-                );
-                self.metrics
-                    .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
-                continue;
-            }
+                check_cancel!();
+                if is_payment {
+                    payment_transactions += 1;
+                }
 
-            let is_payment = if hardfork.is_t5() {
-                pool_tx.transaction.is_payment()
-            } else {
-                pool_tx.transaction.inner().is_payment_v1()
-            };
+                let tx_rlp_length = pool_tx.transaction.encoded_length();
+                let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
 
-            // If the tx is not a payment and will exceed the general gas limit
-            // mark the tx as invalid and continue
-            if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::Other(Box::new(
-                        TempoPoolTransactionError::ExceedsNonPaymentLimit,
-                    )),
-                );
-                self.metrics
-                    .inc_pool_tx_skipped("exceeds_general_gas_limit");
-                continue;
-            }
+                if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        InvalidPoolTransactionError::OversizedData {
+                            size: estimated_block_size_with_tx,
+                            limit: MAX_RLP_BLOCK_SIZE,
+                        },
+                    );
+                    self.metrics.inc_pool_tx_skipped("oversized_block");
+                    skipped_oversized_block = true;
+                    continue;
+                }
 
-            check_cancel!();
-            if is_payment {
-                payment_transactions += 1;
-            }
+                let tx_debug_repr = tracing::enabled!(Level::TRACE)
+                    .then(|| format!("{:?}", pool_tx.transaction))
+                    .unwrap_or_default();
 
-            let tx_rlp_length = pool_tx.transaction.encoded_length();
-            let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
+                let execution_result = executor.execute_transaction_with_result_closure(
+                    pool_tx.transaction.executable(),
+                    |result| {
+                        cumulative_gas_used += result.block_gas_used();
+                        cumulative_state_gas_used += result.state_gas_used();
+                        if !is_payment {
+                            non_payment_gas_used += result.block_gas_used();
+                        }
 
-            if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::OversizedData {
-                        size: estimated_block_size_with_tx,
-                        limit: MAX_RLP_BLOCK_SIZE,
+                        // Score payload value by the validator-credited fee amount that the
+                        // FeeManager precompile actually wrote during this transaction.
+                        total_fees += result.validator_fee();
+
+                        // Notify transactions iterator about the new state.
+                        best_txs.on_new_result(result);
                     },
                 );
-                self.metrics.inc_pool_tx_skipped("oversized_block");
-                skipped_oversized_block = true;
-                continue;
-            }
+                if let Err(err) = execution_result {
+                    if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
+                        error,
+                        ..
+                    }) = &err
+                    {
+                        invalid_pool_transaction_execution_attempts += 1;
 
-            let tx_debug_repr = tracing::enabled!(Level::TRACE)
-                .then(|| format!("{:?}", pool_tx.transaction))
-                .unwrap_or_default();
-
-            let execution_result = executor.execute_transaction_with_result_closure(
-                pool_tx.transaction.executable(),
-                |result| {
-                    cumulative_gas_used += result.block_gas_used();
-                    cumulative_state_gas_used += result.state_gas_used();
-                    if !is_payment {
-                        non_payment_gas_used += result.block_gas_used();
-                    }
-
-                    // Score payload value by the validator-credited fee amount that the
-                    // FeeManager precompile actually wrote during this transaction.
-                    total_fees += result.validator_fee();
-
-                    // Notify transactions iterator about the new state.
-                    best_txs.on_new_result(result);
-                },
-            );
-            if let Err(err) = execution_result {
-                if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
-                    error,
-                    ..
-                }) = &err
-                {
-                    invalid_pool_transaction_execution_attempts += 1;
-
-                    if error.is_nonce_too_low() {
-                        // if the nonce is too low, we can skip this transaction
-                        trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
-                        self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                        if error.is_nonce_too_low() {
+                            // if the nonce is too low, we can skip this transaction
+                            trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
+                            self.metrics.inc_pool_tx_skipped("nonce_too_low");
+                        } else {
+                            // if the transaction is invalid, we can skip it and all of its
+                            // descendants
+                            trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
+                            best_txs.mark_invalid(
+                                &pool_tx,
+                                InvalidPoolTransactionError::Consensus(
+                                    InvalidTransactionError::TxTypeNotSupported,
+                                ),
+                            );
+                            self.metrics.inc_pool_tx_skipped("invalid_tx");
+                        }
+                        continue;
                     } else {
-                        // if the transaction is invalid, we can skip it and all of its
-                        // descendants
-                        trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
-                        best_txs.mark_invalid(
-                            &pool_tx,
-                            InvalidPoolTransactionError::Consensus(
-                                InvalidTransactionError::TxTypeNotSupported,
-                            ),
-                        );
-                        self.metrics.inc_pool_tx_skipped("invalid_tx");
+                        return Err(PayloadBuilderError::evm(err));
                     }
-                    continue;
-                } else {
-                    return Err(PayloadBuilderError::evm(err));
-                }
-            };
-            trace!("Transaction executed");
-            executor.evm_mut().db_mut().bump_bal_index();
+                };
+                trace!("Transaction executed");
+                executor.evm_mut().db_mut().bump_bal_index();
 
-            pool_transactions_included += 1;
-            block_size_used += tx_rlp_length;
-            let _ = roots_tx.send((
-                BuilderTx::Pooled(pool_tx),
-                executor.receipts().last().unwrap().clone(),
-            ));
+                pool_transactions_included += 1;
+                block_size_used += tx_rlp_length;
+                let _ = roots_tx.send((
+                    BuilderTx::Pooled(pool_tx),
+                    executor.receipts().last().unwrap().clone(),
+                ));
+            }
         };
 
         // cancel pre-warming, if any, by dropping the iter
