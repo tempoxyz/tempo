@@ -154,6 +154,46 @@ impl TempoStrippedTxCommit {
             block_gas_used,
         }
     }
+
+    /// Applies a correction to regular gas fields after semantic reduction has
+    /// resolved the serial-equivalent gas for covered storage operations.
+    pub fn apply_regular_gas_delta(&mut self, delta: i64) -> Result<(), &'static str> {
+        self.tx_gas_used = apply_gas_delta(self.tx_gas_used, delta)?;
+        self.regular_gas_used = apply_gas_delta(self.regular_gas_used, delta)?;
+        self.block_gas_used = apply_gas_delta(self.block_gas_used, delta)?;
+        Ok(())
+    }
+
+    /// Replaces the final receipt log.
+    pub fn replace_last_log(&mut self, log: Log) -> Result<(), &'static str> {
+        let Some(last) = self.receipt.logs.last_mut() else {
+            return Err("stripped commit has no logs");
+        };
+        *last = log;
+        Ok(())
+    }
+
+    /// Returns the block gas consumed by this stripped transaction.
+    pub fn block_gas_used(&self) -> u64 {
+        self.block_gas_used
+    }
+
+    /// Returns the state gas consumed by this stripped transaction.
+    pub fn state_gas_used(&self) -> u64 {
+        self.state_gas_used
+    }
+}
+
+fn apply_gas_delta(value: u64, delta: i64) -> Result<u64, &'static str> {
+    if delta >= 0 {
+        value
+            .checked_add(delta as u64)
+            .ok_or("positive gas correction overflowed")
+    } else {
+        value
+            .checked_sub(delta.unsigned_abs())
+            .ok_or("negative gas correction underflowed")
+    }
 }
 
 impl TempoTxResult {
@@ -1583,6 +1623,62 @@ mod tests {
         assert!(receipt.success);
         assert_eq!(receipt.cumulative_gas_used, 21000);
         assert_eq!(receipt.logs.len(), 1);
+    }
+
+    #[test]
+    fn test_commit_prepared_stripped_transaction_applies_semantic_corrections() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let tx = create_legacy_tx();
+        let original_log = Log::new_unchecked(Address::ZERO, vec![B256::ZERO], Bytes::new());
+        let corrected_log = Log::new_unchecked(
+            Address::repeat_byte(0x20),
+            vec![B256::repeat_byte(0x01)],
+            Bytes::from_static(b"fee"),
+        );
+        let output = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: revm::context::result::ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas: ResultGas::default().with_total_gas_spent(50_000),
+                        logs: vec![original_log],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: Default::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            next_section: BlockSection::NonShared,
+            is_payment: false,
+            tx: None,
+            block_gas_used: 50_000,
+            validator_fee: U256::ZERO,
+        };
+
+        let mut commit = output
+            .into_stripped_commit()
+            .expect("empty state result should prepare stripped commit");
+        commit
+            .apply_regular_gas_delta(-2_100)
+            .expect("negative semantic gas correction should fit");
+        commit
+            .replace_last_log(corrected_log.clone())
+            .expect("stripped commit should have a fee log to replace");
+        let gas_output = executor.commit_prepared_stripped_transaction(commit);
+
+        assert_eq!(gas_output.tx_gas_used(), 47_900);
+        let receipt = &executor.inner.receipts[0];
+        assert_eq!(receipt.cumulative_gas_used, 47_900);
+        assert_eq!(receipt.logs, vec![corrected_log]);
     }
 
     #[test]

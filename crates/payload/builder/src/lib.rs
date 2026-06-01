@@ -112,6 +112,12 @@ use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
 const RLP_BLOCK_SIZE_SAFETY_MARGIN: usize = 128 * 1024;
+// Keep production Block-STM receipt and gas accounting tied to real EVM execution.
+// The direct TIP-20 semantic template can synthesize a same-shape transfer without
+// running the EVM, but same-shape transfers are not a sufficient proof of identical
+// gas on live txgen workloads. Semantic actions should resolve ordered state writes;
+// gas, logs, and receipts must continue to come from the transaction's EVM result.
+const ENABLE_BLOCKSTM_DIRECT_SEMANTIC_EXECUTION: bool = false;
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
@@ -327,7 +333,7 @@ fn execute_blockstm_attempt(
     let block_timestamp = evm_env.block_env.inner.timestamp.to::<u64>();
     let spec = evm_env.cfg_env.spec;
     let amsterdam_eip8037_enabled = evm_env.cfg_env.enable_amsterdam_eip8037;
-    if capture_semantic_actions {
+    if capture_semantic_actions && ENABLE_BLOCKSTM_DIRECT_SEMANTIC_EXECUTION {
         let started = Instant::now();
         let template = direct_semantic_template
             .lock()
@@ -390,12 +396,21 @@ fn execute_blockstm_attempt(
         .unwrap_or_default();
     let semantic_plan = if capture_semantic_actions {
         execution_result.as_ref().ok().and_then(|result| {
-            capture_tip20_semantic_plan(tx_index, pool_tx, result, &write_set, beneficiary)
+            capture_tip20_semantic_plan(
+                tx_index,
+                pool_tx,
+                result,
+                &write_set,
+                beneficiary,
+                base_fee,
+            )
         })
     } else {
         None
     };
-    if let (Some(semantic_plan), Ok(result)) = (semantic_plan.as_ref(), execution_result.as_ref())
+    if ENABLE_BLOCKSTM_DIRECT_SEMANTIC_EXECUTION
+        && let (Some(semantic_plan), Ok(result)) =
+            (semantic_plan.as_ref(), execution_result.as_ref())
         && blockstm_result_has_only_semantic_writes(result, semantic_plan.covered_keys())
         && let Some(template) = BlockStmDirectTip20Template::from_evm_result(
             pool_tx,
@@ -2101,7 +2116,7 @@ where
                         }
                         trace!(?elapsed, "Transaction executed through Block-STM");
 
-                        let (commit, block_gas_used, state_gas_used, validator_fee) =
+                        let (mut commit, mut block_gas_used, state_gas_used, mut validator_fee) =
                             if let Some(direct_execution) = direct_semantic_execution {
                                 (
                                     direct_execution.commit,
@@ -2123,6 +2138,20 @@ where
                                     validator_fee,
                                 )
                             };
+                        if let Some(update) = semantic_reduction.tx_update(candidate.tx_index) {
+                            commit
+                                .apply_regular_gas_delta(update.gas_delta())
+                                .map_err(|err| {
+                                    PayloadBuilderError::evm(BlockExecutionError::msg(err))
+                                })?;
+                            commit
+                                .replace_last_log(update.fee_log().clone())
+                                .map_err(|err| {
+                                    PayloadBuilderError::evm(BlockExecutionError::msg(err))
+                                })?;
+                            block_gas_used = commit.block_gas_used();
+                            validator_fee = update.validator_fee();
+                        }
 
                         cumulative_gas_used += block_gas_used;
                         cumulative_state_gas_used += state_gas_used;
@@ -2289,6 +2318,7 @@ where
                                 }
                             }
                         };
+                    let mut result_from_committed_prefix = false;
                     let mut result = match execution_result {
                         Some(Ok(result)) => result,
                         Some(Err(err)) => {
@@ -2296,16 +2326,26 @@ where
                             let Some(result) = execute_against_committed_prefix()? else {
                                 continue;
                             };
+                            result_from_committed_prefix = true;
                             result
                         }
                         None => {
                             let Some(result) = execute_against_committed_prefix()? else {
                                 continue;
                             };
+                            result_from_committed_prefix = true;
                             result
                         }
                     };
-                    if direct_attempt {
+                    if semantic_plan.is_some() && !result_from_committed_prefix {
+                        trace!(tx = %candidate.tx_debug_repr, "re-executing semantic Block-STM fallback transaction against committed prefix");
+                        let Some(serial_result) = execute_against_committed_prefix()? else {
+                            continue;
+                        };
+                        result = serial_result;
+                        result_from_committed_prefix = true;
+                    }
+                    if direct_attempt || result_from_committed_prefix {
                         let write_set = write_set_from_evm_state(&result.result().state);
                         semantic_plan = capture_tip20_semantic_plan(
                             candidate.tx_index,
@@ -2313,39 +2353,45 @@ where
                             &result,
                             &write_set,
                             beneficiary,
+                            base_fee,
                         )
                         .or(semantic_plan);
                     }
 
                     if let Some(semantic_plan) = semantic_plan {
-                        let block_timestamp = executor.evm().block().timestamp.to::<u64>();
-                        match semantic_state.apply_plan(
-                            executor.evm_mut().db_mut(),
-                            &semantic_plan,
-                            &mut result,
-                            block_timestamp,
-                        ) {
-                            Ok(_resolved_write_set) => {
-                                blockstm_stats.semantic_actions_total +=
-                                    semantic_plan.action_count() as u64;
-                            }
-                            Err(err) => {
-                                trace!(%err, tx = %candidate.tx_debug_repr, "skipping semantically invalid transaction and its descendants");
-                                best_txs.mark_invalid(
-                                    &candidate.pool_tx,
-                                    InvalidPoolTransactionError::Consensus(
-                                        InvalidTransactionError::TxTypeNotSupported,
-                                    ),
-                                );
-                                self.metrics.inc_pool_tx_skipped("invalid_tx");
-                                invalidated.push(candidate.pool_tx.clone());
-                                pending_candidates.retain(|pending| {
-                                    !is_blockstm_invalidated_buffered_transaction(
+                        if result_from_committed_prefix {
+                            blockstm_stats.semantic_actions_total +=
+                                semantic_plan.action_count() as u64;
+                        } else {
+                            let block_timestamp = executor.evm().block().timestamp.to::<u64>();
+                            match semantic_state.apply_plan(
+                                executor.evm_mut().db_mut(),
+                                &semantic_plan,
+                                &mut result,
+                                block_timestamp,
+                            ) {
+                                Ok(_resolved_write_set) => {
+                                    blockstm_stats.semantic_actions_total +=
+                                        semantic_plan.action_count() as u64;
+                                }
+                                Err(err) => {
+                                    trace!(%err, tx = %candidate.tx_debug_repr, "skipping semantically invalid transaction and its descendants");
+                                    best_txs.mark_invalid(
                                         &candidate.pool_tx,
-                                        &pending.pool_tx,
-                                    )
-                                });
-                                continue;
+                                        InvalidPoolTransactionError::Consensus(
+                                            InvalidTransactionError::TxTypeNotSupported,
+                                        ),
+                                    );
+                                    self.metrics.inc_pool_tx_skipped("invalid_tx");
+                                    invalidated.push(candidate.pool_tx.clone());
+                                    pending_candidates.retain(|pending| {
+                                        !is_blockstm_invalidated_buffered_transaction(
+                                            &candidate.pool_tx,
+                                            &pending.pool_tx,
+                                        )
+                                    });
+                                    continue;
+                                }
                             }
                         }
                     }

@@ -1,7 +1,9 @@
 use crate::blockstm::{
     BlockStmAccessKey,
     action::{
-        production::{BlockStmSemanticPlan, capture_tip20_semantic_plan},
+        production::{
+            BlockStmSemanticPlan, capture_tip20_semantic_plan, reduce_tip20_semantic_records,
+        },
         slots::{
             expiring_nonce_ring_key, expiring_nonce_ring_ptr_key, expiring_nonce_seen_key,
             fee_manager_collected_fees_key, tip20_balance_key,
@@ -682,7 +684,13 @@ impl HashedPostStateProvider for InMemoryStateProvider {
 }
 
 fn bench_env(block_timestamp: u64) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
-    let spec = TempoHardfork::T5;
+    bench_env_for_spec(TempoHardfork::T5, block_timestamp)
+}
+
+fn bench_env_for_spec(
+    spec: TempoHardfork,
+    block_timestamp: u64,
+) -> EvmEnv<TempoHardfork, TempoBlockEnv> {
     let mut cfg_env = reth_revm::context::CfgEnv::default();
     cfg_env.chain_id = CHAIN_ID;
     cfg_env.spec = spec;
@@ -725,7 +733,14 @@ fn bench_ctx(tx_count: usize) -> TempoBlockExecutionCtx<'static> {
 }
 
 fn seed_fixture(participants: &[Address]) -> BenchFixture {
-    let mut evm = TempoEvm::new(CacheDB::new(EmptyDB::default()), bench_env(BLOCK_TIMESTAMP));
+    seed_fixture_for_spec(participants, TempoHardfork::T5)
+}
+
+fn seed_fixture_for_spec(participants: &[Address], spec: TempoHardfork) -> BenchFixture {
+    let mut evm = TempoEvm::new(
+        CacheDB::new(EmptyDB::default()),
+        bench_env_for_spec(spec, BLOCK_TIMESTAMP),
+    );
     let admin = participants[0];
 
     let ctx = evm.ctx_mut();
@@ -1416,6 +1431,7 @@ fn execute_bench_attempt(
     tx: &TempoPooledTransaction,
     beneficiary: Address,
 ) -> BlockStmAttempt<BenchAttemptOutput> {
+    let base_fee = evm_env.block_env.inner.basefee;
     let db = State::builder()
         .with_database(StateProviderDatabase::new(provider))
         .with_cached_prestate(prefix_cache)
@@ -1432,7 +1448,7 @@ fn execute_bench_attempt(
         .map(|result| write_set_from_evm_state(&result.result().state))
         .unwrap_or_default();
     let semantic_plan = execution_result.as_ref().ok().and_then(|result| {
-        capture_tip20_semantic_plan(tx_index, &tx, result, &write_set, beneficiary)
+        capture_tip20_semantic_plan(tx_index, &tx, result, &write_set, beneficiary, base_fee)
     });
     let fast_plan = execution_result.as_ref().ok().and_then(|result| {
         semantic_plan
@@ -1737,6 +1753,181 @@ fn blockstm_direct_tip20_semantic_execution_matches_serial() {
         validator_fees,
     );
     assert_eq!(direct_digest, expected);
+}
+
+#[test]
+fn blockstm_t6_semantic_commit_matches_serial_receipts_for_reward_prefix_conflicts() {
+    let signers = txgen_signers();
+    let senders = signers
+        .iter()
+        .take(4)
+        .map(PrivateKeySigner::address)
+        .collect::<Vec<_>>();
+    let recipient = signers[32].address();
+    assert!(
+        !senders.contains(&recipient),
+        "recipient must be distinct so repeated credits initialize one shared T6 balance slot"
+    );
+    let mut participants = senders.clone();
+    participants.push(recipient);
+    let txs = senders
+        .iter()
+        .enumerate()
+        .map(|(idx, _)| sign_tip20_transfer(&signers[idx], recipient, idx as u64))
+        .collect::<Vec<_>>();
+    let pooled = txs
+        .iter()
+        .cloned()
+        .map(TempoPooledTransaction::new)
+        .collect::<Vec<_>>();
+
+    let fixture = seed_fixture_for_spec(&participants, TempoHardfork::T5);
+    let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
+    let evm_env = bench_env_for_spec(TempoHardfork::T6, BLOCK_TIMESTAMP);
+
+    let mut serial_executor = BlockExecutorFactory::create_executor(
+        &config,
+        TempoEvm::new(fixture.state_db(), evm_env.clone()),
+        bench_ctx(pooled.len()),
+    );
+    serial_executor
+        .apply_pre_execution_changes()
+        .expect("failed to apply serial T6 pre-execution changes");
+    let mut serial_gas_used = 0u64;
+    let mut serial_validator_fees = U256::ZERO;
+    for pool_tx in &pooled {
+        let output = serial_executor
+            .execute_transaction_without_commit(pool_tx.clone_into_with_tx_env())
+            .expect("serial T6 TIP20 transaction execution failed");
+        assert!(
+            output.result().result.is_success(),
+            "serial T6 TIP20 transaction reverted: {:?}",
+            output.result().result
+        );
+        serial_validator_fees += output.validator_fee();
+        serial_gas_used = serial_gas_used
+            .saturating_add(serial_executor.commit_transaction(output).tx_gas_used());
+        serial_executor.evm_mut().db_mut().bump_bal_index();
+    }
+    let serial_receipts = serial_executor.receipts().to_vec();
+    let expected_digest = digest(
+        &mut serial_executor,
+        &txs,
+        &participants,
+        pooled.len() as u64,
+        serial_gas_used,
+        serial_validator_fees,
+    );
+
+    let mut blockstm_executor = BlockExecutorFactory::create_executor(
+        &config,
+        TempoEvm::new(fixture.state_db(), evm_env.clone()),
+        bench_ctx(pooled.len()),
+    );
+    blockstm_executor
+        .apply_pre_execution_changes()
+        .expect("failed to apply Block-STM T6 pre-execution changes");
+    let prefix_cache = blockstm_executor.evm_mut().db_mut().cache.clone();
+    let beneficiary = blockstm_executor.evm().block().beneficiary;
+    let mut speculative_results = Vec::with_capacity(pooled.len());
+    let mut records = Vec::with_capacity(pooled.len());
+    for (tx_index, pool_tx) in pooled.iter().enumerate() {
+        let attempt = execute_bench_attempt(
+            fixture.provider.clone(),
+            &config,
+            evm_env.clone(),
+            bench_ctx(pooled.len()),
+            prefix_cache.clone(),
+            tx_index,
+            pool_tx,
+            beneficiary,
+        );
+        let result = attempt
+            .output
+            .execution_result
+            .expect("Block-STM T6 speculative execution failed");
+        assert!(
+            result.result().result.is_success(),
+            "Block-STM T6 speculative transaction reverted: {:?}",
+            result.result().result
+        );
+        let semantic_plan = attempt
+            .output
+            .semantic_plan
+            .expect("Block-STM T6 transaction must capture semantic actions");
+        records.push(
+            semantic_plan
+                .to_record(attempt.attempt)
+                .expect("semantic plan should produce a reduction record"),
+        );
+        speculative_results.push(result);
+    }
+
+    let reduction = reduce_tip20_semantic_records(
+        blockstm_executor.evm_mut().db_mut(),
+        &records,
+        BLOCK_TIMESTAMP,
+        blockstm_bench_workers(),
+    )
+    .expect("T6 semantic reduction should succeed");
+    assert!(
+        reduction.invalid_tx_indexes().is_empty(),
+        "T6 semantic reduction should keep all independent senders valid"
+    );
+    assert!(
+        (1..pooled.len()).any(|tx_index| reduction
+            .tx_update(tx_index)
+            .is_some_and(|update| update.gas_delta() < 0)),
+        "repeated uninitialized recipient transfers must require serial gas correction"
+    );
+
+    let mut blockstm_gas_used = 0u64;
+    let mut blockstm_validator_fees = U256::ZERO;
+    blockstm_executor.reserve_receipts(pooled.len());
+    for (tx_index, result) in speculative_results.into_iter().enumerate() {
+        let mut validator_fee = result.validator_fee();
+        let mut commit = result.into_stripped_commit_unchecked();
+        if let Some(update) = reduction.tx_update(tx_index) {
+            commit
+                .apply_regular_gas_delta(update.gas_delta())
+                .expect("semantic gas correction should fit");
+            commit
+                .replace_last_log(update.fee_log().clone())
+                .expect("semantic fee log correction should fit");
+            validator_fee = update.validator_fee();
+        }
+
+        blockstm_validator_fees += validator_fee;
+        blockstm_gas_used = blockstm_gas_used.saturating_add(
+            blockstm_executor
+                .commit_prepared_stripped_transaction(commit)
+                .tx_gas_used(),
+        );
+        blockstm_executor.evm_mut().db_mut().bump_bal_index();
+        assert_eq!(
+            blockstm_executor.receipts()[tx_index],
+            serial_receipts[tx_index],
+            "corrected stripped receipt must match serial receipt at tx {tx_index}"
+        );
+    }
+
+    let semantic_changes = crate::materialize_blockstm_semantic_reduction(
+        blockstm_executor.evm_mut().db_mut(),
+        &reduction,
+        blockstm_bench_workers(),
+    )
+    .expect("T6 semantic materialization should succeed");
+    blockstm_executor.commit_semantic_state_changes(semantic_changes);
+    let blockstm_digest = digest(
+        &mut blockstm_executor,
+        &txs,
+        &participants,
+        pooled.len() as u64,
+        blockstm_gas_used,
+        blockstm_validator_fees,
+    );
+
+    assert_eq!(blockstm_digest, expected_digest);
 }
 
 #[test]
