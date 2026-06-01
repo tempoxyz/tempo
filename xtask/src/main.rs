@@ -2,9 +2,10 @@
 use std::net::SocketAddr;
 
 use crate::{
-    check_abi::CheckAbi, generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
-    generate_localnet::GenerateLocalnet, generate_state_bloat::GenerateStateBloat,
-    get_dkg_outcome::GetDkgOutcome,
+    bootstrap_shadowfork::BootstrapShadowfork, check_abi::CheckAbi,
+    generate_devnet::GenerateDevnet, generate_genesis::GenerateGenesis,
+    generate_localnet::GenerateLocalnet, generate_shadowfork::GenerateShadowfork,
+    generate_state_bloat::GenerateStateBloat, get_dkg_outcome::GetDkgOutcome,
 };
 
 use alloy::signers::{local::MnemonicBuilder, utils::secret_key_to_address};
@@ -12,10 +13,12 @@ use clap::Parser as _;
 use commonware_codec::DecodeExt;
 use eyre::Context;
 
+mod bootstrap_shadowfork;
 mod check_abi;
 mod generate_devnet;
 mod generate_genesis;
 mod generate_localnet;
+mod generate_shadowfork;
 mod generate_state_bloat;
 mod genesis_args;
 mod get_dkg_outcome;
@@ -35,6 +38,13 @@ async fn main() -> eyre::Result<()> {
             .run()
             .await
             .wrap_err("failed to generate localnet configs"),
+        Action::GenerateShadowfork(args) => args
+            .run()
+            .await
+            .wrap_err("failed to generate shadow fork configs"),
+        Action::BootstrapShadowfork(args) => args
+            .run()
+            .wrap_err("failed to bootstrap shadow fork configs"),
         Action::GenerateAddPeer(cfg) => generate_config_to_add_peer(cfg),
         Action::GenerateStateBloat(args) => args
             .run()
@@ -60,6 +70,8 @@ enum Action {
     GenerateGenesis(GenerateGenesis),
     GenerateDevnet(GenerateDevnet),
     GenerateLocalnet(GenerateLocalnet),
+    GenerateShadowfork(GenerateShadowfork),
+    BootstrapShadowfork(BootstrapShadowfork),
     GenerateAddPeer(GenerateAddPeer),
     GenerateStateBloat(GenerateStateBloat),
 }
