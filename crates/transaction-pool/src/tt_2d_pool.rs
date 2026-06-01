@@ -1833,7 +1833,7 @@ impl ExpiringNonceEntry {
     }
 
     fn is_live(&self) -> bool {
-        self.state.load(AtomicOrdering::Acquire) == ExpiringNonceState::Live.as_u8()
+        self.state.load(AtomicOrdering::Relaxed) == ExpiringNonceState::Live.as_u8()
     }
 
     fn is_dead(&self) -> bool {
@@ -1845,8 +1845,8 @@ impl ExpiringNonceEntry {
             .compare_exchange(
                 ExpiringNonceState::Live.as_u8(),
                 ExpiringNonceState::Included.as_u8(),
-                AtomicOrdering::AcqRel,
-                AtomicOrdering::Acquire,
+                AtomicOrdering::Relaxed,
+                AtomicOrdering::Relaxed,
             )
             .is_ok()
     }
@@ -1854,7 +1854,7 @@ impl ExpiringNonceEntry {
     fn mark_removed(&self) -> ExpiringNonceState {
         ExpiringNonceState::from_u8(
             self.state
-                .swap(ExpiringNonceState::Removed.as_u8(), AtomicOrdering::AcqRel),
+                .swap(ExpiringNonceState::Removed.as_u8(), AtomicOrdering::Relaxed),
         )
     }
 
