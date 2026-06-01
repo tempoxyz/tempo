@@ -1,6 +1,5 @@
-use std::sync::LazyLock;
-
-use alloy::primitives::{Address, Log, LogData, U256, keccak256};
+use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
+use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use revm::{
     context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
@@ -10,16 +9,6 @@ use revm::{
     state::{AccountInfo, Bytecode},
 };
 use tempo_chainspec::hardfork::TempoHardfork;
-use tempo_precompiles_macros::Storable;
-
-use crate::{
-    error::TempoPrecompileError,
-    storage::{
-        LayoutCtx, PrecompileStorageProvider, Storable,
-        gas_state::{GAS_TOKEN_BALANCE_SLOT, GasState},
-        packing::PackedSlot,
-    },
-};
 
 /// Production [`PrecompileStorageProvider`] backed by the live EVM journal.
 ///
@@ -35,24 +24,11 @@ pub struct EvmPrecompileStorageProvider<'a> {
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
     // TIP-1060
+    #[allow(dead_code)]
     pending_refund_eligible_creations: AddressMap<u64>,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
-    fn increase_gas_token_balance(&mut self, address: Address) -> Result<(), TempoPrecompileError> {
-        let mut gas_state = self.read_gas_token_balance(address)?;
-        gas_state.token_balance.saturating_add(1);
-
-        self.sstore(address, *GAS_TOKEN_BALANCE_SLOT, gas_state.into())
-    }
-
-    fn decrease_gas_token_balance(&mut self, address: Address) -> Result<(), TempoPrecompileError> {
-        let mut gas_state = self.read_gas_token_balance(address)?;
-        gas_state.token_balance.saturating_sub(1);
-
-        self.sstore(address, *GAS_TOKEN_BALANCE_SLOT, gas_state.into())
-    }
-
     /// Creates a new storage provider with the given gas limit, hardfork, and static flag.
     pub fn new(
         internals: EvmInternals<'a>,

@@ -11,6 +11,7 @@ pub(crate) mod ip_validation;
 
 pub mod account_keychain;
 pub mod address_registry;
+pub mod gas_state;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -27,12 +28,12 @@ pub mod validator_config_v2;
 pub mod test_util;
 
 use crate::{
-    account_keychain::AccountKeychain, address_registry::AddressRegistry, nonce::NonceManager,
-    receive_policy_guard::ReceivePolicyGuard, signature_verifier::SignatureVerifier,
-    stablecoin_dex::StablecoinDEX, storage::StorageCtx, tip_fee_manager::TipFeeManager,
-    tip20::TIP20Token, tip20_channel_reserve::TIP20ChannelReserve, tip20_factory::TIP20Factory,
-    tip403_registry::TIP403Registry, validator_config::ValidatorConfig,
-    validator_config_v2::ValidatorConfigV2,
+    account_keychain::AccountKeychain, address_registry::AddressRegistry, gas_state::GasToken,
+    nonce::NonceManager, receive_policy_guard::ReceivePolicyGuard,
+    signature_verifier::SignatureVerifier, stablecoin_dex::StablecoinDEX, storage::StorageCtx,
+    tip_fee_manager::TipFeeManager, tip20::TIP20Token, tip20_channel_reserve::TIP20ChannelReserve,
+    tip20_factory::TIP20Factory, tip403_registry::TIP403Registry,
+    validator_config::ValidatorConfig, validator_config_v2::ValidatorConfigV2,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
@@ -55,9 +56,9 @@ use revm::{
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, DEFAULT_FEE_TOKEN,
     NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
-    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_GAS_TOKENS_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS,
+    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -171,6 +172,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(SignatureVerifier::create_precompile(&cfg))
         } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && cfg.spec.is_t6() {
             Some(ReceivePolicyGuard::create_precompile(&cfg))
+        } else if *address == STORAGE_GAS_TOKENS_ADDRESS {
+            Some(GasToken::create_precompile(&cfg))
         } else {
             None
         }
@@ -301,6 +304,13 @@ impl ReceivePolicyGuard {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
         tempo_precompile!("ReceivePolicyGuard", cfg, |input| { Self::new() })
+    }
+}
+
+impl GasToken {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("StorageGasTokens", cfg, |input| { Self::new() })
     }
 }
 
