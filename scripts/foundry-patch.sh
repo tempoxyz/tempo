@@ -109,7 +109,50 @@ done <<< "$PATCHES"
 echo "Updated Cargo.toml patch sections:"
 sed -n '/^\[patch\./,$p' "$FOUNDRY_CARGO"
 
-# ── 4. Re-resolve the lockfile without upgrading unrelated crates ──────────
+# ── 4. Keep ABI-defining shared deps aligned with Tempo ────────────────────
+# Foundry imports traits from alloy-evm while Tempo implements them. If Foundry
+# resolves a different alloy-evm version than Tempo, Rust sees distinct traits.
+sync_foundry_dep_version() {
+  local crate="$1"
+  local version
+  version="$(
+    awk -v crate="$crate" '
+      $1 == crate && index($0, "version = \"") {
+        split($0, parts, /version = "/)
+        split(parts[2], rest, /"/)
+        print rest[1]
+        exit
+      }
+      $1 == crate && $2 == "=" && $3 ~ /^"/ {
+        version = $3
+        gsub(/"/, "", version)
+        print version
+        exit
+      }
+    ' "$TEMPO_CARGO"
+  )"
+
+  [[ -n "$version" ]] || return 0
+
+  local tmp_cargo
+  tmp_cargo="$(mktemp "${FOUNDRY_CARGO}.XXXXXX")"
+  awk -v crate="$crate" -v version="$version" '
+    $1 == crate && $2 == "=" {
+      if ($0 ~ /= *"/) {
+        sub(/= *"[^"]+"/, "= \"" version "\"")
+      } else if ($0 ~ /version *= *"/) {
+        sub(/version *= *"[^"]+"/, "version = \"" version "\"")
+      }
+    }
+    { print }
+  ' "$FOUNDRY_CARGO" > "$tmp_cargo"
+  mv "$tmp_cargo" "$FOUNDRY_CARGO"
+  echo "Synced Foundry $crate dependency to Tempo workspace version $version"
+}
+
+sync_foundry_dep_version "alloy-evm"
+
+# ── 5. Re-resolve the lockfile without upgrading unrelated crates ──────────
 # `cargo update` can pull newer upstream deps from Foundry's workspace, which is non-deterministic.
 # A normal resolver pass is enough to rewrite the lockfile entries for the tempo path overrides.
 # Keep this aligned with the CI Forge build so Optimism-only dependencies do not re-enter resolution.
