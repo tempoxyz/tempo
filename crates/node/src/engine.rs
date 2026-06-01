@@ -26,6 +26,7 @@ impl PayloadValidator<TempoPayloadTypes> for TempoEngineValidator {
     ) -> Result<SealedBlock<Self::Block>, NewPayloadError> {
         let TempoExecutionData {
             block,
+            block_access_list: _,
             validator_set: _,
         } = payload;
         Ok(Arc::unwrap_or_clone(block))

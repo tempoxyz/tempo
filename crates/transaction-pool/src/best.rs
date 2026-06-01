@@ -1,20 +1,23 @@
 //! An iterator over the best transactions in the tempo pool.
 
-use crate::{transaction::TempoPooledTransaction, tt_2d_pool::BestAA2dTransactions};
+use crate::{
+    ordering::TempoTipOrdering, transaction::TempoPooledTransaction,
+    tt_2d_pool::BestAA2dTransactions,
+};
 use alloy_primitives::{Address, U256, map::HashMap};
 use reth_evm::block::TxResult;
 use reth_primitives_traits::transaction::error::InvalidTransactionError;
 use reth_transaction_pool::{
-    BestTransactions, CoinbaseTipOrdering, Priority, ValidPoolTransaction,
-    error::InvalidPoolTransactionError, pool::BestTransactions as BestProtocolTransactions,
+    BestTransactions, Priority, ValidPoolTransaction, error::InvalidPoolTransactionError,
+    pool::BestTransactions as BestProtocolTransactions,
 };
 use std::sync::Arc;
 use tempo_evm::TempoTxResult;
-use tempo_precompiles::tip20::is_tip20_prefix;
+use tempo_precompiles::tip20::{decode_tip20_balance, is_tip20_prefix};
 
-type TxOrdering = CoinbaseTipOrdering<TempoPooledTransaction>;
+type TxOrdering = TempoTipOrdering<TempoPooledTransaction>;
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
-type BestTransactionWithPriority = (BestTransaction, Priority<u128>);
+type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
 
 /// A best-transaction iterator that merges the protocol pool and the 2D nonces pool,
 /// always yielding the next best item from either iterator.
@@ -140,11 +143,14 @@ where
             }
 
             for (&slot, storage_slot) in &account.storage {
-                if storage_slot.present_value < storage_slot.original_value {
+                // Decode packed TIP-20 balances so metadata changes cannot hide balance decreases.
+                let present_balance = decode_tip20_balance(storage_slot.present_value);
+                let original_balance = decode_tip20_balance(storage_slot.original_value);
+                if present_balance < original_balance {
                     self.decreased_balances
-                        .insert((address, slot), storage_slot.present_value);
+                        .insert((address, slot), present_balance);
                 } else if let Some(balance) = self.decreased_balances.get_mut(&(address, slot)) {
-                    *balance = storage_slot.present_value;
+                    *balance = present_balance;
                 }
             }
         }
@@ -252,7 +258,7 @@ mod tests {
     fn protocol_best_transactions(txs: Vec<TestTx>) -> BestProtocolTransactions<TxOrdering> {
         let pool = Pool::new(
             OkValidator::<TempoPooledTransaction>::default(),
-            CoinbaseTipOrdering::default(),
+            TempoTipOrdering::default(),
             InMemoryBlobStore::default(),
             PoolConfig::default(),
         );

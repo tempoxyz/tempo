@@ -7,6 +7,7 @@ name: bench-e2e
 
 on:
   workflow_dispatch:
+    # GitHub Actions supports at most 25 workflow_dispatch inputs; keep this UI-only list capped.
     inputs:
       baseline:
         description: Git ref for the baseline run. Empty = merge-base with main.
@@ -65,7 +66,7 @@ on:
         description: Benchmark duration in seconds.
         type: string
         required: true
-        default: "40"
+        default: "90"
       bloat:
         description: State bloat size in GiB.
         type: choice
@@ -79,7 +80,7 @@ on:
         description: Target transactions per second.
         type: string
         required: true
-        default: "20000"
+        default: "50000"
       accounts:
         description: Number of benchmark accounts.
         type: string
@@ -110,6 +111,11 @@ on:
         type: boolean
         required: true
         default: true
+      valscope:
+        description: Generate and publish ValScope static reports.
+        type: boolean
+        required: true
+        default: false
       baseline-args:
         description: Extra args passed only to the baseline node.
         type: string
@@ -145,26 +151,11 @@ on:
         type: string
         required: false
         default: ""
-      bench-env:
-        description: Extra env vars for the bench sender process.
-        type: string
-        required: false
-        default: ""
-      baseline-env:
-        description: Extra env vars for the baseline node process.
-        type: string
-        required: false
-        default: ""
-      feature-env:
-        description: Extra env vars for the feature node process.
-        type: string
-        required: false
-        default: ""
       run-pairs:
         description: Number of baseline/feature run pairs.
         type: string
         required: true
-        default: "9"
+        default: "3"
       clickhouse-run:
         description: Benchmark phase that may use the direct ClickHouse reporter.
         type: string
@@ -189,7 +180,7 @@ on:
       duration:
         type: string
         required: false
-        default: "40"
+        default: "90"
       bloat:
         type: string
         required: false
@@ -197,7 +188,7 @@ on:
       tps:
         type: string
         required: false
-        default: "20000"
+        default: "50000"
       accounts:
         type: string
         required: false
@@ -222,6 +213,14 @@ on:
         type: string
         required: false
         default: T6
+      baseline-features:
+        type: string
+        required: false
+        default: ""
+      feature-features:
+        type: string
+        required: false
+        default: ""
       txgen-ref:
         type: string
         required: false
@@ -254,6 +253,10 @@ on:
         type: string
         required: false
         default: "true"
+      valscope:
+        type: string
+        required: false
+        default: "false"
       baseline-args:
         type: string
         required: false
@@ -301,7 +304,7 @@ on:
       run-pairs:
         type: string
         required: false
-        default: "9"
+        default: "3"
       clickhouse-run:
         type: string
         required: false
@@ -335,6 +338,10 @@ on:
         required: false
       BENCH_VICTORIAMETRICS_URL:
         required: false
+      VICTORIAMETRICS_URL:
+        required: false
+      VICTORIALOGS_URL:
+        required: false
       SLACK_BENCH_BOT_TOKEN:
         required: false
       SLACK_BENCH_CHANNEL:
@@ -363,7 +370,7 @@ jobs:
       BENCH_BLOAT: ${{ inputs.bloat }}
       BENCH_TPS: ${{ inputs.tps }}
       BENCH_ACCOUNTS: ${{ inputs.accounts || '1000' }}
-      BENCH_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests || '100' }}
+      BENCH_MAX_CONCURRENT_REQUESTS: ${{ inputs.max-concurrent-requests || '500' }}
       BENCH_BASELINE_HARDFORK: ${{ inputs.baseline-hardfork }}
       BENCH_FEATURE_HARDFORK: ${{ inputs.feature-hardfork }}
       BENCH_TXGEN_REF: ${{ inputs.txgen-ref }}
@@ -372,7 +379,10 @@ jobs:
       BENCH_TRACY_SECONDS: ${{ inputs.tracy-seconds || '30' }}
       BENCH_TRACY_OFFSET: ${{ inputs.tracy-offset || '120' }}
       BENCH_OTLP: ${{ inputs.otlp != false && inputs.otlp != 'false' }}
+      BENCH_VALSCOPE: ${{ inputs.valscope == true || inputs.valscope == 'true' }}
       BENCH_FEATURES: ${{ (inputs.otlp != false && inputs.otlp != 'false') && 'jemalloc,asm-keccak,keccak-cache-global,otlp' || 'jemalloc,asm-keccak,keccak-cache-global' }}
+      BENCH_BASELINE_FEATURES: ${{ inputs.baseline-features }}
+      BENCH_FEATURE_FEATURES: ${{ inputs.feature-features }}
       BENCH_BASELINE_ARGS: ${{ inputs.baseline-args }}
       BENCH_FEATURE_ARGS: ${{ inputs.feature-args }}
       BENCH_GAS_LIMIT: ${{ inputs.gas-limit || '1000000000' }}
@@ -384,7 +394,7 @@ jobs:
       BENCH_BENCH_ENV: ${{ inputs.bench-env }}
       BENCH_BASELINE_ENV: ${{ inputs.baseline-env }}
       BENCH_FEATURE_ENV: ${{ inputs.feature-env }}
-      BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '9' }}
+      BENCH_RUN_PAIRS: ${{ inputs.run-pairs || '3' }}
       BENCH_CLICKHOUSE_RUN: ${{ inputs.clickhouse-run || 'feature-1' }}
       BENCHMARK_ID: bench-e2e-${{ github.run_id }}
       BENCH_COMMENT_ID: ${{ inputs.comment-id }}
@@ -394,6 +404,9 @@ jobs:
       CLICKHOUSE_USER: ${{ secrets.CLICKHOUSE_USER }}
       CLICKHOUSE_PASSWORD: ${{ secrets.CLICKHOUSE_PASSWORD }}
       BENCH_VICTORIAMETRICS_URL: ${{ secrets.BENCH_VICTORIAMETRICS_URL }}
+      VICTORIAMETRICS_URL: ${{ secrets.VICTORIAMETRICS_URL }}
+      VICTORIALOGS_URL: ${{ secrets.VICTORIALOGS_URL }}
+      VALSCOPE_REPORTS_BASE_URL: ${{ vars.VALSCOPE_REPORTS_BASE_URL }}
       SLACK_BENCH_BOT_TOKEN: ${{ secrets.SLACK_BENCH_BOT_TOKEN }}
       SLACK_BENCH_CHANNEL: ${{ secrets.SLACK_BENCH_CHANNEL }}
     steps:
@@ -423,6 +436,14 @@ jobs:
       - name: Mask VictoriaMetrics URL
         if: env.BENCH_VICTORIAMETRICS_URL
         run: echo "::add-mask::$BENCH_VICTORIAMETRICS_URL"
+
+      - name: Mask ValScope VictoriaMetrics URL
+        if: env.VICTORIAMETRICS_URL
+        run: echo "::add-mask::$VICTORIAMETRICS_URL"
+
+      - name: Mask VictoriaLogs URL
+        if: env.VICTORIALOGS_URL
+        run: echo "::add-mask::$VICTORIALOGS_URL"
 
       - name: Clean up previous results
         run: sudo rm -rf bench-results/ 2>/dev/null || true
@@ -458,6 +479,16 @@ jobs:
           fetch-depth: 0
           ref: ${{ steps.checkout-ref.outputs.ref }}
 
+      - name: Checkout ValScope report builder
+        if: env.BENCH_VALSCOPE == 'true'
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          repository: tempoxyz/valscope
+          ref: main
+          path: valscope
+          persist-credentials: false
+          token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
+
       - name: Resolve job URL and update status
         if: env.BENCH_COMMENT_ID
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
@@ -485,6 +516,8 @@ jobs:
             const maxConcurrentRequests = process.env.BENCH_MAX_CONCURRENT_REQUESTS;
             const baselineHardfork = process.env.BENCH_BASELINE_HARDFORK || '';
             const featureHardfork = process.env.BENCH_FEATURE_HARDFORK || '';
+            const baselineFeatureFlags = process.env.BENCH_BASELINE_FEATURES || '';
+            const featureFeatureFlags = process.env.BENCH_FEATURE_FEATURES || '';
             const baseline = process.env.INPUT_BASELINE_NAME;
             const feature = process.env.INPUT_FEATURE_NAME;
             const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
@@ -494,12 +527,15 @@ jobs:
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
             const otlp = process.env.BENCH_OTLP === 'true';
             const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
+            const valscope = process.env.BENCH_VALSCOPE === 'true';
+            const valscopeNote = valscope ? ', valscope: `enabled`' : ', valscope: `disabled`';
             const noCache = process.env.BENCH_NO_CACHE === 'true';
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
             const gasLimit = process.env.BENCH_GAS_LIMIT;
             const runPairs = process.env.BENCH_RUN_PAIRS || '2';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
-            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`);
+            const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
+            core.exportVariable('BENCH_CONFIG', `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${noCacheNote}`);
 
             const { buildBody } = require('./.github/scripts/bench-update-status.js');
             await github.rest.issues.updateComment({
@@ -672,6 +708,8 @@ jobs:
             const maxConcurrentRequests = process.env.BENCH_MAX_CONCURRENT_REQUESTS;
             const baselineHardfork = process.env.BENCH_BASELINE_HARDFORK || '';
             const featureHardfork = process.env.BENCH_FEATURE_HARDFORK || '';
+            const baselineFeatureFlags = process.env.BENCH_BASELINE_FEATURES || '';
+            const featureFeatureFlags = process.env.BENCH_FEATURE_FEATURES || '';
             const baseline = process.env.INPUT_BASELINE_NAME;
             const feature = process.env.INPUT_FEATURE_NAME;
             const txgenRef = process.env.BENCH_TXGEN_REF || 'default';
@@ -681,12 +719,15 @@ jobs:
             const tracyNote = tracy !== 'off' ? `, tracy: \`${tracy}\`` : '';
             const otlp = process.env.BENCH_OTLP === 'true';
             const otlpNote = otlp ? ', otlp: `enabled`' : ', otlp: `disabled`';
+            const valscope = process.env.BENCH_VALSCOPE === 'true';
+            const valscopeNote = valscope ? ', valscope: `enabled`' : ', valscope: `disabled`';
             const noCache = process.env.BENCH_NO_CACHE === 'true';
             const noCacheNote = noCache ? ', no-cache: `true`' : '';
             const gasLimit = process.env.BENCH_GAS_LIMIT;
             const runPairs = process.env.BENCH_RUN_PAIRS || '2';
             const hardforkNote = (baselineHardfork || featureHardfork) ? `, baseline-hardfork: \`${baselineHardfork}\`, feature-hardfork: \`${featureHardfork}\`` : '';
-            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${samplyNote}${tracyNote}${otlpNote}${noCacheNote}`;
+            const featureFlagsNote = `${baselineFeatureFlags ? `, baseline-features: \`${baselineFeatureFlags}\`` : ''}${featureFeatureFlags ? `, feature-features: \`${featureFeatureFlags}\`` : ''}`;
+            const config = `**Config:** mode: \`${mode}\`, preset: \`${preset}\`, duration: \`${duration}s\`, bloat: \`${bloat} GiB\`, tps: \`${tps}\`, accounts: \`${accounts}\`, max-concurrent-requests: \`${maxConcurrentRequests}\`, gas-limit: \`${gasLimit}\`, run-pairs: \`${runPairs}\`, baseline: \`${baseline}\`, feature: \`${feature}\`, txgen-ref: \`${txgenRef}\`${hardforkNote}${featureFlagsNote}${samplyNote}${tracyNote}${otlpNote}${valscopeNote}${noCacheNote}`;
             core.exportVariable('BENCH_CONFIG', config);
 
             const { data: comment } = await github.rest.issues.createComment({
@@ -748,6 +789,8 @@ jobs:
           [ "$BENCH_TRACY" != "off" ] && cmd+=(--tracy "$BENCH_TRACY" --tracy-seconds "$BENCH_TRACY_SECONDS" --tracy-offset "$BENCH_TRACY_OFFSET")
           [ -n "$BENCH_BASELINE_HARDFORK" ] && cmd+=(--baseline-hardfork="$BENCH_BASELINE_HARDFORK")
           [ -n "$BENCH_FEATURE_HARDFORK" ] && cmd+=(--feature-hardfork="$BENCH_FEATURE_HARDFORK")
+          [ -n "$BENCH_BASELINE_FEATURES" ] && cmd+=(--baseline-features="$BENCH_BASELINE_FEATURES")
+          [ -n "$BENCH_FEATURE_FEATURES" ] && cmd+=(--feature-features="$BENCH_FEATURE_FEATURES")
           [ -n "$BENCH_BASELINE_ARGS" ] && cmd+=(--baseline-args="$BENCH_BASELINE_ARGS")
           [ -n "$BENCH_FEATURE_ARGS" ] && cmd+=(--feature-args="$BENCH_FEATURE_ARGS")
           [ -n "$BENCH_BENCH_ARGS" ] && cmd+=(--bench-args="$BENCH_BENCH_ARGS")
@@ -758,6 +801,13 @@ jobs:
           [ -n "$CLICKHOUSE_URL" ] && cmd+=(--clickhouse-url "$CLICKHOUSE_URL")
           [ -n "$BENCH_RUN_TYPE" ] && cmd+=(--run-type "$BENCH_RUN_TYPE")
           [ -n "$BENCH_CLICKHOUSE_RUN" ] && cmd+=(--clickhouse-run "$BENCH_CLICKHOUSE_RUN")
+          if [ "$BENCH_VALSCOPE" = "true" ]; then
+            if [ ! -f "valscope/apps/api/Cargo.toml" ]; then
+              echo "::error::ValScope static report builder not found"
+              exit 1
+            fi
+            cmd+=(--valscope-static-report --valscope-dir "valscope")
+          fi
 
           quote_arg() {
             local value="$1"
@@ -806,6 +856,8 @@ jobs:
           [ -n "$BENCH_TXGEN_REF" ] && derek_cmd+=(txgen-ref="$BENCH_TXGEN_REF")
           [ "$BENCH_SAMPLY" = "true" ] && derek_cmd+=(samply)
           [ "$BENCH_TRACY" != "off" ] && derek_cmd+=(tracy="$BENCH_TRACY" tracy-seconds="$BENCH_TRACY_SECONDS" tracy-offset="$BENCH_TRACY_OFFSET")
+          [ -n "$BENCH_BASELINE_FEATURES" ] && derek_cmd+=(baseline-features="$BENCH_BASELINE_FEATURES")
+          [ -n "$BENCH_FEATURE_FEATURES" ] && derek_cmd+=(feature-features="$BENCH_FEATURE_FEATURES")
           [ -n "$BENCH_BASELINE_ARGS" ] && derek_cmd+=(baseline-args="$BENCH_BASELINE_ARGS")
           [ -n "$BENCH_FEATURE_ARGS" ] && derek_cmd+=(feature-args="$BENCH_FEATURE_ARGS")
           [ -n "$BENCH_BENCH_ARGS" ] && derek_cmd+=(bench-args="$BENCH_BENCH_ARGS")
@@ -837,6 +889,20 @@ jobs:
           echo "path=$RESULTS_DIR" >> "$GITHUB_OUTPUT"
           echo "Results directory: $RESULTS_DIR"
 
+      - name: Publish ValScope static reports
+        id: publish-valscope-static
+        if: success() && env.BENCH_VALSCOPE == 'true' && steps.results-dir.outputs.path != '' && hashFiles('bench-results/*/valscope-static/index.html') != ''
+        env:
+          BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
+        run: |
+          rm -rf tempo-bench-valscope-static
+          cp -a "$BENCH_RESULTS_DIR/valscope-static" tempo-bench-valscope-static
+          destination="valscope-bench/valscope-bench-reports-dev/${BENCHMARK_ID}"
+          mc cp --recursive tempo-bench-valscope-static/ "$destination"
+          if [ -n "${VALSCOPE_REPORTS_BASE_URL:-}" ]; then
+            echo "url=${VALSCOPE_REPORTS_BASE_URL%/}/${BENCHMARK_ID}/" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Upload results
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
@@ -849,6 +915,7 @@ jobs:
         uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9.0.0
         env:
           BENCH_RESULTS_DIR: ${{ steps.results-dir.outputs.path }}
+          BENCH_VALSCOPE_PUBLISHED_URL: ${{ steps.publish-valscope-static.outputs.url }}
         with:
           github-token: ${{ secrets.DEREK_BENCH_TOKEN || github.token }}
           script: |
@@ -861,6 +928,21 @@ jobs:
             } catch (e) {
               summary = '⚠️ Benchmark completed but failed to read summary.';
             }
+
+            let valscopeLine = '';
+            try {
+              const publishedUrl = process.env.BENCH_VALSCOPE_PUBLISHED_URL || '';
+              const publishedBase = publishedUrl ? (publishedUrl.endsWith('/') ? publishedUrl : `${publishedUrl}/`) : '';
+              if (publishedBase) {
+                const manifest = JSON.parse(fs.readFileSync(`${resultsDir}/valscope-static/reports.json`, 'utf8'));
+                const links = (manifest.runs || []).map(run => {
+                  return `[${run.run}](${new URL(run.path, publishedBase).toString()})`;
+                });
+                if (links.length > 0) {
+                  valscopeLine = `- ValScope: ${links.join(' | ')}\n`;
+                }
+              }
+            } catch (e) {}
 
             // Compute observability URLs from summary.json.
             let grafanaSection = '';
@@ -917,7 +999,7 @@ jobs:
                 });
                 const tracesUrl = `https://tempoxyz.grafana.net/explore?schemaVersion=1&panes=${encodeURIComponent(tracesPane)}&orgId=1`;
                 const internalPerfLine = internalPerfUrl ? `- [Internal dashboard](${internalPerfUrl})\n` : '';
-                grafanaSection = `\n\n### Observability\n\n${internalPerfLine}- [Grafana](${grafanaUrl})\n- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n`;
+                grafanaSection = `\n\n### Observability\n\n${internalPerfLine}- [Grafana](${grafanaUrl})\n- [Logs](${logsUrl})\n- [Traces](${tracesUrl})\n${valscopeLine}`;
               }
             } catch (e) {}
 

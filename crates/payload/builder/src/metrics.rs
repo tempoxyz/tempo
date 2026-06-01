@@ -75,8 +75,12 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) state_setup_duration_seconds: Histogram,
     /// The time it took to prepare system transactions in seconds.
     pub(crate) prepare_system_transactions_duration_seconds: Histogram,
+    /// Total wall-clock time spent filling the block with normal pool transactions.
+    pub(crate) total_normal_transaction_fill_duration_seconds: Histogram,
     /// Time spent waiting for more normal transactions during block fill.
     pub(crate) normal_transaction_fill_idle_duration_seconds: Histogram,
+    /// Total wall-clock time spent in transaction execution phases.
+    pub(crate) total_transaction_execution_duration_seconds: Histogram,
     /// The time it took to execute subblock transactions in seconds.
     pub(crate) total_subblock_transaction_execution_duration_seconds: Histogram,
     /// Execution time for a single subblock.
@@ -97,9 +101,9 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) gas_per_second: Histogram,
     /// Gas per second for the last payload calculated as gas_used / payload_build_duration.
     pub(crate) gas_per_second_last: Gauge,
-    /// RLP-encoded block size in bytes.
+    /// Serialized payload size in bytes, including optional RLP-encoded BAL sidecar bytes.
     pub(crate) rlp_block_size_bytes: Histogram,
-    /// RLP-encoded block size in bytes for the last payload.
+    /// Serialized payload size in bytes for the last payload.
     pub(crate) rlp_block_size_bytes_last: Gauge,
     /// Time to compute the hashed post-state from the bundle state.
     pub(crate) hashed_post_state_duration_seconds: Histogram,
@@ -109,19 +113,19 @@ pub(crate) struct TempoPayloadBuilderMetrics {
 
 /// Reason the payload builder stopped adding pool transactions to the block.
 pub(crate) enum BlockBuildStopReason {
-    TimeLimit,
     GasLimit,
     RlpBlockSizeLimit,
     TxPoolEmpty,
+    BuildBudget,
 }
 
 impl BlockBuildStopReason {
     const fn as_str(&self) -> &'static str {
         match self {
-            Self::TimeLimit => "time_limit",
             Self::GasLimit => "gas_limit",
             Self::RlpBlockSizeLimit => "rlp_block_size_limit",
             Self::TxPoolEmpty => "tx_pool_empty",
+            Self::BuildBudget => "build_budget",
         }
     }
 }

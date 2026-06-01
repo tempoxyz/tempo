@@ -764,25 +764,28 @@ mod tests {
     }
 
     #[test]
-    fn transaction_execution_wait_default_depends_on_sparse_trie_sharing() {
+    fn consensus_block_budget_defaults_are_stable() {
         init_defaults_once();
 
         let cli = TempoCli::try_parse_from(["tempo", "node", "--dev"]).unwrap();
         let Commands::Node(node_cmd) = cli.command else {
             panic!("expected node command");
         };
-        assert!(node_cmd.engine.share_execution_cache_with_payload_builder);
         assert!(node_cmd.engine.share_sparse_trie_with_payload_builder);
         assert_eq!(node_cmd.builder.max_payload_tasks, 1);
-        assert!(node_cmd.ext.node_args.builder_enable_prewarming);
         assert_eq!(
-            node_cmd
-                .ext
-                .consensus
-                .time_to_prepare_proposal_transactions
-                .into_duration(),
-            Duration::from_millis(350)
+            node_cmd.ext.consensus.target_block_time.into_duration(),
+            Duration::from_millis(550)
         );
+        assert_eq!(
+            node_cmd.ext.consensus.wait_for_proposal.into_duration(),
+            Duration::from_millis(1200)
+        );
+        assert_eq!(
+            node_cmd.ext.consensus.network_budget.into_duration(),
+            Duration::from_millis(50)
+        );
+        assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.35);
 
         let cli = TempoCli::try_parse_from([
             "tempo",
@@ -795,12 +798,16 @@ mod tests {
             panic!("expected node command");
         };
         assert_eq!(
-            node_cmd
-                .ext
-                .consensus
-                .time_to_prepare_proposal_transactions
-                .into_duration(),
-            Duration::from_millis(350)
+            node_cmd.ext.consensus.target_block_time.into_duration(),
+            Duration::from_millis(550)
+        );
+        assert_eq!(
+            node_cmd.ext.consensus.wait_for_proposal.into_duration(),
+            Duration::from_millis(1200)
+        );
+        assert_eq!(
+            node_cmd.ext.consensus.network_budget.into_duration(),
+            Duration::from_millis(50)
         );
     }
 }

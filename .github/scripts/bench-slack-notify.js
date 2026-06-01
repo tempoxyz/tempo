@@ -101,13 +101,15 @@ function hasImprovement(changes) {
 }
 
 function e2eChanges(summary) {
-  if (summary.results?.changes) return summary.results.changes;
+  if (summary.results?.changes) {
+    return Object.fromEntries(
+      Object.entries(summary.results.changes)
+        .filter(([key]) => !key.startsWith('serialized_block_size')),
+    );
+  }
   const deltas = summary.results.deltas;
   return {
     tps: changeFromPct(deltas.tps, false),
-    tps_p50: changeFromPct(deltas.tps_p50, false),
-    tps_p90: changeFromPct(deltas.tps_p90, false),
-    tps_p99: changeFromPct(deltas.tps_p99, false),
     mgas_s: changeFromPct(deltas.mgas_s, false),
     block_time_mean: changeFromPct(deltas.block_time_mean, true),
     block_time_p50: changeFromPct(deltas.block_time_p50, true),
@@ -139,9 +141,6 @@ function buildMetricRows(summary) {
   const c = e2eChanges(summary);
   return [
     { label: 'TPS Mean',        baseline: fmtVal(b.tps, '', 0),     feature: fmtVal(f.tps, '', 0),     change: fmtChange(c.tps) },
-    { label: 'TPS P50',         baseline: fmtVal(b.tps_p50, '', 1), feature: fmtVal(f.tps_p50, '', 1), change: fmtChange(c.tps_p50) },
-    { label: 'TPS P90',         baseline: fmtVal(b.tps_p90, '', 1), feature: fmtVal(f.tps_p90, '', 1), change: fmtChange(c.tps_p90) },
-    { label: 'TPS P99',         baseline: fmtVal(b.tps_p99, '', 1), feature: fmtVal(f.tps_p99, '', 1), change: fmtChange(c.tps_p99) },
     { label: 'Gas/s',           baseline: fmtVal(b.mgas_s, ' Mgas/s', 1), feature: fmtVal(f.mgas_s, ' Mgas/s', 1), change: fmtChange(c.mgas_s) },
     { label: 'Block Time Mean', baseline: fmtMs(b.block_time_mean), feature: fmtMs(f.block_time_mean), change: fmtChange(c.block_time_mean) },
     { label: 'Block P50',       baseline: fmtMs(b.block_time_p50),  feature: fmtMs(f.block_time_p50),  change: fmtChange(c.block_time_p50) },
@@ -154,7 +153,7 @@ function buildSuccessBlocks({ summary, prNumber, actor, actorSlackId, jobUrl, re
   const b = summary.results.baseline;
   const f = summary.results.feature;
   const changes = e2eChanges(summary);
-  const classified = summary.classification || verdictFromChanges(changes, 'No Significant Change');
+  const classified = verdictFromChanges(changes, 'No Significant Change');
   const emoji = classified.slack_emoji || classified.emoji || ':white_circle:';
   const label = classified.label || 'No Significant Change';
 

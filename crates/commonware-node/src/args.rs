@@ -106,8 +106,15 @@ pub struct Args {
     #[arg(long = "consensus.wait-for-notarizations", default_value = "2s")]
     pub wait_for_notarizations: PositiveDuration,
 
-    /// Amount of time to wait to receive a proposal from the leader of the
-    /// current view.
+    /// Target wall-clock time between blocks in healthy network conditions.
+    ///
+    /// Local proposal work is paced against this value minus
+    /// `--consensus.network-budget`.
+    #[arg(long = "consensus.target-block-time", default_value = "550ms")]
+    pub target_block_time: PositiveDuration,
+
+    /// Maximum amount of time to wait for the leader's proposal before timing
+    /// out the current view.
     #[arg(long = "consensus.wait-for-proposal", default_value = "1200ms")]
     pub wait_for_proposal: PositiveDuration,
 
@@ -130,34 +137,32 @@ pub struct Args {
     )]
     pub inactive_views_until_leader_skip: u64,
 
-    /// The maximum amount of time to spend on executing transactions when preparing a proposal as a leader.
+    /// Time reserved for proposal propagation before the target block boundary.
     ///
-    /// NOTE: This only limits the time the builder spends on transaction execution, and does not
-    /// include the state root calculation time. For this reason, we keep it well below `consensus.time-to-build-proposal`.
+    /// The remaining `target-block-time - network-budget` is the local proposal
+    /// return budget used by consensus and the payload builder.
+    #[arg(long = "consensus.network-budget", default_value = "50ms")]
+    pub network_budget: PositiveDuration,
+
+    /// Deprecated compatibility flag. Ignored by the elastic proposal budget.
     #[arg(
         long = "consensus.time-to-prepare-proposal-transactions",
-        default_value = "350ms",
-        default_value_if("share_sparse_trie_with_payload_builder", "false", "200ms")
+        value_name = "DURATION",
+        help = "Deprecated: no longer has any effect and will be removed in the next release."
     )]
-    pub time_to_prepare_proposal_transactions: PositiveDuration,
+    pub time_to_prepare_proposal_transactions: Option<PositiveDuration>,
 
-    /// The minimum amount of time this node waits before sending a proposal
-    ///
-    /// The intention is to keep block times stable even if there is low load on the network.
-    /// This value should be well below `consensus.wait-for-proposal` to account
-    /// for the leader to enter the view, build and broadcast the proposal, and
-    /// have the other peers receive the proposal.
+    /// Deprecated compatibility flag. Ignored by the elastic proposal budget.
     #[arg(
         long = "consensus.minimum-time-before-propose",
-        alias = "consensus.time-to-build-proposal",
-        default_value = "450ms"
+        visible_alias = "consensus.time-to-build-proposal",
+        value_name = "DURATION",
+        help = "Deprecated: no longer has any effect and will be removed in the next release."
     )]
-    pub minimum_time_before_propose: PositiveDuration,
+    pub minimum_time_before_propose: Option<PositiveDuration>,
 
     /// The amount of time this node will use to construct a subblock before
-    /// sending it to the next proposer. This value should be well below
-    /// `consensus.time-to-build-proposal` to ensure the subblock is received
-    /// before the build is complete.
+    /// sending it to the next proposer.
     #[arg(long = "consensus.time-to-build-subblock", default_value = "100ms")]
     pub time_to_build_subblock: PositiveDuration,
 
@@ -493,6 +498,17 @@ mod tests {
 
     fn parse(args: &[&str]) -> TestCli {
         TestCli::try_parse_from(std::iter::once("test").chain(args.iter().copied())).unwrap()
+    }
+
+    #[test]
+    fn deprecated_proposal_timing_flags_parse() {
+        for flag in [
+            "--consensus.time-to-prepare-proposal-transactions",
+            "--consensus.minimum-time-before-propose",
+            "--consensus.time-to-build-proposal",
+        ] {
+            parse(&["--dev", flag, "1ms"]);
+        }
     }
 
     fn encrypt(plaintext: &[u8], passphrase: &str) -> Vec<u8> {

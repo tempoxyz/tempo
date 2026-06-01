@@ -7,23 +7,23 @@ const BOOTSTRAP_ITERATIONS = 10000;
 const SIG_EMOJI = { good: '✅', bad: '❌', neutral: '⚪' };
 
 const AXES = {
-  builder_latency_p50: { floor: 0.70, lower: true },
-  builder_latency_p90: { floor: 1.35, lower: true },
-  builder_latency_p99: { floor: 5.0, lower: true },
-  builder_gas_s: { floor: 0.45, lower: false },
-  tps: { floor: 0.45, lower: false },
-  tps_p50: { floor: 0.70, lower: false },
-  tps_p90: { floor: 1.35, lower: false },
-  tps_p99: { floor: 5.0, lower: false },
-  mgas_s: { floor: 0.45, lower: false },
-  block_time_mean: { floor: 0.70, lower: true },
+  builder_latency_p50: { floor: 0.35, lower: true },
+  builder_latency_p90: { floor: 0.70, lower: true },
+  builder_latency_p99: { floor: 0.95, lower: true },
+  builder_gas_s: { floor: 0.70, lower: false },
+  tps: { floor: 0.55, lower: false },
+  mgas_s: { floor: 0.50, lower: false },
+  block_time_mean: { floor: 0.40, lower: true },
   block_time_p50: { floor: 0.70, lower: true },
-  block_time_p90: { floor: 1.35, lower: true },
-  block_time_p99: { floor: 5.0, lower: true },
-  validation_latency_p50: { floor: 0.70, lower: true },
-  validation_latency_p90: { floor: 1.35, lower: true },
-  validation_latency_p99: { floor: 5.0, lower: true },
-  validation_gas_s: { floor: 0.45, lower: false },
+  block_time_p90: { floor: 0.70, lower: true },
+  block_time_p99: { floor: 1.60, lower: true },
+  serialized_block_size_per_tx_p50: { floor: 0.70, lower: true },
+  serialized_block_size_per_tx_p90: { floor: 0.70, lower: true },
+  serialized_block_size_per_tx_p99: { floor: 0.70, lower: true },
+  validation_latency_p50: { floor: 1.55, lower: true },
+  validation_latency_p90: { floor: 1.55, lower: true },
+  validation_latency_p99: { floor: 2.05, lower: true },
+  validation_gas_s: { floor: 0.65, lower: false },
 };
 
 const SECTIONS = [
@@ -31,14 +31,14 @@ const SECTIONS = [
     title: 'Tempo Metrics',
     rows: [
       ['TPS Mean', 'tps', v => fmtVal(v, 0)],
-      ['TPS P50', 'tps_p50', v => fmtVal(v, 1)],
-      ['TPS P90', 'tps_p90', v => fmtVal(v, 1)],
-      ['TPS P99', 'tps_p99', v => fmtVal(v, 1)],
       ['Gas Throughput [Mgas/s]', 'mgas_s', v => fmtVal(v, 1)],
       ['Block Time Mean [ms]', 'block_time_mean', v => fmtVal(v, 1)],
       ['Block Time P50 [ms]', 'block_time_p50', v => fmtVal(v, 1)],
       ['Block Time P90 [ms]', 'block_time_p90', v => fmtVal(v, 1)],
       ['Block Time P99 [ms]', 'block_time_p99', v => fmtVal(v, 1)],
+      ['Serialized Block Size / Tx P50 [B/tx]', 'serialized_block_size_per_tx_p50', v => fmtVal(v, 1)],
+      ['Serialized Block Size / Tx P90 [B/tx]', 'serialized_block_size_per_tx_p90', v => fmtVal(v, 1)],
+      ['Serialized Block Size / Tx P99 [B/tx]', 'serialized_block_size_per_tx_p99', v => fmtVal(v, 1)],
     ],
   },
   {
@@ -65,6 +65,9 @@ const BUILDER_DETAIL_ROWS = [
   ['Finish P50 [ms]', 'builder_finish_p50', v => fmtVal(v, 1)],
   ['Finish P90 [ms]', 'builder_finish_p90', v => fmtVal(v, 1)],
   ['Finish P99 [ms]', 'builder_finish_p99', v => fmtVal(v, 1)],
+  ['Pool Fetch P50 [ms]', 'builder_pool_fetch_p50', v => fmtVal(v, 1)],
+  ['Pool Fetch P90 [ms]', 'builder_pool_fetch_p90', v => fmtVal(v, 1)],
+  ['Pool Fetch P99 [ms]', 'builder_pool_fetch_p99', v => fmtVal(v, 1)],
   ['Included Tx Exec P50 [ms]', 'builder_included_tx_execution_p50', v => fmtVal(v, 1)],
   ['Included Tx Exec P90 [ms]', 'builder_included_tx_execution_p90', v => fmtVal(v, 1)],
   ['Included Tx Exec P99 [ms]', 'builder_included_tx_execution_p99', v => fmtVal(v, 1)],
@@ -76,6 +79,9 @@ const BUILDER_DETAIL_ROWS = [
   ['Invalid Tx Attempts P99', 'builder_invalid_tx_execution_attempts_p99', v => fmtVal(v, 1)],
   ['Invalid Tx Skips', 'builder_invalid_tx_skips', v => fmtVal(v, 0)],
   ['Nonce Too Low Skips', 'builder_nonce_too_low_skips', v => fmtVal(v, 0)],
+  ['Serialized Block Size P50 [KiB]', 'serialized_block_size_p50', fmtKiB],
+  ['Serialized Block Size P90 [KiB]', 'serialized_block_size_p90', fmtKiB],
+  ['Serialized Block Size P99 [KiB]', 'serialized_block_size_p99', fmtKiB],
   ['Fill Overhead P50 [ms]', 'builder_fill_overhead_p50', v => fmtVal(v, 1)],
   ['Fill Overhead P90 [ms]', 'builder_fill_overhead_p90', v => fmtVal(v, 1)],
   ['Fill Overhead P99 [ms]', 'builder_fill_overhead_p99', v => fmtVal(v, 1)],
@@ -170,6 +176,10 @@ function verdict(changes) {
 
 function fmtVal(value, precision) {
   return Number.isFinite(value) ? value.toFixed(precision) : '-';
+}
+
+function fmtKiB(value) {
+  return Number.isFinite(value) ? (value / 1024).toFixed(1) : '-';
 }
 
 function fmtChange(change) {

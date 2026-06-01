@@ -26,7 +26,25 @@ const E2E_LOCAL_RETH_ARGS = [
     "--trusted-only"
     "--tempo.bootnodes-endpoint" "none"
     "--consensus.no-legacy-archive"
+    "--engine.share-execution-cache-with-payload-builder"
+    "--builder.enable-prewarming"
+    "--txpool.pending-max-count" "200000"
+    "--txpool.basefee-max-count" "200000"
+    "--txpool.queued-max-count" "200000"
+    "--txpool.max-pending-txns" "200000"
+    "--txpool.max-new-txns" "200000"
+    "--txpool.max-batch-size" "200000"
 ]
+
+def merge-e2e-features [...features: string] {
+    $features
+    | each { |f| $f | split row "," }
+    | flatten
+    | each { |f| $f | str trim }
+    | where { |f| $f != "" }
+    | uniq
+    | str join ","
+}
 
 def tempo-node-help [tempo_bin: string] {
     let result = (run-external $tempo_bin "node" "--help" | complete)
@@ -776,6 +794,58 @@ def bench-update-pr-status [status: string] {
     }
 }
 
+def build-valscope-static-reports [
+    results_dir: string,
+    benchmark_id: string,
+    valscope_dir: string,
+] {
+    let manifest = $"($valscope_dir)/apps/api/Cargo.toml"
+    if not ($manifest | path exists) {
+        print $"Error: ValScope API Cargo manifest not found at ($manifest)"
+        exit 1
+    }
+
+    let vm_url = ($env | get -o VICTORIAMETRICS_URL | default "")
+    let vlogs_url = ($env | get -o VICTORIALOGS_URL | default "")
+    if $vm_url == "" {
+        print "Error: VICTORIAMETRICS_URL is required to generate ValScope static reports"
+        exit 1
+    }
+    if $vlogs_url == "" {
+        print "Error: VICTORIALOGS_URL is required to generate ValScope static reports"
+        exit 1
+    }
+
+    print "Generating ValScope static reports with configured VM/VLogs datasources"
+    let out_dir = $"($results_dir)/valscope-static"
+    let web_dir = $"($valscope_dir)/apps/web"
+    let web_dist = $"($web_dir)/dist"
+    let npm_ci = (run-external "npm" "--prefix" $web_dir "ci" | complete)
+    if $npm_ci.stdout != "" { print $npm_ci.stdout }
+    if $npm_ci.stderr != "" { print $npm_ci.stderr }
+    if $npm_ci.exit_code != 0 {
+        print $"Error: ValScope web dependency install failed with exit code ($npm_ci.exit_code)"
+        exit $npm_ci.exit_code
+    }
+    let web_build = (run-external "npm" "--prefix" $web_dir "run" "build:static-report-app" | complete)
+    if $web_build.stdout != "" { print $web_build.stdout }
+    if $web_build.stderr != "" { print $web_build.stderr }
+    if $web_build.exit_code != 0 {
+        print $"Error: ValScope static web build failed with exit code ($web_build.exit_code)"
+        exit $web_build.exit_code
+    }
+    let result = (with-env { VICTORIAMETRICS_URL: $vm_url, VICTORIALOGS_URL: $vlogs_url } {
+        run-external "cargo" "run" "--manifest-path" $manifest "--bin" "valscope-bench-report" "--" "--results-dir" $results_dir "--out-dir" $out_dir "--web-dist" $web_dist "--benchmark-id" $benchmark_id | complete
+    })
+    if $result.stdout != "" { print $result.stdout }
+    if $result.stderr != "" { print $result.stderr }
+    if $result.exit_code != 0 {
+        if ($out_dir | path exists) { rm -rf $out_dir }
+        print $"Error: ValScope static report generation failed with exit code ($result.exit_code)"
+        exit $result.exit_code
+    }
+}
+
 def run-local-e2e-phase [run: record, ctx: record] {
     let phase = $run.phase
     print $"=== Starting local e2e phase: ($phase) ==="
@@ -991,11 +1061,11 @@ def e2e-run-sides [run_pairs: int] {
     mut sides = []
     if ($run_pairs mod 2) == 0 {
         for _ in 0..<($run_pairs // 2) {
-            $sides = ($sides | append ["baseline" "feature" "feature" "baseline"])
+            $sides = ($sides | append ["feature" "baseline" "baseline" "feature"])
         }
     } else {
         for _ in 0..<$run_pairs {
-            $sides = ($sides | append ["baseline" "feature"])
+            $sides = ($sides | append ["feature" "baseline"])
         }
     }
     $sides
@@ -1076,16 +1146,18 @@ def "main e2e" [
     --baseline: string                                  # Baseline git SHA/ref
     --feature: string                                   # Feature git SHA/ref
     --preset: string = ""                               # Txgen preset name
-    --tps: int = 20000                                  # Target TPS
-    --duration: int = 300                               # Duration in seconds
+    --tps: int = 50000                                  # Target TPS
+    --duration: int = 90                                # Duration in seconds
     --accounts: int = 1000                              # Number of accounts
-    --max-concurrent-requests: int = 100                # Max concurrent requests
+    --max-concurrent-requests: int = 500                # Max concurrent requests
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 1, 10, or 100
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
-    --features: string = $DEFAULT_FEATURES              # Cargo features
+    --features: string = ""                             # Additional Cargo features appended to the e2e defaults
+    --baseline-features: string = ""                    # Additional Cargo features for baseline build (defaults to --features)
+    --feature-features: string = ""                     # Additional Cargo features for feature build (defaults to --features)
     --no-default-features                               # Disable Cargo default features
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
@@ -1097,7 +1169,7 @@ def "main e2e" [
     --victoriametrics-url: string = ""                  # VictoriaMetrics base URL for txgen metric sample import
     --clickhouse-url: string = ""                       # ClickHouse HTTP endpoint for txgen result upload
     --clickhouse-run: string = "feature-1"              # Run label allowed to use the ClickHouse reporter; empty = every run
-    --run-pairs: int = 2                                # Number of baseline/feature run pairs
+    --run-pairs: int = 3                                # Number of baseline/feature run pairs
     --run-type: string = ""                             # Run type label (dispatch, nightly, release)
     --baseline-args: string = ""                        # Additional node args for baseline phases
     --feature-args: string = ""                         # Additional node args for feature phases
@@ -1112,9 +1184,12 @@ def "main e2e" [
     --tune                                              # Apply system tuning
     --loud                                              # Show node debug logs
     --no-cache                                           # Skip binary cache
+    --valscope-static-report                             # Generate static ValScope reports under the results directory
+    --valscope-dir: string = "../valscope"               # Path to the ValScope checkout
     --skip-summary                                       # Leave summary generation to a later workflow step
 ] {
     let preset_path = (txgen-preset-path $preset)
+    txgen-validate-bench-args $bench_args
     if $tracy not-in ["off" "on" "full"] {
         print $"Error: --tracy must be one of: off, on, full \(got '($tracy)'\)"
         exit 1
@@ -1219,7 +1294,8 @@ def "main e2e" [
         if ($E2E_BLOAT_TMP_DIR | path exists) { rm -rf $E2E_BLOAT_TMP_DIR }
         mkdir $E2E_BLOAT_TMP_DIR
 
-        build-tempo --no-default-features=$no_default_features ["tempo"] $profile $features
+        let snapshot_features = (merge-e2e-features $DEFAULT_FEATURES $features)
+        build-tempo --no-default-features=$no_default_features ["tempo"] $profile $snapshot_features
         let tempo_bin = if $profile == "dev" { "./target/debug/tempo" } else { $"./target/($profile)/tempo" }
         let genesis_accounts = ([$accounts 3] | math max) + 1
         print $"Generating local e2e localnet config for validators: ($E2E_VALIDATORS)"
@@ -1308,26 +1384,30 @@ def "main e2e" [
         git worktree add $regenesis_wt origin/main
     }
 
-    let tbc = (tracy-build-config $features $tracy)
-    let effective_features = $tbc.features
-    let effective_extra_rustflags = $tbc.extra_rustflags
+    let global_build_features = (merge-e2e-features $DEFAULT_FEATURES $features)
+    let baseline_build_features = if $baseline_features != "" { merge-e2e-features $global_build_features $baseline_features } else { $global_build_features }
+    let feature_build_features = if $feature_features != "" { merge-e2e-features $global_build_features $feature_features } else { $global_build_features }
+    let baseline_tbc = (tracy-build-config $baseline_build_features $tracy)
+    let feature_tbc = (tracy-build-config $feature_build_features $tracy)
+    let regenesis_build_features = $global_build_features
+    let regenesis_tbc = (tracy-build-config $regenesis_build_features $tracy)
     let effective_no_cache = $no_cache or ($tracy != "off")
     # Build benchmark binaries in parallel. Regenesis uses latest origin/main so
     # snapshot rewriting is independent of either side being benchmarked.
     # with independent target/ directories, so cargo invocations don't collide.
     mut builds = [
-        { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline" }
-        { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature" }
+        { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features }
+        { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features }
     ]
     let regenesis_sha = if $regenesis_needed { git rev-parse origin/main | str trim } else { "" }
     if $regenesis_needed {
-        $builds = ($builds | append { wt: $regenesis_wt, ref_name: "origin/main", sha: $regenesis_sha, label: "regenesis-main" })
+        $builds = ($builds | append { wt: $regenesis_wt, ref_name: "origin/main", sha: $regenesis_sha, label: "regenesis-main", features: $regenesis_tbc.features, extra_rustflags: $regenesis_tbc.extra_rustflags, bench_features: $regenesis_build_features })
     }
     $builds | par-each { |b|
         if $effective_no_cache {
-            build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $effective_extra_rustflags --bench-features $features $b.wt $b.ref_name $profile $effective_features $b.sha
+            build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
         } else {
-            build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $effective_features $b.sha
+            build-in-worktree --no-default-features=$no_default_features $b.wt $b.ref_name $profile $b.features $b.sha
         }
     } | ignore
     let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
@@ -1479,8 +1559,13 @@ def "main e2e" [
         }
     }
 
-    if $e2e_exit == 0 and not $skip_summary {
-        e2e-generate-summary $results_dir
+    if $e2e_exit == 0 {
+        if not $skip_summary {
+            e2e-generate-summary $results_dir
+        }
+        if $valscope_static_report {
+            build-valscope-static-reports $results_dir $benchmark_id $valscope_dir
+        }
     }
 
     try { git worktree remove --force $baseline_wt } catch { }
