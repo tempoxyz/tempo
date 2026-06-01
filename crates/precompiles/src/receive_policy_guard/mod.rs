@@ -123,6 +123,7 @@ impl ReceivePolicyGuard {
             amount,
             recovery_mode,
             recovery_authority,
+            receipt.kind,
         )?;
 
         self.emit_event(receipt.claimed_event(receiver, msg_sender, to, amount))

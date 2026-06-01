@@ -1221,8 +1221,9 @@ impl TIP20Token {
         Ok(true)
     }
 
-    /// Releases guarded funds to `to`. Resumes skip policy checks. Reroutes
-    /// revalidate the transfer and receive policies and meter the spending limit.
+    /// Releases guarded funds to `to`. Resumes skip reroute checks. Reroutes
+    /// revalidate sender authorization and receive policy, and meter the spending limit.
+    /// All claims enforce destination authorization according to the original inbound kind.
     pub(crate) fn release_blocked_funds(
         &mut self,
         originator: Address,
@@ -1231,6 +1232,7 @@ impl TIP20Token {
         amount: U256,
         recovery_mode: RecoveryMode,
         recovery_auth: Address,
+        kind: InboundKind,
     ) -> Result<()> {
         debug_assert!(
             to != RECEIVE_POLICY_GUARD_ADDRESS,
@@ -1242,7 +1244,7 @@ impl TIP20Token {
         destination.validate()?;
         if recovery_mode.is_reroute(to, receiver) {
             let policy_subject = recovery_mode.policy_subject(originator, receiver);
-            self.ensure_transfer_authorized(policy_subject, destination.target)?;
+            self.ensure_authorized_as(policy_subject, AuthRole::sender())?;
             if TIP403Registry::new()
                 .validate_receive_policy(self.address, policy_subject, destination.target)?
                 .is_some()
@@ -1252,8 +1254,15 @@ impl TIP20Token {
             if let Some(addr) = recovery_mode.spending_account(recovery_auth) {
                 self.check_and_update_spending_limit(addr, amount)?;
             }
-        } else {
-            self.ensure_authorized_as(destination.target, AuthRole::recipient())?;
+        }
+        match kind {
+            InboundKind::TRANSFER => {
+                self.ensure_authorized_as(destination.target, AuthRole::recipient())?
+            }
+            InboundKind::MINT => {
+                self.ensure_authorized_as(destination.target, AuthRole::mint_recipient())?
+            }
+            InboundKind::__Invalid => unreachable!("store_blocked must not create invalid receipt"),
         }
 
         self._transfer(RECEIVE_POLICY_GUARD_ADDRESS, &destination, amount)?;
@@ -1759,6 +1768,7 @@ pub(crate) mod tests {
                         amount,
                         mode,
                         recovery_auth,
+                        InboundKind::TRANSFER,
                     );
 
                     if should_succeed {
@@ -1819,6 +1829,7 @@ pub(crate) mod tests {
                     amount,
                     RecoveryMode::ThirdParty,
                     third_party,
+                    InboundKind::TRANSFER,
                 )?;
 
                 assert_eq!(token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?.amount(), U256::ZERO);
@@ -1826,6 +1837,135 @@ pub(crate) mod tests {
 
                 Ok::<(), TempoPrecompileError>(())
             })?;
+
+            Ok(())
+        }
+
+        #[test]
+        fn test_release_blocked_funds_enforces_destination_role_by_receipt_kind() -> eyre::Result<()>
+        {
+            let admin = Address::random();
+            let originator = admin;
+            let recovery_auth = Address::random();
+            let amount = U256::from(10u64);
+
+            // Full destination-role matrix: receipt kind selects the required TIP-403 role,
+            // regardless of whether the claim resumes to the receiver or reroutes elsewhere.
+            for kind in [InboundKind::TRANSFER, InboundKind::MINT] {
+                for reroute in [false, true] {
+                    for recipient_allowed in [false, true] {
+                        for mint_recipient_allowed in [false, true] {
+                            let should_succeed = match kind {
+                                InboundKind::TRANSFER => recipient_allowed,
+                                InboundKind::MINT => mint_recipient_allowed,
+                                InboundKind::__Invalid => unreachable!(),
+                            };
+
+                            let mut storage =
+                                HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+                            StorageCtx::enter(&mut storage, || {
+                                let receiver = Address::random();
+                                let reroute_destination = Address::random();
+                                let destination = if reroute {
+                                    reroute_destination
+                                } else {
+                                    receiver
+                                };
+                                let mut recipient_accounts = Vec::new();
+                                if recipient_allowed {
+                                    recipient_accounts.push(destination);
+                                }
+                                let mut mint_recipient_accounts = Vec::new();
+                                if mint_recipient_allowed {
+                                    mint_recipient_accounts.push(destination);
+                                }
+
+                                let mut registry = TIP403Registry::new();
+                                let sender_policy = registry.create_policy_with_accounts(
+                                    admin,
+                                    ITIP403Registry::createPolicyWithAccountsCall {
+                                        admin,
+                                        policyType: ITIP403Registry::PolicyType::WHITELIST,
+                                        accounts: vec![receiver],
+                                    },
+                                )?;
+                                let recipient_policy = registry.create_policy_with_accounts(
+                                    admin,
+                                    ITIP403Registry::createPolicyWithAccountsCall {
+                                        admin,
+                                        policyType: ITIP403Registry::PolicyType::WHITELIST,
+                                        accounts: recipient_accounts,
+                                    },
+                                )?;
+                                let mint_recipient_policy = registry.create_policy_with_accounts(
+                                    admin,
+                                    ITIP403Registry::createPolicyWithAccountsCall {
+                                        admin,
+                                        policyType: ITIP403Registry::PolicyType::WHITELIST,
+                                        accounts: mint_recipient_accounts,
+                                    },
+                                )?;
+                                let transfer_policy = registry.create_compound_policy(
+                                    admin,
+                                    ITIP403Registry::createCompoundPolicyCall {
+                                        senderPolicyId: sender_policy,
+                                        recipientPolicyId: recipient_policy,
+                                        mintRecipientPolicyId: mint_recipient_policy,
+                                    },
+                                )?;
+
+                                let mut token = TIP20Setup::create("Test", "TST", admin)
+                                    .with_issuer(admin)
+                                    .apply()?;
+                                token.change_transfer_policy_id(
+                                    admin,
+                                    ITIP20::changeTransferPolicyIdCall {
+                                        newPolicyId: transfer_policy,
+                                    },
+                                )?;
+                                token.set_balance(
+                                    RECEIVE_POLICY_GUARD_ADDRESS,
+                                    UserState::new(amount, RewardFlag::OptedOut)?,
+                                )?;
+
+                                let result = token.release_blocked_funds(
+                                    originator,
+                                    receiver,
+                                    destination,
+                                    amount,
+                                    RecoveryMode::ThirdParty,
+                                    recovery_auth,
+                                    kind,
+                                );
+
+                                if should_succeed {
+                                    result?;
+                                    assert_eq!(token.get_balance(destination)?.amount(), amount);
+                                    assert_eq!(
+                                        token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?.amount(),
+                                        U256::ZERO
+                                    );
+                                } else {
+                                    assert_eq!(
+                                        result.unwrap_err(),
+                                        TIP20Error::policy_forbids().into()
+                                    );
+                                    assert_eq!(
+                                        token.get_balance(destination)?.amount(),
+                                        U256::ZERO
+                                    );
+                                    assert_eq!(
+                                        token.get_balance(RECEIVE_POLICY_GUARD_ADDRESS)?.amount(),
+                                        amount
+                                    );
+                                }
+
+                                Ok::<(), TempoPrecompileError>(())
+                            })?;
+                        }
+                    }
+                }
+            }
 
             Ok(())
         }
