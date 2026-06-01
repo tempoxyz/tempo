@@ -1513,14 +1513,39 @@ async fn get_parent(
         })?
     {
         // EL database reads do not include commonware sidecars.
-        Ok(Block::from_execution_block_unchecked(parent.seal(), None))
+        let parent = Block::from_execution_block_unchecked(parent.seal(), None);
+        if parent.block().header().block_access_list_hash().is_some() {
+            let parent =
+                get_parent_from_marshal(round, parent_digest, parent_view, marshal).await?;
+            ensure!(
+                parent.block_access_list().is_some(),
+                "parent block `{parent_digest}` has a BAL hash but marshal returned no BAL sidecar",
+            );
+            debug!(
+                parent.height = %parent.height(),
+                parent.digest = %parent.digest(),
+                "restored parent BAL sidecar from marshal",
+            );
+            return Ok(parent);
+        }
+
+        Ok(parent)
     } else {
-        marshal
-            .subscribe_by_digest(Some(Round::new(round.epoch(), parent_view)), parent_digest)
-            .await
-            .await
-            .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))
+        get_parent_from_marshal(round, parent_digest, parent_view, marshal).await
     }
+}
+
+async fn get_parent_from_marshal(
+    round: Round,
+    parent_digest: Digest,
+    parent_view: View,
+    marshal: &crate::alias::marshal::Mailbox,
+) -> eyre::Result<Block> {
+    marshal
+        .subscribe_by_digest(Some(Round::new(round.epoch(), parent_view)), parent_digest)
+        .await
+        .await
+        .map_err(|_| eyre!("syncer dropped channel before the parent block was sent"))
 }
 
 #[derive(Clone)]

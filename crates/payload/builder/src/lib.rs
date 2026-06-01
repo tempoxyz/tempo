@@ -153,8 +153,6 @@ pub struct TempoPayloadBuilder<Provider> {
     state_provider_metrics: bool,
     /// Whether to enable prewarming of best transactions.
     enable_prewarming: bool,
-    /// Whether to include block access lists in built execution payloads.
-    enable_bal: bool,
     /// Learned estimate of total replayable build work divided by work at tx cutoff.
     ///
     /// This lets the builder reserve time for non-interruptible
@@ -209,7 +207,6 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             is_dev: config.is_dev,
             state_provider_metrics: config.state_provider_metrics,
             enable_prewarming: config.enable_prewarming,
-            enable_bal: cfg!(feature = "bal"),
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
             ))),
@@ -441,7 +438,7 @@ where
         let mut db = State::builder()
             .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
             .with_bundle_update()
-            .with_bal_builder_if(self.enable_bal)
+            .with_bal_builder()
             .build();
         drop(_state_setup_span);
         self.metrics
@@ -1146,6 +1143,9 @@ where
             timestamp = block.timestamp_millis(),
             gas_limit = block.gas_limit(),
             gas_used,
+            block_access_list_hash = ?block.block_access_list_hash(),
+            block_access_list_accounts = block_access_list.as_ref().map_or(0, Vec::len),
+            block_access_list_rlp_bytes = block_access_list.as_ref().map_or(0, Encodable::length),
             cumulative_state_gas_used,
             extra_data = %block.extra_data(),
             subblocks_count,

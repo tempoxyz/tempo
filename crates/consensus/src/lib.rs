@@ -46,7 +46,7 @@ pub struct TempoConsensus {
 impl TempoConsensus {
     /// Creates a new [`TempoConsensus`] with the given chain spec.
     pub fn new(chain_spec: Arc<TempoChainSpec>) -> Self {
-        Self::new_with_bal_hashes(chain_spec, false)
+        Self::new_with_bal_hashes(chain_spec, true)
     }
 
     /// Creates a new [`TempoConsensus`] with optional pre-Amsterdam BAL hash support.

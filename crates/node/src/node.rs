@@ -386,7 +386,7 @@ pub struct TempoConsensusBuilder {
 impl Default for TempoConsensusBuilder {
     fn default() -> Self {
         Self {
-            allow_bal_hashes: cfg!(feature = "bal"),
+            allow_bal_hashes: true,
         }
     }
 }

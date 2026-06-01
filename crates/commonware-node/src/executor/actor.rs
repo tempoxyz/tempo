@@ -757,7 +757,7 @@ impl std::fmt::Display for HeadOrFinalized {
     }
 }
 
-#[cfg(all(test, feature = "bal"))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use alloy_consensus::Header;
