@@ -1238,14 +1238,12 @@ impl Inner<Init> {
             .map(|tx| *tx.tx_hash())
             .collect::<Vec<_>>();
 
-        let trie_handle = Some(
-            tempo_node::speculative_bal_state_root_handle(
-                &self.execution_node,
-                block.block(),
-                &block_access_list,
-            )
-            .await?,
-        );
+        let (trie_handle, cache) = tempo_node::speculative_bal_payload_builder_inputs(
+            &self.execution_node,
+            block.block(),
+            &block_access_list,
+        )
+        .await?;
         debug!(
             parent.digest = %block.digest(),
             parent.height = %block.height(),
@@ -1277,8 +1275,8 @@ impl Inner<Init> {
                 .send_new_payload(BuildNewPayload {
                     attributes: attrs,
                     parent_hash,
-                    cache: None,
-                    trie_handle,
+                    cache,
+                    trie_handle: Some(trie_handle),
                 });
 
         Ok(SpeculativeBuild {

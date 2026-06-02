@@ -377,6 +377,13 @@ where
         self.metrics.block_time_millis.record(block_time_millis);
         self.metrics.block_time_millis_last.set(block_time_millis);
 
+        let prewarm_parent_hash = attributes
+            .speculative_parent()
+            .map(|parent| parent.base_parent_hash())
+            .unwrap_or_else(|| parent_header.hash());
+        let cache_wrapped_under_bal =
+            cfg!(feature = "bal") && attributes.speculative_parent().is_some();
+
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
         #[cfg(feature = "bal")]
@@ -390,6 +397,15 @@ where
             let base_provider = self
                 .provider
                 .state_by_block_hash(speculative_parent.base_parent_hash())?;
+            let base_provider = if let Some(execution_cache) = &execution_cache {
+                Box::new(CachedStateProvider::new(
+                    base_provider,
+                    execution_cache.cache().clone(),
+                    Some(self.cache_metrics.clone()),
+                )) as reth_storage_api::StateProviderBox
+            } else {
+                base_provider
+            };
             Box::new(bal_overlay::BalOverlayStateProvider::new(
                 base_provider,
                 speculative_parent.parent_header(),
@@ -407,7 +423,7 @@ where
             }
             self.provider.state_by_block_hash(parent_header.hash())?
         };
-        if let Some(execution_cache) = &execution_cache {
+        if !cache_wrapped_under_bal && let Some(execution_cache) = &execution_cache {
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
                 execution_cache.cache().clone(),
@@ -601,7 +617,7 @@ where
                 self.executor.clone(),
                 self.provider.clone(),
                 execution_cache,
-                parent_header.hash(),
+                prewarm_parent_hash,
                 executor.evm().evm_env(),
                 best_txs,
             )) as Box<dyn BestTransactions<Item = _>>
