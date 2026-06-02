@@ -1446,7 +1446,7 @@ impl Inner<Init> {
 
         let block_request = self
             .marshal
-            .subscribe_by_digest(None, payload)
+            .subscribe_by_digest(Some(round), payload)
             .await
             .map_err(|_| {
                 eyre!("marshal actor dropped channel before the block-to-verified was sent")
