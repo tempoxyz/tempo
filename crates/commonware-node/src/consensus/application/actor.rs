@@ -814,9 +814,11 @@ impl Inner<Init> {
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
 
         let payload_build_elapsed = payload_build_start.elapsed();
-        let payload_validation_elapsed = payload.validation_work_duration();
-        let block_size_bytes = payload.rlp_block_size_bytes();
-        let validator_marshal_persist = marshal_persist.estimate(block_size_bytes);
+        let payload_validation_work_elapsed = payload.validation_work_duration();
+        let validator_validation_elapsed = payload.validator_validation_duration();
+        let execution_block_rlp_size_bytes = payload.execution_block_rlp_size_bytes();
+        let consensus_block_size_bytes = payload.consensus_block_size_bytes();
+        let validator_marshal_persist = marshal_persist.estimate(consensus_block_size_bytes);
         let proposal_elapsed = propose_start.elapsed();
         // Pace proposal return from the original propose start. Validators still
         // need to repeat replayable build work and marshal persistence, so leave
@@ -824,15 +826,17 @@ impl Inner<Init> {
         let return_delay = self
             .proposal_return_budget
             .saturating_sub(proposal_elapsed)
-            .saturating_sub(payload_validation_elapsed)
+            .saturating_sub(validator_validation_elapsed)
             .saturating_sub(validator_marshal_persist);
         debug!(
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
-            validation_time = %display_duration(payload_validation_elapsed),
+            payload_validation_work = %display_duration(payload_validation_work_elapsed),
+            validator_validation_time = %display_duration(validator_validation_elapsed),
             validator_marshal_persist = %display_duration(validator_marshal_persist),
             return_time = %display_duration(return_delay),
-            block_size_bytes,
+            execution_block_rlp_size_bytes,
+            consensus_block_size_bytes,
             "sleeping before returning proposal"
         );
         let proposal_return_time = context.current() + return_delay;
@@ -841,7 +845,7 @@ impl Inner<Init> {
         let proposal = Block::from_execution_block_with_encoded_size(
             block,
             block_access_list,
-            block_size_bytes,
+            execution_block_rlp_size_bytes,
         )
         .wrap_err("payload builder produced an invalid block access list")?;
 
@@ -849,7 +853,7 @@ impl Inner<Init> {
             proposal,
             Some(ProposalReturn {
                 time: proposal_return_time,
-                block_size_bytes,
+                block_size_bytes: consensus_block_size_bytes,
             }),
         ))
     }
