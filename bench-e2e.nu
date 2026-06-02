@@ -537,6 +537,13 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
     let signing_key = $"($node_dir)/signing.key"
     let signing_share = $"($node_dir)/signing.share"
     let enode_key = $"($node_dir)/enode.key"
+    let signing_key_contents = (open --raw $signing_key | into binary)
+    let signing_key_is_encrypted = ($signing_key_contents | bytes starts-with 0x[61 67 65 2d 65 6e 63 72 79 70 74 69 6f 6e 2e 6f 72 67 2f])
+    let signing_secret_args = if $signing_key_is_encrypted {
+        ["--consensus.secret" "<(printf '%s\\n' 'tempo-localnet-signing-key-secret')"]
+    } else {
+        []
+    }
 
     let execution_p2p_port = $port + 1
     let metrics_port = $port + 2
@@ -545,6 +552,7 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
 
     [
         "--consensus.signing-key" $signing_key
+        ...$signing_secret_args
         "--consensus.signing-share" $signing_share
         "--consensus.listen-address" $"($ip):($port)"
         "--consensus.metrics-address" $"($ip):($metrics_port)"
@@ -1149,7 +1157,7 @@ def "main e2e" [
     --tps: int = 50000                                  # Target TPS
     --duration: int = 90                                # Duration in seconds
     --accounts: int = 1000                              # Number of accounts
-    --max-concurrent-requests: int = 100                # Max concurrent requests
+    --max-concurrent-requests: int = 500                # Max concurrent requests
     --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 1, 10, or 100
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
