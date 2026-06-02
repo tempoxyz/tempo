@@ -51,6 +51,8 @@ pub struct MultisigOwner {
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct InitMultisig {
+    /// Caller-chosen salt mixed into the permanent config ID.
+    pub salt: B256,
     /// Minimum total owner weight required to authorize a transaction.
     pub threshold: u32,
     /// Sorted weighted owner list.
@@ -254,9 +256,11 @@ pub fn validate_multisig_signature_shape(
 pub fn derive_multisig_config_id(config: &InitMultisig) -> Result<B256, &'static str> {
     validate_multisig_config(config)?;
 
-    let mut input =
-        Vec::with_capacity(MULTISIG_CONFIG_DOMAIN.len() + 8 + config.owners.len() * (1 + 20 + 4));
+    let mut input = Vec::with_capacity(
+        MULTISIG_CONFIG_DOMAIN.len() + 32 + 8 + config.owners.len() * (1 + 20 + 4),
+    );
     input.extend_from_slice(MULTISIG_CONFIG_DOMAIN);
+    input.extend_from_slice(config.salt.as_slice());
     input.extend_from_slice(&config.threshold.to_be_bytes());
     input.extend_from_slice(&(config.owners.len() as u32).to_be_bytes());
     for owner in &config.owners {
@@ -408,7 +412,11 @@ mod tests {
             })
             .collect::<Vec<_>>();
         owners.sort_by_key(|owner| owner.owner);
-        InitMultisig { threshold, owners }
+        InitMultisig {
+            salt: B256::ZERO,
+            threshold,
+            owners,
+        }
     }
 
     #[test]
@@ -425,6 +433,7 @@ mod tests {
         );
 
         let unsorted = InitMultisig {
+            salt: B256::ZERO,
             threshold: 1,
             owners: vec![
                 MultisigOwner {
@@ -440,6 +449,24 @@ mod tests {
             ],
         };
         assert!(validate_multisig_config(&unsorted).is_err());
+    }
+
+    #[test]
+    fn config_derivation_includes_salt() {
+        let owner = Address::from([0x11; 20]);
+        let zero_salt = sorted_secp_config(&[(owner, 1)], 1);
+        let mut nonzero_salt = zero_salt.clone();
+        nonzero_salt.salt = B256::repeat_byte(0x42);
+
+        assert_ne!(
+            zero_salt.config_id().unwrap(),
+            nonzero_salt.config_id().unwrap()
+        );
+        assert_ne!(
+            zero_salt.account().unwrap(),
+            nonzero_salt.account().unwrap()
+        );
+        validate_multisig_config(&zero_salt).expect("zero salt is valid");
     }
 
     #[test]
@@ -494,7 +521,8 @@ mod tests {
 
     #[test]
     fn multisig_signature_roundtrips_init_config() {
-        let config = sorted_secp_config(&[(Address::from([0x11; 20]), 1)], 1);
+        let mut config = sorted_secp_config(&[(Address::from([0x11; 20]), 1)], 1);
+        config.salt = B256::repeat_byte(0x33);
         let config_id = config.config_id().unwrap();
         let signature = MultisigSignature {
             account: derive_multisig_account(config_id),
