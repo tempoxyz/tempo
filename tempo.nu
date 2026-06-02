@@ -33,11 +33,16 @@ def log-filter-args [loud: bool] {
     if $loud { [] } else { ["--log.stdout.filter" "info"] }
 }
 
-def ensure-localnet-consensus-secret [] {
-    let secret_path = $"($LOCALNET_DIR)/consensus-secret.txt"
-    $"($LOCALNET_SIGNING_KEY_SECRET)\n" | save -f $secret_path
+def prepare-localnet-consensus-secret-fifo [node_dir: string] {
+    let secret_path = $"($node_dir)/consensus-secret.fifo"
+    rm -f $secret_path
+    mkfifo $secret_path
     chmod 600 $secret_path
     $secret_path
+}
+
+def start-localnet-consensus-secret-writer [secret_path: string] {
+    job spawn { $"($LOCALNET_SIGNING_KEY_SECRET)\n" | save -f $secret_path } | ignore
 }
 
 # Wrap command with samply if enabled
@@ -1855,7 +1860,6 @@ def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: 
     } | str join ",")
 
     print $"Found ($validator_dirs | length) validator configs"
-    let consensus_secret = (ensure-localnet-consensus-secret)
 
     let tempo_bin = if $profile == "dev" {
         "./target/debug/tempo"
@@ -1898,11 +1902,11 @@ def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: 
     let background_nodes = $validator_dirs | skip 1
 
     for node in $background_nodes {
-        run-consensus-node $node $genesis_path $trusted_peers $tempo_bin $loud false [] $extra_args $consensus_secret true
+        run-consensus-node $node $genesis_path $trusted_peers $tempo_bin $loud false [] $extra_args true
     }
 
     # Run node 0 in foreground (receives Ctrl+C directly)
-    run-consensus-node $foreground_node $genesis_path $trusted_peers $tempo_bin $loud $samply $samply_args $extra_args $consensus_secret false
+    run-consensus-node $foreground_node $genesis_path $trusted_peers $tempo_bin $loud $samply $samply_args $extra_args false
 }
 
 # Run a single consensus node (foreground or background)
@@ -1915,13 +1919,13 @@ def run-consensus-node [
     samply: bool
     samply_args: list<string>
     extra_args: list<string>
-    consensus_secret: string
     background: bool
 ] {
     let addr = ($node_dir | path basename)
     let port = ($addr | split row ":" | get 1 | into int)
     let node_index = (port-to-node-index $port)
     let http_port = 8545 + $node_index
+    let consensus_secret = (prepare-localnet-consensus-secret-fifo $node_dir)
 
     let log_dir = $"($LOGS_DIR)/($addr)"
     mkdir $log_dir
@@ -1935,9 +1939,11 @@ def run-consensus-node [
     print $"  Node ($addr) -> http://localhost:($http_port)(if $background { '' } else { ' (foreground)' })"
 
     if $background {
+        start-localnet-consensus-secret-writer $consensus_secret
         job spawn { sh -c $"($cmd | str join ' ') 2>&1" | lines | each { |line| print $"[($addr)] ($line)" } }
     } else {
         print $"  Running: ($cmd | str join ' ')"
+        start-localnet-consensus-secret-writer $consensus_secret
         run-external ($cmd | first) ...($cmd | skip 1)
     }
 }
