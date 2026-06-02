@@ -11,6 +11,14 @@ accounts:
       - 0
       - ${TXGEN_ACCOUNTS}
 
+address_pools:
+  existing_recipients:
+    fast:
+      seed: "test test test test test test test test test test test junk"
+      range:
+        - ${TXGEN_EXISTING_RECIPIENTS_START}
+        - ${TXGEN_EXISTING_RECIPIENTS_END}
+
 artifacts:
   ERC20: ../erc20.abi.json
 
@@ -20,7 +28,7 @@ templates:
     from:
       pool: users
       select: random
-    gas_limit: 300000
+    gas_limit: 350000
     max_fee_per_gas: 100000000000
     max_priority_fee_per_gas: 100000000000
     fee_token: "0x20c0000000000000000000000000000000000000"
@@ -31,8 +39,8 @@ templates:
       abi: ERC20
       function: transfer
       args:
-        - pool:
-            pool: users
+        - address_pool:
+            pool: existing_recipients
             select: random
         - 1
 

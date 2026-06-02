@@ -1751,6 +1751,7 @@ mod tests {
         subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX,
         transaction::{Call, TEMPO_EXPIRING_NONCE_KEY},
     };
+    use tempo_revm::gas_params::tempo_gas_params;
 
     const TOKEN: Address = address!("20c0000000000000000000000000000000000001");
     const SENDER: Address = address!("1000000000000000000000000000000000000001");
@@ -1821,8 +1822,12 @@ mod tests {
     }
 
     fn transfer_call(to: Address, amount: U256) -> Call {
+        transfer_call_to_token(TOKEN, to, amount)
+    }
+
+    fn transfer_call_to_token(token: Address, to: Address, amount: U256) -> Call {
         Call {
-            to: TxKind::Call(TOKEN),
+            to: TxKind::Call(token),
             value: U256::ZERO,
             input: ITIP20::transferCall { to, amount }.abi_encode().into(),
         }
@@ -1844,6 +1849,13 @@ mod tests {
 
     fn precompile_marker_info() -> AccountInfo {
         AccountInfo::default().with_code(Bytecode::new_legacy([0xef].into()))
+    }
+
+    fn usd_currency_word() -> U256 {
+        let mut bytes = [0u8; 32];
+        bytes[..3].copy_from_slice(b"USD");
+        bytes[31] = 6;
+        U256::from_be_bytes(bytes)
     }
 
     fn assert_fallback(
@@ -2362,14 +2374,16 @@ mod tests {
         let batch_len = 64usize;
         let mut txs = Vec::with_capacity(batch_len);
         let mut plans = Vec::with_capacity(batch_len);
+        let mut recipients = Vec::with_capacity(batch_len);
 
         for i in 0..batch_len {
             let recipient = Address::from_word(B256::with_last_byte(0x80 + i as u8));
+            recipients.push(recipient);
             let nonce_key = U256::from(u64::MAX - i as u64);
             let (recovered, tx_env) = aa_blockstm_tx_with_gas(
                 vec![transfer_call(recipient, U256::from(1))],
                 nonce_key,
-                300_000,
+                350_000,
             );
             let tx = Tip20TransferBlockstmTx {
                 tx_env: tx_env.clone(),
@@ -2380,10 +2394,16 @@ mod tests {
             txs.push((recovered, tx_env));
         }
 
-        let base_storage = HashMap::from([(
+        let mut base_storage = HashMap::from([(
             balance_key(TOKEN, SENDER),
             encode_balance(U256::from(100_000_000), REWARD_FLAG_OPTED_OUT, true),
         )]);
+        for recipient in recipients {
+            base_storage.insert(
+                balance_key(TOKEN, recipient),
+                encode_balance(U256::from(100), REWARD_FLAG_OPTED_OUT, true),
+            );
+        }
         let base_state = Tip20BlockstmBaseState {
             storage: base_storage.clone(),
             accounts: HashMap::new(),
@@ -2397,6 +2417,7 @@ mod tests {
         let mut settled = execution.txs;
         let mut cfg = CfgEnv::<TempoHardfork>::default();
         cfg.spec = TempoHardfork::T6;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T6);
         for (index, execution) in settled.iter_mut().enumerate() {
             let plan = &plans[index];
             let tx_env = &txs[index].1;
@@ -2419,37 +2440,50 @@ mod tests {
     #[test]
     fn public_blockstm_batch_commits_non_expiring_2d_nonces() {
         let chainspec = test_chainspec();
+        let token = tempo_precompiles::PATH_USD_ADDRESS;
         let batch_len = 16usize;
         let mut db = State::builder().with_bundle_update().build();
+        let recipients = (0..batch_len)
+            .map(|i| Address::from_word(B256::with_last_byte(0xa0 + i as u8)))
+            .collect::<Vec<_>>();
+        let mut token_storage = PlainStorage::from_iter([
+            (tip20_slots::CURRENCY, usd_currency_word()),
+            (
+                tip20_slots::TRANSFER_POLICY_ID,
+                policy_word(ALLOW_ALL_POLICY_ID),
+            ),
+            (
+                balance_key(token, SENDER).slot,
+                encode_balance(U256::from(100_000_000), REWARD_FLAG_OPTED_OUT, true),
+            ),
+        ]);
+        for recipient in &recipients {
+            token_storage.insert(
+                balance_key(token, *recipient).slot,
+                encode_balance(U256::from(100), REWARD_FLAG_OPTED_OUT, true),
+            );
+        }
         db.insert_account_with_storage(
-            TOKEN,
+            token,
             precompile_marker_info(),
-            PlainStorage::from_iter([
-                (
-                    tip20_slots::TRANSFER_POLICY_ID,
-                    policy_word(ALLOW_ALL_POLICY_ID),
-                ),
-                (
-                    balance_key(TOKEN, SENDER).slot,
-                    encode_balance(U256::from(100_000_000), REWARD_FLAG_OPTED_OUT, true),
-                ),
-            ]),
+            token_storage,
         );
         db.insert_account(NONCE_PRECOMPILE_ADDRESS, precompile_marker_info());
         db.insert_account(TIP_FEE_MANAGER_ADDRESS, precompile_marker_info());
         let mut executor = TestExecutorBuilder::default()
             .with_general_gas_limit(1_000_000_000)
             .build(db, &chainspec);
+        executor.inner.evm.cfg.spec = TempoHardfork::T6;
+        executor.inner.evm.cfg.gas_params = tempo_gas_params(TempoHardfork::T6);
 
         let mut txs = Vec::with_capacity(batch_len);
         let mut nonce_keys = Vec::with_capacity(batch_len);
-        for i in 0..batch_len {
-            let recipient = Address::from_word(B256::with_last_byte(0xa0 + i as u8));
+        for (i, recipient) in recipients.iter().copied().enumerate() {
             let nonce_key = U256::from(u64::MAX - i as u64);
             let (recovered, tx_env) = aa_blockstm_tx_with_gas(
-                vec![transfer_call(recipient, U256::from(1))],
+                vec![transfer_call_to_token(token, recipient, U256::from(1))],
                 nonce_key,
-                300_000,
+                350_000,
             );
             nonce_keys.push(nonce_key);
             txs.push((recovered, tx_env));
@@ -2460,12 +2494,12 @@ mod tests {
             .map(|(recovered, tx_env)| Tip20TransferBlockstmTx {
                 tx_env: tx_env.clone(),
                 recovered,
-                fee_token: TOKEN,
+                fee_token: token,
             })
             .collect();
         let mut result_count = 0;
         let stats = executor
-            .execute_tip20_transfer_blockstm_batch(batch, TOKEN, |_, result| {
+            .execute_tip20_transfer_blockstm_batch(batch, token, |_, result| {
                 assert!(result.block_gas_used() > 0);
                 assert!(result.validator_fee() > U256::ZERO);
                 result_count += 1;
