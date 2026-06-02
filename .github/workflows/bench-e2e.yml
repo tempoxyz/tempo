@@ -68,11 +68,12 @@ on:
         required: true
         default: "90"
       bloat:
-        description: State bloat size in GiB.
+        description: State bloat size in GiB. Use 0 to disable state bloat.
         type: choice
         required: true
         default: "100"
         options:
+          - "0"
           - "1"
           - "10"
           - "100"
@@ -184,6 +185,7 @@ on:
       bloat:
         type: string
         required: false
+        description: State bloat size in GiB. Use 0 to disable state bloat.
         default: "100"
       tps:
         type: string
