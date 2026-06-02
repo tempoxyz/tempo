@@ -12,7 +12,7 @@ use tempo_revm::TempoBlockEnv;
 use crate::{TempoBlockExecutionCtx, block::TempoBlockExecutor, evm::TempoEvm};
 use alloy_evm::eth::EthBlockExecutionCtx;
 use alloy_primitives::U256;
-use tempo_primitives::subblock::PartialValidatorKey;
+use tempo_primitives::{TempoConsensusContext, ed25519::PublicKey, subblock::PartialValidatorKey};
 
 pub(crate) fn test_chainspec() -> Arc<TempoChainSpec> {
     Arc::new(TempoChainSpec::from_genesis(MODERATO.genesis().clone()))
@@ -51,6 +51,7 @@ pub(crate) struct TestExecutorBuilder {
     pub(crate) general_gas_limit: u64,
     pub(crate) shared_gas_limit: u64,
     pub(crate) validator_set: Option<Vec<B256>>,
+    pub(crate) consensus_context: Option<TempoConsensusContext>,
     pub(crate) parent_beacon_block_root: Option<B256>,
     pub(crate) subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
     /// Sets `cfg_env.enable_amsterdam_eip8037` to gate TIP-1016 behavior in tests.
@@ -69,6 +70,7 @@ impl Default for TestExecutorBuilder {
             general_gas_limit: 10_000_000,
             shared_gas_limit: 10_000_000,
             validator_set: None,
+            consensus_context: None,
             parent_beacon_block_root: None,
             subblock_fee_recipients: HashMap::new(),
             amsterdam_eip8037_enabled: false,
@@ -82,6 +84,16 @@ impl Default for TestExecutorBuilder {
 impl TestExecutorBuilder {
     pub(crate) fn with_validator_set(mut self, validators: Vec<B256>) -> Self {
         self.validator_set = Some(validators);
+        self
+    }
+
+    pub(crate) fn with_consensus_epoch(mut self, epoch: u64) -> Self {
+        self.consensus_context = Some(TempoConsensusContext {
+            epoch,
+            view: 0,
+            parent_view: 0,
+            proposer: PublicKey::from_seed([0xab; 32]),
+        });
         self
     }
 
@@ -166,7 +178,7 @@ impl TestExecutorBuilder {
             general_gas_limit: self.general_gas_limit,
             shared_gas_limit: self.shared_gas_limit,
             validator_set: self.validator_set,
-            consensus_context: None,
+            consensus_context: self.consensus_context,
             subblock_fee_recipients: self.subblock_fee_recipients,
         };
 

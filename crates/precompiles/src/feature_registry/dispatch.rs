@@ -155,6 +155,46 @@ mod tests {
     }
 
     #[test]
+    fn activate_scheduled_features_tip_waits_for_activation_epoch() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            registry.features_tip.write(7)?;
+            registry.scheduled_features_tip.write(13)?;
+            registry.scheduled_activation_epoch.write(21)?;
+
+            assert!(!registry.activate_scheduled_features_tip(20)?);
+            assert_eq!(registry.features_tip()?, 7);
+
+            let scheduled = registry.scheduled_features_tip()?;
+            assert_eq!(scheduled.featuresTip, 13);
+            assert_eq!(scheduled.activationEpoch, 21);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn activate_scheduled_features_tip_activates_and_clears_schedule() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            registry.features_tip.write(7)?;
+            registry.scheduled_features_tip.write(13)?;
+            registry.scheduled_activation_epoch.write(21)?;
+
+            assert!(registry.activate_scheduled_features_tip(21)?);
+            assert_eq!(registry.features_tip()?, 13);
+
+            let scheduled = registry.scheduled_features_tip()?;
+            assert_eq!(scheduled.featuresTip, 0);
+            assert_eq!(scheduled.activationEpoch, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn validator_supported_features_tip_defaults_to_zero() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {

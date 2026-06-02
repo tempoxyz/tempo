@@ -64,4 +64,30 @@ impl FeatureRegistry {
     pub fn validator_supported_features_tip(&self, validator: Address) -> Result<u64> {
         self.validator_supported_features_tip[validator].read()
     }
+
+    /// Activates the scheduled feature tip if its target epoch has arrived.
+    ///
+    /// Quorum enforcement is intentionally not implemented in this scaffold. The full activation
+    /// path should enforce validator support once TIP-1070 lands.
+    pub fn activate_scheduled_features_tip(&mut self, current_epoch: u64) -> Result<bool> {
+        let scheduled_features_tip = self.scheduled_features_tip.read()?;
+        let scheduled_activation_epoch = self.scheduled_activation_epoch.read()?;
+
+        if scheduled_features_tip == 0
+            || scheduled_activation_epoch == 0
+            || scheduled_activation_epoch > current_epoch
+        {
+            return Ok(false);
+        }
+
+        let active_features_tip = self.features_tip.read()?;
+        if scheduled_features_tip > active_features_tip {
+            self.features_tip.write(scheduled_features_tip)?;
+        }
+
+        self.scheduled_features_tip.write(0)?;
+        self.scheduled_activation_epoch.write(0)?;
+
+        Ok(scheduled_features_tip > active_features_tip)
+    }
 }

@@ -31,7 +31,7 @@ use tempo_contracts::precompiles::{
     SIGNATURE_VERIFIER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 use tempo_primitives::{
-    SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
+    SubBlock, SubBlockMetadata, TempoConsensusContext, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
@@ -146,6 +146,7 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     section: BlockSection,
     seen_subblocks: Vec<(PartialValidatorKey, Vec<TempoTxEnvelope>)>,
     validator_set: Option<Vec<B256>>,
+    consensus_context: Option<TempoConsensusContext>,
     shared_gas_limit: u64,
     subblock_fee_recipients: HashMap<PartialValidatorKey, Address>,
 
@@ -167,6 +168,7 @@ where
         Self {
             incentive_gas_used: 0,
             validator_set: ctx.validator_set,
+            consensus_context: ctx.consensus_context,
             non_payment_gas_left: ctx.general_gas_limit,
             non_shared_gas_left: evm.block().gas_limit.saturating_sub(ctx.shared_gas_limit),
             shared_gas_limit: ctx.shared_gas_limit,
@@ -206,6 +208,21 @@ where
             let state = EvmState::from_iter([(address, account)]);
             self.inner.evm.db_mut().commit(state);
         }
+        Ok(())
+    }
+
+    /// Activates a scheduled feature tip once the consensus epoch reaches the target epoch.
+    fn activate_scheduled_features_tip(&mut self) -> Result<(), BlockExecutionError> {
+        let Some(consensus_context) = self.consensus_context else {
+            return Ok(());
+        };
+
+        tempo_revm::activate_scheduled_features_tip(
+            self.evm_mut().ctx_mut(),
+            consensus_context.epoch,
+        )
+        .map_err(BlockExecutionError::other)?;
+
         Ok(())
     }
 
@@ -495,6 +512,7 @@ where
             self.deploy_precompile_at_boundary(RECEIVE_POLICY_GUARD_ADDRESS)?;
             // TODO(TIP-1063): update this gate to T7 before merging.
             self.deploy_precompile_at_boundary(FEATURE_REGISTRY_ADDRESS)?;
+            self.activate_scheduled_features_tip()?;
         }
 
         Ok(())
@@ -692,7 +710,7 @@ mod tests {
     use super::*;
     use crate::test_utils::{TestExecutorBuilder, test_chainspec, test_evm};
     use alloy_consensus::{Signed, TxLegacy};
-    use alloy_evm::{block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
+    use alloy_evm::{EvmInternals, block::BlockExecutor, eth::receipt_builder::ReceiptBuilder};
     use alloy_primitives::{Bytes, Log, Signature, TxKind, bytes::BytesMut};
     use alloy_rlp::Encodable;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
@@ -700,11 +718,16 @@ mod tests {
     use reth_revm::{State, state::AccountInfo};
     use revm::{
         context::result::{ExecutionResult, ResultGas},
-        database::EmptyDB,
+        database::{EmptyDB, states::plain_account::PlainStorage},
     };
     use std::sync::{Arc, Mutex};
     use tempo_chainspec::spec::DEV;
     use tempo_contracts::precompiles::PATH_USD_ADDRESS;
+    use tempo_precompiles::{
+        error::Result as PrecompileResult,
+        feature_registry::FeatureRegistry,
+        storage::{StorageCtx, evm::EvmPrecompileStorageProvider},
+    };
     use tempo_primitives::{
         SubBlockMetadata, TempoSignature, TempoTransaction, TempoTxType,
         subblock::{SubBlockVersion, TEMPO_SUBBLOCK_NONCE_KEY_PREFIX},
@@ -736,6 +759,52 @@ mod tests {
             input: Bytes::new(),
         };
         TempoTxEnvelope::Legacy(Signed::new_unhashed(tx, Signature::test_signature()))
+    }
+
+    fn with_feature_registry<DB, I, R>(
+        executor: &mut TempoBlockExecutor<'_, DB, I>,
+        f: impl FnOnce(&mut FeatureRegistry) -> PrecompileResult<R>,
+    ) -> PrecompileResult<R>
+    where
+        DB: StateDB,
+        I: Inspector<TempoContext<DB>>,
+    {
+        let ctx = executor.evm_mut().ctx_mut();
+        let internals = EvmInternals::new(&mut ctx.journaled_state, &ctx.block, &ctx.cfg, &ctx.tx);
+        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, &ctx.cfg);
+
+        StorageCtx::enter(&mut provider, || {
+            let mut registry = FeatureRegistry::new();
+            f(&mut registry)
+        })
+    }
+
+    fn packed_feature_registry_tips(
+        features_tip: u64,
+        scheduled_features_tip: u64,
+        scheduled_activation_epoch: u64,
+    ) -> U256 {
+        // FeatureRegistry stores the three u64 cursor fields packed into slot zero.
+        U256::from(features_tip)
+            | (U256::from(scheduled_features_tip) << 64)
+            | (U256::from(scheduled_activation_epoch) << 128)
+    }
+
+    fn feature_registry_storage(
+        features_tip: u64,
+        scheduled_features_tip: u64,
+        scheduled_activation_epoch: u64,
+    ) -> PlainStorage {
+        let mut storage = PlainStorage::default();
+        storage.insert(
+            U256::ZERO,
+            packed_feature_registry_tips(
+                features_tip,
+                scheduled_features_tip,
+                scheduled_activation_epoch,
+            ),
+        );
+        storage
     }
 
     #[test]
@@ -1680,6 +1749,66 @@ mod tests {
         let acc = db.load_cache_account(RECEIVE_POLICY_GUARD_ADDRESS).unwrap();
         let info = acc.account_info().unwrap();
         assert!(!info.is_empty_code_hash());
+    }
+
+    #[test]
+    fn test_apply_pre_execution_activates_scheduled_features_tip_at_epoch() {
+        // Dev chainspec has t6Time: 0, so T6 is active at any timestamp.
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        db.insert_account_with_storage(
+            FEATURE_REGISTRY_ADDRESS,
+            AccountInfo::default(),
+            feature_registry_storage(7, 13, 21),
+        );
+
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_consensus_epoch(21)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        with_feature_registry(&mut executor, |registry| {
+            assert_eq!(registry.features_tip()?, 13);
+
+            let scheduled = registry.scheduled_features_tip()?;
+            assert_eq!(scheduled.featuresTip, 0);
+            assert_eq!(scheduled.activationEpoch, 0);
+
+            Ok(())
+        })
+        .unwrap();
+    }
+
+    #[test]
+    fn test_apply_pre_execution_waits_for_scheduled_features_tip_epoch() {
+        // Dev chainspec has t6Time: 0, so T6 is active at any timestamp.
+        let chainspec = Arc::new(TempoChainSpec::from_genesis(DEV.genesis().clone()));
+        let mut db = State::builder().with_bundle_update().build();
+        db.insert_account_with_storage(
+            FEATURE_REGISTRY_ADDRESS,
+            AccountInfo::default(),
+            feature_registry_storage(7, 13, 21),
+        );
+
+        let mut executor = TestExecutorBuilder::default()
+            .with_parent_beacon_block_root(B256::ZERO)
+            .with_consensus_epoch(20)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        with_feature_registry(&mut executor, |registry| {
+            assert_eq!(registry.features_tip()?, 7);
+
+            let scheduled = registry.scheduled_features_tip()?;
+            assert_eq!(scheduled.featuresTip, 13);
+            assert_eq!(scheduled.activationEpoch, 21);
+
+            Ok(())
+        })
+        .unwrap();
     }
 
     #[test]
