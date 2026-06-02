@@ -3,13 +3,15 @@
 //! The builder can stop transaction execution, but it still has to finish
 //! non-interruptible finalization work like state hashing, state root updates,
 //! block assembly, and marshal persistence. These helpers learn the relation
-//! between tx execution cutoff time, total replayable build work, and the
-//! size-dependent cost of persisting large blocks through consensus.
+//! between tx execution cutoff time, total replayable build work, validator
+//! validation feedback, and the size-dependent cost of persisting large blocks
+//! through consensus.
 //!
 //! The decision model is:
-//! `leader_idle + 2 * predicted_replayable_work + 2 * marshal_persist >= budget`.
-//! Idle waiting only happens on the proposer, while replayable work and marshal
-//! persistence happen on both proposer and validators.
+//! `leader_idle + predicted_builder_work + predicted_validator_work + 2 * marshal_persist >= budget`.
+//! Idle waiting only happens on the proposer. Builder work is projected from the
+//! current build, while validator work uses feedback from previously validated
+//! blocks when available and otherwise falls back to the builder projection.
 
 use std::time::Duration;
 
@@ -54,24 +56,29 @@ fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
 /// replayed by validators and therefore counts once.
 /// `budget` is the remaining consensus payload build budget. `block_size_bytes`
 /// is the current encoded-size estimate used for marshal persistence.
+/// `validator_validation` is an estimate of validator-side replay work from
+/// previously validated blocks. If absent, the conservative builder-work
+/// projection is reused for the validator side.
 ///
 /// The budget is not split into fixed leader/validator buckets. Instead, we
-/// charge proposer idle once, projected replayable work once for the proposer
-/// and once for validators, and marshal persistence once for each side.
+/// charge proposer idle once, projected builder work once, learned validator
+/// work once, and marshal persistence once for each side.
 pub(crate) fn payload_budget_exhausted(
     elapsed: Duration,
     idle_elapsed: Duration,
     multiplier: u64,
     budget: Duration,
     marshal_persist: MarshalPersistEstimator,
+    validator_validation: Option<Duration>,
     block_size_bytes: usize,
 ) -> bool {
     let work_elapsed = elapsed.saturating_sub(idle_elapsed);
-    let predicted_work = scaled_duration(work_elapsed, multiplier);
+    let predicted_builder_work = scaled_duration(work_elapsed, multiplier);
+    let predicted_validator_work = validator_validation.unwrap_or(predicted_builder_work);
     let marshal_persist = marshal_persist.estimate(block_size_bytes);
     idle_elapsed
-        .saturating_add(predicted_work)
-        .saturating_add(predicted_work)
+        .saturating_add(predicted_builder_work)
+        .saturating_add(predicted_validator_work)
         .saturating_add(marshal_persist)
         .saturating_add(marshal_persist)
         >= budget
@@ -136,6 +143,7 @@ mod tests {
             1_350_000,
             Duration::from_millis(270),
             MarshalPersistEstimator::default(),
+            None,
             0
         ));
         assert!(!payload_budget_exhausted(
@@ -144,6 +152,7 @@ mod tests {
             1_350_000,
             Duration::from_millis(271),
             MarshalPersistEstimator::default(),
+            None,
             0
         ));
         assert!(payload_budget_exhausted(
@@ -152,6 +161,7 @@ mod tests {
             1_350_000,
             Duration::from_millis(520),
             MarshalPersistEstimator::default(),
+            None,
             0
         ));
         assert!(!payload_budget_exhausted(
@@ -160,6 +170,31 @@ mod tests {
             1_350_000,
             Duration::from_millis(521),
             MarshalPersistEstimator::default(),
+            None,
+            0
+        ));
+    }
+
+    #[test]
+    fn payload_budget_uses_validator_feedback_when_available() {
+        let validator_validation = Some(Duration::from_millis(80));
+
+        assert!(payload_budget_exhausted(
+            Duration::from_millis(100),
+            Duration::ZERO,
+            1_350_000,
+            Duration::from_millis(215),
+            MarshalPersistEstimator::default(),
+            validator_validation,
+            0
+        ));
+        assert!(!payload_budget_exhausted(
+            Duration::from_millis(100),
+            Duration::ZERO,
+            1_350_000,
+            Duration::from_millis(216),
+            MarshalPersistEstimator::default(),
+            validator_validation,
             0
         ));
     }
@@ -174,6 +209,7 @@ mod tests {
             1_350_000,
             Duration::from_millis(300),
             marshal_persist,
+            None,
             15_000
         ));
         assert!(!payload_budget_exhausted(
@@ -182,6 +218,7 @@ mod tests {
             1_350_000,
             Duration::from_millis(300),
             marshal_persist,
+            None,
             14_999
         ));
     }

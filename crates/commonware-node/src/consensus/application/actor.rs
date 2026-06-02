@@ -48,6 +48,7 @@ use tempo_telemetry_util::display_duration;
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
 use tempo_payload_types::{
     TempoPayloadAttributes, marshal_persist_estimate, observe_marshal_persist,
+    observe_validator_validation,
 };
 use tempo_primitives::TempoConsensusContext;
 use tracing::{Level, debug, info, info_span, instrument, warn};
@@ -1013,13 +1014,17 @@ async fn verify_block<TContext: Pacer>(
         block_access_list,
         validator_set,
     };
+    let validation_start = Instant::now();
     let payload_status = engine
         .new_payload(execution_data)
         .pace(&context, Duration::from_millis(50))
         .await
         .wrap_err("failed sending `new payload` message to execution layer to validate block")?;
     match payload_status.status {
-        PayloadStatusEnum::Valid => Ok(true),
+        PayloadStatusEnum::Valid => {
+            observe_validator_validation(validation_start.elapsed());
+            Ok(true)
+        }
         PayloadStatusEnum::Invalid { validation_error } => {
             info!(
                 validation_error,
