@@ -69,6 +69,7 @@ use crate::{
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
     gas_params::SSTORE_SET_COST,
+    tip1060,
 };
 
 /// Additional gas for P256 signature verification
@@ -1540,6 +1541,8 @@ where
         evm: &mut Self::Evm,
         exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
     ) -> Result<(), Self::Error> {
+        // TIP-1060: flush transient storage gas-token refunds into persistent storage.
+        tip1060::apply_refund(evm)?;
         // Call collectFeePostTx on TipFeeManager precompile
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
