@@ -24,7 +24,7 @@ pub const EXPIRING_NONCE_MAX_EXPIRY_SECS: u64 = 30;
 pub const EXPIRING_NONCE_BUCKET_COUNT: u32 = 32;
 
 /// Number of replay cells in each time bucket.
-pub const EXPIRING_NONCE_BUCKET_CAPACITY: u32 = 32_768;
+pub const EXPIRING_NONCE_BUCKET_CAPACITY: u32 = 16_777_216;
 
 /// Maximum number of replay cells checked on one transaction's deterministic probe path.
 pub const EXPIRING_NONCE_MAX_PROBES: usize = 32;
@@ -167,7 +167,7 @@ impl NonceManager {
     ) -> Result<()> {
         let (cell_id, cell) =
             self.checked_expiring_nonce_cell(expiring_nonce_hash, valid_before)?;
-        self.write_expiring_nonce_cell(cell_id, cell)
+        self.expiring_nonce_cells[cell_id].write(cell)
     }
 
     /// Returns the replay-cell write for a valid expiring nonce transaction.
@@ -176,39 +176,18 @@ impl NonceManager {
         expiring_nonce_hash: B256,
         valid_before: u64,
     ) -> Result<(u32, U256)> {
-        self.checked_expiring_nonce_cell_with_pending(expiring_nonce_hash, valid_before, |_| None)
-    }
-
-    /// Returns the replay-cell write for a valid expiring nonce transaction,
-    /// treating `pending_cell` as a block-local overlay of replay cells that
-    /// have been validated but not yet written to state.
-    pub fn checked_expiring_nonce_cell_with_pending<F>(
-        &self,
-        expiring_nonce_hash: B256,
-        valid_before: u64,
-        pending_cell: F,
-    ) -> Result<(u32, U256)>
-    where
-        F: Fn(u32) -> Option<U256>,
-    {
         let (cell_id, fingerprint) =
-            self.expiring_nonce_insert_cell(expiring_nonce_hash, valid_before, pending_cell)?;
+            self.expiring_nonce_insert_cell(expiring_nonce_hash, valid_before)?;
         Ok((
             cell_id,
             Self::pack_expiring_nonce_cell(valid_before, fingerprint),
         ))
     }
 
-    /// Writes a previously validated expiring nonce replay cell.
-    pub fn write_expiring_nonce_cell(&mut self, cell_id: u32, cell: U256) -> Result<()> {
-        self.expiring_nonce_cells[cell_id].write(cell)
-    }
-
     fn expiring_nonce_insert_cell(
         &self,
         expiring_nonce_hash: B256,
         valid_before: u64,
-        pending_cell: impl Fn(u32) -> Option<U256>,
     ) -> Result<(u32, U256)> {
         let now: u64 = self.storage.timestamp().saturating_to();
 
@@ -222,10 +201,7 @@ impl NonceManager {
 
         for probe in 0..EXPIRING_NONCE_MAX_PROBES {
             let cell_id = Self::expiring_nonce_cell_id(expiring_nonce_hash, valid_before, probe);
-            let word = match pending_cell(cell_id) {
-                Some(word) => word,
-                None => self.expiring_nonce_cells[cell_id].read()?,
-            };
+            let word = self.expiring_nonce_cells[cell_id].read()?;
             let (stored_v, stored_fingerprint) = Self::unpack_expiring_nonce_cell(word);
 
             if stored_v != valid_before {
@@ -342,6 +318,22 @@ mod tests {
 
     use super::*;
     use alloy::primitives::address;
+    use std::collections::HashMap;
+
+    const COLLISION_SEARCH_LIMIT: u64 = 30_000;
+
+    fn expiring_nonce_hash_pair_with_same_first_cell(valid_before: u64) -> (B256, B256) {
+        let mut seen: HashMap<U256, B256> = HashMap::default();
+        for i in 0..COLLISION_SEARCH_LIMIT {
+            let hash = keccak256(i.to_be_bytes());
+            let slot = NonceManager::expiring_nonce_first_cell_slot(hash, valid_before);
+            if let Some(first_hash) = seen.insert(slot, hash) {
+                return (first_hash, hash);
+            }
+        }
+
+        panic!("test setup must find a first-cell collision in {COLLISION_SEARCH_LIMIT} hashes");
+    }
 
     #[test]
     fn test_get_nonce_returns_zero_for_new_key() -> eyre::Result<()> {
@@ -516,48 +508,47 @@ mod tests {
     }
 
     #[test]
-    fn test_pending_overlay_resolves_same_block_cell_collision() -> eyre::Result<()> {
+    fn test_expiring_nonce_write_resolves_same_block_cell_collision() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         let now = 1000u64;
         storage.set_timestamp(U256::from(now));
         StorageCtx::enter(&mut storage, || {
-            let mgr = NonceManager::new();
+            let mut mgr = NonceManager::new();
 
             let valid_before = now + 20;
-            let first_hash = keccak256(0u64.to_be_bytes());
+            let (first_hash, second_hash) =
+                expiring_nonce_hash_pair_with_same_first_cell(valid_before);
             let (first_cell_id, first_cell) =
                 mgr.checked_expiring_nonce_cell(first_hash, valid_before)?;
 
-            let (second_hash, second_cell_without_overlay) = (1u64..1_000_000)
-                .map(|i| keccak256(i.to_be_bytes()))
-                .find_map(|hash| {
-                    let (cell_id, _) = mgr.checked_expiring_nonce_cell(hash, valid_before).ok()?;
-                    (cell_id == first_cell_id
-                        && NonceManager::expiring_nonce_fingerprint(hash)
-                            != NonceManager::expiring_nonce_fingerprint(first_hash))
-                    .then_some((hash, cell_id))
-                })
-                .expect("test setup must find two hashes with the same first cell");
+            assert_ne!(
+                NonceManager::expiring_nonce_fingerprint(second_hash),
+                NonceManager::expiring_nonce_fingerprint(first_hash)
+            );
+
+            let (second_cell_without_overlay, _) =
+                mgr.checked_expiring_nonce_cell(second_hash, valid_before)?;
             assert_eq!(second_cell_without_overlay, first_cell_id);
 
-            let replay_result =
-                mgr.checked_expiring_nonce_cell_with_pending(first_hash, valid_before, |cell_id| {
-                    (cell_id == first_cell_id).then_some(first_cell)
-                });
+            mgr.check_and_mark_expiring_nonce(first_hash, valid_before)?;
+
+            let replay_result = mgr.check_and_mark_expiring_nonce(first_hash, valid_before);
             assert_eq!(
                 replay_result.unwrap_err(),
                 TempoPrecompileError::NonceError(NonceError::expiring_nonce_replay())
             );
 
-            let (second_cell_with_overlay, _) = mgr.checked_expiring_nonce_cell_with_pending(
-                second_hash,
-                valid_before,
-                |cell_id| (cell_id == first_cell_id).then_some(first_cell),
-            )?;
+            let (second_cell_with_state, _) =
+                mgr.checked_expiring_nonce_cell(second_hash, valid_before)?;
             assert_ne!(
-                second_cell_with_overlay, first_cell_id,
-                "pending in-block cells must be treated as occupied"
+                second_cell_with_state, first_cell_id,
+                "written in-block cells must be treated as occupied"
             );
+
+            mgr.check_and_mark_expiring_nonce(second_hash, valid_before)?;
+            assert!(mgr.is_expiring_nonce_seen_at(first_hash, valid_before)?);
+            assert!(mgr.is_expiring_nonce_seen_at(second_hash, valid_before)?);
+            assert_eq!(mgr.expiring_nonce_cells[first_cell_id].read()?, first_cell);
 
             Ok(())
         })
