@@ -206,14 +206,11 @@ def ensure-bloat-space [bloat: int] {
 }
 
 def e2e-bloat-gib-to-mib [bloat: int] {
-    if $bloat == 0 {
-        return 0
-    }
     if $bloat in [1 10 100] {
         return ($bloat * 1000)
     }
 
-    print "Error: --bloat must be one of: 0, 1, 10, 100"
+    print "Error: --bloat must be one of: 1, 10, 100"
     exit 1
 }
 
@@ -305,36 +302,6 @@ def e2e-snapshot-state-hardfork [datadir: string] {
     normalize-hardfork $state_hardfork
 }
 
-def e2e-file-fingerprint [path: string] {
-    open --raw $path | hash sha256
-}
-
-def e2e-snapshot-state-genesis-fingerprint [datadir: string] {
-    let marker = (read-bench-marker $datadir)
-    if $marker != null {
-        let marker_genesis = ($marker | get -o genesis_fingerprint | default "")
-        if $marker_genesis != "" {
-            return $marker_genesis
-        }
-    }
-
-    let genesis_path = $"($datadir)/($BENCH_META_SUBDIR)/genesis.json"
-    if ($genesis_path | path exists) {
-        return (e2e-file-fingerprint $genesis_path)
-    }
-
-    ""
-}
-
-def e2e-snapshot-state-genesis-tool-fingerprint [datadir: string] {
-    let marker = (read-bench-marker $datadir)
-    if $marker == null {
-        return ""
-    }
-
-    $marker | get -o genesis_tool_fingerprint | default ""
-}
-
 def normalize-gas-limit [gas_limit: string] {
     if $gas_limit == "" {
         return ""
@@ -374,8 +341,6 @@ def e2e-update-snapshot-genesis-marker [
     datadir: string,
     hardfork: string,
     gas_limit: string,
-    genesis_fingerprint: string,
-    genesis_tool_fingerprint: string,
 ] {
     let marker_path = $"($datadir)/($BENCH_META_SUBDIR)/marker.json"
     mut marker = (open $marker_path)
@@ -386,8 +351,6 @@ def e2e-update-snapshot-genesis-marker [
     if $gas_limit != "" {
         $marker = ($marker | upsert gas_limit (normalize-gas-limit $gas_limit))
     }
-    $marker = ($marker | upsert genesis_fingerprint $genesis_fingerprint)
-    $marker = ($marker | upsert genesis_tool_fingerprint $genesis_tool_fingerprint)
     $marker | to json | save -f $marker_path
 }
 
@@ -433,20 +396,11 @@ def e2e-regenesis [
 ] {
     let target_hardfork = if $hardfork != "" { normalize-hardfork $hardfork } else { "" }
     let target_gas_limit = if $gas_limit != "" { normalize-gas-limit $gas_limit } else { "" }
-    let target_genesis = $"($datadir)/($BENCH_META_SUBDIR)/regenesis-target.json"
-    e2e-synthesize-genesis $genesis $target_genesis $target_hardfork $target_gas_limit
-
-    let target_genesis_fingerprint = (e2e-file-fingerprint $target_genesis)
-    let target_genesis_tool_fingerprint = (e2e-file-fingerprint $tempo_bin)
     let current_hardfork = (e2e-snapshot-state-hardfork $datadir)
     let current_gas_limit = (e2e-snapshot-state-gas-limit $datadir)
-    let current_genesis_fingerprint = (e2e-snapshot-state-genesis-fingerprint $datadir)
-    let current_genesis_tool_fingerprint = (e2e-snapshot-state-genesis-tool-fingerprint $datadir)
     let hardfork_matches = $target_hardfork == "" or $current_hardfork == $target_hardfork
     let gas_limit_matches = $target_gas_limit == "" or $current_gas_limit == $target_gas_limit
-    let genesis_matches = $current_genesis_fingerprint == $target_genesis_fingerprint
-    let genesis_tool_matches = $current_genesis_tool_fingerprint == $target_genesis_tool_fingerprint
-    if $hardfork_matches and $gas_limit_matches and $genesis_matches and $genesis_tool_matches {
+    if $hardfork_matches and $gas_limit_matches {
         mut matches = []
         if $target_hardfork != "" {
             $matches = ($matches | append $"state_hardfork=($target_hardfork)")
@@ -454,12 +408,12 @@ def e2e-regenesis [
         if $target_gas_limit != "" {
             $matches = ($matches | append $"gas_limit=($target_gas_limit)")
         }
-        $matches = ($matches | append "genesis")
-        $matches = ($matches | append "genesis_tool")
         print $"Skipping tempo regenesis for ($datadir); marker already matches (($matches | str join ', '))"
-        rm $target_genesis
         return
     }
+
+    let target_genesis = $"($datadir)/($BENCH_META_SUBDIR)/regenesis-target.json"
+    e2e-synthesize-genesis $genesis $target_genesis $target_hardfork $target_gas_limit
 
     mut changes = []
     if not $hardfork_matches {
@@ -467,12 +421,6 @@ def e2e-regenesis [
     }
     if not $gas_limit_matches {
         $changes = ($changes | append $"gas_limit=($current_gas_limit) -> ($target_gas_limit)")
-    }
-    if not $genesis_matches {
-        $changes = ($changes | append "genesis=changed")
-    }
-    if not $genesis_tool_matches {
-        $changes = ($changes | append "genesis_tool=changed")
     }
     print $"Running tempo regenesis for ($datadir): ($changes | str join ', ') with ($target_genesis)..."
     let result = (run-external $tempo_bin "regenesis" "--chain" $target_genesis "--datadir" $datadir | complete)
@@ -482,8 +430,8 @@ def e2e-regenesis [
         print $"Error: tempo regenesis failed for ($datadir) with exit code ($result.exit_code)"
         exit $result.exit_code
     }
-    cp $target_genesis $"($datadir)/($BENCH_META_SUBDIR)/genesis.json"
-    e2e-update-snapshot-genesis-marker $datadir $target_hardfork $target_gas_limit $target_genesis_fingerprint $target_genesis_tool_fingerprint
+    e2e-synthesize-genesis $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $"($datadir)/($BENCH_META_SUBDIR)/genesis.json" $target_hardfork $target_gas_limit
+    e2e-update-snapshot-genesis-marker $datadir $target_hardfork $target_gas_limit
     rm $target_genesis
 }
 
@@ -927,8 +875,10 @@ def run-local-e2e-phase [run: record, ctx: record] {
             exit 1
         }
     }
-    e2e-regenesis $run.tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit
-    e2e-regenesis $run.tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit
+    if $hardfork != "" or $ctx.gas_limit != "" {
+        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.a.datadir $hardfork $ctx.gas_limit
+        e2e-regenesis $ctx.regenesis_tempo $genesis $ctx.b.datadir $hardfork $ctx.gas_limit
+    }
     for role_info in [
         { role: "a", node_dir: $ctx.a.node_dir }
         { role: "b", node_dir: $ctx.b.node_dir }
@@ -1208,7 +1158,7 @@ def "main e2e" [
     --duration: int = 90                                # Duration in seconds
     --accounts: int = 1000                              # Number of accounts
     --max-concurrent-requests: int = 500                # Max concurrent requests
-    --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 0 disables bloat; otherwise 1, 10, or 100
+    --bloat: int = $E2E_DEFAULT_BLOAT                   # State bloat snapshot size in GiB: 1, 10, or 100
     --gas-limit: string = $E2E_GAS_LIMIT                # Builder gas limit
     --force-bloat                                      # Regenerate and promote both local e2e snapshots
     --init-only                                         # Refresh snapshots and exit without running benchmark phases
@@ -1371,8 +1321,6 @@ def "main e2e" [
             cargo run -p tempo-xtask --profile $profile -- generate-state-bloat --size $bloat_mib --out $bloat_file ...$token_args
         }
 
-        let snapshot_genesis_fingerprint = (e2e-file-fingerprint $generated_genesis)
-        let snapshot_genesis_tool_fingerprint = (e2e-file-fingerprint $tempo_bin)
         let marker = {
             bloat_mib: $bloat_mib
             bloat: $bloat
@@ -1383,8 +1331,6 @@ def "main e2e" [
             dkg_in_genesis: true
             topology: "single-runner"
             state_hardfork: $snapshot_state_hardfork
-            genesis_fingerprint: $snapshot_genesis_fingerprint
-            genesis_tool_fingerprint: $snapshot_genesis_tool_fingerprint
         }
         init-local-e2e-side a $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db $a_identity $"($init_dir)/($a_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $a_db | insert node_dir $a_identity | insert validator_addr $a_validator)
         init-local-e2e-side b $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db $b_identity $"($init_dir)/($b_validator)" $generated_genesis $trusted_peers $bloat_mib $bloat_file $tempo_bin ($marker | insert bench_datadir $b_db | insert node_dir $b_identity | insert validator_addr $b_validator)
@@ -1430,7 +1376,9 @@ def "main e2e" [
     mkdir $BENCH_WORKTREES_DIR
     let baseline_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-baseline"
     let feature_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-feature"
-    for wt in [$baseline_wt $feature_wt] {
+    let regenesis_wt = $"($BENCH_WORKTREES_DIR)/e2e-local-regenesis-main"
+    let regenesis_needed = $hardfork_mode or $gas_limit != ""
+    for wt in [$baseline_wt $feature_wt $regenesis_wt] {
         if ($wt | path exists) {
             print $"Removing stale local e2e worktree: ($wt)"
             try { git worktree remove --force $wt } catch { rm -rf $wt }
@@ -1438,19 +1386,31 @@ def "main e2e" [
     }
     git worktree add $baseline_wt $baseline
     git worktree add $feature_wt $feature
+    if $regenesis_needed {
+        print "Fetching latest origin/main for tempo regenesis..."
+        git fetch origin main
+        git worktree add $regenesis_wt origin/main
+    }
 
     let global_build_features = (merge-e2e-features $DEFAULT_FEATURES $features)
     let baseline_build_features = if $baseline_features != "" { merge-e2e-features $global_build_features $baseline_features } else { $global_build_features }
     let feature_build_features = if $feature_features != "" { merge-e2e-features $global_build_features $feature_features } else { $global_build_features }
     let baseline_tbc = (tracy-build-config $baseline_build_features $tracy)
     let feature_tbc = (tracy-build-config $feature_build_features $tracy)
+    let regenesis_build_features = $global_build_features
+    let regenesis_tbc = (tracy-build-config $regenesis_build_features $tracy)
     let effective_no_cache = $no_cache or ($tracy != "off")
-    # Build benchmark binaries in parallel with independent target/ directories,
-    # so cargo invocations don't collide.
+    # Build benchmark binaries in parallel. Regenesis uses latest origin/main so
+    # snapshot rewriting is independent of either side being benchmarked.
+    # with independent target/ directories, so cargo invocations don't collide.
     mut builds = [
         { wt: $baseline_wt, ref_name: $baseline, sha: $baseline, label: "baseline", features: $baseline_tbc.features, extra_rustflags: $baseline_tbc.extra_rustflags, bench_features: $baseline_build_features }
         { wt: $feature_wt, ref_name: $feature, sha: $feature, label: "feature", features: $feature_tbc.features, extra_rustflags: $feature_tbc.extra_rustflags, bench_features: $feature_build_features }
     ]
+    let regenesis_sha = if $regenesis_needed { git rev-parse origin/main | str trim } else { "" }
+    if $regenesis_needed {
+        $builds = ($builds | append { wt: $regenesis_wt, ref_name: "origin/main", sha: $regenesis_sha, label: "regenesis-main", features: $regenesis_tbc.features, extra_rustflags: $regenesis_tbc.extra_rustflags, bench_features: $regenesis_build_features })
+    }
     $builds | par-each { |b|
         if $effective_no_cache {
             build-in-worktree --no-cache --no-default-features=$no_default_features --extra-rustflags $b.extra_rustflags --bench-features $b.bench_features $b.wt $b.ref_name $profile $b.features $b.sha
@@ -1460,6 +1420,7 @@ def "main e2e" [
     } | ignore
     let baseline_tempo = (worktree-bin $baseline_wt $profile "tempo")
     let feature_tempo = (worktree-bin $feature_wt $profile "tempo")
+    let regenesis_tempo = if $regenesis_needed { worktree-bin $regenesis_wt $profile "tempo" } else { "" }
     let baseline_arg_filter = (supported-node-arg-filter $baseline_tempo $E2E_LOCAL_RETH_ARGS)
     let feature_arg_filter = (supported-node-arg-filter $feature_tempo $E2E_LOCAL_RETH_ARGS)
     let removed_arg_config = $"(format-removed-node-arg-config 'baseline' $baseline_arg_filter.removed)(format-removed-node-arg-config 'feature' $feature_arg_filter.removed)"
@@ -1530,6 +1491,7 @@ def "main e2e" [
         gas_limit: $gas_limit
         baseline_local_reth_args: $baseline_arg_filter.supported
         feature_local_reth_args: $feature_arg_filter.supported
+        regenesis_tempo: $regenesis_tempo
         tracing_otlp: $tracing_otlp
     }
 
@@ -1616,6 +1578,7 @@ def "main e2e" [
 
     try { git worktree remove --force $baseline_wt } catch { }
     try { git worktree remove --force $feature_wt } catch { }
+    try { git worktree remove --force $regenesis_wt } catch { }
     cleanup-local-e2e-processes
     bench-restore-at $E2E_A_STATE_PATH $E2E_A_MOUNT $a_db
     bench-restore-at $E2E_B_STATE_PATH $E2E_B_MOUNT $b_db

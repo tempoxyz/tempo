@@ -14,7 +14,7 @@ use alloy::{
 };
 use alloy_evm::{
     EvmFactory as _,
-    revm::{context::JournalTr, inspector::JournalExt as _},
+    revm::inspector::JournalExt as _,
 };
 use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256, Keccak256, U256};

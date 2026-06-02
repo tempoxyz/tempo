@@ -35,7 +35,7 @@ use reth_trie::{
 };
 use revm::{
     DatabaseCommit,
-    context::{BlockEnv, CfgEnv, JournalTr},
+    context::{BlockEnv, CfgEnv},
     database::{CacheDB, DbAccount, EmptyDB},
     inspector::JournalExt as _,
 };
@@ -144,14 +144,15 @@ struct ExecutionFixture {
     metrics: CachedStateMetrics,
 }
 
-type FixedCacheDb = State<StateProviderDatabase<CachedStateProvider<InMemoryStateProvider>>>;
+type FixedCacheDb<const PREWARM: bool> =
+    State<StateProviderDatabase<CachedStateProvider<InMemoryStateProvider, PREWARM>>>;
 
 impl ExecutionFixture {
-    fn state_db(&self) -> FixedCacheDb {
+    fn state_db(&self) -> FixedCacheDb<false> {
         let provider = CachedStateProvider::new(
             self.provider.clone(),
             self.cache.clone(),
-            Some(self.metrics.clone()),
+            self.metrics.clone(),
         );
         State::builder()
             .with_database(StateProviderDatabase::new(provider))
@@ -159,8 +160,12 @@ impl ExecutionFixture {
             .build()
     }
 
-    fn prewarm_state_db(&self) -> FixedCacheDb {
-        let provider = CachedStateProvider::new_prewarm(self.provider.clone(), self.cache.clone());
+    fn prewarm_state_db(&self) -> FixedCacheDb<true> {
+        let provider = CachedStateProvider::new_prewarm(
+            self.provider.clone(),
+            self.cache.clone(),
+            self.metrics.clone(),
+        );
         State::builder()
             .with_database(StateProviderDatabase::new(provider))
             .with_bundle_update()
