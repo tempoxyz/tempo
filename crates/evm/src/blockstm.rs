@@ -626,6 +626,7 @@ where
 const USER_REWARD_INFO_SLOTS: u64 = 3;
 const U64_MASK: U256 = U256::from_limbs([u64::MAX, 0, 0, 0]);
 const REWARD_FLAG_SHIFT_BITS: usize = 128;
+const REWARD_FLAG_UNINITIALIZED: u8 = 0;
 const REWARD_FLAG_OPTED_OUT: u8 = 1;
 const REWARD_FLAG_OPTED_IN: u8 = 2;
 
@@ -1244,7 +1245,8 @@ fn meter_tip20_transfer_action_gas(
     }
 
     let from_flag = meter_tip20_t6_reward_update(
-        from_key,
+        action.token,
+        action.from,
         execution,
         base_state,
         cfg,
@@ -1253,7 +1255,8 @@ fn meter_tip20_transfer_action_gas(
         present_values,
     )?;
     let to_flag = meter_tip20_t6_reward_update(
-        to_key,
+        action.token,
+        action.to,
         execution,
         base_state,
         cfg,
@@ -1333,7 +1336,8 @@ fn meter_tip20_transfer_action_gas(
 }
 
 fn meter_tip20_t6_reward_update(
-    balance_key: StorageKey,
+    token: Address,
+    holder: Address,
     execution: &Tip20BlockstmTxExecution,
     base_state: &Tip20BlockstmBaseState,
     cfg: &CfgEnv<TempoHardfork>,
@@ -1345,6 +1349,7 @@ fn meter_tip20_t6_reward_update(
         return Err(Tip20TransferBlockstmFallback::RewardActive);
     }
 
+    let balance_key = balance_key(token, holder);
     meter.sload(balance_key, cfg.gas_params())?;
     let balance = decode_balance_state(synthetic_present_value(
         present_values,
@@ -1353,11 +1358,29 @@ fn meter_tip20_t6_reward_update(
         base_state,
         balance_key,
     ))?;
-    if balance.reward_flag != REWARD_FLAG_OPTED_OUT {
-        return Err(Tip20TransferBlockstmFallback::RewardActive);
-    }
 
-    Ok(REWARD_FLAG_OPTED_OUT)
+    match balance.reward_flag {
+        REWARD_FLAG_OPTED_OUT => Ok(REWARD_FLAG_OPTED_OUT),
+        REWARD_FLAG_UNINITIALIZED => {
+            let reward_recipient_key = StorageKey {
+                address: token,
+                slot: holder.mapping_slot(tip20_slots::USER_REWARD_INFO),
+            };
+            meter.sload(reward_recipient_key, cfg.gas_params())?;
+            let reward_recipient = synthetic_present_value(
+                present_values,
+                original_values,
+                execution,
+                base_state,
+                reward_recipient_key,
+            );
+            if reward_recipient != U256::ZERO {
+                return Err(Tip20TransferBlockstmFallback::RewardActive);
+            }
+            Ok(REWARD_FLAG_OPTED_OUT)
+        }
+        _ => Err(Tip20TransferBlockstmFallback::RewardActive),
+    }
 }
 
 fn synthetic_initial_gas(
@@ -1992,23 +2015,39 @@ mod tests {
         AccountInfo::default().with_code(Bytecode::new_legacy([0xef].into()))
     }
 
-    fn path_usd_state_with_balances(
+    fn path_usd_state_with_balances_and_reward_flag(
         balances: impl IntoIterator<Item = (Address, U256)>,
+        reward_flag: u8,
     ) -> State<EmptyDB> {
+        let balances = balances.into_iter().collect::<Vec<_>>();
         let mut provider = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         StorageCtx::enter(&mut provider, || {
             let mut setup = TIP20Setup::path_usd(SENDER)
                 .with_issuer(SENDER)
                 .clear_events();
-            for (account, balance) in balances {
-                setup = setup.with_mint(account, balance);
+            for (account, balance) in &balances {
+                setup = setup.with_mint(*account, *balance);
             }
             setup.apply().expect("pathUSD setup must succeed");
         });
 
+        let balance_slots = balances
+            .into_iter()
+            .map(|(account, balance)| {
+                (
+                    balance_slot(account),
+                    encode_balance(balance, reward_flag, true),
+                )
+            })
+            .collect::<HashMap<_, _>>();
         let mut db = State::builder().with_bundle_update().build();
         let mut storage_by_account: HashMap<Address, PlainStorage> = HashMap::new();
-        for (address, slot, value) in provider.into_storage() {
+        for (address, slot, mut value) in provider.into_storage() {
+            if address == tempo_precompiles::PATH_USD_ADDRESS
+                && let Some(balance) = balance_slots.get(&slot)
+            {
+                value = *balance;
+            }
             storage_by_account
                 .entry(address)
                 .or_default()
@@ -2807,7 +2846,7 @@ mod tests {
     }
 
     #[test]
-    fn blockstm_2d_nonce_gas_matches_normal_execution() {
+    fn blockstm_2d_nonce_gas_matches_normal_execution_for_inactive_rewards() {
         let chainspec = test_chainspec();
         let token = tempo_precompiles::PATH_USD_ADDRESS;
         let batch_len = 4usize;
@@ -2816,16 +2855,6 @@ mod tests {
             .map(|i| Address::from_word(B256::with_last_byte(0xb0 + i as u8)))
             .collect::<Vec<_>>();
 
-        let build_db = || {
-            path_usd_state_with_balances(
-                std::iter::once((SENDER, sender_balance)).chain(
-                    recipients
-                        .iter()
-                        .copied()
-                        .map(|recipient| (recipient, U256::from(100))),
-                ),
-            )
-        };
         let build_executor = |db| {
             TestExecutorBuilder::default()
                 .with_general_gas_limit(1_000_000_000)
@@ -2844,62 +2873,76 @@ mod tests {
             txs.push((recovered, tx_env));
         }
 
-        let mut normal_executor = build_executor(build_db());
-        let mut normal_block_gas = Vec::with_capacity(batch_len);
-        let mut normal_validator_fees = Vec::with_capacity(batch_len);
-        for (idx, (recovered, tx_env)) in txs.iter().enumerate() {
-            let result = normal_executor
-                .execute_transaction_without_commit((tx_env.clone(), recovered))
+        for reward_flag in [REWARD_FLAG_UNINITIALIZED, REWARD_FLAG_OPTED_OUT] {
+            let build_db = || {
+                path_usd_state_with_balances_and_reward_flag(
+                    std::iter::once((SENDER, sender_balance)).chain(
+                        recipients
+                            .iter()
+                            .copied()
+                            .map(|recipient| (recipient, U256::from(100))),
+                    ),
+                    reward_flag,
+                )
+            };
+
+            let mut normal_executor = build_executor(build_db());
+            let mut normal_block_gas = Vec::with_capacity(batch_len);
+            let mut normal_validator_fees = Vec::with_capacity(batch_len);
+            for (idx, (recovered, tx_env)) in txs.iter().enumerate() {
+                let result = normal_executor
+                    .execute_transaction_without_commit((tx_env.clone(), recovered))
+                    .unwrap();
+                assert!(
+                    result.result().result.is_success(),
+                    "normal tx {idx} failed with reward flag {reward_flag}: {:?}",
+                    result.result().result
+                );
+                normal_block_gas.push(result.block_gas_used());
+                normal_validator_fees.push(result.validator_fee());
+                normal_executor.commit_transaction(result);
+            }
+            let normal_cumulative_gas = normal_executor
+                .receipts()
+                .iter()
+                .map(|receipt| receipt.cumulative_gas_used)
+                .collect::<Vec<_>>();
+
+            let mut blockstm_executor = build_executor(build_db());
+            let batch = txs
+                .iter()
+                .map(|(recovered, tx_env)| Tip20TransferBlockstmTx {
+                    tx_env: tx_env.clone(),
+                    recovered,
+                    fee_token: token,
+                })
+                .collect();
+            let mut blockstm_block_gas = Vec::with_capacity(batch_len);
+            let mut blockstm_validator_fees = Vec::with_capacity(batch_len);
+            let stats = blockstm_executor
+                .execute_tip20_transfer_blockstm_batch(batch, token, |_, result| {
+                    blockstm_block_gas.push(result.block_gas_used());
+                    blockstm_validator_fees.push(result.validator_fee());
+                })
                 .unwrap();
-            assert!(
-                result.result().result.is_success(),
-                "normal tx {idx} failed: {:?}",
-                result.result().result
+            let blockstm_cumulative_gas = blockstm_executor
+                .receipts()
+                .iter()
+                .map(|receipt| receipt.cumulative_gas_used)
+                .collect::<Vec<_>>();
+
+            assert_eq!(stats.transaction_count, batch_len);
+            assert_eq!(stats.retry_count, 0);
+            assert_eq!(
+                blockstm_block_gas, normal_block_gas,
+                "per-transaction block gas differs from normal execution with reward flag {reward_flag}"
             );
-            normal_block_gas.push(result.block_gas_used());
-            normal_validator_fees.push(result.validator_fee());
-            normal_executor.commit_transaction(result);
+            assert_eq!(
+                blockstm_cumulative_gas, normal_cumulative_gas,
+                "receipt cumulative gas differs from normal execution with reward flag {reward_flag}"
+            );
+            assert_eq!(blockstm_validator_fees, normal_validator_fees);
         }
-        let normal_cumulative_gas = normal_executor
-            .receipts()
-            .iter()
-            .map(|receipt| receipt.cumulative_gas_used)
-            .collect::<Vec<_>>();
-
-        let mut blockstm_executor = build_executor(build_db());
-        let batch = txs
-            .iter()
-            .map(|(recovered, tx_env)| Tip20TransferBlockstmTx {
-                tx_env: tx_env.clone(),
-                recovered,
-                fee_token: token,
-            })
-            .collect();
-        let mut blockstm_block_gas = Vec::with_capacity(batch_len);
-        let mut blockstm_validator_fees = Vec::with_capacity(batch_len);
-        let stats = blockstm_executor
-            .execute_tip20_transfer_blockstm_batch(batch, token, |_, result| {
-                blockstm_block_gas.push(result.block_gas_used());
-                blockstm_validator_fees.push(result.validator_fee());
-            })
-            .unwrap();
-        let blockstm_cumulative_gas = blockstm_executor
-            .receipts()
-            .iter()
-            .map(|receipt| receipt.cumulative_gas_used)
-            .collect::<Vec<_>>();
-
-        assert_eq!(stats.transaction_count, batch_len);
-        assert_eq!(stats.retry_count, 0);
-        assert_eq!(
-            blockstm_block_gas, normal_block_gas,
-            "per-transaction block gas differs from normal execution"
-        );
-        assert_eq!(
-            blockstm_cumulative_gas, normal_cumulative_gas,
-            "receipt cumulative gas differs from normal execution"
-        );
-        assert_eq!(blockstm_validator_fees, normal_validator_fees);
     }
 
     #[test]
