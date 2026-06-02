@@ -583,10 +583,10 @@ impl TempoTransaction {
         // remaining byte after these fields is usually a signature RLP string; do
         // not consume it unless it is an RLP list.
         let mut key_authorization = None;
-        if let Some(&first) = buf.first() {
-            if first >= 0xc0 {
-                key_authorization = Some(Decodable::decode(buf)?);
-            }
+        if let Some(&first) = buf.first()
+            && first >= 0xc0
+        {
+            key_authorization = Some(Decodable::decode(buf)?);
         }
 
         let tx = Self {
