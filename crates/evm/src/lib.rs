@@ -13,8 +13,7 @@ pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};
 mod blockstm;
 #[cfg(feature = "engine")]
 pub use blockstm::{
-    Tip20TransferBlockstmBatchError, Tip20TransferBlockstmBatchStats,
-    Tip20TransferBlockstmFallback, Tip20TransferBlockstmTx,
+    Tip20TransferBlockstmBatchError, Tip20TransferBlockstmFallback, Tip20TransferBlockstmTx,
 };
 mod context;
 pub use context::{TempoBlockExecutionCtx, TempoNextBlockEnvAttributes};

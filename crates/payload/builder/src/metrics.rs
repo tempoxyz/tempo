@@ -113,8 +113,6 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) blockstm_tip20_duration_seconds: Histogram,
     /// Number of transactions attempted through the BlockSTM TIP-20 transfer fast path.
     pub(crate) blockstm_tip20_transaction_count: Histogram,
-    /// Number of conflict retries observed by the BlockSTM TIP-20 transfer fast path.
-    pub(crate) blockstm_tip20_retry_count: Histogram,
 }
 
 /// Reason the payload builder stopped adding pool transactions to the block.
