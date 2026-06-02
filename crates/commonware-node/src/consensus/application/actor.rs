@@ -1150,7 +1150,8 @@ impl Inner<Init> {
             block.sealed_header().clone(),
             block_access_list,
         ))
-        .with_excluded_pool_transaction_hashes(parent_transaction_hashes);
+        .with_excluded_pool_transaction_hashes(parent_transaction_hashes)
+        .without_executed_block_fast_path();
 
         let payload_id_rx =
             self.execution_node

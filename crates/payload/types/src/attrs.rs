@@ -48,6 +48,9 @@ pub struct TempoPayloadAttributes {
     #[debug(skip)]
     #[serde(skip)]
     excluded_pool_transaction_hashes: Arc<HashSet<B256>>,
+    /// Whether this payload may expose executed block state to the node builder insertion fast path.
+    #[serde(skip, default = "default_publish_executed_block")]
+    publish_executed_block: bool,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -100,6 +103,7 @@ impl TempoPayloadAttributes {
             payload_build_control: None,
             speculative_parent: None,
             excluded_pool_transaction_hashes: Arc::default(),
+            publish_executed_block: true,
             timestamp_millis_part,
             extra_data,
             proposer_public_key,
@@ -149,6 +153,16 @@ impl TempoPayloadAttributes {
         self
     }
 
+    /// Suppresses the node builder's self-built executed-block insertion fast path.
+    ///
+    /// This is required for speculative consensus builds: they may be abandoned if
+    /// the view times out, so their executed state must not be inserted before
+    /// consensus accepts the block.
+    pub fn without_executed_block_fast_path(mut self) -> Self {
+        self.publish_executed_block = false;
+        self
+    }
+
     /// Returns the consensus-provided build budget, if this is a paced build.
     ///
     /// `None` is intentional for non-consensus builds such as dev or external
@@ -171,6 +185,11 @@ impl TempoPayloadAttributes {
     /// Returns pool transaction hashes that must not be considered for this payload.
     pub fn excluded_pool_transaction_hashes(&self) -> &HashSet<B256> {
         self.excluded_pool_transaction_hashes.as_ref()
+    }
+
+    /// Returns whether this payload may expose executed block state for self-built insertion.
+    pub fn publish_executed_block(&self) -> bool {
+        self.publish_executed_block
     }
 
     /// Returns the milliseconds portion of the timestamp.
@@ -208,6 +227,7 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
             payload_build_control: None,
             speculative_parent: None,
             excluded_pool_transaction_hashes: Arc::default(),
+            publish_executed_block: true,
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
             proposer_public_key: None,
@@ -556,6 +576,10 @@ fn default_subblocks() -> Arc<dyn Fn() -> Vec<RecoveredSubBlock> + Send + Sync +
     Arc::new(Vec::new)
 }
 
+const fn default_publish_executed_block() -> bool {
+    true
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -621,6 +645,7 @@ mod tests {
         assert_eq!(attrs.timestamp(), 1);
         assert_eq!(attrs.timestamp_millis_part(), 500);
         assert!(attrs.excluded_pool_transaction_hashes().is_empty());
+        assert!(attrs.publish_executed_block());
 
         // Hardcoded in ::new()
         assert_eq!(attrs.prev_randao, B256::ZERO);
@@ -651,6 +676,19 @@ mod tests {
         assert_eq!(attrs.excluded_pool_transaction_hashes().len(), 2);
         assert!(attrs.excluded_pool_transaction_hashes().contains(&hash_a));
         assert!(attrs.excluded_pool_transaction_hashes().contains(&hash_b));
+    }
+
+    #[test]
+    fn test_builder_attributes_executed_block_fast_path_control() {
+        let attrs = TempoPayloadAttributes::random();
+        assert!(attrs.publish_executed_block());
+
+        let attrs = attrs.without_executed_block_fast_path();
+        assert!(!attrs.publish_executed_block());
+
+        let json = serde_json::to_string(&attrs).unwrap();
+        let deserialized: TempoPayloadAttributes = serde_json::from_str(&json).unwrap();
+        assert!(deserialized.publish_executed_block());
     }
 
     #[test]

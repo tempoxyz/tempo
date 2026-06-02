@@ -1223,22 +1223,31 @@ where
             block_access_list.map(|block_access_list| alloy_rlp::encode(&block_access_list).into());
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
 
-        let execution_output = BlockExecutionOutput {
-            result: execution_result,
-            state: db.take_bundle(),
-        };
+        let executed_block = if attributes.publish_executed_block() {
+            let execution_output = BlockExecutionOutput {
+                result: execution_result,
+                state: db.take_bundle(),
+            };
 
-        let executed_block = BuiltPayloadExecutedBlock {
-            recovered_block: block,
-            execution_output: Arc::new(execution_output),
-            hashed_state: Arc::new(hashed_state),
-            trie_updates,
+            Some(BuiltPayloadExecutedBlock {
+                recovered_block: block,
+                execution_output: Arc::new(execution_output),
+                hashed_state: Arc::new(hashed_state),
+                trie_updates,
+            })
+        } else {
+            debug!(
+                block_number = %block.number(),
+                block_hash = %block.hash(),
+                "skipping executed-block fast path for built payload"
+            );
+            None
         };
 
         let payload = TempoBuiltPayload::new(
             eth_payload,
             block_access_list,
-            Some(executed_block),
+            executed_block,
             validation_work_duration,
             rlp_length,
         );
