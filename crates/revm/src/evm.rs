@@ -299,15 +299,10 @@ impl<DB: Database> GasStateBackend for InterpreterGasState<'_, '_, DB> {
 
     #[inline]
     fn token_tstore_increment(&mut self, key: U256) {
-        let pending: u64 = self
-            .context
-            .host
-            .tload(GAS_TOKEN, key)
-            .try_into()
-            .expect("saturates at u64::MAX");
+        let pending = self.context.host.tload(GAS_TOKEN, key);
         self.context
             .host
-            .tstore(GAS_TOKEN, key, U256::from(pending.saturating_add(1)));
+            .tstore(GAS_TOKEN, key, pending.saturating_add(U256::from(1)));
     }
 }
 

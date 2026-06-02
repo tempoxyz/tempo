@@ -154,15 +154,11 @@ impl<'a> GasStateBackend for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn token_tstore_increment(&mut self, key: U256) {
-        let pending: u64 = self
-            .internals
-            .tload(STORAGE_GAS_TOKENS_ADDRESS, key)
-            .try_into()
-            .expect("saturates at u64::MAX");
+        let pending = self.internals.tload(STORAGE_GAS_TOKENS_ADDRESS, key);
         self.internals.tstore(
             STORAGE_GAS_TOKENS_ADDRESS,
             key,
-            U256::from(pending.saturating_add(1)),
+            pending.saturating_add(U256::from(1)),
         );
     }
 }
