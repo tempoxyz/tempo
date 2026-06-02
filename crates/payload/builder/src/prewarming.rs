@@ -1,7 +1,7 @@
 use std::sync::{
     Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+    mpsc::{self, Receiver, Sender, SyncSender},
 };
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256, map::U256Map};
@@ -103,6 +103,8 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        let buffer_capacity = pool.current_num_threads() * 2;
+        let (buffers_tx, buffers_rx) = mpsc::sync_channel(buffer_capacity);
 
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
@@ -115,14 +117,18 @@ impl BestTransactionsPrewarming {
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
-                let overlay = Arc::new(OnceLock::new());
+                let overlay = PrewarmedOverlay::new(buffers_tx.clone());
                 let transaction = (tx.clone(), overlay.clone());
                 let _ = ctx.transactions_tx.send(Some(transaction));
+                let cached_reads = match buffers_rx.try_recv() {
+                    Ok(cached_reads) => cached_reads,
+                    Err(_) => CachedReads::default(),
+                };
 
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
                 scope.spawn(move |_| {
-                    Self::prewarm_transaction(prewarm, tx.clone(), overlay);
+                    Self::prewarm_transaction(prewarm, tx.clone(), overlay, cached_reads);
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
             };
@@ -130,7 +136,7 @@ impl BestTransactionsPrewarming {
             // Fill the initial batch of transactions to execute and prewarm.
             //
             // We schedule 2x the number of threads to make sure that workers are never idle.
-            for _ in 0..pool.current_num_threads() * 2 {
+            for _ in 0..buffer_capacity {
                 advance(&mut ctx);
             }
 
@@ -148,10 +154,12 @@ impl BestTransactionsPrewarming {
                         ctx.transactions_tx = new_tx;
 
                         for tx in old_rx {
-                            if let Some(tx) = tx
-                                && !is_invalidated_buffered_transaction(&invalid.tx, &tx.0)
-                            {
-                                let _ = ctx.transactions_tx.send(Some(tx));
+                            if let Some(tx) = tx {
+                                if !is_invalidated_buffered_transaction(&invalid.tx, &tx.0) {
+                                    let _ = ctx.transactions_tx.send(Some(tx));
+                                } else {
+                                    tx.1.recycle();
+                                }
                             }
                         }
                     }
@@ -176,10 +184,12 @@ impl BestTransactionsPrewarming {
         prewarm: PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
         overlay: PrewarmedOverlay,
+        mut cached_reads: CachedReads,
     ) where
         Provider: StateProviderFactory + Clone + 'static,
     {
         if prewarm.is_stopped() {
+            overlay.recycle_cached_reads(cached_reads);
             return;
         }
 
@@ -193,10 +203,10 @@ impl BestTransactionsPrewarming {
             let touched = if is_tip20_transfer_transaction(&tx) {
                 let touches =
                     storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary);
-                let mut cached_reads = CachedReads::default();
 
                 for touch in &touches {
                     if prewarm.is_stopped() {
+                        overlay.recycle_cached_reads(cached_reads);
                         return;
                     }
                     if let Err(err) = touch.warm(evm, &mut cached_reads) {
@@ -206,14 +216,16 @@ impl BestTransactionsPrewarming {
                             ?tx_hash,
                             "Failed to prewarm transaction storage"
                         );
+                        overlay.recycle_cached_reads(cached_reads);
                         return;
                     }
                 }
 
-                let _ = overlay.set(cached_reads);
+                overlay.publish(cached_reads);
                 Some(touches.len())
             } else {
                 if prewarm.is_stopped() {
+                    overlay.recycle_cached_reads(cached_reads);
                     return;
                 }
 
@@ -224,12 +236,15 @@ impl BestTransactionsPrewarming {
                         ?tx_hash,
                         "Failed to prewarm transaction by execution"
                     );
+                    overlay.recycle_cached_reads(cached_reads);
                     return;
                 }
 
+                overlay.recycle_cached_reads(cached_reads);
                 None
             };
 
+            drop(overlay);
             trace!(
                 target: "payload_builder",
                 touched,
@@ -286,8 +301,64 @@ impl BestTransactions for BestTransactionsPrewarming {
     }
 }
 
-pub(crate) type PrewarmedOverlay = Arc<OnceLock<CachedReads>>;
+#[derive(Clone)]
+pub(crate) struct PrewarmedOverlay {
+    reads: Arc<OnceLock<CachedReads>>,
+    buffers_tx: SyncSender<CachedReads>,
+}
+
+impl PrewarmedOverlay {
+    fn new(buffers_tx: SyncSender<CachedReads>) -> Self {
+        Self {
+            reads: Arc::new(OnceLock::new()),
+            buffers_tx,
+        }
+    }
+
+    fn get(&self) -> Option<&CachedReads> {
+        self.reads.get()
+    }
+
+    fn publish(&self, cached_reads: CachedReads) {
+        if let Err(cached_reads) = self.reads.set(cached_reads) {
+            self.recycle_cached_reads(cached_reads);
+        }
+    }
+
+    pub(crate) fn recycle(self) {
+        let Self { reads, buffers_tx } = self;
+        if let Ok(reads) = Arc::try_unwrap(reads)
+            && let Some(cached_reads) = reads.into_inner()
+        {
+            Self::recycle_to(&buffers_tx, cached_reads);
+        }
+    }
+
+    fn recycle_cached_reads(&self, cached_reads: CachedReads) {
+        Self::recycle_to(&self.buffers_tx, cached_reads);
+    }
+
+    fn recycle_to(buffers_tx: &SyncSender<CachedReads>, mut cached_reads: CachedReads) {
+        clear_cached_reads(&mut cached_reads);
+        let _ = buffers_tx.try_send(cached_reads);
+    }
+}
+
+impl core::fmt::Debug for PrewarmedOverlay {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PrewarmedOverlay")
+            .field("published", &self.reads.get().is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 pub(crate) type BestTransactionWithOverlay = (BestTransaction, PrewarmedOverlay);
+
+fn clear_cached_reads(cached_reads: &mut CachedReads) {
+    cached_reads.accounts.clear();
+    cached_reads.contracts.clear();
+    cached_reads.block_hashes.clear();
+}
 
 /// Context for prewarming best transactions for a payload build.
 struct BestTransactionsPrewarmingContext<Txs, Provider> {
@@ -1205,8 +1276,9 @@ mod tests {
             .block_hashes
             .insert(block_number, overlay_block_hash);
 
-        let overlay = Arc::new(OnceLock::new());
-        assert!(overlay.set(cached_reads).is_ok());
+        let (buffers_tx, _buffers_rx) = std::sync::mpsc::sync_channel(1);
+        let overlay = PrewarmedOverlay::new(buffers_tx);
+        overlay.publish(cached_reads);
 
         let mut db = PrewarmedStateOverlay::new(TestOverlayDb::default());
         db.set_overlay(overlay);
@@ -1225,12 +1297,59 @@ mod tests {
         let fallback = TestOverlayDb::default();
         let mut db = PrewarmedStateOverlay::new(fallback.clone());
 
-        db.set_overlay(Arc::new(OnceLock::new()));
+        let (buffers_tx, _buffers_rx) = std::sync::mpsc::sync_channel(1);
+        db.set_overlay(PrewarmedOverlay::new(buffers_tx));
 
         assert_eq!(db.basic(address), Ok(Some(fallback.account)));
         assert_eq!(db.storage(address, slot), Ok(fallback.storage));
         assert_eq!(db.code_by_hash(B256::ZERO), Ok(fallback.code));
         assert_eq!(db.block_hash(block_number), Ok(fallback.block_hash));
+    }
+
+    #[test]
+    fn prewarmed_overlay_recycles_published_cached_reads() {
+        let (buffers_tx, buffers_rx) = std::sync::mpsc::sync_channel(1);
+        let overlay = PrewarmedOverlay::new(buffers_tx);
+        let address = Address::random();
+        let slot = U256::from(7);
+
+        let mut storage = U256Map::default();
+        storage.insert(slot, U256::from(11));
+        let mut cached_reads = CachedReads::default();
+        cached_reads.accounts.insert(
+            address,
+            CachedAccount {
+                info: Some(AccountInfo::default()),
+                storage,
+            },
+        );
+        cached_reads
+            .contracts
+            .insert(B256::with_last_byte(8), Bytecode::default());
+        cached_reads
+            .block_hashes
+            .insert(9, B256::with_last_byte(12));
+
+        overlay.publish(cached_reads);
+        overlay.recycle();
+
+        let recycled = buffers_rx.try_recv().expect("recycled buffer");
+        assert!(recycled.accounts.is_empty());
+        assert!(recycled.contracts.is_empty());
+        assert!(recycled.block_hashes.is_empty());
+    }
+
+    #[test]
+    fn prewarmed_overlay_recycle_is_nonblocking_when_still_shared() {
+        let (buffers_tx, buffers_rx) = std::sync::mpsc::sync_channel(1);
+        let overlay = PrewarmedOverlay::new(buffers_tx);
+        let shared = overlay.clone();
+
+        overlay.publish(CachedReads::default());
+        overlay.recycle();
+
+        assert!(buffers_rx.try_recv().is_err());
+        drop(shared);
     }
 
     #[test]
@@ -1245,8 +1364,14 @@ mod tests {
 
         assert!(prewarming.next().is_some());
 
-        pool.broadcast(pool.current_num_threads(), |worker| {
-            assert!(worker.get::<PrewarmEvmState>().is_some());
+        wait_until(|| {
+            let initialized = AtomicBool::new(true);
+            pool.broadcast(pool.current_num_threads(), |worker| {
+                if worker.get_or_init::<PrewarmEvmState>(|| None).is_none() {
+                    initialized.store(false, Ordering::Relaxed);
+                }
+            });
+            initialized.load(Ordering::Relaxed)
         });
     }
 }

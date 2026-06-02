@@ -611,13 +611,15 @@ where
                 let gas_limit = pool_tx.gas_limit();
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
+                let invalid_tx = (pool_tx, state_overlay);
                 best_txs.mark_invalid(
-                    &(pool_tx, state_overlay),
+                    &invalid_tx,
                     InvalidPoolTransactionError::ExceedsGasLimit(
                         gas_limit,
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
                 );
+                invalid_tx.1.recycle();
                 self.metrics
                     .inc_pool_tx_skipped("exceeds_non_shared_gas_limit");
                 continue;
@@ -632,12 +634,14 @@ where
             // If the tx is not a payment and will exceed the general gas limit
             // mark the tx as invalid and continue
             if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
+                let invalid_tx = (pool_tx, state_overlay);
                 best_txs.mark_invalid(
-                    &(pool_tx, state_overlay),
+                    &invalid_tx,
                     InvalidPoolTransactionError::Other(Box::new(
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
                 );
+                invalid_tx.1.recycle();
                 self.metrics
                     .inc_pool_tx_skipped("exceeds_general_gas_limit");
                 continue;
@@ -652,13 +656,15 @@ where
             let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                let invalid_tx = (pool_tx, state_overlay);
                 best_txs.mark_invalid(
-                    &(pool_tx, state_overlay),
+                    &invalid_tx,
                     InvalidPoolTransactionError::OversizedData {
                         size: estimated_block_size_with_tx,
                         limit: MAX_RLP_BLOCK_SIZE,
                     },
                 );
+                invalid_tx.1.recycle();
                 self.metrics.inc_pool_tx_skipped("oversized_block");
                 skipped_oversized_block = true;
                 continue;
@@ -702,24 +708,29 @@ where
                     if error.is_nonce_too_low() {
                         // if the nonce is too low, we can skip this transaction
                         trace!(%error, tx = %tx_debug_repr, "skipping nonce too low transaction");
+                        state_overlay.recycle();
                         self.metrics.inc_pool_tx_skipped("nonce_too_low");
                     } else {
                         // if the transaction is invalid, we can skip it and all of its
                         // descendants
                         trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
+                        let invalid_tx = (pool_tx, state_overlay);
                         best_txs.mark_invalid(
-                            &(pool_tx, state_overlay),
+                            &invalid_tx,
                             InvalidPoolTransactionError::Consensus(
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),
                         );
+                        invalid_tx.1.recycle();
                         self.metrics.inc_pool_tx_skipped("invalid_tx");
                     }
                     continue;
                 } else {
+                    state_overlay.recycle();
                     return Err(PayloadBuilderError::evm(err));
                 }
             };
+            state_overlay.recycle();
             trace!("Transaction executed");
             executor.evm_mut().db_mut().bump_bal_index();
 
