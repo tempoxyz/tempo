@@ -664,13 +664,19 @@ impl Inner<Init> {
             .await
             .wrap_err("failed verifying block against execution layer")?;
 
-            if let Some(duration) = verification.validation_duration {
-                self.observe_validator_validation(
-                    parent.height().get(),
-                    validator_validation_shape(&parent),
-                    duration,
-                );
-            }
+            // FIXME: Parent blocks can be reconstructed from the EL database
+            // without their commonware BAL sidecar. `validator_validation_shape`
+            // calls `Block::encode_size`, which requires BAL bytes when the
+            // header commits to a BAL, so observing here can panic for
+            // BAL-enabled parents. Rely on the normal verify path until parent
+            // retrieval restores missing sidecars.
+            // if let Some(duration) = verification.validation_duration {
+            //     self.observe_validator_validation(
+            //         parent.height().get(),
+            //         validator_validation_shape(&parent),
+            //         duration,
+            //     );
+            // }
             if !verification.is_valid {
                 bail!("the proposal parent block is not valid");
             }
