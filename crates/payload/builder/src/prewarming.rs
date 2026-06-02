@@ -1,5 +1,5 @@
 use std::sync::{
-    Arc, OnceLock,
+    Arc, Mutex, OnceLock,
     atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, Sender, SyncSender},
 };
@@ -34,6 +34,55 @@ use tracing::trace;
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
+#[derive(Clone)]
+pub(crate) struct PrewarmingBuffers {
+    buffers_tx: SyncSender<CachedReads>,
+    buffers_rx: Arc<Mutex<Receiver<CachedReads>>>,
+    capacity: usize,
+}
+
+impl PrewarmingBuffers {
+    pub(crate) fn for_executor(executor: &TaskExecutor) -> Self {
+        Self::new(executor.prewarming_pool().current_num_threads() * 2)
+    }
+
+    fn new(capacity: usize) -> Self {
+        let (buffers_tx, buffers_rx) = mpsc::sync_channel(capacity);
+        Self {
+            buffers_tx,
+            buffers_rx: Arc::new(Mutex::new(buffers_rx)),
+            capacity,
+        }
+    }
+
+    fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    fn overlay(&self) -> PrewarmedOverlay {
+        PrewarmedOverlay::new(self.buffers_tx.clone())
+    }
+
+    fn cached_reads(&self) -> CachedReads {
+        self.try_cached_reads().unwrap_or_default()
+    }
+
+    fn try_cached_reads(&self) -> Option<CachedReads> {
+        let Ok(buffers_rx) = self.buffers_rx.lock() else {
+            return None;
+        };
+        buffers_rx.try_recv().ok()
+    }
+}
+
+impl core::fmt::Debug for PrewarmingBuffers {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("PrewarmingBuffers")
+            .field("capacity", &self.capacity)
+            .finish_non_exhaustive()
+    }
+}
+
 /// Prewarming orchestrator that consumes source [`BestTransactions`] with bounded
 /// lookahead, prewarms buffered transactions in parallel, and produces a new
 /// [`BestTransactions`] iterator with the source order and invalidations triggered
@@ -53,6 +102,7 @@ impl BestTransactionsPrewarming {
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
         best_txs: Txs,
+        buffers: PrewarmingBuffers,
     ) -> Self
     where
         Txs: BestTransactions<Item = BestTransaction> + Send + 'static,
@@ -85,6 +135,7 @@ impl BestTransactionsPrewarming {
                     commands_rx,
                     commands_tx,
                     prewarm,
+                    buffers,
                 },
             );
         });
@@ -103,8 +154,7 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
-        let buffer_capacity = pool.current_num_threads() * 2;
-        let (buffers_tx, buffers_rx) = mpsc::sync_channel(buffer_capacity);
+        let buffer_capacity = ctx.buffers.capacity();
 
         pool.in_place_scope(|scope| {
             let prewarm = ctx.prewarm.clone();
@@ -117,13 +167,10 @@ impl BestTransactionsPrewarming {
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
-                let overlay = PrewarmedOverlay::new(buffers_tx.clone());
+                let overlay = ctx.buffers.overlay();
                 let transaction = (tx.clone(), overlay.clone());
                 let _ = ctx.transactions_tx.send(Some(transaction));
-                let cached_reads = match buffers_rx.try_recv() {
-                    Ok(cached_reads) => cached_reads,
-                    Err(_) => CachedReads::default(),
-                };
+                let cached_reads = ctx.buffers.cached_reads();
 
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
@@ -325,17 +372,21 @@ impl PrewarmedOverlay {
         }
     }
 
-    pub(crate) fn recycle(self) {
-        let Self { reads, buffers_tx } = self;
-        if let Ok(reads) = Arc::try_unwrap(reads)
-            && let Some(cached_reads) = reads.into_inner()
-        {
-            Self::recycle_to(&buffers_tx, cached_reads);
-        }
+    pub(crate) fn recycle(mut self) {
+        self.recycle_published_reads();
     }
 
     fn recycle_cached_reads(&self, cached_reads: CachedReads) {
         Self::recycle_to(&self.buffers_tx, cached_reads);
+    }
+
+    fn recycle_published_reads(&mut self) {
+        let Some(reads) = Arc::get_mut(&mut self.reads) else {
+            return;
+        };
+        if let Some(cached_reads) = reads.take() {
+            Self::recycle_to(&self.buffers_tx, cached_reads);
+        }
     }
 
     fn recycle_to(buffers_tx: &SyncSender<CachedReads>, mut cached_reads: CachedReads) {
@@ -349,6 +400,12 @@ impl core::fmt::Debug for PrewarmedOverlay {
         f.debug_struct("PrewarmedOverlay")
             .field("published", &self.reads.get().is_some())
             .finish_non_exhaustive()
+    }
+}
+
+impl Drop for PrewarmedOverlay {
+    fn drop(&mut self) {
+        self.recycle_published_reads();
     }
 }
 
@@ -367,6 +424,7 @@ struct BestTransactionsPrewarmingContext<Txs, Provider> {
     commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
+    buffers: PrewarmingBuffers,
 }
 
 /// Context needed to prewarm transaction storage independently of the real builder.
@@ -1058,6 +1116,7 @@ mod tests {
             parent_header.hash(),
             evm_env,
             TestBestTransactions::new(txs, log),
+            PrewarmingBuffers::for_executor(&executor),
         );
         TestPrewarming {
             prewarming: Some(prewarming),
@@ -1337,6 +1396,33 @@ mod tests {
         assert!(recycled.accounts.is_empty());
         assert!(recycled.contracts.is_empty());
         assert!(recycled.block_hashes.is_empty());
+    }
+
+    #[test]
+    fn prewarmed_overlay_recycles_published_cached_reads_on_drop() {
+        let buffers = PrewarmingBuffers::new(1);
+        let overlay = buffers.overlay();
+        let address = Address::random();
+        let slot = U256::from(7);
+
+        let mut storage = U256Map::default();
+        storage.insert(slot, U256::from(11));
+        let mut cached_reads = CachedReads::default();
+        cached_reads.accounts.insert(
+            address,
+            CachedAccount {
+                info: Some(AccountInfo::default()),
+                storage,
+            },
+        );
+
+        overlay.publish(cached_reads);
+        drop(overlay);
+
+        let recycled = buffers
+            .try_cached_reads()
+            .expect("published reads should be recycled");
+        assert!(recycled.accounts.is_empty());
     }
 
     #[test]
