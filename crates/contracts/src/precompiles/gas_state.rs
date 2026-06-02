@@ -1,16 +1,16 @@
-pub use ITIP1060StorageGasTokens::{
-    ITIP1060StorageGasTokensErrors as TIP1060StorageGasTokensError,
-    ITIP1060StorageGasTokensEvents as TIP1060StorageGasTokensEvent,
+pub use ITIP1060StorageCredits::{
+    ITIP1060StorageCreditsErrors as TIP1060StorageCreditsError,
+    ITIP1060StorageCreditsEvents as TIP1060StorageCreditsEvent,
 };
 
 crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
-    interface ITIP1060StorageGasTokens {
+    interface ITIP1060StorageCredits {
         enum Mode {
-            RefundTokens,
-            PreserveTokens,
-            DirectTokens
+            Refund,
+            Preserve,
+            Direct
         }
 
         error InvalidMode();

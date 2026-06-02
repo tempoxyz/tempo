@@ -15,7 +15,7 @@ pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
 pub mod stablecoin_dex;
-pub mod tip1060_storage_gas_token;
+pub mod tip1060_storage_credits;
 pub mod tip20;
 pub mod tip20_channel_reserve;
 pub mod tip20_factory;
@@ -32,7 +32,7 @@ use crate::{
     receive_policy_guard::ReceivePolicyGuard, signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX, storage::StorageCtx, tip_fee_manager::TipFeeManager,
     tip20::TIP20Token, tip20_channel_reserve::TIP20ChannelReserve, tip20_factory::TIP20Factory,
-    tip403_registry::TIP403Registry, tip1060_storage_gas_token::TIP1060StorageGasToken,
+    tip403_registry::TIP403Registry, tip1060_storage_credits::TIP1060StorageCredits,
     validator_config::ValidatorConfig, validator_config_v2::ValidatorConfigV2,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
@@ -56,7 +56,7 @@ use revm::{
 pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, DEFAULT_FEE_TOKEN,
     NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
-    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_GAS_TOKENS_ADDRESS,
+    SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, STORAGE_CREDITS_ADDRESS,
     TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS,
     TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
@@ -147,8 +147,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(SignatureVerifier::create_precompile(&cfg))
         } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && cfg.spec.is_t6() {
             Some(ReceivePolicyGuard::create_precompile(&cfg))
-        } else if *address == STORAGE_GAS_TOKENS_ADDRESS {
-            Some(TIP1060StorageGasToken::create_precompile(&cfg))
+        } else if *address == STORAGE_CREDITS_ADDRESS {
+            Some(TIP1060StorageCredits::create_precompile(&cfg))
         } else {
             None
         }
@@ -282,10 +282,10 @@ impl ReceivePolicyGuard {
     }
 }
 
-impl TIP1060StorageGasToken {
+impl TIP1060StorageCredits {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
-        tempo_precompile!("TIP1060StorageGasTokens", cfg, |input| { Self::new() })
+        tempo_precompile!("TIP1060StorageCredits", cfg, |input| { Self::new() })
     }
 }
 

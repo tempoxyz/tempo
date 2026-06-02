@@ -1540,7 +1540,7 @@ where
         evm: &mut Self::Evm,
         exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
     ) -> Result<(), Self::Error> {
-        // TIP-1060: flush transient storage gas-token refunds into persistent storage.
+        // TIP-1060: flush transient storage-credit refunds into persistent storage.
         tip1060::apply_refund(evm)?;
         // Call collectFeePostTx on TipFeeManager precompile
         let context = &mut evm.inner.ctx;

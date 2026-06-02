@@ -1,8 +1,8 @@
 use crate::{
-    STORAGE_GAS_TOKENS_ADDRESS,
+    STORAGE_CREDITS_ADDRESS,
     error::TempoPrecompileError,
     storage::PrecompileStorageProvider,
-    tip1060_storage_gas_token::{GasStateBackend, sstore_gas_state},
+    tip1060_storage_credits::{StorageCreditsBackend, sstore_storage_credits},
 };
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
@@ -97,7 +97,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
     }
 }
 
-impl<'a> GasStateBackend for EvmPrecompileStorageProvider<'a> {
+impl<'a> StorageCreditsBackend for EvmPrecompileStorageProvider<'a> {
     type Error = TempoPrecompileError;
 
     #[inline]
@@ -107,7 +107,7 @@ impl<'a> GasStateBackend for EvmPrecompileStorageProvider<'a> {
 
     #[inline]
     fn fatal_external() -> Self::Error {
-        TempoPrecompileError::Fatal("invalid storage gas-token account state".to_string())
+        TempoPrecompileError::Fatal("invalid storage credits account state".to_string())
     }
 
     #[inline]
@@ -126,37 +126,35 @@ impl<'a> GasStateBackend for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
-    fn load_gas_token_account(&mut self) -> Result<(), Self::Error> {
-        self.internals.load_account(STORAGE_GAS_TOKENS_ADDRESS)?;
+    fn load_storage_credit_account(&mut self) -> Result<(), Self::Error> {
+        self.internals.load_account(STORAGE_CREDITS_ADDRESS)?;
         Ok(())
     }
 
     #[inline]
-    fn gas_token_sload(
+    fn load_credits(
         &mut self,
         key: U256,
         skip_cold_load: bool,
     ) -> Result<StateLoad<U256>, Self::Error> {
-        let mut account = self
-            .internals
-            .load_account_mut(STORAGE_GAS_TOKENS_ADDRESS)?;
+        let mut account = self.internals.load_account_mut(STORAGE_CREDITS_ADDRESS)?;
         let val = account.sload(key, skip_cold_load)?;
         Ok(StateLoad::new(val.present_value, val.is_cold))
     }
 
     #[inline]
-    fn gas_token_sstore(&mut self, key: U256, value: U256) -> Result<(), Self::Error> {
+    fn store_credits(&mut self, key: U256, value: U256) -> Result<(), Self::Error> {
         self.internals
-            .load_account_mut(STORAGE_GAS_TOKENS_ADDRESS)?
+            .load_account_mut(STORAGE_CREDITS_ADDRESS)?
             .sstore(key, value, false)?;
         Ok(())
     }
 
     #[inline]
-    fn token_tstore_increment(&mut self, key: U256) {
-        let pending = self.internals.tload(STORAGE_GAS_TOKENS_ADDRESS, key);
+    fn credit_tstore_increment(&mut self, key: U256) {
+        let pending = self.internals.tload(STORAGE_CREDITS_ADDRESS, key);
         self.internals.tstore(
-            STORAGE_GAS_TOKENS_ADDRESS,
+            STORAGE_CREDITS_ADDRESS,
             key,
             pending.saturating_add(U256::from(1)),
         );
@@ -268,10 +266,10 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
         }
 
-        // TIP-1060 (T6+): run the storage gas-token policy so precompile-driven storage
+        // TIP-1060 (T6+): run the storage credits policy so precompile-driven storage
         // writes honor the same accounting as the opcode-level SSTORE hook.
         let outcome = if self.spec.is_t6() {
-            sstore_gas_state(self, address, &result.data)?
+            sstore_storage_credits(self, address, &result.data)?
         } else {
             Default::default()
         };
