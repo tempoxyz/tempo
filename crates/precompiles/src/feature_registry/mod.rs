@@ -3,8 +3,13 @@
 pub mod dispatch;
 
 use crate::{FEATURE_REGISTRY_ADDRESS, error::Result, storage::Handler};
+use alloy::primitives::U256;
 use tempo_contracts::precompiles::IFeatureRegistry;
 use tempo_precompiles_macros::contract;
+
+// Activation requires 80% support from the active validator set, represented exactly as 4/5.
+const ACTIVATION_QUORUM_NUMERATOR: u64 = 4;
+const ACTIVATION_QUORUM_DENOMINATOR: u64 = 5;
 
 /// Protocol feature registry.
 ///
@@ -29,6 +34,15 @@ impl FeatureRegistry {
     /// Returns the highest active protocol feature ID.
     pub fn features_tip(&self) -> Result<u64> {
         self.features_tip.read()
+    }
+
+    /// Returns the fixed activation quorum threshold as an exact fraction: 4/5, or 80%.
+    pub fn activation_quorum(&self) -> Result<IFeatureRegistry::activationQuorumReturn> {
+        Ok((
+            U256::from(ACTIVATION_QUORUM_NUMERATOR),
+            U256::from(ACTIVATION_QUORUM_DENOMINATOR),
+        )
+            .into())
     }
 
     /// Returns the scheduled target feature tip and earliest activation epoch.
