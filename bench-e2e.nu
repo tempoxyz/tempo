@@ -537,13 +537,13 @@ def build-e2e-consensus-args [node_dir: string, trusted_peers: string, port: int
     let signing_key = $"($node_dir)/signing.key"
     let signing_share = $"($node_dir)/signing.share"
     let enode_key = $"($node_dir)/enode.key"
-    let signing_key_is_encrypted = try {
-        (open --raw $signing_key) | str starts-with "age-encryption.org/"
-    } catch { |err|
+    let signing_key_read = (run-external "cat" $signing_key | complete)
+    if $signing_key_read.exit_code != 0 {
         print $"Error: failed to inspect signing key file: ($signing_key)"
-        print $err
-        exit 1
+        if $signing_key_read.stderr != "" { print $signing_key_read.stderr }
+        exit $signing_key_read.exit_code
     }
+    let signing_key_is_encrypted = $signing_key_read.stdout | str starts-with "age-encryption.org/"
     let signing_secret_args = if $signing_key_is_encrypted {
         ["--consensus.secret" "<(printf '%s\\n' 'tempo-localnet-signing-key-secret')"]
     } else {
