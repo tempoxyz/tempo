@@ -17,12 +17,11 @@ pub struct Tip20StorageSlot {
 
 /// Static TIP-20 storage metadata derived from a transfer-only payment transaction.
 ///
-/// The vectors are separated by storage kind so the payload builder can keep
-/// cheaper per-kind seen sets. `token_info` is the token-global path:
-/// account load plus currency, pause, policy, and reward aggregate slots.
+/// The vectors are separated by storage kind so the payload builder can warm the
+/// high-cardinality per-transaction storage directly. Token-global metadata is
+/// intentionally omitted and left to normal execution.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Tip20StaticInfo {
-    token_info: Vec<Address>,
     balance_slots: Vec<Tip20StorageSlot>,
     reward_slots: Vec<Tip20StorageSlot>,
     allowance_slots: Vec<Tip20StorageSlot>,
@@ -51,37 +50,6 @@ impl Tip20StaticInfo {
         (!info.is_empty()).then_some(info)
     }
 
-    /// TIP-20 tokens whose global token metadata slots are touched.
-    pub fn token_info(&self) -> &[Address] {
-        &self.token_info
-    }
-
-    /// Global token storage slots touched when loading TIP-20 token metadata.
-    pub fn token_info_slots(token: Address) -> [Tip20StorageSlot; 5] {
-        [
-            Tip20StorageSlot {
-                address: token,
-                slot: tip20_slots::CURRENCY,
-            },
-            Tip20StorageSlot {
-                address: token,
-                slot: tip20_slots::PAUSED,
-            },
-            Tip20StorageSlot {
-                address: token,
-                slot: tip20_slots::TRANSFER_POLICY_ID,
-            },
-            Tip20StorageSlot {
-                address: token,
-                slot: tip20_slots::GLOBAL_REWARD_PER_TOKEN,
-            },
-            Tip20StorageSlot {
-                address: token,
-                slot: tip20_slots::OPTED_IN_SUPPLY,
-            },
-        ]
-    }
-
     /// TIP-20 balance storage slots touched by the transaction.
     pub fn balance_slots(&self) -> &[Tip20StorageSlot] {
         &self.balance_slots
@@ -99,22 +67,14 @@ impl Tip20StaticInfo {
 
     /// Total number of static entries in this plan.
     pub fn len(&self) -> usize {
-        self.token_info.len()
-            + self.balance_slots.len()
-            + self.reward_slots.len()
-            + self.allowance_slots.len()
+        self.balance_slots.len() + self.reward_slots.len() + self.allowance_slots.len()
     }
 
     /// Returns true if the plan has no static entries.
     pub fn is_empty(&self) -> bool {
-        self.token_info.is_empty()
-            && self.balance_slots.is_empty()
+        self.balance_slots.is_empty()
             && self.reward_slots.is_empty()
             && self.allowance_slots.is_empty()
-    }
-
-    fn add_token_info(&mut self, token: Address) {
-        add_unique(&mut self.token_info, token);
     }
 
     fn add_balance_slot(&mut self, token: Address, account: Address) {
@@ -167,15 +127,12 @@ impl Tip20StaticInfo {
             return;
         }
 
-        self.add_token_info(fee_token);
         self.add_balance_slot(fee_token, fee_payer);
         self.add_balance_slot(fee_token, TIP_FEE_MANAGER_ADDRESS);
         self.add_reward_slots(fee_token, fee_payer);
     }
 
     fn add_transfer_call(&mut self, sender: Address, token: Address, call: ITIP20::ITIP20Calls) {
-        self.add_token_info(token);
-
         match call {
             ITIP20::ITIP20Calls::transfer(call) => {
                 self.add_balance_slot(token, sender);

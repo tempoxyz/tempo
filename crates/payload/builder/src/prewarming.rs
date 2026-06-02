@@ -1,14 +1,10 @@
-use std::{
-    collections::HashSet,
-    sync::{
-        Arc,
-        atomic::{AtomicBool, Ordering},
-        mpsc::{self, Receiver, Sender},
-    },
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc::{self, Receiver, Sender},
 };
 
-use alloy_primitives::{Address, B256};
-use parking_lot::Mutex;
+use alloy_primitives::B256;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Database, Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
@@ -18,10 +14,6 @@ use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
-use tempo_precompiles::{
-    NONCE_PRECOMPILE_ADDRESS, TIP_FEE_MANAGER_ADDRESS, nonce::slots as nonce_slots,
-    storage::StorageKey as _, tip_fee_manager::slots as fee_manager_slots,
-};
 use tempo_transaction_pool::{
     best::BestTransaction,
     tip20_info::{Tip20StaticInfo, Tip20StorageSlot},
@@ -63,7 +55,6 @@ impl BestTransactionsPrewarming {
             cache,
             evm_env,
             stop: stop.clone(),
-            dedup: Arc::new(PrewarmDedup::default()),
         };
 
         let this = Self {
@@ -185,13 +176,7 @@ impl BestTransactionsPrewarming {
             let tx_hash = *tx.hash();
 
             let touched = if let Some(static_info) = tx.transaction.tip20_static_info() {
-                match prewarm_static_tip20_transaction(
-                    evm,
-                    &prewarm,
-                    static_info,
-                    &tx,
-                    prewarm.evm_env.block_env.beneficiary,
-                ) {
+                match prewarm_static_tip20_transaction(evm, &prewarm, static_info) {
                     Ok(touched) => Some(touched),
                     Err(err) => {
                         trace!(
@@ -294,7 +279,6 @@ struct PrewarmingExecutionContext<Provider> {
     cache: Option<SavedCache>,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
-    dedup: Arc<PrewarmDedup>,
 }
 
 impl<Provider> PrewarmingExecutionContext<Provider>
@@ -341,201 +325,46 @@ impl<Provider> PrewarmingExecutionContext<Provider> {
     }
 }
 
-#[derive(Debug, Default)]
-struct PrewarmDedup {
-    accounts: Mutex<HashSet<Address>>,
-    shared_storage_slots: Mutex<HashSet<Tip20StorageSlot>>,
-    tip20_token_info: Mutex<HashSet<Address>>,
-}
-
 fn prewarm_static_tip20_transaction<DB, Provider>(
     evm: &mut TempoEvm<DB>,
     prewarm: &PrewarmingExecutionContext<Provider>,
     info: &Tip20StaticInfo,
-    tx: &BestTransaction,
-    fee_recipient: Address,
 ) -> Result<usize, DB::Error>
 where
     DB: Database,
 {
     let mut touched = 0;
 
-    for token in info.token_info() {
-        if prewarm.is_stopped() {
-            return Ok(touched);
-        }
-        touched += warm_tip20_token_info_once(evm, prewarm, *token)?;
-    }
-
     for slot in info.balance_slots() {
         if prewarm.is_stopped() {
             return Ok(touched);
         }
-        touched += warm_storage_slot(evm, prewarm, *slot)?;
+        touched += warm_storage_slot(evm, *slot)?;
     }
 
     for slot in info.reward_slots() {
         if prewarm.is_stopped() {
             return Ok(touched);
         }
-        touched += warm_storage_slot(evm, prewarm, *slot)?;
+        touched += warm_storage_slot(evm, *slot)?;
     }
 
     for slot in info.allowance_slots() {
         if prewarm.is_stopped() {
             return Ok(touched);
         }
-        touched += warm_storage_slot(evm, prewarm, *slot)?;
+        touched += warm_storage_slot(evm, *slot)?;
     }
-
-    if prewarm.is_stopped() {
-        return Ok(touched);
-    }
-    touched += prewarm_fee_manager_touches_once(
-        evm,
-        prewarm,
-        fee_recipient,
-        tx.transaction.effective_fee_token(),
-    )?;
-
-    if prewarm.is_stopped() {
-        return Ok(touched);
-    }
-    touched += prewarm_expiring_nonce_touches_once(evm, prewarm, tx)?;
 
     Ok(touched)
 }
 
-fn warm_tip20_token_info_once<DB, Provider>(
-    evm: &mut TempoEvm<DB>,
-    prewarm: &PrewarmingExecutionContext<Provider>,
-    token: Address,
-) -> Result<usize, DB::Error>
+fn warm_storage_slot<DB>(evm: &mut TempoEvm<DB>, slot: Tip20StorageSlot) -> Result<usize, DB::Error>
 where
     DB: Database,
 {
-    let should_warm = prewarm.dedup.tip20_token_info.lock().insert(token);
-
-    if !should_warm {
-        return Ok(0);
-    }
-
-    let mut touched = warm_account_once(evm, prewarm, token)?;
-    for slot in Tip20StaticInfo::token_info_slots(token) {
-        touched += warm_shared_storage_slot_once(evm, prewarm, slot)?;
-    }
-    Ok(touched)
-}
-
-fn prewarm_fee_manager_touches_once<DB, Provider>(
-    evm: &mut TempoEvm<DB>,
-    prewarm: &PrewarmingExecutionContext<Provider>,
-    fee_recipient: Address,
-    fee_token: Address,
-) -> Result<usize, DB::Error>
-where
-    DB: Database,
-{
-    let mut touched = 0;
-    touched += warm_shared_storage_slot_once(
-        evm,
-        prewarm,
-        Tip20StorageSlot {
-            address: TIP_FEE_MANAGER_ADDRESS,
-            slot: fee_recipient.mapping_slot(fee_manager_slots::VALIDATOR_TOKENS),
-        },
-    )?;
-    touched += warm_shared_storage_slot_once(
-        evm,
-        prewarm,
-        Tip20StorageSlot {
-            address: TIP_FEE_MANAGER_ADDRESS,
-            slot: fee_token
-                .mapping_slot(fee_recipient.mapping_slot(fee_manager_slots::COLLECTED_FEES)),
-        },
-    )?;
-    Ok(touched)
-}
-
-fn prewarm_expiring_nonce_touches_once<DB, Provider>(
-    evm: &mut TempoEvm<DB>,
-    prewarm: &PrewarmingExecutionContext<Provider>,
-    tx: &BestTransaction,
-) -> Result<usize, DB::Error>
-where
-    DB: Database,
-{
-    let Some(expiring_nonce_slot) = tx.transaction.expiring_nonce_slot() else {
-        return Ok(0);
-    };
-
-    let mut touched = 0;
-    touched += warm_storage_slot(
-        evm,
-        prewarm,
-        Tip20StorageSlot {
-            address: NONCE_PRECOMPILE_ADDRESS,
-            slot: expiring_nonce_slot,
-        },
-    )?;
-    touched += warm_shared_storage_slot_once(
-        evm,
-        prewarm,
-        Tip20StorageSlot {
-            address: NONCE_PRECOMPILE_ADDRESS,
-            slot: nonce_slots::EXPIRING_NONCE_RING_PTR,
-        },
-    )?;
-    Ok(touched)
-}
-
-fn warm_account_once<DB, Provider>(
-    evm: &mut TempoEvm<DB>,
-    prewarm: &PrewarmingExecutionContext<Provider>,
-    address: Address,
-) -> Result<usize, DB::Error>
-where
-    DB: Database,
-{
-    let should_warm = prewarm.dedup.accounts.lock().insert(address);
-
-    if should_warm {
-        let _ = evm.db_mut().basic(address)?;
-        Ok(1)
-    } else {
-        Ok(0)
-    }
-}
-
-fn warm_shared_storage_slot_once<DB, Provider>(
-    evm: &mut TempoEvm<DB>,
-    prewarm: &PrewarmingExecutionContext<Provider>,
-    slot: Tip20StorageSlot,
-) -> Result<usize, DB::Error>
-where
-    DB: Database,
-{
-    let should_warm = prewarm.dedup.shared_storage_slots.lock().insert(slot);
-
-    if should_warm {
-        warm_storage_slot(evm, prewarm, slot)
-    } else {
-        Ok(0)
-    }
-}
-
-fn warm_storage_slot<DB, Provider>(
-    evm: &mut TempoEvm<DB>,
-    prewarm: &PrewarmingExecutionContext<Provider>,
-    slot: Tip20StorageSlot,
-) -> Result<usize, DB::Error>
-where
-    DB: Database,
-{
-    let mut touched = warm_account_once(evm, prewarm, slot.address)?;
     let _ = evm.db_mut().storage(slot.address, slot.slot)?;
-    touched += 1;
-    Ok(touched)
+    Ok(1)
 }
 
 /// Command sent by [`BestTransactionsPrewarming`] consumer.

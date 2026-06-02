@@ -13291,7 +13291,6 @@ dependencies = [
  "alloy-rlp",
  "crossbeam-channel",
  "metrics",
- "parking_lot",
  "reth-basic-payload-builder",
  "reth-chainspec",
  "reth-consensus-common",

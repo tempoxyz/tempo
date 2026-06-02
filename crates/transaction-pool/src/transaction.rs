@@ -997,8 +997,6 @@ mod tests {
             .tip20_static_info()
             .expect("transfer payment has static TIP20 info");
 
-        assert_eq!(info.token_info(), &[token]);
-
         let sender_balance = Tip20StorageSlot {
             address: token,
             slot: sender.mapping_slot(tip20_slots::BALANCES),
