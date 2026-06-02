@@ -222,7 +222,7 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::gas_params::tempo_gas_params;
+    use crate::gas_params::{tempo_gas_params, tempo_gas_params_with_amsterdam};
     use alloy_eips::eip7702::Authorization;
     use alloy_evm::FromRecoveredTx;
     use alloy_primitives::{Address, Bytes, TxKind, U256, bytes, hex};
@@ -248,11 +248,12 @@ mod tests {
     use sha2::{Digest, Sha256};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{
-        AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
+        AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
         nonce::NonceManager,
         storage::{Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
         test_util::TIP20Setup,
         tip20::{ITIP20, TIP20Token},
+        tip1060_storage_credits::{AccountState, CreditMode, TIP1060StorageCredits},
     };
     use tempo_primitives::{
         TempoTransaction,
@@ -370,6 +371,28 @@ mod tests {
         cfg.spec = TempoHardfork::T4;
         cfg.gas_params = tempo_gas_params(TempoHardfork::T4);
         cfg.enable_amsterdam_eip8037 = true;
+
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(Default::default())
+            .with_cfg(cfg)
+            .with_tx(Default::default());
+
+        let mut evm = TempoEvm::new(ctx, ());
+        fund_account(&mut evm, address);
+        evm
+    }
+
+    /// Creates a T6-enabled EVM with a funded account.
+    /// This activates the TIP-1060 SSTORE gas-token hook while keeping the
+    /// TIP-1016 state-gas split disabled to match production.
+
+    fn create_funded_evm_t6(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T6;
+        cfg.gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T6, false);
+        cfg.enable_amsterdam_eip8037 = false;
 
         let ctx = Context::mainnet()
             .with_db(db)
@@ -1881,6 +1904,236 @@ mod tests {
         // With TIP-1000: new account (250k) + 2 SSTOREs to new slots (2 * 250k) = 750k + base
         let gas_used = result.tx_gas_used();
         assert_eq!(gas_used, 783069, "T1 multiple SSTOREs gas should be exact");
+
+        Ok(())
+    }
+
+    /// Seed the TIP-1060 storage gas-token state (token balance + storage-creation mode)
+    /// for `owner` directly into the gas-token contract's storage. This lets a test select
+    /// a mode without first sending a `setMode` transaction. The mode that governs an SSTORE
+    /// is the one stored for the contract that owns the slot being written (`owner`).
+    fn seed_gas_token_state(
+        evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>,
+        owner: Address,
+        balance: u64,
+        mode: CreditMode,
+    ) {
+        // The gas-token contract account must exist before we can write storage to it.
+        evm.ctx
+            .db_mut()
+            .insert_account_info(STORAGE_CREDITS_ADDRESS, AccountInfo::default());
+        let slot = TIP1060StorageCredits::slot(owner);
+        let word = AccountState { balance, mode }.into_word();
+        evm.ctx
+            .db_mut()
+            .insert_account_storage(STORAGE_CREDITS_ADDRESS, slot, word)
+            .unwrap();
+    }
+
+    /// Read back the TIP-1060 token balance stored for `owner` from the gas-token contract.
+    fn gas_token_balance(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> u64 {
+        let slot = TIP1060StorageCredits::slot(owner);
+        let word = evm
+            .ctx
+            .db()
+            .storage_ref(STORAGE_CREDITS_ADDRESS, slot)
+            .unwrap();
+        AccountState::from_word(word).unwrap().balance
+    }
+
+    /// TIP-1060: a single transaction that creates then clears the same storage slot
+    /// (SSTORE 0->1 followed by SSTORE 1->0), exercised under the three storage-creation
+    /// modes. Only the create (0->x) leg is mode-sensitive, so the gas used differs per mode:
+    /// - `PreserveTokens` charges the full EVM/state gas as normal,
+    /// - `DirectTokens` has no token to spend at create time (balance starts at 0), so it also
+    ///   charges the full create cost,
+    /// - `RefundTokens` charges the full create gas but accrues a deferred credit that
+    ///   `apply_refund` flushes at end-of-tx, erasing the create gas so the reported gas drops
+    ///   to the intrinsic floor.
+    ///
+    /// The gas-token balance corroborates the mechanism: the clear (x->0) leg mints one token in
+    /// every mode, but `RefundTokens` consumes that minted token against its deferred create
+    /// credit at end-of-tx, so it lands at 0 while the others stay at 1.
+    #[test]
+    fn test_tip1060_sstore_create_then_clear_modes() -> eyre::Result<()> {
+        // Contract bytecode: SSTORE 1 at slot 0 (0->1), then SSTORE 0 at slot 0 (1->0), STOP.
+        // PUSH1 0x01 PUSH1 0x00 SSTORE  PUSH1 0x00 PUSH1 0x00 SSTORE  STOP
+        let create_clear_bytecode = Bytecode::new_raw(bytes!("6001600055600060005500"));
+
+        // (mode, expected gas used, expected post-tx gas-token balance).
+        //
+        // Gas: PreserveTokens and DirectTokens both charge the full create cost (DirectTokens has
+        // no token to spend at create time), so their gas matches. RefundTokens charges the same
+        // create cost during execution, but the deferred credit is flushed in `post_execution`
+        // (before the result gas is snapshotted), erasing the create gas; what remains is below
+        // the EIP-7623 intrinsic floor, so the reported gas clamps to it (21_000).
+        //
+        // Balance: the clear (x->0) leg mints one token in every mode. RefundTokens *additionally*
+        // accrues a deferred credit on the create (0->x) leg into transient storage; at end-of-tx
+        // `apply_refund` consumes the minted token against that credit, so it lands at 0 while the
+        // others keep the minted token at 1.
+        let cases = [
+            (CreditMode::Refund, 283_268u64, 0u64),
+            (CreditMode::Preserve, 513_268u64, 1u64),
+            (CreditMode::Direct, 513_268u64, 1u64),
+        ];
+
+        for (mode, expected_gas, expected_balance) in cases {
+            let key_pair = P256KeyPair::random();
+            let caller = key_pair.address;
+            let contract = Address::repeat_byte(0x60);
+
+            let mut evm = create_funded_evm_t6(caller);
+
+            evm.ctx.db_mut().insert_account_info(
+                contract,
+                AccountInfo {
+                    code: Some(create_clear_bytecode.clone()),
+                    ..Default::default()
+                },
+            );
+
+            // Select the storage-creation mode for the contract that owns the slot.
+            seed_gas_token_state(&mut evm, contract, 0, mode);
+
+            let tx = TxBuilder::new()
+                .call(contract, &[])
+                .gas_limit(600_000)
+                .build();
+            let signed_tx = key_pair.sign_tx(tx)?;
+            let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+            let result = evm.transact_commit(tx_env)?;
+            assert!(
+                result.is_success(),
+                "create+clear tx should succeed in {mode:?} mode"
+            );
+
+            let gas_used = result.tx_gas_used();
+            assert_eq!(
+                gas_used, expected_gas,
+                "T6 create+clear gas should be exact in {mode:?} mode"
+            );
+
+            // The gas-token balance corroborates the per-mode gas: RefundTokens consumes its
+            // minted token against the deferred create credit (lands at 0), the others keep it (1).
+            assert_eq!(
+                gas_token_balance(&evm, contract),
+                expected_balance,
+                "T6 post-tx gas-token balance should be exact in {mode:?} mode"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// TIP-1060: the gas tokens minted by clearing a slot in a first transaction change the
+    /// cost of creating a slot in a *later* transaction, and that dependence is mode-specific.
+    ///
+    /// The contract branches on calldata: with empty calldata it does the create+clear pair
+    /// (SSTORE 0->1 then 1->0), minting a token; with non-empty calldata it does a single
+    /// create (SSTORE 0->1) that can consume a previously minted token. We run the minting
+    /// transaction first, then the create-only transaction, and assert the create-only gas
+    /// depends on the mode: `DirectTokens` spends the token for a flat charge, while
+    /// `PreserveTokens`/`RefundTokens` pay the full creation cost regardless of balance.
+    ///
+    /// The gas-token balance is checked after each transaction to make the mechanism explicit:
+    /// `DirectTokens` consumes the minted token (balance drops to 0), `RefundTokens` keeps
+    /// accruing deferred credits, and `PreserveTokens` leaves the create leg untouched.
+    #[test]
+    fn test_tip1060_minted_tokens_affect_second_tx() -> eyre::Result<()> {
+        // Bytecode:
+        //   CALLDATASIZE PUSH1 0x0f JUMPI            ; if calldata non-empty, jump to create-only
+        //   PUSH1 0x01 PUSH1 0x00 SSTORE             ; 0->1 (create)
+        //   PUSH1 0x00 PUSH1 0x00 SSTORE             ; 1->0 (clear, mints a token)
+        //   STOP
+        //   JUMPDEST(0x0f) PUSH1 0x01 PUSH1 0x00 SSTORE STOP  ; create-only path
+        let branching_bytecode =
+            Bytecode::new_raw(bytes!("36600f5760016000556000600055005b600160005500"));
+
+        // (mode, expected second-tx gas, expected balance after tx1, expected balance after tx2).
+        //
+        // Gas: the token minted by the first tx's clear leg is only *spent* on the second tx's
+        // create leg under DirectTokens (flat charge instead of full state gas); RefundTokens
+        // and PreserveTokens ignore the balance on a create and pay the full cost.
+        //
+        // Balance traces the mechanism behind the gas:
+        // - RefundTokens: tx1 → 2 (clear mint + deferred create credit), tx2's create accrues
+        //   another deferred credit flushed at end-of-tx → 3. Tokens are never spent here.
+        // - PreserveTokens: tx1 → 1 (clear mint only); tx2's create touches nothing → stays 1.
+        // - DirectTokens: tx1 → 1 (clear mint); tx2's create *consumes* the token → 0, which is
+        //   exactly why the second tx is cheap.
+        let cases = [
+            (CreditMode::Refund, 282_994u64, 0u64, 0u64),
+            (CreditMode::Preserve, 282_994u64, 1u64, 1u64),
+            (CreditMode::Direct, 50_894u64, 1u64, 0u64),
+        ];
+
+        for (mode, expected_second_gas, expected_credit_tx1, expected_credit_tx2) in cases {
+            let key_pair = P256KeyPair::random();
+            let caller = key_pair.address;
+            let contract = Address::repeat_byte(0x61);
+
+            let mut evm = create_funded_evm_t6(caller);
+
+            evm.ctx.db_mut().insert_account_info(
+                contract,
+                AccountInfo {
+                    code: Some(branching_bytecode.clone()),
+                    ..Default::default()
+                },
+            );
+            seed_gas_token_state(&mut evm, contract, 0, mode);
+
+            // First transaction (empty calldata): create+clear, minting a gas token.
+            let tx1 = TxBuilder::new()
+                .call(contract, &[])
+                .nonce(0)
+                .gas_limit(600_000)
+                .build();
+            let signed_tx1 = key_pair.sign_tx(tx1)?;
+            let tx_env1 = TempoTxEnv::from_recovered_tx(&signed_tx1, caller);
+            let result1 = evm.transact_commit(tx_env1)?;
+            assert!(
+                result1.is_success(),
+                "minting tx should succeed in {mode:?} mode"
+            );
+            assert_eq!(
+                gas_token_balance(&evm, contract),
+                expected_credit_tx1,
+                "gas-token balance after the minting tx should be exact in {mode:?} mode"
+            );
+
+            // Second transaction (non-empty calldata): a single 0->1 create that can spend
+            // the previously minted token, depending on the mode.
+            let tx2 = TxBuilder::new()
+                .call(contract, &[0x01])
+                .nonce(1)
+                .gas_limit(600_000)
+                .build();
+            let signed_tx2 = key_pair.sign_tx(tx2)?;
+            let tx_env2 = TempoTxEnv::from_recovered_tx(&signed_tx2, caller);
+            let result2 = evm.transact_commit(tx_env2)?;
+            assert!(
+                result2.is_success(),
+                "create-only tx should succeed in {mode:?} mode"
+            );
+
+            let second_gas = result2.tx_gas_used();
+            assert_eq!(
+                second_gas, expected_second_gas,
+                "T6 second-tx create gas should be exact in {mode:?} mode"
+            );
+
+            // The post-tx2 balance shows the mechanism behind the gas: DirectTokens spends the
+            // minted token (→ 0), RefundTokens keeps accruing deferred credits (→ 3), and
+            // PreserveTokens leaves the create leg untouched (→ 1).
+            assert_eq!(
+                gas_token_balance(&evm, contract),
+                expected_credit_tx2,
+                "gas-token balance after the create-only tx should be exact in {mode:?} mode"
+            );
+        }
 
         Ok(())
     }

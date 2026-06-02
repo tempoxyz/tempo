@@ -1534,24 +1534,43 @@ where
         Ok(())
     }
 
+    #[inline]
+    fn last_frame_result(
+        &mut self,
+        evm: &mut Self::Evm,
+        original_reservoir: u64,
+        frame_result: &mut FrameResult,
+    ) -> Result<(), Self::Error> {
+        MainnetHandler::<_, Self::Error, _>::default().last_frame_result(
+            evm,
+            original_reservoir,
+            frame_result,
+        )?;
+        tip1060::apply_refund(evm, frame_result.gas_mut())?;
+        Ok(())
+    }
+
     fn reimburse_caller(
         &self,
         evm: &mut Self::Evm,
-        exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+        exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
-        // TIP-1060: flush transient storage-credit refunds into persistent storage.
-        tip1060::apply_refund(evm)?;
+        let gas = exec_result.gas_mut();
         // Call collectFeePostTx on TipFeeManager precompile
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
         let basefee = u128::from(context.block().basefee());
-        let effective_gas_price = tx.effective_gas_price(basefee);
-        let gas = exec_result.gas();
+        let mut effective_gas_price = tx.effective_gas_price(basefee);
+        let gas_used = gas.used().saturating_sub(gas.reservoir());
+        if context.cfg.spec.is_t6() && tx.is_discounted_payment() {
+            // TIP-1059 subtracts only the base-fee discount. The transaction-derived priority-fee
+            // component remains payable.
+            // https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#applying-the-discount
+            effective_gas_price =
+                tempo_t6_discounted_payment_effective_gas_price(effective_gas_price);
+        }
 
-        let actual_spending = calc_gas_balance_spending(
-            gas.used().saturating_sub(gas.reservoir()),
-            effective_gas_price,
-        );
+        let actual_spending = calc_gas_balance_spending(gas_used, effective_gas_price);
         let refund_amount = tx.effective_balance_spending(
             context.block.basefee.into(),
             context.block.blob_gasprice().unwrap_or_default(),
