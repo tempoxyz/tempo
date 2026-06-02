@@ -19,6 +19,7 @@ use revm::{
     context::journaled_state::JournalLoadError,
     precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
+use tempo_contracts::precompiles::FeatureRegistryError;
 use tempo_contracts::precompiles::{
     AccountKeychainError, AddrRegistryError, FeeManagerError, NonceError, ReceivePolicyGuardError,
     RolesAuthError, SignatureVerifierError, StablecoinDEXError, TIP20ChannelReserveError,
@@ -95,6 +96,10 @@ pub enum TempoPrecompileError {
     #[error("TIP1028 blocked transfers error: {0:?}")]
     ReceivePolicyGuardError(ReceivePolicyGuardError),
 
+    /// Error from feature registry precompile
+    #[error("Feature registry error: {0:?}")]
+    FeatureRegistryError(FeatureRegistryError),
+
     /// Gas limit exceeded during precompile execution.
     #[error("Gas limit exceeded")]
     OutOfGas,
@@ -157,6 +162,7 @@ impl TempoPrecompileError {
             Self::AccountKeychainError(e) => e.selector(),
             Self::SignatureVerifierError(e) => e.selector(),
             Self::ReceivePolicyGuardError(e) => e.selector(),
+            Self::FeatureRegistryError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) => Panic::SELECTOR,
             Self::OutOfGas | Self::Fatal(_) => [0, 0, 0, 0],
@@ -184,6 +190,7 @@ impl TempoPrecompileError {
             | Self::AccountKeychainError(_)
             | Self::SignatureVerifierError(_)
             | Self::ReceivePolicyGuardError(_)
+            | Self::FeatureRegistryError(_)
             | Self::UnknownFunctionSelector(_) => false,
         }
     }
@@ -232,6 +239,7 @@ impl TempoPrecompileError {
             Self::AccountKeychainError(e) => e.abi_encode().into(),
             Self::SignatureVerifierError(e) => e.abi_encode().into(),
             Self::ReceivePolicyGuardError(e) => e.abi_encode().into(),
+            Self::FeatureRegistryError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
             }
@@ -304,6 +312,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::AccountKeychainError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::SignatureVerifierError);
     add_errors_to_registry(&mut registry, TempoPrecompileError::ReceivePolicyGuardError);
+    add_errors_to_registry(&mut registry, TempoPrecompileError::FeatureRegistryError);
 
     registry
 }

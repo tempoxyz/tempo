@@ -8,7 +8,7 @@ use crate::{
     storage::{Handler, Mapping},
 };
 use alloy::primitives::{Address, U256};
-use tempo_contracts::precompiles::IFeatureRegistry;
+use tempo_contracts::precompiles::{FeatureRegistryError, IFeatureRegistry};
 use tempo_precompiles_macros::contract;
 
 // Activation requires 80% support from the active validator set, represented exactly as 4/5.
@@ -63,5 +63,18 @@ impl FeatureRegistry {
     /// Returns the latest feature tip reported as supported by `validator`.
     pub fn validator_supported_features_tip(&self, validator: Address) -> Result<u64> {
         self.validator_supported_features_tip[validator].read()
+    }
+
+    /// Records the highest protocol feature tip reported as supported by a validator.
+    pub fn set_supported_features_tip(
+        &mut self,
+        call: IFeatureRegistry::setSupportedFeaturesTipCall,
+    ) -> Result<()> {
+        let previous = self.validator_supported_features_tip[call.validator].read()?;
+        if call.featuresTip < previous {
+            return Err(FeatureRegistryError::supported_features_tip_decreased().into());
+        }
+
+        self.validator_supported_features_tip[call.validator].write(call.featuresTip)
     }
 }
