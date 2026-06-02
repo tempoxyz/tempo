@@ -109,7 +109,7 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) rlp_block_size_bytes_last: Gauge,
     /// Time to compute the hashed post-state from the bundle state.
     pub(crate) hashed_post_state_duration_seconds: Histogram,
-    /// Time to compute the state root and trie updates via `state_root_with_updates`.
+    /// Time to compute fallback state-root data.
     pub(crate) state_root_with_updates_duration_seconds: Histogram,
 }
 
@@ -165,7 +165,8 @@ impl TempoPayloadBuilderMetrics {
 }
 
 /// Wraps a [`StateProvider`] reference to instrument `hashed_post_state` and
-/// `state_root_with_updates` with tracing spans and histogram metrics during `builder.finish()`.
+/// Instruments state-root provider calls with tracing spans and histogram metrics during
+/// `builder.finish()`.
 pub(crate) struct InstrumentedFinishProvider<'a> {
     pub(crate) inner: &'a dyn StateProvider,
     pub(crate) metrics: TempoPayloadBuilderMetrics,
@@ -247,20 +248,13 @@ impl StateRootProvider for InstrumentedFinishProvider<'_> {
         result
     }
 
-    fn lattice_state_root_with_updates(
+    fn lattice_state_root(
         &self,
         bundle_state: &reth_revm::db::BundleState,
-        hashed_state: HashedPostState,
-        precomputed_trie_updates: Option<TrieUpdates>,
-    ) -> ProviderResult<(B256, TrieUpdates, LatticeAccumulatorUpdates)> {
+    ) -> ProviderResult<(B256, LatticeAccumulatorUpdates)> {
         let start = Instant::now();
-        let _span =
-            debug_span!(target: "payload_builder", "lattice_state_root_with_updates").entered();
-        let result = self.inner.lattice_state_root_with_updates(
-            bundle_state,
-            hashed_state,
-            precomputed_trie_updates,
-        );
+        let _span = debug_span!(target: "payload_builder", "lattice_state_root").entered();
+        let result = self.inner.lattice_state_root(bundle_state);
         drop(_span);
         self.metrics
             .state_root_with_updates_duration_seconds
