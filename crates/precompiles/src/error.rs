@@ -19,12 +19,11 @@ use revm::{
     context::journaled_state::JournalLoadError,
     precompile::{PrecompileError, PrecompileHalt, PrecompileOutput, PrecompileResult},
 };
-use tempo_contracts::precompiles::FeatureRegistryError;
 use tempo_contracts::precompiles::{
-    AccountKeychainError, AddrRegistryError, FeeManagerError, NonceError, ReceivePolicyGuardError,
-    RolesAuthError, SignatureVerifierError, StablecoinDEXError, TIP20ChannelReserveError,
-    TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError, UnknownFunctionSelector,
-    ValidatorConfigError, ValidatorConfigV2Error,
+    AccountKeychainError, AddrRegistryError, FeatureRegistryError, FeeManagerError, NonceError,
+    ReceivePolicyGuardError, RolesAuthError, SignatureVerifierError, StablecoinDEXError,
+    TIP20ChannelReserveError, TIP20FactoryError, TIP403RegistryError, TIPFeeAMMError,
+    UnknownFunctionSelector, ValidatorConfigError, ValidatorConfigV2Error,
 };
 
 /// Top-level error type for all Tempo precompile operations
