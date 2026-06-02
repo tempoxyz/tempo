@@ -551,6 +551,8 @@ mod tests {
     #[cfg(feature = "bal")]
     use alloy_consensus::BlockHeader as _;
     use alloy_primitives::{B256, bytes, keccak256};
+    #[cfg(feature = "bal")]
+    use commonware_codec::EncodeSize as _;
     #[cfg(not(feature = "bal"))]
     use commonware_codec::Write as _;
     use commonware_codec::{Encode, Read as _};
@@ -713,6 +715,25 @@ mod tests {
             decoded.block_access_list().map(|bytes| bytes.as_ref()),
             Some(block_access_list.as_ref())
         );
+    }
+
+    #[cfg(feature = "bal")]
+    #[test]
+    fn encode_size_with_cached_execution_size_includes_block_access_list_once() {
+        let block_access_list = bytes!("0xc0");
+        let execution_block =
+            execution_block_with_block_access_list_hash(keccak256(block_access_list.as_ref()));
+        let mut execution_block_bytes = Vec::new();
+        alloy_rlp::Encodable::encode(&execution_block, &mut execution_block_bytes);
+
+        let block = Block::from_execution_block_with_encoded_size(
+            execution_block,
+            Some(block_access_list),
+            execution_block_bytes.len(),
+        )
+        .unwrap();
+
+        assert_eq!(block.encode_size(), block.encode().len());
     }
 
     #[cfg(feature = "bal")]

@@ -1147,6 +1147,7 @@ where
             Some(executed_block),
             validation_work_duration,
             validator_validation_duration,
+            rlp_length,
             recorded_block_size_bytes,
         );
 
@@ -1393,7 +1394,15 @@ mod tests {
         .unwrap();
         let rlp_length = block.rlp_length();
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, Duration::ZERO, rlp_length)
+        TempoBuiltPayload::new(
+            eth,
+            None,
+            None,
+            Duration::ZERO,
+            Duration::ZERO,
+            rlp_length,
+            rlp_length,
+        )
     }
 
     #[test]
