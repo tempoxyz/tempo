@@ -57,6 +57,7 @@ use reth_transaction_pool::{
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::{
+    ops::{Deref, DerefMut},
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -78,6 +79,54 @@ use tempo_transaction_pool::{
 };
 use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
+
+struct BackgroundDrop<T: Send + 'static> {
+    value: Option<T>,
+    executor: TaskExecutor,
+    task_name: &'static str,
+}
+
+impl<T: Send + 'static> BackgroundDrop<T> {
+    fn new(value: T, executor: TaskExecutor, task_name: &'static str) -> Self {
+        Self {
+            value: Some(value),
+            executor,
+            task_name,
+        }
+    }
+
+    fn drop_in_background(mut self) {
+        self.spawn_drop();
+    }
+
+    fn spawn_drop(&mut self) {
+        let Some(value) = self.value.take() else {
+            return;
+        };
+        self.executor
+            .spawn_blocking_named(self.task_name, move || drop(value));
+    }
+}
+
+impl<T: Send + 'static> Deref for BackgroundDrop<T> {
+    type Target = T;
+
+    fn deref(&self) -> &Self::Target {
+        self.value.as_ref().expect("background drop value exists")
+    }
+}
+
+impl<T: Send + 'static> DerefMut for BackgroundDrop<T> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.value.as_mut().expect("background drop value exists")
+    }
+}
+
+impl<T: Send + 'static> Drop for BackgroundDrop<T> {
+    fn drop(&mut self) {
+        self.spawn_drop();
+    }
+}
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
 fn has_expired_transactions(subblock: &RecoveredSubBlock, timestamp: u64) -> bool {
@@ -531,7 +580,7 @@ where
         ));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
-        let mut best_txs = StateAwareBestTransactions::new(BestTransactionsPrewarming::new(
+        let best_txs = StateAwareBestTransactions::new(BestTransactionsPrewarming::new(
             self.executor.clone(),
             self.provider.clone(),
             execution_cache,
@@ -540,6 +589,8 @@ where
             best_txs,
             self.prewarming_buffers.clone(),
         ));
+        let mut best_txs =
+            BackgroundDrop::new(best_txs, self.executor.clone(), "builder-prewarm-drop");
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
@@ -747,8 +798,8 @@ where
             ));
         };
 
-        // cancel pre-warming, if any, by dropping the iter
-        drop(best_txs);
+        // Cancel prewarming without draining buffered overlays on the payload-builder thread.
+        best_txs.drop_in_background();
 
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =
