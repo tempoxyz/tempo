@@ -102,10 +102,10 @@ const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 /// - `ring_ptr` SLOAD/SSTORE: Accessed by almost every expiring nonce tx in a block, so
 ///   amortized cost approaches ~200 gas. May be moved out of EVM storage in the future.
 ///
-/// Why SSTORE_RESET (2,900) instead of SSTORE_SET (20,000) for `seen[tx_hash]`:
+/// Why SSTORE_RESET (2,900) instead of SSTORE_SET (250,000) for `seen[tx_hash]`:
 /// - SSTORE_SET cost exists to penalize permanent state growth
 /// - Expiring nonce data is ephemeral: evicted within 30 seconds, fixed-size buffer (300k)
-/// - No permanent state growth, so the 20k penalty doesn't apply
+/// - No permanent state growth, so the 250k penalty doesn't apply
 ///
 /// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
 pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
