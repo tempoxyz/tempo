@@ -10,7 +10,8 @@ use reth_storage_api::{
 use reth_trie_common::{
     AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, MultiProof,
     MultiProofTargets, StorageMultiProof, StorageProof, TrieInput,
-    lattice::LatticeAccumulatorUpdates, updates::TrieUpdates,
+    lattice::{LatticeAccumulatorUpdates, LatticeHashState},
+    updates::TrieUpdates,
 };
 use std::time::Instant;
 use tracing::debug_span;
@@ -265,6 +266,17 @@ impl StateRootProvider for InstrumentedFinishProvider<'_> {
             .state_root_with_updates_duration_seconds
             .record(start.elapsed());
         result
+    }
+
+    fn lattice_accumulator_seed(&self) -> ProviderResult<LatticeAccumulatorUpdates> {
+        self.inner.lattice_accumulator_seed()
+    }
+
+    fn lattice_storage_accumulator(
+        &self,
+        hashed_address: B256,
+    ) -> ProviderResult<Option<LatticeHashState>> {
+        self.inner.lattice_storage_accumulator(hashed_address)
     }
 
     fn state_root_from_nodes_with_updates(

@@ -56,6 +56,9 @@ use reth_transaction_pool::{
     BestTransactions, BestTransactionsAttributes, PoolTransaction, TransactionPool,
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
+use reth_trie_parallel::state_root_task::{
+    LatticeRootMessage, LatticeStateHookSender, StateHookSender, StateRootMessage,
+};
 use std::{
     sync::{
         Arc,
@@ -276,6 +279,7 @@ where
                 Default::default(),
                 None,
                 None,
+                None,
                 config,
                 Default::default(),
                 Default::default(),
@@ -317,6 +321,7 @@ where
             cached_reads,
             execution_cache,
             mut trie_handle,
+            lattice_handle,
             config,
             cancel,
             best_payload,
@@ -486,11 +491,24 @@ where
         // validator config contract, if available.
         maybe_override_fee_recipient(&mut executor, &attributes);
 
-        if let Some(ref handle) = trie_handle {
-            executor
-                .evm_mut()
-                .db_mut()
-                .set_state_hook(Some(Box::new(handle.state_hook())));
+        let sparse_sender = trie_handle
+            .as_ref()
+            .map(|handle| StateHookSender::new(handle.updates_tx().clone()));
+        let lattice_sender = lattice_handle
+            .as_ref()
+            .map(|handle| LatticeStateHookSender::new(handle.updates_tx().clone()));
+
+        if sparse_sender.is_some() || lattice_sender.is_some() {
+            executor.evm_mut().db_mut().set_state_hook(Some(Box::new(
+                move |state: &reth_revm::state::EvmState| {
+                    if let Some(sender) = &sparse_sender {
+                        let _ = sender.send(StateRootMessage::StateUpdate(state.clone()));
+                    }
+                    if let Some(sender) = &lattice_sender {
+                        let _ = sender.send(LatticeRootMessage::StateUpdate(state.clone()));
+                    }
+                },
+            )));
         }
 
         executor.apply_pre_execution_changes().map_err(|err| {
@@ -875,8 +893,8 @@ where
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
 
-        // Drop the state hook to signal that execution is complete and the sparse trie task can
-        // finalize the state root.
+        // Drop the state hook to signal that execution is complete and the root tasks can
+        // finalize.
         db.set_state_hook(None);
 
         let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
@@ -921,6 +939,32 @@ where
             }
             .unzip();
 
+        let streamed_lattice_root = if let Some(mut handle) = lattice_handle {
+            let _span = debug_span!(target: "payload_builder", "await_lattice_root").entered();
+            match handle.lattice_root() {
+                Ok(outcome) => {
+                    debug!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        state_root = ?outcome.state_root,
+                        "received state root from lattice task"
+                    );
+                    Some(outcome)
+                }
+                Err(err) => {
+                    warn!(
+                        target: "payload_builder",
+                        id = %payload_id,
+                        %err,
+                        "lattice root task failed, falling back to bundle lattice root"
+                    );
+                    None
+                }
+            }
+        } else {
+            None
+        };
+
         let block_access_list = db.take_built_alloy_bal();
         let block_access_list_hash = block_access_list
             .as_ref()
@@ -936,16 +980,25 @@ where
             Arc::new(trie_updates)
         };
 
-        let (state_root, trie_updates, lattice_accumulator_updates) = finish_provider
-            .lattice_state_root_with_updates(
-                &db.bundle_state,
-                hashed_state.clone(),
-                Some(trie_updates.as_ref().clone()),
-            )
-            .map(|(root, trie_updates, lattice_updates)| {
-                (root, Arc::new(trie_updates), Arc::new(lattice_updates))
-            })
-            .map_err(BlockExecutionError::other)?;
+        let (state_root, trie_updates, lattice_accumulator_updates) =
+            if let Some(outcome) = streamed_lattice_root {
+                (
+                    outcome.state_root,
+                    trie_updates,
+                    outcome.accumulator_updates,
+                )
+            } else {
+                finish_provider
+                    .lattice_state_root_with_updates(
+                        &db.bundle_state,
+                        hashed_state.clone(),
+                        Some(trie_updates.as_ref().clone()),
+                    )
+                    .map(|(root, trie_updates, lattice_updates)| {
+                        (root, Arc::new(trie_updates), Arc::new(lattice_updates))
+                    })
+                    .map_err(BlockExecutionError::other)?
+            };
 
         let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
             .blocking_recv()

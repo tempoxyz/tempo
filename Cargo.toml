@@ -140,7 +140,9 @@ tempo-telemetry-util = { path = "crates/telemetry-util", default-features = fals
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
 
-reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", features = [
+  "lattice-state-root",
+] }
 reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", default-features = false, features = [
   "lattice-state-root",
 ] }
@@ -216,6 +218,9 @@ reth-trie-common = { git = "https://github.com/paradigmxyz/reth", branch = "alex
   "lattice-state-root",
 ] }
 reth-trie-db = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", features = [
+  "lattice-state-root",
+] }
+reth-trie-parallel = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", features = [
   "lattice-state-root",
 ] }
 
