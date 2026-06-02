@@ -343,6 +343,7 @@ mod tests {
         state::{AccountInfo, Bytecode},
     };
     use sha2::{Digest, Sha256};
+    use std::collections::HashMap;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{
         AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
@@ -378,6 +379,21 @@ mod tests {
     const IDENTITY_PRECOMPILE: Address = Address::new([
         0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x04,
     ]);
+
+    const COLLISION_SEARCH_LIMIT: u64 = 30_000;
+
+    fn expiring_nonce_hash_pair_with_same_first_cell(valid_before: u64) -> (B256, B256) {
+        let mut seen: HashMap<U256, B256> = HashMap::default();
+        for i in 0..COLLISION_SEARCH_LIMIT {
+            let hash = keccak256(i.to_be_bytes());
+            let slot = NonceManager::expiring_nonce_first_cell_slot(hash, valid_before);
+            if let Some(first_hash) = seen.insert(slot, hash) {
+                return (first_hash, hash);
+            }
+        }
+
+        panic!("test setup must find a first-cell collision in {COLLISION_SEARCH_LIMIT} hashes");
+    }
 
     // ==================== Test Utility Functions ====================
 
@@ -550,21 +566,15 @@ mod tests {
         evm.ctx.cfg.spec = TempoHardfork::T1C;
 
         let valid_before = now + 20;
-        let first_hash = keccak256(0u64.to_be_bytes());
+        let (first_hash, second_hash) = expiring_nonce_hash_pair_with_same_first_cell(valid_before);
         let (first_cell_id, first_cell) = StorageCtx::enter_ctx(&mut evm.ctx, || {
             NonceManager::new().checked_expiring_nonce_cell(first_hash, valid_before)
         })?;
 
-        let second_hash = (1u64..1_000_000)
-            .find_map(|i| {
-                let hash = keccak256(i.to_be_bytes());
-                let (cell_id, _) = StorageCtx::enter_ctx(&mut evm.ctx, || {
-                    NonceManager::new().checked_expiring_nonce_cell(hash, valid_before)
-                })
-                .ok()?;
-                (cell_id == first_cell_id && hash != first_hash).then_some(hash)
-            })
-            .expect("test setup must find two hashes with the same first cell");
+        let (second_cell_without_overlay, _) = StorageCtx::enter_ctx(&mut evm.ctx, || {
+            NonceManager::new().checked_expiring_nonce_cell(second_hash, valid_before)
+        })?;
+        assert_eq!(second_cell_without_overlay, first_cell_id);
 
         evm.queue_expiring_nonce(PendingExpiringNonce {
             replay_hash: first_hash,
