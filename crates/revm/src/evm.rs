@@ -382,9 +382,10 @@ mod tests {
         evm
     }
 
-    /// Create an EVM with T6 hardfork enabled and a funded account.
-    /// T6 activates the TIP-1060 SSTORE storage gas-token hook. TIP-1016 (Amsterdam
-    /// EIP-8037 state-gas split) is disabled in T6, matching production config.
+    /// Creates a T6-enabled EVM with a funded account.
+    /// This activates the TIP-1060 SSTORE gas-token hook while keeping the
+    /// TIP-1016 state-gas split disabled to match production.
+
     fn create_funded_evm_t6(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
