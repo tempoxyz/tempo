@@ -9,7 +9,8 @@ use reth_storage_api::{
 };
 use reth_trie_common::{
     AccountProof, ExecutionWitnessMode, HashedPostState, HashedStorage, MultiProof,
-    MultiProofTargets, StorageMultiProof, StorageProof, TrieInput, updates::TrieUpdates,
+    MultiProofTargets, StorageMultiProof, StorageProof, TrieInput,
+    lattice::LatticeAccumulatorUpdates, updates::TrieUpdates,
 };
 use std::time::Instant;
 use tracing::debug_span;
@@ -238,6 +239,27 @@ impl StateRootProvider for InstrumentedFinishProvider<'_> {
         let start = Instant::now();
         let _span = debug_span!(target: "payload_builder", "state_root_with_updates").entered();
         let result = self.inner.state_root_with_updates(hashed_state);
+        drop(_span);
+        self.metrics
+            .state_root_with_updates_duration_seconds
+            .record(start.elapsed());
+        result
+    }
+
+    fn lattice_state_root_with_updates(
+        &self,
+        bundle_state: &reth_revm::db::BundleState,
+        hashed_state: HashedPostState,
+        precomputed_trie_updates: Option<TrieUpdates>,
+    ) -> ProviderResult<(B256, TrieUpdates, LatticeAccumulatorUpdates)> {
+        let start = Instant::now();
+        let _span =
+            debug_span!(target: "payload_builder", "lattice_state_root_with_updates").entered();
+        let result = self.inner.lattice_state_root_with_updates(
+            bundle_state,
+            hashed_state,
+            precomputed_trie_updates,
+        );
         drop(_span);
         self.metrics
             .state_root_with_updates_duration_seconds

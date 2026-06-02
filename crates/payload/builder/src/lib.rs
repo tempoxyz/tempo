@@ -926,15 +926,26 @@ where
             .as_ref()
             .map(|bal| compute_block_access_list_hash(bal.as_slice()));
 
-        let (state_root, trie_updates) = if let Some(outcome) = state_root_outcome {
-            (outcome.state_root, outcome.trie_updates)
+        let trie_updates = if let Some(outcome) = state_root_outcome {
+            outcome.trie_updates
         } else {
-            let (state_root, trie_updates) = finish_provider
+            let (_, trie_updates) = finish_provider
                 .state_root_with_updates(hashed_state.clone())
                 .map_err(BlockExecutionError::other)?;
 
-            (state_root, Arc::new(trie_updates))
+            Arc::new(trie_updates)
         };
+
+        let (state_root, trie_updates, lattice_accumulator_updates) = finish_provider
+            .lattice_state_root_with_updates(
+                &db.bundle_state,
+                hashed_state.clone(),
+                Some(trie_updates.as_ref().clone()),
+            )
+            .map(|(root, trie_updates, lattice_updates)| {
+                (root, Arc::new(trie_updates), Arc::new(lattice_updates))
+            })
+            .map_err(BlockExecutionError::other)?;
 
         let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
             .blocking_recv()
@@ -1108,6 +1119,7 @@ where
             execution_output: Arc::new(execution_output),
             hashed_state: Arc::new(hashed_state),
             trie_updates,
+            lattice_accumulator_updates,
         };
 
         let payload = TempoBuiltPayload::new(
