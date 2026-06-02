@@ -561,7 +561,7 @@ mod tests {
     };
     use alloy_primitives::{Bytes, Signature, TxKind, U256, address, aliases::U96};
     use alloy_sol_types::SolCall;
-    use tempo_contracts::precompiles::ITIP20ChannelReserve;
+    use tempo_contracts::precompiles::{ITIP20ChannelReserve, MAX_PAYMENT_CALLDATA_LEN};
 
     const PAYMENT_TKN: Address = address!("20c0000000000000000000000000000000000001");
 
@@ -609,16 +609,24 @@ mod tests {
     }
 
     fn stealth_payment_calldata() -> Bytes {
+        stealth_payment_calldata_with(metadata(0x01), Bytes::from_static(b"memo"))
+    }
+
+    fn metadata(scheme: u8) -> Bytes {
         let mut metadata = vec![0u8; 35];
-        metadata[0] = 0x01;
+        metadata[0] = scheme;
         metadata[1] = 0x02;
         metadata[34] = 0xa7;
+        metadata.into()
+    }
+
+    fn stealth_payment_calldata_with(metadata: Bytes, memo: Bytes) -> Bytes {
         ITIP20Stealth::transferCall {
             token: PAYMENT_TKN,
             stealthAddress: Address::random(),
             amount: U256::from(1),
-            metadata: metadata.into(),
-            memo: Bytes::from_static(b"memo"),
+            metadata,
+            memo,
         }
         .abi_encode()
         .into()
@@ -878,6 +886,34 @@ mod tests {
             assert!(
                 envelope.is_payment_v2(),
                 "V2 must accept valid TIP20Stealth calldata"
+            );
+        }
+    }
+
+    #[test]
+    fn test_payment_v2_rejects_invalid_tip20_stealth_metadata() {
+        for calldata in [
+            stealth_payment_calldata_with(Bytes::new(), Bytes::new()),
+            stealth_payment_calldata_with(metadata(0xff), Bytes::new()),
+        ] {
+            for envelope in payment_envelopes_to(TIP20_STEALTH_ADDRESS, calldata) {
+                assert!(
+                    !envelope.is_payment_v2(),
+                    "V2 rejects invalid TIP20Stealth metadata"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_payment_v2_rejects_oversized_tip20_stealth_calldata() {
+        let calldata =
+            stealth_payment_calldata_with(metadata(0x01), vec![0; MAX_PAYMENT_CALLDATA_LEN].into());
+        assert!(calldata.len() > MAX_PAYMENT_CALLDATA_LEN);
+        for envelope in payment_envelopes_to(TIP20_STEALTH_ADDRESS, calldata) {
+            assert!(
+                !envelope.is_payment_v2(),
+                "V2 rejects oversized TIP20Stealth calldata"
             );
         }
     }

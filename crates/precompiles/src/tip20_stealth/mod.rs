@@ -8,15 +8,12 @@ use crate::{
     tip20::{ITIP20, TIP20Token},
 };
 use alloy::primitives::{Address, U256};
-pub use tempo_contracts::precompiles::{ITIP20Stealth, TIP20StealthError, TIP20StealthEvent};
+pub use tempo_contracts::precompiles::{
+    ITIP20Stealth, TIP20_STEALTH_SCHEME_P256 as SCHEME_P256,
+    TIP20_STEALTH_SCHEME_SECP256K1 as SCHEME_SECP256K1,
+    TIP20_STEALTH_V1_METADATA_LEN as V1_METADATA_LEN, TIP20StealthError, TIP20StealthEvent,
+};
 use tempo_precompiles_macros::contract;
-
-/// secp256k1 stealth-address derivation scheme.
-pub const SCHEME_SECP256K1: u8 = 0x01;
-/// P-256 stealth-address derivation scheme.
-pub const SCHEME_P256: u8 = 0x02;
-/// Metadata length for all TIP-1069 v1 schemes.
-pub const V1_METADATA_LEN: usize = 35;
 
 #[contract(addr = TIP20_STEALTH_ADDRESS)]
 pub struct TIP20Stealth {}
@@ -36,7 +33,7 @@ impl TIP20Stealth {
         validate_metadata(&call.metadata)?;
 
         let mut token = TIP20Token::from_address(call.token)?;
-        self.ensure_no_custody(&token)?;
+        let initial_custody_balance = self.custody_balance(&token)?;
 
         token.transfer_as_system(
             self.address,
@@ -47,7 +44,7 @@ impl TIP20Stealth {
             },
         )?;
 
-        self.ensure_no_custody(&token)?;
+        self.ensure_no_custody_increase(&token, initial_custody_balance)?;
         self.emit_event(TIP20StealthEvent::announce(
             call.token,
             call.stealthAddress,
@@ -58,11 +55,15 @@ impl TIP20Stealth {
         Ok(true)
     }
 
-    fn ensure_no_custody(&self, token: &TIP20Token) -> Result<()> {
-        let balance = token.balance_of(ITIP20::balanceOfCall {
+    fn custody_balance(&self, token: &TIP20Token) -> Result<U256> {
+        token.balance_of(ITIP20::balanceOfCall {
             account: self.address,
-        })?;
-        if balance != U256::ZERO {
+        })
+    }
+
+    fn ensure_no_custody_increase(&self, token: &TIP20Token, initial_balance: U256) -> Result<()> {
+        let balance = self.custody_balance(token)?;
+        if balance > initial_balance {
             return Err(TIP20StealthError::precompile_custody().into());
         }
         Ok(())

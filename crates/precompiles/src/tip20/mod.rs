@@ -28,7 +28,7 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
-    storage::{Handler, Mapping, StorageCtx},
+    storage::{Handler, Mapping},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
@@ -915,9 +915,12 @@ impl TIP20Token {
             return Err(TIP20Error::unauthorized().into());
         }
 
-        let to = Recipient::direct(to);
+        let to = Recipient::resolve(to)?;
         self.check_not_paused()?;
         to.validate()?;
+        if to.target == RECEIVE_POLICY_GUARD_ADDRESS {
+            return Err(ReceivePolicyGuardError::address_reserved().into());
+        }
         self.ensure_transfer_authorized(from, to.target)?;
         self.check_and_update_spending_limit(from, amount)?;
 
@@ -930,6 +933,9 @@ impl TIP20Token {
         }
 
         self._transfer(from, &to, amount)?;
+        if let Some(hop) = to.build_virtual_transfer_event(amount) {
+            self.emit_event(hop)?;
+        }
         Ok(true)
     }
 
@@ -1440,10 +1446,7 @@ impl Recipient {
     /// - the zero address (preventing accidental burns)
     /// - an address with the TIP-20 prefix (preventing transfers to token contracts)
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.target.is_zero()
-            || self.target.is_tip20()
-            || (StorageCtx.spec().is_t6() && self.target == TIP20_STEALTH_ADDRESS)
-        {
+        if self.target.is_zero() || self.target.is_tip20() || self.target == TIP20_STEALTH_ADDRESS {
             return Err(TIP20Error::invalid_recipient().into());
         }
         Ok(())
@@ -1588,11 +1591,12 @@ pub(crate) mod tests {
         account_keychain::{
             AccountKeychain, KeyRestrictions, SignatureType, TokenLimit, getRemainingLimitCall,
         },
-        address_registry::{AddressRegistry, MasterId, UserTag},
+        address_registry::{AddrRegistryError, AddressRegistry, MasterId, UserTag},
         error::TempoPrecompileError,
         receive_policy_guard::ReceivePolicyGuard,
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::{TIP20Setup, VIRTUAL_MASTER, register_virtual_master, setup_storage},
+        tip20_stealth::TIP20Stealth,
         tip403_registry::REJECT_ALL_POLICY_ID,
     };
     use alloy::primitives::{Address, FixedBytes, IntoLogData, U256, hex};
@@ -2692,6 +2696,119 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn test_system_transfer_as_t6_virtual_recipient_credits_master() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let admin = Address::random();
+        let from = Address::random();
+        let amount = U256::from(123);
+
+        StorageCtx::enter(&mut storage, || {
+            let (_, virtual_addr) = register_virtual_master(&mut AddressRegistry::new())?;
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(from, amount)
+                .clear_events()
+                .apply()?;
+
+            token.system_transfer_as(TIP20_STEALTH_ADDRESS, from, virtual_addr, amount)?;
+
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: from })?,
+                U256::ZERO
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: virtual_addr
+                })?,
+                U256::ZERO
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: VIRTUAL_MASTER
+                })?,
+                amount
+            );
+            token.assert_emitted_events(vec![
+                TIP20Event::transfer(from, virtual_addr, amount),
+                TIP20Event::transfer(virtual_addr, VIRTUAL_MASTER, amount),
+            ]);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_system_transfer_as_t6_unregistered_virtual_recipient_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let admin = Address::random();
+        let from = Address::random();
+        let amount = U256::from(123);
+        let virtual_addr = Address::new_virtual(MasterId::ZERO, UserTag::ZERO);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(from, amount)
+                .apply()?;
+
+            let result =
+                token.system_transfer_as(TIP20_STEALTH_ADDRESS, from, virtual_addr, amount);
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::AddrRegistryError(
+                    AddrRegistryError::VirtualAddressUnregistered(_)
+                ))
+            ));
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: from })?,
+                amount
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_system_transfer_as_t6_receive_policy_guard_recipient_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let admin = Address::random();
+        let from = Address::random();
+        let amount = U256::from(123);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(from, amount)
+                .apply()?;
+
+            let result = token.system_transfer_as(
+                TIP20_STEALTH_ADDRESS,
+                from,
+                RECEIVE_POLICY_GUARD_ADDRESS,
+                amount,
+            );
+            assert!(matches!(
+                result,
+                Err(TempoPrecompileError::ReceivePolicyGuardError(
+                    ReceivePolicyGuardError::AddressReserved(_)
+                ))
+            ));
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: from })?,
+                amount
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: RECEIVE_POLICY_GUARD_ADDRESS
+                })?,
+                U256::ZERO
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn test_transfer_as_system_t6_direct_user_call_reverts() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         let admin = Address::random();
@@ -2723,33 +2840,91 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn test_t6_transfer_to_tip20_stealth_address_reverts() -> eyre::Result<()> {
+    fn test_transfer_to_tip20_stealth_address_reverts_across_specs() -> eyre::Result<()> {
+        for spec in [TempoHardfork::T4, TempoHardfork::T5, TempoHardfork::T6] {
+            let mut storage = HashMapStorageProvider::new_with_spec(1, spec);
+            let admin = Address::random();
+            let from = Address::random();
+            let amount = U256::from(123);
+
+            StorageCtx::enter(&mut storage, || {
+                let mut token = TIP20Setup::create("Test", "TST", admin)
+                    .with_issuer(admin)
+                    .with_mint(from, amount)
+                    .apply()?;
+
+                assert!(matches!(
+                    token.transfer(
+                        from,
+                        ITIP20::transferCall {
+                            to: TIP20_STEALTH_ADDRESS,
+                            amount
+                        }
+                    ),
+                    Err(TempoPrecompileError::TIP20(TIP20Error::InvalidRecipient(_)))
+                ));
+                assert_eq!(
+                    token.balance_of(ITIP20::balanceOfCall {
+                        account: TIP20_STEALTH_ADDRESS
+                    })?,
+                    U256::ZERO
+                );
+
+                Ok::<_, eyre::Report>(())
+            })?;
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_tip20_stealth_transfer_tolerates_preexisting_custody_balance() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         let admin = Address::random();
         let from = Address::random();
+        let to = Address::random();
         let amount = U256::from(123);
+        let preexisting_dust = U256::ONE;
+        let mut metadata = vec![0u8; crate::tip20_stealth::V1_METADATA_LEN];
+        metadata[0] = crate::tip20_stealth::SCHEME_SECP256K1;
+        metadata[1] = 0x02;
 
         StorageCtx::enter(&mut storage, || {
             let mut token = TIP20Setup::create("Test", "TST", admin)
                 .with_issuer(admin)
                 .with_mint(from, amount)
+                .clear_events()
                 .apply()?;
+            token.set_balance(
+                TIP20_STEALTH_ADDRESS,
+                UserState::new(preexisting_dust, RewardFlag::OptedOut)?,
+            )?;
+            let mut stealth = TIP20Stealth::new();
 
-            assert!(matches!(
-                token.transfer(
-                    from,
-                    ITIP20::transferCall {
-                        to: TIP20_STEALTH_ADDRESS,
-                        amount
-                    }
-                ),
-                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidRecipient(_)))
-            ));
+            stealth.transfer(
+                from,
+                crate::tip20_stealth::ITIP20Stealth::transferCall {
+                    token: token.address,
+                    stealthAddress: to,
+                    amount,
+                    metadata: metadata.into(),
+                    memo: Default::default(),
+                },
+            )?;
+
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: from })?,
+                U256::ZERO
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: to })?,
+                amount
+            );
             assert_eq!(
                 token.balance_of(ITIP20::balanceOfCall {
                     account: TIP20_STEALTH_ADDRESS
                 })?,
-                U256::ZERO
+                preexisting_dust
             );
 
             Ok(())
