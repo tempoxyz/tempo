@@ -872,11 +872,6 @@ where
         let (evm, execution_result) = executor.finish()?;
         let evm_env = evm.into_env();
 
-        // Drop the state hook so the underlying `StateHookSender` is dropped, which
-        // signals `FinishedStateUpdates` to the background sparse trie task. Without
-        // this, `handle.state_root()` below would deadlock waiting for the sentinel.
-        db.set_state_hook(None);
-
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
 
