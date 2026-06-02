@@ -17,7 +17,7 @@ use crate::{
         payload_budget_exhausted, scaled_build_time_multiplier,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    prewarming::BestTransactionsPrewarming,
+    prewarming::{BestTransactionsPrewarming, PrewarmedStateOverlay},
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
 use alloy_eip7928::compute_block_access_list_hash;
@@ -112,8 +112,6 @@ pub struct TempoPayloadBuilder<Provider> {
     is_dev: bool,
     /// Whether to enable state provider metrics.
     state_provider_metrics: bool,
-    /// Whether to enable prewarming of best transactions.
-    enable_prewarming: bool,
     /// Whether to include block access lists in built execution payloads.
     enable_bal: bool,
     /// Learned estimate of total replayable build work divided by work at tx cutoff.
@@ -169,7 +167,6 @@ impl<Provider> TempoPayloadBuilder<Provider> {
             highest_invalid_subblock: Default::default(),
             is_dev: config.is_dev,
             state_provider_metrics: config.state_provider_metrics,
-            enable_prewarming: config.enable_prewarming,
             enable_bal: cfg!(feature = "bal"),
             build_time_multiplier: Arc::new(AtomicU64::new(scaled_build_time_multiplier(
                 config.build_time_multiplier,
@@ -366,7 +363,9 @@ where
 
         let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()
-            .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
+            .with_database(PrewarmedStateOverlay::new(
+                Box::new(state) as Box<dyn Database<Error = ProviderError>>
+            ))
             .with_bundle_update()
             .with_bal_builder_if(self.enable_bal)
             .build();
@@ -528,18 +527,14 @@ where
         ));
         // Wrap best transactions into state-aware wrapper to skip transactions that
         // get invalidated by already-executed ones.
-        let mut best_txs = StateAwareBestTransactions::new(if self.enable_prewarming {
-            Box::new(BestTransactionsPrewarming::new(
-                self.executor.clone(),
-                self.provider.clone(),
-                execution_cache,
-                parent_header.hash(),
-                executor.evm().evm_env(),
-                best_txs,
-            )) as Box<dyn BestTransactions<Item = _>>
-        } else {
-            Box::new(best_txs)
-        });
+        let mut best_txs = StateAwareBestTransactions::new(BestTransactionsPrewarming::new(
+            self.executor.clone(),
+            self.provider.clone(),
+            execution_cache,
+            parent_header.hash(),
+            executor.evm().evm_env(),
+            best_txs,
+        ));
         self.metrics
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
@@ -584,7 +579,7 @@ where
                 }
             }
 
-            let Some(pool_tx) = best_txs.next() else {
+            let Some((pool_tx, state_overlay)) = best_txs.next() else {
                 if build_once_with_shared_trie
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
@@ -613,12 +608,13 @@ where
             // The remaining `shared_gas_limit` is reserved for validator subblocks and must not
             // be consumed by proposer's pool transactions.
             if cumulative_gas_used + max_regular_gas_used > non_shared_gas_limit {
+                let gas_limit = pool_tx.gas_limit();
                 // Mark this transaction as invalid since it doesn't fit
                 // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
-                    &pool_tx,
+                    &(pool_tx, state_overlay),
                     InvalidPoolTransactionError::ExceedsGasLimit(
-                        pool_tx.gas_limit(),
+                        gas_limit,
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
                 );
@@ -637,7 +633,7 @@ where
             // mark the tx as invalid and continue
             if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
                 best_txs.mark_invalid(
-                    &pool_tx,
+                    &(pool_tx, state_overlay),
                     InvalidPoolTransactionError::Other(Box::new(
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
@@ -657,7 +653,7 @@ where
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
                 best_txs.mark_invalid(
-                    &pool_tx,
+                    &(pool_tx, state_overlay),
                     InvalidPoolTransactionError::OversizedData {
                         size: estimated_block_size_with_tx,
                         limit: MAX_RLP_BLOCK_SIZE,
@@ -672,6 +668,11 @@ where
                 .then(|| format!("{:?}", pool_tx.transaction))
                 .unwrap_or_default();
 
+            executor
+                .evm_mut()
+                .db_mut()
+                .database
+                .set_overlay(state_overlay.clone());
             let execution_result = executor.execute_transaction_with_result_closure(
                 pool_tx.transaction.executable(),
                 |result| {
@@ -689,6 +690,7 @@ where
                     best_txs.on_new_result(result);
                 },
             );
+            executor.evm_mut().db_mut().database.clear_overlay();
             if let Err(err) = execution_result {
                 if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,
@@ -706,7 +708,7 @@ where
                         // descendants
                         trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
                         best_txs.mark_invalid(
-                            &pool_tx,
+                            &(pool_tx, state_overlay),
                             InvalidPoolTransactionError::Consensus(
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),

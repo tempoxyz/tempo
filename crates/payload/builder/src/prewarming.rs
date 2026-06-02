@@ -1,14 +1,20 @@
 use std::sync::{
-    Arc,
+    Arc, OnceLock,
     atomic::{AtomicBool, Ordering},
     mpsc::{self, Receiver, Sender},
 };
 
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, map::U256Map};
 use alloy_sol_types::SolInterface;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Database, Evm, EvmEnvFor};
-use reth_revm::database::StateProviderDatabase;
+use reth_revm::{
+    Database as RevmDatabase,
+    cached::{CachedAccount, CachedReads},
+    database::StateProviderDatabase,
+    primitives::{StorageKey, StorageValue},
+    state::{AccountId, AccountInfo, Bytecode},
+};
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
@@ -33,7 +39,7 @@ type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>
 /// [`BestTransactions`] iterator with the source order and invalidations triggered
 /// by [`Self::mark_invalid`] preserved.
 pub(crate) struct BestTransactionsPrewarming {
-    transactions_rx: Receiver<Option<BestTransaction>>,
+    transactions_rx: Receiver<Option<BestTransactionWithOverlay>>,
     commands_tx: Sender<BestTransactionsCommand>,
     stop: Arc<AtomicBool>,
 }
@@ -109,12 +115,14 @@ impl BestTransactionsPrewarming {
                     let _ = ctx.transactions_tx.send(None);
                     return;
                 };
-                let _ = ctx.transactions_tx.send(Some(tx.clone()));
+                let overlay = Arc::new(OnceLock::new());
+                let transaction = (tx.clone(), overlay.clone());
+                let _ = ctx.transactions_tx.send(Some(transaction));
 
                 let prewarm = ctx.prewarm.clone();
                 let commands_tx = ctx.commands_tx.clone();
                 scope.spawn(move |_| {
-                    Self::prewarm_transaction(prewarm, tx.clone());
+                    Self::prewarm_transaction(prewarm, tx.clone(), overlay);
                     let _ = commands_tx.send(BestTransactionsCommand::Advance);
                 });
             };
@@ -141,7 +149,7 @@ impl BestTransactionsPrewarming {
 
                         for tx in old_rx {
                             if let Some(tx) = tx
-                                && !is_invalidated_buffered_transaction(&invalid.tx, &tx)
+                                && !is_invalidated_buffered_transaction(&invalid.tx, &tx.0)
                             {
                                 let _ = ctx.transactions_tx.send(Some(tx));
                             }
@@ -167,6 +175,7 @@ impl BestTransactionsPrewarming {
     fn prewarm_transaction<Provider>(
         prewarm: PrewarmingExecutionContext<Provider>,
         tx: BestTransaction,
+        overlay: PrewarmedOverlay,
     ) where
         Provider: StateProviderFactory + Clone + 'static,
     {
@@ -184,12 +193,13 @@ impl BestTransactionsPrewarming {
             let touched = if is_tip20_transfer_transaction(&tx) {
                 let touches =
                     storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary);
+                let mut cached_reads = CachedReads::default();
 
                 for touch in &touches {
                     if prewarm.is_stopped() {
                         return;
                     }
-                    if let Err(err) = touch.warm(evm) {
+                    if let Err(err) = touch.warm(evm, &mut cached_reads) {
                         trace!(
                             target: "payload_builder",
                             %err,
@@ -200,6 +210,7 @@ impl BestTransactionsPrewarming {
                     }
                 }
 
+                let _ = overlay.set(cached_reads);
                 Some(touches.len())
             } else {
                 if prewarm.is_stopped() {
@@ -237,7 +248,7 @@ impl Drop for BestTransactionsPrewarming {
 }
 
 impl Iterator for BestTransactionsPrewarming {
-    type Item = BestTransaction;
+    type Item = BestTransactionWithOverlay;
 
     fn next(&mut self) -> Option<Self::Item> {
         if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
@@ -256,7 +267,7 @@ impl BestTransactions for BestTransactionsPrewarming {
         let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
         let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
             invalid: InvalidTransaction {
-                tx: transaction.clone(),
+                tx: transaction.0.clone(),
                 kind,
             },
             old_rx,
@@ -275,10 +286,13 @@ impl BestTransactions for BestTransactionsPrewarming {
     }
 }
 
+pub(crate) type PrewarmedOverlay = Arc<OnceLock<CachedReads>>;
+pub(crate) type BestTransactionWithOverlay = (BestTransaction, PrewarmedOverlay);
+
 /// Context for prewarming best transactions for a payload build.
 struct BestTransactionsPrewarmingContext<Txs, Provider> {
     best_txs: Txs,
-    transactions_tx: Sender<Option<BestTransaction>>,
+    transactions_tx: Sender<Option<BestTransactionWithOverlay>>,
     commands_tx: Sender<BestTransactionsCommand>,
     commands_rx: Receiver<BestTransactionsCommand>,
     prewarm: PrewarmingExecutionContext<Provider>,
@@ -343,17 +357,136 @@ enum StorageTouch {
 }
 
 impl StorageTouch {
-    fn warm<DB: Database>(&self, evm: &mut TempoEvm<DB>) -> Result<(), DB::Error> {
+    fn warm<DB: Database>(
+        &self,
+        evm: &mut TempoEvm<DB>,
+        overlay: &mut CachedReads,
+    ) -> Result<(), DB::Error> {
         match *self {
             Self::Account(address) => {
-                let _ = evm.db_mut().basic(address)?;
+                let account = evm.db_mut().basic(address)?;
+                overlay
+                    .accounts
+                    .entry(address)
+                    .or_insert_with(|| CachedAccount {
+                        info: account,
+                        storage: U256Map::default(),
+                    });
             }
             Self::Storage { address, slot } => {
-                let _ = evm.db_mut().storage(address, slot)?;
+                let value = evm.db_mut().storage(address, slot)?;
+                overlay
+                    .accounts
+                    .entry(address)
+                    .or_insert_with(|| CachedAccount {
+                        info: None,
+                        storage: U256Map::default(),
+                    })
+                    .storage
+                    .insert(slot, value);
             }
         }
 
         Ok(())
+    }
+}
+
+/// Database wrapper that serves reads from the current transaction's prewarmed overlay first.
+#[derive(Debug)]
+pub(crate) struct PrewarmedStateOverlay<DB> {
+    db: DB,
+    overlay: Option<PrewarmedOverlay>,
+}
+
+impl<DB> PrewarmedStateOverlay<DB> {
+    pub(crate) const fn new(db: DB) -> Self {
+        Self { db, overlay: None }
+    }
+
+    pub(crate) fn set_overlay(&mut self, overlay: PrewarmedOverlay) {
+        self.overlay = Some(overlay);
+    }
+
+    pub(crate) fn clear_overlay(&mut self) {
+        self.overlay = None;
+    }
+
+    fn overlay_basic(&self, address: Address) -> Option<AccountInfo> {
+        let overlay = self.overlay.as_ref()?.get()?;
+        overlay
+            .accounts
+            .get(&address)
+            .and_then(|account| account.info.clone())
+    }
+
+    fn overlay_storage(&self, address: Address, slot: StorageKey) -> Option<StorageValue> {
+        let overlay = self.overlay.as_ref()?.get()?;
+        overlay
+            .accounts
+            .get(&address)
+            .and_then(|account| account.storage.get(&slot).copied())
+    }
+
+    fn overlay_code(&self, code_hash: B256) -> Option<Bytecode> {
+        let overlay = self.overlay.as_ref()?.get()?;
+        overlay.contracts.get(&code_hash).cloned()
+    }
+
+    fn overlay_block_hash(&self, number: u64) -> Option<B256> {
+        let overlay = self.overlay.as_ref()?.get()?;
+        overlay.block_hashes.get(&number).copied()
+    }
+}
+
+impl<DB> RevmDatabase for PrewarmedStateOverlay<DB>
+where
+    DB: Database,
+{
+    type Error = DB::Error;
+
+    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        if let Some(account) = self.overlay_basic(address) {
+            return Ok(Some(account));
+        }
+        self.db.basic(address)
+    }
+
+    fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        if let Some(code) = self.overlay_code(code_hash) {
+            return Ok(code);
+        }
+        self.db.code_by_hash(code_hash)
+    }
+
+    fn storage(
+        &mut self,
+        address: Address,
+        index: StorageKey,
+    ) -> Result<StorageValue, Self::Error> {
+        if let Some(value) = self.overlay_storage(address, index) {
+            return Ok(value);
+        }
+        self.db.storage(address, index)
+    }
+
+    fn storage_by_account_id(
+        &mut self,
+        address: Address,
+        account_id: AccountId,
+        storage_key: StorageKey,
+    ) -> Result<StorageValue, Self::Error> {
+        if let Some(value) = self.overlay_storage(address, storage_key) {
+            return Ok(value);
+        }
+        self.db
+            .storage_by_account_id(address, account_id, storage_key)
+    }
+
+    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+        if let Some(hash) = self.overlay_block_hash(number) {
+            return Ok(hash);
+        }
+        self.db.block_hash(number)
     }
 }
 
@@ -578,8 +711,8 @@ enum BestTransactionsCommand {
     Advance,
     Invalid {
         invalid: InvalidTransaction,
-        old_rx: Receiver<Option<BestTransaction>>,
-        new_tx: Sender<Option<BestTransaction>>,
+        old_rx: Receiver<Option<BestTransactionWithOverlay>>,
+        new_tx: Sender<Option<BestTransactionWithOverlay>>,
     },
     NoUpdates,
     SkipBlobs(bool),
@@ -631,6 +764,7 @@ mod tests {
     };
     use std::{
         collections::VecDeque,
+        convert::Infallible,
         sync::{Arc, Mutex},
         thread,
         time::{Duration, Instant},
@@ -647,6 +781,52 @@ mod tests {
         invalid: usize,
         no_updates: usize,
         skip_blobs: Vec<bool>,
+    }
+
+    #[derive(Debug, Clone)]
+    struct TestOverlayDb {
+        account: AccountInfo,
+        storage: U256,
+        code: Bytecode,
+        block_hash: B256,
+    }
+
+    impl Default for TestOverlayDb {
+        fn default() -> Self {
+            Self {
+                account: AccountInfo {
+                    balance: U256::from(1),
+                    ..Default::default()
+                },
+                storage: U256::from(2),
+                code: Bytecode::default(),
+                block_hash: B256::with_last_byte(3),
+            }
+        }
+    }
+
+    impl RevmDatabase for TestOverlayDb {
+        type Error = Infallible;
+
+        fn basic(&mut self, _address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+            Ok(Some(self.account.clone()))
+        }
+
+        fn code_by_hash(&mut self, _code_hash: B256) -> Result<Bytecode, Self::Error> {
+            Ok(self.code.clone())
+        }
+
+        fn storage(
+            &mut self,
+            _address: Address,
+            _index: StorageKey,
+        ) -> Result<StorageValue, Self::Error> {
+            Ok(self.storage)
+        }
+
+        fn block_hash(&mut self, _number: u64) -> Result<B256, Self::Error> {
+            Ok(self.block_hash)
+        }
     }
 
     struct TestBestTransactions {
@@ -911,7 +1091,7 @@ mod tests {
 
         let mut prewarming = prewarming(txs, log);
         let actual = (0..expected.len())
-            .map(|_| *prewarming.next().expect("transaction").hash())
+            .map(|_| *prewarming.next().expect("transaction").0.hash())
             .collect::<Vec<_>>();
 
         assert_eq!(actual, expected);
@@ -931,7 +1111,7 @@ mod tests {
         wait_until(|| log.lock().unwrap().yielded == expected.len());
 
         let actual = (0..expected.len())
-            .map(|_| *prewarming.next().expect("transaction").hash())
+            .map(|_| *prewarming.next().expect("transaction").0.hash())
             .collect::<Vec<_>>();
         assert_eq!(actual, expected);
     }
@@ -965,20 +1145,18 @@ mod tests {
         let log = Arc::new(Mutex::new(TestLog::default()));
 
         let mut prewarming = prewarming(vec![tx1.clone(), tx2.clone(), tx3.clone()], log.clone());
-        assert_eq!(
-            prewarming.next().as_ref().map(|tx| tx.hash()),
-            Some(tx1.hash())
-        );
+        let first = prewarming.next().expect("first transaction");
+        assert_eq!(first.0.hash(), tx1.hash());
 
         wait_until(|| log.lock().unwrap().yielded == 3);
         prewarming.mark_invalid(
-            &tx1,
+            &first,
             InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
         );
 
         let next = prewarming.next().expect("non-invalidated transaction");
-        assert_eq!(next.hash(), tx3.hash());
-        assert_ne!(next.hash(), tx2.hash());
+        assert_eq!(next.0.hash(), tx3.hash());
+        assert_ne!(next.0.hash(), tx2.hash());
         wait_until(|| log.lock().unwrap().invalid == 1);
     }
 
@@ -997,10 +1175,68 @@ mod tests {
     }
 
     #[test]
-    fn prewarming_does_not_use_shared_worker_state_slot() {
+    fn prewarmed_state_overlay_reads_published_cache_without_locking() {
+        let address = Address::random();
+        let slot = U256::from(7);
+        let code_hash = B256::with_last_byte(8);
+        let block_number = 9;
+        let overlay_account = AccountInfo {
+            balance: U256::from(10),
+            ..Default::default()
+        };
+        let overlay_storage = U256::from(11);
+        let overlay_code = Bytecode::default();
+        let overlay_block_hash = B256::with_last_byte(12);
+
+        let mut storage = U256Map::default();
+        storage.insert(slot, overlay_storage);
+        let mut cached_reads = CachedReads::default();
+        cached_reads.accounts.insert(
+            address,
+            CachedAccount {
+                info: Some(overlay_account.clone()),
+                storage,
+            },
+        );
+        cached_reads
+            .contracts
+            .insert(code_hash, overlay_code.clone());
+        cached_reads
+            .block_hashes
+            .insert(block_number, overlay_block_hash);
+
+        let overlay = Arc::new(OnceLock::new());
+        assert!(overlay.set(cached_reads).is_ok());
+
+        let mut db = PrewarmedStateOverlay::new(TestOverlayDb::default());
+        db.set_overlay(overlay);
+
+        assert_eq!(db.basic(address), Ok(Some(overlay_account)));
+        assert_eq!(db.storage(address, slot), Ok(overlay_storage));
+        assert_eq!(db.code_by_hash(code_hash), Ok(overlay_code));
+        assert_eq!(db.block_hash(block_number), Ok(overlay_block_hash));
+    }
+
+    #[test]
+    fn prewarmed_state_overlay_falls_back_when_cache_is_unset() {
+        let address = Address::random();
+        let slot = U256::from(7);
+        let block_number = 9;
+        let fallback = TestOverlayDb::default();
+        let mut db = PrewarmedStateOverlay::new(fallback.clone());
+
+        db.set_overlay(Arc::new(OnceLock::new()));
+
+        assert_eq!(db.basic(address), Ok(Some(fallback.account)));
+        assert_eq!(db.storage(address, slot), Ok(fallback.storage));
+        assert_eq!(db.code_by_hash(B256::ZERO), Ok(fallback.code));
+        assert_eq!(db.block_hash(block_number), Ok(fallback.block_hash));
+    }
+
+    #[test]
+    fn prewarming_initializes_worker_evm_state() {
         let executor = TaskExecutor::test();
         let pool = executor.prewarming_pool();
-        pool.init::<usize>(|existing| existing.map(|value| *value).unwrap_or(1));
 
         let sender = Address::random();
         let txs = vec![test_tx(sender, 0)];
@@ -1010,7 +1246,7 @@ mod tests {
         assert!(prewarming.next().is_some());
 
         pool.broadcast(pool.current_num_threads(), |worker| {
-            assert_eq!(*worker.get::<usize>(), 1);
+            assert!(worker.get::<PrewarmEvmState>().is_some());
         });
     }
 }
