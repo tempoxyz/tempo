@@ -1,12 +1,12 @@
-pub use IStorageGasTokens::{
-    IStorageGasTokensErrors as StorageGasTokensError,
-    IStorageGasTokensEvents as StorageGasTokensEvent,
+pub use ITIP1060StorageGasTokens::{
+    ITIP1060StorageGasTokensErrors as TIP1060StorageGasTokensError,
+    ITIP1060StorageGasTokensEvents as TIP1060StorageGasTokensEvent,
 };
 
 crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
-    interface IStorageGasTokens {
+    interface ITIP1060StorageGasTokens {
         enum Mode {
             RefundTokens,
             PreserveTokens,
