@@ -560,6 +560,7 @@ where
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut blockstm_buffer = VecDeque::new();
         let mut blockstm_completed_stop_reason = None;
+        let mut blockstm_fallback_proposer_only_elapsed = Duration::ZERO;
         if self.enable_blockstm_tip20_transfers {
             if self.enable_bal {
                 self.metrics.inc_blockstm_tip20_fallback("bal_enabled");
@@ -771,6 +772,7 @@ where
                         Err(Tip20TransferBlockstmBatchError::Fallback(reason)) => {
                             self.metrics.inc_blockstm_tip20_fallback(reason.as_str());
                             let blockstm_elapsed = collect_start.elapsed();
+                            blockstm_fallback_proposer_only_elapsed = blockstm_elapsed;
                             info!(
                                 target: "payload_builder",
                                 reason = reason.as_str(),
@@ -874,9 +876,11 @@ where
 
                 if let Some(build_budget) = payload_build_budget {
                     let elapsed = start.elapsed();
+                    let proposer_only_elapsed = normal_transaction_fill_idle_elapsed
+                        .saturating_add(blockstm_fallback_proposer_only_elapsed);
                     if payload_budget_exhausted(
                         elapsed,
-                        normal_transaction_fill_idle_elapsed,
+                        proposer_only_elapsed,
                         build_time_multiplier,
                         build_budget,
                         marshal_persist,
@@ -889,6 +893,7 @@ where
                                 target: "payload_builder",
                                 ?elapsed,
                                 ?normal_transaction_fill_idle_elapsed,
+                                ?blockstm_fallback_proposer_only_elapsed,
                                 ?build_budget,
                                 ?estimated_marshal_persist,
                                 block_size_used,
@@ -906,6 +911,7 @@ where
                                 target: "payload_builder",
                                 ?elapsed,
                                 ?normal_transaction_fill_idle_elapsed,
+                                ?blockstm_fallback_proposer_only_elapsed,
                                 ?build_budget,
                                 ?estimated_marshal_persist,
                                 block_size_used,
@@ -1072,8 +1078,10 @@ where
         drop(best_txs);
 
         let elapsed_at_tx_cutoff = start.elapsed();
+        let proposer_only_elapsed_at_tx_cutoff = normal_transaction_fill_idle_elapsed
+            .saturating_add(blockstm_fallback_proposer_only_elapsed);
         let validation_work_at_tx_cutoff =
-            elapsed_at_tx_cutoff.saturating_sub(normal_transaction_fill_idle_elapsed);
+            elapsed_at_tx_cutoff.saturating_sub(proposer_only_elapsed_at_tx_cutoff);
         drop(_block_fill_span);
         self.metrics
             .inc_block_build_stop_reason(block_build_stop_reason);
@@ -1385,7 +1393,9 @@ where
             .set(pool_transactions_inclusion_ratio);
 
         let elapsed = start.elapsed();
-        let validation_work_duration = elapsed.saturating_sub(normal_transaction_fill_idle_elapsed);
+        let proposer_only_elapsed = normal_transaction_fill_idle_elapsed
+            .saturating_add(blockstm_fallback_proposer_only_elapsed);
+        let validation_work_duration = elapsed.saturating_sub(proposer_only_elapsed);
         if payload_build_budget.is_some() {
             self.update_build_time_multiplier(
                 validation_work_duration,
@@ -1430,6 +1440,7 @@ where
             ?validation_work_duration,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
+            ?blockstm_fallback_proposer_only_elapsed,
             ?total_subblock_transaction_execution_elapsed,
             ?system_txs_execution_elapsed,
             ?total_transaction_execution_elapsed,
