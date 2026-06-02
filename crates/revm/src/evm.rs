@@ -201,8 +201,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             return Ok(());
         }
 
-        let pending_expiring_nonces = self.pending_expiring_nonces.clone();
-        StorageCtx::enter_ctx(&mut self.inner.ctx, || {
+        let pending_expiring_nonces = core::mem::take(&mut self.pending_expiring_nonces);
+        let finalize_result = StorageCtx::enter_ctx(&mut self.inner.ctx, || {
             let mut nonce_manager = NonceManager::new();
 
             for pending in &pending_expiring_nonces {
@@ -215,9 +215,13 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             }
 
             Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
-        })?;
+        });
 
-        self.pending_expiring_nonces.clear();
+        if let Err(err) = finalize_result {
+            self.pending_expiring_nonces = pending_expiring_nonces;
+            return Err(err);
+        }
+
         self.seen_expiring_nonce_hashes.clear();
         self.pending_expiring_nonce_cells.clear();
         Ok(())
