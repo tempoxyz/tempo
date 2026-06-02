@@ -553,6 +553,19 @@ impl Default for PendingStalenessTracker {
     }
 }
 
+fn included_expiring_nonce_hashes(chain: &Chain<TempoPrimitives>) -> Vec<B256> {
+    chain
+        .transactions_recovered_iter()
+        .filter_map(|tx| {
+            let aa_tx = tx.as_aa()?;
+            aa_tx
+                .tx()
+                .is_expiring_nonce_tx()
+                .then(|| aa_tx.expiring_nonce_hash(tx.signer()))
+        })
+        .collect()
+}
+
 /// Unified maintenance task for the Tempo transaction pool.
 ///
 /// Handles:
@@ -619,12 +632,16 @@ where
                 let tip = &new;
                 let bundle_state = tip.execution_outcome().state().state();
                 let tip_timestamp = tip.tip().header().timestamp();
+                let included_expiring_nonce_hashes = included_expiring_nonce_hashes(tip);
 
                 // 1. Update 2D nonce pool before scan-based maintenance.
                 // This removes mined 2D nonce transactions and promotes newly
                 // unblocked transactions before later pool scans.
                 let nonce_pool_start = Instant::now();
-                let _mined_aa_txs = pool.notify_aa_pool_on_state_updates(bundle_state);
+                let _mined_aa_txs = pool.notify_aa_pool_on_state_updates(
+                    bundle_state,
+                    included_expiring_nonce_hashes,
+                );
                 metrics.nonce_pool_update_duration_seconds.record(nonce_pool_start.elapsed());
 
                 // 2. Update AMM liquidity cache before revalidation/invalidation scans.

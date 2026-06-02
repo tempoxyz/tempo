@@ -40,9 +40,9 @@ use tempo_precompiles::{
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
-    subblock::PartialValidatorKey,
+    subblock::PartialValidatorKey, transaction::TEMPO_EXPIRING_NONCE_KEY,
 };
-use tempo_revm::{TempoHaltReason, evm::TempoContext};
+use tempo_revm::{PendingExpiringNonce, TempoHaltReason, TempoTxEnv, evm::TempoContext};
 use tracing::{debug, trace};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -153,6 +153,8 @@ pub struct TempoTxResult {
     /// This is only populated for subblock transactions for which we need to store
     /// the full transaction encoding for later validation of subblock hash.
     tx: Option<TempoTxEnvelope>,
+    /// Expiring nonce replay marker to write if this transaction is committed.
+    pending_expiring_nonce: Option<PendingExpiringNonce>,
     /// Block gas consumed by this transaction. The block `gas_used` field will be incremented by this value.
     block_gas_used: u64,
     /// Validator-credited fee (in the validator's fee token) reported by `collectFeePostTx`.
@@ -323,6 +325,23 @@ where
             self.inner.evm.db_mut().commit(state);
         }
         Ok(())
+    }
+
+    fn pending_expiring_nonce_hash(&self, tx_env: &TempoTxEnv) -> Option<B256> {
+        if !self.evm().cfg.spec.is_t1() {
+            return None;
+        }
+
+        let tempo_tx_env = tx_env.tempo_tx_env.as_ref()?;
+        if tempo_tx_env.nonce_key != TEMPO_EXPIRING_NONCE_KEY {
+            return None;
+        }
+
+        Some(if self.evm().cfg.spec.is_t1b() {
+            tx_env.unique_tx_identifier()?
+        } else {
+            tempo_tx_env.tx_hash
+        })
     }
 
     /// Validates a system transaction.
@@ -622,12 +641,17 @@ where
         &mut self,
         tx: impl ExecutableTx<Self>,
     ) -> Result<Self::Result, BlockExecutionError> {
-        let (mut tx_env, recovered) = tx.into_parts();
-        // Remove any prewarming-specific context that was added to the tx env.
-        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-            tempo_tx_env.expiring_nonce_idx = None;
-        }
+        let (tx_env, recovered) = tx.into_parts();
         let next_section = self.validate_tx_pre_execution(recovered.tx())?;
+        let pending_expiring_nonce_hash = self.pending_expiring_nonce_hash(&tx_env);
+
+        if let Some(replay_hash) = pending_expiring_nonce_hash
+            && self.evm().has_pending_expiring_nonce_hash(replay_hash)
+        {
+            return Err(
+                BlockValidationError::msg("duplicate expiring nonce replay hash in block").into(),
+            );
+        }
 
         let beneficiary = self.evm_mut().ctx_mut().block.beneficiary;
         // If we are dealing with a subblock transaction, configure the fee recipient context.
@@ -646,6 +670,7 @@ where
         self.evm_mut().ctx_mut().block.beneficiary = beneficiary;
 
         let inner = result?;
+        let pending_expiring_nonce = self.evm_mut().take_current_expiring_nonce();
 
         // TIP-1016 enabled: use block_regular_gas_used (excludes state gas) for section
         // validation, matching block gas limit semantics. TIP-1016 disabled: use tx_gas_used.
@@ -670,6 +695,7 @@ where
             is_payment: self.is_payment(recovered.tx()),
             tx: matches!(next_section, BlockSection::SubBlock { .. })
                 .then(|| recovered.tx().clone()),
+            pending_expiring_nonce,
             block_gas_used,
             validator_fee,
             validator_fee_credit,
@@ -682,6 +708,7 @@ where
             next_section,
             is_payment,
             tx,
+            pending_expiring_nonce,
             block_gas_used,
             validator_fee: _,
             validator_fee_credit,
@@ -691,6 +718,10 @@ where
 
         if let Some(credit) = validator_fee_credit {
             self.pending_collected_fee_credits.push(credit);
+        }
+
+        if let Some(pending) = pending_expiring_nonce {
+            self.evm_mut().queue_expiring_nonce(pending);
         }
 
         self.section = next_section;
@@ -752,6 +783,9 @@ where
         let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
 
         let regular_gas_used = self.inner.block_regular_gas_used;
+        self.evm_mut().finalize_expiring_nonces().map_err(|err| {
+            BlockExecutionError::msg(format!("failed to finalize expiring nonces: {err}"))
+        })?;
         let (evm, mut result) = self.inner.finish()?;
 
         // TIP-1016 enabled: block header `gas_used` = block_regular_gas_used.
@@ -1441,6 +1475,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            pending_expiring_nonce: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
             validator_fee_credit: None,
@@ -1599,6 +1634,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            pending_expiring_nonce: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
             validator_fee_credit: None,
@@ -1640,6 +1676,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            pending_expiring_nonce: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
             validator_fee_credit: None,
@@ -1665,6 +1702,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            pending_expiring_nonce: None,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
             validator_fee_credit: None,
@@ -1729,6 +1767,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            pending_expiring_nonce: None,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
             validator_fee_credit: None,
@@ -1776,6 +1815,7 @@ mod tests {
             next_section: BlockSection::NonShared,
             is_payment: false,
             tx: None,
+            pending_expiring_nonce: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
             validator_fee_credit: None,
@@ -1826,6 +1866,7 @@ mod tests {
             next_section: BlockSection::GasIncentive,
             is_payment: false,
             tx: None,
+            pending_expiring_nonce: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
             validator_fee_credit: None,

@@ -26,8 +26,8 @@ crate::sol! {
         // Expiring nonce errors
         /// Returned when an expiring nonce tx hash has already been seen
         error ExpiringNonceReplay();
-        /// Returned when the expiring nonce seen set is at capacity
-        error ExpiringNonceSetFull();
+        /// Returned when every cell on the transaction's deterministic probe path is occupied
+        error ExpiringNonceProbeExhausted();
         /// Returned when valid_before is not within the allowed window
         error InvalidExpiringNonceExpiry();
     }

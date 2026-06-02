@@ -44,10 +44,7 @@ use tempo_precompiles::{
         SelectorRule as PrecompileSelectorRule, TokenLimit,
     },
     error::TempoPrecompileError,
-    nonce::{
-        EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, INonce::getNonceCall,
-        NonceManager,
-    },
+    nonce::{EXPIRING_NONCE_MAX_EXPIRY_SECS, INonce::getNonceCall, NonceManager},
     storage::{
         Handler as _, PrecompileStorageProvider, StorageCtx, evm::EvmPrecompileStorageProvider,
     },
@@ -64,7 +61,7 @@ use tempo_primitives::{
 };
 
 use crate::{
-    TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
+    PendingExpiringNonce, TempoBatchCallEnv, TempoEvm, TempoInvalidTransaction, TempoTxEnv,
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
@@ -87,28 +84,23 @@ const KEY_AUTH_PER_LIMIT_GAS: u64 = 22_000;
 /// Rounded buffer for each extra LOG3/no-data event emitted by key authorizations.
 const KEY_AUTH_EXTRA_EVENT_BUFFER: u64 = 1_500;
 
-/// Gas cost for expiring nonce transactions (replay check + insert).
+/// Gas cost for expiring nonce transactions (replay check + deferred insert).
 ///
 /// See [TIP-1009] for full specification.
 ///
 /// [TIP-1009]: <https://docs.tempo.xyz/protocol/tips/tip-1009>
 ///
-/// Operations charged:
-/// - 2 cold SLOADs: `seen[tx_hash]`, `ring[idx]` (unique slots per tx)
-/// - 1 warm SLOAD: `seen[old_hash]` (warm because we just read `ring[idx]` which points to it)
-/// - 3 SSTOREs at RESET price: `seen[old_hash]=0`, `ring[idx]=tx_hash`, `seen[tx_hash]=valid_before`
+/// Operations charged for the common first-cell path:
+/// - 1 cold SLOAD: `cell[cell_id]`
+/// - 1 deferred SSTORE at RESET price: `cell[cell_id]=valid_before || fingerprint_192`
 ///
-/// Excluded from gas calculation:
-/// - `ring_ptr` SLOAD/SSTORE: Accessed by almost every expiring nonce tx in a block, so
-///   amortized cost approaches ~200 gas. May be moved out of EVM storage in the future.
-///
-/// Why SSTORE_RESET (2,900) instead of SSTORE_SET (20,000) for `seen[tx_hash]`:
+/// Why SSTORE_RESET (2,900) instead of SSTORE_SET (20,000):
 /// - SSTORE_SET cost exists to penalize permanent state growth
-/// - Expiring nonce data is ephemeral: evicted within 30 seconds, fixed-size buffer (300k)
+/// - Expiring nonce data is ephemeral: overwritten by a fixed-size time wheel
 /// - No permanent state growth, so the 20k penalty doesn't apply
 ///
-/// Total: 2*2100 + 100 + 3*2900 = 13,000 gas
-pub const EXPIRING_NONCE_GAS: u64 = 2 * COLD_SLOAD_COST + 100 + 3 * WARM_SSTORE_RESET;
+/// Total: 2100 + 2900 = 5,000 gas
+pub const EXPIRING_NONCE_GAS: u64 = COLD_SLOAD_COST + WARM_SSTORE_RESET;
 
 /// Calculates the gas cost for verifying a primitive signature.
 ///
@@ -906,6 +898,7 @@ where
     ) -> Result<(), Self::Error> {
         self.seed_precompile_tx_context(evm)?;
 
+        let pending_expiring_nonce_cells = &evm.pending_expiring_nonce_cells;
         let block = &evm.inner.ctx.block;
         let tx = &evm.inner.ctx.tx;
         let cfg = &evm.inner.ctx.cfg;
@@ -946,6 +939,7 @@ where
 
         // Only treat as expiring nonce if T1 is active, otherwise treat as regular 2D nonce
         let is_expiring_nonce = nonce_key == TEMPO_EXPIRING_NONCE_KEY && spec.is_t1();
+        let mut current_expiring_nonce = None;
 
         // Validate account nonce and code (EIP-3607) using upstream helper
         pre_execution::validate_account_nonce_and_code(
@@ -1017,29 +1011,15 @@ where
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
-            StorageCtx::enter_evm(journal, block, cfg, tx, || {
-                let mut nonce_manager = NonceManager::new();
-
-                let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
-                    let ptr = nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .read()
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
-
-                    let next = (ptr + expiring_nonce_idx as u32) % EXPIRING_NONCE_SET_CAPACITY;
-
-                    nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(next)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
-
-                    Some(ptr)
-                } else {
-                    None
-                };
+            let (cell_id, cell) = StorageCtx::enter_evm(journal, block, cfg, tx, || {
+                let nonce_manager = NonceManager::new();
 
                 nonce_manager
-                    .check_and_mark_expiring_nonce(replay_hash, valid_before)
+                    .checked_expiring_nonce_cell_with_pending(
+                        replay_hash,
+                        valid_before,
+                        |cell_id| pending_expiring_nonce_cells.get(&cell_id).copied(),
+                    )
                     .map_err(|err| match err {
                         TempoPrecompileError::Fatal(err) => EVMError::Custom(err),
                         TempoPrecompileError::NonceError(
@@ -1060,17 +1040,14 @@ where
                             }
                         }
                         err => TempoInvalidTransaction::NonceManagerError(err.to_string()).into(),
-                    })?;
-
-                if let Some(prev_ptr) = prev_ptr {
-                    nonce_manager
-                        .expiring_nonce_ring_ptr
-                        .write(prev_ptr)
-                        .map_err(|err| EVMError::Custom(err.to_string()))?;
-                }
-
-                Ok::<_, EVMError<DB::Error, TempoInvalidTransaction>>(())
+                    })
             })?;
+            current_expiring_nonce = Some(PendingExpiringNonce {
+                replay_hash,
+                valid_before,
+                cell_id,
+                cell,
+            });
         } else if !nonce_key.is_zero() {
             // 2D nonce transaction
             StorageCtx::enter_evm(journal, block, cfg, tx, || {
@@ -1532,6 +1509,10 @@ where
             }
         }
 
+        if let Some(pending) = current_expiring_nonce {
+            evm.set_current_expiring_nonce(pending);
+        }
+
         Ok(())
     }
 
@@ -1634,6 +1615,7 @@ where
         // Reset per-tx validator fee.
         evm.validator_fee = U256::ZERO;
         evm.validator_fee_credit = None;
+        evm.clear_current_expiring_nonce();
 
         // Validate the fee payer signature
         let fee_payer = evm.ctx.tx.fee_payer()?;
@@ -2073,6 +2055,7 @@ where
                 .expect("set in `validate_against_state_and_deduct_caller`"),
             key_expiry: evm.key_expiry,
         };
+        evm.clear_current_expiring_nonce();
         evm.clear();
         Ok(result)
     }
@@ -2250,7 +2233,7 @@ where
     if spec.is_t1() {
         if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
             // Calculate nonce gas based on nonce type:
-            // - Expiring nonce (nonce_key == MAX, T1 active): ring buffer + seen mapping operations
+            // - Expiring nonce (nonce_key == MAX, T1 active): time-wheel replay cell operation
             // - 2D nonce (nonce_key != 0): SLOAD + SSTORE for nonce increment
             // - Regular nonce (nonce_key == 0): no additional gas
             batch_gas.initial_regular_gas += EXPIRING_NONCE_GAS;

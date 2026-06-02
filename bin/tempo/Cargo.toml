@@ -107,7 +107,7 @@ name = "tempo"
 path = "src/main.rs"
 
 [features]
-default = ["asm-keccak", "jemalloc", "otlp", "keccak-cache-global"]
+default = ["asm-keccak", "bal", "jemalloc", "otlp", "keccak-cache-global"]
 
 bal = ["tempo-commonware-node/bal", "tempo-node/bal"]
 
