@@ -2,8 +2,12 @@
 
 pub mod dispatch;
 
-use crate::{FEATURE_REGISTRY_ADDRESS, error::Result, storage::Handler};
-use alloy::primitives::U256;
+use crate::{
+    FEATURE_REGISTRY_ADDRESS,
+    error::Result,
+    storage::{Handler, Mapping},
+};
+use alloy::primitives::{Address, U256};
 use tempo_contracts::precompiles::IFeatureRegistry;
 use tempo_precompiles_macros::contract;
 
@@ -23,6 +27,8 @@ pub struct FeatureRegistry {
     scheduled_features_tip: u64,
     /// Earliest activation epoch for the scheduled feature tip, or zero when none is scheduled.
     scheduled_activation_epoch: u64,
+    /// Latest feature tip reported as supported by each validator.
+    validator_supported_features_tip: Mapping<Address, u64>,
 }
 
 impl FeatureRegistry {
@@ -52,5 +58,10 @@ impl FeatureRegistry {
             self.scheduled_activation_epoch.read()?,
         )
             .into())
+    }
+
+    /// Returns the latest feature tip reported as supported by `validator`.
+    pub fn validator_supported_features_tip(&self, validator: Address) -> Result<u64> {
+        self.validator_supported_features_tip[validator].read()
     }
 }

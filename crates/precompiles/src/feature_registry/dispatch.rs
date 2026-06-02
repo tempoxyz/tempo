@@ -44,9 +44,9 @@ impl Precompile for FeatureRegistry {
                 IFeatureRegistryCalls::cancelScheduledFeaturesTip(_) => {
                     unsupported::<IFeatureRegistry::cancelScheduledFeaturesTipCall>()
                 }
-                IFeatureRegistryCalls::validatorSupportedFeaturesTip(_) => {
-                    unsupported::<IFeatureRegistry::validatorSupportedFeaturesTipCall>()
-                }
+                IFeatureRegistryCalls::validatorSupportedFeaturesTip(call) => view(call, |call| {
+                    self.validator_supported_features_tip(call.validator)
+                }),
                 IFeatureRegistryCalls::featuresTipSupport(_) => {
                     unsupported::<IFeatureRegistry::featuresTipSupportCall>()
                 }
@@ -155,6 +155,34 @@ mod tests {
     }
 
     #[test]
+    fn validator_supported_features_tip_defaults_to_zero() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let registry = FeatureRegistry::new();
+            let validator = Address::repeat_byte(0x01);
+
+            assert_eq!(registry.validator_supported_features_tip(validator)?, 0);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn validator_supported_features_tip_reads_validator_report() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let validator = Address::repeat_byte(0x01);
+
+            registry.validator_supported_features_tip[validator].write(13)?;
+
+            assert_eq!(registry.validator_supported_features_tip(validator)?, 13);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn features_tip_dispatch_returns_encoded_cursor() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
@@ -203,6 +231,23 @@ mod tests {
                 IFeatureRegistry::scheduledFeaturesTipCall::abi_decode_returns(&result.bytes)?;
             assert_eq!(decoded.featuresTip, 34);
             assert_eq!(decoded.activationEpoch, 55);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn validator_supported_features_tip_dispatch_returns_encoded_report() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            let validator = Address::repeat_byte(0x01);
+            registry.validator_supported_features_tip[validator].write(34)?;
+
+            let call = IFeatureRegistry::validatorSupportedFeaturesTipCall { validator };
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(!result.is_revert());
+            assert_eq!(u64::abi_decode(&result.bytes)?, 34);
 
             Ok(())
         })
