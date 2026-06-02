@@ -1,14 +1,15 @@
-use alloy_rpc_types_engine::PayloadId;
 use commonware_consensus::{Reporter, marshal::Update, types::Height};
 use eyre::WrapErr as _;
 use futures::{
     SinkExt as _,
     channel::{mpsc, oneshot},
 };
-use tempo_payload_types::TempoPayloadAttributes;
+use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tracing::Span;
 
 use crate::consensus::{Digest, block::Block};
+
+pub(crate) type PayloadBuildReceiver = oneshot::Receiver<eyre::Result<TempoBuiltPayload>>;
 
 #[derive(Clone, Debug)]
 pub(crate) struct Mailbox {
@@ -41,7 +42,7 @@ impl Mailbox {
         height: Height,
         digest: Digest,
         attributes: TempoPayloadAttributes,
-    ) -> eyre::Result<oneshot::Receiver<eyre::Result<PayloadId>>> {
+    ) -> eyre::Result<PayloadBuildReceiver> {
         let (response, rx) = oneshot::channel();
         self.inner
             .unbounded_send(Message::in_current_span(CanonicalizeAndBuild {
@@ -94,7 +95,7 @@ pub(super) struct CanonicalizeAndBuild {
     pub(super) height: Height,
     pub(super) digest: Digest,
     pub(super) attributes: Box<TempoPayloadAttributes>,
-    pub(super) response: oneshot::Sender<eyre::Result<PayloadId>>,
+    pub(super) response: oneshot::Sender<eyre::Result<TempoBuiltPayload>>,
 }
 
 impl From<CanonicalizeHead> for Command {

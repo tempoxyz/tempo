@@ -9,7 +9,9 @@ use std::{ops::RangeInclusive, pin::Pin, sync::Arc, time::Duration};
 use alloy_rpc_types_engine::{ForkchoiceState, PayloadId};
 use commonware_consensus::{Heightable as _, marshal::Update, types::Height};
 use commonware_cryptography::ed25519::PublicKey;
-use commonware_runtime::{Clock, ContextCell, FutureExt, Handle, Pacer, Spawner, spawn_cell};
+use commonware_runtime::{
+    Clock, ContextCell, FutureExt, Handle, Metrics as _, Pacer, Spawner, spawn_cell,
+};
 use commonware_utils::{Acknowledgement, acknowledgement::Exact};
 use eyre::{Report, WrapErr as _, ensure, eyre};
 use futures::{
@@ -23,8 +25,9 @@ use futures::{
 };
 use prometheus_client::metrics::counter::Counter;
 use reth_ethereum::{chainspec::EthChainSpec, rpc::eth::primitives::BlockNumHash};
+use reth_node_builder::PayloadKind;
 use tempo_node::{TempoExecutionData, TempoFullNode};
-use tempo_payload_types::TempoPayloadAttributes;
+use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes};
 use tokio::select;
 use tracing::{
     Level, Span, debug, error, error_span, info, info_span, instrument, warn, warn_span,
@@ -342,6 +345,20 @@ where
         self.fcu_heartbeat_timer = Box::pin(self.context.sleep(self.fcu_heartbeat_interval));
     }
 
+    fn spawn_payload_resolver(
+        &self,
+        payload_id: PayloadId,
+        response: oneshot::Sender<eyre::Result<TempoBuiltPayload>>,
+    ) {
+        let execution_node = self.execution_node.clone();
+        let _ = self
+            .context
+            .with_label("payload_build")
+            .spawn(move |context| {
+                resolve_payload_build(context, execution_node, payload_id, response)
+            });
+    }
+
     #[instrument(skip_all)]
     async fn send_forkchoice_update_heartbeat(&mut self) {
         info!(
@@ -511,7 +528,7 @@ where
             }
             JustCanonicalizeOrAlsoBuild::AlsoBuild { response, .. } => {
                 if let Some(payload_id) = fcu_response.payload_id {
-                    let _ = response.send(Ok(payload_id));
+                    self.spawn_payload_resolver(payload_id, response);
                 } else {
                     let _ = response.send(Err(eyre!("no payload id for the build request")));
                 }
@@ -608,13 +625,80 @@ where
     }
 }
 
+#[instrument(skip_all, fields(%payload_id))]
+async fn resolve_payload_build<TContext>(
+    context: TContext,
+    execution_node: Arc<TempoFullNode>,
+    payload_id: PayloadId,
+    mut response: oneshot::Sender<eyre::Result<TempoBuiltPayload>>,
+) where
+    TContext: Pacer,
+{
+    if response.is_canceled() {
+        cancel_payload_build(&execution_node, payload_id).await;
+        return;
+    }
+
+    let resolve = match execution_node
+        .payload_builder_handle
+        .resolve_kind_fut(payload_id, PayloadKind::WaitForPending)
+        .await
+    {
+        Ok(Some(resolve)) => resolve,
+        Ok(None) => {
+            let _ = response.send(Err(eyre!("no payload found under provided id")));
+            return;
+        }
+        Err(error) => {
+            let _ = response.send(Err(Report::new(error)
+                .wrap_err("failed resolving payload while starting payload build receiver")));
+            return;
+        }
+    };
+
+    let mut resolve = resolve;
+
+    select! {
+        _ = response.cancellation() => {
+            debug!(%payload_id, "payload build receiver was dropped; cancelled builder job");
+        }
+
+        payload = (&mut resolve).pace(&context, Duration::from_millis(20)) => {
+            let payload = payload
+                .map_err(Into::<eyre::Report>::into)
+                .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"));
+            let _ = response.send(payload);
+        }
+    }
+}
+
+#[instrument(skip_all, fields(%payload_id))]
+async fn cancel_payload_build(execution_node: &TempoFullNode, payload_id: PayloadId) {
+    let fut = match execution_node
+        .payload_builder_handle
+        .resolve_kind_fut(payload_id, PayloadKind::WaitForPending)
+        .await
+    {
+        Ok(Some(fut)) => fut,
+        Ok(None) => {
+            debug!(%payload_id, "payload build was already gone before cancellation");
+            return;
+        }
+        Err(error) => {
+            warn!(%error, %payload_id, "failed resolving payload while cancelling build");
+            return;
+        }
+    };
+    drop(fut);
+}
+
 /// Controls canonicalization: if attributes are sent, the FCU also builds a payload.
 enum JustCanonicalizeOrAlsoBuild {
     JustCanonicalize {
         response: oneshot::Sender<eyre::Result<()>>,
     },
     AlsoBuild {
-        response: oneshot::Sender<eyre::Result<PayloadId>>,
+        response: oneshot::Sender<eyre::Result<TempoBuiltPayload>>,
         attributes: Box<TempoPayloadAttributes>,
     },
 }
