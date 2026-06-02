@@ -5,7 +5,7 @@ use super::{
 use crate::TempoAddressExt;
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, keccak256};
-use alloy_rlp::{Decodable, Encodable};
+use alloy_rlp::{Buf, Decodable, EMPTY_STRING_CODE, Encodable};
 use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, NATIVE_MULTISIG_ADDRESS,
     NONCE_PRECOMPILE_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
@@ -86,6 +86,8 @@ pub struct MultisigSignature {
     pub config_id: B256,
     /// Encoded primitive owner signatures over the multisig digest.
     pub signatures: Vec<Bytes>,
+    /// Initial native multisig config for bootstrapping this account.
+    pub init: Option<InitMultisig>,
 }
 
 impl MultisigSignature {
@@ -95,6 +97,15 @@ impl MultisigSignature {
         if self.account != derive_multisig_account(self.config_id) {
             return Err("multisig account does not match config_id");
         }
+        if let Some(init) = &self.init {
+            let init_config_id = init.config_id()?;
+            if init_config_id != self.config_id {
+                return Err("multisig init does not match config_id");
+            }
+            if derive_multisig_account(init_config_id) != self.account {
+                return Err("multisig init does not derive account");
+            }
+        }
         Ok(self.account)
     }
 
@@ -103,13 +114,16 @@ impl MultisigSignature {
         size_of::<Self>()
             + self.signatures.capacity() * size_of::<Bytes>()
             + self.signatures.iter().map(|sig| sig.len()).sum::<usize>()
+            + self.init.as_ref().map_or(0, InitMultisig::size)
     }
 }
 
 impl Encodable for MultisigSignature {
     fn encode(&self, out: &mut dyn alloy_rlp::BufMut) {
-        let payload_length =
-            self.account.length() + self.config_id.length() + self.signatures.length();
+        let payload_length = self.account.length()
+            + self.config_id.length()
+            + self.signatures.length()
+            + self.init.as_ref().map_or(1, Encodable::length);
         alloy_rlp::Header {
             list: true,
             payload_length,
@@ -118,11 +132,18 @@ impl Encodable for MultisigSignature {
         self.account.encode(out);
         self.config_id.encode(out);
         self.signatures.encode(out);
+        if let Some(init) = &self.init {
+            init.encode(out);
+        } else {
+            out.put_u8(EMPTY_STRING_CODE);
+        }
     }
 
     fn length(&self) -> usize {
-        let payload_length =
-            self.account.length() + self.config_id.length() + self.signatures.length();
+        let payload_length = self.account.length()
+            + self.config_id.length()
+            + self.signatures.length()
+            + self.init.as_ref().map_or(1, Encodable::length);
         alloy_rlp::Header {
             list: true,
             payload_length,
@@ -138,20 +159,29 @@ impl Decodable for MultisigSignature {
             return Err(alloy_rlp::Error::UnexpectedString);
         }
 
-        let remaining = buf.len();
-        if header.payload_length > remaining {
+        if header.payload_length > buf.len() {
             return Err(alloy_rlp::Error::InputTooShort);
         }
 
+        let mut payload = &buf[..header.payload_length];
         let this = Self {
-            account: Decodable::decode(buf)?,
-            config_id: Decodable::decode(buf)?,
-            signatures: Decodable::decode(buf)?,
+            account: Decodable::decode(&mut payload)?,
+            config_id: Decodable::decode(&mut payload)?,
+            signatures: Decodable::decode(&mut payload)?,
+            init: if payload.is_empty() {
+                None
+            } else if payload[0] == EMPTY_STRING_CODE {
+                payload.advance(1);
+                None
+            } else {
+                Some(Decodable::decode(&mut payload)?)
+            },
         };
 
-        if buf.len() + header.payload_length != remaining {
+        if !payload.is_empty() {
             return Err(alloy_rlp::Error::UnexpectedLength);
         }
+        buf.advance(header.payload_length);
 
         Ok(this)
     }
@@ -355,6 +385,7 @@ impl<'a> arbitrary::Arbitrary<'a> for MultisigSignature {
             account: u.arbitrary()?,
             config_id: u.arbitrary()?,
             signatures,
+            init: u.arbitrary()?,
         })
     }
 }
@@ -447,11 +478,33 @@ mod tests {
             account: derive_multisig_account(config_id),
             config_id,
             signatures: vec![Bytes::from_static(&[0xaa; 65])],
+            init: None,
         };
         let tempo_signature = TempoSignature::Multisig(signature.clone());
 
         let encoded = tempo_signature.to_bytes();
         assert_eq!(encoded[0], SIGNATURE_TYPE_MULTISIG);
+        let decoded = TempoSignature::from_bytes(&encoded).unwrap();
+        assert_eq!(decoded.as_multisig(), Some(&signature));
+        assert_eq!(
+            decoded.recover_signer(&B256::ZERO).unwrap(),
+            signature.account
+        );
+    }
+
+    #[test]
+    fn multisig_signature_roundtrips_init_config() {
+        let config = sorted_secp_config(&[(Address::from([0x11; 20]), 1)], 1);
+        let config_id = config.config_id().unwrap();
+        let signature = MultisigSignature {
+            account: derive_multisig_account(config_id),
+            config_id,
+            signatures: vec![Bytes::from_static(&[0xaa; 65])],
+            init: Some(config),
+        };
+        let tempo_signature = TempoSignature::Multisig(signature.clone());
+
+        let encoded = tempo_signature.to_bytes();
         let decoded = TempoSignature::from_bytes(&encoded).unwrap();
         assert_eq!(decoded.as_multisig(), Some(&signature));
         assert_eq!(

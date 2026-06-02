@@ -16,8 +16,8 @@ use tempo_contracts::precompiles::ITIP20;
 use tempo_primitives::{
     AASigned, TempoAddressExt, TempoSignature, TempoTransaction, TempoTxEnvelope,
     transaction::{
-        Call, InitMultisig, RecoveredTempoAuthorization, SignedKeyAuthorization,
-        calc_gas_balance_spending, envelope::KEY_AUTHORIZATION_MAX_RLP_LEN,
+        Call, RecoveredTempoAuthorization, SignedKeyAuthorization, calc_gas_balance_spending,
+        envelope::KEY_AUTHORIZATION_MAX_RLP_LEN,
     },
 };
 
@@ -50,9 +50,6 @@ pub struct TempoBatchCallEnv {
 
     /// Optional key authorization for provisioning access keys
     pub key_authorization: Option<SignedKeyAuthorization>,
-
-    /// Optional initial native multisig account config.
-    pub multisig_init: Option<InitMultisig>,
 
     /// Transaction signature hash (for signature verification)
     pub signature_hash: B256,
@@ -346,7 +343,6 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
             valid_before,
             valid_after,
             key_authorization,
-            multisig_init,
             tempo_authorization_list,
         } = tx;
 
@@ -409,7 +405,6 @@ impl FromRecoveredTx<AASigned> for TempoTxEnv {
                 nonce_key: *nonce_key,
                 subblock_transaction: aa_signed.tx().subblock_proposer().is_some(),
                 key_authorization: key_authorization.clone(),
-                multisig_init: multisig_init.clone(),
                 signature_hash: aa_signed.signature_hash(),
                 tx_hash: *aa_signed.hash(),
                 // override_key_id is only used for gas estimation, not actual execution

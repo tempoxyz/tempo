@@ -301,7 +301,6 @@ impl TempoTransactionRequest {
             tempo_authorization_list: self.tempo_authorization_list,
             nonce_key: self.nonce_key.unwrap_or_default(),
             key_authorization: self.key_authorization,
-            multisig_init: self.multisig_init,
         })
     }
 }
@@ -428,7 +427,7 @@ impl From<TempoTransaction> for TempoTransactionRequest {
             key_id: None,
             nonce_key: Some(tx.nonce_key),
             key_authorization: tx.key_authorization,
-            multisig_init: tx.multisig_init,
+            multisig_init: None,
             valid_before: tx.valid_before,
             valid_after: tx.valid_after,
             fee_payer_signature: tx.fee_payer_signature,
@@ -438,7 +437,14 @@ impl From<TempoTransaction> for TempoTransactionRequest {
 
 impl From<AASigned> for TempoTransactionRequest {
     fn from(value: AASigned) -> Self {
-        value.into_parts().0.into()
+        let (tx, signature, _) = value.into_parts();
+        let multisig_init = signature
+            .as_multisig()
+            .and_then(|multisig| multisig.init.clone());
+        Self {
+            multisig_init,
+            ..tx.into()
+        }
     }
 }
 
@@ -496,7 +502,7 @@ pub trait TempoCallBuilderExt {
     /// Sets the `key_authorization` field in the [`TempoTransaction`] transaction.
     fn key_authorization(self, key_authorization: SignedKeyAuthorization) -> Self;
 
-    /// Sets the `multisig_init` field in the [`TempoTransaction`] transaction.
+    /// Sets the native multisig initialization config for request building and simulation.
     fn multisig_init(self, multisig_init: InitMultisig) -> Self;
 }
 
@@ -636,7 +642,6 @@ mod tests {
             tempo_authorization_list: vec![],
             nonce_key: TEMPO_EXPIRING_NONCE_KEY,
             key_authorization: None,
-            multisig_init: None,
         };
 
         let request: TempoTransactionRequest = tx.into();
@@ -716,7 +721,6 @@ mod tests {
             tempo_authorization_list: vec![],
             nonce_key: Default::default(),
             key_authorization: None,
-            multisig_init: None,
         };
 
         let request: TempoTransactionRequest = tx.into();

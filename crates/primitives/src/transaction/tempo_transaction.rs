@@ -3,7 +3,7 @@ use crate::transaction::key_authorization::serde_nonzero_quantity_opt;
 use crate::{
     subblock::{PartialValidatorKey, has_sub_block_nonce_key_prefix},
     transaction::{
-        AASigned, InitMultisig, TempoSignature, TempoSignedAuthorization,
+        AASigned, TempoSignature, TempoSignedAuthorization,
         key_authorization::SignedKeyAuthorization,
     },
 };
@@ -269,9 +269,6 @@ pub struct TempoTransaction {
     /// The authorization must be signed with the root key, the tx can be signed by the Keychain signature.
     pub key_authorization: Option<SignedKeyAuthorization>,
 
-    /// Optional initial native multisig config for the first transaction from a derived account.
-    pub multisig_init: Option<InitMultisig>,
-
     /// Authorization list (EIP-7702 style with Tempo signatures)
     #[cfg_attr(feature = "serde", serde(rename = "aaAuthorizationList"))]
     pub tempo_authorization_list: Vec<TempoSignedAuthorization>,
@@ -359,7 +356,6 @@ impl TempoTransaction {
             + self.calls.iter().map(|call| call.size()).sum::<usize>()
             + self.access_list.size()
             + self.key_authorization.as_ref().map_or(0, |k| k.size())
-            + self.multisig_init.as_ref().map_or(0, |m| m.size())
             + self
                 .tempo_authorization_list
                 .iter()
@@ -450,13 +446,8 @@ impl TempoTransaction {
             signature_length(&self.fee_payer_signature) +
             // authorization_list
             self.tempo_authorization_list.length() +
-            // key_authorization and multisig_init are trailing optionals.
-            match (&self.key_authorization, &self.multisig_init) {
-                (Some(key_auth), Some(multisig_init)) => key_auth.length() + multisig_init.length(),
-                (Some(key_auth), None) => key_auth.length(),
-                (None, Some(multisig_init)) => 1 + multisig_init.length(),
-                (None, None) => 0,
-            }
+            // key_authorization is a trailing optional.
+            self.key_authorization.as_ref().map_or(0, Encodable::length)
     }
 
     pub(crate) fn rlp_encode_fields(
@@ -497,20 +488,8 @@ impl TempoTransaction {
         // Encode authorization_list
         self.tempo_authorization_list.encode(out);
 
-        // Encode trailing optionals. If multisig_init is present without a
-        // key_authorization, emit the canonical empty placeholder for the absent
-        // key_authorization so old payloads remain prefix-compatible.
-        match (&self.key_authorization, &self.multisig_init) {
-            (Some(key_auth), Some(multisig_init)) => {
-                key_auth.encode(out);
-                multisig_init.encode(out);
-            }
-            (Some(key_auth), None) => key_auth.encode(out),
-            (None, Some(multisig_init)) => {
-                out.put_u8(EMPTY_STRING_CODE);
-                multisig_init.encode(out);
-            }
-            (None, None) => {}
+        if let Some(key_auth) = &self.key_authorization {
+            key_auth.encode(out);
         }
     }
 
@@ -600,31 +579,13 @@ impl TempoTransaction {
 
         let tempo_authorization_list = Decodable::decode(buf)?;
 
-        // Decode trailing optionals. In AASigned context, the remaining byte after
-        // these fields is usually a signature RLP string; do not consume it unless
-        // it is the canonical key_authorization placeholder followed by
-        // multisig_init, or an RLP list.
+        // Decode trailing optional key_authorization. In AASigned context, the
+        // remaining byte after these fields is usually a signature RLP string; do
+        // not consume it unless it is an RLP list.
         let mut key_authorization = None;
-        let mut multisig_init = None;
         if let Some(&first) = buf.first() {
-            if first == EMPTY_STRING_CODE {
-                buf.advance(1);
-                if matches!(buf.first(), Some(next) if *next >= 0xc0) {
-                    multisig_init = Some(Decodable::decode(buf)?);
-                } else {
-                    return Err(alloy_rlp::Error::Custom(
-                        "missing multisig_init after key_authorization placeholder",
-                    ));
-                }
-            } else if first >= 0xc0 {
+            if first >= 0xc0 {
                 key_authorization = Some(Decodable::decode(buf)?);
-                if matches!(buf.first(), Some(next) if *next >= 0xc0) {
-                    multisig_init = Some(Decodable::decode(buf)?);
-                } else if matches!(buf.first(), Some(next) if *next == EMPTY_STRING_CODE) {
-                    return Err(alloy_rlp::Error::Custom(
-                        "non-canonical absent multisig_init",
-                    ));
-                }
             }
         }
 
@@ -642,7 +603,6 @@ impl TempoTransaction {
             valid_before,
             valid_after,
             key_authorization,
-            multisig_init,
             tempo_authorization_list,
         };
 
@@ -921,7 +881,6 @@ impl<'a> arbitrary::Arbitrary<'a> for TempoTransaction {
             valid_before,
             valid_after,
             key_authorization: u.arbitrary()?,
-            multisig_init: None,
             tempo_authorization_list: vec![],
         })
     }
@@ -1093,7 +1052,6 @@ mod tests {
             valid_before: Some(nz(1000000)),
             valid_after: Some(nz(500000)),
             key_authorization: None,
-            multisig_init: None,
             tempo_authorization_list: vec![],
         };
 
@@ -1146,7 +1104,6 @@ mod tests {
             valid_before: Some(nz(1000000)),
             valid_after: Some(nz(500000)),
             key_authorization: None,
-            multisig_init: None,
             tempo_authorization_list: vec![],
         };
 
@@ -1190,7 +1147,6 @@ mod tests {
             valid_before: Some(nz(1000)),
             valid_after: None,
             key_authorization: None,
-            multisig_init: None,
             tempo_authorization_list: vec![],
         };
 
@@ -1207,45 +1163,6 @@ mod tests {
         assert_eq!(decoded.fee_payer_signature, None);
         assert_eq!(decoded.valid_after, None);
         assert_eq!(decoded.calls.len(), 1);
-    }
-
-    #[test]
-    fn test_rlp_roundtrip_multisig_init_without_key_authorization() {
-        let multisig_init = InitMultisig {
-            threshold: 1,
-            owners: vec![crate::transaction::MultisigOwner {
-                signature_type: SignatureType::Secp256k1,
-                owner: address!("0000000000000000000000000000000000000011"),
-                weight: 1,
-            }],
-        };
-        let tx = TempoTransaction {
-            chain_id: 1,
-            fee_token: None,
-            max_priority_fee_per_gas: 1000000000,
-            max_fee_per_gas: 2000000000,
-            gas_limit: 21000,
-            calls: vec![Call {
-                to: TxKind::Call(address!("0000000000000000000000000000000000000002")),
-                value: U256::ZERO,
-                input: Bytes::new(),
-            }],
-            access_list: Default::default(),
-            nonce_key: U256::ZERO,
-            nonce: 0,
-            fee_payer_signature: None,
-            valid_before: None,
-            valid_after: None,
-            key_authorization: None,
-            multisig_init: Some(multisig_init.clone()),
-            tempo_authorization_list: vec![],
-        };
-
-        let mut buf = Vec::new();
-        tx.encode(&mut buf);
-        let decoded = TempoTransaction::decode(&mut buf.as_slice()).unwrap();
-        assert_eq!(decoded.key_authorization, None);
-        assert_eq!(decoded.multisig_init, Some(multisig_init));
     }
 
     #[test]
@@ -1527,7 +1444,6 @@ mod tests {
             tempo_authorization_list: vec![],
             access_list: Default::default(),
             key_authorization: None,
-            multisig_init: None,
         };
 
         // Transaction WITHOUT fee_payer, fee_token = token1
@@ -1590,7 +1506,6 @@ mod tests {
             tempo_authorization_list: vec![],
             access_list: Default::default(),
             key_authorization: None,
-            multisig_init: None,
         };
 
         // Transaction without fee_token
@@ -1655,7 +1570,6 @@ mod tests {
             tempo_authorization_list: vec![],
             access_list: Default::default(),
             key_authorization: None,
-            multisig_init: None,
         };
 
         // Scenario 2: No fee payer, with token
@@ -1726,7 +1640,6 @@ mod tests {
             valid_before: Some(nz(1000000)),
             valid_after: Some(nz(500000)),
             key_authorization: None, // No key authorization
-            multisig_init: None,
             tempo_authorization_list: vec![],
         };
 
@@ -1816,7 +1729,6 @@ mod tests {
             valid_before: None,
             valid_after: None,
             key_authorization: None, // No key_authorization
-            multisig_init: None,
             tempo_authorization_list: vec![],
         };
 
@@ -1857,7 +1769,6 @@ mod tests {
             valid_before: None,
             valid_after: None,
             key_authorization: None, // No key_authorization
-            multisig_init: None,
             tempo_authorization_list: vec![],
         };
 
@@ -1935,7 +1846,6 @@ mod tests {
             valid_before: Some(nz(1000000)),
             valid_after: Some(nz(500000)),
             key_authorization: None,
-            multisig_init: None,
             tempo_authorization_list: vec![],
         };
 
@@ -2251,7 +2161,6 @@ mod compact_tests {
                     pre_hash: false,
                 })),
             ),
-            multisig_init: None,
             tempo_authorization_list: vec![TempoSignedAuthorization::new_unchecked(
                 Authorization {
                     chain_id: U256::from(42170u64),
