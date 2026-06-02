@@ -591,7 +591,19 @@ impl TempoSignature {
             return Err("Signature data is empty");
         }
 
-        // Check if this is a Keychain or Multisig signature before delegating to
+        // Multisig is length-variable, so a typed multisig payload can be exactly
+        // 65 bytes. Try that typed decode first, but fall back to the legacy raw
+        // secp256k1 interpretation if the 65-byte payload is not valid multisig RLP.
+        if data.len() > 1 && data[0] == SIGNATURE_TYPE_MULTISIG {
+            let mut sig_data = &data[1..];
+            match MultisigSignature::decode(&mut sig_data) {
+                Ok(signature) if sig_data.is_empty() => return Ok(Self::Multisig(signature)),
+                _ if data.len() == SECP256K1_SIGNATURE_LENGTH => {}
+                _ => return Err("Invalid Multisig signature RLP"),
+            }
+        }
+
+        // Check if this is a Keychain signature before delegating to
         // PrimitiveSignature. The exact 65-byte secp256k1 path remains untyped for
         // backwards compatibility.
         if data.len() > 1
@@ -623,18 +635,6 @@ impl TempoSignature {
                 version,
                 cached_key_id: OnceLock::new(),
             }));
-        }
-        if data.len() > 1
-            && data.len() != SECP256K1_SIGNATURE_LENGTH
-            && data[0] == SIGNATURE_TYPE_MULTISIG
-        {
-            let mut sig_data = &data[1..];
-            let signature = MultisigSignature::decode(&mut sig_data)
-                .map_err(|_| "Invalid Multisig signature RLP")?;
-            if !sig_data.is_empty() {
-                return Err("Invalid Multisig signature: trailing bytes");
-            }
-            return Ok(Self::Multisig(signature));
         }
 
         // For all non-Keychain signatures, delegate to PrimitiveSignature
