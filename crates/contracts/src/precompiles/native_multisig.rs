@@ -7,14 +7,7 @@ crate::sol! {
     #[derive(Debug, PartialEq, Eq)]
     #[sol(abi)]
     interface INativeMultisig {
-        enum SignatureType {
-            Secp256k1,
-            P256,
-            WebAuthn
-        }
-
         struct MultisigOwner {
-            SignatureType signatureType;
             address owner;
             uint32 weight;
         }
@@ -43,7 +36,6 @@ crate::sol! {
         error InvalidConfigId();
         error InvalidThreshold();
         error InvalidOwner();
-        error InvalidSignatureType();
         error InvalidWeight();
         error TooManyOwners();
         error DuplicateOwner();

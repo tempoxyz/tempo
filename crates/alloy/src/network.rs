@@ -538,7 +538,6 @@ mod tests {
                 salt: B256::ZERO,
                 threshold: 1,
                 owners: vec![MultisigOwner {
-                    signature_type: SignatureType::Secp256k1,
                     owner: Address::repeat_byte(0x11),
                     weight: 1,
                 }],
