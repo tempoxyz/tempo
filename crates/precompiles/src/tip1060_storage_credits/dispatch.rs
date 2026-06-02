@@ -1,14 +1,14 @@
-//! ABI dispatch for the storage gas tokens precompile.
+//! ABI dispatch for the storage credits precompile.
 
 use crate::{
     Precompile, charge_input_cost, dispatch_call, mutate_void,
-    tip1060_storage_gas_token::TIP1060StorageGasToken, view,
+    tip1060_storage_credits::TIP1060StorageCredits, view,
 };
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
-use tempo_contracts::precompiles::ITIP1060StorageGasTokens::ITIP1060StorageGasTokensCalls;
+use tempo_contracts::precompiles::ITIP1060StorageCredits::ITIP1060StorageCreditsCalls;
 
-impl Precompile for TIP1060StorageGasToken {
+impl Precompile for TIP1060StorageCredits {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
@@ -17,21 +17,21 @@ impl Precompile for TIP1060StorageGasToken {
         dispatch_call(
             calldata,
             &[],
-            ITIP1060StorageGasTokensCalls::abi_decode,
+            ITIP1060StorageCreditsCalls::abi_decode,
             |call| match call {
-                ITIP1060StorageGasTokensCalls::balance(call) => view(call, |_| {
+                ITIP1060StorageCreditsCalls::balance(call) => view(call, |_| {
                     self.state_of(msg_sender).map(|state| state.balance)
                 }),
-                ITIP1060StorageGasTokensCalls::balanceOf(call) => view(call, |c| {
+                ITIP1060StorageCreditsCalls::balanceOf(call) => view(call, |c| {
                     self.state_of(c.account).map(|state| state.balance)
                 }),
-                ITIP1060StorageGasTokensCalls::mode(call) => view(call, |_| {
+                ITIP1060StorageCreditsCalls::mode(call) => view(call, |_| {
                     self.state_of(msg_sender).map(|state| state.mode.into())
                 }),
-                ITIP1060StorageGasTokensCalls::modeOf(call) => view(call, |c| {
+                ITIP1060StorageCreditsCalls::modeOf(call) => view(call, |c| {
                     self.state_of(c.account).map(|state| state.mode.into())
                 }),
-                ITIP1060StorageGasTokensCalls::setMode(call) => {
+                ITIP1060StorageCreditsCalls::setMode(call) => {
                     mutate_void(call, msg_sender, |sender, c| {
                         self.set_mode(sender, c.newMode)
                     })
@@ -50,16 +50,16 @@ mod tests {
     };
 
     #[test]
-    fn test_storage_gas_tokens_selector_coverage() -> eyre::Result<()> {
+    fn test_storage_credits_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut gas_token = TIP1060StorageGasToken::new();
+            let mut storage_credits_precompile = TIP1060StorageCredits::new();
 
             let unsupported = check_selector_coverage(
-                &mut gas_token,
-                ITIP1060StorageGasTokensCalls::SELECTORS,
-                "ITIP1060StorageGasTokens",
-                ITIP1060StorageGasTokensCalls::name_by_selector,
+                &mut storage_credits_precompile,
+                ITIP1060StorageCreditsCalls::SELECTORS,
+                "ITIP1060StorageCredits",
+                ITIP1060StorageCreditsCalls::name_by_selector,
             );
 
             assert_full_coverage([unsupported]);
