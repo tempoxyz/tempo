@@ -1,5 +1,5 @@
 use std::{
-    collections::VecDeque,
+    collections::BTreeMap,
     sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
@@ -86,31 +86,32 @@ impl MarshalPersistEstimator {
 /// avoiding a single best-case block dominating the next build.
 #[derive(Clone, Debug)]
 pub struct ValidatorValidationEstimator {
-    samples: VecDeque<u64>,
+    samples: BTreeMap<u64, u64>,
 }
 
 impl Default for ValidatorValidationEstimator {
     fn default() -> Self {
         Self {
-            samples: VecDeque::with_capacity(VALIDATOR_VALIDATION_SAMPLE_WINDOW),
+            samples: BTreeMap::new(),
         }
     }
 }
 
 impl ValidatorValidationEstimator {
     /// Records local time spent validating a block through the execution layer.
-    pub fn observe(&mut self, elapsed: Duration) {
+    pub fn observe(&mut self, sample_id: u64, elapsed: Duration) {
         if elapsed == Duration::ZERO {
             return;
         }
 
         let elapsed_nanos = elapsed.as_nanos().min(u128::from(u64::MAX)) as u64;
-        if self.samples.len() == VALIDATOR_VALIDATION_SAMPLE_WINDOW {
-            self.samples.pop_front();
+        self.samples.insert(sample_id, elapsed_nanos);
+        while self.samples.len() > VALIDATOR_VALIDATION_SAMPLE_WINDOW {
+            self.samples.pop_first();
         }
-        self.samples.push_back(elapsed_nanos);
 
         debug!(
+            sample_id,
             elapsed = ?elapsed,
             estimated_p75 = ?self.estimate(),
             samples = self.samples.len(),
@@ -128,7 +129,7 @@ impl ValidatorValidationEstimator {
             return None;
         }
 
-        let mut sorted = self.samples.iter().copied().collect::<Vec<_>>();
+        let mut sorted = self.samples.values().copied().collect::<Vec<_>>();
         sorted.sort_unstable();
         let index = ((sorted.len() * 3).div_ceil(4)).saturating_sub(1);
         Some(Duration::from_nanos(sorted[index]))
@@ -161,15 +162,25 @@ mod tests {
     #[test]
     fn validator_validation_estimate_uses_recent_p75() {
         let mut estimator = ValidatorValidationEstimator {
-            samples: VecDeque::from([10, 20, 30, 40]),
+            samples: BTreeMap::from([(1, 10), (2, 20), (3, 30), (4, 40)]),
         };
         assert_eq!(estimator.estimate(), Some(Duration::from_nanos(30)));
 
         estimator = ValidatorValidationEstimator::default();
         for elapsed in 1..=VALIDATOR_VALIDATION_SAMPLE_WINDOW as u64 {
-            estimator.observe(Duration::from_nanos(elapsed));
+            estimator.observe(elapsed, Duration::from_nanos(elapsed));
         }
-        estimator.observe(Duration::from_nanos(10_000));
+        estimator.observe(10_000, Duration::from_nanos(10_000));
         assert_eq!(estimator.estimate(), Some(Duration::from_nanos(49)));
+    }
+
+    #[test]
+    fn validator_validation_estimate_replaces_duplicate_sample_ids() {
+        let mut estimator = ValidatorValidationEstimator::default();
+        estimator.observe(10, Duration::from_nanos(100));
+        estimator.observe(10, Duration::from_nanos(200));
+
+        assert_eq!(estimator.samples.len(), 1);
+        assert_eq!(estimator.estimate(), Some(Duration::from_nanos(200)));
     }
 }

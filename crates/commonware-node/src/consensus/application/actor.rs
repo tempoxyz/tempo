@@ -256,11 +256,11 @@ struct Inner<TState> {
 }
 
 impl<TState> Inner<TState> {
-    fn observe_validator_validation(&self, elapsed: Duration) {
+    fn observe_validator_validation(&self, sample_id: u64, elapsed: Duration) {
         let Ok(mut estimator) = self.validator_validation_estimator.lock() else {
             return;
         };
-        estimator.observe(elapsed);
+        estimator.observe(sample_id, elapsed);
     }
 
     fn validator_validation_estimate(&self) -> Option<Duration> {
@@ -659,7 +659,7 @@ impl Inner<Init> {
             .wrap_err("failed verifying block against execution layer")?;
 
             if let Some(duration) = verification.validation_duration {
-                self.observe_validator_validation(duration);
+                self.observe_validator_validation(parent.height().get(), duration);
             }
             if !verification.is_valid {
                 bail!("the proposal parent block is not valid");
@@ -931,7 +931,7 @@ impl Inner<Init> {
         .await
         .wrap_err("failed verifying block against execution layer")?;
         if let Some(duration) = verification.validation_duration {
-            self.observe_validator_validation(duration);
+            self.observe_validator_validation(block.height().get(), duration);
         }
         let is_good = verification.is_valid;
 
