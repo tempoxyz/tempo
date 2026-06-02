@@ -15,7 +15,11 @@
 
 use std::time::Duration;
 
-use tempo_payload_types::MarshalPersistEstimator;
+#[cfg(test)]
+use tempo_payload_types::ValidatorValidationEstimator;
+use tempo_payload_types::{
+    MarshalPersistEstimator, ValidatorValidationEstimate, ValidatorValidationShape,
+};
 
 /// Fixed-point scale for build time multipliers.
 pub(crate) const BUILD_TIME_MULTIPLIER_SCALE: u64 = 1_000_000;
@@ -54,11 +58,12 @@ fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
 /// `elapsed` is wall-clock time spent in the builder so far. `idle_elapsed` is
 /// the proposer-only time spent waiting for more transactions, which is not
 /// replayed by validators and therefore counts once.
-/// `budget` is the remaining consensus payload build budget. `block_size_bytes`
-/// is the current encoded-size estimate used for marshal persistence.
-/// `validator_validation` is an estimate of validator-side replay work from
-/// previously validated blocks. If absent, the conservative builder-work
-/// projection is reused for the validator side.
+/// `budget` is the remaining consensus payload build budget.
+/// `validator_validation` is a shape-normalized estimate of validator-side
+/// replay work from previously validated blocks. If absent, or if it cannot
+/// estimate the current block shape, the conservative builder-work projection
+/// is reused for the validator side.
+/// `current_validation_shape` describes the block currently being assembled.
 ///
 /// The budget is not split into fixed leader/validator buckets. Instead, we
 /// charge proposer idle once, projected builder work once, learned validator
@@ -69,13 +74,15 @@ pub(crate) fn payload_budget_exhausted(
     multiplier: u64,
     budget: Duration,
     marshal_persist: MarshalPersistEstimator,
-    validator_validation: Option<Duration>,
-    block_size_bytes: usize,
+    validator_validation: Option<ValidatorValidationEstimate>,
+    current_validation_shape: ValidatorValidationShape,
 ) -> bool {
     let work_elapsed = elapsed.saturating_sub(idle_elapsed);
     let predicted_builder_work = scaled_duration(work_elapsed, multiplier);
-    let predicted_validator_work = validator_validation.unwrap_or(predicted_builder_work);
-    let marshal_persist = marshal_persist.estimate(block_size_bytes);
+    let predicted_validator_work = validator_validation
+        .and_then(|estimate| estimate.estimate(current_validation_shape))
+        .unwrap_or(predicted_builder_work);
+    let marshal_persist = marshal_persist.estimate(current_validation_shape.block_size_bytes());
     idle_elapsed
         .saturating_add(predicted_builder_work)
         .saturating_add(predicted_validator_work)
@@ -118,6 +125,15 @@ pub(crate) fn decay_build_time_multiplier(current: u64, observed: u64) -> u64 {
 mod tests {
     use super::*;
 
+    fn validator_validation_estimate(
+        shape: ValidatorValidationShape,
+        elapsed: Duration,
+    ) -> Option<ValidatorValidationEstimate> {
+        let mut estimator = ValidatorValidationEstimator::default();
+        estimator.observe(1, shape, elapsed);
+        estimator.estimate()
+    }
+
     #[test]
     fn observed_build_multiplier_tracks_tail_cost() {
         assert_eq!(
@@ -144,7 +160,7 @@ mod tests {
             Duration::from_millis(270),
             MarshalPersistEstimator::default(),
             None,
-            0
+            ValidatorValidationShape::default(),
         ));
         assert!(!payload_budget_exhausted(
             Duration::from_millis(100),
@@ -153,7 +169,7 @@ mod tests {
             Duration::from_millis(271),
             MarshalPersistEstimator::default(),
             None,
-            0
+            ValidatorValidationShape::default(),
         ));
         assert!(payload_budget_exhausted(
             Duration::from_millis(350),
@@ -162,7 +178,7 @@ mod tests {
             Duration::from_millis(520),
             MarshalPersistEstimator::default(),
             None,
-            0
+            ValidatorValidationShape::default(),
         ));
         assert!(!payload_budget_exhausted(
             Duration::from_millis(350),
@@ -171,13 +187,14 @@ mod tests {
             Duration::from_millis(521),
             MarshalPersistEstimator::default(),
             None,
-            0
+            ValidatorValidationShape::default(),
         ));
     }
 
     #[test]
     fn payload_budget_uses_validator_feedback_when_available() {
-        let validator_validation = Some(Duration::from_millis(80));
+        let shape = ValidatorValidationShape::new(0, 100, 0);
+        let validator_validation = validator_validation_estimate(shape, Duration::from_millis(80));
 
         assert!(payload_budget_exhausted(
             Duration::from_millis(100),
@@ -186,7 +203,7 @@ mod tests {
             Duration::from_millis(215),
             MarshalPersistEstimator::default(),
             validator_validation,
-            0
+            shape,
         ));
         assert!(!payload_budget_exhausted(
             Duration::from_millis(100),
@@ -195,7 +212,34 @@ mod tests {
             Duration::from_millis(216),
             MarshalPersistEstimator::default(),
             validator_validation,
-            0
+            shape,
+        ));
+    }
+
+    #[test]
+    fn payload_budget_scales_validator_feedback_to_current_block() {
+        let validator_validation = validator_validation_estimate(
+            ValidatorValidationShape::new(0, 100, 0),
+            Duration::from_millis(100),
+        );
+
+        assert!(payload_budget_exhausted(
+            Duration::from_millis(100),
+            Duration::ZERO,
+            1_350_000,
+            Duration::from_millis(185),
+            MarshalPersistEstimator::default(),
+            validator_validation,
+            ValidatorValidationShape::new(0, 50, 0),
+        ));
+        assert!(!payload_budget_exhausted(
+            Duration::from_millis(100),
+            Duration::ZERO,
+            1_350_000,
+            Duration::from_millis(186),
+            MarshalPersistEstimator::default(),
+            validator_validation,
+            ValidatorValidationShape::new(0, 50, 0),
         ));
     }
 
@@ -210,7 +254,7 @@ mod tests {
             Duration::from_millis(300),
             marshal_persist,
             None,
-            15_000
+            ValidatorValidationShape::new(15_000, 0, 0),
         ));
         assert!(!payload_budget_exhausted(
             Duration::from_millis(100),
@@ -219,7 +263,7 @@ mod tests {
             Duration::from_millis(300),
             marshal_persist,
             None,
-            14_999
+            ValidatorValidationShape::new(14_999, 0, 0),
         ));
     }
 

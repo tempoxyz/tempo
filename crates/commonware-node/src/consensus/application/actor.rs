@@ -18,7 +18,7 @@ use std::{
 use alloy_consensus::BlockHeader;
 use alloy_primitives::{B256, Bytes};
 use alloy_rpc_types_engine::PayloadId;
-use commonware_codec::{Encode as _, ReadExt as _};
+use commonware_codec::{Encode as _, EncodeSize as _, ReadExt as _};
 use commonware_consensus::{
     Heightable as _,
     simplex::Plan,
@@ -41,14 +41,15 @@ use futures::{
 };
 use rand_08::{CryptoRng, Rng};
 use reth_node_builder::{Block as _, ConsensusEngineHandle, PayloadKind};
+use reth_primitives_traits::BlockBody as _;
 use tempo_dkg_onchain_artifacts::OnchainDkgOutcome;
 use tempo_node::{TempoExecutionData, TempoFullNode, TempoPayloadTypes};
 use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
 use tempo_payload_types::{
-    TempoPayloadAttributes, ValidatorValidationEstimator, marshal_persist_estimate,
-    observe_marshal_persist,
+    TempoPayloadAttributes, ValidatorValidationEstimate, ValidatorValidationEstimator,
+    ValidatorValidationShape, marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
 use tracing::{Level, debug, info, info_span, instrument, warn};
@@ -256,14 +257,19 @@ struct Inner<TState> {
 }
 
 impl<TState> Inner<TState> {
-    fn observe_validator_validation(&self, sample_id: u64, elapsed: Duration) {
+    fn observe_validator_validation(
+        &self,
+        sample_id: u64,
+        shape: ValidatorValidationShape,
+        elapsed: Duration,
+    ) {
         let Ok(mut estimator) = self.validator_validation_estimator.lock() else {
             return;
         };
-        estimator.observe(sample_id, elapsed);
+        estimator.observe(sample_id, shape, elapsed);
     }
 
-    fn validator_validation_estimate(&self) -> Option<Duration> {
+    fn validator_validation_estimate(&self) -> Option<ValidatorValidationEstimate> {
         self.validator_validation_estimator
             .lock()
             .ok()
@@ -659,7 +665,11 @@ impl Inner<Init> {
             .wrap_err("failed verifying block against execution layer")?;
 
             if let Some(duration) = verification.validation_duration {
-                self.observe_validator_validation(parent.height().get(), duration);
+                self.observe_validator_validation(
+                    parent.height().get(),
+                    validator_validation_shape(&parent),
+                    duration,
+                );
             }
             if !verification.is_valid {
                 bail!("the proposal parent block is not valid");
@@ -931,7 +941,11 @@ impl Inner<Init> {
         .await
         .wrap_err("failed verifying block against execution layer")?;
         if let Some(duration) = verification.validation_duration {
-            self.observe_validator_validation(block.height().get(), duration);
+            self.observe_validator_validation(
+                block.height().get(),
+                validator_validation_shape(&block),
+                duration,
+            );
         }
         let is_good = verification.is_valid;
 
@@ -999,6 +1013,14 @@ struct Init {
     dkg_manager: crate::dkg::manager::Mailbox,
     /// The communication channel to the executor agent.
     executor: crate::executor::Mailbox,
+}
+
+fn validator_validation_shape(block: &Block) -> ValidatorValidationShape {
+    ValidatorValidationShape::new(
+        block.encode_size(),
+        block.block().gas_used(),
+        block.block().body().transaction_count(),
+    )
 }
 
 /// Verifies `block` given its `parent` against the execution layer.

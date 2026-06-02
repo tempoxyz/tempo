@@ -65,7 +65,9 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
-use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
+use tempo_payload_types::{
+    TempoBuiltPayload, TempoPayloadAttributes, ValidatorValidationShape, marshal_persist_estimate,
+};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
@@ -561,6 +563,11 @@ where
 
             if let Some(build_budget) = payload_build_budget {
                 let elapsed = start.elapsed();
+                let validator_validation_shape = ValidatorValidationShape::new(
+                    block_size_used,
+                    cumulative_gas_used,
+                    pool_transactions_included as usize,
+                );
                 if payload_budget_exhausted(
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
@@ -568,16 +575,19 @@ where
                     build_budget,
                     marshal_persist,
                     validator_validation,
-                    block_size_used,
+                    validator_validation_shape,
                 ) {
                     let estimated_marshal_persist = marshal_persist.estimate(block_size_used);
+                    let estimated_validator_validation = validator_validation
+                        .and_then(|estimate| estimate.estimate(validator_validation_shape));
                     debug!(
                         target: "payload_builder",
                         ?elapsed,
                         ?normal_transaction_fill_idle_elapsed,
                         ?build_budget,
                         ?estimated_marshal_persist,
-                        ?validator_validation,
+                        ?estimated_validator_validation,
+                        ?validator_validation_shape,
                         block_size_used,
                         build_time_multiplier = build_time_multiplier as f64
                             / BUILD_TIME_MULTIPLIER_SCALE as f64,

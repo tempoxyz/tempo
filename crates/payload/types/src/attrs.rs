@@ -1,3 +1,4 @@
+use crate::ValidatorValidationEstimate;
 use alloy_primitives::{Address, B256, Bytes, Keccak256};
 use alloy_rpc_types_engine::PayloadId;
 use alloy_rpc_types_eth::Withdrawal;
@@ -33,7 +34,7 @@ pub struct TempoPayloadAttributes {
     /// Consensus snapshots this from recent locally validated blocks. `None`
     /// means the builder should use its conservative fallback.
     #[serde(skip)]
-    validator_validation_estimate: Option<Duration>,
+    validator_validation_estimate: Option<ValidatorValidationEstimate>,
     /// Milliseconds portion of the timestamp.
     timestamp_millis_part: u64,
     /// DKG ceremony data to include in the block's extra_data header field.
@@ -123,13 +124,16 @@ impl TempoPayloadAttributes {
 
     /// Sets the validator-side execution-layer validation estimate for a
     /// consensus payload build.
-    pub fn with_validator_validation_estimate(mut self, estimate: Option<Duration>) -> Self {
+    pub fn with_validator_validation_estimate(
+        mut self,
+        estimate: Option<ValidatorValidationEstimate>,
+    ) -> Self {
         self.validator_validation_estimate = estimate;
         self
     }
 
     /// Returns the consensus-provided validator-side validation estimate.
-    pub fn validator_validation_estimate(&self) -> Option<Duration> {
+    pub fn validator_validation_estimate(&self) -> Option<ValidatorValidationEstimate> {
         self.validator_validation_estimate
     }
 
