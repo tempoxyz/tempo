@@ -9,7 +9,7 @@ use tracing::debug;
 const RATE_DECAY: u64 = 8;
 /// Ignore tiny blocks so fixed archive overhead does not become a large-block byte cost.
 const MIN_SAMPLE_BYTES: usize = 128 * 1024;
-/// Number of recent successful EL validation timings to retain for the P75 estimate.
+/// Number of recent successful EL validation timings to retain for the P90 estimate.
 const VALIDATOR_VALIDATION_SAMPLE_WINDOW: usize = 64;
 /// Fixed-point scale for learned validation rates.
 const VALIDATOR_VALIDATION_RATE_SCALE: u128 = 1_000_000;
@@ -149,14 +149,14 @@ fn scaled_duration(rate: u64, units: u128) -> Duration {
     Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
 }
 
-fn p75_rate(rates: impl Iterator<Item = u64>) -> Option<u64> {
+fn p90_rate(rates: impl Iterator<Item = u64>) -> Option<u64> {
     let mut sorted = rates.collect::<Vec<_>>();
     if sorted.is_empty() {
         return None;
     }
 
     sorted.sort_unstable();
-    let index = ((sorted.len() * 3).div_ceil(4)).saturating_sub(1);
+    let index = ((sorted.len() * 9).div_ceil(10)).saturating_sub(1);
     Some(sorted[index])
 }
 
@@ -204,9 +204,9 @@ fn estimate_scaled_duration(rate: Option<u64>, units: u128) -> Option<Duration> 
 
 /// Tracks recent local execution-layer block validation durations.
 ///
-/// The estimate intentionally uses the P75 of recent successful validations. This
-/// is aggressive enough to reclaim budget from faster validator replay paths while
-/// avoiding a single best-case block dominating the next build. Samples are
+/// The estimate intentionally uses the P90 of recent successful validations. This
+/// still reclaims budget from faster validator replay paths while reserving more
+/// headroom for tail validation costs than a median-like estimate. Samples are
 /// normalized by block shape so a node that validated large blocks does not
 /// reserve the same absolute duration for a smaller block it is currently
 /// building.
@@ -242,13 +242,13 @@ impl ValidatorValidationEstimator {
         debug!(
             sample_id,
             elapsed = ?elapsed,
-            estimated_p75 = ?self.estimate(),
+            estimated_p90 = ?self.estimate(),
             samples = self.samples.len(),
             "updated validator validation estimate"
         );
     }
 
-    /// Returns the current P75 estimate for execution-layer block validation work.
+    /// Returns the current P90 estimate for execution-layer block validation work.
     ///
     /// `None` means this node has not yet observed any successful validations.
     /// Callers should fall back to their conservative validator-work estimate in
@@ -259,17 +259,17 @@ impl ValidatorValidationEstimator {
         }
 
         let estimate = ValidatorValidationEstimate {
-            ns_per_byte_scaled: p75_rate(
+            ns_per_byte_scaled: p90_rate(
                 self.samples
                     .values()
                     .filter_map(|sample| sample.ns_per_byte_scaled),
             ),
-            ns_per_gas_scaled: p75_rate(
+            ns_per_gas_scaled: p90_rate(
                 self.samples
                     .values()
                     .filter_map(|sample| sample.ns_per_gas_scaled),
             ),
-            ns_per_transaction_scaled: p75_rate(
+            ns_per_transaction_scaled: p90_rate(
                 self.samples
                     .values()
                     .filter_map(|sample| sample.ns_per_transaction_scaled),
@@ -303,7 +303,7 @@ mod tests {
     }
 
     #[test]
-    fn validator_validation_estimate_uses_recent_p75() {
+    fn validator_validation_estimate_uses_recent_p90() {
         let mut estimator = ValidatorValidationEstimator::default();
         let sample_shape = ValidatorValidationShape::new(0, 100, 0);
         let current_shape = ValidatorValidationShape::new(0, 100, 0);
@@ -314,7 +314,7 @@ mod tests {
             estimator
                 .estimate()
                 .and_then(|estimate| estimate.estimate(current_shape)),
-            Some(Duration::from_nanos(30))
+            Some(Duration::from_nanos(40))
         );
 
         estimator = ValidatorValidationEstimator::default();
@@ -334,7 +334,7 @@ mod tests {
             estimator
                 .estimate()
                 .and_then(|estimate| estimate.estimate(ValidatorValidationShape::new(0, 1, 0))),
-            Some(Duration::from_nanos(49))
+            Some(Duration::from_nanos(59))
         );
     }
 
