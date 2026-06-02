@@ -636,9 +636,6 @@ impl Inner<Init> {
                         persist_start.elapsed(),
                     );
 
-                    // Keep waiting for the remaining return time, if there's anything left after building the block.
-                    context.sleep_until(proposal_return.time).await;
-
                     if let Some(executed_block) = fast_path_executed_block {
                         #[cfg(feature = "bal")]
                         {
@@ -659,6 +656,9 @@ impl Inner<Init> {
                         #[cfg(not(feature = "bal"))]
                         let _ = executed_block;
                     }
+
+                    // Keep waiting for the remaining return time, if there's anything left after building the block.
+                    context.sleep_until(proposal_return.time).await;
                 }
 
                 eyre::Ok(digest)
@@ -951,6 +951,9 @@ impl Inner<Init> {
         let parent_hash = parent.block_hash();
         let proposer_public_key = crate::utils::public_key_to_b256(&self.public_key);
         let marshal_persist = marshal_persist_estimate();
+        #[cfg(feature = "bal")]
+        let nullified_view_recovery =
+            !is_genesis_parent && is_nullified_view_recovery(round, parent_view);
 
         #[cfg(feature = "bal")]
         if let Some(mut speculative_build) = self
@@ -961,9 +964,15 @@ impl Inner<Init> {
         {
             let consensus_context = consensus_context
                 .expect("proposal consensus context is constructed immediately above");
+            let build_budget = if nullified_view_recovery {
+                Duration::ZERO
+            } else {
+                self.proposal_return_budget
+                    .saturating_sub(propose_start.elapsed())
+            };
             speculative_build
                 .build_control
-                .attach_proposal_context(extra_data, consensus_context)
+                .attach_proposal_context_with_budget(extra_data, consensus_context, build_budget)
                 .map_err(|error| eyre!("failed attaching speculative proposal context: {error}"))?;
             self.metrics
                 .speculative_payload_builds_reused_by_propose
@@ -995,6 +1004,7 @@ impl Inner<Init> {
                     payload_id_rx,
                     propose_start,
                     Instant::now(),
+                    nullified_view_recovery,
                 )
                 .await?;
 
@@ -1014,8 +1024,7 @@ impl Inner<Init> {
         if !is_genesis_parent {
             let consensus_context = consensus_context
                 .expect("proposal consensus context is constructed immediately above");
-            let is_nullified_view_recovery = is_nullified_view_recovery(round, parent_view);
-            let build_budget = if is_nullified_view_recovery {
+            let build_budget = if nullified_view_recovery {
                 Duration::ZERO
             } else {
                 self.proposal_return_budget
@@ -1027,7 +1036,7 @@ impl Inner<Init> {
                 .map_err(|error| {
                     eyre!("failed attaching propose-time speculative proposal context: {error}")
                 })?;
-            if is_nullified_view_recovery {
+            if nullified_view_recovery {
                 self.metrics
                     .speculative_payload_builds_started_from_propose_recovery
                     .inc();
@@ -1068,6 +1077,7 @@ impl Inner<Init> {
                     payload_id_rx,
                     propose_start,
                     Instant::now(),
+                    nullified_view_recovery,
                 )
                 .await?;
 
@@ -1145,11 +1155,13 @@ impl Inner<Init> {
         // Pace proposal return from the original propose start. Validators still
         // need to repeat replayable build work and marshal persistence, so leave
         // room for those costs before returning the proposal.
-        let return_delay = self
-            .proposal_return_budget
-            .saturating_sub(proposal_elapsed)
-            .saturating_sub(payload_validation_elapsed)
-            .saturating_sub(validator_marshal_persist);
+        let return_delay = proposal_return_delay(
+            self.proposal_return_budget,
+            proposal_elapsed,
+            payload_validation_elapsed,
+            validator_marshal_persist,
+            false,
+        );
         debug!(
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
@@ -1286,6 +1298,7 @@ impl Inner<Init> {
         payload_id_rx: &mut Option<PendingPayloadId>,
         propose_start: Instant,
         payload_build_start: Instant,
+        return_immediately: bool,
     ) -> eyre::Result<(Block, ProposalReturn)> {
         if payload_id_rx.is_none() {
             *payload_id_rx = Some(if let Some(payload_id) = speculative_build.payload_id {
@@ -1327,11 +1340,13 @@ impl Inner<Init> {
         let block_size_bytes = payload.rlp_block_size_bytes();
         let validator_marshal_persist = marshal_persist.estimate(block_size_bytes);
         let proposal_elapsed = propose_start.elapsed();
-        let return_delay = self
-            .proposal_return_budget
-            .saturating_sub(proposal_elapsed)
-            .saturating_sub(payload_validation_elapsed)
-            .saturating_sub(validator_marshal_persist);
+        let return_delay = proposal_return_delay(
+            self.proposal_return_budget,
+            proposal_elapsed,
+            payload_validation_elapsed,
+            validator_marshal_persist,
+            return_immediately,
+        );
         debug!(
             %payload_id,
             proposal_elapsed = %display_duration(proposal_elapsed),
@@ -1339,8 +1354,9 @@ impl Inner<Init> {
             validation_time = %display_duration(payload_validation_elapsed),
             validator_marshal_persist = %display_duration(validator_marshal_persist),
             return_time = %display_duration(return_delay),
+            return_immediately,
             block_size_bytes,
-            "sleeping before returning speculative proposal"
+            "resolved speculative proposal return timing"
         );
         let proposal_return_time = context.current() + return_delay;
 
@@ -1596,6 +1612,23 @@ impl Inner<Uninit> {
 #[cfg(feature = "bal")]
 fn is_nullified_view_recovery(round: Round, parent_view: View) -> bool {
     round.view() > parent_view.next()
+}
+
+fn proposal_return_delay(
+    proposal_return_budget: Duration,
+    proposal_elapsed: Duration,
+    payload_validation_elapsed: Duration,
+    validator_marshal_persist: Duration,
+    return_immediately: bool,
+) -> Duration {
+    if return_immediately {
+        Duration::ZERO
+    } else {
+        proposal_return_budget
+            .saturating_sub(proposal_elapsed)
+            .saturating_sub(payload_validation_elapsed)
+            .saturating_sub(validator_marshal_persist)
+    }
 }
 
 /// Marker type to signal that the actor is not fully initialized.
@@ -1916,5 +1949,29 @@ mod tests {
             Round::new(Epoch::new(0), View::new(270)),
             parent_view
         ));
+    }
+
+    #[test]
+    fn recovery_proposal_return_delay_is_zero() {
+        assert_eq!(
+            proposal_return_delay(
+                Duration::from_millis(500),
+                Duration::from_millis(40),
+                Duration::from_millis(30),
+                Duration::from_millis(20),
+                true,
+            ),
+            Duration::ZERO
+        );
+        assert_eq!(
+            proposal_return_delay(
+                Duration::from_millis(500),
+                Duration::from_millis(40),
+                Duration::from_millis(30),
+                Duration::from_millis(20),
+                false,
+            ),
+            Duration::from_millis(410)
+        );
     }
 }

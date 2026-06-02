@@ -259,7 +259,7 @@ pub struct PayloadBuildControl {
 
 #[derive(Debug)]
 struct PayloadBuildControlInner {
-    proposal_return_budget: Duration,
+    proposal_return_budget: Mutex<Duration>,
     builder_start: Instant,
     proposal_timing: Mutex<Option<ProposalTiming>>,
     proposal_timing_changed: Condvar,
@@ -306,7 +306,7 @@ impl PayloadBuildControl {
     pub fn new_at(proposal_return_budget: Duration, builder_start: Instant) -> Self {
         Self {
             inner: Arc::new(PayloadBuildControlInner {
-                proposal_return_budget,
+                proposal_return_budget: Mutex::new(proposal_return_budget),
                 builder_start,
                 proposal_timing: Mutex::new(None),
                 proposal_timing_changed: Condvar::new(),
@@ -325,6 +325,33 @@ impl PayloadBuildControl {
             return Err(ProposalTimingAlreadyAttached);
         }
 
+        *proposal_timing = Some(ProposalTiming {
+            payload_context: PayloadProposalContext {
+                extra_data,
+                consensus_context,
+            },
+        });
+        self.inner.proposal_timing_changed.notify_all();
+        Ok(())
+    }
+
+    /// Attaches proposal context and tightens the replayable work budget.
+    ///
+    /// Speculative builds start with the verify-time budget. Once `handle_propose`
+    /// knows the actual proposal window, the running builder must observe the
+    /// smaller remaining budget without resetting elapsed build accounting.
+    pub fn attach_proposal_context_with_budget(
+        &self,
+        extra_data: Bytes,
+        consensus_context: TempoConsensusContext,
+        proposal_return_budget: Duration,
+    ) -> Result<(), ProposalTimingAlreadyAttached> {
+        let mut proposal_timing = self.proposal_timing();
+        if proposal_timing.is_some() {
+            return Err(ProposalTimingAlreadyAttached);
+        }
+
+        self.tighten_proposal_return_budget_locked(proposal_return_budget);
         *proposal_timing = Some(ProposalTiming {
             payload_context: PayloadProposalContext {
                 extra_data,
@@ -381,9 +408,23 @@ impl PayloadBuildControl {
     /// Returns a consistent snapshot of the control state at `now`.
     pub fn snapshot_at(&self, now: Instant) -> PayloadBuildControlSnapshot {
         PayloadBuildControlSnapshot {
-            proposal_return_budget: self.inner.proposal_return_budget,
+            proposal_return_budget: *self.proposal_return_budget(),
             builder_elapsed: now.saturating_duration_since(self.inner.builder_start),
         }
+    }
+
+    fn tighten_proposal_return_budget_locked(&self, proposal_return_budget: Duration) {
+        let mut current_budget = self.proposal_return_budget();
+        if proposal_return_budget < *current_budget {
+            *current_budget = proposal_return_budget;
+        }
+    }
+
+    fn proposal_return_budget(&self) -> MutexGuard<'_, Duration> {
+        self.inner
+            .proposal_return_budget
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
     }
 
     fn proposal_timing(&self) -> MutexGuard<'_, Option<ProposalTiming>> {
@@ -763,6 +804,61 @@ mod tests {
         let after_attach = control.snapshot_at(builder_start + Duration::from_millis(75));
         assert_eq!(after_attach.builder_elapsed(), Duration::from_millis(75));
         assert!(control.proposal_timing_attached());
+    }
+
+    #[test]
+    fn payload_build_control_tightens_budget_on_late_proposal_attach() {
+        let builder_start = Instant::now();
+        let control = PayloadBuildControl::new_at(Duration::from_millis(300), builder_start);
+        let consensus_context = TempoConsensusContext {
+            epoch: 1,
+            view: 2,
+            parent_view: 1,
+            proposer: PublicKey::from_seed([0xab; 32]),
+        };
+
+        control
+            .attach_proposal_context_with_budget(
+                Bytes::default(),
+                consensus_context,
+                Duration::from_millis(120),
+            )
+            .unwrap();
+
+        let after_attach = control.snapshot_at(builder_start + Duration::from_millis(75));
+        assert_eq!(
+            after_attach.proposal_return_budget(),
+            Duration::from_millis(120)
+        );
+        assert_eq!(after_attach.builder_elapsed(), Duration::from_millis(75));
+        assert!(control.proposal_timing_attached());
+    }
+
+    #[test]
+    fn payload_build_control_late_attach_does_not_extend_budget() {
+        let builder_start = Instant::now();
+        let control = PayloadBuildControl::new_at(Duration::from_millis(300), builder_start);
+        let consensus_context = TempoConsensusContext {
+            epoch: 1,
+            view: 2,
+            parent_view: 1,
+            proposer: PublicKey::from_seed([0xab; 32]),
+        };
+
+        control
+            .attach_proposal_context_with_budget(
+                Bytes::default(),
+                consensus_context,
+                Duration::from_millis(500),
+            )
+            .unwrap();
+
+        assert_eq!(
+            control
+                .snapshot_at(builder_start + Duration::from_millis(75))
+                .proposal_return_budget(),
+            Duration::from_millis(300)
+        );
     }
 
     #[test]
