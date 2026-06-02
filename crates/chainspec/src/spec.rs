@@ -64,6 +64,9 @@ pub struct TempoGenesisInfo {
     /// Activation timestamp for T6 hardfork.
     #[serde(skip_serializing_if = "Option::is_none")]
     t6_time: Option<u64>,
+    /// Activation timestamp for T7 hardfork.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    t7_time: Option<u64>,
 }
 
 impl TempoGenesisInfo {
@@ -94,6 +97,7 @@ impl TempoGenesisInfo {
             TempoHardfork::T4 => self.t4_time,
             TempoHardfork::T5 => self.t5_time,
             TempoHardfork::T6 => self.t6_time,
+            TempoHardfork::T7 => self.t7_time,
         }
     }
 }
