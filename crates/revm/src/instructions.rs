@@ -33,11 +33,18 @@ pub(crate) fn tempo_instructions<DB: Database>(
     spec: TempoHardfork,
 ) -> EthInstructions<EthInterpreter, TempoContext<DB>> {
     let evm_spec = spec.into();
-    let mut instructions = EthInstructions::new(
-        instruction_table_with_gas_state::<TempoGasState, EthInterpreter, TempoContext<DB>>(),
-        gas_table_spec(evm_spec),
-        evm_spec,
-    );
+
+    // +T6: Enable TIP-1060 sstore hook
+    let mut instructions = if spec.is_t6() {
+        EthInstructions::new(
+            instruction_table_with_gas_state::<TempoGasState, EthInterpreter, TempoContext<DB>>(),
+            gas_table_spec(evm_spec),
+            evm_spec,
+        )
+    } else {
+        EthInstructions::new_mainnet_with_spec(spec.into())
+    };
+
     if !spec.is_t1c() {
         instructions.insert_instruction(
             MILLIS_TIMESTAMP,
