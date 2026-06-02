@@ -1,6 +1,6 @@
 use crate::{ProtocolFeeManager, TempoBlockEnv, TempoFeeManager, TempoTxEnv, instructions};
 use alloy_evm::{Database, precompiles::PrecompilesMap};
-use alloy_primitives::{Address, U256};
+use alloy_primitives::{Address, B256, U256};
 use revm::{
     Context, Inspector,
     context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
@@ -10,9 +10,10 @@ use revm::{
     inspector::InspectorEvmTr,
     interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
 };
-use std::{cell::RefCell, rc::Rc, sync::Arc};
+use std::{cell::RefCell, collections::HashMap, rc::Rc, sync::Arc};
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{storage::StorageActions, storage_credits::NonCreditableSlots};
+use tempo_primitives::transaction::InitMultisig;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
@@ -59,6 +60,19 @@ pub struct TempoEvm<DB: Database, I> {
     pub(crate) non_creditable_slots: Rc<RefCell<NonCreditableSlots>>,
     /// Internal protocol fee hooks.
     pub(crate) fee_manager: Arc<dyn ProtocolFeeManager<DB>>,
+    /// Block-scoped cache for native multisig account markers.
+    ///
+    /// The marker is stateful account metadata, not transaction signature metadata. It is cached on
+    /// the EVM so repeated transactions from the same accounts do not repeatedly read the native
+    /// multisig marker storage slot. The cache is cleared when the EVM moves to a new block.
+    pub(crate) native_multisig_account_cache: HashMap<Address, bool>,
+    /// Block-scoped cache for validated native multisig configs.
+    ///
+    /// Values are inserted only after the native multisig storage path has loaded and validated the
+    /// config. The cache is cleared when the EVM moves to a new block or when a transaction directly
+    /// touches the native multisig precompile, because config updates use the same `(account,
+    /// config_id)` key.
+    pub(crate) native_multisig_config_cache: HashMap<(Address, B256), InitMultisig>,
 }
 
 impl<DB: Database, I> TempoEvm<DB, I> {
@@ -108,6 +122,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             skip_liquidity_check,
             actions,
             non_creditable_slots,
+            native_multisig_account_cache,
+            native_multisig_config_cache,
             ..
         } = self;
 
@@ -122,6 +138,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             actions,
             non_creditable_slots,
             fee_manager,
+            native_multisig_account_cache,
+            native_multisig_config_cache,
         }
     }
 
@@ -151,6 +169,8 @@ impl<DB: Database, I> TempoEvm<DB, I> {
             actions,
             non_creditable_slots,
             fee_manager,
+            native_multisig_account_cache: HashMap::new(),
+            native_multisig_config_cache: HashMap::new(),
         }
     }
 
@@ -221,6 +241,12 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.fee_token = None;
         self.key_expiry = None;
         self.non_creditable_slots.borrow_mut().clear();
+    }
+
+    /// Clears block-scoped execution caches.
+    pub fn clear_block_caches(&mut self) {
+        self.native_multisig_account_cache.clear();
+        self.native_multisig_config_cache.clear();
     }
 }
 
@@ -318,7 +344,9 @@ mod tests {
     use crate::gas_params::{tempo_gas_params, tempo_gas_params_with_amsterdam};
     use alloy_eips::eip7702::Authorization;
     use alloy_evm::FromRecoveredTx;
-    use alloy_primitives::{Address, Bytes, TxKind, U256, bytes, hex};
+    use alloy_primitives::{Address, B256, Bytes, TxKind, U256, bytes, hex};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::PrivateKeySigner;
     use alloy_sol_types::{SolCall, SolError};
     use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
     use p256::{
@@ -344,8 +372,11 @@ mod tests {
     use tempo_precompiles::{
         AuthorizedKey, DelegateCallNotAllowed, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS,
         STORAGE_CREDITS_ADDRESS,
+        native_multisig::NativeMultisig,
         nonce::NonceManager,
-        storage::{FromWord, Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
+        storage::{
+            FromWord, Handler, StorageActions, StorageCtx, evm::EvmPrecompileStorageProvider,
+        },
         storage_credits::{CreditMode, StorageCredits},
         test_util::TIP20Setup,
         tip20::{ITIP20, TIP20Token},
@@ -353,7 +384,8 @@ mod tests {
     use tempo_primitives::{
         TempoTransaction,
         transaction::{
-            KeyAuthorization, KeychainSignature, SignatureType, TempoSignedAuthorization,
+            InitMultisig, KeyAuthorization, KeychainSignature, MultisigOwner, MultisigSignature,
+            SignatureType, TempoSignedAuthorization, multisig_digest,
             tempo_transaction::Call,
             tt_signature::{
                 PrimitiveSignature, TempoSignature, WebAuthnSignature, derive_p256_address,
@@ -476,6 +508,24 @@ mod tests {
         cfg.spec = TempoHardfork::T4;
         cfg.gas_params = tempo_gas_params(TempoHardfork::T4);
         cfg.enable_amsterdam_eip8037 = true;
+
+        let ctx = Context::mainnet()
+            .with_db(db)
+            .with_block(Default::default())
+            .with_cfg(cfg)
+            .with_tx(Default::default());
+
+        let mut evm = TempoEvm::new(ctx, ());
+        fund_account(&mut evm, address);
+        evm
+    }
+
+    /// Create an EVM with T6 hardfork enabled and a funded account.
+    fn create_funded_evm_t6(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
+        let db = CacheDB::new(EmptyDB::new());
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T6;
+        cfg.gas_params = tempo_gas_params(TempoHardfork::T6);
 
         let ctx = Context::mainnet()
             .with_db(db)
@@ -837,6 +887,75 @@ mod tests {
     }
 
     // ==================== End Test Utility Functions ====================
+
+    #[test]
+    fn test_t6_bootstrap_multisig_persists_after_transaction_commit() -> eyre::Result<()> {
+        let mut signers = [
+            PrivateKeySigner::from_bytes(&B256::from([0x11; 32]))?,
+            PrivateKeySigner::from_bytes(&B256::from([0x22; 32]))?,
+        ];
+        signers.sort_by_key(|signer| signer.address());
+
+        let config = InitMultisig {
+            salt: B256::repeat_byte(0x44),
+            threshold: 1,
+            owners: signers
+                .iter()
+                .map(|signer| MultisigOwner {
+                    owner: signer.address(),
+                    weight: 1,
+                })
+                .collect(),
+        };
+        let config_id = config.config_id().map_err(eyre::Report::msg)?;
+        let account = config.account().map_err(eyre::Report::msg)?;
+        let tx = TxBuilder::new()
+            .call_identity(&[])
+            .gas_limit(1_000_000)
+            .build();
+        let digest = multisig_digest(tx.signature_hash(), account, config_id);
+        let owner_signature =
+            PrimitiveSignature::Secp256k1(signers[0].sign_hash_sync(&digest)?).to_bytes();
+        let signed_tx = tx.into_signed(TempoSignature::Multisig(MultisigSignature::new(
+            account,
+            config_id,
+            vec![owner_signature],
+            Some(config.clone()),
+        )));
+
+        let mut evm = create_funded_evm_t6(account);
+        StorageCtx::enter_ctx(&mut evm.ctx, StorageActions::disabled(), || {
+            NativeMultisig::new().initialize()
+        })?;
+
+        let result = evm.transact_commit(TempoTxEnv::from_recovered_tx(&signed_tx, account))?;
+        assert!(result.is_success());
+
+        let nonce = evm
+            .ctx
+            .db()
+            .basic_ref(account)?
+            .map(|info| info.nonce)
+            .unwrap_or_default();
+        assert_eq!(nonce, 1);
+
+        StorageCtx::enter_ctx(
+            &mut evm.ctx,
+            StorageActions::disabled(),
+            || -> eyre::Result<()> {
+                let multisig = NativeMultisig::new();
+                assert!(multisig.is_multisig_account(account)?);
+                assert_eq!(multisig.get_multisig_config_id(account)?, config_id);
+                assert_eq!(
+                    multisig.get_multisig_config(account, config_id)?.threshold,
+                    config.threshold
+                );
+                Ok(())
+            },
+        )?;
+
+        Ok(())
+    }
 
     #[test_case::test_case(TempoHardfork::T1)]
     #[test_case::test_case(TempoHardfork::T1C)]
