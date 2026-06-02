@@ -1014,15 +1014,31 @@ impl Inner<Init> {
         if !is_genesis_parent {
             let consensus_context = consensus_context
                 .expect("proposal consensus context is constructed immediately above");
-            let build_budget = self
-                .proposal_return_budget
-                .saturating_sub(propose_start.elapsed());
+            let is_nullified_view_recovery = is_nullified_view_recovery(round, parent_view);
+            let build_budget = if is_nullified_view_recovery {
+                Duration::ZERO
+            } else {
+                self.proposal_return_budget
+                    .saturating_sub(propose_start.elapsed())
+            };
             let build_control = PayloadBuildControl::new(build_budget);
             build_control
                 .attach_proposal_context(extra_data.clone(), consensus_context)
                 .map_err(|error| {
                     eyre!("failed attaching propose-time speculative proposal context: {error}")
                 })?;
+            if is_nullified_view_recovery {
+                self.metrics
+                    .speculative_payload_builds_started_from_propose_recovery
+                    .inc();
+                debug!(
+                    parent.digest = %parent.digest(),
+                    parent.height = %parent.height(),
+                    parent.view = %parent_view,
+                    round.view = %round.view(),
+                    "limiting missing-slot BAL proposal fallback after nullified view recovery"
+                );
+            }
 
             let mut speculative_build = self
                 .dispatch_speculative_payload_build(
@@ -1577,6 +1593,11 @@ impl Inner<Uninit> {
     }
 }
 
+#[cfg(feature = "bal")]
+fn is_nullified_view_recovery(round: Round, parent_view: View) -> bool {
+    round.view() > parent_view.next()
+}
+
 /// Marker type to signal that the actor is not fully initialized.
 #[derive(Clone, Debug)]
 pub(in crate::consensus) struct Uninit(());
@@ -1805,6 +1826,8 @@ struct Metrics {
     speculative_payload_builds_reused_by_propose: Counter,
     #[cfg(feature = "bal")]
     speculative_payload_builds_started_from_propose_fallback: Counter,
+    #[cfg(feature = "bal")]
+    speculative_payload_builds_started_from_propose_recovery: Counter,
 }
 
 impl Metrics {
@@ -1848,6 +1871,16 @@ impl Metrics {
             );
             counter
         };
+        #[cfg(feature = "bal")]
+        let speculative_payload_builds_started_from_propose_recovery = {
+            let counter = Counter::default();
+            context.register(
+                "speculative_payload_builds_started_from_propose_recovery",
+                "number of BAL proposal fallback builds limited after nullified view recovery",
+                counter.clone(),
+            );
+            counter
+        };
 
         Self {
             parent_ahead_of_local_time,
@@ -1857,6 +1890,31 @@ impl Metrics {
             speculative_payload_builds_reused_by_propose,
             #[cfg(feature = "bal")]
             speculative_payload_builds_started_from_propose_fallback,
+            #[cfg(feature = "bal")]
+            speculative_payload_builds_started_from_propose_recovery,
         }
+    }
+}
+
+#[cfg(all(test, feature = "bal"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn nullified_view_recovery_detects_view_gap_after_parent() {
+        let parent_view = View::new(27);
+
+        assert!(!is_nullified_view_recovery(
+            Round::new(Epoch::new(0), View::new(28)),
+            parent_view
+        ));
+        assert!(is_nullified_view_recovery(
+            Round::new(Epoch::new(0), View::new(29)),
+            parent_view
+        ));
+        assert!(is_nullified_view_recovery(
+            Round::new(Epoch::new(0), View::new(270)),
+            parent_view
+        ));
     }
 }
