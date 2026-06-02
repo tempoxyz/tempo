@@ -4,9 +4,9 @@ use core::num::NonZeroU64;
 use criterion::{BatchSize, Criterion, Throughput, criterion_group, criterion_main};
 use reth_provider::test_utils::{ExtendedAccount, MockEthProvider};
 use reth_transaction_pool::{
-    BestTransactionsAttributes, Pool, PoolConfig, PoolTransaction, SubPoolLimit, TransactionOrigin,
-    TransactionPool, TransactionValidationTaskExecutor, blobstore::InMemoryBlobStore,
-    validate::EthTransactionValidatorBuilder,
+    BestTransactionsAttributes, BlockInfo, Pool, PoolConfig, PoolTransaction, SubPoolLimit,
+    TransactionOrigin, TransactionPool, TransactionPoolExt, TransactionValidationTaskExecutor,
+    blobstore::InMemoryBlobStore, validate::EthTransactionValidatorBuilder,
 };
 use std::{hint::black_box, sync::Arc};
 use tempo_chainspec::{
@@ -15,7 +15,10 @@ use tempo_chainspec::{
     spec::{MODERATO, TEMPO_T1_TX_GAS_LIMIT_CAP},
 };
 use tempo_evm::TempoEvmConfig;
-use tempo_precompiles::{PATH_USD_ADDRESS, tip20::TIP20Token, tip20::slots as tip20_slots};
+use tempo_precompiles::{
+    PATH_USD_ADDRESS,
+    tip20::{TIP20Token, slots as tip20_slots},
+};
 use tempo_primitives::{
     AASigned, Block, TempoHeader, TempoPrimitives, TempoSignature, TempoTransaction,
     TempoTxEnvelope, TempoTxType,
@@ -37,7 +40,8 @@ const TX_COUNT: usize = 50_000;
 const CHAIN_ID: u64 = 42431;
 const GAS_LIMIT: u64 = 1_000_000;
 const PRIORITY_FEE_BASE: u128 = 1_000_000_000;
-const VALID_BEFORE: u64 = 1_700_000_600;
+const VALID_BEFORE: u64 = 1_771_000_600;
+const BLOCK_TIMESTAMP: u64 = VALID_BEFORE - 15;
 const FEE_TOKEN_BALANCE: u128 = 1_000_000_000_000_000_000;
 
 type BenchProvider = MockEthProvider<TempoPrimitives, TempoChainSpec>;
@@ -55,7 +59,11 @@ fn aa2d_expiring_nonce_50k(c: &mut Criterion) {
 
     group.bench_function("add_transactions", |b| {
         b.iter_batched(
-            || (build_pool(provider.clone(), &runtime), txs.clone()),
+            || {
+                let pool = build_pool(provider.clone(), &runtime);
+                set_pool_block_info(&pool, base_fee);
+                (pool, txs.clone())
+            },
             |(pool, txs)| {
                 let results =
                     runtime.block_on(pool.add_transactions(TransactionOrigin::Local, txs));
@@ -67,15 +75,26 @@ fn aa2d_expiring_nonce_50k(c: &mut Criterion) {
     });
 
     let pool = build_pool(provider, &runtime);
+    set_pool_block_info(&pool, base_fee);
     let results = runtime.block_on(pool.add_transactions(TransactionOrigin::Local, txs));
     assert_all_admitted(&results);
 
     let attributes = BestTransactionsAttributes::base_fee(base_fee);
+    let lower_base_fee = base_fee - 1;
+    let lower_attributes = BestTransactionsAttributes::base_fee(lower_base_fee);
 
     group.bench_function("best_transactions_with_attributes", |b| {
         b.iter(|| {
             drop(black_box(
                 pool.best_transactions_with_attributes(attributes),
+            ));
+        });
+    });
+
+    group.bench_function("best_transactions_with_lower_base_fee", |b| {
+        b.iter(|| {
+            drop(black_box(
+                pool.best_transactions_with_attributes(lower_attributes),
             ));
         });
     });
@@ -93,6 +112,30 @@ fn aa2d_expiring_nonce_50k(c: &mut Criterion) {
             },
             BatchSize::LargeInput,
         );
+    });
+
+    group.bench_function("advance_best_transactions_with_lower_base_fee", |b| {
+        b.iter_batched(
+            || pool.best_transactions_with_attributes(lower_attributes),
+            |mut best| {
+                let mut count = 0usize;
+                while let Some(tx) = best.next() {
+                    black_box(tx);
+                    count += 1;
+                }
+                black_box(count);
+            },
+            BatchSize::LargeInput,
+        );
+    });
+
+    let base_info = bench_block_info(base_fee);
+    let lower_info = bench_block_info(lower_base_fee);
+    group.bench_function("set_block_info_round_trip", |b| {
+        b.iter(|| {
+            pool.set_block_info(black_box(lower_info));
+            pool.set_block_info(black_box(base_info));
+        });
     });
 
     group.finish();
@@ -134,6 +177,20 @@ fn build_pool(provider: BenchProvider, runtime: &Runtime) -> BenchPool {
     TempoTransactionPool::new(protocol_pool, AA2dPool::new(bench_aa_config()))
 }
 
+fn set_pool_block_info(pool: &BenchPool, base_fee: u64) {
+    pool.set_block_info(bench_block_info(base_fee));
+}
+
+fn bench_block_info(base_fee: u64) -> BlockInfo {
+    BlockInfo {
+        last_seen_block_hash: B256::ZERO,
+        last_seen_block_number: 0,
+        block_gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
+        pending_basefee: base_fee,
+        pending_blob_fee: None,
+    }
+}
+
 fn spawn_validation_task(
     runtime: &Runtime,
     task: impl std::future::Future<Output = ()> + Send + 'static,
@@ -165,7 +222,7 @@ fn build_provider(txs: &[TempoPooledTransaction]) -> BenchProvider {
             header: TempoHeader {
                 inner: Header {
                     gas_limit: TEMPO_T1_TX_GAS_LIMIT_CAP,
-                    timestamp: VALID_BEFORE - 60,
+                    timestamp: BLOCK_TIMESTAMP,
                     base_fee_per_gas: Some(TempoHardfork::T1.base_fee()),
                     blob_gas_used: Some(0),
                     excess_blob_gas: Some(0),
