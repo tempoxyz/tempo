@@ -1,7 +1,7 @@
 //! Conservative TIP-20 transfer fast-path preflight.
 
 use alloy_consensus::Transaction;
-use alloy_primitives::{Address, Bytes, IntoLogData, Log, LogData, U256};
+use alloy_primitives::{Address, B256, Bytes, IntoLogData, Log, LogData, U256};
 use alloy_sol_types::SolCall;
 use rayon::prelude::*;
 use reth_evm::block::{BlockExecutionError, StateDB};
@@ -33,7 +33,10 @@ use tempo_precompiles::{
     DEFAULT_FEE_TOKEN, NONCE_PRECOMPILE_ADDRESS, Precompile, TIP_FEE_MANAGER_ADDRESS,
     TIP403_REGISTRY_ADDRESS,
     error::TempoPrecompileError,
-    nonce::NonceManager,
+    nonce::{
+        EXPIRING_NONCE_MAX_EXPIRY_SECS, EXPIRING_NONCE_SET_CAPACITY, NonceManager,
+        slots as nonce_slots,
+    },
     storage::{PrecompileStorageProvider, StorageCtx, StorageKey, packing::extract_from_word},
     tip_fee_manager::slots as fee_manager_slots,
     tip20::{ITIP20, TIP20Event, TIP20Token, U128_MAX, decode_tip20_balance, tip20_slots},
@@ -60,10 +63,17 @@ pub(crate) struct Tip20TransferActionSet {
     pub(crate) amount: U256,
     pub(crate) nonce_key: U256,
     pub(crate) nonce: u64,
+    pub(crate) expiring_nonce_hash: Option<B256>,
+    pub(crate) valid_before: Option<u64>,
+    pub(crate) block_timestamp: u64,
     pub(crate) max_fee: U256,
 }
 
 impl Tip20TransferActionSet {
+    fn is_expiring_nonce(&self) -> bool {
+        self.expiring_nonce_hash.is_some()
+    }
+
     fn calculate_initial_gas(
         &self,
         config: Tip20InitialGasConfig<'_>,
@@ -134,10 +144,13 @@ impl Tip20TransferBatch {
                     action.amount,
                     action.nonce_key,
                     action.nonce,
+                    action.expiring_nonce_hash,
+                    action.valid_before,
+                    action.block_timestamp,
                     action.max_fee,
                 );
-                // sender balance, recipient balance, fee manager balance, nonce slot.
-                4
+                // sender balance, recipient balance, fee manager balance, and nonce-manager slots.
+                if action.is_expiring_nonce() { 6 } else { 4 }
             })
             .sum()
     }
@@ -631,40 +644,29 @@ impl Tip20Overlay {
             self.validate_token(action)?;
             self.validate_recipient(action)?;
             self.validate_validator_token(action)?;
-            let new_nonce = self.apply_nonce(action)?;
+            let nonce_log = self.apply_nonce(action)?;
             let fee = self.apply_settled_fee_and_transfer(action, *gas)?;
             let storage = self.storage_deltas_since(&slots_before);
             let balance_updates = self.balance_updates_since(&balance_updates_before);
+
+            let mut logs = Vec::with_capacity(3);
+            logs.extend(nonce_log);
+            logs.push(Log {
+                address: action.token,
+                data: TIP20Event::transfer(action.sender, action.recipient, action.amount)
+                    .into_log_data(),
+            });
+            logs.push(Log {
+                address: action.token,
+                data: TIP20Event::transfer(action.sender, TIP_FEE_MANAGER_ADDRESS, fee.actual_fee)
+                    .into_log_data(),
+            });
 
             transactions.push(Tip20SettledTx {
                 pool_tx: Arc::clone(&action.pool_tx),
                 storage,
                 balance_updates,
-                logs: vec![
-                    Log {
-                        address: NONCE_PRECOMPILE_ADDRESS,
-                        data: NonceEvent::nonce_incremented(
-                            action.sender,
-                            action.nonce_key,
-                            new_nonce,
-                        )
-                        .into_log_data(),
-                    },
-                    Log {
-                        address: action.token,
-                        data: TIP20Event::transfer(action.sender, action.recipient, action.amount)
-                            .into_log_data(),
-                    },
-                    Log {
-                        address: action.token,
-                        data: TIP20Event::transfer(
-                            action.sender,
-                            TIP_FEE_MANAGER_ADDRESS,
-                            fee.actual_fee,
-                        )
-                        .into_log_data(),
-                    },
-                ],
+                logs,
                 actual_fee: fee.actual_fee,
                 refund: fee.refund,
                 validator_fee: fee.actual_fee,
@@ -709,7 +711,7 @@ impl Tip20Overlay {
             self.validate_token(action)?;
             self.validate_recipient(action)?;
             self.validate_validator_token(action)?;
-            let new_nonce = self.apply_nonce(action)?;
+            let nonce_log = self.apply_nonce(action)?;
             self.apply_fee_pre_tx(action)?;
             let metered_transfer =
                 self.execute_user_transfer(action, config, *initial_gas, &slots_before)?;
@@ -720,11 +722,7 @@ impl Tip20Overlay {
             let balance_updates = self.balance_updates_since(&balance_updates_before);
 
             let mut logs = Vec::with_capacity(2 + metered_transfer.logs.len());
-            logs.push(Log {
-                address: NONCE_PRECOMPILE_ADDRESS,
-                data: NonceEvent::nonce_incremented(action.sender, action.nonce_key, new_nonce)
-                    .into_log_data(),
-            });
+            logs.extend(nonce_log);
             logs.extend(metered_transfer.logs);
             if !fee.actual_fee.is_zero() || !fee.refund.is_zero() {
                 logs.push(Log {
@@ -890,7 +888,12 @@ impl Tip20Overlay {
     fn apply_nonce(
         &mut self,
         action: &Tip20TransferActionSet,
-    ) -> Result<u64, FastPathFallbackReason> {
+    ) -> Result<Option<Log>, FastPathFallbackReason> {
+        if action.is_expiring_nonce() {
+            self.apply_expiring_nonce(action)?;
+            return Ok(None);
+        }
+
         let slot = NonceManager::new().nonces[action.sender][action.nonce_key].slot();
         let current = self.read(NONCE_PRECOMPILE_ADDRESS, slot)?;
         if current != U256::from(action.nonce) {
@@ -901,7 +904,82 @@ impl Tip20Overlay {
             .checked_add(1)
             .ok_or(FastPathFallbackReason::NonceOverflow)?;
         self.write(NONCE_PRECOMPILE_ADDRESS, slot, U256::from(next))?;
-        Ok(next)
+        Ok(Some(Log {
+            address: NONCE_PRECOMPILE_ADDRESS,
+            data: NonceEvent::nonce_incremented(action.sender, action.nonce_key, next)
+                .into_log_data(),
+        }))
+    }
+
+    fn apply_expiring_nonce(
+        &mut self,
+        action: &Tip20TransferActionSet,
+    ) -> Result<(), FastPathFallbackReason> {
+        if action.nonce != 0 {
+            return Err(FastPathFallbackReason::ExpiringNonce);
+        }
+
+        let hash = action
+            .expiring_nonce_hash
+            .ok_or(FastPathFallbackReason::ExpiringNonce)?;
+        let valid_before = action
+            .valid_before
+            .ok_or(FastPathFallbackReason::ExpiringNonce)?;
+        let max_valid_before = action
+            .block_timestamp
+            .saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
+        if valid_before <= action.block_timestamp || valid_before > max_valid_before {
+            return Err(FastPathFallbackReason::ExpiringNonce);
+        }
+
+        let nonce_manager = NonceManager::new();
+        let seen_slot = nonce_manager.expiring_nonce_seen[hash].slot();
+        let seen_expiry = self.read(NONCE_PRECOMPILE_ADDRESS, seen_slot)?;
+        if !seen_expiry.is_zero() && seen_expiry > U256::from(action.block_timestamp) {
+            return Err(FastPathFallbackReason::ExpiringNonce);
+        }
+
+        let ptr_word = self.read(
+            NONCE_PRECOMPILE_ADDRESS,
+            nonce_slots::EXPIRING_NONCE_RING_PTR,
+        )?;
+        if ptr_word >= U256::from(EXPIRING_NONCE_SET_CAPACITY) {
+            return Err(FastPathFallbackReason::ExpiringNonce);
+        }
+        let ptr = ptr_word.saturating_to::<u32>();
+        let ring_slot = nonce_manager.expiring_nonce_ring[ptr].slot();
+        let old_hash_word = self.read(NONCE_PRECOMPILE_ADDRESS, ring_slot)?;
+        if !old_hash_word.is_zero() {
+            let old_hash = B256::from(old_hash_word.to_be_bytes::<32>());
+            let old_seen_slot = nonce_manager.expiring_nonce_seen[old_hash].slot();
+            let old_expiry = self.read(NONCE_PRECOMPILE_ADDRESS, old_seen_slot)?;
+            if !old_expiry.is_zero() && old_expiry > U256::from(action.block_timestamp) {
+                return Err(FastPathFallbackReason::ExpiringNonce);
+            }
+            self.write(NONCE_PRECOMPILE_ADDRESS, old_seen_slot, U256::ZERO)?;
+        }
+
+        self.write(
+            NONCE_PRECOMPILE_ADDRESS,
+            ring_slot,
+            U256::from_be_slice(hash.as_slice()),
+        )?;
+        self.write(
+            NONCE_PRECOMPILE_ADDRESS,
+            seen_slot,
+            U256::from(valid_before),
+        )?;
+        let next = if ptr + 1 >= EXPIRING_NONCE_SET_CAPACITY {
+            0
+        } else {
+            ptr + 1
+        };
+        self.write(
+            NONCE_PRECOMPILE_ADDRESS,
+            nonce_slots::EXPIRING_NONCE_RING_PTR,
+            U256::from(next),
+        )?;
+        Ok(())
     }
 
     fn apply_fee_and_transfer(
@@ -1764,8 +1842,25 @@ mod tests {
             amount: U256::from(amount),
             nonce_key: U256::from(7),
             nonce,
+            expiring_nonce_hash: None,
+            valid_before: None,
+            block_timestamp: 1,
             max_fee: U256::from(max_fee),
         }
+    }
+
+    fn expiring_action(
+        sender: Address,
+        recipient: Address,
+        hash: B256,
+        valid_before: u64,
+    ) -> Tip20TransferActionSet {
+        let mut action = action(sender, recipient, 0, 100, 10);
+        action.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
+        action.expiring_nonce_hash = Some(hash);
+        action.valid_before = Some(valid_before);
+        action.block_timestamp = valid_before - 10;
+        action
     }
 
     fn test_pool_tx(
@@ -1888,8 +1983,39 @@ mod tests {
         })
     }
 
+    fn aa_expiring_transfer_pool_tx(
+        sender: Address,
+        recipient: Address,
+        amount: U256,
+        valid_before: u64,
+    ) -> Arc<ValidPoolTransaction<TempoPooledTransaction>> {
+        aa_pool_tx(sender, 0, |tx| {
+            tx.gas_limit = 1_000_000;
+            tx.max_fee_per_gas = ONE_TOKEN_GAS_PRICE;
+            tx.max_priority_fee_per_gas = ONE_TOKEN_GAS_PRICE;
+            tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
+            tx.nonce = 0;
+            tx.valid_before = Some(nz(valid_before));
+            tx.calls[0].input = Bytes::from(
+                ITIP20::transferCall {
+                    to: recipient,
+                    amount,
+                }
+                .abi_encode(),
+            );
+        })
+    }
+
     fn nonce_slot(sender: Address) -> U256 {
         NonceManager::new().nonces[sender][U256::from(7)].slot()
+    }
+
+    fn expiring_nonce_seen_slot(hash: B256) -> U256 {
+        NonceManager::new().expiring_nonce_seen[hash].slot()
+    }
+
+    fn expiring_nonce_ring_slot(index: u32) -> U256 {
+        NonceManager::new().expiring_nonce_ring[index].slot()
     }
 
     fn balance_slot(account: Address) -> U256 {
@@ -2135,6 +2261,135 @@ mod tests {
             delta_value(&deltas, NONCE_PRECOMPILE_ADDRESS, nonce_slot(sender)),
             U256::from(2)
         );
+    }
+
+    #[test]
+    fn overlay_applies_expiring_nonce_ring_pointer_in_transaction_order() {
+        let sender = Address::repeat_byte(0x11);
+        let recipient = Address::repeat_byte(0x22);
+        let beneficiary = Address::repeat_byte(0x33);
+        let hash_a = B256::repeat_byte(0xa1);
+        let hash_b = B256::repeat_byte(0xb2);
+        let valid_before = 20;
+        let mut storage = HashMapStorageProvider::new(1);
+
+        seed_allow_all_token(&mut storage);
+        storage
+            .sstore(DEFAULT_FEE_TOKEN, balance_slot(sender), U256::from(1_000))
+            .unwrap();
+
+        let batch = Tip20TransferBatch {
+            actions: vec![
+                expiring_action(sender, recipient, hash_a, valid_before),
+                expiring_action(sender, recipient, hash_b, valid_before),
+            ],
+        };
+
+        let deltas = StorageCtx::enter(&mut storage, || batch.validate_state(beneficiary, false))
+            .expect("valid expiring nonces should advance the local ring");
+
+        assert_eq!(
+            delta_value(
+                &deltas,
+                NONCE_PRECOMPILE_ADDRESS,
+                expiring_nonce_seen_slot(hash_a)
+            ),
+            U256::from(valid_before)
+        );
+        assert_eq!(
+            delta_value(
+                &deltas,
+                NONCE_PRECOMPILE_ADDRESS,
+                expiring_nonce_seen_slot(hash_b)
+            ),
+            U256::from(valid_before)
+        );
+        assert_eq!(
+            delta_value(
+                &deltas,
+                NONCE_PRECOMPILE_ADDRESS,
+                expiring_nonce_ring_slot(0)
+            ),
+            U256::from_be_slice(hash_a.as_slice())
+        );
+        assert_eq!(
+            delta_value(
+                &deltas,
+                NONCE_PRECOMPILE_ADDRESS,
+                expiring_nonce_ring_slot(1)
+            ),
+            U256::from_be_slice(hash_b.as_slice())
+        );
+        assert_eq!(
+            delta_value(
+                &deltas,
+                NONCE_PRECOMPILE_ADDRESS,
+                nonce_slots::EXPIRING_NONCE_RING_PTR
+            ),
+            U256::from(2)
+        );
+    }
+
+    #[test]
+    fn overlay_rejects_expiring_nonce_replay_after_local_insert() {
+        let sender = Address::repeat_byte(0x11);
+        let recipient = Address::repeat_byte(0x22);
+        let beneficiary = Address::repeat_byte(0x33);
+        let hash = B256::repeat_byte(0xa1);
+        let mut storage = HashMapStorageProvider::new(1);
+
+        seed_allow_all_token(&mut storage);
+        storage
+            .sstore(DEFAULT_FEE_TOKEN, balance_slot(sender), U256::from(1_000))
+            .unwrap();
+
+        let batch = Tip20TransferBatch {
+            actions: vec![
+                expiring_action(sender, recipient, hash, 20),
+                expiring_action(sender, recipient, hash, 20),
+            ],
+        };
+
+        let err = StorageCtx::enter(&mut storage, || batch.validate_state(beneficiary, false))
+            .expect_err("replaying an expiring nonce hash must invalidate the batch");
+        assert_eq!(err, FastPathFallbackReason::ExpiringNonce);
+    }
+
+    #[test]
+    fn overlay_rejects_unexpired_expiring_nonce_ring_entry() {
+        let sender = Address::repeat_byte(0x11);
+        let recipient = Address::repeat_byte(0x22);
+        let beneficiary = Address::repeat_byte(0x33);
+        let old_hash = B256::repeat_byte(0x0a);
+        let new_hash = B256::repeat_byte(0x0b);
+        let mut storage = HashMapStorageProvider::new(1);
+
+        seed_allow_all_token(&mut storage);
+        storage
+            .sstore(DEFAULT_FEE_TOKEN, balance_slot(sender), U256::from(1_000))
+            .unwrap();
+        storage
+            .sstore(
+                NONCE_PRECOMPILE_ADDRESS,
+                expiring_nonce_ring_slot(0),
+                U256::from_be_slice(old_hash.as_slice()),
+            )
+            .unwrap();
+        storage
+            .sstore(
+                NONCE_PRECOMPILE_ADDRESS,
+                expiring_nonce_seen_slot(old_hash),
+                U256::from(20),
+            )
+            .unwrap();
+
+        let batch = Tip20TransferBatch {
+            actions: vec![expiring_action(sender, recipient, new_hash, 20)],
+        };
+
+        let err = StorageCtx::enter(&mut storage, || batch.validate_state(beneficiary, false))
+            .expect_err("unexpired ring slot must fall back to sequential execution");
+        assert_eq!(err, FastPathFallbackReason::ExpiringNonce);
     }
 
     #[test]
@@ -3066,6 +3321,211 @@ mod tests {
     }
 
     #[test]
+    fn fast_path_batch_matches_sequential_executor_for_expiring_nonce_t6_transfers() {
+        let sender = Address::repeat_byte(0x11);
+        let recipient_a = Address::repeat_byte(0x22);
+        let recipient_b = Address::repeat_byte(0x44);
+        let beneficiary = Address::repeat_byte(0x33);
+        let block_timestamp = 10;
+        let valid_before = block_timestamp + 20;
+        let sender_start = U256::from(10_000_000_000_000_000_000u128);
+
+        let policy_word =
+            U256::from(ALLOW_ALL_POLICY_ID) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8);
+        let initial_storage = vec![
+            (
+                DEFAULT_FEE_TOKEN,
+                tip20_slots::CURRENCY,
+                usd_currency_value(),
+            ),
+            (
+                DEFAULT_FEE_TOKEN,
+                tip20_slots::TRANSFER_POLICY_ID,
+                policy_word,
+            ),
+            (
+                DEFAULT_FEE_TOKEN,
+                balance_slot(sender),
+                opted_out_balance(sender_start),
+            ),
+            (
+                DEFAULT_FEE_TOKEN,
+                balance_slot(TIP_FEE_MANAGER_ADDRESS),
+                opted_out_balance(U256::ZERO),
+            ),
+        ];
+
+        let pool_txs = vec![
+            aa_expiring_transfer_pool_tx(sender, recipient_a, U256::from(100), valid_before),
+            aa_expiring_transfer_pool_tx(sender, recipient_b, U256::from(25), valid_before),
+        ];
+
+        let batch = preflight_tip20_transfer_batch(&pool_txs, block_timestamp)
+            .expect("valid expiring nonce transfers should preflight");
+        assert_eq!(batch.len(), pool_txs.len());
+
+        let gas_params = tempo_gas_params_with_amsterdam(TempoHardfork::T6, false);
+        let initial_gas = batch
+            .calculate_initial_gas(Tip20InitialGasConfig {
+                gas_params: &gas_params,
+                spec: TempoHardfork::T6,
+                eip7623_disabled: false,
+                amsterdam_eip8037_enabled: false,
+                tx_gas_limit_cap: TempoHardfork::T6
+                    .tx_gas_limit_cap()
+                    .expect("T6 has tx gas limit cap"),
+                max_initcode_size: usize::MAX,
+            })
+            .expect("initial gas should include expiring nonce cost");
+        let execution_config = Tip20ExecutionGasConfig {
+            gas_params: &gas_params,
+            spec: TempoHardfork::T6,
+            amsterdam_eip8037_enabled: false,
+            basefee: TEMPO_T1_BASE_FEE,
+            chain_id: 1,
+            timestamp: U256::from(block_timestamp),
+            beneficiary,
+            block_number: 1,
+        };
+        let mut fast_storage = seed_fast_path_hashmap_storage(&initial_storage);
+        let settled = StorageCtx::enter(&mut fast_storage, || {
+            batch.settle_state_with_calculated_gas(
+                beneficiary,
+                true,
+                execution_config,
+                &initial_gas,
+            )
+        })
+        .expect("fast path should settle expiring nonce transfer batch");
+
+        let config = TempoEvmConfig::new(Arc::new(TempoChainSpec::moderato()));
+        let mut sequential_executor = t6_executor(
+            &config,
+            seed_fast_path_cache_db(&initial_storage),
+            beneficiary,
+            block_timestamp,
+            pool_txs.len(),
+        );
+        sequential_executor
+            .apply_pre_execution_changes()
+            .expect("sequential pre-execution changes should apply");
+
+        let mut sequential_summaries = Vec::new();
+        for (idx, pool_tx) in pool_txs.iter().enumerate() {
+            let output = sequential_executor
+                .execute_transaction_without_commit(pool_tx.transaction.executable())
+                .expect("expiring nonce transfer should execute sequentially");
+            assert!(
+                output.result().result.is_success(),
+                "sequential transfer {idx} should succeed"
+            );
+
+            let synthetic = settled.transactions()[idx].synthetic_commit();
+            assert_eq!(
+                synthetic.receipt.logs,
+                output.result().result.logs(),
+                "synthetic logs must match sequential logs for tx {idx}"
+            );
+            assert_eq!(
+                synthetic.tx_gas_used,
+                output.result().result.tx_gas_used(),
+                "receipt gas must match for tx {idx}"
+            );
+            assert_eq!(
+                synthetic.block_gas_used,
+                output.block_gas_used(),
+                "block gas must match for tx {idx}"
+            );
+            assert_eq!(
+                synthetic.block_state_gas_used,
+                output.state_gas_used(),
+                "state gas must match for tx {idx}"
+            );
+            assert_eq!(
+                synthetic.validator_fee,
+                output.validator_fee(),
+                "validator fee must match for tx {idx}"
+            );
+            sequential_summaries.push((
+                output.block_gas_used(),
+                output.state_gas_used(),
+                output.validator_fee(),
+            ));
+
+            let gas_output = sequential_executor.commit_transaction(output);
+            assert_eq!(gas_output.tx_gas_used(), synthetic.tx_gas_used);
+            assert_eq!(gas_output.state_gas_used(), synthetic.block_state_gas_used);
+        }
+
+        let sequential_receipts = sequential_executor.receipts().to_vec();
+        let (sequential_evm, sequential_result) = sequential_executor
+            .finish()
+            .expect("sequential executor should finish");
+        let (sequential_db, _) = sequential_evm.finish();
+
+        let mut synthetic_executor = t6_executor(
+            &config,
+            seed_fast_path_cache_db(&initial_storage),
+            beneficiary,
+            block_timestamp,
+            pool_txs.len(),
+        );
+        synthetic_executor
+            .apply_pre_execution_changes()
+            .expect("synthetic pre-execution changes should apply");
+        let committed = settled
+            .commit_to_executor(&mut synthetic_executor)
+            .expect("synthetic batch should commit");
+        let synthetic_receipts = synthetic_executor.receipts().to_vec();
+        let (synthetic_evm, synthetic_result) = synthetic_executor
+            .finish()
+            .expect("synthetic executor should finish");
+        let (synthetic_db, _) = synthetic_evm.finish();
+
+        assert_eq!(synthetic_receipts, sequential_receipts);
+        assert_eq!(synthetic_result.gas_used, sequential_result.gas_used);
+        assert_eq!(
+            committed
+                .summaries()
+                .iter()
+                .map(|summary| (
+                    summary.block_gas_used,
+                    summary.state_gas_used,
+                    summary.validator_fee
+                ))
+                .collect::<Vec<_>>(),
+            sequential_summaries
+        );
+        for delta in settled.storage() {
+            assert_eq!(
+                storage_value(&sequential_db, delta.address, delta.slot),
+                delta.present,
+                "sequential final storage must match synthetic delta at {:?}:{:?}",
+                delta.address,
+                delta.slot
+            );
+        }
+
+        let storage_addresses = BTreeSet::from([
+            DEFAULT_FEE_TOKEN,
+            NONCE_PRECOMPILE_ADDRESS,
+            TIP_FEE_MANAGER_ADDRESS,
+        ]);
+        assert_eq!(
+            storage_values(&synthetic_db, storage_addresses.iter().copied()),
+            storage_values(&sequential_db, storage_addresses.iter().copied())
+        );
+        assert_eq!(
+            storage_value(
+                &synthetic_db,
+                NONCE_PRECOMPILE_ADDRESS,
+                nonce_slots::EXPIRING_NONCE_RING_PTR
+            ),
+            U256::from(pool_txs.len())
+        );
+    }
+
+    #[test]
     fn settle_state_tracks_per_transaction_deltas_in_order() {
         let sender = Address::repeat_byte(0x11);
         let recipient = Address::repeat_byte(0x22);
@@ -3324,6 +3784,28 @@ mod tests {
     }
 
     #[test]
+    fn preflight_accepts_valid_expiring_nonce_tip20_transfer() {
+        let sender = Address::repeat_byte(0x11);
+        let tx = aa_pool_tx(sender, 0, |tx| {
+            tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
+            tx.valid_before = Some(nz(20));
+        });
+
+        let action =
+            preflight_tip20_transfer(&tx, 10).expect("valid expiring nonce should preflight");
+
+        assert_eq!(action.sender, sender);
+        assert_eq!(action.nonce_key, TEMPO_EXPIRING_NONCE_KEY);
+        assert_eq!(action.nonce, 0);
+        assert_eq!(action.valid_before, Some(20));
+        assert_eq!(action.block_timestamp, 10);
+        assert_eq!(
+            action.expiring_nonce_hash,
+            tx.transaction.expiring_nonce_hash()
+        );
+    }
+
+    #[test]
     fn preflight_rejects_non_public_pool_transactions() {
         let sender = Address::repeat_byte(0x11);
 
@@ -3381,11 +3863,12 @@ mod tests {
         let err = preflight_tip20_transfer(&tx, 10).expect_err("protocol nonce must reject");
         assert_eq!(err, FastPathFallbackReason::Not2dNonce);
 
-        let tx = aa_pool_tx(sender, 0, |tx| {
+        let tx = aa_pool_tx(sender, 1, |tx| {
             tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
             tx.valid_before = Some(nz(20));
         });
-        let err = preflight_tip20_transfer(&tx, 10).expect_err("expiring nonce must reject");
+        let err =
+            preflight_tip20_transfer(&tx, 10).expect_err("nonzero expiring nonce must reject");
         assert_eq!(err, FastPathFallbackReason::ExpiringNonce);
 
         let tx = aa_pool_tx(sender, 0, |tx| {
@@ -3446,14 +3929,30 @@ mod tests {
         });
         let err = preflight_tip20_transfer(&tx, 10).expect_err("future valid_after rejects");
         assert_eq!(err, FastPathFallbackReason::InvalidValidityWindow);
+
+        let tx = aa_pool_tx(sender, 0, |tx| {
+            tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
+        });
+        let err =
+            preflight_tip20_transfer(&tx, 10).expect_err("missing expiring valid_before rejects");
+        assert_eq!(err, FastPathFallbackReason::ExpiringNonce);
+
+        let tx = aa_pool_tx(sender, 0, |tx| {
+            tx.nonce_key = TEMPO_EXPIRING_NONCE_KEY;
+            tx.valid_before = Some(nz(41));
+        });
+        let err =
+            preflight_tip20_transfer(&tx, 10).expect_err("too-far expiring valid_before rejects");
+        assert_eq!(err, FastPathFallbackReason::ExpiringNonce);
     }
 }
 
 /// Runs a parallel static preflight over a fixed chunk of pool transactions.
 ///
 /// This deliberately accepts only the v1 shape that can later be converted to
-/// storage-slot action deltas: one sender-paid AA transaction, one 2D nonce, one
-/// direct `ITIP20.transfer` call, and the same token for transfer and fees.
+/// storage-slot action deltas: one sender-paid AA transaction, one 2D or valid
+/// expiring nonce, one direct `ITIP20.transfer` call, and the same token for
+/// transfer and fees.
 pub(crate) fn preflight_tip20_transfer_batch(
     txs: &[Arc<ValidPoolTransaction<TempoPooledTransaction>>],
     block_timestamp: u64,
@@ -3488,12 +3987,37 @@ fn preflight_tip20_transfer(
     };
     let tx = aa_tx.tx();
 
+    let is_expiring_nonce = tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY;
     if tx.nonce_key.is_zero() {
         return Err(FastPathFallbackReason::Not2dNonce);
     }
-    if tx.nonce_key == TEMPO_EXPIRING_NONCE_KEY || pool_tx.transaction.is_expiring_nonce() {
+    if pool_tx.transaction.is_expiring_nonce() != is_expiring_nonce {
         return Err(FastPathFallbackReason::ExpiringNonce);
     }
+    let (expiring_nonce_hash, expiring_valid_before) = if is_expiring_nonce {
+        if tx.nonce != 0 {
+            return Err(FastPathFallbackReason::ExpiringNonce);
+        }
+        let valid_before = tx
+            .valid_before
+            .ok_or(FastPathFallbackReason::ExpiringNonce)?
+            .get();
+        let max_valid_before = block_timestamp.saturating_add(EXPIRING_NONCE_MAX_EXPIRY_SECS);
+        if valid_before <= block_timestamp || valid_before > max_valid_before {
+            return Err(FastPathFallbackReason::ExpiringNonce);
+        }
+        (
+            Some(
+                pool_tx
+                    .transaction
+                    .expiring_nonce_hash()
+                    .ok_or(FastPathFallbackReason::ExpiringNonce)?,
+            ),
+            Some(valid_before),
+        )
+    } else {
+        (None, tx.valid_before.map(|valid_before| valid_before.get()))
+    };
     if tx.fee_payer_signature.is_some()
         || pool_tx.transaction.fee_payer().ok() != Some(pool_tx.sender())
     {
@@ -3553,6 +4077,9 @@ fn preflight_tip20_transfer(
         amount: transfer.amount,
         nonce_key: tx.nonce_key,
         nonce: tx.nonce,
+        expiring_nonce_hash,
+        valid_before: expiring_valid_before,
+        block_timestamp,
         max_fee: pool_tx.transaction.fee_token_cost(),
     })
 }
