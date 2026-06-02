@@ -24,7 +24,7 @@ use tempo_precompiles::{
 };
 use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::BestTransaction;
-use tracing::trace;
+use tracing::{info, trace};
 
 type PrewarmEvmState = Option<TempoEvm<StateProviderDatabase<StateProviderBox>>>;
 
@@ -233,6 +233,9 @@ impl BestTransactionsPrewarming {
                     return;
                 }
 
+                let actions = evm.take_actions();
+                info!("actions: {:?}", actions);
+
                 None
             };
 
@@ -342,7 +345,7 @@ where
         evm_env.cfg_env.disable_nonce_check = true;
         evm_env.cfg_env.disable_balance_check = true;
 
-        Some(TempoEvm::new(state_provider, evm_env))
+        Some(TempoEvm::new(state_provider, evm_env).with_actions())
     }
 
     fn is_stopped(&self) -> bool {

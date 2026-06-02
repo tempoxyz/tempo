@@ -17,6 +17,7 @@ use reth_revm::{
 };
 use std::ops::{Deref, DerefMut};
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::storage::evm::{EvmAction, EvmActions};
 use tempo_revm::{
     TempoHaltReason, TempoInvalidTransaction, TempoTxEnv, ValidationContext, evm::TempoContext,
     handler::TempoEvmHandler,
@@ -64,6 +65,7 @@ impl EvmFactory for TempoEvmFactory {
 #[expect(missing_debug_implementations)]
 pub struct TempoEvm<DB: Database, I = NoOpInspector> {
     inner: tempo_revm::TempoEvm<DB, I>,
+    actions: EvmActions,
     inspect: bool,
 }
 
@@ -79,8 +81,10 @@ impl<DB: Database> TempoEvm<DB> {
             .with_cfg(input.cfg_env)
             .with_tx(Default::default());
 
+        let actions = EvmActions::default();
         Self {
-            inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}),
+            inner: tempo_revm::TempoEvm::new(ctx, NoOpInspector {}, actions.clone()),
+            actions,
             inspect: false,
         }
     }
@@ -125,6 +129,7 @@ impl<DB: Database, I> TempoEvm<DB, I> {
     pub fn with_inspector<OINSP>(self, inspector: OINSP) -> TempoEvm<DB, OINSP> {
         TempoEvm {
             inner: self.inner.with_inspector(inspector),
+            actions: self.actions,
             inspect: true,
         }
     }
@@ -139,6 +144,23 @@ impl<DB: Database, I> TempoEvm<DB, I> {
         self.inner.inner.ctx.tx = tx.into_tx_env();
         let mut handler = TempoEvmHandler::new();
         handler.validate_transaction(&mut self.inner)
+    }
+
+    /// Enables recording of [`EvmAction`]s.
+    pub fn with_actions(self) -> Self {
+        self.actions.replace(Some(Vec::new()));
+        self
+    }
+
+    /// Takes the recorded [`EvmAction`]s from the EVM context, if enabled with [`Self::with_actions`].
+    pub fn take_actions(&mut self) -> Option<Vec<EvmAction>> {
+        self.actions.replace_with(|old| {
+            if old.is_some() {
+                Some(Vec::new())
+            } else {
+                None
+            }
+        })
     }
 }
 

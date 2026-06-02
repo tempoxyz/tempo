@@ -1,3 +1,5 @@
+use std::{cell::RefCell, rc::Rc};
+
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use revm::{
@@ -23,6 +25,7 @@ pub struct EvmPrecompileStorageProvider<'a> {
     /// Debug-only LIFO checkpoint validator. See [`Self::assert_lifo`].
     #[cfg(debug_assertions)]
     checkpoint_stack: Vec<(usize, usize)>,
+    actions: EvmActions,
 }
 
 impl<'a> EvmPrecompileStorageProvider<'a> {
@@ -45,6 +48,7 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             gas_params,
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
+            actions: EvmActions::default(),
         }
     }
 
@@ -77,6 +81,11 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             false,
             cfg.gas_params.clone(),
         )
+    }
+
+    pub fn with_actions(mut self, actions: EvmActions) -> Self {
+        self.actions = actions;
+        self
     }
 
     #[inline]
@@ -188,6 +197,9 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             value,
             insufficient_gas_for_cold_load,
         )?;
+        if let Some(actions) = self.actions.borrow_mut().as_mut() {
+            actions.push(EvmAction::Sstore(address, key, value));
+        }
 
         if !self.spec.is_t4() {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
@@ -254,9 +266,12 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         {
             let mut account = self.internals.load_account_mut(address)?;
             let val = account.sload(key, insufficient_gas_for_cold_load)?;
-
             value = val.present_value;
             is_cold = val.is_cold;
+
+            if let Some(actions) = self.actions.borrow_mut().as_mut() {
+                actions.push(EvmAction::Sstore(address, key, value));
+            }
         };
 
         if !self.spec.is_t4() {
@@ -378,6 +393,14 @@ impl EvmPrecompileStorageProvider<'_> {
         );
     }
 }
+
+#[derive(Debug)]
+pub enum EvmAction {
+    Sload(Address, U256),
+    Sstore(Address, U256, U256),
+}
+
+pub type EvmActions = Rc<RefCell<Option<Vec<EvmAction>>>>;
 
 /// Deducts gas from the remaining gas and returns an error if insufficient.
 #[inline]
