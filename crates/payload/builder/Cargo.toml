@@ -12,11 +12,13 @@ workspace = true
 
 [dependencies]
 tempo-chainspec = { workspace = true, features = ["reth"] }
+tempo-contracts.workspace = true
 tempo-evm.workspace = true
 tempo-precompiles.workspace = true
 tempo-primitives = { workspace = true, features = ["reth"] }
 tempo-transaction-pool.workspace = true
 tempo-payload-types.workspace = true
+tempo-revm.workspace = true
 
 reth-basic-payload-builder.workspace = true
 reth-chainspec.workspace = true
@@ -43,6 +45,7 @@ alloy-rlp.workspace = true
 alloy-sol-types.workspace = true
 
 metrics.workspace = true
+rayon.workspace = true
 tracing.workspace = true
 crossbeam-channel.workspace = true
 tokio.workspace = true

@@ -2199,6 +2199,78 @@ pub fn calculate_aa_batch_intrinsic_gas<'a>(
     Ok(gas)
 }
 
+/// Calculates initial gas for an AA transaction, including fork-specific nonce-key gas.
+///
+/// This is the pure transaction-environment portion of [`TempoEvmHandler`]'s initial-gas
+/// validation. It does not apply EIP-7623 floor-gas disablement or the Amsterdam regular-gas
+/// cap; callers that need full validation should apply those cfg-level checks after this helper.
+pub fn calculate_aa_initial_tx_gas_with_nonce(
+    tx: &TempoTxEnv,
+    gas_params: &GasParams,
+    spec: tempo_chainspec::hardfork::TempoHardfork,
+    max_initcode_size: usize,
+) -> Result<InitialAndFloorGas, TempoInvalidTransaction> {
+    let gas_limit = tx.gas_limit();
+
+    let aa_env = tx
+        .tempo_tx_env
+        .as_ref()
+        .expect("calculate_aa_initial_tx_gas_with_nonce called for non-AA transaction");
+
+    let calls = &aa_env.aa_calls;
+
+    // Validate all CREATE calls' initcode size upfront (EIP-3860).
+    for call in calls {
+        if call.to.is_create() && call.input.len() > max_initcode_size {
+            return Err(InvalidTransaction::CreateInitCodeSizeLimit.into());
+        }
+    }
+
+    let mut batch_gas =
+        calculate_aa_batch_intrinsic_gas(aa_env, gas_params, tx.access_list(), spec)?;
+
+    let mut nonce_2d_gas = 0;
+
+    // Calculate 2D nonce gas if nonce_key is non-zero.
+    // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key.
+    if spec.is_t1() {
+        if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
+            batch_gas.initial_regular_gas += EXPIRING_NONCE_GAS;
+        } else if tx.nonce == 0 {
+            batch_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
+            batch_gas.initial_state_gas += gas_params.new_account_state_gas();
+        } else if !aa_env.nonce_key.is_zero() {
+            batch_gas.initial_regular_gas += spec.gas_existing_nonce_key();
+        }
+    } else if !aa_env.nonce_key.is_zero() {
+        nonce_2d_gas = if tx.nonce() == 0 {
+            spec.gas_new_nonce_key()
+        } else {
+            spec.gas_existing_nonce_key()
+        };
+    };
+
+    // For T0+, include 2D nonce gas in validation (charged upfront).
+    // For pre-T0 (Genesis), 2D nonce gas is added after validation to preserve legacy behavior.
+    if spec.is_t0() {
+        batch_gas.initial_regular_gas += nonce_2d_gas;
+    }
+
+    if gas_limit < batch_gas.initial_total_gas() {
+        return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
+            gas_limit,
+            initial_gas: batch_gas.initial_total_gas(),
+        }
+        .into());
+    }
+
+    if !spec.is_t0() {
+        batch_gas.initial_regular_gas += nonce_2d_gas;
+    }
+
+    Ok(batch_gas)
+}
+
 /// Validates and calculates initial transaction gas for AA transactions.
 ///
 /// Calculates intrinsic gas based on:
@@ -2211,87 +2283,11 @@ where
     DB: alloy_evm::Database,
 {
     let (_, tx, cfg, _, _, _, _) = evm.ctx_ref().all();
-    let gas_limit = tx.gas_limit();
     let gas_params = cfg.gas_params();
     let spec = *cfg.spec();
 
-    // This function should only be called for AA transactions
-    let aa_env = tx
-        .tempo_tx_env
-        .as_ref()
-        .expect("validate_aa_initial_tx_gas called for non-AA transaction");
-
-    let calls = &aa_env.aa_calls;
-
-    // Validate all CREATE calls' initcode size upfront (EIP-3860)
-    let max_initcode_size = evm.ctx_ref().cfg().max_initcode_size();
-    for call in calls {
-        if call.to.is_create() && call.input.len() > max_initcode_size {
-            return Err(InvalidTransaction::CreateInitCodeSizeLimit.into());
-        }
-    }
-
-    // Calculate batch intrinsic gas using helper
-    let mut batch_gas =
-        calculate_aa_batch_intrinsic_gas(aa_env, gas_params, tx.access_list(), spec)?;
-
-    let mut nonce_2d_gas = 0;
-
-    // Calculate 2D nonce gas if nonce_key is non-zero
-    // If tx nonce is 0, it's a new key (0 -> 1 transition), otherwise existing key
-    if spec.is_t1() {
-        if aa_env.nonce_key == TEMPO_EXPIRING_NONCE_KEY {
-            // Calculate nonce gas based on nonce type:
-            // - Expiring nonce (nonce_key == MAX, T1 active): ring buffer + seen mapping operations
-            // - 2D nonce (nonce_key != 0): SLOAD + SSTORE for nonce increment
-            // - Regular nonce (nonce_key == 0): no additional gas
-            batch_gas.initial_regular_gas += EXPIRING_NONCE_GAS;
-        } else if tx.nonce == 0 {
-            // TIP-1000: Storage pricing updates for launch
-            // Tempo transactions with any `nonce_key` and `nonce == 0` require an additional 250,000 gas
-            batch_gas.initial_regular_gas += gas_params.get(GasId::new_account_cost());
-            batch_gas.initial_state_gas += gas_params.new_account_state_gas();
-        } else if !aa_env.nonce_key.is_zero() {
-            // Existing 2D nonce key usage (nonce > 0)
-            // TIP-1000 Invariant 3: existing state updates must charge +5,000 gas
-            batch_gas.initial_regular_gas += spec.gas_existing_nonce_key();
-        }
-    } else if let Some(aa_env) = &tx.tempo_tx_env
-        && !aa_env.nonce_key.is_zero()
-    {
-        nonce_2d_gas = if tx.nonce() == 0 {
-            spec.gas_new_nonce_key()
-        } else {
-            spec.gas_existing_nonce_key()
-        };
-    };
-
-    // For T0+, include 2D nonce gas in validation (charged upfront)
-    // For pre-T0 (Genesis), 2D nonce gas is added AFTER validation to allow transactions
-    // with gas_limit < intrinsic + nonce_2d_gas to pass validation, but the gas is still
-    // charged during execution via init_and_floor_gas (not evm.initial_gas)
-    if spec.is_t0() {
-        batch_gas.initial_regular_gas += nonce_2d_gas;
-    }
-
-    // Validate gas limit is sufficient for initial gas.
-    // initial_total_gas already includes initial_state_gas as a subset,
-    // so no need to add state gas separately.
-    if gas_limit < batch_gas.initial_total_gas() {
-        return Err(InvalidTransaction::CallGasCostMoreThanGasLimit {
-            gas_limit,
-            initial_gas: batch_gas.initial_total_gas(),
-        }
-        .into());
-    }
-
-    // For pre-T0 (Genesis), add 2D nonce gas after validation
-    // This gas will be charged via init_and_floor_gas, not evm.initial_gas
-    if !spec.is_t0() {
-        batch_gas.initial_regular_gas += nonce_2d_gas;
-    }
-
-    Ok(batch_gas)
+    calculate_aa_initial_tx_gas_with_nonce(tx, gas_params, spec, cfg.max_initcode_size())
+        .map_err(Into::into)
 }
 
 /// IMPORTANT: the caller must ensure `token` is a valid TIP20Token address.
@@ -2532,6 +2528,64 @@ mod tests {
             self.handler
                 .execution(&mut self.evm, init_gas)
                 .expect("execution should return a frame result")
+        }
+    }
+
+    #[test]
+    fn test_calculate_aa_initial_tx_gas_with_nonce_matches_handler() {
+        let cases = [
+            (TempoHardfork::T1, 5, U256::ZERO),
+            (TempoHardfork::T1, 5, U256::from(7)),
+            (TempoHardfork::T4, 0, U256::from(7)),
+        ];
+
+        for (spec, nonce, nonce_key) in cases {
+            let aa_env = TempoBatchCallEnv {
+                signature: TempoSignature::Primitive(PrimitiveSignature::Secp256k1(
+                    alloy_primitives::Signature::test_signature(),
+                )),
+                aa_calls: vec![Call {
+                    to: TxKind::Call(Address::random()),
+                    value: U256::ZERO,
+                    input: Bytes::from_static(b"fast-path"),
+                }],
+                nonce_key,
+                ..Default::default()
+            };
+
+            let mut test = TestHandlerEvm::aa(spec, aa_env, |tx_env| {
+                tx_env.inner.gas_limit = 60_000_000;
+                tx_env.inner.nonce = nonce;
+            });
+
+            let cfg = test.evm.ctx().cfg.clone();
+            let tx = test.evm.ctx().tx.clone();
+            let helper_gas = calculate_aa_initial_tx_gas_with_nonce(
+                &tx,
+                &cfg.gas_params,
+                cfg.spec,
+                cfg.max_initcode_size(),
+            )
+            .expect("helper gas calculation should succeed");
+            let handler_gas = test.validate_initial_tx_gas();
+
+            assert_eq!(
+                helper_gas.initial_regular_gas, handler_gas.initial_regular_gas,
+                "regular gas mismatch for {spec:?}, nonce {nonce}, nonce key {nonce_key:?}"
+            );
+            assert_eq!(
+                helper_gas.initial_state_gas, handler_gas.initial_state_gas,
+                "state gas mismatch for {spec:?}, nonce {nonce}, nonce key {nonce_key:?}"
+            );
+            assert_eq!(
+                helper_gas.floor_gas, handler_gas.floor_gas,
+                "floor gas mismatch for {spec:?}, nonce {nonce}, nonce key {nonce_key:?}"
+            );
+            assert_eq!(
+                helper_gas.initial_total_gas(),
+                handler_gas.initial_total_gas(),
+                "total gas mismatch for {spec:?}, nonce {nonce}, nonce key {nonce_key:?}"
+            );
         }
     }
 

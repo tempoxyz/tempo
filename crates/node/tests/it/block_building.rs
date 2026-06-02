@@ -4,14 +4,19 @@ use alloy::{
     network::{EthereumWallet, NetworkTransactionBuilder},
     primitives::{Address, B256, U256, aliases::U96},
     providers::{Provider, ProviderBuilder},
-    signers::local::{MnemonicBuilder, PrivateKeySigner},
-    sol_types::SolEvent,
+    signers::{
+        SignerSync,
+        local::{MnemonicBuilder, PrivateKeySigner},
+    },
+    sol_types::{SolCall, SolEvent},
 };
 use alloy_eips::eip2718::Encodable2718;
 use alloy_network::{Ethereum, ReceiptResponse, TxSignerSync};
 use alloy_primitives::Bytes;
 use alloy_rpc_types_eth::TransactionRequest;
 use reth_node_api::BuiltPayload;
+use reth_primitives_traits::transaction::TxHashRef;
+use tempo_alloy::rpc::TempoTransactionReceipt;
 use tempo_chainspec::spec::TEMPO_T1_BASE_FEE;
 use tempo_contracts::precompiles::{
     IFeeManager, IRolesAuth, ITIP20, ITIP20ChannelReserve, ITIP20Factory, ITIPFeeAMM,
@@ -21,7 +26,10 @@ use tempo_precompiles::{
     PATH_USD_ADDRESS, TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
     TIP20_FACTORY_ADDRESS, tip_fee_manager::amm::compute_amount_out, tip20::ISSUER_ROLE,
 };
-use tempo_primitives::{TempoTxEnvelope, transaction::calc_gas_balance_spending};
+use tempo_primitives::{
+    AASigned, TempoSignature, TempoTransaction, TempoTxEnvelope,
+    transaction::{Call, PrimitiveSignature, calc_gas_balance_spending},
+};
 
 /// Helper to setup a test token by manually injecting transactions and advancing blocks
 async fn setup_token_manual<P>(
@@ -187,6 +195,67 @@ where
                 .await?;
         let tx_bytes: Bytes = signed_tx.encoded_2718().into();
         node.rpc.inject_tx(tx_bytes).await?;
+    }
+    Ok(())
+}
+
+/// Helper to inject simple sender-paid AA TIP-20 transfers eligible for the fast path.
+async fn inject_aa_tip20_transfer_txs_from_sender(
+    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    sender: &PrivateKeySigner,
+    recipient: Address,
+    chain_id: u64,
+    count: usize,
+) -> eyre::Result<()> {
+    let call_inputs = (0..count)
+        .map(|i| {
+            ITIP20::transferCall {
+                to: recipient,
+                amount: U256::from((i + 1) as u64),
+            }
+            .abi_encode()
+            .into()
+        })
+        .collect();
+
+    inject_aa_tip20_call_txs_from_sender(node, sender, chain_id, U256::from(7), call_inputs).await
+}
+
+async fn inject_aa_tip20_call_txs_from_sender(
+    node: &mut reth_e2e_test_utils::NodeHelperType<TempoNode>,
+    sender: &PrivateKeySigner,
+    chain_id: u64,
+    nonce_key: U256,
+    call_inputs: Vec<Bytes>,
+) -> eyre::Result<()> {
+    for (i, input) in call_inputs.into_iter().enumerate() {
+        let tx = TempoTransaction {
+            chain_id,
+            fee_token: Some(PATH_USD_ADDRESS),
+            max_priority_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+            max_fee_per_gas: TEMPO_T1_BASE_FEE as u128,
+            gas_limit: 1_000_000,
+            calls: vec![Call {
+                to: PATH_USD_ADDRESS.into(),
+                value: U256::ZERO,
+                input,
+            }],
+            nonce_key,
+            nonce: i as u64,
+            fee_payer_signature: None,
+            valid_before: None,
+            valid_after: None,
+            access_list: Default::default(),
+            key_authorization: None,
+            tempo_authorization_list: vec![],
+        };
+        let signature = sender.sign_hash_sync(&tx.signature_hash())?;
+        let envelope = TempoTxEnvelope::AA(AASigned::new_unhashed(
+            tx,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        ));
+
+        node.rpc.inject_tx(envelope.encoded_2718().into()).await?;
     }
     Ok(())
 }
@@ -375,6 +444,192 @@ async fn test_block_building_only_payment_txs() -> eyre::Result<()> {
             "All transactions should be payment transactions"
         );
     }
+
+    Ok(())
+}
+
+/// Test with AA TIP-20 transfers that satisfy the payload-builder fast path.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_block_building_aa_tip20_fast_path_transfers() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?;
+
+    let funder = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(0)?
+        .build()?;
+    let aa_sender = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(31)?
+        .build()?;
+    let recipient = Address::random();
+
+    let provider = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(aa_sender.clone()))
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    fund_path_usd(&mut setup.node, &funder, &aa_sender, chain_id, 0).await?;
+
+    let token = ITIP20::new(PATH_USD_ADDRESS, provider.clone());
+    let sender_before = token.balanceOf(aa_sender.address()).call().await?;
+    let recipient_before = token.balanceOf(recipient).call().await?;
+    let num_payment_txs = 4usize;
+    let transfer_total = (1..=num_payment_txs)
+        .map(|amount| U256::from(amount as u64))
+        .sum::<U256>();
+
+    inject_aa_tip20_transfer_txs_from_sender(
+        &mut setup.node,
+        &aa_sender,
+        recipient,
+        chain_id,
+        num_payment_txs,
+    )
+    .await?;
+
+    let payload = setup.node.advance_block().await?;
+    let block = payload.block();
+    let all_transactions: Vec<_> = block.body().transactions().cloned().collect();
+    let user_txs = extract_user_txs(all_transactions);
+
+    assert_eq!(user_txs.len(), num_payment_txs);
+    for (index, tx) in user_txs.iter().enumerate() {
+        let aa = tx.as_aa().expect("fast-path test tx must be AA");
+        assert_eq!(aa.tx().nonce_key, U256::from(7));
+        assert_eq!(aa.tx().nonce, index as u64);
+        assert!(tx.is_payment_v2());
+    }
+
+    for tx in &user_txs {
+        let receipt = provider
+            .raw_request::<_, TempoTransactionReceipt>(
+                "eth_getTransactionReceipt".into(),
+                (*tx.tx_hash(),),
+            )
+            .await?;
+        assert!(receipt.status());
+        assert!(!receipt.logs().is_empty());
+    }
+
+    let sender_after = token.balanceOf(aa_sender.address()).call().await?;
+    let recipient_after = token.balanceOf(recipient).call().await?;
+    assert_eq!(recipient_after - recipient_before, transfer_total);
+    assert!(
+        sender_before - sender_after > transfer_total,
+        "sender should pay transfers plus TIP-20 fees"
+    );
+
+    Ok(())
+}
+
+/// Test that one unsupported AA TIP-20 payment shape falls back to the sequential path.
+#[tokio::test(flavor = "multi_thread")]
+async fn test_block_building_aa_tip20_mixed_fast_path_fallback() -> eyre::Result<()> {
+    reth_tracing::init_test_tracing();
+
+    let mut setup = crate::utils::TestNodeBuilder::new()
+        .build_with_node_access()
+        .await?;
+
+    let funder = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(0)?
+        .build()?;
+    let aa_sender = MnemonicBuilder::from_phrase(crate::utils::TEST_MNEMONIC)
+        .index(32)?
+        .build()?;
+    let recipient = Address::random();
+
+    let provider = ProviderBuilder::new()
+        .wallet(EthereumWallet::from(aa_sender.clone()))
+        .connect_http(setup.node.rpc_url());
+    let chain_id = provider.get_chain_id().await?;
+
+    fund_path_usd(&mut setup.node, &funder, &aa_sender, chain_id, 0).await?;
+
+    let token = ITIP20::new(PATH_USD_ADDRESS, provider.clone());
+    let sender_before = token.balanceOf(aa_sender.address()).call().await?;
+    let recipient_before = token.balanceOf(recipient).call().await?;
+
+    let call_inputs = vec![
+        ITIP20::transferCall {
+            to: recipient,
+            amount: U256::from(1),
+        }
+        .abi_encode()
+        .into(),
+        ITIP20::transferWithMemoCall {
+            to: recipient,
+            amount: U256::from(2),
+            memo: B256::repeat_byte(0x6d),
+        }
+        .abi_encode()
+        .into(),
+        ITIP20::transferCall {
+            to: recipient,
+            amount: U256::from(3),
+        }
+        .abi_encode()
+        .into(),
+        ITIP20::transferCall {
+            to: recipient,
+            amount: U256::from(4),
+        }
+        .abi_encode()
+        .into(),
+    ];
+    let transfer_total = U256::from(10);
+
+    inject_aa_tip20_call_txs_from_sender(
+        &mut setup.node,
+        &aa_sender,
+        chain_id,
+        U256::from(7),
+        call_inputs,
+    )
+    .await?;
+
+    let payload = setup.node.advance_block().await?;
+    let block = payload.block();
+    let all_transactions: Vec<_> = block.body().transactions().cloned().collect();
+    let user_txs = extract_user_txs(all_transactions);
+
+    assert_eq!(user_txs.len(), 4);
+    for (index, tx) in user_txs.iter().enumerate() {
+        let aa = tx.as_aa().expect("fallback test tx must be AA");
+        assert_eq!(aa.tx().nonce_key, U256::from(7));
+        assert_eq!(aa.tx().nonce, index as u64);
+        assert!(tx.is_payment_v2());
+    }
+
+    let memo_tx = user_txs[1]
+        .as_aa()
+        .expect("second tx must be AA")
+        .tx()
+        .calls
+        .first()
+        .expect("second tx call");
+    assert!(ITIP20::transferWithMemoCall::abi_decode(&memo_tx.input).is_ok());
+
+    for tx in &user_txs {
+        let receipt = provider
+            .raw_request::<_, TempoTransactionReceipt>(
+                "eth_getTransactionReceipt".into(),
+                (*tx.tx_hash(),),
+            )
+            .await?;
+        assert!(receipt.status());
+        assert!(!receipt.logs().is_empty());
+    }
+
+    let sender_after = token.balanceOf(aa_sender.address()).call().await?;
+    let recipient_after = token.balanceOf(recipient).call().await?;
+    assert_eq!(recipient_after - recipient_before, transfer_total);
+    assert!(
+        sender_before - sender_after > transfer_total,
+        "sender should pay transfers plus TIP-20 fees"
+    );
 
     Ok(())
 }

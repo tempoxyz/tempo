@@ -22,7 +22,7 @@ use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
     context::result::ResultAndState,
-    state::{Account, Bytecode, EvmState},
+    state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
 use std::collections::{HashMap, HashSet};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
@@ -105,6 +105,73 @@ pub struct TempoTxResult {
     validator_fee: U256,
 }
 
+/// Exact synthetic execution output for a non-shared payment transaction.
+///
+/// This is intentionally narrow: callers must synthesize the same state, logs,
+/// receipt, gas values, and validator-fee credit that normal execution would
+/// have produced. The executor only commits those already-validated results into
+/// block-level accounting.
+#[derive(Debug)]
+pub struct TempoSyntheticTxCommit {
+    /// State changes produced by the synthetic transaction.
+    pub state: EvmState,
+    /// Receipt produced by the synthetic transaction.
+    pub receipt: TempoReceipt,
+    /// Cumulative transaction gas increment for receipt accounting.
+    pub tx_gas_used: u64,
+    /// Regular block gas increment.
+    pub block_regular_gas_used: u64,
+    /// State gas increment.
+    pub block_state_gas_used: u64,
+    /// Section-capacity gas consumed by this transaction.
+    pub block_gas_used: u64,
+    /// Validator-credited fee amount for payload scoring.
+    pub validator_fee: U256,
+}
+
+/// Exact synthetic execution output for a storage-only non-shared payment transaction.
+#[derive(Debug)]
+pub struct TempoSyntheticStorageTxCommit {
+    /// Storage changes produced by the synthetic transaction.
+    pub storage_deltas: Vec<TempoSyntheticStorageDelta>,
+    /// Receipt produced by the synthetic transaction.
+    pub receipt: TempoReceipt,
+    /// Cumulative transaction gas increment for receipt accounting.
+    pub tx_gas_used: u64,
+    /// Regular block gas increment.
+    pub block_regular_gas_used: u64,
+    /// State gas increment.
+    pub block_state_gas_used: u64,
+    /// Section-capacity gas consumed by this transaction.
+    pub block_gas_used: u64,
+    /// Validator-credited fee amount for payload scoring.
+    pub validator_fee: U256,
+}
+
+/// One storage write synthesized by an external fast path.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TempoSyntheticStorageDelta {
+    /// Account whose storage is updated.
+    pub address: Address,
+    /// Storage slot key.
+    pub slot: U256,
+    /// Value before this synthetic transaction.
+    pub original: U256,
+    /// Value after this synthetic transaction.
+    pub present: U256,
+}
+
+/// Accounting returned after committing a synthetic transaction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TempoSyntheticTxSummary {
+    /// Block gas consumed by this transaction.
+    pub block_gas_used: u64,
+    /// State gas consumed by this transaction.
+    pub state_gas_used: u64,
+    /// Validator-credited fee amount for payload scoring.
+    pub validator_fee: U256,
+}
+
 impl TempoTxResult {
     /// Returns the block gas consumed by this transaction.
     pub fn block_gas_used(&self) -> u64 {
@@ -180,6 +247,88 @@ where
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
         }
+    }
+
+    /// Commits an already validated synthetic non-shared payment transaction.
+    ///
+    /// This mirrors the commit side effects used by normal execution for the
+    /// subset supported by the payload-builder TIP-20 fast path. It does not run
+    /// transaction validation, execute bytecode/precompiles, or synthesize
+    /// receipts; callers must provide exact parity data.
+    pub fn commit_synthetic_non_shared_payment(
+        &mut self,
+        mut commit: TempoSyntheticTxCommit,
+    ) -> TempoSyntheticTxSummary {
+        self.inner.block_regular_gas_used += commit.block_regular_gas_used;
+        self.inner.block_state_gas_used += commit.block_state_gas_used;
+        self.inner.cumulative_tx_gas_used += commit.tx_gas_used;
+        commit.receipt.cumulative_gas_used = self.inner.cumulative_tx_gas_used;
+        self.inner.receipts.push(commit.receipt);
+        self.inner.evm.db_mut().commit(commit.state);
+
+        self.section = BlockSection::NonShared;
+        self.non_shared_gas_left -= commit.block_gas_used;
+
+        TempoSyntheticTxSummary {
+            block_gas_used: commit.block_gas_used,
+            state_gas_used: commit.block_state_gas_used,
+            validator_fee: commit.validator_fee,
+        }
+    }
+
+    /// Commits an already validated storage-only synthetic non-shared payment transaction.
+    pub fn commit_synthetic_storage_non_shared_payment(
+        &mut self,
+        commit: TempoSyntheticStorageTxCommit,
+    ) -> Result<TempoSyntheticTxSummary, BlockExecutionError> {
+        let state = self.synthetic_state_from_storage_deltas(commit.storage_deltas)?;
+        Ok(
+            self.commit_synthetic_non_shared_payment(TempoSyntheticTxCommit {
+                state,
+                receipt: commit.receipt,
+                tx_gas_used: commit.tx_gas_used,
+                block_regular_gas_used: commit.block_regular_gas_used,
+                block_state_gas_used: commit.block_state_gas_used,
+                block_gas_used: commit.block_gas_used,
+                validator_fee: commit.validator_fee,
+            }),
+        )
+    }
+
+    /// Builds an [`EvmState`] from storage-only synthetic deltas while preserving account info.
+    ///
+    /// Storage-only fast paths should use this before
+    /// [`Self::commit_synthetic_non_shared_payment`]. Loading the current account info here avoids
+    /// accidentally committing touched accounts with default metadata.
+    pub fn synthetic_state_from_storage_deltas(
+        &mut self,
+        deltas: impl IntoIterator<Item = TempoSyntheticStorageDelta>,
+    ) -> Result<EvmState, BlockExecutionError> {
+        let mut state = EvmState::default();
+
+        for delta in deltas {
+            if !state.contains_key(&delta.address) {
+                let info = self
+                    .inner
+                    .evm
+                    .db_mut()
+                    .basic(delta.address)
+                    .map_err(BlockExecutionError::other)?
+                    .ok_or_else(|| BlockExecutionError::msg("synthetic account missing"))?;
+                state.insert(delta.address, Account::from(info).with_touched_mark());
+            }
+
+            state
+                .get_mut(&delta.address)
+                .expect("account inserted above")
+                .storage
+                .insert(
+                    delta.slot,
+                    EvmStorageSlot::new_changed(delta.original, delta.present, TransactionId::ZERO),
+                );
+        }
+
+        Ok(state)
     }
 
     /// Deploys `0xEF` marker bytecode to a precompile address if it doesn't already have code.
@@ -697,6 +846,7 @@ mod tests {
     use reth_chainspec::EthChainSpec;
     use reth_revm::{State, state::AccountInfo};
     use revm::{
+        Database as _,
         context::result::{ExecutionResult, ResultGas},
         database::EmptyDB,
     };
@@ -1324,6 +1474,93 @@ mod tests {
 
         assert_eq!(gas_output.tx_gas_used(), 21000);
         assert_eq!(executor.section(), BlockSection::NonShared);
+    }
+
+    #[test]
+    fn test_synthetic_state_from_storage_deltas_preserves_account_info() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let info = AccountInfo {
+            balance: U256::from(11),
+            nonce: 3,
+            ..Default::default()
+        };
+        db.insert_account(address, info.clone());
+
+        let mut executor = TestExecutorBuilder::default().build(&mut db, &chainspec);
+        let state = executor
+            .synthetic_state_from_storage_deltas([TempoSyntheticStorageDelta {
+                address,
+                slot,
+                original: U256::from(1),
+                present: U256::from(2),
+            }])
+            .expect("synthetic state");
+
+        let account = state.get(&address).expect("account state");
+        assert_eq!(account.info, info);
+        assert!(account.is_touched());
+
+        let storage = account.storage.get(&slot).expect("changed slot");
+        assert_eq!(storage.original_value(), U256::from(1));
+        assert_eq!(storage.present_value(), U256::from(2));
+        assert!(storage.is_changed());
+    }
+
+    #[test]
+    fn test_commit_synthetic_storage_non_shared_payment() {
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let address = Address::repeat_byte(0x42);
+        let slot = U256::from(7);
+        let info = AccountInfo {
+            balance: U256::from(11),
+            nonce: 3,
+            ..Default::default()
+        };
+        db.insert_account(address, info.clone());
+
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .build(&mut db, &chainspec);
+        let initial_non_shared_gas_left = executor.non_shared_gas_left;
+        let summary = executor
+            .commit_synthetic_storage_non_shared_payment(TempoSyntheticStorageTxCommit {
+                storage_deltas: vec![TempoSyntheticStorageDelta {
+                    address,
+                    slot,
+                    original: U256::ZERO,
+                    present: U256::from(2),
+                }],
+                receipt: TempoReceipt {
+                    tx_type: TempoTxType::Legacy,
+                    success: true,
+                    cumulative_gas_used: 0,
+                    logs: Vec::new(),
+                },
+                tx_gas_used: 21_000,
+                block_regular_gas_used: 21_000,
+                block_state_gas_used: 0,
+                block_gas_used: 21_000,
+                validator_fee: U256::from(5),
+            })
+            .expect("synthetic storage commit");
+
+        assert_eq!(summary.block_gas_used, 21_000);
+        assert_eq!(summary.state_gas_used, 0);
+        assert_eq!(summary.validator_fee, U256::from(5));
+        assert_eq!(executor.section(), BlockSection::NonShared);
+        assert_eq!(
+            executor.non_shared_gas_left,
+            initial_non_shared_gas_left - 21_000
+        );
+        assert_eq!(executor.receipts()[0].cumulative_gas_used, 21_000);
+
+        let db = executor.inner.evm.db_mut();
+        assert_eq!(db.storage(address, slot).unwrap(), U256::from(2));
+        assert_eq!(db.basic(address).unwrap().expect("account info"), info);
     }
 
     #[test]

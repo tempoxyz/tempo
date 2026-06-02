@@ -6,6 +6,7 @@
 mod budget;
 mod metrics;
 mod prewarming;
+mod tip20_fast_path;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
 use crossbeam_channel::Sender;
@@ -47,7 +48,9 @@ use reth_primitives_traits::{
     Recovered, RecoveredBlock, transaction::error::InvalidTransactionError,
 };
 use reth_revm::{
-    State, context::Block, database::StateProviderDatabase,
+    State,
+    context::{Block, Cfg},
+    database::StateProviderDatabase,
     db::states::bundle_state::BundleRetention,
 };
 use reth_storage_api::{HashedPostStateProvider, StateProviderFactory, StateRootProvider};
@@ -57,6 +60,7 @@ use reth_transaction_pool::{
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::{
+    collections::VecDeque,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -75,6 +79,10 @@ use tempo_primitives::{
 use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
+};
+use tip20_fast_path::{
+    FAST_TIP20_CHUNK_SIZE, FastPathFallbackReason, Tip20ExecutionGasConfig, Tip20InitialGasConfig,
+    preflight_tip20_transfer_batch,
 };
 use tokio::sync::oneshot;
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
@@ -549,6 +557,8 @@ where
         let mut skipped_oversized_block = false;
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let mut queued_pool_transactions = VecDeque::new();
+        let mut tip20_fast_path_disabled = false;
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -584,25 +594,357 @@ where
                 }
             }
 
-            let Some(pool_tx) = best_txs.next() else {
-                if build_once_with_shared_trie
-                    && payload_build_budget.is_some()
-                    && cumulative_gas_used < non_shared_gas_limit
-                {
-                    std::thread::sleep(Duration::from_millis(1));
-                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+            let (pool_tx, pool_tx_was_queued) =
+                if let Some(pool_tx) = queued_pool_transactions.pop_front() {
+                    (pool_tx, true)
+                } else if let Some(pool_tx) = best_txs.next() {
+                    pool_transactions_yielded += 1;
+                    (pool_tx, false)
+                } else {
+                    if build_once_with_shared_trie
+                        && payload_build_budget.is_some()
+                        && cumulative_gas_used < non_shared_gas_limit
+                    {
+                        std::thread::sleep(Duration::from_millis(1));
+                        normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
+                        continue;
+                    }
+                    let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
+                        BlockBuildStopReason::GasLimit
+                    } else if skipped_oversized_block {
+                        BlockBuildStopReason::RlpBlockSizeLimit
+                    } else {
+                        BlockBuildStopReason::TxPoolEmpty
+                    };
+                    break stop_reason;
+                };
+
+            if !pool_tx_was_queued && !tip20_fast_path_disabled {
+                let initial_preflight_start = Instant::now();
+                if let Err(reason) = preflight_tip20_transfer_batch(
+                    std::slice::from_ref(&pool_tx),
+                    attributes.timestamp,
+                ) {
+                    let elapsed = initial_preflight_start.elapsed();
+                    self.metrics
+                        .tip20_fast_path_preflight_duration_seconds
+                        .record(elapsed);
+                    self.metrics.inc_tip20_fast_path_fallback(reason.as_str());
+                    trace!(
+                        target: "payload_builder",
+                        reason = reason.as_str(),
+                        txs = 1,
+                        ?elapsed,
+                        "falling back from TIP-20 transfer fast-path initial preflight"
+                    );
+                    tip20_fast_path_disabled = true;
+                } else {
+                    // Preflight a fixed chunk up front. Fully validated chunks are committed
+                    // through synthetic storage deltas; any miss falls back to sequential replay.
+                    let mut chunk = Vec::with_capacity(FAST_TIP20_CHUNK_SIZE);
+                    chunk.push(pool_tx);
+                    while chunk.len() < FAST_TIP20_CHUNK_SIZE {
+                        let Some(next_pool_tx) = best_txs.next() else {
+                            break;
+                        };
+                        pool_transactions_yielded += 1;
+                        chunk.push(next_pool_tx);
+                    }
+
+                    self.metrics.inc_tip20_fast_path_attempted_chunk();
+                    let preflight_start = Instant::now();
+                    match preflight_tip20_transfer_batch(&chunk, attributes.timestamp) {
+                        Ok(batch) => {
+                            let elapsed = preflight_start.elapsed();
+                            self.metrics
+                                .tip20_fast_path_preflight_duration_seconds
+                                .record(elapsed);
+                            self.metrics
+                                .tip20_fast_path_preflight_transactions
+                                .record(batch.len() as f64);
+
+                            let validation_start = Instant::now();
+                            let beneficiary = executor.evm().block().beneficiary;
+                            let validation_result = {
+                                let ctx = executor.evm_mut().ctx_mut();
+                                ctx.journaled_state
+                                    .database
+                                    .with_read_only_storage_ctx(ctx.cfg.spec, || {
+                                        batch.validate_state(beneficiary, hardfork.is_t6())
+                                    })
+                            };
+                            let validation_elapsed = validation_start.elapsed();
+                            self.metrics
+                                .tip20_fast_path_validation_duration_seconds
+                                .record(validation_elapsed);
+
+                            match validation_result {
+                                Ok(deltas) => {
+                                    let cfg = &executor.evm().cfg;
+                                    let gas_config = Tip20InitialGasConfig {
+                                        gas_params: &cfg.gas_params,
+                                        spec: cfg.spec,
+                                        eip7623_disabled: cfg.is_eip7623_disabled(),
+                                        amsterdam_eip8037_enabled: cfg
+                                            .is_amsterdam_eip8037_enabled(),
+                                        tx_gas_limit_cap: cfg.tx_gas_limit_cap(),
+                                        max_initcode_size: cfg.max_initcode_size(),
+                                    };
+
+                                    match batch.calculate_initial_gas(gas_config) {
+                                        Ok(initial_gas) => {
+                                            self.metrics.inc_tip20_fast_path_accepted();
+                                            let tx_rlp_length = chunk
+                                                .iter()
+                                                .map(|tx| tx.transaction.encoded_length())
+                                                .sum::<usize>();
+                                            let projected_regular_gas =
+                                                chunk.iter().fold(0u64, |acc, tx| {
+                                                    acc.saturating_add(core::cmp::min(
+                                                        tx.gas_limit(),
+                                                        gas_config.tx_gas_limit_cap,
+                                                    ))
+                                                });
+                                            let estimated_block_size_with_chunk =
+                                                block_size_used + tx_rlp_length;
+                                            let capacity_reason = if cumulative_gas_used
+                                                .saturating_add(projected_regular_gas)
+                                                > non_shared_gas_limit
+                                            {
+                                                Some(FastPathFallbackReason::GasLimit)
+                                            } else if is_osaka
+                                                && estimated_block_size_with_chunk
+                                                    > MAX_RLP_BLOCK_SIZE
+                                            {
+                                                Some(FastPathFallbackReason::RlpBlockSizeLimit)
+                                            } else {
+                                                None
+                                            };
+
+                                            let settlement_result =
+                                                capacity_reason.map_or_else(
+                                                    || {
+                                                        let (
+                                                            gas_params,
+                                                            spec,
+                                                            amsterdam_eip8037_enabled,
+                                                            chain_id,
+                                                            basefee,
+                                                            timestamp,
+                                                            block_number,
+                                                        ) = {
+                                                            let cfg = &executor.evm().cfg;
+                                                            let block = executor.evm().block();
+                                                            (
+                                                                cfg.gas_params.clone(),
+                                                                cfg.spec,
+                                                                cfg.is_amsterdam_eip8037_enabled(),
+                                                                cfg.chain_id,
+                                                                block.basefee,
+                                                                block.timestamp,
+                                                                block.number.to(),
+                                                            )
+                                                        };
+                                                        let gas_config =
+                                                            Tip20ExecutionGasConfig {
+                                                                gas_params: &gas_params,
+                                                                spec,
+                                                                amsterdam_eip8037_enabled,
+                                                                basefee,
+                                                                chain_id,
+                                                                timestamp,
+                                                                beneficiary,
+                                                                block_number,
+                                                            };
+                                                        let settlement_start = Instant::now();
+                                                        let result = {
+                                                            let ctx =
+                                                                executor.evm_mut().ctx_mut();
+                                                            ctx.journaled_state
+                                                                .database
+                                                                .with_read_only_storage_ctx(
+                                                                    ctx.cfg.spec,
+                                                                    || {
+                                                                        batch
+                                                                            .settle_state_with_calculated_gas(
+                                                                                beneficiary,
+                                                                                hardfork.is_t6(),
+                                                                                gas_config,
+                                                                                &initial_gas,
+                                                                            )
+                                                                    },
+                                                                )
+                                                        };
+                                                        self.metrics
+                                                            .tip20_fast_path_settlement_duration_seconds
+                                                            .record(settlement_start.elapsed());
+                                                        result
+                                                    },
+                                                    Err,
+                                                );
+
+                                            match settlement_result {
+                                                Ok(settled) => {
+                                                    let batch_block_gas_used = settled
+                                                        .transactions()
+                                                        .iter()
+                                                        .map(|tx| tx.gas.block_gas_used)
+                                                        .sum::<u64>();
+                                                    if cumulative_gas_used + batch_block_gas_used
+                                                        > non_shared_gas_limit
+                                                    {
+                                                        self.metrics.inc_tip20_fast_path_fallback(
+                                                            FastPathFallbackReason::GasLimit
+                                                                .as_str(),
+                                                        );
+                                                        trace!(
+                                                            target: "payload_builder",
+                                                            txs = chunk.len(),
+                                                            projected_regular_gas,
+                                                            estimated_block_size_with_chunk,
+                                                            batch_block_gas_used,
+                                                            cumulative_gas_used,
+                                                            non_shared_gas_limit,
+                                                            "falling back from TIP-20 transfer fast-path capacity validation"
+                                                        );
+                                                        tip20_fast_path_disabled = true;
+                                                    } else {
+                                                        let commit_start = Instant::now();
+                                                        let receipt_start =
+                                                            executor.receipts().len();
+                                                        let committed = settled
+                                                            .commit_to_executor(&mut executor)
+                                                            .map_err(PayloadBuilderError::evm)?;
+                                                        for _ in 0..settled.len() {
+                                                            executor
+                                                                .evm_mut()
+                                                                .db_mut()
+                                                                .bump_bal_index();
+                                                        }
+                                                        let commit_elapsed = commit_start.elapsed();
+                                                        self.metrics
+                                                            .tip20_fast_path_commit_duration_seconds
+                                                            .record(commit_elapsed);
+                                                        self.metrics
+                                                            .inc_tip20_fast_path_committed_chunk();
+                                                        self.metrics
+                                                            .inc_tip20_fast_path_committed_txs(
+                                                                settled.len() as u64,
+                                                            );
+
+                                                        cumulative_gas_used +=
+                                                            committed.block_gas_used();
+                                                        cumulative_state_gas_used +=
+                                                            committed.state_gas_used();
+                                                        total_fees += committed.validator_fee();
+                                                        payment_transactions +=
+                                                            settled.len() as u64;
+                                                        pool_transactions_included +=
+                                                            settled.len() as u64;
+                                                        block_size_used += tx_rlp_length;
+                                                        best_txs.on_balance_slot_updates(
+                                                            committed.balance_updates(),
+                                                        );
+
+                                                        for (tx, receipt) in
+                                                            settled.transactions().iter().zip(
+                                                                executor.receipts()
+                                                                    [receipt_start..]
+                                                                    .iter(),
+                                                            )
+                                                        {
+                                                            let _ = roots_tx.send((
+                                                                BuilderTx::Pooled(Arc::clone(
+                                                                    &tx.pool_tx,
+                                                                )),
+                                                                receipt.clone(),
+                                                            ));
+                                                        }
+
+                                                        trace!(
+                                                            target: "payload_builder",
+                                                            txs = settled.len(),
+                                                            estimated_deltas = batch.estimated_delta_count(),
+                                                            validated_deltas = deltas.len(),
+                                                            balance_updates = deltas.balance_updates().count(),
+                                                            initial_gas_outcomes = initial_gas.len(),
+                                                            block_gas_used = committed.block_gas_used(),
+                                                            state_gas_used = committed.state_gas_used(),
+                                                            validator_fee = %committed.validator_fee(),
+                                                            preflight_elapsed = ?elapsed,
+                                                            ?validation_elapsed,
+                                                            ?commit_elapsed,
+                                                            "committed TIP-20 transfer fast-path batch"
+                                                        );
+                                                        continue;
+                                                    }
+                                                }
+                                                Err(reason) => {
+                                                    self.metrics.inc_tip20_fast_path_fallback(
+                                                        reason.as_str(),
+                                                    );
+                                                    trace!(
+                                                        target: "payload_builder",
+                                                        reason = reason.as_str(),
+                                                        txs = chunk.len(),
+                                                        preflight_elapsed = ?elapsed,
+                                                        ?validation_elapsed,
+                                                        "falling back from TIP-20 transfer fast-path settlement"
+                                                    );
+                                                    tip20_fast_path_disabled = true;
+                                                }
+                                            }
+                                        }
+                                        Err(reason) => {
+                                            self.metrics
+                                                .inc_tip20_fast_path_fallback(reason.as_str());
+                                            trace!(
+                                                target: "payload_builder",
+                                                reason = reason.as_str(),
+                                                txs = chunk.len(),
+                                                preflight_elapsed = ?elapsed,
+                                                ?validation_elapsed,
+                                                "falling back from TIP-20 transfer fast-path initial gas validation"
+                                            );
+                                            tip20_fast_path_disabled = true;
+                                        }
+                                    }
+                                }
+                                Err(reason) => {
+                                    self.metrics.inc_tip20_fast_path_fallback(reason.as_str());
+                                    trace!(
+                                        target: "payload_builder",
+                                        reason = reason.as_str(),
+                                        txs = chunk.len(),
+                                        preflight_elapsed = ?elapsed,
+                                        ?validation_elapsed,
+                                        "falling back from TIP-20 transfer fast-path state validation"
+                                    );
+                                    tip20_fast_path_disabled = true;
+                                }
+                            }
+                        }
+                        Err(reason) => {
+                            let elapsed = preflight_start.elapsed();
+                            self.metrics
+                                .tip20_fast_path_preflight_duration_seconds
+                                .record(elapsed);
+                            self.metrics.inc_tip20_fast_path_fallback(reason.as_str());
+                            trace!(
+                                target: "payload_builder",
+                                reason = reason.as_str(),
+                                txs = chunk.len(),
+                                ?elapsed,
+                                "falling back from TIP-20 transfer fast-path preflight"
+                            );
+                            tip20_fast_path_disabled = true;
+                        }
+                    }
+
+                    queued_pool_transactions.extend(chunk);
                     continue;
                 }
-                let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
-                    BlockBuildStopReason::GasLimit
-                } else if skipped_oversized_block {
-                    BlockBuildStopReason::RlpBlockSizeLimit
-                } else {
-                    BlockBuildStopReason::TxPoolEmpty
-                };
-                break stop_reason;
-            };
-            pool_transactions_yielded += 1;
+            }
 
             let max_regular_gas_used = core::cmp::min(
                 pool_tx.gas_limit(),

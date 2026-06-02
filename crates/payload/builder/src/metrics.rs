@@ -77,6 +77,16 @@ pub(crate) struct TempoPayloadBuilderMetrics {
     pub(crate) prepare_system_transactions_duration_seconds: Histogram,
     /// Total wall-clock time spent filling the block with normal pool transactions.
     pub(crate) total_normal_transaction_fill_duration_seconds: Histogram,
+    /// Time spent preflighting simple TIP-20 transfer fast-path batches.
+    pub(crate) tip20_fast_path_preflight_duration_seconds: Histogram,
+    /// Time spent validating simple TIP-20 transfer fast-path batches against state.
+    pub(crate) tip20_fast_path_validation_duration_seconds: Histogram,
+    /// Time spent settling simple TIP-20 transfer fast-path batches and synthesizing gas/logs.
+    pub(crate) tip20_fast_path_settlement_duration_seconds: Histogram,
+    /// Time spent committing synthetic simple TIP-20 transfer fast-path batches.
+    pub(crate) tip20_fast_path_commit_duration_seconds: Histogram,
+    /// Number of transactions in accepted TIP-20 fast-path preflight batches.
+    pub(crate) tip20_fast_path_preflight_transactions: Histogram,
     /// Time spent waiting for more normal transactions during block fill.
     pub(crate) normal_transaction_fill_idle_duration_seconds: Histogram,
     /// Total wall-clock time spent in transaction execution phases.
@@ -138,6 +148,40 @@ impl TempoPayloadBuilderMetrics {
     #[inline]
     pub(crate) fn inc_pool_tx_skipped(&self, reason: &'static str) {
         metrics::counter!("tempo_payload_builder_pool_transactions_skipped_total", "reason" => reason)
+            .increment(1);
+    }
+
+    /// Increments the counter for TIP-20 fast-path chunk attempts.
+    #[inline]
+    pub(crate) fn inc_tip20_fast_path_attempted_chunk(&self) {
+        metrics::counter!("tempo_payload_builder_tip20_fast_path_attempted_chunks_total")
+            .increment(1);
+    }
+
+    /// Increments the counter for accepted TIP-20 fast-path preflight batches.
+    #[inline]
+    pub(crate) fn inc_tip20_fast_path_accepted(&self) {
+        metrics::counter!("tempo_payload_builder_tip20_fast_path_accepted_total").increment(1);
+    }
+
+    /// Increments the counter for committed TIP-20 fast-path chunks.
+    #[inline]
+    pub(crate) fn inc_tip20_fast_path_committed_chunk(&self) {
+        metrics::counter!("tempo_payload_builder_tip20_fast_path_committed_chunks_total")
+            .increment(1);
+    }
+
+    /// Increments the counter for committed TIP-20 fast-path transactions.
+    #[inline]
+    pub(crate) fn inc_tip20_fast_path_committed_txs(&self, txs: u64) {
+        metrics::counter!("tempo_payload_builder_tip20_fast_path_committed_txs_total")
+            .increment(txs);
+    }
+
+    /// Increments the counter for TIP-20 fast-path fallbacks with a reason label.
+    #[inline]
+    pub(crate) fn inc_tip20_fast_path_fallback(&self, reason: &'static str) {
+        metrics::counter!("tempo_payload_builder_tip20_fast_path_fallback_total", "reason" => reason)
             .increment(1);
     }
 

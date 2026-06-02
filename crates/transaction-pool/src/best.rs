@@ -155,6 +155,23 @@ where
             }
         }
     }
+
+    /// Applies TIP-20 balance-slot values that should affect later transaction selection.
+    ///
+    /// Callers should pass the same slots that [`Self::on_new_result`] would have tracked:
+    /// balance decreases, plus later values for already-tracked slots.
+    pub fn on_balance_slot_updates(
+        &mut self,
+        updates: impl IntoIterator<Item = ((Address, U256), U256)>,
+    ) {
+        for (key, balance) in updates {
+            if let Some(existing) = self.decreased_balances.get_mut(&key) {
+                *existing = balance;
+            } else {
+                self.decreased_balances.insert(key, balance);
+            }
+        }
+    }
 }
 
 impl<I> Iterator for StateAwareBestTransactions<I>
