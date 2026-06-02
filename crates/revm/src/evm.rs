@@ -247,12 +247,12 @@ mod tests {
     use sha2::{Digest, Sha256};
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_precompiles::{
-        AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_GAS_TOKENS_ADDRESS,
+        AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
         nonce::NonceManager,
         storage::{Handler, StorageCtx, evm::EvmPrecompileStorageProvider},
         test_util::TIP20Setup,
         tip20::{ITIP20, TIP20Token},
-        tip1060_storage_gas_token::{AccountState, StorageGasMode, TIP1060StorageGasToken},
+        tip1060_storage_credits::{AccountState, CreditMode, TIP1060StorageCredits},
     };
     use tempo_primitives::{
         TempoTransaction,
@@ -1914,27 +1914,27 @@ mod tests {
         evm: &mut TempoEvm<CacheDB<EmptyDB>, ()>,
         owner: Address,
         balance: u64,
-        mode: StorageGasMode,
+        mode: CreditMode,
     ) {
         // The gas-token contract account must exist before we can write storage to it.
         evm.ctx
             .db_mut()
-            .insert_account_info(STORAGE_GAS_TOKENS_ADDRESS, AccountInfo::default());
-        let slot = TIP1060StorageGasToken::slot(owner);
+            .insert_account_info(STORAGE_CREDITS_ADDRESS, AccountInfo::default());
+        let slot = TIP1060StorageCredits::slot(owner);
         let word = AccountState { balance, mode }.into_word();
         evm.ctx
             .db_mut()
-            .insert_account_storage(STORAGE_GAS_TOKENS_ADDRESS, slot, word)
+            .insert_account_storage(STORAGE_CREDITS_ADDRESS, slot, word)
             .unwrap();
     }
 
     /// Read back the TIP-1060 token balance stored for `owner` from the gas-token contract.
     fn gas_token_balance(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> u64 {
-        let slot = TIP1060StorageGasToken::slot(owner);
+        let slot = TIP1060StorageCredits::slot(owner);
         let word = evm
             .ctx
             .db()
-            .storage_ref(STORAGE_GAS_TOKENS_ADDRESS, slot)
+            .storage_ref(STORAGE_CREDITS_ADDRESS, slot)
             .unwrap();
         AccountState::from_word(word).unwrap().balance
     }
@@ -1971,9 +1971,9 @@ mod tests {
         // `apply_refund` consumes the minted token against that credit, so it lands at 0 while the
         // others keep the minted token at 1.
         let cases = [
-            (StorageGasMode::RefundTokens, 283_268u64, 0u64),
-            (StorageGasMode::PreserveTokens, 513_268u64, 1u64),
-            (StorageGasMode::DirectTokens, 513_268u64, 1u64),
+            (CreditMode::Refund, 283_268u64, 0u64),
+            (CreditMode::Preserve, 513_268u64, 1u64),
+            (CreditMode::Direct, 513_268u64, 1u64),
         ];
 
         for (mode, expected_gas, expected_balance) in cases {
@@ -2062,9 +2062,9 @@ mod tests {
         // - DirectTokens: tx1 → 1 (clear mint); tx2's create *consumes* the token → 0, which is
         //   exactly why the second tx is cheap.
         let cases = [
-            (StorageGasMode::RefundTokens, 282_994u64, 0u64, 0u64),
-            (StorageGasMode::PreserveTokens, 282_994u64, 1u64, 1u64),
-            (StorageGasMode::DirectTokens, 50_894u64, 1u64, 0u64),
+            (CreditMode::Refund, 282_994u64, 0u64, 0u64),
+            (CreditMode::Preserve, 282_994u64, 1u64, 1u64),
+            (CreditMode::Direct, 50_894u64, 1u64, 0u64),
         ];
 
         for (mode, expected_second_gas, expected_credit_tx1, expected_credit_tx2) in cases {

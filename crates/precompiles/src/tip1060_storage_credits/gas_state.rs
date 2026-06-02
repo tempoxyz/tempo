@@ -1,28 +1,28 @@
-//! Backend-agnostic TIP-1060 SSTORE gas-token accounting.
+//! Backend-agnostic TIP-1060 SSTORE storage credits accounting.
 //!
-//! [`sstore_gas_state`] implements the storage gas-token policy that runs
-//! after a storage slot is written. It is driven through the [`GasStateBackend`]
+//! [`sstore_storage_credits`] implements the storage credits policy that runs
+//! after a storage slot is written. It is driven through the [`StorageCreditsBackend`]
 //! trait so the exact same logic can be reused from two places:
 //!
 //! - the opcode-level SSTORE hook in `tempo-revm` (`TempoGasState`), and
 //! - [`EvmPrecompileStorageProvider`](crate::storage::evm::EvmPrecompileStorageProvider)
 //!   so precompile-driven storage writes honor the same accounting.
 
-use super::{AccountState, StorageGasMode, TIP1060StorageGasToken};
+use super::{AccountState, CreditMode, TIP1060StorageCredits};
 use alloy::primitives::{Address, U256};
 use revm::{
     context_interface::cfg::GasParams,
     interpreter::{SStoreResult, StateLoad, instruction_context::GasStateOutcome},
 };
 
-/// Storage and gas operations required by [`sstore_gas_state`].
+/// Storage and gas operations required by [`sstore_storage_credits`].
 ///
-/// All storage operations target the storage gas-token contract; the concrete
+/// All storage operations target the storage credits contract; the concrete
 /// address is supplied by the implementor so this trait stays free of revm
-/// host details. The associated [`Error`](GasStateBackend::Error) lets each
+/// host details. The associated [`Error`](StorageCreditsBackend::Error) lets each
 /// backend surface failures in its own error type (`InstructionResult` for the
 /// opcode path, `TempoPrecompileError` for the precompile path).
-pub trait GasStateBackend {
+pub trait StorageCreditsBackend {
     /// Error type returned by the backend.
     type Error;
 
@@ -41,31 +41,31 @@ pub trait GasStateBackend {
     /// Charges `cost` regular gas, returning [`out_of_gas`](Self::out_of_gas) if insufficient.
     fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error>;
 
-    /// Loads (warms) the storage gas-token contract account.
-    fn load_gas_token_account(&mut self) -> Result<(), Self::Error>;
+    /// Loads (warms) the storage credits contract account.
+    fn load_storage_credit_account(&mut self) -> Result<(), Self::Error>;
 
-    /// SLOAD a slot of the gas-token contract, optionally skipping the cold load.
-    fn gas_token_sload(
+    /// SLOAD a slot of the storage credits contract, optionally skipping the cold load.
+    fn load_credits(
         &mut self,
         key: U256,
         skip_cold_load: bool,
     ) -> Result<StateLoad<U256>, Self::Error>;
 
-    /// SSTORE a slot of the gas-token contract (cold load is never skipped here).
-    fn gas_token_sstore(&mut self, key: U256, value: U256) -> Result<(), Self::Error>;
+    /// SSTORE a slot of the storage credits contract (cold load is never skipped here).
+    fn store_credits(&mut self, key: U256, value: U256) -> Result<(), Self::Error>;
 
-    /// Increments the pending refund count held in the gas-token contract's
+    /// Increments the pending refund count held in the storage credits contract's
     /// transient storage at `key` (TLOAD the current count, add one, TSTORE).
-    fn token_tstore_increment(&mut self, key: U256);
+    fn credit_tstore_increment(&mut self, key: U256);
 }
 
-/// Applies the TIP-1060 storage gas-token policy for a single SSTORE.
+/// Applies the TIP-1060 storage credits policy for a single SSTORE.
 ///
 /// Called after the storage write has been journaled, with `values` describing
 /// the original/present/new slot values for `owner`. Returns a [`GasStateOutcome`]
 /// telling the caller whether to skip the normal dynamic/state-gas accounting
 /// (`skip_gas`) and/or the refund accounting (`skip_refund`).
-pub fn sstore_gas_state<B: GasStateBackend>(
+pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     backend: &mut B,
     owner: Address,
     values: &SStoreResult,
@@ -90,52 +90,52 @@ pub fn sstore_gas_state<B: GasStateBackend>(
     let warm_storage_read_cost = backend.gas_params().warm_storage_read_cost();
     backend.charge_gas(warm_storage_read_cost)?;
 
-    backend.load_gas_token_account()?;
+    backend.load_storage_credit_account()?;
 
-    let account_slot = TIP1060StorageGasToken::slot(owner);
+    let account_slot = TIP1060StorageCredits::slot(owner);
     let additional_cold_cost = backend.gas_params().cold_storage_additional_cost();
     let skip_cold = backend.remaining_gas() < additional_cold_cost;
-    let storage = backend.gas_token_sload(account_slot, skip_cold)?;
+    let storage = backend.load_credits(account_slot, skip_cold)?;
     if storage.is_cold {
         backend.charge_gas(additional_cold_cost)?;
     }
 
-    let mut gas_token_state =
+    let mut storage_credits =
         AccountState::from_word(storage.data).map_err(|_| B::fatal_external())?;
 
     let mut was_changed = false;
     if is_clear {
-        gas_token_state.balance = gas_token_state.balance.saturating_add(1);
+        storage_credits.balance = storage_credits.balance.saturating_add(1);
         was_changed = true;
     } else {
-        match gas_token_state.mode {
-            StorageGasMode::DirectTokens => {
-                if gas_token_state.balance > 0 {
-                    // Consume the gas token credit and charge 20k for the SSTORE.
+        match storage_credits.mode {
+            CreditMode::Direct => {
+                if storage_credits.balance > 0 {
+                    // Consume the storage credit and charge 20k for the SSTORE.
                     backend.charge_gas(20_000)?;
-                    gas_token_state.balance -= 1;
+                    storage_credits.balance -= 1;
                     was_changed = true;
 
-                    // only if there is token available, skip refund and gas
+                    // only if there is a credit available, skip refund and gas
                     outcome.skip_refund = true;
                     outcome.skip_gas = true;
                 }
                 // If no token is available, leave both regular and state gas enabled so
                 // revm charges the full zero-to-nonzero creation cost after this hook.
             }
-            StorageGasMode::PreserveTokens => {
+            CreditMode::Preserve => {
                 // Do nothing, so revm takes care of gas accounting after this hook.
             }
-            StorageGasMode::RefundTokens => {
+            CreditMode::Refund => {
                 // Skip refund as it will happen at the end of the transaction.
                 outcome.skip_refund = true;
-                backend.token_tstore_increment(account_slot);
+                backend.credit_tstore_increment(account_slot);
             }
         }
     }
 
     if was_changed {
-        backend.gas_token_sstore(account_slot, gas_token_state.into_word())?;
+        backend.store_credits(account_slot, storage_credits.into_word())?;
     }
 
     Ok(outcome)

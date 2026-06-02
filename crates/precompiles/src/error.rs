@@ -22,7 +22,7 @@ use revm::{
 use tempo_contracts::precompiles::{
     AccountKeychainError, AddrRegistryError, FeeManagerError, NonceError, ReceivePolicyGuardError,
     RolesAuthError, SignatureVerifierError, StablecoinDEXError, TIP20ChannelReserveError,
-    TIP20FactoryError, TIP403RegistryError, TIP1060StorageGasTokensError, TIPFeeAMMError,
+    TIP20FactoryError, TIP403RegistryError, TIP1060StorageCreditsError, TIPFeeAMMError,
     UnknownFunctionSelector, ValidatorConfigError, ValidatorConfigV2Error,
 };
 
@@ -95,9 +95,9 @@ pub enum TempoPrecompileError {
     #[error("TIP1028 blocked transfers error: {0:?}")]
     ReceivePolicyGuardError(ReceivePolicyGuardError),
 
-    /// Error from TIP-1060 storage gas tokens precompile
-    #[error("TIP1060 storage gas tokens error: {0:?}")]
-    TIP1060StorageGasTokensError(TIP1060StorageGasTokensError),
+    /// Error from TIP-1060 storage credits precompile
+    #[error("TIP1060 storage credits error: {0:?}")]
+    TIP1060StorageCreditsError(TIP1060StorageCreditsError),
 
     /// Gas limit exceeded during precompile execution.
     #[error("Gas limit exceeded")]
@@ -161,7 +161,7 @@ impl TempoPrecompileError {
             Self::AccountKeychainError(e) => e.selector(),
             Self::SignatureVerifierError(e) => e.selector(),
             Self::ReceivePolicyGuardError(e) => e.selector(),
-            Self::TIP1060StorageGasTokensError(e) => e.selector(),
+            Self::TIP1060StorageCreditsError(e) => e.selector(),
             Self::UnknownFunctionSelector(selector) => *selector,
             Self::Panic(_) => Panic::SELECTOR,
             Self::OutOfGas | Self::Fatal(_) => [0, 0, 0, 0],
@@ -189,7 +189,7 @@ impl TempoPrecompileError {
             | Self::AccountKeychainError(_)
             | Self::SignatureVerifierError(_)
             | Self::ReceivePolicyGuardError(_)
-            | Self::TIP1060StorageGasTokensError(_)
+            | Self::TIP1060StorageCreditsError(_)
             | Self::UnknownFunctionSelector(_) => false,
         }
     }
@@ -238,7 +238,7 @@ impl TempoPrecompileError {
             Self::AccountKeychainError(e) => e.abi_encode().into(),
             Self::SignatureVerifierError(e) => e.abi_encode().into(),
             Self::ReceivePolicyGuardError(e) => e.abi_encode().into(),
-            Self::TIP1060StorageGasTokensError(e) => e.abi_encode().into(),
+            Self::TIP1060StorageCreditsError(e) => e.abi_encode().into(),
             Self::OutOfGas => {
                 return Ok(PrecompileOutput::halt(PrecompileHalt::OutOfGas, reservoir));
             }
@@ -313,7 +313,7 @@ pub fn error_decoder_registry() -> TempoPrecompileErrorRegistry {
     add_errors_to_registry(&mut registry, TempoPrecompileError::ReceivePolicyGuardError);
     add_errors_to_registry(
         &mut registry,
-        TempoPrecompileError::TIP1060StorageGasTokensError,
+        TempoPrecompileError::TIP1060StorageCreditsError,
     );
 
     registry

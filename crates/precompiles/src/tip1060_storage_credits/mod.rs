@@ -1,62 +1,62 @@
-//! State gas token precompile (TIP-1060).
+//! Storage credits precompile (TIP-1060).
 
 pub mod dispatch;
 pub mod gas_state;
 
-pub use gas_state::{GasStateBackend, sstore_gas_state};
+pub use gas_state::{StorageCreditsBackend, sstore_storage_credits};
 
 use crate::{
-    STORAGE_GAS_TOKENS_ADDRESS,
+    STORAGE_CREDITS_ADDRESS,
     error::{Result, TempoPrecompileError},
     storage::{Handler, LayoutCtx, StorableType},
 };
 use alloy::primitives::{Address, U256};
 use tempo_contracts::precompiles::{
-    ITIP1060StorageGasTokens::Mode, TIP1060StorageGasTokensError, TIP1060StorageGasTokensEvent,
+    ITIP1060StorageCredits::Mode, TIP1060StorageCreditsError, TIP1060StorageCreditsEvent,
 };
 use tempo_precompiles_macros::{Storable, contract};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
-pub enum StorageGasMode {
+pub enum CreditMode {
     #[default]
-    RefundTokens,
-    PreserveTokens,
-    DirectTokens,
+    Refund,
+    Preserve,
+    Direct,
 }
 
-impl TryFrom<u8> for StorageGasMode {
+impl TryFrom<u8> for CreditMode {
     type Error = TempoPrecompileError;
 
     fn try_from(value: u8) -> Result<Self> {
         match value {
-            0 => Ok(Self::RefundTokens),
-            1 => Ok(Self::PreserveTokens),
-            2 => Ok(Self::DirectTokens),
-            _ => Err(TIP1060StorageGasTokensError::invalid_mode().into()),
+            0 => Ok(Self::Refund),
+            1 => Ok(Self::Preserve),
+            2 => Ok(Self::Direct),
+            _ => Err(TIP1060StorageCreditsError::invalid_mode().into()),
         }
     }
 }
 
-impl TryFrom<Mode> for StorageGasMode {
+impl TryFrom<Mode> for CreditMode {
     type Error = TempoPrecompileError;
 
     fn try_from(mode: Mode) -> Result<Self> {
         match mode {
-            Mode::RefundTokens => Ok(Self::RefundTokens),
-            Mode::PreserveTokens => Ok(Self::PreserveTokens),
-            Mode::DirectTokens => Ok(Self::DirectTokens),
-            _ => Err(TIP1060StorageGasTokensError::invalid_mode().into()),
+            Mode::Refund => Ok(Self::Refund),
+            Mode::Preserve => Ok(Self::Preserve),
+            Mode::Direct => Ok(Self::Direct),
+            _ => Err(TIP1060StorageCreditsError::invalid_mode().into()),
         }
     }
 }
 
-impl From<StorageGasMode> for Mode {
-    fn from(mode: StorageGasMode) -> Self {
+impl From<CreditMode> for Mode {
+    fn from(mode: CreditMode) -> Self {
         match mode {
-            StorageGasMode::RefundTokens => Self::RefundTokens,
-            StorageGasMode::PreserveTokens => Self::PreserveTokens,
-            StorageGasMode::DirectTokens => Self::DirectTokens,
+            CreditMode::Refund => Self::Refund,
+            CreditMode::Preserve => Self::Preserve,
+            CreditMode::Direct => Self::Direct,
         }
     }
 }
@@ -64,11 +64,11 @@ impl From<StorageGasMode> for Mode {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
 pub struct AccountState {
     pub balance: u64,
-    pub mode: StorageGasMode,
+    pub mode: CreditMode,
 }
 
 impl AccountState {
-    /// Decodes a packed storage gas token state word.
+    /// Decodes a packed storage credit state word.
     ///
     /// Layout:
     /// - bits `0..=63`: token balance (`uint64`)
@@ -92,20 +92,20 @@ impl AccountState {
     }
 }
 
-/// TIP-1060 state gas token precompile, which tracks per-account gas token state.
+/// TIP-1060 storage credits precompile, which tracks per-account storage credit state.
 ///
 /// Unlike the Solidity-compatible `Mapping<Address, GasState>` layout, account state is stored
 /// directly at the account-derived slot: the 20-byte address is left-padded to 32 bytes and used
 /// as the storage key, avoiding hashing on the SSTORE gas-state hook hot path.
 ///
 /// ```text
-/// storage_gas_token_slot = uint256(bytes32(account))
+/// storage_credit_slot = uint256(bytes32(account))
 /// solidity_mapping_slot = keccak256(abi.encode(account, base_slot))
 /// ```
-#[contract(addr = STORAGE_GAS_TOKENS_ADDRESS)]
-pub struct TIP1060StorageGasToken {}
+#[contract(addr = STORAGE_CREDITS_ADDRESS)]
+pub struct TIP1060StorageCredits {}
 
-impl TIP1060StorageGasToken {
+impl TIP1060StorageCredits {
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
@@ -121,10 +121,10 @@ impl TIP1060StorageGasToken {
 
     pub fn set_mode(&mut self, msg_sender: Address, mode: Mode) -> Result<()> {
         let mut state = self.state_of(msg_sender)?;
-        state.mode = StorageGasMode::try_from(mode)?;
+        state.mode = CreditMode::try_from(mode)?;
         self.write_state_of(msg_sender, state)?;
 
-        self.emit_event(TIP1060StorageGasTokensEvent::mode_updated(msg_sender, mode))
+        self.emit_event(TIP1060StorageCreditsEvent::mode_updated(msg_sender, mode))
     }
 
     #[inline]
