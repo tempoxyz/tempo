@@ -232,6 +232,11 @@ impl NonceManager {
     /// Returns the first replay-table storage slot touched by an expiring nonce transaction.
     pub fn expiring_nonce_first_cell_slot(expiring_nonce_hash: B256, valid_before: u64) -> U256 {
         let cell_id = Self::expiring_nonce_cell_id(expiring_nonce_hash, valid_before, 0);
+        Self::expiring_nonce_cell_slot(cell_id)
+    }
+
+    /// Returns the storage slot for a raw replay-table cell id.
+    pub fn expiring_nonce_cell_slot(cell_id: u32) -> U256 {
         Self::new().expiring_nonce_cells[cell_id].slot()
     }
 
