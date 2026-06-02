@@ -4,17 +4,19 @@ use alloy_primitives::{Address, U256};
 use revm::{
     Context, Inspector,
     context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
+    context_interface::host::{StorageCreationMode, StorageGasTokenState, storage_gas_token_slot},
     handler::{
         EthFrame, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult, instructions::EthInstructions,
     },
     inspector::InspectorEvmTr,
     interpreter::{
-        InitialAndFloorGas, InstructionContext, InstructionResult, SStoreResult,
+        Host, InitialAndFloorGas, InstructionContext, InstructionResult, SStoreResult,
         instruction_context::{GasStateOutcome, GasStateTr},
         interpreter::EthInterpreter,
     },
 };
 use tempo_chainspec::hardfork::TempoHardfork;
+use tempo_precompiles::STORAGE_GAS_TOKENS_ADDRESS as GAS_TOKEN;
 
 /// The Tempo EVM context type.
 pub type TempoContext<DB> = Context<TempoBlockEnv, TempoTxEnv, CfgEnv<TempoHardfork>, DB>;
@@ -235,27 +237,110 @@ where
     fn sstore_gas_state(
         context: &mut InstructionContext<'_, TempoContext<DB>, EthInterpreter>,
         owner: Address,
-        vals: &SStoreResult,
+        values: &SStoreResult,
     ) -> Result<GasStateOutcome, InstructionResult> {
-        if vals.is_new_eq_present() {
-            return Ok(GasStateOutcome::default());
+        let mut outcome = GasStateOutcome::default();
+
+        if values.is_new_eq_present() {
+            return Ok(outcome);
         }
 
-        if vals.is_original_zero() && vals.is_present_zero() && !vals.is_new_zero() {
-            let _ = (context, owner);
-            // TODO: consume storage gas token balance for `_owner` and return the
-            // corresponding `GasStateOutcome`.
-            return Ok(GasStateOutcome::default());
+        // 0→x: slot create (charged EIP-8037 state gas today).
+        let is_create = values.new_values_changes_present()
+            && values.is_original_eq_present()
+            && values.is_original_zero();
+        // x→0: slot clear (present non-zero set to zero).
+        let is_clear = values.new_values_changes_present()
+            && values.is_new_zero()
+            && !values.is_present_zero();
+
+        // x→y: return from instruction, nothing to be done.
+        if !(is_create || is_clear) {
+            return Ok(outcome);
         }
 
-        if !vals.is_present_zero() && vals.is_new_zero() {
-            let _ = (context, owner);
-            // TODO: mint/refill storage gas token balance for `_owner` and return the
-            // corresponding `GasStateOutcome`.
-            return Ok(GasStateOutcome::default());
+        // Load token_state for the contract
+        let warm_storage_read_cost = context.host.gas_params().warm_storage_read_cost();
+        if !context
+            .interpreter
+            .gas
+            .record_regular_cost(warm_storage_read_cost)
+        {
+            return Err(InstructionResult::OutOfGas);
         }
 
-        Ok(GasStateOutcome::default())
+        context
+            .host
+            .load_account_info_skip_cold_load(GAS_TOKEN, false, false)?;
+
+        let token_state_slot = storage_gas_token_slot(owner);
+        let additional_cold_cost = context.host.gas_params().cold_storage_additional_cost();
+        let skip_cold = context.interpreter.gas.remaining() < additional_cold_cost;
+        let storage = context
+            .host
+            .sload_skip_cold_load(GAS_TOKEN, token_state_slot, skip_cold)?;
+        if storage.is_cold
+            && !context
+                .interpreter
+                .gas
+                .record_regular_cost(additional_cold_cost)
+        {
+            return Err(InstructionResult::OutOfGas);
+        }
+
+        let mut token_state = StorageGasTokenState::from(storage.data);
+        let mut was_changed = false;
+
+        if is_clear {
+            token_state.gas_token_balance = token_state.gas_token_balance.saturating_add(1);
+            was_changed = true;
+        } else {
+            match token_state.storage_creation_mode {
+                StorageCreationMode::DirectTokens => {
+                    outcome.skip_refund = true;
+                    outcome.skip_regular_gas = true;
+
+                    if token_state.gas_token_balance > 0 {
+                        token_state.gas_token_balance -= 1;
+                        was_changed = true;
+                        // A consumed token only offsets the EIP-8037 state-gas component.
+                        // Keep `skip_regular_gas` false so revm's normal post-hook SSTORE
+                        // dynamic-gas path charges the 20k residual and any cold-slot surcharge.
+                        outcome.skip_state_gas = true;
+                    }
+                    // If no token is available, leave both regular and state gas enabled so
+                    // revm charges the full zero-to-nonzero creation cost after this hook.
+                }
+                StorageCreationMode::PreserveTokens => {
+                    // Do nothing, so revm takes care of gas accounting after this hook.
+                }
+                StorageCreationMode::RefundTokens => {
+                    // Skip refund as it will happen at the end of the transaction.
+                    outcome.skip_refund = true;
+                    let pending: u64 = context
+                        .host
+                        .tload(GAS_TOKEN, token_state_slot)
+                        .try_into()
+                        .expect("saturates at u64::MAX");
+                    context.host.tstore(
+                        GAS_TOKEN,
+                        token_state_slot,
+                        U256::from(pending.saturating_add(1)),
+                    );
+                }
+            }
+        }
+
+        if was_changed {
+            context.host.sstore_skip_cold_load(
+                GAS_TOKEN,
+                token_state_slot,
+                token_state.into(),
+                false,
+            )?;
+        }
+
+        Ok(outcome)
     }
 }
 
