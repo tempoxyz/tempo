@@ -631,13 +631,7 @@ impl AA2dPool {
                     .aa_transaction_id()
                     .expect("Independent transaction must have AA transaction ID");
                 let tx = self.by_id.get(&id)?;
-                let priority = TempoTipOrdering::default()
-                    .priority(&tx.inner.transaction.transaction, base_fee);
-                Some(PendingTransaction {
-                    submission_id: tx.inner.submission_id,
-                    priority,
-                    transaction: tx.inner.transaction.clone(),
-                })
+                Some(tx.inner.clone_into_pending(base_fee))
             })
             .collect();
 
