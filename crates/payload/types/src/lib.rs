@@ -9,8 +9,8 @@ mod budget;
 use alloy_primitives::{B256, Bytes};
 pub use attrs::TempoPayloadAttributes;
 pub use budget::{
-    MarshalPersistEstimator, marshal_persist_estimate, observe_marshal_persist,
-    observe_validator_validation, validator_validation_estimate,
+    MarshalPersistEstimator, ValidatorValidationEstimator, marshal_persist_estimate,
+    observe_marshal_persist,
 };
 use std::{sync::Arc, time::Duration};
 

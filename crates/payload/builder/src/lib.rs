@@ -65,10 +65,7 @@ use std::{
 };
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_evm::{TempoEvmConfig, TempoNextBlockEnvAttributes, TempoStateAccess, evm::TempoEvm};
-use tempo_payload_types::{
-    TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate,
-    validator_validation_estimate,
-};
+use tempo_payload_types::{TempoBuiltPayload, TempoPayloadAttributes, marshal_persist_estimate};
 use tempo_precompiles::validator_config_v2::ValidatorConfigV2;
 use tempo_primitives::{
     RecoveredSubBlock, SubBlockMetadata, TempoHeader, TempoReceipt, TempoTxEnvelope,
@@ -558,7 +555,7 @@ where
         let payload_build_budget = attributes.payload_build_budget();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
-        let validator_validation = validator_validation_estimate();
+        let validator_validation = attributes.validator_validation_estimate();
         let block_build_stop_reason = loop {
             check_cancel!();
 

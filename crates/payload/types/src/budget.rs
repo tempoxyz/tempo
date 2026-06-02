@@ -1,9 +1,6 @@
 use std::{
     collections::VecDeque,
-    sync::{
-        LazyLock, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
+    sync::atomic::{AtomicU64, Ordering},
     time::Duration,
 };
 use tracing::debug;
@@ -16,8 +13,6 @@ const MIN_SAMPLE_BYTES: usize = 128 * 1024;
 const VALIDATOR_VALIDATION_SAMPLE_WINDOW: usize = 64;
 
 static MARSHAL_PERSIST_NS_PER_BYTE: AtomicU64 = AtomicU64::new(0);
-static VALIDATOR_VALIDATION_SAMPLES: LazyLock<Mutex<VecDeque<u64>>> =
-    LazyLock::new(|| Mutex::new(VecDeque::with_capacity(VALIDATOR_VALIDATION_SAMPLE_WINDOW)));
 
 /// Returns the current estimate of consensus marshal persistence cost.
 ///
@@ -26,15 +21,6 @@ static VALIDATOR_VALIDATION_SAMPLES: LazyLock<Mutex<VecDeque<u64>>> =
 /// decision.
 pub fn marshal_persist_estimate() -> MarshalPersistEstimator {
     MarshalPersistEstimator::from_ns_per_byte(MARSHAL_PERSIST_NS_PER_BYTE.load(Ordering::Relaxed))
-}
-
-/// Returns the current P75 estimate for execution-layer block validation work.
-///
-/// `None` means this node has not yet observed any successful validations. Callers
-/// should fall back to their conservative validator-work estimate in that case.
-pub fn validator_validation_estimate() -> Option<Duration> {
-    let samples = VALIDATOR_VALIDATION_SAMPLES.lock().ok()?;
-    validator_validation_estimate_from_samples(&samples)
 }
 
 /// Records time spent persisting an encoded block through consensus marshal.
@@ -74,45 +60,6 @@ pub fn observe_marshal_persist(block_size_bytes: usize, elapsed: Duration) {
     );
 }
 
-/// Records local time spent validating a block through the execution layer.
-///
-/// The estimate intentionally uses the P75 of recent successful validations. This
-/// is aggressive enough to reclaim budget from faster validator replay paths while
-/// avoiding a single best-case block dominating the next build.
-pub fn observe_validator_validation(elapsed: Duration) {
-    if elapsed == Duration::ZERO {
-        return;
-    }
-
-    let elapsed_nanos = elapsed.as_nanos().min(u128::from(u64::MAX)) as u64;
-    let Ok(mut samples) = VALIDATOR_VALIDATION_SAMPLES.lock() else {
-        return;
-    };
-
-    if samples.len() == VALIDATOR_VALIDATION_SAMPLE_WINDOW {
-        samples.pop_front();
-    }
-    samples.push_back(elapsed_nanos);
-
-    debug!(
-        elapsed = ?elapsed,
-        estimated_p75 = ?validator_validation_estimate_from_samples(&samples),
-        samples = samples.len(),
-        "updated validator validation estimate"
-    );
-}
-
-fn validator_validation_estimate_from_samples(samples: &VecDeque<u64>) -> Option<Duration> {
-    if samples.is_empty() {
-        return None;
-    }
-
-    let mut sorted = samples.iter().copied().collect::<Vec<_>>();
-    sorted.sort_unstable();
-    let index = ((sorted.len() * 3).div_ceil(4)).saturating_sub(1);
-    Some(Duration::from_nanos(sorted[index]))
-}
-
 /// Point-in-time marshal persistence cost per encoded block byte.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct MarshalPersistEstimator {
@@ -129,6 +76,62 @@ impl MarshalPersistEstimator {
     pub fn estimate(self, block_size_bytes: usize) -> Duration {
         let nanos = u128::from(self.ns_per_byte).saturating_mul(block_size_bytes as u128);
         Duration::from_nanos(nanos.min(u128::from(u64::MAX)) as u64)
+    }
+}
+
+/// Tracks recent local execution-layer block validation durations.
+///
+/// The estimate intentionally uses the P75 of recent successful validations. This
+/// is aggressive enough to reclaim budget from faster validator replay paths while
+/// avoiding a single best-case block dominating the next build.
+#[derive(Clone, Debug)]
+pub struct ValidatorValidationEstimator {
+    samples: VecDeque<u64>,
+}
+
+impl Default for ValidatorValidationEstimator {
+    fn default() -> Self {
+        Self {
+            samples: VecDeque::with_capacity(VALIDATOR_VALIDATION_SAMPLE_WINDOW),
+        }
+    }
+}
+
+impl ValidatorValidationEstimator {
+    /// Records local time spent validating a block through the execution layer.
+    pub fn observe(&mut self, elapsed: Duration) {
+        if elapsed == Duration::ZERO {
+            return;
+        }
+
+        let elapsed_nanos = elapsed.as_nanos().min(u128::from(u64::MAX)) as u64;
+        if self.samples.len() == VALIDATOR_VALIDATION_SAMPLE_WINDOW {
+            self.samples.pop_front();
+        }
+        self.samples.push_back(elapsed_nanos);
+
+        debug!(
+            elapsed = ?elapsed,
+            estimated_p75 = ?self.estimate(),
+            samples = self.samples.len(),
+            "updated validator validation estimate"
+        );
+    }
+
+    /// Returns the current P75 estimate for execution-layer block validation work.
+    ///
+    /// `None` means this node has not yet observed any successful validations.
+    /// Callers should fall back to their conservative validator-work estimate in
+    /// that case.
+    pub fn estimate(&self) -> Option<Duration> {
+        if self.samples.is_empty() {
+            return None;
+        }
+
+        let mut sorted = self.samples.iter().copied().collect::<Vec<_>>();
+        sorted.sort_unstable();
+        let index = ((sorted.len() * 3).div_ceil(4)).saturating_sub(1);
+        Some(Duration::from_nanos(sorted[index]))
     }
 }
 
@@ -157,18 +160,16 @@ mod tests {
 
     #[test]
     fn validator_validation_estimate_uses_recent_p75() {
-        let mut samples = VecDeque::from([10, 20, 30, 40]);
-        assert_eq!(
-            validator_validation_estimate_from_samples(&samples),
-            Some(Duration::from_nanos(30))
-        );
+        let mut estimator = ValidatorValidationEstimator {
+            samples: VecDeque::from([10, 20, 30, 40]),
+        };
+        assert_eq!(estimator.estimate(), Some(Duration::from_nanos(30)));
 
-        samples = (1..=VALIDATOR_VALIDATION_SAMPLE_WINDOW as u64).collect();
-        samples.pop_front();
-        samples.push_back(10_000);
-        assert_eq!(
-            validator_validation_estimate_from_samples(&samples),
-            Some(Duration::from_nanos(49))
-        );
+        estimator = ValidatorValidationEstimator::default();
+        for elapsed in 1..=VALIDATOR_VALIDATION_SAMPLE_WINDOW as u64 {
+            estimator.observe(Duration::from_nanos(elapsed));
+        }
+        estimator.observe(Duration::from_nanos(10_000));
+        assert_eq!(estimator.estimate(), Some(Duration::from_nanos(49)));
     }
 }
