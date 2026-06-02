@@ -672,7 +672,27 @@ where
 
                 if candidates.is_empty() {
                     self.metrics.inc_blockstm_tip20_fallback("empty_batch");
+                    let blockstm_elapsed = collect_start.elapsed();
+                    info!(
+                        target: "payload_builder",
+                        stop_reason = blockstm_collection_stop_reason.as_str(),
+                        ?blockstm_elapsed,
+                        "BlockSTM TIP-20 fast path collected no candidates"
+                    );
                 } else {
+                    let candidate_count = candidates.len();
+                    let collect_elapsed = collect_start.elapsed();
+                    info!(
+                        target: "payload_builder",
+                        candidate_count,
+                        stop_reason = blockstm_collection_stop_reason.as_str(),
+                        projected_cumulative_gas_used,
+                        projected_non_payment_gas_used,
+                        projected_block_size_used,
+                        ?collect_elapsed,
+                        "collected BlockSTM TIP-20 transfer candidates"
+                    );
+
                     let receipt_start = executor.receipts().len();
                     let payment_flags = candidates
                         .iter()
@@ -700,15 +720,28 @@ where
                     ) {
                         Ok(stats) => {
                             self.metrics.inc_blockstm_tip20_succeeded();
+                            let blockstm_elapsed = collect_start.elapsed();
                             self.metrics
                                 .blockstm_tip20_duration_seconds
-                                .record(collect_start.elapsed());
+                                .record(blockstm_elapsed);
                             self.metrics
                                 .blockstm_tip20_transaction_count
                                 .record(stats.transaction_count as f64);
                             self.metrics
                                 .blockstm_tip20_retry_count
                                 .record(stats.retry_count as f64);
+                            info!(
+                                target: "payload_builder",
+                                transaction_count = stats.transaction_count,
+                                action_count = stats.action_count,
+                                read_set_count = stats.read_set_count,
+                                write_set_count = stats.write_set_count,
+                                retry_count = stats.retry_count,
+                                receipt_count = executor.receipts().len().saturating_sub(receipt_start),
+                                collection_stop_reason = blockstm_collection_stop_reason.as_str(),
+                                ?blockstm_elapsed,
+                                "completed BlockSTM TIP-20 fast path"
+                            );
 
                             for (pool_tx, receipt) in candidates
                                 .into_iter()
@@ -737,12 +770,36 @@ where
                         }
                         Err(Tip20TransferBlockstmBatchError::Fallback(reason)) => {
                             self.metrics.inc_blockstm_tip20_fallback(reason.as_str());
+                            let blockstm_elapsed = collect_start.elapsed();
+                            info!(
+                                target: "payload_builder",
+                                reason = reason.as_str(),
+                                buffered_transactions = candidate_count,
+                                collection_stop_reason = blockstm_collection_stop_reason.as_str(),
+                                ?collect_elapsed,
+                                ?blockstm_elapsed,
+                                "BlockSTM TIP-20 fast path falling back to sequential replay"
+                            );
                             blockstm_buffer = candidates.into();
                         }
                         Err(Tip20TransferBlockstmBatchError::Execution {
                             transaction_index,
                             error,
                         }) => {
+                            let buffered_transactions =
+                                candidate_count.saturating_sub(transaction_index.saturating_add(1));
+                            let blockstm_elapsed = collect_start.elapsed();
+                            info!(
+                                target: "payload_builder",
+                                transaction_index,
+                                committed_prefix = transaction_index,
+                                buffered_transactions,
+                                collection_stop_reason = blockstm_collection_stop_reason.as_str(),
+                                ?collect_elapsed,
+                                ?blockstm_elapsed,
+                                ?error,
+                                "BlockSTM TIP-20 synthetic execution stopped; replaying suffix sequentially"
+                            );
                             for (pool_tx, receipt) in candidates
                                 .iter()
                                 .take(transaction_index)
@@ -795,6 +852,14 @@ where
 
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
+        let blockstm_fallback_replay_total = blockstm_buffer.len();
+        if blockstm_fallback_replay_total > 0 {
+            info!(
+                target: "payload_builder",
+                buffered_transactions = blockstm_fallback_replay_total,
+                "starting BlockSTM TIP-20 fallback sequential replay"
+            );
+        }
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
@@ -818,17 +883,37 @@ where
                         block_size_used,
                     ) {
                         let estimated_marshal_persist = marshal_persist.estimate(block_size_used);
-                        debug!(
-                            target: "payload_builder",
-                            ?elapsed,
-                            ?normal_transaction_fill_idle_elapsed,
-                            ?build_budget,
-                            ?estimated_marshal_persist,
-                            block_size_used,
-                            build_time_multiplier = build_time_multiplier as f64
-                                / BUILD_TIME_MULTIPLIER_SCALE as f64,
-                            "stopping pool transaction execution before payload build budget is exhausted"
-                        );
+                        let blockstm_buffered_transactions_remaining = blockstm_buffer.len();
+                        if blockstm_buffered_transactions_remaining > 0 {
+                            info!(
+                                target: "payload_builder",
+                                ?elapsed,
+                                ?normal_transaction_fill_idle_elapsed,
+                                ?build_budget,
+                                ?estimated_marshal_persist,
+                                block_size_used,
+                                build_time_multiplier = build_time_multiplier as f64
+                                    / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                                blockstm_fallback_replay_total,
+                                blockstm_fallback_replayed =
+                                    blockstm_fallback_replay_total
+                                        .saturating_sub(blockstm_buffered_transactions_remaining),
+                                blockstm_buffered_transactions_remaining,
+                                "stopping BlockSTM TIP-20 fallback replay before payload build budget is exhausted"
+                            );
+                        } else {
+                            debug!(
+                                target: "payload_builder",
+                                ?elapsed,
+                                ?normal_transaction_fill_idle_elapsed,
+                                ?build_budget,
+                                ?estimated_marshal_persist,
+                                block_size_used,
+                                build_time_multiplier = build_time_multiplier as f64
+                                    / BUILD_TIME_MULTIPLIER_SCALE as f64,
+                                "stopping pool transaction execution before payload build budget is exhausted"
+                            );
+                        }
                         break BlockBuildStopReason::BuildBudget;
                     }
                 }
@@ -1274,6 +1359,9 @@ where
         } else {
             pool_transactions_included as f64 / pool_transactions_yielded as f64
         };
+        let blockstm_fallback_buffer_remaining = blockstm_buffer.len();
+        let blockstm_fallback_replayed =
+            blockstm_fallback_replay_total.saturating_sub(blockstm_fallback_buffer_remaining);
         self.metrics
             .pool_transactions_yielded
             .record(pool_transactions_yielded as f64);
@@ -1333,6 +1421,9 @@ where
             pool_transactions_included,
             invalid_pool_transaction_execution_attempts,
             pool_transactions_inclusion_ratio,
+            blockstm_fallback_replay_total,
+            blockstm_fallback_replayed,
+            blockstm_fallback_buffer_remaining,
             subblock_transactions,
             total_transactions,
             ?elapsed,
