@@ -19,4 +19,5 @@ pub use network_identity::NetworkIdentity;
 pub use spec::TempoChainSpec;
 
 pub mod constants;
+pub mod features;
 pub mod hardfork;
