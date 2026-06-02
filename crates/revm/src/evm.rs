@@ -298,15 +298,16 @@ where
             match token_state.storage_creation_mode {
                 StorageCreationMode::DirectTokens => {
                     outcome.skip_refund = true;
+                    outcome.skip_state_gas = true;
                     outcome.skip_regular_gas = true;
 
                     if token_state.gas_token_balance > 0 {
+                        // Consume the gas token credit and charge 20k for the SSTORE.
+                        if !context.interpreter.gas.record_regular_cost(20_000) {
+                            return Err(InstructionResult::OutOfGas);
+                        }
                         token_state.gas_token_balance -= 1;
                         was_changed = true;
-                        // A consumed token only offsets the EIP-8037 state-gas component.
-                        // Keep `skip_regular_gas` false so revm's normal post-hook SSTORE
-                        // dynamic-gas path charges the 20k residual and any cold-slot surcharge.
-                        outcome.skip_state_gas = true;
                     }
                     // If no token is available, leave both regular and state gas enabled so
                     // revm charges the full zero-to-nonzero creation cost after this hook.
