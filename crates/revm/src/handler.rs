@@ -68,7 +68,6 @@ use crate::{
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
-    gas_params::SSTORE_SET_COST,
     tip1060,
 };
 

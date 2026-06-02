@@ -247,11 +247,9 @@ where
         }
 
         // 0→x: slot create (charged EIP-8037 state gas today).
-        let is_create = values.is_original_eq_present()
-            && values.is_original_zero();
+        let is_create = values.is_original_eq_present() && values.is_original_zero();
         // x→0: slot clear (present non-zero set to zero).
-        let is_clear = values.is_new_zero()
-            && !values.is_present_zero();
+        let is_clear = values.is_new_zero() && !values.is_present_zero();
 
         // x→y: return from instruction, nothing to be done.
         if !(is_create || is_clear) {
