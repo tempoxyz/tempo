@@ -588,7 +588,8 @@ where
             keys.extend(plan.write_set());
             caller_accounts.insert(plan.nonce.caller());
         }
-        let accounts = keys.iter().map(|key| key.address).collect::<HashSet<_>>();
+        let mut accounts = keys.iter().map(|key| key.address).collect::<HashSet<_>>();
+        accounts.extend(caller_accounts.iter().copied());
 
         let mut storage = HashMap::with_capacity(keys.len());
         for key in keys {
@@ -1740,7 +1741,10 @@ mod tests {
     use alloy_evm::FromRecoveredTx;
     use alloy_primitives::{Signature, address};
     use alloy_sol_types::SolCall;
-    use reth_revm::{State, state::AccountInfo};
+    use reth_revm::{
+        State,
+        state::{AccountInfo, Bytecode},
+    };
     use revm::database::states::plain_account::PlainStorage;
     use tempo_primitives::{
         MasterId, TempoSignature, TempoTransaction, UserTag,
@@ -1792,10 +1796,18 @@ mod tests {
         calls: Vec<Call>,
         nonce_key: U256,
     ) -> (Recovered<TempoTxEnvelope>, TempoTxEnv) {
+        aa_blockstm_tx_with_gas(calls, nonce_key, 100_000)
+    }
+
+    fn aa_blockstm_tx_with_gas(
+        calls: Vec<Call>,
+        nonce_key: U256,
+        gas_limit: u64,
+    ) -> (Recovered<TempoTxEnvelope>, TempoTxEnv) {
         let tx = TempoTransaction {
             chain_id: 1,
             calls,
-            gas_limit: 100_000,
+            gas_limit,
             nonce_key,
             max_fee_per_gas: 1,
             max_priority_fee_per_gas: 1,
@@ -1828,6 +1840,10 @@ mod tests {
 
     fn policy_word(policy_id: u64) -> U256 {
         U256::from(policy_id) << (tip20_slots::TRANSFER_POLICY_ID_OFFSET * 8)
+    }
+
+    fn precompile_marker_info() -> AccountInfo {
+        AccountInfo::default().with_code(Bytecode::new_legacy([0xef].into()))
     }
 
     fn assert_fallback(
@@ -2338,6 +2354,132 @@ mod tests {
 
         let logs = synthetic_tip20_logs(&plan, U256::ZERO);
         assert_eq!(logs[0].address, NONCE_PRECOMPILE_ADDRESS);
+    }
+
+    #[test]
+    fn non_expiring_2d_nonce_batch_completes_synthetic_success_path() {
+        let beneficiary = address!("10000000000000000000000000000000000000d6");
+        let batch_len = 64usize;
+        let mut txs = Vec::with_capacity(batch_len);
+        let mut plans = Vec::with_capacity(batch_len);
+
+        for i in 0..batch_len {
+            let recipient = Address::from_word(B256::with_last_byte(0x80 + i as u8));
+            let nonce_key = U256::from(u64::MAX - i as u64);
+            let (recovered, tx_env) = aa_blockstm_tx_with_gas(
+                vec![transfer_call(recipient, U256::from(1))],
+                nonce_key,
+                300_000,
+            );
+            let tx = Tip20TransferBlockstmTx {
+                tx_env: tx_env.clone(),
+                recovered: &recovered,
+                fee_token: TOKEN,
+            };
+            plans.push(build_tip20_transfer_plan(&tx, TOKEN, beneficiary, 1, 0).unwrap());
+            txs.push((recovered, tx_env));
+        }
+
+        let base_storage = HashMap::from([(
+            balance_key(TOKEN, SENDER),
+            encode_balance(U256::from(100_000_000), REWARD_FLAG_OPTED_OUT, true),
+        )]);
+        let base_state = Tip20BlockstmBaseState {
+            storage: base_storage.clone(),
+            accounts: HashMap::new(),
+        };
+
+        let execution =
+            execute_tip20_transfer_plans_blockstm(&plans, &base_storage, true).unwrap();
+        assert!(execution.retry_count > 0);
+        assert_eq!(execution.txs.len(), batch_len);
+
+        let mut settled = execution.txs;
+        let mut cfg = CfgEnv::<TempoHardfork>::default();
+        cfg.spec = TempoHardfork::T6;
+        for (index, execution) in settled.iter_mut().enumerate() {
+            let plan = &plans[index];
+            let tx_env = &txs[index].1;
+            let gas = synthetic_tip20_result_gas(tx_env, plan, execution, &base_state, &cfg)
+                .unwrap();
+            let actual_fee = synthetic_actual_fee(tx_env, gas.tx_gas_used(), 1, true);
+            settle_actual_fee(plan, execution, actual_fee, true).unwrap();
+
+            let nonce_key = match plan.nonce {
+                Tip20BlockstmNonceAction::TwoDimensional { nonce_key, .. } => nonce_key,
+                Tip20BlockstmNonceAction::Protocol { .. } => panic!("expected 2D nonce action"),
+            };
+            assert_eq!(
+                execution.writes[&two_dimensional_nonce_key(SENDER, nonce_key)],
+                U256::ONE
+            );
+        }
+    }
+
+    #[test]
+    fn public_blockstm_batch_commits_non_expiring_2d_nonces() {
+        let chainspec = test_chainspec();
+        let batch_len = 16usize;
+        let mut db = State::builder().with_bundle_update().build();
+        db.insert_account_with_storage(
+            TOKEN,
+            precompile_marker_info(),
+            PlainStorage::from_iter([
+                (
+                    tip20_slots::TRANSFER_POLICY_ID,
+                    policy_word(ALLOW_ALL_POLICY_ID),
+                ),
+                (
+                    balance_key(TOKEN, SENDER).slot,
+                    encode_balance(U256::from(100_000_000), REWARD_FLAG_OPTED_OUT, true),
+                ),
+            ]),
+        );
+        db.insert_account(NONCE_PRECOMPILE_ADDRESS, precompile_marker_info());
+        db.insert_account(TIP_FEE_MANAGER_ADDRESS, precompile_marker_info());
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(1_000_000_000)
+            .build(db, &chainspec);
+
+        let mut txs = Vec::with_capacity(batch_len);
+        let mut nonce_keys = Vec::with_capacity(batch_len);
+        for i in 0..batch_len {
+            let recipient = Address::from_word(B256::with_last_byte(0xa0 + i as u8));
+            let nonce_key = U256::from(u64::MAX - i as u64);
+            let (recovered, tx_env) = aa_blockstm_tx_with_gas(
+                vec![transfer_call(recipient, U256::from(1))],
+                nonce_key,
+                300_000,
+            );
+            nonce_keys.push(nonce_key);
+            txs.push((recovered, tx_env));
+        }
+
+        let batch = txs
+            .iter()
+            .map(|(recovered, tx_env)| Tip20TransferBlockstmTx {
+                tx_env: tx_env.clone(),
+                recovered,
+                fee_token: TOKEN,
+            })
+            .collect();
+        let mut result_count = 0;
+        let stats = executor
+            .execute_tip20_transfer_blockstm_batch(batch, TOKEN, |_, result| {
+                assert!(result.block_gas_used() > 0);
+                assert!(result.validator_fee() > U256::ZERO);
+                result_count += 1;
+            })
+            .unwrap();
+
+        assert_eq!(stats.transaction_count, batch_len);
+        assert_eq!(stats.action_count, batch_len);
+        assert_eq!(result_count, batch_len);
+        assert_eq!(executor.receipts().len(), batch_len);
+        for nonce_key in nonce_keys {
+            let key = two_dimensional_nonce_key(SENDER, nonce_key);
+            assert_eq!(executor.read_storage(key.address, key.slot).unwrap(), U256::ONE);
+        }
     }
 
     #[test]
