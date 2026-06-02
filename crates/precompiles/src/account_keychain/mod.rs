@@ -1670,6 +1670,7 @@ mod tests {
 
     fn native_multisig_config() -> InitMultisig {
         InitMultisig {
+            salt: B256::ZERO,
             threshold: 1,
             owners: vec![
                 MultisigOwner {

@@ -2766,6 +2766,7 @@ mod tests {
 
     fn native_multisig_config() -> InitMultisig {
         InitMultisig {
+            salt: B256::ZERO,
             threshold: 1,
             owners: vec![
                 MultisigOwner {
@@ -3103,6 +3104,7 @@ mod tests {
         signers.sort_by_key(|signer| signer.address());
 
         let config = InitMultisig {
+            salt: B256::repeat_byte(0x44),
             threshold: 1,
             owners: signers
                 .iter()
