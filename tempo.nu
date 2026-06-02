@@ -14,6 +14,7 @@ const BENCH_WORKTREES_DIR = ".bench-worktrees"
 const BENCH_RESULTS_DIR = "bench-results"
 const MINIO_BUCKET = "minio/tempo-binaries"
 const BENCH_META_SUBDIR = ".bench-meta"
+const LOCALNET_SIGNING_KEY_SECRET = "tempo-localnet-signing-key-secret"
 
 # TIP20 token IDs created by localnet genesis (pathUSD, AlphaUSD, BetaUSD, ThetaUSD)
 const TIP20_TOKEN_IDS = [0, 1, 2, 3]
@@ -30,6 +31,18 @@ def port-to-node-index [port: int] {
 # Build log filter args based on --loud flag
 def log-filter-args [loud: bool] {
     if $loud { [] } else { ["--log.stdout.filter" "info"] }
+}
+
+def prepare-localnet-consensus-secret-fifo [node_dir: string] {
+    let secret_path = $"($node_dir)/consensus-secret.fifo"
+    rm -f $secret_path
+    mkfifo $secret_path
+    chmod 600 $secret_path
+    $secret_path
+}
+
+def start-localnet-consensus-secret-writer [secret_path: string] {
+    job spawn { $"($LOCALNET_SIGNING_KEY_SECRET)\n" | save -f $secret_path } | ignore
 }
 
 # Wrap command with samply if enabled
@@ -1912,11 +1925,12 @@ def run-consensus-node [
     let port = ($addr | split row ":" | get 1 | into int)
     let node_index = (port-to-node-index $port)
     let http_port = 8545 + $node_index
+    let consensus_secret = (prepare-localnet-consensus-secret-fifo $node_dir)
 
     let log_dir = $"($LOGS_DIR)/($addr)"
     mkdir $log_dir
 
-    let args = (build-consensus-node-args $node_dir $genesis_path $trusted_peers $port $log_dir)
+    let args = (build-consensus-node-args $node_dir $genesis_path $trusted_peers $port $log_dir $consensus_secret)
         | append (log-filter-args $loud)
         | append $extra_args
 
@@ -1925,25 +1939,27 @@ def run-consensus-node [
     print $"  Node ($addr) -> http://localhost:($http_port)(if $background { '' } else { ' (foreground)' })"
 
     if $background {
+        start-localnet-consensus-secret-writer $consensus_secret
         job spawn { sh -c $"($cmd | str join ' ') 2>&1" | lines | each { |line| print $"[($addr)] ($line)" } }
     } else {
         print $"  Running: ($cmd | str join ' ')"
+        start-localnet-consensus-secret-writer $consensus_secret
         run-external ($cmd | first) ...($cmd | skip 1)
     }
 }
 
 # Build full node arguments for consensus mode
-def build-consensus-node-args [node_dir: string, genesis_path: string, trusted_peers: string, port: int, log_dir: string] {
+def build-consensus-node-args [node_dir: string, genesis_path: string, trusted_peers: string, port: int, log_dir: string, consensus_secret: string] {
     let node_index = (port-to-node-index $port)
     let http_port = 8545 + $node_index
     let reth_metrics_port = 9001 + $node_index
 
     (build-base-args $genesis_path $node_dir $log_dir "0.0.0.0" $http_port $reth_metrics_port)
-        | append (build-consensus-args $node_dir $trusted_peers $port)
+        | append (build-consensus-args $node_dir $trusted_peers $port $consensus_secret)
 }
 
 # Build consensus mode specific arguments
-def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
+def build-consensus-args [node_dir: string, trusted_peers: string, port: int, consensus_secret: string] {
     let addr = ($node_dir | path basename)
     let ip = ($addr | split row ":" | get 0)
     let signing_key = $"($node_dir)/signing.key"
@@ -1957,6 +1973,7 @@ def build-consensus-args [node_dir: string, trusted_peers: string, port: int] {
 
     [
         "--consensus.signing-key" $signing_key
+        "--consensus.secret" $consensus_secret
         "--consensus.signing-share" $signing_share
         "--consensus.listen-address" $"($ip):($port)"
         "--consensus.metrics-address" $"0.0.0.0:($metrics_port)"
