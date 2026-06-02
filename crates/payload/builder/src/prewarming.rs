@@ -4,7 +4,7 @@ use std::sync::{
     mpsc::{self, Receiver, Sender},
 };
 
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{Address, B256, Bytes, TxKind, U256, map::HashSet};
 use alloy_sol_types::SolInterface;
 use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
 use reth_evm::{Database, Evm, EvmEnvFor};
@@ -336,7 +336,7 @@ where
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 enum StorageTouch {
     Account(Address),
     Storage { address: Address, slot: U256 },
@@ -354,6 +354,30 @@ impl StorageTouch {
         }
 
         Ok(())
+    }
+}
+
+struct UniqueTouches {
+    touches: Vec<StorageTouch>,
+    seen: HashSet<StorageTouch>,
+}
+
+impl UniqueTouches {
+    fn new() -> Self {
+        Self {
+            touches: Vec::with_capacity(32),
+            seen: HashSet::with_capacity_and_hasher(32, Default::default()),
+        }
+    }
+
+    fn push(&mut self, touch: StorageTouch) {
+        if self.seen.insert(touch) {
+            self.touches.push(touch);
+        }
+    }
+
+    fn into_vec(self) -> Vec<StorageTouch> {
+        self.touches
     }
 }
 
@@ -393,7 +417,7 @@ fn storage_touches_for_transaction(
     tx: &BestTransaction,
     fee_recipient: Address,
 ) -> Vec<StorageTouch> {
-    let mut touches = Vec::new();
+    let mut touches = UniqueTouches::new();
     let sender = tx.transaction.sender();
     let fee_payer = tx.transaction.inner().fee_payer(sender).unwrap_or(sender);
     let fee_token = tx.transaction.resolved_fee_token().unwrap_or_else(|| {
@@ -414,10 +438,10 @@ fn storage_touches_for_transaction(
 
     add_expiring_nonce_touches(&mut touches, tx);
 
-    touches
+    touches.into_vec()
 }
 
-fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fee_payer: Address) {
+fn add_tip20_fee_touches(touches: &mut UniqueTouches, fee_token: Address, fee_payer: Address) {
     if !fee_token.is_tip20() {
         return;
     }
@@ -429,7 +453,7 @@ fn add_tip20_fee_touches(touches: &mut Vec<StorageTouch>, fee_token: Address, fe
 }
 
 fn add_tip20_call_touches(
-    touches: &mut Vec<StorageTouch>,
+    touches: &mut UniqueTouches,
     sender: Address,
     kind: TxKind,
     input: &[u8],
@@ -492,7 +516,7 @@ fn add_tip20_call_touches(
     }
 }
 
-fn add_tip20_common_touches(touches: &mut Vec<StorageTouch>, token: Address) {
+fn add_tip20_common_touches(touches: &mut UniqueTouches, token: Address) {
     add_account_touch(touches, token);
     add_storage_touch(touches, token, tip20_slots::CURRENCY);
     add_storage_touch(touches, token, tip20_slots::PAUSED);
@@ -501,12 +525,12 @@ fn add_tip20_common_touches(touches: &mut Vec<StorageTouch>, token: Address) {
     add_storage_touch(touches, token, tip20_slots::OPTED_IN_SUPPLY);
 }
 
-fn add_tip20_balance_touch(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
+fn add_tip20_balance_touch(touches: &mut UniqueTouches, token: Address, account: Address) {
     add_storage_touch(touches, token, account.mapping_slot(tip20_slots::BALANCES));
 }
 
 fn add_tip20_allowance_touch(
-    touches: &mut Vec<StorageTouch>,
+    touches: &mut UniqueTouches,
     token: Address,
     owner: Address,
     spender: Address,
@@ -518,7 +542,7 @@ fn add_tip20_allowance_touch(
     );
 }
 
-fn add_tip20_reward_touches(touches: &mut Vec<StorageTouch>, token: Address, account: Address) {
+fn add_tip20_reward_touches(touches: &mut UniqueTouches, token: Address, account: Address) {
     let base_slot = account.mapping_slot(tip20_slots::USER_REWARD_INFO);
     add_storage_touch(touches, token, base_slot);
     add_storage_touch(touches, token, base_slot + U256::from(1));
@@ -526,7 +550,7 @@ fn add_tip20_reward_touches(touches: &mut Vec<StorageTouch>, token: Address, acc
 }
 
 fn add_fee_manager_touches(
-    touches: &mut Vec<StorageTouch>,
+    touches: &mut UniqueTouches,
     fee_recipient: Address,
     fee_token: Address,
 ) {
@@ -543,7 +567,7 @@ fn add_fee_manager_touches(
     );
 }
 
-fn add_expiring_nonce_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransaction) {
+fn add_expiring_nonce_touches(touches: &mut UniqueTouches, tx: &BestTransaction) {
     let Some(expiring_nonce_slot) = tx.transaction.expiring_nonce_slot() else {
         return;
     };
@@ -557,19 +581,13 @@ fn add_expiring_nonce_touches(touches: &mut Vec<StorageTouch>, tx: &BestTransact
     );
 }
 
-fn add_account_touch(touches: &mut Vec<StorageTouch>, address: Address) {
-    add_unique_touch(touches, StorageTouch::Account(address));
+fn add_account_touch(touches: &mut UniqueTouches, address: Address) {
+    touches.push(StorageTouch::Account(address));
 }
 
-fn add_storage_touch(touches: &mut Vec<StorageTouch>, address: Address, slot: U256) {
+fn add_storage_touch(touches: &mut UniqueTouches, address: Address, slot: U256) {
     add_account_touch(touches, address);
-    add_unique_touch(touches, StorageTouch::Storage { address, slot });
-}
-
-fn add_unique_touch(touches: &mut Vec<StorageTouch>, touch: StorageTouch) {
-    if !touches.contains(&touch) {
-        touches.push(touch);
-    }
+    touches.push(StorageTouch::Storage { address, slot });
 }
 
 /// Command sent by [`BestTransactionsPrewarming`] consumer.
@@ -830,11 +848,11 @@ mod tests {
         let sender = Address::random();
         let recipient = Address::random();
         let token = DEFAULT_FEE_TOKEN;
-        let mut touches = Vec::new();
+        let mut unique_touches = UniqueTouches::new();
 
-        add_tip20_fee_touches(&mut touches, token, sender);
+        add_tip20_fee_touches(&mut unique_touches, token, sender);
         add_tip20_call_touches(
-            &mut touches,
+            &mut unique_touches,
             sender,
             TxKind::Call(token),
             &ITIP20::transferCall {
@@ -844,6 +862,7 @@ mod tests {
             .abi_encode(),
         );
 
+        let touches = unique_touches.into_vec();
         for (index, touch) in touches.iter().enumerate() {
             assert!(
                 !touches[index + 1..].contains(touch),
