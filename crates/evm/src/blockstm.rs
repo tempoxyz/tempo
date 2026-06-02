@@ -808,10 +808,9 @@ fn execute_tip20_transfer_plan_with_deltas(
                 token,
                 fee_payer,
                 amount,
-            } => transfer_balance(
+            } => reserve_fee_balance(
                 *token,
                 *fee_payer,
-                TIP_FEE_MANAGER_ADDRESS,
                 *amount,
                 is_t6,
                 &mut execution,
@@ -890,16 +889,7 @@ fn settle_actual_fee_with_deltas(
 
     let refund = max_amount - actual_fee;
     if !refund.is_zero() {
-        transfer_balance(
-            token,
-            TIP_FEE_MANAGER_ADDRESS,
-            fee_payer,
-            refund,
-            is_t6,
-            execution,
-            ledger,
-            tx_index,
-        )?;
+        refund_fee_balance(token, fee_payer, refund, is_t6, execution, ledger, tx_index)?;
     }
 
     let collected_key = collected_fees_key(beneficiary, token);
@@ -994,12 +984,100 @@ impl<'a> Tip20DeltaLedger<'a> {
     }
 }
 
+#[derive(Debug, Clone, Copy)]
+enum BalanceWriteFlag {
+    Preserve,
+    Inactive,
+}
+
+impl BalanceWriteFlag {
+    fn resolve(self, balance: Tip20BalanceState) -> u8 {
+        match self {
+            Self::Preserve => balance.reward_flag,
+            Self::Inactive => balance.inactive_write_flag(),
+        }
+    }
+}
+
+fn reserve_fee_balance(
+    token: Address,
+    fee_payer: Address,
+    amount: U256,
+    is_t6: bool,
+    execution: &mut Tip20BlockstmTxExecution,
+    ledger: &mut Tip20DeltaLedger<'_>,
+    tx_index: usize,
+) -> Result<(), Tip20TransferBlockstmFallback> {
+    transfer_balance_with_flags(
+        token,
+        fee_payer,
+        TIP_FEE_MANAGER_ADDRESS,
+        amount,
+        is_t6,
+        BalanceWriteFlag::Inactive,
+        BalanceWriteFlag::Preserve,
+        execution,
+        ledger,
+        tx_index,
+    )
+}
+
+fn refund_fee_balance(
+    token: Address,
+    fee_payer: Address,
+    amount: U256,
+    is_t6: bool,
+    execution: &mut Tip20BlockstmTxExecution,
+    ledger: &mut Tip20DeltaLedger<'_>,
+    tx_index: usize,
+) -> Result<(), Tip20TransferBlockstmFallback> {
+    transfer_balance_with_flags(
+        token,
+        TIP_FEE_MANAGER_ADDRESS,
+        fee_payer,
+        amount,
+        is_t6,
+        BalanceWriteFlag::Preserve,
+        BalanceWriteFlag::Inactive,
+        execution,
+        ledger,
+        tx_index,
+    )
+}
+
 fn transfer_balance(
     token: Address,
     from: Address,
     to: Address,
     amount: U256,
     is_t6: bool,
+    execution: &mut Tip20BlockstmTxExecution,
+    ledger: &mut Tip20DeltaLedger<'_>,
+    tx_index: usize,
+) -> Result<(), Tip20TransferBlockstmFallback> {
+    transfer_balance_with_flags(
+        token,
+        from,
+        to,
+        amount,
+        is_t6,
+        BalanceWriteFlag::Inactive,
+        BalanceWriteFlag::Inactive,
+        execution,
+        ledger,
+        tx_index,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn transfer_balance_with_flags(
+    token: Address,
+    from: Address,
+    to: Address,
+    amount: U256,
+    is_t6: bool,
+    from_write_flag: BalanceWriteFlag,
+    to_write_flag: BalanceWriteFlag,
     execution: &mut Tip20BlockstmTxExecution,
     ledger: &mut Tip20DeltaLedger<'_>,
     tx_index: usize,
@@ -1030,14 +1108,14 @@ fn transfer_balance(
         ledger,
         tx_index,
         from_key,
-        encode_balance(new_from, from_balance.inactive_write_flag(), is_t6),
+        encode_balance(new_from, from_write_flag.resolve(from_balance), is_t6),
     );
     write_value(
         execution,
         ledger,
         tx_index,
         to_key,
-        encode_balance(new_to, to_balance.inactive_write_flag(), is_t6),
+        encode_balance(new_to, to_write_flag.resolve(to_balance), is_t6),
     );
 
     Ok(())
@@ -2462,7 +2540,7 @@ mod tests {
         );
         assert_eq!(
             writes[&balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS)],
-            encode_balance(actual_fee, REWARD_FLAG_OPTED_OUT, true)
+            encode_balance(actual_fee, REWARD_FLAG_UNINITIALIZED, true)
         );
         assert_eq!(
             writes[&collected_fees_key(beneficiary, TOKEN)],
@@ -2519,7 +2597,7 @@ mod tests {
         );
         assert_eq!(
             writes[&balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS)],
-            encode_balance(actual_fee, REWARD_FLAG_OPTED_OUT, true)
+            encode_balance(actual_fee, REWARD_FLAG_UNINITIALIZED, true)
         );
         assert_eq!(
             writes[&collected_fees_key(beneficiary, TOKEN)],
@@ -2588,7 +2666,7 @@ mod tests {
         );
         assert_eq!(
             execution.txs[1].writes[&balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS)],
-            encode_balance(total_fee, REWARD_FLAG_OPTED_OUT, true)
+            encode_balance(total_fee, REWARD_FLAG_UNINITIALIZED, true)
         );
     }
 
@@ -2764,7 +2842,7 @@ mod tests {
             .fold(U256::ZERO, |acc, fee| acc + fee);
         assert_eq!(
             execution.txs[batch_len - 1].writes[&balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS)],
-            encode_balance(total_fee, REWARD_FLAG_OPTED_OUT, true)
+            encode_balance(total_fee, REWARD_FLAG_UNINITIALIZED, true)
         );
     }
 
@@ -2863,6 +2941,7 @@ mod tests {
         };
 
         let mut txs = Vec::with_capacity(batch_len);
+        let mut nonce_keys = Vec::with_capacity(batch_len);
         for (i, recipient) in recipients.iter().copied().enumerate() {
             let nonce_key = U256::from(u64::MAX - i as u64);
             let (recovered, tx_env) = aa_blockstm_tx_with_gas(
@@ -2870,6 +2949,7 @@ mod tests {
                 nonce_key,
                 350_000,
             );
+            nonce_keys.push(nonce_key);
             txs.push((recovered, tx_env));
         }
 
@@ -2942,6 +3022,33 @@ mod tests {
                 "receipt cumulative gas differs from normal execution with reward flag {reward_flag}"
             );
             assert_eq!(blockstm_validator_fees, normal_validator_fees);
+
+            let mut storage_keys = vec![
+                balance_key(token, SENDER),
+                balance_key(token, TIP_FEE_MANAGER_ADDRESS),
+                collected_fees_key(Address::ZERO, token),
+            ];
+            storage_keys.extend(
+                recipients
+                    .iter()
+                    .copied()
+                    .map(|recipient| balance_key(token, recipient)),
+            );
+            storage_keys.extend(
+                nonce_keys
+                    .iter()
+                    .copied()
+                    .map(|nonce_key| two_dimensional_nonce_key(SENDER, nonce_key)),
+            );
+            for key in storage_keys {
+                assert_eq!(
+                    blockstm_executor
+                        .read_storage(key.address, key.slot)
+                        .unwrap(),
+                    normal_executor.read_storage(key.address, key.slot).unwrap(),
+                    "storage differs for {key:?} with reward flag {reward_flag}"
+                );
+            }
         }
     }
 
