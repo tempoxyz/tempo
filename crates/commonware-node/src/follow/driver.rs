@@ -265,8 +265,8 @@ where
                 warn!(
                     "cannot heal finalization gap; consensus layer epoch {consensus_epoch} is ahead \
                     of execution layer epoch {execution_epoch}, but the consensus layer does not have \
-                    the boundary block at height `{last_consensus_boundary}`. the node likely previously skipped \
-                    epoch boundaries via the network identity"
+                    the boundary block at height `{last_consensus_boundary}`. The node likely previously skipped \
+                    epoch boundaries via the network identity and will continue to try use it to verify finalizations"
                 );
 
                 return Ok(());
