@@ -54,37 +54,11 @@ fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum ValidatorValidationSource {
-    Feedback,
-    Fallback,
-}
-
-impl ValidatorValidationSource {
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            Self::Feedback => "feedback",
-            Self::Fallback => "fallback",
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PayloadBudgetDecision {
-    pub(crate) elapsed: Duration,
-    pub(crate) idle_elapsed: Duration,
-    pub(crate) work_elapsed: Duration,
     pub(crate) predicted_builder_work: Duration,
     pub(crate) predicted_validator_work: Duration,
-    pub(crate) validator_validation_source: ValidatorValidationSource,
     pub(crate) marshal_persist: Duration,
     pub(crate) total_reserved: Duration,
-    pub(crate) budget: Duration,
-}
-
-impl PayloadBudgetDecision {
-    pub(crate) fn exhausted(self) -> bool {
-        self.total_reserved >= self.budget
-    }
 }
 
 /// Builds the shared proposer/validator budget decision for the current payload.
@@ -92,7 +66,6 @@ impl PayloadBudgetDecision {
 /// `elapsed` is wall-clock time spent in the builder so far. `idle_elapsed` is
 /// the proposer-only time spent waiting for more transactions, which is not
 /// replayed by validators and therefore counts once.
-/// `budget` is the remaining consensus payload build budget.
 /// `validator_validation` is an estimate of validator-side replay work from
 /// previously validated proposals. If absent, or if it cannot estimate the
 /// current block shape, the conservative builder-work projection is reused for
@@ -106,8 +79,8 @@ pub(crate) fn payload_budget_decision(
     elapsed: Duration,
     idle_elapsed: Duration,
     multiplier: u64,
-    budget: Duration,
     marshal_persist: MarshalPersistEstimator,
+    block_size_bytes: usize,
     validator_validation: Option<ValidatorValidationEstimate>,
     current_validation_shape: ValidatorValidationShape,
 ) -> PayloadBudgetDecision {
@@ -115,31 +88,18 @@ pub(crate) fn payload_budget_decision(
     let predicted_builder_work = scaled_duration(work_elapsed, multiplier);
     let validator_validation_estimate =
         validator_validation.and_then(|estimate| estimate.estimate(current_validation_shape));
-    let (predicted_validator_work, validator_validation_source) =
-        if let Some(validator_validation_estimate) = validator_validation_estimate {
-            (
-                validator_validation_estimate,
-                ValidatorValidationSource::Feedback,
-            )
-        } else {
-            (predicted_builder_work, ValidatorValidationSource::Fallback)
-        };
-    let marshal_persist = marshal_persist.estimate(current_validation_shape.block_size_bytes());
+    let predicted_validator_work = validator_validation_estimate.unwrap_or(predicted_builder_work);
+    let marshal_persist = marshal_persist.estimate(block_size_bytes);
     let total_reserved = idle_elapsed
         .saturating_add(predicted_builder_work)
         .saturating_add(predicted_validator_work)
         .saturating_add(marshal_persist)
         .saturating_add(marshal_persist);
     PayloadBudgetDecision {
-        elapsed,
-        idle_elapsed,
-        work_elapsed,
         predicted_builder_work,
         predicted_validator_work,
-        validator_validation_source,
         marshal_persist,
         total_reserved,
-        budget,
     }
 }
 
@@ -150,6 +110,7 @@ fn payload_budget_exhausted(
     multiplier: u64,
     budget: Duration,
     marshal_persist: MarshalPersistEstimator,
+    block_size_bytes: usize,
     validator_validation: Option<ValidatorValidationEstimate>,
     current_validation_shape: ValidatorValidationShape,
 ) -> bool {
@@ -157,12 +118,13 @@ fn payload_budget_exhausted(
         elapsed,
         idle_elapsed,
         multiplier,
-        budget,
         marshal_persist,
+        block_size_bytes,
         validator_validation,
         current_validation_shape,
     )
-    .exhausted()
+    .total_reserved
+        >= budget
 }
 
 /// Computes the observed total-work to tx-cutoff-work multiplier.
@@ -233,6 +195,7 @@ mod tests {
             1_350_000,
             Duration::from_millis(270),
             MarshalPersistEstimator::default(),
+            0,
             None,
             ValidatorValidationShape::default(),
         ));
@@ -242,6 +205,7 @@ mod tests {
             1_350_000,
             Duration::from_millis(271),
             MarshalPersistEstimator::default(),
+            0,
             None,
             ValidatorValidationShape::default(),
         ));
@@ -251,6 +215,7 @@ mod tests {
             1_350_000,
             Duration::from_millis(520),
             MarshalPersistEstimator::default(),
+            0,
             None,
             ValidatorValidationShape::default(),
         ));
@@ -260,6 +225,7 @@ mod tests {
             1_350_000,
             Duration::from_millis(521),
             MarshalPersistEstimator::default(),
+            0,
             None,
             ValidatorValidationShape::default(),
         ));
@@ -267,22 +233,18 @@ mod tests {
 
     #[test]
     fn payload_budget_uses_validator_feedback_when_available() {
-        let shape = ValidatorValidationShape::new(0, 100, 0);
+        let shape = ValidatorValidationShape::new(100, 0);
         let validator_validation = validator_validation_estimate(shape, Duration::from_millis(80));
         let decision = payload_budget_decision(
             Duration::from_millis(100),
             Duration::ZERO,
             1_350_000,
-            Duration::from_millis(215),
             MarshalPersistEstimator::default(),
+            0,
             validator_validation,
             shape,
         );
 
-        assert_eq!(
-            decision.validator_validation_source,
-            ValidatorValidationSource::Feedback
-        );
         assert_eq!(decision.predicted_builder_work, Duration::from_millis(135));
         assert_eq!(decision.predicted_validator_work, Duration::from_millis(80));
         assert_eq!(decision.total_reserved, Duration::from_millis(215));
@@ -293,6 +255,7 @@ mod tests {
             1_350_000,
             Duration::from_millis(215),
             MarshalPersistEstimator::default(),
+            0,
             validator_validation,
             shape,
         ));
@@ -302,64 +265,33 @@ mod tests {
             1_350_000,
             Duration::from_millis(216),
             MarshalPersistEstimator::default(),
+            0,
             validator_validation,
             shape,
         ));
     }
 
     #[test]
-    fn payload_budget_uses_absolute_validator_feedback_for_current_block() {
-        let validator_validation = validator_validation_estimate(
-            ValidatorValidationShape::new(0, 100, 0),
-            Duration::from_millis(100),
-        );
-
-        assert!(payload_budget_exhausted(
-            Duration::from_millis(100),
-            Duration::ZERO,
-            1_350_000,
-            Duration::from_millis(235),
-            MarshalPersistEstimator::default(),
-            validator_validation,
-            ValidatorValidationShape::new(0, 50, 0),
-        ));
-        assert!(!payload_budget_exhausted(
-            Duration::from_millis(100),
-            Duration::ZERO,
-            1_350_000,
-            Duration::from_millis(236),
-            MarshalPersistEstimator::default(),
-            validator_validation,
-            ValidatorValidationShape::new(0, 50, 0),
-        ));
-    }
-
-    #[test]
     fn payload_budget_scales_validator_feedback_for_larger_current_block() {
         let validator_validation = validator_validation_estimate(
-            ValidatorValidationShape::new(0, 100, 10),
+            ValidatorValidationShape::new(100, 10),
             Duration::from_millis(100),
         );
         let decision = payload_budget_decision(
             Duration::from_millis(100),
             Duration::ZERO,
             1_350_000,
-            Duration::from_millis(335),
             MarshalPersistEstimator::default(),
+            0,
             validator_validation,
-            ValidatorValidationShape::new(0, 200, 10),
+            ValidatorValidationShape::new(200, 10),
         );
 
-        assert_eq!(
-            decision.validator_validation_source,
-            ValidatorValidationSource::Feedback
-        );
         assert_eq!(
             decision.predicted_validator_work,
             Duration::from_millis(200)
         );
         assert_eq!(decision.total_reserved, Duration::from_millis(335));
-        assert!(decision.exhausted());
     }
 
     #[test]
@@ -372,8 +304,9 @@ mod tests {
             1_350_000,
             Duration::from_millis(300),
             marshal_persist,
+            15_000,
             None,
-            ValidatorValidationShape::new(15_000, 0, 0),
+            ValidatorValidationShape::default(),
         ));
         assert!(!payload_budget_exhausted(
             Duration::from_millis(100),
@@ -381,8 +314,9 @@ mod tests {
             1_350_000,
             Duration::from_millis(300),
             marshal_persist,
+            14_999,
             None,
-            ValidatorValidationShape::new(14_999, 0, 0),
+            ValidatorValidationShape::default(),
         ));
     }
 

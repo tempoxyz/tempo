@@ -86,34 +86,17 @@ impl MarshalPersistEstimator {
 /// Current or observed block shape used to estimate validator validation cost.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ValidatorValidationShape {
-    block_size_bytes: usize,
     gas_used: u64,
     transaction_count: usize,
 }
 
 impl ValidatorValidationShape {
-    /// Creates a validation shape from encoded size, gas, and transaction count.
-    pub fn new(block_size_bytes: usize, gas_used: u64, transaction_count: usize) -> Self {
+    /// Creates a validation shape from gas and transaction count.
+    pub fn new(gas_used: u64, transaction_count: usize) -> Self {
         Self {
-            block_size_bytes,
             gas_used,
             transaction_count,
         }
-    }
-
-    /// Returns the encoded block size in bytes.
-    pub fn block_size_bytes(self) -> usize {
-        self.block_size_bytes
-    }
-
-    /// Returns gas used by the block.
-    pub fn gas_used(self) -> u64 {
-        self.gas_used
-    }
-
-    /// Returns the number of transactions in the block.
-    pub fn transaction_count(self) -> usize {
-        self.transaction_count
     }
 }
 
@@ -196,9 +179,9 @@ impl ValidatorValidationEstimate {
         }
 
         let scale = [
-            scale_above_baseline(u128::from(shape.gas_used()), u128::from(self.p90_gas_used)),
+            scale_above_baseline(u128::from(shape.gas_used), u128::from(self.p90_gas_used)),
             scale_above_baseline(
-                shape.transaction_count() as u128,
+                shape.transaction_count as u128,
                 self.p90_transaction_count as u128,
             ),
         ]
@@ -216,17 +199,9 @@ impl ValidatorValidationEstimate {
 /// P90 gas or transaction count. This avoids combining independent per-unit
 /// rates from differently shaped blocks while still reserving validator
 /// headroom when the builder grows beyond the shapes that produced the feedback.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct ValidatorValidationEstimator {
     samples: BTreeMap<u64, ValidatorValidationSample>,
-}
-
-impl Default for ValidatorValidationEstimator {
-    fn default() -> Self {
-        Self {
-            samples: BTreeMap::new(),
-        }
-    }
 }
 
 impl ValidatorValidationEstimator {
@@ -246,7 +221,7 @@ impl ValidatorValidationEstimator {
             sample_id,
             shape = ?shape,
             elapsed = ?elapsed,
-            estimated_p90 = ?self.estimate(),
+            estimate = ?self.estimate(),
             samples = self.samples.len(),
             "updated validator validation estimate"
         );
@@ -263,12 +238,12 @@ impl ValidatorValidationEstimator {
         let p90_floor = scale_duration(p90_elapsed, VALIDATOR_VALIDATION_P90_FLOOR_SCALE);
         Some(ValidatorValidationEstimate {
             elapsed: p50_elapsed.max(p90_floor),
-            p90_gas_used: p90(self.samples.values().map(|sample| sample.shape.gas_used()))
+            p90_gas_used: p90(self.samples.values().map(|sample| sample.shape.gas_used))
                 .unwrap_or_default(),
             p90_transaction_count: p90(self
                 .samples
                 .values()
-                .map(|sample| sample.shape.transaction_count()))
+                .map(|sample| sample.shape.transaction_count))
             .unwrap_or_default(),
         })
     }
@@ -277,6 +252,17 @@ impl ValidatorValidationEstimator {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn estimate_with_sample(
+        sample_shape: ValidatorValidationShape,
+        current_shape: ValidatorValidationShape,
+    ) -> Option<Duration> {
+        let mut estimator = ValidatorValidationEstimator::default();
+        estimator.observe(1, sample_shape, Duration::from_millis(100));
+        estimator
+            .estimate()
+            .and_then(|estimate| estimate.estimate(current_shape))
+    }
 
     #[test]
     fn observes_large_blocks_and_ignores_tiny_samples() {
@@ -300,8 +286,8 @@ mod tests {
     #[test]
     fn validator_validation_estimate_uses_tail_discounted_recent_elapsed() {
         let mut estimator = ValidatorValidationEstimator::default();
-        let sample_shape = ValidatorValidationShape::new(0, 100, 0);
-        let current_shape = ValidatorValidationShape::new(0, 100, 0);
+        let sample_shape = ValidatorValidationShape::new(100, 0);
+        let current_shape = ValidatorValidationShape::new(100, 0);
         for (sample_id, elapsed) in [(1, 10), (2, 20), (3, 30), (4, 40)] {
             estimator.observe(sample_id, sample_shape, Duration::from_nanos(elapsed));
         }
@@ -316,35 +302,29 @@ mod tests {
         for elapsed in 1..=VALIDATOR_VALIDATION_SAMPLE_WINDOW as u64 {
             estimator.observe(
                 elapsed,
-                ValidatorValidationShape::new(0, 1, 0),
+                ValidatorValidationShape::new(1, 0),
                 Duration::from_nanos(elapsed),
             );
         }
         estimator.observe(
             10_000,
-            ValidatorValidationShape::new(0, 1, 0),
+            ValidatorValidationShape::new(1, 0),
             Duration::from_nanos(10_000),
         );
         assert_eq!(
             estimator
                 .estimate()
-                .and_then(|estimate| estimate.estimate(ValidatorValidationShape::new(0, 1, 0))),
+                .and_then(|estimate| estimate.estimate(ValidatorValidationShape::new(1, 0))),
             Some(Duration::from_nanos(54))
         );
     }
 
     #[test]
     fn validator_validation_estimate_does_not_scale_down() {
-        let mut estimator = ValidatorValidationEstimator::default();
-        estimator.observe(
-            1,
-            ValidatorValidationShape::new(1_000, 1_000, 10),
-            Duration::from_millis(100),
-        );
-
         assert_eq!(
-            estimator.estimate().and_then(
-                |estimate| estimate.estimate(ValidatorValidationShape::new(10_000, 400, 4))
+            estimate_with_sample(
+                ValidatorValidationShape::new(1_000, 10),
+                ValidatorValidationShape::new(400, 4)
             ),
             Some(Duration::from_millis(100))
         );
@@ -352,87 +332,29 @@ mod tests {
 
     #[test]
     fn validator_validation_estimate_scales_up_by_gas_or_transactions() {
-        let mut estimator = ValidatorValidationEstimator::default();
-        estimator.observe(
-            1,
-            ValidatorValidationShape::new(1_000, 1_000, 10),
-            Duration::from_millis(100),
-        );
+        let sample = ValidatorValidationShape::new(1_000, 10);
 
         assert_eq!(
-            estimator.estimate().and_then(
-                |estimate| estimate.estimate(ValidatorValidationShape::new(1_000, 1_500, 10))
-            ),
+            estimate_with_sample(sample, ValidatorValidationShape::new(1_500, 10)),
             Some(Duration::from_millis(150))
         );
         assert_eq!(
-            estimator.estimate().and_then(
-                |estimate| estimate.estimate(ValidatorValidationShape::new(1_000, 1_000, 15))
-            ),
+            estimate_with_sample(sample, ValidatorValidationShape::new(1_000, 15)),
             Some(Duration::from_millis(150))
-        );
-    }
-
-    #[test]
-    fn validator_validation_estimate_ignores_block_size_growth() {
-        let mut estimator = ValidatorValidationEstimator::default();
-        estimator.observe(
-            1,
-            ValidatorValidationShape::new(1_000, 1_000, 10),
-            Duration::from_millis(100),
-        );
-
-        assert_eq!(
-            estimator.estimate().and_then(
-                |estimate| estimate.estimate(ValidatorValidationShape::new(10_000, 1_000, 10))
-            ),
-            Some(Duration::from_millis(100))
         );
     }
 
     #[test]
     fn validator_validation_estimate_requires_non_empty_shape_feedback() {
-        let mut estimator = ValidatorValidationEstimator::default();
-        estimator.observe(
-            1,
-            ValidatorValidationShape::new(1_000, 0, 0),
-            Duration::from_millis(100),
-        );
+        let empty = ValidatorValidationShape::new(0, 0);
 
         assert_eq!(
-            estimator
-                .estimate()
-                .and_then(|estimate| estimate.estimate(ValidatorValidationShape::new(1_000, 0, 0))),
+            estimate_with_sample(empty, ValidatorValidationShape::new(0, 0)),
             Some(Duration::from_millis(100))
         );
         assert_eq!(
-            estimator.estimate().and_then(
-                |estimate| estimate.estimate(ValidatorValidationShape::new(1_000, 1_000, 10))
-            ),
+            estimate_with_sample(empty, ValidatorValidationShape::new(1_000, 10)),
             None
-        );
-    }
-
-    #[test]
-    fn validator_validation_estimate_replaces_duplicate_sample_ids() {
-        let mut estimator = ValidatorValidationEstimator::default();
-        estimator.observe(
-            10,
-            ValidatorValidationShape::new(0, 1, 0),
-            Duration::from_nanos(100),
-        );
-        estimator.observe(
-            10,
-            ValidatorValidationShape::new(0, 1, 0),
-            Duration::from_nanos(200),
-        );
-
-        assert_eq!(estimator.samples.len(), 1);
-        assert_eq!(
-            estimator
-                .estimate()
-                .and_then(|estimate| estimate.estimate(ValidatorValidationShape::new(0, 1, 0))),
-            Some(Duration::from_nanos(200))
         );
     }
 }

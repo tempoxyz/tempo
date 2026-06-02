@@ -48,11 +48,6 @@ pub struct TempoBuiltPayload {
     validation_work_duration: Duration,
     /// Time validators are expected to spend validating this payload.
     validator_validation_duration: Duration,
-    /// RLP-encoded execution block size used to seed consensus block encoding.
-    execution_block_rlp_size_bytes: usize,
-    /// Consensus-encoded block size, including any BAL sidecar, used for
-    /// proposal return marshal estimates and learning future builder budgets.
-    consensus_block_size_bytes: usize,
 }
 
 impl TempoBuiltPayload {
@@ -63,8 +58,6 @@ impl TempoBuiltPayload {
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
         validation_work_duration: Duration,
         validator_validation_duration: Duration,
-        execution_block_rlp_size_bytes: usize,
-        consensus_block_size_bytes: usize,
     ) -> Self {
         Self {
             inner,
@@ -72,8 +65,6 @@ impl TempoBuiltPayload {
             executed_block,
             validation_work_duration,
             validator_validation_duration,
-            execution_block_rlp_size_bytes,
-            consensus_block_size_bytes,
         }
     }
 
@@ -93,19 +84,6 @@ impl TempoBuiltPayload {
     /// Returns the time validators are expected to spend validating this payload.
     pub fn validator_validation_duration(&self) -> Duration {
         self.validator_validation_duration
-    }
-
-    /// Returns the RLP-encoded execution block size in bytes.
-    pub fn execution_block_rlp_size_bytes(&self) -> usize {
-        self.execution_block_rlp_size_bytes
-    }
-
-    /// Returns the consensus-encoded block size in bytes.
-    ///
-    /// Consensus uses this with the learned marshal persistence rate to reserve
-    /// time for validators to persist similarly sized proposals.
-    pub fn consensus_block_size_bytes(&self) -> usize {
-        self.consensus_block_size_bytes
     }
 
     /// Converts the built payload into [`TempoExecutionData`].

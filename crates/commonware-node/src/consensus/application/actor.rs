@@ -48,8 +48,8 @@ use tempo_telemetry_util::display_duration;
 
 use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
 use tempo_payload_types::{
-    TempoPayloadAttributes, ValidatorValidationEstimate, ValidatorValidationEstimator,
-    ValidatorValidationShape, marshal_persist_estimate, observe_marshal_persist,
+    TempoPayloadAttributes, ValidatorValidationEstimator, ValidatorValidationShape,
+    marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
 use tracing::{Level, debug, info, info_span, instrument, warn};
@@ -84,27 +84,6 @@ struct BuildProposalArgs<'a> {
 struct ProposalReturn {
     time: SystemTime,
     block_size_bytes: usize,
-}
-
-struct BlockVerification {
-    is_valid: bool,
-    validation_duration: Option<Duration>,
-}
-
-impl BlockVerification {
-    fn valid(validation_duration: Duration) -> Self {
-        Self {
-            is_valid: true,
-            validation_duration: Some(validation_duration),
-        }
-    }
-
-    const fn invalid() -> Self {
-        Self {
-            is_valid: false,
-            validation_duration: None,
-        }
-    }
 }
 
 impl<TContext, TState> Actor<TContext, TState> {
@@ -254,27 +233,6 @@ struct Inner<TState> {
     metrics: Metrics,
 
     state: TState,
-}
-
-impl<TState> Inner<TState> {
-    fn observe_validator_validation(
-        &self,
-        sample_id: u64,
-        shape: ValidatorValidationShape,
-        elapsed: Duration,
-    ) {
-        let Ok(mut estimator) = self.validator_validation_estimator.lock() else {
-            return;
-        };
-        estimator.observe(sample_id, shape, elapsed);
-    }
-
-    fn validator_validation_estimate(&self) -> Option<ValidatorValidationEstimate> {
-        self.validator_validation_estimator
-            .lock()
-            .ok()
-            .and_then(|estimator| estimator.estimate())
-    }
 }
 
 impl Inner<Init> {
@@ -647,8 +605,8 @@ impl Inner<Init> {
         // If proposing the first block of an epoch, its parent
         // (genesis/boundary block) must exist and be finalized, so we can skip
         // it.
-        if !is_genesis_parent {
-            let verification = verify_block(
+        if !is_genesis_parent
+            && verify_block(
                 context.clone(),
                 parent_epoch_info.epoch(),
                 &self.epoch_strategy,
@@ -662,24 +620,10 @@ impl Inner<Init> {
                 &self.scheme_provider,
             )
             .await
-            .wrap_err("failed verifying block against execution layer")?;
-
-            // FIXME: Parent blocks can be reconstructed from the EL database
-            // without their commonware BAL sidecar. `validator_validation_shape`
-            // calls `Block::encode_size`, which requires BAL bytes when the
-            // header commits to a BAL, so observing here can panic for
-            // BAL-enabled parents. Rely on the normal verify path until parent
-            // retrieval restores missing sidecars.
-            // if let Some(duration) = verification.validation_duration {
-            //     self.observe_validator_validation(
-            //         parent.height().get(),
-            //         validator_validation_shape(&parent),
-            //         duration,
-            //     );
-            // }
-            if !verification.is_valid {
-                bail!("the proposal parent block is not valid");
-            }
+            .wrap_err("failed verifying block against execution layer")?
+            .is_none()
+        {
+            bail!("the proposal parent block is not valid");
         }
 
         // Query DKG manager for ceremony data before building payload
@@ -760,7 +704,11 @@ impl Inner<Init> {
         let build_budget = self
             .proposal_return_budget
             .saturating_sub(propose_start.elapsed());
-        let validator_validation_estimate = self.validator_validation_estimate();
+        let validator_validation_estimate = self
+            .validator_validation_estimator
+            .lock()
+            .ok()
+            .and_then(|estimator| estimator.estimate());
         let attrs = TempoPayloadAttributes::new(
             Some(proposer_public_key),
             timestamp,
@@ -816,8 +764,15 @@ impl Inner<Init> {
         let payload_build_elapsed = payload_build_start.elapsed();
         let payload_validation_work_elapsed = payload.validation_work_duration();
         let validator_validation_elapsed = payload.validator_validation_duration();
-        let execution_block_rlp_size_bytes = payload.execution_block_rlp_size_bytes();
-        let consensus_block_size_bytes = payload.consensus_block_size_bytes();
+        let (block, block_access_list) = payload.into_execution_payload();
+        let execution_block_rlp_size_bytes = block.rlp_length();
+        let proposal = Block::from_execution_block_with_encoded_size(
+            block,
+            block_access_list,
+            execution_block_rlp_size_bytes,
+        )
+        .wrap_err("payload builder produced an invalid block access list")?;
+        let consensus_block_size_bytes = proposal.encode_size();
         let validator_marshal_persist = marshal_persist.estimate(consensus_block_size_bytes);
         let proposal_elapsed = propose_start.elapsed();
         // Pace proposal return from the original propose start. Validators still
@@ -840,14 +795,6 @@ impl Inner<Init> {
             "sleeping before returning proposal"
         );
         let proposal_return_time = context.current() + return_delay;
-
-        let (block, block_access_list) = payload.into_execution_payload();
-        let proposal = Block::from_execution_block_with_encoded_size(
-            block,
-            block_access_list,
-            execution_block_rlp_size_bytes,
-        )
-        .wrap_err("payload builder produced an invalid block access list")?;
 
         Ok((
             proposal,
@@ -936,7 +883,7 @@ impl Inner<Init> {
             );
         }
 
-        let verification = verify_block(
+        let validation_duration = verify_block(
             context,
             round.epoch(),
             &self.epoch_strategy,
@@ -950,14 +897,19 @@ impl Inner<Init> {
         )
         .await
         .wrap_err("failed verifying block against execution layer")?;
-        if let Some(duration) = verification.validation_duration {
-            self.observe_validator_validation(
-                block.height().get(),
-                validator_validation_shape(&block),
-                duration,
-            );
+        if let Some(duration) = validation_duration {
+            if let Ok(mut estimator) = self.validator_validation_estimator.lock() {
+                estimator.observe(
+                    block.height().get(),
+                    ValidatorValidationShape::new(
+                        block.block().gas_used(),
+                        block.block().body().transaction_count(),
+                    ),
+                    duration,
+                );
+            }
         }
-        let is_good = verification.is_valid;
+        let is_good = validation_duration.is_some();
 
         let block_height = block.height();
         let block_digest = block.digest();
@@ -1025,19 +977,12 @@ struct Init {
     executor: crate::executor::Mailbox,
 }
 
-fn validator_validation_shape(block: &Block) -> ValidatorValidationShape {
-    ValidatorValidationShape::new(
-        block.encode_size(),
-        block.block().gas_used(),
-        block.block().body().transaction_count(),
-    )
-}
-
 /// Verifies `block` given its `parent` against the execution layer.
 ///
-/// Returns block validity and EL validation duration, when validation reached
-/// the execution layer and succeeded. Returns an error if validation was not
-/// possible, for example if communication with the execution layer failed.
+/// Returns EL validation duration when validation reached the execution layer
+/// and succeeded, or `None` if the block is invalid. Returns an error if
+/// validation was not possible, for example if communication with the execution
+/// layer failed.
 ///
 /// Reason the reason for why a block was not valid is communicated as a
 /// tracing event.
@@ -1061,7 +1006,7 @@ async fn verify_block<TContext: Pacer>(
     block: &Block,
     parent_digest: Digest,
     scheme_provider: &SchemeProvider,
-) -> eyre::Result<BlockVerification> {
+) -> eyre::Result<Option<Duration>> {
     use alloy_rpc_types_engine::PayloadStatusEnum;
 
     let epoch_info = epoch_strategy
@@ -1069,14 +1014,14 @@ async fn verify_block<TContext: Pacer>(
         .expect("epoch strategy is for all heights");
     if epoch_info.epoch() != epoch {
         info!("block does not belong to this epoch");
-        return Ok(BlockVerification::invalid());
+        return Ok(None);
     }
     if block.parent_hash() != *parent_digest {
         info!(
             "parent digest stored in block must match the digest of the parent \
             argument but doesn't"
         );
-        return Ok(BlockVerification::invalid());
+        return Ok(None);
     }
 
     // Scheme registration precedes engine creation, so the scheme must exist
@@ -1104,13 +1049,13 @@ async fn verify_block<TContext: Pacer>(
         .await
         .wrap_err("failed sending `new payload` message to execution layer to validate block")?;
     match payload_status.status {
-        PayloadStatusEnum::Valid => Ok(BlockVerification::valid(validation_start.elapsed())),
+        PayloadStatusEnum::Valid => Ok(Some(validation_start.elapsed())),
         PayloadStatusEnum::Invalid { validation_error } => {
             info!(
                 validation_error,
                 "execution layer returned that the block was invalid"
             );
-            Ok(BlockVerification::invalid())
+            Ok(None)
         }
         PayloadStatusEnum::Accepted => {
             bail!(
