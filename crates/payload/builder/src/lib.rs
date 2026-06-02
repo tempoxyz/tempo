@@ -17,7 +17,9 @@ use crate::{
         payload_budget_exhausted, scaled_build_time_multiplier,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
-    prewarming::BestTransactionsPrewarming,
+    prewarming::{
+        BestTransactionsPrewarming, BestTransactionsWithoutPrewarming, PrewarmedStateOverlay,
+    },
 };
 use alloy_consensus::{BlockHeader as _, Signed, Transaction, TxLegacy, TxReceipt};
 use alloy_eip7928::compute_block_access_list_hash;
@@ -34,7 +36,7 @@ use reth_engine_tree::tree::{
     CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider,
     instrumented_state::InstrumentedStateProvider,
 };
-use reth_errors::{ConsensusError, ProviderError};
+use reth_errors::ConsensusError;
 use reth_evm::{
     ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
     block::{BlockExecutionError, BlockExecutor, BlockValidationError},
@@ -366,7 +368,7 @@ where
 
         let state = StateProviderDatabase::new(&state_provider);
         let mut db = State::builder()
-            .with_database(Box::new(state) as Box<dyn Database<Error = ProviderError>>)
+            .with_database(PrewarmedStateOverlay::new(state))
             .with_bundle_update()
             .with_bal_builder_if(self.enable_bal)
             .build();
@@ -532,13 +534,12 @@ where
             Box::new(BestTransactionsPrewarming::new(
                 self.executor.clone(),
                 self.provider.clone(),
-                execution_cache,
                 parent_header.hash(),
                 executor.evm().evm_env(),
                 best_txs,
             )) as Box<dyn BestTransactions<Item = _>>
         } else {
-            Box::new(best_txs)
+            Box::new(BestTransactionsWithoutPrewarming::new(best_txs))
         });
         self.metrics
             .pool_fetch_duration_seconds
@@ -584,7 +585,7 @@ where
                 }
             }
 
-            let Some(pool_tx) = best_txs.next() else {
+            let Some(mut pool_tx) = best_txs.next() else {
                 if build_once_with_shared_trie
                     && payload_build_budget.is_some()
                     && cumulative_gas_used < non_shared_gas_limit
@@ -604,8 +605,9 @@ where
             };
             pool_transactions_yielded += 1;
 
+            let pool_transaction = pool_tx.transaction();
             let max_regular_gas_used = core::cmp::min(
-                pool_tx.gas_limit(),
+                pool_transaction.gas_limit(),
                 executor.evm().cfg.tx_gas_limit_cap.unwrap_or(u64::MAX),
             );
 
@@ -618,7 +620,7 @@ where
                 best_txs.mark_invalid(
                     &pool_tx,
                     InvalidPoolTransactionError::ExceedsGasLimit(
-                        pool_tx.gas_limit(),
+                        pool_transaction.gas_limit(),
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
                 );
@@ -628,9 +630,9 @@ where
             }
 
             let is_payment = if hardfork.is_t5() {
-                pool_tx.transaction.is_payment()
+                pool_transaction.transaction.is_payment()
             } else {
-                pool_tx.transaction.inner().is_payment_v1()
+                pool_transaction.transaction.inner().is_payment_v1()
             };
 
             // If the tx is not a payment and will exceed the general gas limit
@@ -652,7 +654,7 @@ where
                 payment_transactions += 1;
             }
 
-            let tx_rlp_length = pool_tx.transaction.encoded_length();
+            let tx_rlp_length = pool_transaction.transaction.encoded_length();
             let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
@@ -669,11 +671,17 @@ where
             }
 
             let tx_debug_repr = tracing::enabled!(Level::TRACE)
-                .then(|| format!("{:?}", pool_tx.transaction))
+                .then(|| format!("{:?}", pool_transaction.transaction))
                 .unwrap_or_default();
 
+            let prewarmed_state = pool_tx.take_prewarmed_state();
+            executor
+                .evm_mut()
+                .db_mut()
+                .database
+                .set_overlay(prewarmed_state);
             let execution_result = executor.execute_transaction_with_result_closure(
-                pool_tx.transaction.executable(),
+                pool_tx.transaction().transaction.executable(),
                 |result| {
                     cumulative_gas_used += result.block_gas_used();
                     cumulative_state_gas_used += result.state_gas_used();
@@ -689,6 +697,7 @@ where
                     best_txs.on_new_result(result);
                 },
             );
+            executor.evm_mut().db_mut().database.clear_overlay();
             if let Err(err) = execution_result {
                 if let BlockExecutionError::Validation(BlockValidationError::InvalidTx {
                     error,
@@ -724,7 +733,7 @@ where
             pool_transactions_included += 1;
             block_size_used += tx_rlp_length;
             let _ = roots_tx.send((
-                BuilderTx::Pooled(pool_tx),
+                BuilderTx::Pooled(pool_tx.into_transaction()),
                 executor.receipts().last().unwrap().clone(),
             ));
         };

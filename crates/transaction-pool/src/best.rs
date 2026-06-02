@@ -19,6 +19,18 @@ type TxOrdering = TempoTipOrdering<TempoPooledTransaction>;
 pub type BestTransaction = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
 type BestTransactionWithPriority = (BestTransaction, Priority<u64>);
 
+/// Provides access to the underlying pool transaction for best-transaction wrappers.
+pub trait AsBestTransaction {
+    /// Returns the wrapped best transaction.
+    fn as_best_transaction(&self) -> &BestTransaction;
+}
+
+impl AsBestTransaction for BestTransaction {
+    fn as_best_transaction(&self) -> &BestTransaction {
+        self
+    }
+}
+
 /// A best-transaction iterator that merges the protocol pool and the 2D nonces pool,
 /// always yielding the next best item from either iterator.
 pub struct MergeBestTransactions {
@@ -124,7 +136,8 @@ pub struct StateAwareBestTransactions<I> {
 
 impl<I> StateAwareBestTransactions<I>
 where
-    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    I: BestTransactions,
+    I::Item: AsBestTransaction,
 {
     /// Wraps an existing [`BestTransactions`] iterator.
     pub fn new(inner: I) -> Self {
@@ -159,27 +172,29 @@ where
 
 impl<I> Iterator for StateAwareBestTransactions<I>
 where
-    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>>,
+    I: BestTransactions,
+    I::Item: AsBestTransaction,
 {
-    type Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
+    type Item = I::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
         loop {
             let tx = self.inner.next()?;
+            let pool_tx = tx.as_best_transaction();
 
-            let Some(key) = tx.transaction.fee_balance_slot() else {
+            let Some(key) = pool_tx.transaction.fee_balance_slot() else {
                 debug_assert!(false, "pool transaction must have cached fee_balance_slot");
                 continue;
             };
 
             if let Some(&balance) = self.decreased_balances.get(&key)
-                && balance < tx.transaction.fee_token_cost()
+                && balance < pool_tx.transaction.fee_token_cost()
             {
                 self.inner.mark_invalid(
                     &tx,
                     InvalidPoolTransactionError::Consensus(
                         InvalidTransactionError::InsufficientFunds(
-                            (balance, tx.transaction.fee_token_cost()).into(),
+                            (balance, pool_tx.transaction.fee_token_cost()).into(),
                         ),
                     ),
                 );
@@ -193,7 +208,8 @@ where
 
 impl<I> BestTransactions for StateAwareBestTransactions<I>
 where
-    I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
+    I: BestTransactions + Send,
+    I::Item: AsBestTransaction,
 {
     fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
         self.inner.mark_invalid(transaction, kind);
@@ -222,7 +238,10 @@ mod tests {
         Pool, PoolConfig, TransactionOrigin, TransactionPool, blobstore::InMemoryBlobStore,
         test_utils::OkValidator,
     };
-    use std::sync::Arc;
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+    };
     use tempo_chainspec::hardfork::TempoHardfork;
 
     type TestTx = Arc<ValidPoolTransaction<TempoPooledTransaction>>;
@@ -308,6 +327,65 @@ mod tests {
             protocol_best_transactions(protocol_txs),
             aa_2d_best_transactions(aa_2d_txs),
         )
+    }
+
+    #[derive(Clone)]
+    struct WrappedTx {
+        tx: TestTx,
+        tag: u64,
+    }
+
+    impl AsBestTransaction for WrappedTx {
+        fn as_best_transaction(&self) -> &BestTransaction {
+            &self.tx
+        }
+    }
+
+    struct WrappedBestTransactions {
+        txs: VecDeque<WrappedTx>,
+        invalidated: Arc<Mutex<usize>>,
+    }
+
+    impl Iterator for WrappedBestTransactions {
+        type Item = WrappedTx;
+
+        fn next(&mut self) -> Option<Self::Item> {
+            self.txs.pop_front()
+        }
+    }
+
+    impl BestTransactions for WrappedBestTransactions {
+        fn mark_invalid(&mut self, _transaction: &Self::Item, _kind: InvalidPoolTransactionError) {
+            *self.invalidated.lock().unwrap() += 1;
+        }
+
+        fn no_updates(&mut self) {}
+
+        fn set_skip_blobs(&mut self, _skip_blobs: bool) {}
+    }
+
+    #[test]
+    fn state_aware_preserves_wrapped_items_and_forwards_invalidation() {
+        let tx = protocol_tx(0, 10);
+        assert!(tx.transaction.fee_balance_slot().is_some());
+        let invalidated = Arc::new(Mutex::new(0));
+        let wrapped = WrappedTx {
+            tx: tx.clone(),
+            tag: 42,
+        };
+        let mut state_aware = StateAwareBestTransactions::new(WrappedBestTransactions {
+            txs: VecDeque::from([wrapped]),
+            invalidated: invalidated.clone(),
+        });
+
+        let next = state_aware.next().expect("wrapped transaction");
+        assert_eq!(next.tag, 42);
+        assert_eq!(next.as_best_transaction().hash(), tx.hash());
+
+        let kind =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        state_aware.mark_invalid(&next, kind);
+        assert_eq!(*invalidated.lock().unwrap(), 1);
     }
 
     #[test]
