@@ -20,6 +20,7 @@ const E2E_GAS_LIMIT = "1000000000"
 const E2E_BLOAT_TMP_DIR = "/reth-bench-a/.bench-tmp/e2e-local-init"
 const E2E_BLOAT_FREE_MARGIN_MIB = 51200
 const E2E_DEFAULT_BLOAT = 100
+const E2E_FEATURE_DEFAULT_FEATURES = "bal"
 const E2E_LOCAL_RETH_ARGS = [
     "--ipcdisable"
     "--disable-discovery"
@@ -1165,7 +1166,7 @@ def "main e2e" [
     --profile: string = $DEFAULT_PROFILE                # Cargo build profile
     --features: string = ""                             # Additional Cargo features appended to the e2e defaults
     --baseline-features: string = ""                    # Additional Cargo features for baseline build (defaults to --features)
-    --feature-features: string = ""                     # Additional Cargo features for feature build (defaults to --features)
+    --feature-features: string = ""                     # Additional Cargo features for feature build, after feature-side defaults
     --no-default-features                               # Disable Cargo default features
     --samply                                            # Profile validators with samply
     --samply-args: string = ""                          # Additional samply arguments
@@ -1394,7 +1395,7 @@ def "main e2e" [
 
     let global_build_features = (merge-e2e-features $DEFAULT_FEATURES $features)
     let baseline_build_features = if $baseline_features != "" { merge-e2e-features $global_build_features $baseline_features } else { $global_build_features }
-    let feature_build_features = if $feature_features != "" { merge-e2e-features $global_build_features $feature_features } else { $global_build_features }
+    let feature_build_features = (merge-e2e-features $global_build_features $E2E_FEATURE_DEFAULT_FEATURES $feature_features)
     let baseline_tbc = (tracy-build-config $baseline_build_features $tracy)
     let feature_tbc = (tracy-build-config $feature_build_features $tracy)
     let regenesis_build_features = $global_build_features
