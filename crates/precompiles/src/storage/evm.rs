@@ -1,4 +1,12 @@
-use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
+use crate::{
+    STORAGE_GAS_TOKENS_ADDRESS as GAS_TOKEN,
+    error::TempoPrecompileError,
+    state_gas_token::{
+        AccountState, StorageGasToken, StorageGasTokenBackend, StorageGasTokenOutcome,
+        StorageWriteTransition, apply_storage_gas_token_transition,
+    },
+    storage::PrecompileStorageProvider,
+};
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use revm::{
@@ -88,6 +96,74 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         if !self.gas_tracker.record_state_cost(gas) {
             return Err(TempoPrecompileError::OutOfGas);
         }
+        Ok(())
+    }
+
+    /// Applies TIP-1060 storage gas-token accounting for a precompile SSTORE.
+    ///
+    /// EVM bytecode SSTOREs go through `TempoGasState`; precompile storage writes bypass that
+    /// path and must mirror the same owner-based token mint/consume/refund behavior here.
+    #[inline]
+    fn apply_storage_gas_tokens(
+        &mut self,
+        owner: Address,
+        result: &revm::interpreter::SStoreResult,
+    ) -> Result<StorageGasTokenOutcome, TempoPrecompileError> {
+        apply_storage_gas_token_transition(
+            self,
+            owner,
+            StorageWriteTransition {
+                is_noop: result.is_new_eq_present(),
+                is_create: result.is_original_eq_present() && result.is_original_zero(),
+                is_clear: result.is_new_zero() && !result.is_present_zero(),
+            },
+        )
+    }
+}
+
+impl StorageGasTokenBackend for EvmPrecompileStorageProvider<'_> {
+    type Error = TempoPrecompileError;
+
+    fn load_state(&mut self, owner: Address) -> Result<AccountState, Self::Error> {
+        // Match the EVM SSTORE hook: accessing the protocol token state is itself metered.
+        self.deduct_gas(self.gas_params.warm_storage_read_cost())?;
+        self.internals.load_account_mut_skip_cold_load(GAS_TOKEN, false)?;
+
+        let account_slot = StorageGasToken::slot(owner);
+        let insufficient_gas_for_cold_load =
+            self.gas_tracker.remaining() < self.gas_params.cold_storage_additional_cost();
+        let (token_word, is_cold) = {
+            let mut account = self.internals.load_account_mut(GAS_TOKEN)?;
+            let storage = account.sload(account_slot, insufficient_gas_for_cold_load)?;
+            (storage.present_value, storage.is_cold)
+        };
+        if is_cold {
+            self.deduct_gas(self.gas_params.cold_storage_additional_cost())?;
+        }
+
+        AccountState::from_word(token_word)
+    }
+
+    fn store_state(&mut self, owner: Address, state: AccountState) -> Result<(), Self::Error> {
+        self.internals.load_account_mut(GAS_TOKEN)?.sstore(
+            StorageGasToken::slot(owner),
+            state.into_word(),
+            false,
+        )?;
+        Ok(())
+    }
+
+    fn load_pending_refund_creations(&mut self, owner: Address) -> Result<u64, Self::Error> {
+        Ok(self.internals.tload(GAS_TOKEN, StorageGasToken::slot(owner)).to::<u64>())
+    }
+
+    fn store_pending_refund_creations(
+        &mut self,
+        owner: Address,
+        pending: u64,
+    ) -> Result<(), Self::Error> {
+        self.internals
+            .tstore(GAS_TOKEN, StorageGasToken::slot(owner), U256::from(pending));
         Ok(())
     }
 }
@@ -203,11 +279,19 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
                 .sstore_dynamic_gas(true, &result.data, result.is_cold),
         )?;
 
-        // Track state gas (cold SSTORE zero->non-zero only)
-        self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
+        let token_outcome = self.apply_storage_gas_tokens(address, &result.data)?;
 
-        // refund gas.
-        self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
+        // Track state gas (cold SSTORE zero->non-zero only), unless TIP-1060 DirectTokens paid
+        // with a token and therefore removes the 230k TIP-1000 creation component.
+        if !token_outcome.skip_state_gas {
+            self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
+        }
+
+        // Refund gas. TIP-1060 removes the legacy clear refund and defers RefundTokens credits to
+        // end-of-transaction settlement via transient pending-creation counters.
+        if !token_outcome.skip_refund {
+            self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
+        }
 
         Ok(())
     }

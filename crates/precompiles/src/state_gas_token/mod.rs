@@ -1,6 +1,12 @@
 //! State gas token precompile (TIP-1060).
 
+pub mod accounting;
 pub mod dispatch;
+
+pub use accounting::{
+    StorageGasTokenBackend, StorageGasTokenOutcome, StorageWriteTransition,
+    apply_storage_gas_token_transition,
+};
 
 use crate::{
     STORAGE_GAS_TOKENS_ADDRESS,

@@ -17,7 +17,10 @@ use revm::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     STORAGE_GAS_TOKENS_ADDRESS as GAS_TOKEN,
-    state_gas_token::{AccountState, StorageGasMode, StorageGasToken},
+    state_gas_token::{
+        AccountState, StorageGasToken, StorageGasTokenBackend, StorageWriteTransition,
+        apply_storage_gas_token_transition,
+    },
 };
 
 /// The Tempo EVM context type.
@@ -227,6 +230,79 @@ where
     }
 }
 
+struct EvmStorageGasTokenBackend<'a, 'b, DB: Database> {
+    context: &'a mut InstructionContext<'b, TempoContext<DB>, EthInterpreter>,
+}
+
+impl<DB: Database> StorageGasTokenBackend for EvmStorageGasTokenBackend<'_, '_, DB> {
+    type Error = InstructionResult;
+
+    fn load_state(&mut self, owner: Address) -> Result<AccountState, Self::Error> {
+        let warm_storage_read_cost = self.context.host.gas_params().warm_storage_read_cost();
+        if !self
+            .context
+            .interpreter
+            .gas
+            .record_regular_cost(warm_storage_read_cost)
+        {
+            return Err(InstructionResult::OutOfGas);
+        }
+
+        self.context
+            .host
+            .load_account_info_skip_cold_load(GAS_TOKEN, false, false)?;
+
+        let account_slot = StorageGasToken::slot(owner);
+        let additional_cold_cost = self.context.host.gas_params().cold_storage_additional_cost();
+        let skip_cold = self.context.interpreter.gas.remaining() < additional_cold_cost;
+        let storage = self
+            .context
+            .host
+            .sload_skip_cold_load(GAS_TOKEN, account_slot, skip_cold)?;
+        if storage.is_cold
+            && !self
+                .context
+                .interpreter
+                .gas
+                .record_regular_cost(additional_cold_cost)
+        {
+            return Err(InstructionResult::OutOfGas);
+        }
+
+        AccountState::from_word(storage.data).map_err(|_| InstructionResult::FatalExternalError)
+    }
+
+    fn store_state(&mut self, owner: Address, state: AccountState) -> Result<(), Self::Error> {
+        self.context.host.sstore_skip_cold_load(
+            GAS_TOKEN,
+            StorageGasToken::slot(owner),
+            state.into_word(),
+            false,
+        )?;
+        Ok(())
+    }
+
+    fn load_pending_refund_creations(&mut self, owner: Address) -> Result<u64, Self::Error> {
+        Ok(self
+            .context
+            .host
+            .tload(GAS_TOKEN, StorageGasToken::slot(owner))
+            .try_into()
+            .expect("saturates at u64::MAX"))
+    }
+
+    fn store_pending_refund_creations(
+        &mut self,
+        owner: Address,
+        pending: u64,
+    ) -> Result<(), Self::Error> {
+        self.context
+            .host
+            .tstore(GAS_TOKEN, StorageGasToken::slot(owner), U256::from(pending));
+        Ok(())
+    }
+}
+
 /// Tempo SSTORE gas-state policy.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) struct TempoGasState;
@@ -240,105 +316,24 @@ where
         owner: Address,
         values: &SStoreResult,
     ) -> Result<GasStateOutcome, InstructionResult> {
-        let mut outcome = GasStateOutcome::default();
+        let token_outcome = apply_storage_gas_token_transition(
+            &mut EvmStorageGasTokenBackend { context },
+            owner,
+            StorageWriteTransition {
+                is_noop: values.is_new_eq_present(),
+                is_create: values.is_original_eq_present() && values.is_original_zero(),
+                is_clear: values.is_new_zero() && !values.is_present_zero(),
+            },
+        )?;
 
-        if values.is_new_eq_present() {
-            return Ok(outcome);
-        }
-
-        // 0→x: slot create (charged EIP-8037 state gas today).
-        let is_create = values.is_original_eq_present() && values.is_original_zero();
-        // x→0: slot clear (present non-zero set to zero).
-        let is_clear = values.is_new_zero() && !values.is_present_zero();
-
-        // x→y: return from instruction, nothing to be done.
-        if !(is_create || is_clear) {
-            return Ok(outcome);
-        }
-
-        // Load token_state for the contract
-        let warm_storage_read_cost = context.host.gas_params().warm_storage_read_cost();
-        if !context
-            .interpreter
-            .gas
-            .record_regular_cost(warm_storage_read_cost)
-        {
+        if token_outcome.skip_state_gas && !context.interpreter.gas.record_regular_cost(20_000) {
             return Err(InstructionResult::OutOfGas);
         }
 
-        context
-            .host
-            .load_account_info_skip_cold_load(GAS_TOKEN, false, false)?;
-
-        let account_slot = StorageGasToken::slot(owner);
-        let additional_cold_cost = context.host.gas_params().cold_storage_additional_cost();
-        let skip_cold = context.interpreter.gas.remaining() < additional_cold_cost;
-        let storage = context
-            .host
-            .sload_skip_cold_load(GAS_TOKEN, account_slot, skip_cold)?;
-        if storage.is_cold
-            && !context
-                .interpreter
-                .gas
-                .record_regular_cost(additional_cold_cost)
-        {
-            return Err(InstructionResult::OutOfGas);
-        }
-
-        let mut gas_token_state = AccountState::from_word(storage.data)
-            .map_err(|_| InstructionResult::FatalExternalError)?;
-
-        let mut was_changed = false;
-        if is_clear {
-            gas_token_state.balance = gas_token_state.balance.saturating_add(1);
-            was_changed = true;
-        } else {
-            match gas_token_state.mode {
-                StorageGasMode::DirectTokens => {
-                    outcome.skip_refund = true;
-                    outcome.skip_gas = true;
-
-                    if gas_token_state.balance > 0 {
-                        // Consume the gas token credit and charge 20k for the SSTORE.
-                        if !context.interpreter.gas.record_regular_cost(20_000) {
-                            return Err(InstructionResult::OutOfGas);
-                        }
-                        gas_token_state.balance -= 1;
-                        was_changed = true;
-                    }
-                    // If no token is available, leave both regular and state gas enabled so
-                    // revm charges the full zero-to-nonzero creation cost after this hook.
-                }
-                StorageGasMode::PreserveTokens => {
-                    // Do nothing, so revm takes care of gas accounting after this hook.
-                }
-                StorageGasMode::RefundTokens => {
-                    // Skip refund as it will happen at the end of the transaction.
-                    outcome.skip_refund = true;
-                    let pending: u64 = context
-                        .host
-                        .tload(GAS_TOKEN, account_slot)
-                        .try_into()
-                        .expect("saturates at u64::MAX");
-                    context.host.tstore(
-                        GAS_TOKEN,
-                        account_slot,
-                        U256::from(pending.saturating_add(1)),
-                    );
-                }
-            }
-        }
-
-        if was_changed {
-            context.host.sstore_skip_cold_load(
-                GAS_TOKEN,
-                account_slot,
-                gas_token_state.into_word(),
-                false,
-            )?;
-        }
-
-        Ok(outcome)
+        Ok(GasStateOutcome {
+            skip_refund: token_outcome.skip_refund,
+            skip_gas: token_outcome.skip_state_gas,
+        })
     }
 }
 
