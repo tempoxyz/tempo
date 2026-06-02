@@ -1222,32 +1222,35 @@ where
         let block_access_list: Option<Bytes> =
             block_access_list.map(|block_access_list| alloy_rlp::encode(&block_access_list).into());
         let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
+        let block_num_hash = block.num_hash();
 
-        let executed_block = if attributes.publish_executed_block() {
-            let execution_output = BlockExecutionOutput {
-                result: execution_result,
-                state: db.take_bundle(),
-            };
+        let execution_output = BlockExecutionOutput {
+            result: execution_result,
+            state: db.take_bundle(),
+        };
 
-            Some(BuiltPayloadExecutedBlock {
-                recovered_block: block,
-                execution_output: Arc::new(execution_output),
-                hashed_state: Arc::new(hashed_state),
-                trie_updates,
-            })
+        let built_executed_block = BuiltPayloadExecutedBlock {
+            recovered_block: block,
+            execution_output: Arc::new(execution_output),
+            hashed_state: Arc::new(hashed_state),
+            trie_updates,
+        };
+        let (executed_block, gated_executed_block) = if attributes.publish_executed_block() {
+            (Some(built_executed_block), None)
         } else {
             debug!(
-                block_number = %block.number(),
-                block_hash = %block.hash(),
-                "skipping executed-block fast path for built payload"
+                block_number = %block_num_hash.number,
+                block_hash = %block_num_hash.hash,
+                "deferring executed-block fast path for built payload"
             );
-            None
+            (None, Some(built_executed_block))
         };
 
         let payload = TempoBuiltPayload::new(
             eth_payload,
             block_access_list,
             executed_block,
+            gated_executed_block,
             validation_work_duration,
             rlp_length,
         );
@@ -1533,7 +1536,7 @@ mod tests {
         .unwrap();
         let rlp_length = block.rlp_length();
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, rlp_length)
+        TempoBuiltPayload::new(eth, None, None, None, Duration::ZERO, rlp_length)
     }
 
     #[test]

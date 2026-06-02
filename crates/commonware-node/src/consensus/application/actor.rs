@@ -54,7 +54,8 @@ use reth_provider::{BlockHashReader as _, BlockReader as _, BlockSource};
 #[cfg(feature = "bal")]
 use tempo_payload_types::SpeculativePayloadParent;
 use tempo_payload_types::{
-    PayloadBuildControl, TempoPayloadAttributes, marshal_persist_estimate, observe_marshal_persist,
+    PayloadBuildControl, TempoBuiltPayloadExecutedBlock, TempoPayloadAttributes,
+    marshal_persist_estimate, observe_marshal_persist,
 };
 use tempo_primitives::TempoConsensusContext;
 #[cfg(feature = "bal")]
@@ -119,6 +120,7 @@ impl PendingPayloadId {
 struct ProposalReturn {
     time: SystemTime,
     block_size_bytes: usize,
+    fast_path_executed_block: Option<TempoBuiltPayloadExecutedBlock>,
 }
 
 #[cfg(feature = "bal")]
@@ -521,7 +523,7 @@ impl Inner<Init> {
             started_at: propose_start,
         } = request;
 
-        let proposal_digest = {
+        let (proposal_digest, fast_path_executed_block) = {
             let mut payload_id_rx: Option<PendingPayloadId> = None;
             let mut proposal = Box::pin(async {
                 // Follow the commonware marshal::standard::inline application:
@@ -588,7 +590,7 @@ impl Inner<Init> {
                 };
 
                 let digest = block.digest();
-                if let Some(proposal_return) = proposal_return {
+                let fast_path_executed_block = if let Some(proposal_return) = proposal_return {
                     let persist_start = Instant::now();
                     if !self.marshal.proposed(round, block).await {
                         bail!("marshal actor rejected persisting proposal");
@@ -600,9 +602,12 @@ impl Inner<Init> {
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
                     context.sleep_until(proposal_return.time).await;
-                }
+                    proposal_return.fast_path_executed_block
+                } else {
+                    None
+                };
 
-                eyre::Ok(digest)
+                eyre::Ok((digest, fast_path_executed_block))
             });
 
             tokio::select! {
@@ -633,6 +638,16 @@ impl Inner<Init> {
                 channel was already closed"
             )
         })?;
+
+        if let Some(executed_block) = fast_path_executed_block
+            && let Err(error) = self
+                .execution_node
+                .add_ons_handle
+                .beacon_engine_handle
+                .insert_executed_block(executed_block)
+        {
+            warn!(%error, proposal.digest = %proposal_digest, "failed inserting gated built payload");
+        }
 
         Ok(())
     }
@@ -1068,6 +1083,7 @@ impl Inner<Init> {
             Some(ProposalReturn {
                 time: proposal_return_time,
                 block_size_bytes,
+                fast_path_executed_block: None,
             }),
         ))
     }
@@ -1238,7 +1254,8 @@ impl Inner<Init> {
         );
         let proposal_return_time = context.current() + return_delay;
 
-        let (block, block_access_list) = payload.into_execution_payload();
+        let (block, block_access_list, fast_path_executed_block) =
+            payload.into_execution_payload_with_gated_fast_path();
         let proposal = Block::from_execution_block(block, block_access_list)
             .wrap_err("payload builder produced an invalid block access list")?;
         ensure!(
@@ -1269,6 +1286,7 @@ impl Inner<Init> {
             ProposalReturn {
                 time: proposal_return_time,
                 block_size_bytes,
+                fast_path_executed_block,
             },
         ))
     }
