@@ -18,16 +18,49 @@ use alloy::{
 };
 use tempo_precompiles_macros::Storable;
 
-// NOTE: `RewardFlag` derives `Storable`, so the cached flag occupies 1 byte in storage despite
-// only needing 2 bits (as per the spec). If the balance slot needs to pack more metadata in the
-// future, `UserState` should not derive `StorableLayout` and switch to a manual bit-level layout.
-#[derive(Default, Debug, Clone, Storable, Copy, PartialEq)]
+// NOTE: `RewardFlag`'s `Storable` impl makes the cached flag occupy 1 byte in storage despite only
+// needing 2 bits (as per the spec). If the balance slot needs to pack more metadata in the future,
+// `PackedUserState` should not derive `Storable` and switch to a manual bit-level layout.
+#[derive(Default, Debug, Clone, Copy, PartialEq)]
 #[repr(u8)]
 pub enum RewardFlag {
     #[default]
-    Uninitialized,
-    OptedOut,
-    OptedIn,
+    Uninitialized = 0,
+    OptedOut = 1,
+    OptedIn = 2,
+}
+
+impl StorableType for RewardFlag {
+    const LAYOUT: Layout = Layout::Bytes(1);
+
+    type Handler = Slot<Self>;
+
+    fn handle(slot: U256, ctx: LayoutCtx, address: Address) -> Self::Handler {
+        Slot::new_with_ctx(slot, ctx, address)
+    }
+}
+
+impl Storable for RewardFlag {
+    #[inline]
+    fn load<S: StorageOps>(storage: &S, slot: U256, ctx: LayoutCtx) -> Result<Self> {
+        match <u8 as Storable>::load(storage, slot, ctx)? {
+            discriminant if discriminant == Self::Uninitialized as u8 => Ok(Self::Uninitialized),
+            discriminant if discriminant == Self::OptedOut as u8 => Ok(Self::OptedOut),
+            discriminant if discriminant == Self::OptedIn as u8 => Ok(Self::OptedIn),
+            _ => Err(TempoPrecompileError::enum_conversion_error()),
+        }
+    }
+
+    #[inline]
+    fn store<S: StorageOps>(&self, storage: &mut S, slot: U256, ctx: LayoutCtx) -> Result<()> {
+        let value = match self {
+            Self::Uninitialized => Self::Uninitialized as u8,
+            Self::OptedOut => Self::OptedOut as u8,
+            Self::OptedIn => Self::OptedIn as u8,
+        };
+
+        <u8 as Storable>::store(&value, storage, slot, ctx)
+    }
 }
 
 impl RewardFlag {
