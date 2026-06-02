@@ -1,6 +1,9 @@
 //! State gas token precompile (TIP-1060).
 
 pub mod dispatch;
+pub mod gas_state;
+
+pub use gas_state::{GasStateBackend, sstore_gas_state_inner};
 
 use crate::{
     STORAGE_GAS_TOKENS_ADDRESS,
