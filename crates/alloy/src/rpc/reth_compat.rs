@@ -197,7 +197,6 @@ impl TryIntoTxEnv<TempoTxEnv, TempoHardfork, TempoBlockEnv> for TempoTransaction
                         .collect(),
                     nonce_key: nonce_key.unwrap_or_default(),
                     key_authorization,
-                    multisig_init,
                     signature_hash: B256::ZERO,
                     tx_hash: B256::ZERO,
                     valid_before: valid_before.map(NonZeroU64::get),
@@ -242,6 +241,7 @@ fn create_mock_native_multisig_sig(
         account: derive_multisig_account(config_id),
         config_id,
         signatures,
+        init: Some(init.clone()),
     }))
 }
 
@@ -440,7 +440,7 @@ mod tests {
     }
 
     #[test]
-    fn test_try_into_tx_env_preserves_multisig_init() {
+    fn test_try_into_tx_env_embeds_multisig_init_in_signature() {
         let init = InitMultisig {
             threshold: 1,
             owners: vec![MultisigOwner {
@@ -476,7 +476,7 @@ mod tests {
             .as_multisig()
             .expect("mock native multisig signature");
 
-        assert_eq!(aa_env.multisig_init, Some(init));
+        assert_eq!(multisig_sig.init, Some(init));
         assert_eq!(multisig_sig.account, account);
         assert_eq!(multisig_sig.config_id, config_id);
         assert_eq!(multisig_sig.signatures.len(), 1);
@@ -592,7 +592,6 @@ mod tests {
             tempo_authorization_list: vec![],
             nonce_key: Default::default(),
             key_authorization: None,
-            multisig_init: None,
         };
         let hash = tx.fee_payer_signature_hash(sender);
         let fee_payer_sig = sponsor.sign_hash_sync(&hash).expect("sign");

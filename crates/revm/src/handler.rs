@@ -1169,7 +1169,7 @@ where
                     );
 
                     if caller_is_multisig {
-                        if tempo_tx_env.multisig_init.is_some() {
+                        if multisig_signature.init.is_some() {
                             return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
                                 reason:
                                     "multisig_init is only allowed when bootstrapping an account"
@@ -1195,7 +1195,7 @@ where
                             }
                         })?;
                     } else {
-                        let init_config = tempo_tx_env.multisig_init.as_ref().ok_or_else(|| {
+                        let init_config = multisig_signature.init.as_ref().ok_or_else(|| {
                             TempoInvalidTransaction::NativeMultisigValidationFailed {
                                 reason:
                                     "first native multisig transaction requires multisig_init"
@@ -2084,18 +2084,10 @@ where
 
             let has_keychain_fields =
                 aa_env.key_authorization.is_some() || aa_env.signature.is_keychain();
-            let has_native_multisig_fields =
-                aa_env.multisig_init.is_some() || aa_env.signature.is_multisig();
+            let has_native_multisig_fields = aa_env.signature.is_multisig();
 
             if has_native_multisig_fields && !cfg.spec.is_t6() {
                 return Err(TempoInvalidTransaction::NativeMultisigNotActive.into());
-            }
-
-            if aa_env.multisig_init.is_some() && !aa_env.signature.is_multisig() {
-                return Err(TempoInvalidTransaction::NativeMultisigValidationFailed {
-                    reason: "multisig_init requires a native multisig signature".to_string(),
-                }
-                .into());
             }
 
             if aa_env.signature.is_multisig() && aa_env.key_authorization.is_some() {
@@ -3184,6 +3176,7 @@ mod tests {
                 account,
                 config_id,
                 signatures: vec![Bytes::from_static(&[0xaa; 65])],
+                init: Some(config),
             }),
             aa_calls: vec![Call {
                 to: TxKind::Call(Address::random()),
@@ -3191,7 +3184,6 @@ mod tests {
                 input: Bytes::new(),
             }],
             tempo_authorization_list: vec![tempo_authorization(account)],
-            multisig_init: Some(config),
             ..Default::default()
         };
         let mut test = TestHandlerEvm::aa(TempoHardfork::T6, aa_env, |tx_env| {
@@ -3249,13 +3241,13 @@ mod tests {
                 account,
                 config_id,
                 signatures: vec![owner_signature],
+                init: Some(config.clone()),
             }),
             aa_calls: vec![Call {
                 to: TxKind::Call(Address::random()),
                 value: U256::ZERO,
                 input: Bytes::new(),
             }],
-            multisig_init: Some(config.clone()),
             signature_hash,
             tx_hash: B256::repeat_byte(0x24),
             ..Default::default()
