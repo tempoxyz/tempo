@@ -68,7 +68,6 @@ use crate::{
     common::TempoStateAccess,
     error::{FeePaymentError, TempoHaltReason},
     evm::TempoContext,
-    gas_params::SSTORE_SET_COST,
 };
 
 /// Additional gas for P256 signature verification
@@ -1547,7 +1546,7 @@ where
         let mut effective_gas_price = tx.effective_gas_price(basefee);
         let gas = exec_result.gas();
         let gas_used = gas.used().saturating_sub(gas.reservoir());
-        if context.cfg.spec.is_t6() && tx.is_discounted_payment() && gas_used <= SSTORE_SET_COST {
+        if context.cfg.spec.is_t6() && tx.is_discounted_payment() {
             // TIP-1059 subtracts only the base-fee discount. The transaction-derived priority-fee
             // component remains payable.
             // https://github.com/tempoxyz/tempo/blob/main/tips/tip-1059.md#applying-the-discount
