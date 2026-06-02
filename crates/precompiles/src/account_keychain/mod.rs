@@ -1598,9 +1598,7 @@ mod tests {
     use revm::state::Bytecode;
     use tempo_chainspec::hardfork::TempoHardfork;
     use tempo_contracts::precompiles::{DEFAULT_FEE_TOKEN, IAccountKeychain::SignatureType};
-    use tempo_primitives::transaction::{
-        InitMultisig, MultisigOwner, SignatureType as PrimitiveSignatureType,
-    };
+    use tempo_primitives::transaction::{InitMultisig, MultisigOwner};
 
     fn authorize_key(
         keychain: &mut AccountKeychain,
@@ -1703,12 +1701,10 @@ mod tests {
             threshold: 1,
             owners: vec![
                 MultisigOwner {
-                    signature_type: PrimitiveSignatureType::Secp256k1,
                     owner: Address::from([0x11; 20]),
                     weight: 1,
                 },
                 MultisigOwner {
-                    signature_type: PrimitiveSignatureType::Secp256k1,
                     owner: Address::from([0x22; 20]),
                     weight: 1,
                 },

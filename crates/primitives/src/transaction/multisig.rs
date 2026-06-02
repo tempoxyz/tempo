@@ -1,7 +1,4 @@
-use super::{
-    PrimitiveSignature,
-    tempo_transaction::{MAX_WEBAUTHN_SIGNATURE_LENGTH, SignatureType},
-};
+use super::{PrimitiveSignature, tempo_transaction::MAX_WEBAUTHN_SIGNATURE_LENGTH};
 use crate::TempoAddressExt;
 use alloc::vec::Vec;
 use alloy_primitives::{Address, B256, Bytes, keccak256};
@@ -36,9 +33,7 @@ const MULTISIG_ACCOUNT_DOMAIN: &[u8] = b"tempo:multisig:account";
 #[cfg_attr(any(test, feature = "arbitrary"), derive(arbitrary::Arbitrary))]
 #[cfg_attr(test, reth_codecs::add_arbitrary_tests(rlp))]
 pub struct MultisigOwner {
-    /// Primitive signature type this owner must use.
-    pub signature_type: SignatureType,
-    /// Owner key ID derived from a primitive signature type.
+    /// Owner address recovered from a primitive signature.
     pub owner: Address,
     /// Nonzero owner weight.
     pub weight: u32,
@@ -256,15 +251,13 @@ pub fn validate_multisig_signature_shape(
 pub fn derive_multisig_config_id(config: &InitMultisig) -> Result<B256, &'static str> {
     validate_multisig_config(config)?;
 
-    let mut input = Vec::with_capacity(
-        MULTISIG_CONFIG_DOMAIN.len() + 32 + 8 + config.owners.len() * (1 + 20 + 4),
-    );
+    let mut input =
+        Vec::with_capacity(MULTISIG_CONFIG_DOMAIN.len() + 32 + 8 + config.owners.len() * (20 + 4));
     input.extend_from_slice(MULTISIG_CONFIG_DOMAIN);
     input.extend_from_slice(config.salt.as_slice());
     input.extend_from_slice(&config.threshold.to_be_bytes());
     input.extend_from_slice(&(config.owners.len() as u32).to_be_bytes());
     for owner in &config.owners {
-        input.push(owner.signature_type.into());
         input.extend_from_slice(owner.owner.as_slice());
         input.extend_from_slice(&owner.weight.to_be_bytes());
     }
@@ -338,9 +331,6 @@ pub fn verify_multisig_owner_signatures(
             .iter()
             .find(|entry| entry.owner == owner)
             .ok_or("multisig signer is not an owner")?;
-        if configured_owner.signature_type != signature.signature_type() {
-            return Err("multisig owner signature type mismatch");
-        }
 
         recovered_weight = recovered_weight
             .checked_add(u64::from(configured_owner.weight))
@@ -406,7 +396,6 @@ mod tests {
         let mut owners = owners
             .iter()
             .map(|(owner, weight)| MultisigOwner {
-                signature_type: SignatureType::Secp256k1,
                 owner: *owner,
                 weight: *weight,
             })
@@ -437,12 +426,10 @@ mod tests {
             threshold: 1,
             owners: vec![
                 MultisigOwner {
-                    signature_type: SignatureType::Secp256k1,
                     owner: owner_b,
                     weight: 1,
                 },
                 MultisigOwner {
-                    signature_type: SignatureType::Secp256k1,
                     owner: owner_a,
                     weight: 1,
                 },
