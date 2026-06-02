@@ -391,7 +391,7 @@ impl FromConsensusHeader<TempoHeader> for TempoHeaderResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use alloy_primitives::{TxKind, address};
+    use alloy_primitives::{B256, TxKind, address};
     use alloy_rpc_types_eth::TransactionRequest;
     use alloy_signer::SignerSync;
     use alloy_signer_local::PrivateKeySigner;
@@ -442,6 +442,7 @@ mod tests {
     #[test]
     fn test_try_into_tx_env_embeds_multisig_init_in_signature() {
         let init = InitMultisig {
+            salt: B256::repeat_byte(0x55),
             threshold: 1,
             owners: vec![MultisigOwner {
                 signature_type: SignatureType::Secp256k1,

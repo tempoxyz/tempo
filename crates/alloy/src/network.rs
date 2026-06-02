@@ -535,6 +535,7 @@ mod tests {
     fn output_tx_type_multisig_init_is_aa() {
         let req = TempoTransactionRequest {
             multisig_init: Some(InitMultisig {
+                salt: B256::ZERO,
                 threshold: 1,
                 owners: vec![MultisigOwner {
                     signature_type: SignatureType::Secp256k1,
