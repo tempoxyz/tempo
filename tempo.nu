@@ -1870,12 +1870,15 @@ def run-consensus-nodes [nodes: int, accounts: int, epoch_length: int, genesis: 
     # Ensure loopback aliases exist for distinct validator IPs (macOS only has 127.0.0.1 by default)
     if (sys host | get name) == "Darwin" {
         let extra_ips = ($validator_dirs | each { |d| $d | path basename | split row ":" | get 0 } | where { |ip| $ip != "127.0.0.1" })
-        if ($extra_ips | length) > 0 {
-            print $"Adding macOS loopback aliases for validator IPs: ($extra_ips | str join ', ') \(sudo required\)..."
+        let lo0 = (^ifconfig lo0 | complete)
+        let lo0_stdout = if $lo0.exit_code == 0 { $lo0.stdout } else { "" }
+        let missing_ips = ($extra_ips | where { |ip| not ($lo0_stdout | str contains $"inet ($ip) ") })
+        if ($missing_ips | length) > 0 {
+            print $"Adding macOS loopback aliases for validator IPs: ($missing_ips | str join ', ') \(sudo required\)..."
         }
         for dir in $validator_dirs {
             let ip = ($dir | path basename | split row ":" | get 0)
-            if $ip != "127.0.0.1" {
+            if $ip != "127.0.0.1" and not ($lo0_stdout | str contains $"inet ($ip) ") {
                 try { sudo ifconfig lo0 alias $ip up } catch { |e|
                     print $"(ansi red)Failed to add loopback alias ($ip): ($e.msg)(ansi reset)"
                     print "Run: sudo ifconfig lo0 alias $ip up"
