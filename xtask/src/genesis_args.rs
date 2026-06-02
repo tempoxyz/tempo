@@ -27,6 +27,7 @@ use reth_evm::{
         DatabaseCommit,
         context_interface::JournalTr as _,
         database::{CacheDB, EmptyDB},
+        inspector::JournalExt as _,
         state::{AccountInfo, Bytecode},
     },
 };
@@ -451,7 +452,7 @@ impl GenesisArgs {
 
         // Save EVM state to allocation
         println!("Saving EVM state to allocation");
-        let evm_state = evm.ctx_mut().journaled_state.evm_state();
+        let evm_state = evm.ctx_mut().journaled_state.evm_state_mut();
         let mut genesis_alloc: BTreeMap<Address, GenesisAccount> = evm_state
             .iter()
             .progress()

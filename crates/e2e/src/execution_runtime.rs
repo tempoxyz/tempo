@@ -12,7 +12,10 @@ use alloy::{
     signers::{local::MnemonicBuilder, utils::secret_key_to_address},
     transports::http::reqwest::Url,
 };
-use alloy_evm::{EvmFactory as _, revm::context::JournalTr};
+use alloy_evm::{
+    EvmFactory as _,
+    revm::{context::JournalTr, inspector::JournalExt as _},
+};
 use alloy_genesis::{Genesis, GenesisAccount};
 use alloy_primitives::{Address, B256, Keccak256, U256};
 use commonware_codec::Encode;
@@ -189,7 +192,7 @@ impl Builder {
             })
         }
 
-        let evm_state = evm.ctx_mut().journaled_state.evm_state();
+        let evm_state = evm.ctx_mut().journaled_state.evm_state_mut();
         for (address, account) in evm_state.iter() {
             let storage = if !account.storage.is_empty() {
                 Some(

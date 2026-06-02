@@ -8,7 +8,7 @@ mod metrics;
 mod prewarming;
 
 pub use budget::DEFAULT_BUILD_TIME_MULTIPLIER;
-use crossbeam_channel::Sender;
+use crossbeam_channel::{Receiver, Sender};
 use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 
 use crate::{
@@ -76,7 +76,7 @@ use tempo_transaction_pool::{
     StateAwareBestTransactions, TempoTransactionPool,
     transaction::{TempoPoolTransactionError, TempoPooledTransaction},
 };
-use tokio::sync::oneshot;
+use tokio as _;
 use tracing::{Level, debug, debug_span, error, info, instrument, trace, warn};
 
 /// Returns true if a subblock has any expired transactions for the given timestamp.
@@ -926,9 +926,8 @@ where
             (state_root, Arc::new(trie_updates))
         };
 
-        let (transactions_root, receipts_root, receipts_bloom, transactions, senders) = roots_rx
-            .blocking_recv()
-            .map_err(PayloadBuilderError::other)?;
+        let (transactions_root, receipts_root, receipts_bloom, transactions, senders) =
+            roots_rx.recv().map_err(PayloadBuilderError::other)?;
 
         let block = self.evm_config.block_assembler.assemble_block(
             BlockAssemblerInput::new(
@@ -1125,14 +1124,14 @@ where
         &self,
     ) -> (
         Sender<(BuilderTx, TempoReceipt)>,
-        oneshot::Receiver<(B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>)>,
+        Receiver<(B256, B256, Bloom, Vec<TempoTxEnvelope>, Vec<Address>)>,
     ) {
         let (transactions_tx, transactions_rx) =
             crossbeam_channel::unbounded::<(BuilderTx, TempoReceipt)>();
-        let (result_tx, result_rx) = oneshot::channel();
+        let (result_tx, result_rx) = crossbeam_channel::bounded(1);
 
         self.executor
-            .spawn_blocking_named("builder-roots-task", || {
+            .spawn_blocking_named("builder-roots-task", move || {
                 let mut transactions = Vec::new();
                 let mut senders = Vec::new();
                 let mut encoded_transactions = Vec::new();

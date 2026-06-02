@@ -37,6 +37,7 @@ use revm::{
     DatabaseCommit,
     context::{BlockEnv, CfgEnv, JournalTr},
     database::{CacheDB, DbAccount, EmptyDB},
+    inspector::JournalExt as _,
 };
 use std::{
     collections::BTreeSet,
@@ -393,7 +394,7 @@ fn seed_in_memory_cache_db(
     )
     .expect("failed to seed TIP20 benchmark state");
 
-    let evm_state = evm.ctx_mut().journaled_state.evm_state().clone();
+    let evm_state = evm.ctx_mut().journaled_state.evm_state_mut().clone();
     evm.db_mut().commit(evm_state);
     evm.finish().0
 }
