@@ -22,20 +22,28 @@ use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
     context::result::ResultAndState,
-    state::{Account, Bytecode, EvmState},
+    state::{Account, Bytecode, EvmState, EvmStorageSlot, TransactionId},
 };
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    time::Instant,
+};
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardforks};
 use tempo_contracts::precompiles::{
     ADDRESS_REGISTRY_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS, SIGNATURE_VERIFIER_ADDRESS,
     TIP20_CHANNEL_RESERVE_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+};
+use tempo_precompiles::{
+    TIP_FEE_MANAGER_ADDRESS,
+    storage::StorageKey as _,
+    tip_fee_manager::{CollectedFeeCredit, slots as fee_manager_slots},
 };
 use tempo_primitives::{
     SubBlock, SubBlockMetadata, TempoReceipt, TempoTxEnvelope, TempoTxType,
     subblock::PartialValidatorKey,
 };
 use tempo_revm::{TempoHaltReason, evm::TempoContext};
-use tracing::trace;
+use tracing::{debug, trace};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum BlockSection {
@@ -51,6 +59,55 @@ pub(crate) enum BlockSection {
     GasIncentive,
     /// End of block system transactions.
     System { seen_subblocks_signatures: bool },
+}
+
+fn collected_fee_slot(recipient: Address, token: Address) -> U256 {
+    token.mapping_slot(recipient.mapping_slot(fee_manager_slots::COLLECTED_FEES))
+}
+
+fn collected_fee_state<DB>(
+    increments: &HashMap<(Address, Address), U256>,
+    state: &mut DB,
+) -> Result<EvmState, BlockExecutionError>
+where
+    DB: Database,
+{
+    let info = state
+        .basic(TIP_FEE_MANAGER_ADDRESS)
+        .map_err(BlockExecutionError::other)?;
+    let mut account = info
+        .map(Account::from)
+        .unwrap_or_else(|| Account::new_not_existing(TransactionId::ZERO));
+
+    for (&(recipient, token), &amount) in increments {
+        if amount.is_zero() {
+            continue;
+        }
+
+        let slot = collected_fee_slot(recipient, token);
+        let current = state
+            .storage(TIP_FEE_MANAGER_ADDRESS, slot)
+            .map_err(BlockExecutionError::other)?;
+        let updated = current
+            .checked_add(amount)
+            .ok_or_else(|| BlockExecutionError::msg("collected fee accumulator overflow"))?;
+
+        account.storage.insert(
+            slot,
+            EvmStorageSlot::new_changed(current, updated, TransactionId::ZERO),
+        );
+    }
+
+    if account.storage.is_empty() {
+        return Ok(EvmState::default());
+    }
+
+    if account.info.is_empty() {
+        account.mark_created();
+    }
+    account.mark_touch();
+
+    Ok(EvmState::from_iter([(TIP_FEE_MANAGER_ADDRESS, account)]))
 }
 
 /// Builder for [`TempoReceipt`].
@@ -103,6 +160,8 @@ pub struct TempoTxResult {
     /// Used by the payload builder to score blocks by actual proposer revenue. The value is the
     /// post-feeAMM amount, regardless of route shape — absorbs any number of pool haircuts.
     validator_fee: U256,
+    /// Deferred `collected_fees` ledger increment reported by `collectFeePostTx`.
+    validator_fee_credit: Option<CollectedFeeCredit>,
 }
 
 impl TempoTxResult {
@@ -119,6 +178,11 @@ impl TempoTxResult {
     /// Returns the validator-credited fee amount (post-feeAMM haircut) for this transaction.
     pub fn validator_fee(&self) -> U256 {
         self.validator_fee
+    }
+
+    /// Returns the deferred `collected_fees` ledger increment reported for this transaction.
+    pub fn validator_fee_credit(&self) -> Option<CollectedFeeCredit> {
+        self.validator_fee_credit
     }
 }
 
@@ -152,6 +216,7 @@ pub struct TempoBlockExecutor<'a, DB: Database, I> {
     non_shared_gas_left: u64,
     non_payment_gas_left: u64,
     incentive_gas_used: u64,
+    pending_collected_fee_credits: Vec<CollectedFeeCredit>,
 }
 
 impl<'a, DB, I> TempoBlockExecutor<'a, DB, I>
@@ -179,7 +244,58 @@ where
             section: BlockSection::StartOfBlock,
             seen_subblocks: Vec::new(),
             subblock_fee_recipients: ctx.subblock_fee_recipients,
+            pending_collected_fee_credits: Vec::new(),
         }
+    }
+
+    /// Applies deferred `collected_fees` ledger increments as a post-block state update.
+    pub fn apply_deferred_collected_fees(&mut self) -> Result<(), BlockExecutionError> {
+        let total_start = Instant::now();
+        let pending_credits = self.pending_collected_fee_credits.len();
+        if self.pending_collected_fee_credits.is_empty() {
+            return Ok(());
+        }
+
+        let mut increments = HashMap::<(Address, Address), U256>::new();
+        for credit in &self.pending_collected_fee_credits {
+            if credit.amount.is_zero() {
+                continue;
+            }
+
+            let entry = increments
+                .entry((credit.recipient, credit.token))
+                .or_default();
+            *entry = entry
+                .checked_add(credit.amount)
+                .ok_or_else(|| BlockExecutionError::msg("collected fee credit overflow"))?;
+        }
+
+        let unique_increments = increments.len();
+        if increments.is_empty() {
+            self.pending_collected_fee_credits.clear();
+            return Ok(());
+        }
+
+        let state = collected_fee_state(&increments, self.inner.evm.db_mut())?;
+        let state_storage_slots = state
+            .values()
+            .map(|account| account.storage.len())
+            .sum::<usize>();
+
+        // `State::commit` invokes the configured state hook in the current Reth/revm version.
+        self.inner.evm.db_mut().commit(state);
+        self.pending_collected_fee_credits.clear();
+
+        debug!(
+            target: "evm",
+            pending_credits,
+            unique_increments,
+            state_storage_slots,
+            elapsed = ?total_start.elapsed(),
+            "applied deferred collected fee credits"
+        );
+
+        Ok(())
     }
 
     /// Deploys `0xEF` marker bytecode to a precompile address if it doesn't already have code.
@@ -547,6 +663,7 @@ where
         };
         // Snapshot the per-tx validator-credited fee set by the handler's `reimburse_caller`
         let validator_fee = self.evm().validator_fee();
+        let validator_fee_credit = self.evm().validator_fee_credit();
         Ok(TempoTxResult {
             inner,
             next_section,
@@ -555,6 +672,7 @@ where
                 .then(|| recovered.tx().clone()),
             block_gas_used,
             validator_fee,
+            validator_fee_credit,
         })
     }
 
@@ -566,9 +684,14 @@ where
             tx,
             block_gas_used,
             validator_fee: _,
+            validator_fee_credit,
         } = output;
 
         let gas_output = self.inner.commit_transaction(inner);
+
+        if let Some(credit) = validator_fee_credit {
+            self.pending_collected_fee_credits.push(credit);
+        }
 
         self.section = next_section;
 
@@ -610,7 +733,7 @@ where
     }
 
     fn finish(
-        self,
+        mut self,
     ) -> Result<(Self::Evm, BlockExecutionResult<Self::Receipt>), BlockExecutionError> {
         let seen_subblock_signatures = match self.section {
             BlockSection::System {
@@ -623,6 +746,8 @@ where
         if !seen_subblock_signatures && self.evm().cfg.spec.is_t4() {
             self.validate_shared_gas(&[])?;
         }
+
+        self.apply_deferred_collected_fees()?;
 
         let amsterdam_eip8037_enabled = self.evm().cfg.enable_amsterdam_eip8037;
 
@@ -1318,12 +1443,87 @@ mod tests {
             tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
+            validator_fee_credit: None,
         };
 
         let gas_output = executor.commit_transaction(output);
 
         assert_eq!(gas_output.tx_gas_used(), 21000);
         assert_eq!(executor.section(), BlockSection::NonShared);
+    }
+
+    #[test]
+    fn test_apply_deferred_collected_fees_aggregates_and_dispatches_state_hook() {
+        use revm::Database as _;
+
+        let chainspec = test_chainspec();
+        let mut db = State::builder().with_bundle_update().build();
+        let mut executor = TestExecutorBuilder::default()
+            .with_general_gas_limit(30_000_000)
+            .with_parent_beacon_block_root(B256::ZERO)
+            .build(&mut db, &chainspec);
+
+        executor.apply_pre_execution_changes().unwrap();
+
+        let recipient = Address::with_last_byte(0x42);
+        let token = Address::with_last_byte(0x20);
+        let make_output = |amount| {
+            let tx = create_legacy_tx();
+            TempoTxResult {
+                inner: EthTxResult {
+                    result: ResultAndState {
+                        result: revm::context::result::ExecutionResult::Success {
+                            reason: revm::context::result::SuccessReason::Return,
+                            gas: ResultGas::default().with_total_gas_spent(21000),
+                            logs: vec![],
+                            output: revm::context::result::Output::Call(Bytes::new()),
+                        },
+                        state: Default::default(),
+                    },
+                    blob_gas_used: 0,
+                    tx_type: tx.tx_type(),
+                },
+                next_section: BlockSection::NonShared,
+                is_payment: false,
+                tx: None,
+                block_gas_used: 21000,
+                validator_fee: amount,
+                validator_fee_credit: Some(CollectedFeeCredit {
+                    recipient,
+                    token,
+                    amount,
+                }),
+            }
+        };
+
+        executor.commit_transaction(make_output(U256::from(5)));
+        executor.commit_transaction(make_output(U256::from(7)));
+
+        let hook_calls: Arc<Mutex<Vec<EvmState>>> = Arc::new(Mutex::new(Vec::new()));
+        let hook_calls_clone = hook_calls.clone();
+        executor
+            .evm_mut()
+            .db_mut()
+            .set_state_hook(Some(Box::new(move |state: &EvmState| {
+                hook_calls_clone.lock().unwrap().push(state.clone());
+            })));
+
+        executor.apply_deferred_collected_fees().unwrap();
+
+        let slot = collected_fee_slot(recipient, token);
+        assert_eq!(
+            db.storage(TIP_FEE_MANAGER_ADDRESS, slot).unwrap(),
+            U256::from(12)
+        );
+
+        let calls = hook_calls.lock().unwrap();
+        assert_eq!(
+            calls.len(),
+            1,
+            "state hook should receive one collected fee post-block update"
+        );
+        let account = &calls[0][&TIP_FEE_MANAGER_ADDRESS];
+        assert_eq!(account.storage[&slot].present_value, U256::from(12));
     }
 
     #[test]
@@ -1401,6 +1601,7 @@ mod tests {
             tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
+            validator_fee_credit: None,
         };
 
         let gas_output = executor.commit_transaction(output);
@@ -1441,6 +1642,7 @@ mod tests {
             tx: None,
             block_gas_used: 21000,
             validator_fee: U256::ZERO,
+            validator_fee_credit: None,
         };
         executor.commit_transaction(output1);
 
@@ -1465,6 +1667,7 @@ mod tests {
             tx: None,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
+            validator_fee_credit: None,
         };
         executor.commit_transaction(output2);
 
@@ -1528,6 +1731,7 @@ mod tests {
             tx: None,
             block_gas_used: 50000,
             validator_fee: U256::ZERO,
+            validator_fee_credit: None,
         };
         executor.commit_transaction(output);
 
@@ -1574,6 +1778,7 @@ mod tests {
             tx: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
+            validator_fee_credit: None,
         };
         executor.commit_transaction(output);
 
@@ -1623,6 +1828,7 @@ mod tests {
             tx: None,
             block_gas_used: 200_000,
             validator_fee: U256::ZERO,
+            validator_fee_credit: None,
         };
         executor.commit_transaction(output);
 

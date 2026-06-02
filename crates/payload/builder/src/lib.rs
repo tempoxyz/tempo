@@ -864,6 +864,10 @@ where
 
         check_cancel!();
 
+        executor
+            .apply_deferred_collected_fees()
+            .map_err(PayloadBuilderError::evm)?;
+
         let builder_finish_start = Instant::now();
 
         // Drop the roots task handle to trigger finalization
