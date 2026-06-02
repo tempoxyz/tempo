@@ -6,7 +6,6 @@ use reth_node_api::PayloadAttributes;
 use reth_primitives_traits::{AlloyBlockHeader as _, SealedHeader};
 use serde::{Deserialize, Serialize};
 use std::{
-    collections::HashSet,
     error::Error,
     fmt,
     sync::{Arc, Condvar, Mutex, MutexGuard},
@@ -27,13 +26,6 @@ pub struct TempoPayloadAttributes {
     #[deref_mut]
     #[serde(flatten)]
     inner: EthPayloadAttributes,
-    /// Remaining local proposal budget available to this payload build.
-    ///
-    /// Consensus sets this to the proposal return budget left when it dispatches
-    /// the build. `None` means the build was not requested by consensus, so the
-    /// builder should not stop early for block pacing.
-    #[serde(skip)]
-    payload_build_budget: Option<Duration>,
     /// Shared build-control state for consensus payloads.
     ///
     /// This lets consensus start replayable build work before the proposal
@@ -47,7 +39,7 @@ pub struct TempoPayloadAttributes {
     /// Pool transactions already mined in the parent block and ineligible for this child payload.
     #[debug(skip)]
     #[serde(skip)]
-    excluded_pool_transaction_hashes: Arc<HashSet<B256>>,
+    excluded_pool_transaction_hashes: Arc<[B256]>,
     /// Whether this payload may expose executed block state to the node builder insertion fast path.
     #[serde(skip, default = "default_publish_executed_block")]
     publish_executed_block: bool,
@@ -99,10 +91,9 @@ impl TempoPayloadAttributes {
                 parent_beacon_block_root: Some(B256::ZERO),
                 slot_number: None,
             },
-            payload_build_budget: None,
             payload_build_control: None,
             speculative_parent: None,
-            excluded_pool_transaction_hashes: Arc::default(),
+            excluded_pool_transaction_hashes: Vec::new().into(),
             publish_executed_block: true,
             timestamp_millis_part,
             extra_data,
@@ -122,16 +113,6 @@ impl TempoPayloadAttributes {
         self.proposer_public_key.as_ref()
     }
 
-    /// Sets the remaining local proposal budget for a consensus payload build.
-    ///
-    /// The value should already account for any time spent before the build was
-    /// requested. The builder treats it as a shared budget for leader
-    /// build/persist work and validator replay/persist work.
-    pub fn with_payload_build_budget(mut self, budget: Duration) -> Self {
-        self.payload_build_budget = Some(budget);
-        self
-    }
-
     /// Sets the shared build-control handle for this payload build.
     pub fn with_payload_build_control(mut self, control: PayloadBuildControl) -> Self {
         self.payload_build_control = Some(control);
@@ -149,7 +130,7 @@ impl TempoPayloadAttributes {
         mut self,
         hashes: impl IntoIterator<Item = B256>,
     ) -> Self {
-        self.excluded_pool_transaction_hashes = Arc::new(hashes.into_iter().collect());
+        self.excluded_pool_transaction_hashes = hashes.into_iter().collect::<Vec<_>>().into();
         self
     }
 
@@ -163,15 +144,6 @@ impl TempoPayloadAttributes {
         self
     }
 
-    /// Returns the consensus-provided build budget, if this is a paced build.
-    ///
-    /// `None` is intentional for non-consensus builds such as dev or external
-    /// payload requests; those builds are not constrained by the consensus
-    /// block-time budget.
-    pub fn payload_build_budget(&self) -> Option<Duration> {
-        self.payload_build_budget
-    }
-
     /// Returns the shared build-control handle, if this is a controlled build.
     pub fn payload_build_control(&self) -> Option<&PayloadBuildControl> {
         self.payload_build_control.as_ref()
@@ -183,7 +155,7 @@ impl TempoPayloadAttributes {
     }
 
     /// Returns pool transaction hashes that must not be considered for this payload.
-    pub fn excluded_pool_transaction_hashes(&self) -> &HashSet<B256> {
+    pub fn excluded_pool_transaction_hashes(&self) -> &[B256] {
         self.excluded_pool_transaction_hashes.as_ref()
     }
 
@@ -223,10 +195,9 @@ impl From<EthPayloadAttributes> for TempoPayloadAttributes {
     fn from(inner: EthPayloadAttributes) -> Self {
         Self {
             inner,
-            payload_build_budget: None,
             payload_build_control: None,
             speculative_parent: None,
-            excluded_pool_transaction_hashes: Arc::default(),
+            excluded_pool_transaction_hashes: Vec::new().into(),
             publish_executed_block: true,
             timestamp_millis_part: 0,
             extra_data: Bytes::default(),
@@ -296,8 +267,7 @@ struct PayloadBuildControlInner {
 
 #[derive(Clone, Debug)]
 struct ProposalTiming {
-    propose_start: Instant,
-    payload_context: Option<PayloadProposalContext>,
+    payload_context: PayloadProposalContext,
 }
 
 /// Consensus payload fields that may be attached after speculative execution starts.
@@ -308,14 +278,6 @@ pub struct PayloadProposalContext {
 }
 
 impl PayloadProposalContext {
-    /// Creates proposal sealing context from the final consensus fields.
-    pub fn new(extra_data: Bytes, consensus_context: TempoConsensusContext) -> Self {
-        Self {
-            extra_data,
-            consensus_context,
-        }
-    }
-
     /// Returns the extra data to seal into the header.
     pub fn extra_data(&self) -> &Bytes {
         &self.extra_data
@@ -332,7 +294,6 @@ impl PayloadProposalContext {
 pub struct PayloadBuildControlSnapshot {
     proposal_return_budget: Duration,
     builder_elapsed: Duration,
-    proposal_elapsed: Option<Duration>,
 }
 
 impl PayloadBuildControl {
@@ -353,28 +314,9 @@ impl PayloadBuildControl {
         }
     }
 
-    /// Attaches the proposal start time once `handle_propose` reaches this build.
-    pub fn attach_proposal_timing(
-        &self,
-        propose_start: Instant,
-    ) -> Result<(), ProposalTimingAlreadyAttached> {
-        let mut proposal_timing = self.proposal_timing();
-        if proposal_timing.is_some() {
-            return Err(ProposalTimingAlreadyAttached);
-        }
-
-        *proposal_timing = Some(ProposalTiming {
-            propose_start,
-            payload_context: None,
-        });
-        self.inner.proposal_timing_changed.notify_all();
-        Ok(())
-    }
-
     /// Attaches proposal timing and the consensus fields needed to seal this payload.
     pub fn attach_proposal_context(
         &self,
-        propose_start: Instant,
         extra_data: Bytes,
         consensus_context: TempoConsensusContext,
     ) -> Result<(), ProposalTimingAlreadyAttached> {
@@ -384,11 +326,10 @@ impl PayloadBuildControl {
         }
 
         *proposal_timing = Some(ProposalTiming {
-            propose_start,
-            payload_context: Some(PayloadProposalContext {
+            payload_context: PayloadProposalContext {
                 extra_data,
                 consensus_context,
-            }),
+            },
         });
         self.inner.proposal_timing_changed.notify_all();
         Ok(())
@@ -403,7 +344,7 @@ impl PayloadBuildControl {
     pub fn proposal_context(&self) -> Option<PayloadProposalContext> {
         self.proposal_timing()
             .as_ref()
-            .and_then(|timing| timing.payload_context.clone())
+            .map(|timing| timing.payload_context.clone())
     }
 
     /// Waits until proposal context is attached or `should_cancel` returns true.
@@ -415,7 +356,7 @@ impl PayloadBuildControl {
         loop {
             if let Some(payload_context) = proposal_timing
                 .as_ref()
-                .and_then(|timing| timing.payload_context.clone())
+                .map(|timing| timing.payload_context.clone())
             {
                 return Ok(payload_context);
             }
@@ -439,13 +380,9 @@ impl PayloadBuildControl {
 
     /// Returns a consistent snapshot of the control state at `now`.
     pub fn snapshot_at(&self, now: Instant) -> PayloadBuildControlSnapshot {
-        let proposal_timing = self.proposal_timing();
         PayloadBuildControlSnapshot {
             proposal_return_budget: self.inner.proposal_return_budget,
             builder_elapsed: now.saturating_duration_since(self.inner.builder_start),
-            proposal_elapsed: proposal_timing
-                .as_ref()
-                .map(|timing| now.saturating_duration_since(timing.propose_start)),
         }
     }
 
@@ -466,16 +403,6 @@ impl PayloadBuildControlSnapshot {
     /// Returns elapsed replayable build work time since verify-time dispatch.
     pub fn builder_elapsed(&self) -> Duration {
         self.builder_elapsed
-    }
-
-    /// Returns elapsed proposer time if `handle_propose` has attached.
-    pub fn proposal_elapsed(&self) -> Option<Duration> {
-        self.proposal_elapsed
-    }
-
-    /// Returns true once proposer timing has been attached.
-    pub fn proposal_timing_attached(&self) -> bool {
-        self.proposal_elapsed.is_some()
     }
 }
 
@@ -673,9 +600,10 @@ mod tests {
         let attrs = TempoPayloadAttributes::random()
             .with_excluded_pool_transaction_hashes([hash_a, hash_b, hash_a]);
 
-        assert_eq!(attrs.excluded_pool_transaction_hashes().len(), 2);
-        assert!(attrs.excluded_pool_transaction_hashes().contains(&hash_a));
-        assert!(attrs.excluded_pool_transaction_hashes().contains(&hash_b));
+        assert_eq!(
+            attrs.excluded_pool_transaction_hashes(),
+            &[hash_a, hash_b, hash_a]
+        );
     }
 
     #[test]
@@ -820,20 +748,20 @@ mod tests {
             Duration::from_millis(300)
         );
         assert_eq!(before_attach.builder_elapsed(), Duration::from_millis(25));
-        assert_eq!(before_attach.proposal_elapsed(), None);
-        assert!(!before_attach.proposal_timing_attached());
         assert!(!control.proposal_timing_attached());
 
-        let propose_start = builder_start + Duration::from_millis(40);
-        control.attach_proposal_timing(propose_start).unwrap();
+        let consensus_context = TempoConsensusContext {
+            epoch: 1,
+            view: 2,
+            parent_view: 1,
+            proposer: PublicKey::from_seed([0xab; 32]),
+        };
+        control
+            .attach_proposal_context(Bytes::default(), consensus_context)
+            .unwrap();
 
         let after_attach = control.snapshot_at(builder_start + Duration::from_millis(75));
         assert_eq!(after_attach.builder_elapsed(), Duration::from_millis(75));
-        assert_eq!(
-            after_attach.proposal_elapsed(),
-            Some(Duration::from_millis(35))
-        );
-        assert!(after_attach.proposal_timing_attached());
         assert!(control.proposal_timing_attached());
     }
 
@@ -849,7 +777,7 @@ mod tests {
         let extra_data = Bytes::from_static(b"dkg");
 
         control
-            .attach_proposal_context(Instant::now(), extra_data.clone(), consensus_context)
+            .attach_proposal_context(extra_data.clone(), consensus_context)
             .unwrap();
 
         let context = control
@@ -873,10 +801,18 @@ mod tests {
     #[test]
     fn payload_build_control_rejects_double_attach() {
         let control = PayloadBuildControl::new(Duration::from_millis(300));
-        control.attach_proposal_timing(Instant::now()).unwrap();
+        let consensus_context = TempoConsensusContext {
+            epoch: 1,
+            view: 2,
+            parent_view: 1,
+            proposer: PublicKey::from_seed([0xab; 32]),
+        };
+        control
+            .attach_proposal_context(Bytes::default(), consensus_context)
+            .unwrap();
 
         assert_eq!(
-            control.attach_proposal_timing(Instant::now()),
+            control.attach_proposal_context(Bytes::default(), consensus_context),
             Err(ProposalTimingAlreadyAttached)
         );
     }

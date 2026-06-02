@@ -61,6 +61,7 @@ use reth_transaction_pool::{
     ValidPoolTransaction, error::InvalidPoolTransactionError,
 };
 use std::{
+    collections::HashSet,
     sync::{
         Arc,
         atomic::{AtomicU64, Ordering},
@@ -617,13 +618,19 @@ where
         let mut invalid_pool_transaction_execution_attempts = 0u64;
         let mut excluded_pool_transaction_skips = 0u64;
         let mut normal_transaction_fill_idle_elapsed = Duration::ZERO;
-        let excluded_pool_transaction_hashes = attributes.excluded_pool_transaction_hashes();
+        let excluded_pool_transaction_hashes =
+            (!attributes.excluded_pool_transaction_hashes().is_empty()).then(|| {
+                attributes
+                    .excluded_pool_transaction_hashes()
+                    .iter()
+                    .copied()
+                    .collect::<HashSet<_>>()
+            });
         // Consensus builds carry a remaining proposal budget. When present, the
         // builder stops pool tx execution before projected proposer and validator
         // work would consume that window.
-        let payload_build_budget = attributes.payload_build_budget();
         let payload_build_control = attributes.payload_build_control().cloned();
-        let is_budgeted_build = payload_build_budget.is_some() || payload_build_control.is_some();
+        let is_budgeted_build = payload_build_control.is_some();
         let build_time_multiplier = self.build_time_multiplier();
         let marshal_persist = marshal_persist_estimate();
         let block_build_stop_reason = loop {
@@ -634,8 +641,7 @@ where
                 .map(|control| control.snapshot());
             let active_build_budget = build_budget_snapshot
                 .as_ref()
-                .map(|snapshot| snapshot.proposal_return_budget())
-                .or(payload_build_budget);
+                .map(|snapshot| snapshot.proposal_return_budget());
             if let Some(build_budget) = active_build_budget {
                 let elapsed = build_budget_snapshot
                     .as_ref()
@@ -666,17 +672,16 @@ where
             }
 
             let Some(pool_tx) = best_txs.next() else {
-                let control_pending_proposal = payload_build_control
+                let proposal_context_attached = payload_build_control
                     .as_ref()
-                    .is_some_and(|control| !control.proposal_timing_attached());
+                    .map_or(true, |control| control.proposal_timing_attached());
                 let can_wait_for_pool = cumulative_gas_used < non_shared_gas_limit
                     && is_budgeted_build
-                    && (build_once_with_shared_trie || control_pending_proposal);
+                    && build_once_with_shared_trie
+                    && proposal_context_attached;
                 if can_wait_for_pool {
                     std::thread::sleep(Duration::from_millis(1));
-                    if !control_pending_proposal {
-                        normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
-                    }
+                    normal_transaction_fill_idle_elapsed += Duration::from_millis(1);
                     continue;
                 }
                 let stop_reason = if cumulative_gas_used >= non_shared_gas_limit {
@@ -690,7 +695,10 @@ where
             };
             pool_transactions_yielded += 1;
 
-            if excluded_pool_transaction_hashes.contains(pool_tx.hash()) {
+            if excluded_pool_transaction_hashes
+                .as_ref()
+                .is_some_and(|hashes| hashes.contains(pool_tx.hash()))
+            {
                 excluded_pool_transaction_skips += 1;
                 self.metrics.inc_pool_tx_skipped("parent_block_tx");
                 continue;

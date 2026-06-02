@@ -594,7 +594,10 @@ impl Inner<Init> {
 
                     Some(block) = &mut already_verified => {
                         drop(proposal);
-                        self.cancel_payload_build(&mut payload_id_rx).await;
+                        self.cancel_payload_build(
+                            &mut payload_id_rx,
+                            "proposal_already_verified_on_restart",
+                        );
                         debug!("skipping proposal: verified block already exists for round on restart");
                         (block, None)
                     },
@@ -664,7 +667,10 @@ impl Inner<Init> {
             tokio::select! {
                 () = response.closed() => {
                     drop(proposal);
-                    self.cancel_payload_build(&mut payload_id_rx).await;
+                    self.cancel_payload_build(
+                        &mut payload_id_rx,
+                        "proposal_response_channel_closed",
+                    );
 
                     return Err(eyre!(
                         "proposal return channel was closed by consensus \
@@ -747,32 +753,39 @@ impl Inner<Init> {
         Ok(())
     }
 
-    async fn cancel_payload_build(&self, payload_id_rx: &mut Option<PendingPayloadId>) {
+    fn cancel_payload_build(
+        &self,
+        payload_id_rx: &mut Option<PendingPayloadId>,
+        reason: &'static str,
+    ) {
         let Some(mut pending) = payload_id_rx.take() else {
             return;
         };
 
-        let payload_id = match pending.recv().await {
-            Ok(payload_id) => payload_id,
-            Err(error) => {
-                warn!(%error, "payload build was not started before cancellation");
-                return;
-            }
-        };
+        let execution_node = self.execution_node.clone();
+        let task_executor = execution_node.task_executor.clone();
+        task_executor.spawn_task(async move {
+            let payload_id = match pending.recv().await {
+                Ok(payload_id) => payload_id,
+                Err(error) => {
+                    warn!(%error, reason, "payload build was not started before cancellation");
+                    return;
+                }
+            };
 
-        let fut = match self
-            .execution_node
-            .payload_builder_handle
-            .resolve_kind_fut(payload_id, PayloadKind::WaitForPending)
-            .await
-        {
-            Ok(fut) => fut,
-            Err(error) => {
-                warn!(%error, %payload_id, "failed resolving payload while cancelling build");
-                return;
-            }
-        };
-        drop(fut);
+            let fut = match execution_node
+                .payload_builder_handle
+                .resolve_kind_fut(payload_id, PayloadKind::WaitForPending)
+                .await
+            {
+                Ok(fut) => fut,
+                Err(error) => {
+                    warn!(%error, %payload_id, reason, "failed resolving payload while cancelling build");
+                    return;
+                }
+            };
+            drop(fut);
+        });
     }
 
     async fn proposal_extra_data(
@@ -833,6 +846,33 @@ impl Inner<Init> {
         }
     }
 
+    async fn verify_proposal_parent<TContext: Pacer>(
+        &self,
+        context: TContext,
+        parent_epoch: Epoch,
+        parent: &Block,
+    ) -> eyre::Result<()> {
+        if !verify_block(
+            context,
+            parent_epoch,
+            &self.epoch_strategy,
+            self.execution_node
+                .add_ons_handle
+                .beacon_engine_handle
+                .clone(),
+            parent,
+            parent.parent_digest(),
+            &self.scheme_provider,
+        )
+        .await
+        .wrap_err("failed verifying block against execution layer")?
+        {
+            bail!("the proposal parent block is not valid");
+        }
+
+        Ok(())
+    }
+
     async fn build_proposal<TContext: Pacer>(
         self,
         context: TContext,
@@ -884,33 +924,6 @@ impl Inner<Init> {
             || parent_epoch_info.last() == parent.height()
                 && parent_epoch_info.epoch().next() == round.epoch();
 
-        // Send the proposal parent to execution layer to cover edge cases when
-        // we were not asked to to verify it (and hence are missing it in the
-        // EL).
-        //
-        // If proposing the first block of an epoch, its parent
-        // (genesis/boundary block) must exist and be finalized, so we can skip
-        // it.
-        if !is_genesis_parent
-            && !verify_block(
-                context.clone(),
-                parent_epoch_info.epoch(),
-                &self.epoch_strategy,
-                self.execution_node
-                    .add_ons_handle
-                    .beacon_engine_handle
-                    .clone(),
-                &parent,
-                // It is safe to not verify the parent of the parent because this block is already notarized.
-                parent.parent_digest(),
-                &self.scheme_provider,
-            )
-            .await
-            .wrap_err("failed verifying block against execution layer")?
-        {
-            bail!("the proposal parent block is not valid");
-        }
-
         // Query DKG manager for ceremony data before building or attaching payload.
         let extra_data = self
             .proposal_extra_data(&parent, parent_digest, round)
@@ -950,7 +963,7 @@ impl Inner<Init> {
                 .expect("proposal consensus context is constructed immediately above");
             speculative_build
                 .build_control
-                .attach_proposal_context(propose_start, extra_data, consensus_context)
+                .attach_proposal_context(extra_data, consensus_context)
                 .map_err(|error| eyre!("failed attaching speculative proposal context: {error}"))?;
             self.metrics
                 .speculative_payload_builds_reused_by_propose
@@ -960,6 +973,20 @@ impl Inner<Init> {
                 parent.height = %parent.height(),
                 "attached proposal context to speculative BAL payload build"
             );
+
+            if !is_genesis_parent {
+                if let Err(error) = self
+                    .verify_proposal_parent(context.clone(), parent_epoch_info.epoch(), &parent)
+                    .await
+                {
+                    SpeculativeBuildRegistry::spawn_cancel(
+                        self.execution_node.clone(),
+                        speculative_build,
+                        "proposal_parent_validation_failed",
+                    );
+                    return Err(error);
+                }
+            }
 
             let (proposal, proposal_return) = self
                 .resolve_speculative_proposal_payload(
@@ -974,6 +1001,15 @@ impl Inner<Init> {
             return Ok((proposal, Some(proposal_return)));
         }
 
+        // Send the proposal parent to execution layer to cover edge cases when
+        // we were not asked to verify it and are missing it in the EL. For a
+        // matching speculative build, proposal context is attached before this
+        // check so replayable builder work can continue while validation runs.
+        if !is_genesis_parent {
+            self.verify_proposal_parent(context.clone(), parent_epoch_info.epoch(), &parent)
+                .await?;
+        }
+
         #[cfg(feature = "bal")]
         if !is_genesis_parent {
             let consensus_context = consensus_context
@@ -983,7 +1019,7 @@ impl Inner<Init> {
                 .saturating_sub(propose_start.elapsed());
             let build_control = PayloadBuildControl::new(build_budget);
             build_control
-                .attach_proposal_context(propose_start, extra_data.clone(), consensus_context)
+                .attach_proposal_context(extra_data.clone(), consensus_context)
                 .map_err(|error| {
                     eyre!("failed attaching propose-time speculative proposal context: {error}")
                 })?;
@@ -992,7 +1028,6 @@ impl Inner<Init> {
                 .dispatch_speculative_payload_build(
                     &context,
                     &parent,
-                    None,
                     build_control,
                     extra_data,
                     Some(consensus_context),
@@ -1032,7 +1067,6 @@ impl Inner<Init> {
         let build_control = PayloadBuildControl::new(build_budget);
         build_control
             .attach_proposal_context(
-                propose_start,
                 extra_data.clone(),
                 consensus_context
                     .expect("proposal consensus context is constructed immediately above"),
@@ -1155,7 +1189,6 @@ impl Inner<Init> {
         &self,
         context: &TContext,
         block: &Block,
-        _base_parent: Option<&Block>,
         build_control: PayloadBuildControl,
         extra_data: Bytes,
         consensus_context: Option<TempoConsensusContext>,
@@ -1337,14 +1370,12 @@ impl Inner<Init> {
         &self,
         context: &TContext,
         block: &Block,
-        parent: &Block,
     ) -> eyre::Result<()> {
         let build_control = PayloadBuildControl::new(self.proposal_return_budget);
         let build = self
             .dispatch_speculative_payload_build(
                 context,
                 block,
-                Some(parent),
                 build_control,
                 Bytes::default(),
                 None,
@@ -1440,10 +1471,7 @@ impl Inner<Init> {
         }
 
         #[cfg(feature = "bal")]
-        block.required_block_access_list();
-
-        #[cfg(feature = "bal")]
-        self.start_speculative_build(&context, &block, &parent)
+        self.start_speculative_build(&context, &block)
             .await
             .wrap_err("failed starting speculative BAL payload build")?;
 

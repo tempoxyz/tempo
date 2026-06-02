@@ -241,7 +241,8 @@ where
                             trace!(target: "payload_builder", worse_fees = %fees, "skipped payload build of worse block");
                         }
                         BuildOutcome::Cancelled => {
-                            unreachable!("the cancel signal never fired")
+                            debug!(target: "payload_builder", "payload build cancelled");
+                            return Poll::Ready(Ok(()));
                         }
                     },
                     Poll::Ready(Err(error)) => {
