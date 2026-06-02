@@ -1962,7 +1962,7 @@ impl Iterator for BestAA2dTransactions {
 }
 
 impl BestTransactions for BestAA2dTransactions {
-    fn mark_invalid(&mut self, transaction: &Self::Item, _kind: InvalidPoolTransactionError) {
+    fn mark_invalid(&mut self, transaction: &Self::Item, _kind: &InvalidPoolTransactionError) {
         // Skip invalidation for expiring nonce transactions - they are independent
         // and should not block other expiring nonce txs from the same sender
         if transaction.transaction.is_expiring_nonce() {

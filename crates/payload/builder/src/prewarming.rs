@@ -1,18 +1,24 @@
-use std::sync::{
-    Arc,
-    atomic::{AtomicBool, Ordering},
-    mpsc::{self, Receiver, Sender},
+use std::{
+    any::Any,
+    sync::{
+        Arc,
+        atomic::{AtomicBool, Ordering},
+        mpsc::{self, Receiver, Sender},
+    },
 };
 
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_sol_types::SolInterface;
-use reth_engine_tree::tree::{CachedStateProvider, SavedCache};
+use reth_engine_tree::tree::{
+    CachedStateMetrics, CachedStateMetricsSource, CachedStateProvider, SavedCache,
+};
 use reth_evm::{Database, Evm, EvmEnvFor};
 use reth_revm::database::StateProviderDatabase;
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
 use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
-    BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
+    BestTransactions, PoolTransaction,
+    error::{InvalidPoolTransactionError, PoolTransactionError},
 };
 use tempo_evm::{TempoEvmConfig, evm::TempoEvm};
 use tempo_precompiles::{
@@ -136,7 +142,9 @@ impl BestTransactionsPrewarming {
                         old_rx,
                         new_tx,
                     } => {
-                        ctx.best_txs.mark_invalid(&invalid.tx, invalid.kind);
+                        let kind =
+                            InvalidPoolTransactionError::Other(Box::new(PrewarmingInvalidation));
+                        ctx.best_txs.mark_invalid(&invalid.tx, &kind);
                         ctx.transactions_tx = new_tx;
 
                         for tx in old_rx {
@@ -251,13 +259,12 @@ impl Iterator for BestTransactionsPrewarming {
 }
 
 impl BestTransactions for BestTransactionsPrewarming {
-    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
+    fn mark_invalid(&mut self, transaction: &Self::Item, _kind: &InvalidPoolTransactionError) {
         let (new_tx, new_rx) = mpsc::channel();
         let old_rx = core::mem::replace(&mut self.transactions_rx, new_rx);
         let _ = self.commands_tx.send(BestTransactionsCommand::Invalid {
             invalid: InvalidTransaction {
                 tx: transaction.clone(),
-                kind,
             },
             old_rx,
             new_tx,
@@ -316,6 +323,7 @@ where
             state_provider = Box::new(CachedStateProvider::new_prewarm(
                 state_provider,
                 cache.cache().clone(),
+                CachedStateMetrics::zeroed(CachedStateMetricsSource::Builder),
             ));
         }
 
@@ -590,7 +598,29 @@ enum BestTransactionsCommand {
 #[derive(Debug)]
 struct InvalidTransaction {
     tx: BestTransaction,
-    kind: InvalidPoolTransactionError,
+}
+
+/// Generic invalidation reason used when bridging borrowed invalidation errors
+/// across the prewarming coordinator channel.
+#[derive(Debug)]
+struct PrewarmingInvalidation;
+
+impl std::fmt::Display for PrewarmingInvalidation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("transaction invalidated during payload prewarming")
+    }
+}
+
+impl std::error::Error for PrewarmingInvalidation {}
+
+impl PoolTransactionError for PrewarmingInvalidation {
+    fn is_bad_transaction(&self) -> bool {
+        false
+    }
+
+    fn as_any(&self) -> &dyn Any {
+        self
+    }
 }
 
 /// Returns whether the candidate transaction is invalidated by the given invalid transaction.
@@ -684,7 +714,7 @@ mod tests {
     }
 
     impl BestTransactions for TestBestTransactions {
-        fn mark_invalid(&mut self, transaction: &Self::Item, _kind: InvalidPoolTransactionError) {
+        fn mark_invalid(&mut self, transaction: &Self::Item, _kind: &InvalidPoolTransactionError) {
             self.log.lock().unwrap().invalid += 1;
             self.txs
                 .retain(|tx| !is_invalidated_buffered_transaction(transaction, tx));
@@ -971,10 +1001,9 @@ mod tests {
         );
 
         wait_until(|| log.lock().unwrap().yielded == 3);
-        prewarming.mark_invalid(
-            &tx1,
-            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported),
-        );
+        let invalid =
+            InvalidPoolTransactionError::Consensus(InvalidTransactionError::TxTypeNotSupported);
+        prewarming.mark_invalid(&tx1, &invalid);
 
         let next = prewarming.next().expect("non-invalidated transaction");
         assert_eq!(next.hash(), tx3.hash());

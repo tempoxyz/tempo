@@ -6,6 +6,8 @@
 mod assemble;
 use alloy_consensus::{BlockHeader as _, Transaction};
 use alloy_rlp::Decodable;
+#[cfg(feature = "rpc")]
+use alloy_rpc_types_eth as _;
 pub use assemble::TempoBlockAssembler;
 mod block;
 pub use block::{TempoBlockExecutor, TempoReceiptBuilder, TempoTxResult};

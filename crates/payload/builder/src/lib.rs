@@ -36,7 +36,7 @@ use reth_engine_tree::tree::{
 };
 use reth_errors::{ConsensusError, ProviderError};
 use reth_evm::{
-    ConfigureEvm, Database, Evm, NextBlockEnvAttributes,
+    ConfigureEvm, Database, Evm, NextBlockEnvAttributes, OnStateHook,
     block::{BlockExecutionError, BlockExecutor, BlockValidationError},
     execute::BlockAssemblerInput,
 };
@@ -316,7 +316,7 @@ where
         let BuildArguments {
             cached_reads,
             execution_cache,
-            mut trie_handle,
+            trie_handle,
             config,
             cancel,
             best_payload,
@@ -357,7 +357,7 @@ where
             state_provider = Box::new(CachedStateProvider::new(
                 state_provider,
                 execution_cache.cache().clone(),
-                Some(self.cache_metrics.clone()),
+                self.cache_metrics.clone(),
             ));
         }
         if self.state_provider_metrics {
@@ -487,10 +487,7 @@ where
         maybe_override_fee_recipient(&mut executor, &attributes);
 
         if let Some(ref handle) = trie_handle {
-            executor
-                .evm_mut()
-                .db_mut()
-                .set_state_hook(Some(Box::new(handle.state_hook())));
+            executor.set_state_hook(Some(Box::new(handle.state_hook()) as Box<dyn OnStateHook>));
         }
 
         executor.apply_pre_execution_changes().map_err(|err| {
@@ -617,7 +614,7 @@ where
                 // The iterator will handle lane switching internally when appropriate
                 best_txs.mark_invalid(
                     &pool_tx,
-                    InvalidPoolTransactionError::ExceedsGasLimit(
+                    &InvalidPoolTransactionError::ExceedsGasLimit(
                         pool_tx.gas_limit(),
                         non_shared_gas_limit - cumulative_gas_used,
                     ),
@@ -638,7 +635,7 @@ where
             if !is_payment && non_payment_gas_used + max_regular_gas_used > general_gas_limit {
                 best_txs.mark_invalid(
                     &pool_tx,
-                    InvalidPoolTransactionError::Other(Box::new(
+                    &InvalidPoolTransactionError::Other(Box::new(
                         TempoPoolTransactionError::ExceedsNonPaymentLimit,
                     )),
                 );
@@ -658,7 +655,7 @@ where
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
                 best_txs.mark_invalid(
                     &pool_tx,
-                    InvalidPoolTransactionError::OversizedData {
+                    &InvalidPoolTransactionError::OversizedData {
                         size: estimated_block_size_with_tx,
                         limit: MAX_RLP_BLOCK_SIZE,
                     },
@@ -707,7 +704,7 @@ where
                         trace!(%error, tx = %tx_debug_repr, "skipping invalid transaction and its descendants");
                         best_txs.mark_invalid(
                             &pool_tx,
-                            InvalidPoolTransactionError::Consensus(
+                            &InvalidPoolTransactionError::Consensus(
                                 InvalidTransactionError::TxTypeNotSupported,
                             ),
                         );
@@ -869,24 +866,17 @@ where
         // Drop the roots task handle to trigger finalization
         drop(roots_tx);
 
+        // Drop the state hook to signal that execution is complete and the sparse trie task can
+        // finalize the state root.
+        executor.set_state_hook(None);
+
         let (evm, execution_result) = executor.finish()?;
         let evm_env = evm.into_env();
 
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
 
-        // Drop the state hook to signal that execution is complete and the sparse trie task can
-        // finalize the state root.
-        db.set_state_hook(None);
-
-        let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
-            .as_mut()
-            .map(|handle| handle.take_hashed_state_rx().recv())
-        {
-            hashed_state
-        } else {
-            finish_provider.hashed_post_state(&db.bundle_state)
-        };
+        let hashed_state = finish_provider.hashed_post_state(&db.bundle_state);
 
         let (state_root_outcome, sparse_trie_state_root_wait_elapsed) =
             if let Some(mut handle) = trie_handle {
@@ -1093,10 +1083,11 @@ where
             "Built payload"
         );
 
+        let eth_block = Arc::new(block.sealed_block().clone());
         let block = Arc::new(block);
         let block_access_list: Option<Bytes> =
             block_access_list.map(|block_access_list| alloy_rlp::encode(&block_access_list).into());
-        let eth_payload = EthBuiltPayload::new(block.clone(), total_fees, requests, None);
+        let eth_payload = EthBuiltPayload::new(eth_block, total_fees, requests, None);
 
         let execution_output = BlockExecutionOutput {
             result: execution_result,
@@ -1144,9 +1135,9 @@ where
             .spawn_blocking_named("builder-roots-task", || {
                 let mut transactions = Vec::new();
                 let mut senders = Vec::new();
+                let mut encoded_transactions = Vec::new();
+                let mut encoded_receipts = Vec::new();
 
-                let mut transactions_root = OrderedTrieRootEncodedBuilder::new();
-                let mut receipts_root = OrderedTrieRootEncodedBuilder::new();
                 let mut receipts_bloom = Bloom::ZERO;
 
                 let mut buf = Vec::new();
@@ -1155,7 +1146,7 @@ where
                     let (tx, sender) = tx.into_parts();
                     buf.clear();
                     tx.encode_2718(&mut buf);
-                    transactions_root.push_next(&buf);
+                    encoded_transactions.push(buf.clone());
                     transactions.push(tx);
                     senders.push(sender);
 
@@ -1163,11 +1154,25 @@ where
 
                     buf.clear();
                     receipt.encode_2718(&mut buf);
-                    receipts_root.push_next(&buf);
+                    encoded_receipts.push(buf.clone());
                     receipts_bloom |= receipt.bloom();
                 }
-                let transactions_root = transactions_root.finalize();
-                let receipts_root = receipts_root.finalize();
+                let mut transactions_root =
+                    OrderedTrieRootEncodedBuilder::new(encoded_transactions.len());
+                for (index, encoded) in encoded_transactions.iter().enumerate() {
+                    transactions_root.push_unchecked(index, encoded);
+                }
+                let transactions_root = transactions_root
+                    .finalize()
+                    .expect("all encoded transactions were pushed");
+
+                let mut receipts_root = OrderedTrieRootEncodedBuilder::new(encoded_receipts.len());
+                for (index, encoded) in encoded_receipts.iter().enumerate() {
+                    receipts_root.push_unchecked(index, encoded);
+                }
+                let receipts_root = receipts_root
+                    .finalize()
+                    .expect("all encoded receipts were pushed");
                 let _ = result_tx.send((
                     transactions_root,
                     receipts_root,
@@ -1360,7 +1365,12 @@ mod tests {
         .try_into_recovered()
         .unwrap();
         let rlp_length = block.rlp_length();
-        let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
+        let eth = EthBuiltPayload::new(
+            Arc::new(block.sealed_block().clone()),
+            U256::ZERO,
+            None,
+            None,
+        );
         TempoBuiltPayload::new(eth, None, None, Duration::ZERO, rlp_length)
     }
 

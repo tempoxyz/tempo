@@ -68,10 +68,7 @@ impl TempoBuiltPayload {
 
     /// Converts the built payload into owned execution payload parts.
     pub fn into_execution_payload(self) -> (SealedBlock<Block>, Option<Bytes>) {
-        (
-            Arc::unwrap_or_clone(self.inner.block_arc().clone()).into_sealed_block(),
-            self.block_access_list,
-        )
+        (self.inner.block().clone(), self.block_access_list)
     }
 
     /// Returns the time validators are expected to spend reproducing this payload's build work.
@@ -194,10 +191,10 @@ impl PayloadTypes for TempoPayloadTypes {
     type BuiltPayload = TempoBuiltPayload;
     type PayloadAttributes = TempoPayloadAttributes;
 
-    fn block_to_payload(block: SealedBlock<Block>, bal: Option<Bytes>) -> Self::ExecutionData {
+    fn block_to_payload(block: SealedBlock<Block>) -> Self::ExecutionData {
         TempoExecutionData {
             block: Arc::new(block),
-            block_access_list: bal,
+            block_access_list: None,
             validator_set: None,
         }
     }

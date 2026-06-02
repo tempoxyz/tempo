@@ -140,78 +140,98 @@ tempo-telemetry-util = { path = "crates/telemetry-util", default-features = fals
 tempo-transaction-pool = { path = "crates/transaction-pool", default-features = false }
 tempo-validator-config = { path = "crates/validator-config", default-features = false }
 
-reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-chainspec = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc", default-features = false }
-reth-cli = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-cli-util = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-codecs = { version = "0.4.0", default-features = false }
-reth-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-db = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-discv5 = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-db-api = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-engine-local = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-errors = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-etl = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc", default-features = false }
-reth-execution-cache = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-execution-types = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-evm = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-network-api = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-network-peers = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc", default-features = false }
-reth-node-api = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-node-builder = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-node-core = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-primitives-traits = { version = "0.4.0", default-features = false }
-reth-config = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-downloaders = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-provider = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-prune-types = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-rpc = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-stages = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-static-file = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-storage-api = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-tasks = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-tracing = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-trie = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-trie-common = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
-reth-trie-db = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc" }
+reth-basic-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-chainspec = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", default-features = false, features = [
+  "lattice-state-root",
+] }
+reth-cli = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-cli-commands = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-cli-runner = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-cli-util = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-codecs = { version = "0.3.1", default-features = false }
+reth-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-consensus-common = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-db = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-discv5 = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-db-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-e2e-test-utils = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-engine-local = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-engine-tree = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", features = [
+  "lattice-state-root",
+] }
+reth-errors = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-eth-wire-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-etl = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", features = [
+  "lattice-state-root",
+] }
+reth-ethereum-cli = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-ethereum-consensus = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-ethereum-engine-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-ethereum-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", default-features = false }
+reth-execution-cache = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-execution-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-evm = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-evm-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-network-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-network-peers = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", default-features = false }
+reth-node-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-node-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", features = [
+  "lattice-state-root",
+] }
+reth-node-core = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-node-ethereum = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", features = [
+  "lattice-state-root",
+] }
+reth-node-metrics = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-payload-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-payload-primitives = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-primitives-traits = { version = "0.3.1", default-features = false }
+reth-config = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-downloaders = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-provider = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", features = [
+  "lattice-state-root",
+] }
+reth-prune-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-rpc = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-rpc-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-rpc-builder = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-rpc-convert = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-rpc-eth-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-rpc-eth-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-rpc-server-types = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-stages = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", features = [
+  "lattice-state-root",
+] }
+reth-static-file = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-storage-api = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-tasks = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-tracing = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-transaction-pool = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root" }
+reth-trie = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", features = [
+  "lattice-state-root",
+] }
+reth-trie-common = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", features = [
+  "lattice-state-root",
+] }
+reth-trie-db = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", features = [
+  "lattice-state-root",
+] }
 
-reth-revm = { git = "https://github.com/paradigmxyz/reth", rev = "259b8dc", features = [
+reth-revm = { git = "https://github.com/paradigmxyz/reth", branch = "alexey/lattice-state-root", features = [
   "std",
   "optional-checks",
 ] }
-revm = { version = "40.0.3", features = ["optional_fee_charge"], default-features = false }
+revm = { version = "38.0.0", features = ["optional_fee_charge"], default-features = false }
 
 alloy = { version = "2.0.5", default-features = false }
 alloy-consensus = { version = "2.0.5", default-features = false }
 alloy-contract = { version = "2.0.5", default-features = false }
-alloy-eip7928 = { version = "0.4.0", default-features = false }
+alloy-eip7928 = { version = "0.3.7", default-features = false }
 alloy-eips = { version = "2.0.5", default-features = false }
-alloy-evm = { version = "0.36.0", default-features = false }
-revm-inspectors = "0.40.0"
+alloy-evm = { version = "0.34.0", default-features = false }
+revm-inspectors = "0.39.1"
 alloy-genesis = { version = "2.0.5", default-features = false }
 alloy-hardforks = "0.4.7"
 alloy-json-abi = { version = "1.6.0", default-features = false }

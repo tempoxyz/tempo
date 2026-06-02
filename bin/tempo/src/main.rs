@@ -771,7 +771,7 @@ mod tests {
         let Commands::Node(node_cmd) = cli.command else {
             panic!("expected node command");
         };
-        assert!(node_cmd.engine.share_sparse_trie_with_payload_builder);
+        assert!(!node_cmd.engine.share_sparse_trie_with_payload_builder);
         assert_eq!(node_cmd.builder.max_payload_tasks, 1);
         assert_eq!(
             node_cmd.ext.consensus.target_block_time.into_duration(),
@@ -797,6 +797,7 @@ mod tests {
         let Commands::Node(node_cmd) = cli.command else {
             panic!("expected node command");
         };
+        assert!(node_cmd.engine.share_sparse_trie_with_payload_builder);
         assert_eq!(
             node_cmd.ext.consensus.target_block_time.into_duration(),
             Duration::from_millis(550)

@@ -6,6 +6,7 @@ use crate::{
     paused::{PausedEntry, PausedFeeTokenPool},
     transaction::TempoPooledTransaction,
 };
+use alloy_consensus::transaction::TxHashRef;
 use alloy_primitives::{
     Address, B256, Log, TxHash,
     map::{AddressMap, AddressSet, B256Map, B256Set},
@@ -639,9 +640,11 @@ where
 
                 // 3. Collect all block-level invalidation events
                 let mut updates = TempoPoolUpdates::from_chain(tip);
+                let mined_hashes: B256Set =
+                    tip.transactions_iter().map(|tx| *tx.tx_hash()).collect();
 
                 // Remove expiry tracking for mined transactions.
-                state.untrack_many(tip.transaction_hashes());
+                state.untrack_many(mined_hashes.iter());
 
                 // Evict transactions slightly before they expire to prevent
                 // broadcasting near-expiry txs that peers would reject.
@@ -650,7 +653,6 @@ where
                 // Add expired transactions (from local tracking state)
                 let expired = state.drain_expired(max_expiry);
                 if !expired.is_empty() {
-                    let mined_hashes: B256Set = tip.transaction_hashes().copied().collect();
                     updates.expired_txs = expired
                         .into_iter()
                         .filter(|hash| !mined_hashes.contains(hash) && pool.contains(hash))

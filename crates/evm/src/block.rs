@@ -4,7 +4,7 @@ use alloy_evm::{
     Database, Evm, RecoveredTx,
     block::{
         BlockExecutionError, BlockExecutionResult, BlockExecutor, BlockValidationError,
-        ExecutableTx, GasOutput, TxResult,
+        ExecutableTx, GasOutput, OnStateHook, TxResult,
     },
     eth::{
         EthBlockExecutor, EthTxResult,
@@ -113,7 +113,7 @@ impl TempoTxResult {
 
     /// Returns the state gas consumed by this transaction.
     pub fn state_gas_used(&self) -> u64 {
-        self.inner.result.result.gas().state_gas_spent_final()
+        self.inner.result.result.gas().state_gas_spent()
     }
 
     /// Returns the validator-credited fee amount (post-feeAMM haircut) for this transaction.
@@ -642,6 +642,10 @@ where
         }
 
         Ok((evm, result))
+    }
+
+    fn set_state_hook(&mut self, hook: Option<Box<dyn OnStateHook>>) {
+        self.inner.set_state_hook(hook);
     }
 
     fn evm_mut(&mut self) -> &mut Self::Evm {

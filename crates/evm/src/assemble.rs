@@ -26,9 +26,9 @@ impl TempoBlockAssembler {
     pub fn assemble_block(
         &self,
         input: BlockAssemblerInput<'_, '_, TempoEvmConfig, TempoHeader>,
-        transactions_root: Option<B256>,
-        receipts_root: Option<B256>,
-        receipts_bloom: Option<Bloom>,
+        _transactions_root: Option<B256>,
+        _receipts_root: Option<B256>,
+        _receipts_bloom: Option<Bloom>,
     ) -> Result<tempo_primitives::Block, BlockExecutionError> {
         let BlockAssemblerInput {
             evm_env,
@@ -56,24 +56,19 @@ impl TempoBlockAssembler {
         let timestamp_millis_part = evm_env.block_env.timestamp_millis_part;
 
         // Delegate block building to the inner assembler
-        let block = self.inner.assemble_block(
-            BlockAssemblerInput::<
-                EthBlockExecutorFactory<TempoReceiptBuilder, TempoChainSpec, TempoEvmFactory>,
-            >::new(
-                evm_env,
-                inner,
-                &parent,
-                transactions,
-                output,
-                bundle_state,
-                state_provider,
-                state_root,
-                block_access_list_hash,
-            ),
-            transactions_root,
-            receipts_root,
-            receipts_bloom,
-        )?;
+        let block = self.inner.assemble_block(BlockAssemblerInput::<
+            EthBlockExecutorFactory<TempoReceiptBuilder, TempoChainSpec, TempoEvmFactory>,
+        >::new(
+            evm_env,
+            inner,
+            &parent,
+            transactions,
+            output,
+            bundle_state,
+            state_provider,
+            state_root,
+            block_access_list_hash,
+        ))?;
 
         Ok(block.map_header(|inner| TempoHeader {
             inner,

@@ -92,7 +92,7 @@ impl Iterator for MergeBestTransactions {
 }
 
 impl BestTransactions for MergeBestTransactions {
-    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
         if transaction.transaction.is_aa_2d() {
             self.aa_2d_pool.mark_invalid(transaction, kind);
         } else {
@@ -177,7 +177,7 @@ where
             {
                 self.inner.mark_invalid(
                     &tx,
-                    InvalidPoolTransactionError::Consensus(
+                    &InvalidPoolTransactionError::Consensus(
                         InvalidTransactionError::InsufficientFunds(
                             (balance, tx.transaction.fee_token_cost()).into(),
                         ),
@@ -195,7 +195,7 @@ impl<I> BestTransactions for StateAwareBestTransactions<I>
 where
     I: BestTransactions<Item = Arc<ValidPoolTransaction<TempoPooledTransaction>>> + Send,
 {
-    fn mark_invalid(&mut self, transaction: &Self::Item, kind: InvalidPoolTransactionError) {
+    fn mark_invalid(&mut self, transaction: &Self::Item, kind: &InvalidPoolTransactionError) {
         self.inner.mark_invalid(transaction, kind);
     }
 
