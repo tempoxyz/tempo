@@ -68,10 +68,5 @@ alloy-eips.workspace = true
 alloy-consensus.workspace = true
 alloy-signer.workspace = true
 alloy-signer-local.workspace = true
-criterion.workspace = true
 tokio.workspace = true
 test-case.workspace = true
-
-[[bench]]
-name = "aa2d_expiring_nonce"
-harness = false
