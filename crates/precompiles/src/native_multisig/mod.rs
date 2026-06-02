@@ -260,7 +260,11 @@ fn abi_config_to_init(
         .into_iter()
         .map(abi_owner_to_init)
         .collect::<Result<Vec<_>>>()?;
-    let config = InitMultisig { threshold, owners };
+    let config = InitMultisig {
+        salt: B256::ZERO,
+        threshold,
+        owners,
+    };
     validate_multisig_config(&config).map_err(|_| NativeMultisigError::invalid_config())?;
     Ok(config)
 }
@@ -328,6 +332,7 @@ fn stored_config_to_init(value: StoredMultisigConfig) -> Result<InitMultisig> {
         .map(stored_owner_to_init)
         .collect::<Vec<_>>();
     let config = InitMultisig {
+        salt: B256::ZERO,
         threshold: value.threshold,
         owners,
     };
@@ -387,6 +392,7 @@ mod tests {
 
     fn init_config() -> InitMultisig {
         InitMultisig {
+            salt: B256::ZERO,
             threshold: 1,
             owners: vec![
                 MultisigOwner {
