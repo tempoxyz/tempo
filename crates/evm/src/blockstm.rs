@@ -891,7 +891,7 @@ fn execute_tip20_transfer_plans_blockstm(
             block_timestamp,
         )?;
         let gas = synthetic_tip20_result_gas(&tx.tx_env, plan, &execution, base_state, cfg)?;
-        let actual_fee = synthetic_actual_fee(&tx.tx_env, gas.tx_gas_used(), basefee, is_t6);
+        let actual_fee = synthetic_actual_fee(&tx.tx_env, &gas, basefee, is_t6);
         settle_actual_fee_with_deltas(
             tx_index,
             plan,
@@ -1326,12 +1326,20 @@ fn transfer_balance_with_flags(
     let from_key = balance_key(token, from);
     let to_key = balance_key(token, to);
     let from_balance = read_balance_for_write(execution, ledger, from_key)?;
-    let to_balance = read_balance_for_write(execution, ledger, to_key)?;
 
     if from_balance.amount < amount {
         return Err(Tip20TransferBlockstmFallback::InsufficientBalance);
     }
     let new_from = from_balance.amount - amount;
+    write_value(
+        execution,
+        ledger,
+        tx_index,
+        from_key,
+        encode_balance(new_from, from_write_flag.resolve(from_balance), is_t6),
+    );
+
+    let to_balance = read_balance_for_write(execution, ledger, to_key)?;
     let new_to = to_balance
         .amount
         .checked_add(amount)
@@ -1340,13 +1348,6 @@ fn transfer_balance_with_flags(
         return Err(Tip20TransferBlockstmFallback::BalanceOverflow);
     }
 
-    write_value(
-        execution,
-        ledger,
-        tx_index,
-        from_key,
-        encode_balance(new_from, from_write_flag.resolve(from_balance), is_t6),
-    );
     write_value(
         execution,
         ledger,
@@ -1896,12 +1897,13 @@ fn tx_storage_value(
         .unwrap_or_default()
 }
 
-fn synthetic_actual_fee(tx: &TempoTxEnv, tx_gas_used: u64, basefee: u128, is_t6: bool) -> U256 {
+fn synthetic_actual_fee(tx: &TempoTxEnv, gas: &ResultGas, basefee: u128, is_t6: bool) -> U256 {
+    let fee_gas_used = gas.spent_sub_refunded();
     let mut effective_gas_price = tx.effective_gas_price(basefee);
-    if is_t6 && tx.is_discounted_payment() && tx_gas_used <= SSTORE_SET_COST {
+    if is_t6 && tx.is_discounted_payment() && fee_gas_used <= SSTORE_SET_COST {
         effective_gas_price = tempo_t6_discounted_payment_effective_gas_price(effective_gas_price);
     }
-    calc_gas_balance_spending(tx_gas_used, effective_gas_price)
+    calc_gas_balance_spending(fee_gas_used, effective_gas_price)
 }
 
 fn synthetic_tip20_logs(plan: &Tip20TransferBlockstmPlan, actual_fee: U256) -> Vec<Log> {
@@ -2284,26 +2286,56 @@ mod tests {
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_eips::eip2930::{AccessList, AccessListItem};
     use alloy_evm::{FromRecoveredTx, block::TxResult};
-    use alloy_primitives::{Signature, address};
+    use alloy_genesis::Genesis;
+    use alloy_primitives::{Signature, address, keccak256};
+    use alloy_signer::SignerSync;
+    use alloy_signer_local::{MnemonicBuilder, PrivateKeySigner};
     use alloy_sol_types::SolCall;
+    use reth_chainspec::{Chain, ChainSpec};
+    use reth_db_common::init::init_genesis;
+    use reth_engine_tree::tree::{
+        PayloadProcessor, TreeConfig, precompile_cache::PrecompileCacheMap,
+    };
+    use reth_ethereum_primitives::EthPrimitives;
+    use reth_evm::OnStateHook as _;
+    use reth_evm_ethereum::EthEvmConfig;
+    use reth_primitives_traits::{Account as RethAccount, StorageEntry};
+    use reth_provider::{
+        HashingWriter,
+        providers::{BlockchainProvider, OverlayBuilder, OverlayStateProviderFactory},
+        test_utils::create_test_provider_factory_with_chain_spec,
+    };
     use reth_revm::{
         State,
         state::{AccountInfo, Bytecode},
     };
+    use reth_storage_api::{DBProvider, DatabaseProviderFactory, StorageSettingsCache, TrieWriter};
+    use reth_trie::{HashedPostState, HashedStorage, StateRoot, test_utils::state_root};
+    use reth_trie_db::{
+        ChangesetCache, DatabaseHashedCursorFactory, DatabaseStateRoot, DatabaseTrieCursorFactory,
+    };
     use revm::database::{EmptyDB, states::plain_account::PlainStorage};
+    use std::{
+        collections::BTreeSet,
+        fmt::Write as _,
+        sync::{Arc, Mutex},
+    };
     use tempo_precompiles::{
         storage::{StorageCtx, hashmap::HashMapStorageProvider},
         test_util::TIP20Setup,
     };
     use tempo_primitives::{
-        MasterId, TempoSignature, TempoTransaction, UserTag,
+        AASigned, MasterId, TempoSignature, TempoTransaction, TempoTxEnvelope, UserTag,
         subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX,
-        transaction::{Call, TEMPO_EXPIRING_NONCE_KEY},
+        transaction::{Call, PrimitiveSignature, TEMPO_EXPIRING_NONCE_KEY},
     };
     use tempo_revm::gas_params::tempo_gas_params;
 
     const TOKEN: Address = address!("20c0000000000000000000000000000000000001");
     const SENDER: Address = address!("1000000000000000000000000000000000000001");
+
+    type DbStateRoot<'a, TX, A> =
+        StateRoot<DatabaseTrieCursorFactory<&'a TX, A>, DatabaseHashedCursorFactory<&'a TX>>;
 
     fn blockstm_tx(input: Vec<u8>) -> (Recovered<TempoTxEnvelope>, TempoTxEnv) {
         blockstm_tx_to(TOKEN, input)
@@ -2391,6 +2423,56 @@ mod tests {
         let recovered = Recovered::new_unchecked(signed, SENDER);
         let tx_env = TempoTxEnv::from_recovered_tx(recovered.inner(), SENDER);
         (recovered, tx_env)
+    }
+
+    fn signed_expiring_tip20_transfer(
+        signer: &PrivateKeySigner,
+        recipient: Address,
+        amount: U256,
+        valid_before: u64,
+        gas_limit: u64,
+        gas_price: u128,
+    ) -> (Recovered<TempoTxEnvelope>, TempoTxEnv) {
+        let tx = TempoTransaction {
+            chain_id: 1,
+            fee_token: Some(tempo_precompiles::PATH_USD_ADDRESS),
+            calls: vec![transfer_call_to_token(
+                tempo_precompiles::PATH_USD_ADDRESS,
+                recipient,
+                amount,
+            )],
+            gas_limit,
+            nonce_key: TEMPO_EXPIRING_NONCE_KEY,
+            nonce: 0,
+            valid_before: core::num::NonZeroU64::new(valid_before),
+            max_fee_per_gas: gas_price,
+            max_priority_fee_per_gas: gas_price,
+            ..Default::default()
+        };
+        let signature = signer
+            .sign_hash_sync(&tx.signature_hash())
+            .expect("test transaction must sign");
+        let signed = TempoTxEnvelope::AA(AASigned::new_unhashed(
+            tx,
+            TempoSignature::Primitive(PrimitiveSignature::Secp256k1(signature)),
+        ));
+        let recovered = Recovered::new_unchecked(signed, signer.address());
+        let tx_env = TempoTxEnv::from_recovered_tx(recovered.inner(), signer.address());
+        (recovered, tx_env)
+    }
+
+    fn txgen_signers(account_count: usize) -> Vec<PrivateKeySigner> {
+        (0..account_count)
+            .map(|idx| {
+                MnemonicBuilder::from_phrase(
+                    "test test test test test test test test test test test junk",
+                )
+                .index(idx as u32)
+                .expect("valid test account index")
+                .build()
+                .expect("valid test mnemonic")
+            })
+            .collect()
     }
 
     fn transfer_call(to: Address, amount: U256) -> Call {
@@ -2506,6 +2588,206 @@ mod tests {
             storage,
             accounts: HashMap::new(),
         }
+    }
+
+    fn evm_state_to_hashed_post_state(update: EvmState) -> HashedPostState {
+        let mut hashed_state = HashedPostState::with_capacity(update.len());
+
+        for (address, account) in update {
+            if account.is_touched() {
+                let hashed_address = keccak256(address);
+                let destroyed = account.is_selfdestructed();
+
+                if account.info != account.original_info() {
+                    let info = if destroyed {
+                        None
+                    } else {
+                        Some(account.info.into())
+                    };
+                    hashed_state.accounts.insert(hashed_address, info);
+                }
+
+                let mut changed_storage_iter = account
+                    .storage
+                    .into_iter()
+                    .filter(|(_, value)| value.is_changed())
+                    .map(|(slot, value)| (keccak256(B256::from(slot)), value.present_value))
+                    .peekable();
+
+                if destroyed {
+                    hashed_state
+                        .storages
+                        .insert(hashed_address, HashedStorage::new(true));
+                } else if changed_storage_iter.peek().is_some() {
+                    hashed_state.storages.insert(
+                        hashed_address,
+                        HashedStorage::from_iter(false, changed_storage_iter),
+                    );
+                }
+            }
+        }
+
+        hashed_state
+    }
+
+    fn hooked_state_updates_to_hashed_post_state(updates: &[EvmState]) -> HashedPostState {
+        let mut hashed_state = HashedPostState::default();
+        for update in updates {
+            hashed_state.extend(evm_state_to_hashed_post_state(update.clone()));
+        }
+        hashed_state
+    }
+
+    fn db_to_trie_state(
+        db: &State<EmptyDB>,
+    ) -> HashMap<Address, (RethAccount, HashMap<B256, U256>)> {
+        db.cache
+            .trie_account()
+            .into_iter()
+            .map(|(address, account)| {
+                (
+                    address,
+                    (
+                        RethAccount::from(&account.info),
+                        account
+                            .storage
+                            .iter()
+                            .filter(|(_, value)| !value.is_zero())
+                            .map(|(slot, value)| (B256::from(*slot), *value))
+                            .collect(),
+                    ),
+                )
+            })
+            .collect()
+    }
+
+    fn apply_evm_state_updates_to_trie_state(
+        trie_state: &mut HashMap<Address, (RethAccount, HashMap<B256, U256>)>,
+        updates: &[EvmState],
+    ) {
+        for update in updates {
+            for (address, account) in update {
+                if !account.is_touched() {
+                    continue;
+                }
+
+                if account.is_selfdestructed() {
+                    trie_state.remove(address);
+                    continue;
+                }
+
+                let info_changed = account.info != account.original_info();
+                let changed_storage = account
+                    .storage
+                    .iter()
+                    .filter(|(_, value)| value.is_changed())
+                    .map(|(slot, value)| (B256::from(*slot), value.present_value))
+                    .collect::<Vec<_>>();
+                if !info_changed && changed_storage.is_empty() {
+                    continue;
+                }
+
+                let entry = trie_state.entry(*address).or_default();
+                if info_changed {
+                    entry.0 = RethAccount::from(&account.info);
+                }
+                for (slot, value) in changed_storage {
+                    if value.is_zero() {
+                        entry.1.remove(&slot);
+                    } else {
+                        entry.1.insert(slot, value);
+                    }
+                }
+            }
+        }
+    }
+
+    fn describe_trie_state_diff(
+        normal: &HashMap<Address, (RethAccount, HashMap<B256, U256>)>,
+        blockstm: &HashMap<Address, (RethAccount, HashMap<B256, U256>)>,
+    ) -> String {
+        let mut out = String::new();
+        let mut addresses = BTreeSet::new();
+        addresses.extend(normal.keys().copied());
+        addresses.extend(blockstm.keys().copied());
+
+        let mut diffs = 0usize;
+        for address in addresses {
+            let normal_account = normal.get(&address);
+            let blockstm_account = blockstm.get(&address);
+            match (normal_account, blockstm_account) {
+                (Some((normal_info, normal_storage)), Some((blockstm_info, blockstm_storage))) => {
+                    if normal_info != blockstm_info {
+                        let _ = writeln!(
+                            out,
+                            "account {address}: normal={normal_info:?} blockstm={blockstm_info:?}"
+                        );
+                        diffs += 1;
+                    }
+
+                    let mut slots = BTreeSet::new();
+                    slots.extend(normal_storage.keys().copied());
+                    slots.extend(blockstm_storage.keys().copied());
+                    for slot in slots {
+                        let normal_value = normal_storage.get(&slot).copied().unwrap_or_default();
+                        let blockstm_value =
+                            blockstm_storage.get(&slot).copied().unwrap_or_default();
+                        if normal_value != blockstm_value {
+                            let _ = writeln!(
+                                out,
+                                "storage {address} {slot}: normal={normal_value:#x} blockstm={blockstm_value:#x}"
+                            );
+                            diffs += 1;
+                        }
+                        if diffs >= 12 {
+                            return out;
+                        }
+                    }
+                }
+                (Some(_), None) => {
+                    let _ = writeln!(out, "account {address}: present in normal only");
+                    diffs += 1;
+                }
+                (None, Some(_)) => {
+                    let _ = writeln!(out, "account {address}: present in blockstm only");
+                    diffs += 1;
+                }
+                (None, None) => {}
+            }
+
+            if diffs >= 12 {
+                return out;
+            }
+        }
+
+        out
+    }
+
+    fn insert_trie_state_for_hashing(
+        provider_rw: &impl HashingWriter,
+        trie_state: &HashMap<Address, (RethAccount, HashMap<B256, U256>)>,
+    ) {
+        provider_rw
+            .insert_account_for_hashing(
+                trie_state
+                    .iter()
+                    .map(|(address, (account, _))| (*address, Some(*account))),
+            )
+            .expect("failed to insert accounts for hashing");
+        provider_rw
+            .insert_storage_for_hashing(trie_state.iter().map(|(address, (_, storage))| {
+                (
+                    *address,
+                    storage
+                        .iter()
+                        .map(|(key, value)| StorageEntry {
+                            key: *key,
+                            value: *value,
+                        })
+                        .collect::<Vec<_>>(),
+                )
+            }))
+            .expect("failed to insert storage for hashing");
     }
 
     fn execute_test_blockstm(
@@ -2823,6 +3105,26 @@ mod tests {
     }
 
     #[test]
+    fn synthetic_actual_fee_uses_post_refund_gas_before_floor() {
+        let (_, tx_env) = blockstm_tx_with_fee(Vec::new(), 1_000, 1_000_000_000_000);
+        let gas = ResultGas::new_with_state_gas(90, 0, 100, 20);
+
+        assert_eq!(gas.tx_gas_used(), 100);
+        assert_eq!(gas.spent_sub_refunded(), 90);
+
+        let actual_fee = synthetic_actual_fee(&tx_env, &gas, 0, false);
+
+        assert_eq!(
+            actual_fee,
+            calc_gas_balance_spending(gas.spent_sub_refunded(), 1_000_000_000_000)
+        );
+        assert_ne!(
+            actual_fee,
+            calc_gas_balance_spending(gas.tx_gas_used(), 1_000_000_000_000)
+        );
+    }
+
+    #[test]
     fn write_conflicts_are_counted_across_transactions() {
         let recipient = address!("10000000000000000000000000000000000000ce");
         let beneficiary = address!("10000000000000000000000000000000000000df");
@@ -2910,6 +3212,46 @@ mod tests {
         assert_eq!(
             writes[&collected_fees_key(beneficiary, TOKEN)],
             collected_fees + actual_fee
+        );
+    }
+
+    #[test]
+    fn speculative_execution_self_transfer_has_no_net_transfer_delta() {
+        let beneficiary = address!("10000000000000000000000000000000000000d2");
+        let transfer_amount = U256::from(7);
+        let (recovered, tx_env) = blockstm_tx_with_fee(
+            ITIP20::transferCall {
+                to: SENDER,
+                amount: transfer_amount,
+            }
+            .abi_encode(),
+            350_000,
+            1_000_000_000_000,
+        );
+        let tx = Tip20TransferBlockstmTx {
+            tx_env,
+            recovered: &recovered,
+            fee_token: TOKEN,
+        };
+        let plan =
+            build_tip20_transfer_plan(&tx, TOKEN, beneficiary, 1, 0, TempoHardfork::T6).unwrap();
+        let sender_balance = U256::from(1_000_000);
+        let base_storage = HashMap::from([(
+            balance_key(TOKEN, SENDER),
+            encode_balance(sender_balance, REWARD_FLAG_OPTED_OUT, true),
+        )]);
+
+        let execution = execute_test_blockstm(&[tx], &[plan], base_storage);
+        let actual_fee = execution.actual_fees[0];
+        let writes = &execution.txs[0].writes;
+
+        assert_eq!(
+            writes[&balance_key(TOKEN, SENDER)],
+            encode_balance(sender_balance - actual_fee, REWARD_FLAG_OPTED_OUT, true)
+        );
+        assert_eq!(
+            writes[&balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS)],
+            encode_balance(actual_fee, REWARD_FLAG_UNINITIALIZED, true)
         );
     }
 
@@ -3529,6 +3871,621 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn blockstm_expiring_nonce_state_matches_normal_execution_for_inactive_rewards() {
+        let chainspec = test_chainspec();
+        let token = tempo_precompiles::PATH_USD_ADDRESS;
+        let batch_len = 8usize;
+        let block_timestamp = 2u64;
+        let valid_before = 20u64;
+        let sender_balance = U256::from(1_000_000_000_000u64);
+        let recipients = (0..batch_len)
+            .map(|i| Address::from_word(B256::with_last_byte(0xd0 + i as u8)))
+            .collect::<Vec<_>>();
+
+        let build_executor = |db| {
+            let mut executor = TestExecutorBuilder::default()
+                .with_general_gas_limit(1_000_000_000)
+                .with_spec(TempoHardfork::T6)
+                .build(db, &chainspec);
+            executor.evm_mut().ctx_mut().block.timestamp = U256::from(block_timestamp);
+            executor
+        };
+
+        let mut txs = Vec::with_capacity(batch_len);
+        let mut replay_hashes = Vec::with_capacity(batch_len);
+        for recipient in recipients.iter().copied() {
+            let (recovered, tx_env) = expiring_blockstm_tx_with_gas(
+                vec![transfer_call_to_token(token, recipient, U256::from(1))],
+                valid_before,
+                350_000,
+            );
+            replay_hashes.push(tx_env.unique_tx_identifier.unwrap());
+            txs.push((recovered, tx_env));
+        }
+
+        let build_db = || {
+            path_usd_state_with_balances_and_reward_flag(
+                std::iter::once((SENDER, sender_balance)).chain(
+                    recipients
+                        .iter()
+                        .copied()
+                        .map(|recipient| (recipient, U256::from(100))),
+                ),
+                REWARD_FLAG_OPTED_OUT,
+            )
+        };
+
+        let mut normal_executor = build_executor(build_db());
+        let mut normal_block_gas = Vec::with_capacity(batch_len);
+        let mut normal_validator_fees = Vec::with_capacity(batch_len);
+        for (idx, (recovered, tx_env)) in txs.iter().enumerate() {
+            let result = normal_executor
+                .execute_transaction_without_commit((tx_env.clone(), recovered))
+                .unwrap();
+            assert!(
+                result.result().result.is_success(),
+                "normal expiring nonce tx {idx} failed: {:?}",
+                result.result().result
+            );
+            normal_block_gas.push(result.block_gas_used());
+            normal_validator_fees.push(result.validator_fee());
+            normal_executor.commit_transaction(result);
+        }
+        let normal_cumulative_gas = normal_executor
+            .receipts()
+            .iter()
+            .map(|receipt| receipt.cumulative_gas_used)
+            .collect::<Vec<_>>();
+
+        let mut blockstm_executor = build_executor(build_db());
+        let batch = txs
+            .iter()
+            .map(|(recovered, tx_env)| Tip20TransferBlockstmTx {
+                tx_env: tx_env.clone(),
+                recovered,
+                fee_token: token,
+            })
+            .collect();
+        let mut blockstm_block_gas = Vec::with_capacity(batch_len);
+        let mut blockstm_validator_fees = Vec::with_capacity(batch_len);
+        let stats = blockstm_executor
+            .execute_tip20_transfer_blockstm_batch(batch, token, |_, result| {
+                blockstm_block_gas.push(result.block_gas_used());
+                blockstm_validator_fees.push(result.validator_fee());
+            })
+            .unwrap();
+        let blockstm_cumulative_gas = blockstm_executor
+            .receipts()
+            .iter()
+            .map(|receipt| receipt.cumulative_gas_used)
+            .collect::<Vec<_>>();
+
+        assert_eq!(stats.transaction_count, batch_len);
+        assert_eq!(stats.retry_count, 0);
+        assert_eq!(blockstm_block_gas, normal_block_gas);
+        assert_eq!(blockstm_cumulative_gas, normal_cumulative_gas);
+        assert_eq!(blockstm_validator_fees, normal_validator_fees);
+
+        let mut storage_keys = vec![
+            balance_key(token, SENDER),
+            balance_key(token, TIP_FEE_MANAGER_ADDRESS),
+            collected_fees_key(Address::ZERO, token),
+            expiring_nonce_ring_ptr_key(),
+        ];
+        storage_keys.extend(
+            recipients
+                .iter()
+                .copied()
+                .map(|recipient| balance_key(token, recipient)),
+        );
+        storage_keys.extend(replay_hashes.iter().copied().map(expiring_nonce_seen_key));
+        storage_keys.extend((0..batch_len).map(|idx| expiring_nonce_ring_key(idx as u32)));
+
+        for key in storage_keys {
+            assert_eq!(
+                blockstm_executor
+                    .read_storage(key.address, key.slot)
+                    .unwrap(),
+                normal_executor.read_storage(key.address, key.slot).unwrap(),
+                "storage differs for {key:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn blockstm_expiring_nonce_state_hook_matches_normal_execution() {
+        let chainspec = test_chainspec();
+        let token = tempo_precompiles::PATH_USD_ADDRESS;
+        let batch_len = 8usize;
+        let block_timestamp = 2u64;
+        let valid_before = 20u64;
+        let sender_balance = U256::from(1_000_000_000_000u64);
+        let recipients = (0..batch_len)
+            .map(|i| Address::from_word(B256::with_last_byte(0xe0 + i as u8)))
+            .collect::<Vec<_>>();
+
+        let build_hooked_executor = |mut db: State<EmptyDB>| {
+            let updates = Arc::new(Mutex::new(Vec::<EvmState>::new()));
+            let captured = updates.clone();
+            db.set_state_hook(Some(Box::new(move |state: &EvmState| {
+                captured.lock().unwrap().push(state.clone());
+            })));
+            let mut executor = TestExecutorBuilder::default()
+                .with_general_gas_limit(1_000_000_000)
+                .with_spec(TempoHardfork::T6)
+                .build(db, &chainspec);
+            executor.evm_mut().ctx_mut().block.timestamp = U256::from(block_timestamp);
+            (executor, updates)
+        };
+
+        let mut txs = Vec::with_capacity(batch_len);
+        for recipient in recipients.iter().copied() {
+            let (recovered, tx_env) = expiring_blockstm_tx_with_gas(
+                vec![transfer_call_to_token(token, recipient, U256::from(1))],
+                valid_before,
+                350_000,
+            );
+            txs.push((recovered, tx_env));
+        }
+
+        let build_db = || {
+            path_usd_state_with_balances_and_reward_flag(
+                std::iter::once((SENDER, sender_balance)).chain(
+                    recipients
+                        .iter()
+                        .copied()
+                        .map(|recipient| (recipient, U256::from(100))),
+                ),
+                REWARD_FLAG_OPTED_OUT,
+            )
+        };
+
+        let (mut normal_executor, normal_updates) = build_hooked_executor(build_db());
+        for (idx, (recovered, tx_env)) in txs.iter().enumerate() {
+            let result = normal_executor
+                .execute_transaction_without_commit((tx_env.clone(), recovered))
+                .unwrap();
+            assert!(
+                result.result().result.is_success(),
+                "normal expiring nonce tx {idx} failed: {:?}",
+                result.result().result
+            );
+            normal_executor.commit_transaction(result);
+        }
+
+        let (mut blockstm_executor, blockstm_updates) = build_hooked_executor(build_db());
+        let batch = txs
+            .iter()
+            .map(|(recovered, tx_env)| Tip20TransferBlockstmTx {
+                tx_env: tx_env.clone(),
+                recovered,
+                fee_token: token,
+            })
+            .collect();
+        let stats = blockstm_executor
+            .execute_tip20_transfer_blockstm_batch(batch, token, |_, _| {})
+            .unwrap();
+
+        assert_eq!(stats.transaction_count, batch_len);
+        assert_eq!(stats.retry_count, 0);
+
+        let normal_updates = normal_updates.lock().unwrap().clone();
+        let blockstm_updates = blockstm_updates.lock().unwrap().clone();
+        assert_eq!(
+            blockstm_updates.len(),
+            normal_updates.len(),
+            "STM and normal execution emitted a different number of state-hook updates"
+        );
+
+        let normal_hashed = hooked_state_updates_to_hashed_post_state(&normal_updates);
+        let blockstm_hashed = hooked_state_updates_to_hashed_post_state(&blockstm_updates);
+        assert_eq!(
+            blockstm_hashed, normal_hashed,
+            "STM and normal execution emitted different sparse-trie-visible state"
+        );
+    }
+
+    #[test]
+    fn blockstm_txgen_expiring_nonce_batch_matches_normal_execution() {
+        let chainspec = test_chainspec();
+        let token = tempo_precompiles::PATH_USD_ADDRESS;
+        let account_count = 10usize;
+        let batch_len = 50usize;
+        let block_timestamp = 1_700_000_000u64;
+        let valid_before = block_timestamp + 10;
+        let participant_balance = U256::from(1_000_000_000_000_000_000u128);
+        let signers = txgen_signers(account_count);
+        let participants = signers
+            .iter()
+            .map(PrivateKeySigner::address)
+            .collect::<Vec<_>>();
+
+        let mut txs = Vec::with_capacity(batch_len);
+        for idx in 0..batch_len {
+            let signer = &signers[idx % signers.len()];
+            let recipient = participants[(idx.wrapping_mul(17) + 1) % participants.len()];
+            txs.push(signed_expiring_tip20_transfer(
+                signer,
+                recipient,
+                U256::from(idx as u64 + 1),
+                valid_before,
+                300_000,
+                100_000_000_000,
+            ));
+        }
+
+        let build_db = || {
+            path_usd_state_with_balances_and_reward_flag(
+                participants
+                    .iter()
+                    .copied()
+                    .map(|participant| (participant, participant_balance)),
+                REWARD_FLAG_OPTED_OUT,
+            )
+        };
+        let build_executor = |db| {
+            let mut executor = TestExecutorBuilder::default()
+                .with_general_gas_limit(10_000_000_000)
+                .with_parent_beacon_block_root(B256::ZERO)
+                .with_spec(TempoHardfork::T6)
+                .build(db, &chainspec);
+            executor.evm_mut().ctx_mut().block.timestamp = U256::from(block_timestamp);
+            executor.evm_mut().ctx_mut().block.basefee = 1;
+            executor
+        };
+
+        let mut normal_executor = build_executor(build_db());
+        let mut normal_block_gas = Vec::with_capacity(batch_len);
+        let mut normal_validator_fees = Vec::with_capacity(batch_len);
+        for (idx, (recovered, tx_env)) in txs.iter().enumerate() {
+            let result = normal_executor
+                .execute_transaction_without_commit((tx_env.clone(), recovered))
+                .unwrap();
+            assert!(
+                result.result().result.is_success(),
+                "normal txgen-shaped expiring nonce tx {idx} failed: {:?}",
+                result.result().result
+            );
+            normal_block_gas.push(result.block_gas_used());
+            normal_validator_fees.push(result.validator_fee());
+            normal_executor.commit_transaction(result);
+        }
+
+        let mut blockstm_executor = build_executor(build_db());
+        let batch = txs
+            .iter()
+            .map(|(recovered, tx_env)| Tip20TransferBlockstmTx {
+                tx_env: tx_env.clone(),
+                recovered,
+                fee_token: token,
+            })
+            .collect();
+        let mut blockstm_block_gas = Vec::with_capacity(batch_len);
+        let mut blockstm_validator_fees = Vec::with_capacity(batch_len);
+        let stats = blockstm_executor
+            .execute_tip20_transfer_blockstm_batch(batch, token, |_, result| {
+                blockstm_block_gas.push(result.block_gas_used());
+                blockstm_validator_fees.push(result.validator_fee());
+            })
+            .unwrap();
+
+        assert_eq!(stats.transaction_count, batch_len);
+        assert_eq!(blockstm_block_gas, normal_block_gas);
+        assert_eq!(blockstm_validator_fees, normal_validator_fees);
+
+        let mut storage_keys = vec![
+            balance_key(token, TIP_FEE_MANAGER_ADDRESS),
+            collected_fees_key(Address::ZERO, token),
+            expiring_nonce_ring_ptr_key(),
+        ];
+        storage_keys.extend(
+            participants
+                .iter()
+                .copied()
+                .map(|participant| balance_key(token, participant)),
+        );
+        storage_keys.extend(
+            txs.iter()
+                .map(|(_, tx_env)| expiring_nonce_seen_key(tx_env.unique_tx_identifier.unwrap())),
+        );
+        storage_keys.extend((0..batch_len).map(|idx| expiring_nonce_ring_key(idx as u32)));
+
+        for key in storage_keys {
+            assert_eq!(
+                blockstm_executor
+                    .read_storage(key.address, key.slot)
+                    .unwrap(),
+                normal_executor.read_storage(key.address, key.slot).unwrap(),
+                "storage differs for {key:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn blockstm_txgen_expiring_nonce_sparse_trie_root_matches_regular_root() {
+        let chainspec = test_chainspec();
+        let token = tempo_precompiles::PATH_USD_ADDRESS;
+        let account_count = 10usize;
+        let batch_len = 50usize;
+        let block_timestamp = 1_700_000_000u64;
+        let valid_before = block_timestamp + 10;
+        let participant_balance = U256::from(1_000_000_000_000_000_000u128);
+        let signers = txgen_signers(account_count);
+        let participants = signers
+            .iter()
+            .map(PrivateKeySigner::address)
+            .collect::<Vec<_>>();
+
+        let mut txs = Vec::with_capacity(batch_len);
+        for idx in 0..batch_len {
+            let signer = &signers[idx % signers.len()];
+            let recipient = participants[(idx.wrapping_mul(17) + 1) % participants.len()];
+            txs.push(signed_expiring_tip20_transfer(
+                signer,
+                recipient,
+                U256::from(idx as u64 + 1),
+                valid_before,
+                300_000,
+                100_000_000_000,
+            ));
+        }
+
+        let build_db = || {
+            path_usd_state_with_balances_and_reward_flag(
+                participants
+                    .iter()
+                    .copied()
+                    .map(|participant| (participant, participant_balance)),
+                REWARD_FLAG_OPTED_OUT,
+            )
+        };
+        let build_hooked_executor = |mut db: State<EmptyDB>| {
+            let updates = Arc::new(Mutex::new(Vec::<EvmState>::new()));
+            let captured = updates.clone();
+            db.set_state_hook(Some(Box::new(move |state: &EvmState| {
+                captured.lock().unwrap().push(state.clone());
+            })));
+            let mut executor = TestExecutorBuilder::default()
+                .with_general_gas_limit(10_000_000_000)
+                .with_parent_beacon_block_root(B256::ZERO)
+                .with_spec(TempoHardfork::T6)
+                .build(db, &chainspec);
+            executor.evm_mut().ctx_mut().block.timestamp = U256::from(block_timestamp);
+            executor.evm_mut().ctx_mut().block.basefee = 1;
+            executor
+                .apply_pre_execution_changes()
+                .expect("pre-execution changes");
+            executor.evm_mut().db_mut().bump_bal_index();
+            (executor, updates)
+        };
+
+        let prestate_db = build_db();
+        let prestate = db_to_trie_state(&prestate_db);
+        let parent_root = state_root(prestate.clone());
+
+        let (mut normal_executor, normal_updates) = build_hooked_executor(build_db());
+        for (idx, (recovered, tx_env)) in txs.iter().enumerate() {
+            let result = normal_executor
+                .execute_transaction_without_commit((tx_env.clone(), recovered))
+                .unwrap();
+            assert!(
+                result.result().result.is_success(),
+                "normal txgen-shaped expiring nonce tx {idx} failed: {:?}",
+                result.result().result
+            );
+            normal_executor.commit_transaction(result);
+        }
+        let normal_updates = normal_updates.lock().unwrap().clone();
+        let mut normal_poststate = prestate.clone();
+        apply_evm_state_updates_to_trie_state(&mut normal_poststate, &normal_updates);
+        let normal_regular_root = state_root(normal_poststate.clone());
+
+        let (mut blockstm_executor, blockstm_updates) = build_hooked_executor(build_db());
+        let batch = txs
+            .iter()
+            .map(|(recovered, tx_env)| Tip20TransferBlockstmTx {
+                tx_env: tx_env.clone(),
+                recovered,
+                fee_token: token,
+            })
+            .collect();
+        let stats = blockstm_executor
+            .execute_tip20_transfer_blockstm_batch(batch, token, |_, _| {})
+            .unwrap();
+        assert_eq!(stats.transaction_count, batch_len);
+
+        let blockstm_updates = blockstm_updates.lock().unwrap().clone();
+        let mut poststate = prestate.clone();
+        apply_evm_state_updates_to_trie_state(&mut poststate, &blockstm_updates);
+        let regular_root = state_root(poststate.clone());
+
+        assert_eq!(
+            regular_root,
+            normal_regular_root,
+            "STM state hook updates differ from normal execution before sparse trie:\n{}",
+            describe_trie_state_diff(&normal_poststate, &poststate)
+        );
+
+        let sparse_root_for_updates = |updates: &[EvmState]| {
+            let chain_spec = Arc::new(
+                ChainSpec::builder()
+                    .chain(Chain::from_id(1))
+                    .genesis(Genesis::default())
+                    .build(),
+            );
+            let factory = create_test_provider_factory_with_chain_spec(chain_spec.clone());
+            let genesis_hash = init_genesis(&factory).expect("genesis init");
+            {
+                let provider_rw = factory.database_provider_rw().expect("provider rw");
+                insert_trie_state_for_hashing(&provider_rw, &prestate);
+                let (computed_parent_root, trie_updates) =
+                    reth_trie_db::with_adapter!(provider_rw, |A| {
+                        DbStateRoot::<_, A>::from_tx(provider_rw.tx_ref())
+                            .root_with_updates()
+                            .expect("failed to compute prestate trie updates")
+                    });
+                assert_eq!(
+                    computed_parent_root, parent_root,
+                    "provider prestate root does not match fixture prestate root"
+                );
+                provider_rw
+                    .write_trie_updates(trie_updates)
+                    .expect("failed to write prestate trie updates");
+                provider_rw.commit().expect("provider commit");
+            }
+            let provider = BlockchainProvider::new(factory).expect("blockchain provider");
+            let overlay_factory = OverlayStateProviderFactory::new(
+                provider,
+                OverlayBuilder::<EthPrimitives>::new(genesis_hash, ChangesetCache::new()),
+            );
+
+            let payload_processor = PayloadProcessor::new(
+                reth_tasks::Runtime::test(),
+                EthEvmConfig::new(chain_spec),
+                &TreeConfig::default(),
+                PrecompileCacheMap::default(),
+            );
+            let mut handle = payload_processor.spawn_state_root(
+                overlay_factory,
+                parent_root,
+                false,
+                &TreeConfig::default(),
+            );
+            {
+                let mut state_hook = handle.state_hook();
+                for update in updates {
+                    state_hook.on_state(update);
+                }
+            }
+
+            handle
+                .state_root()
+                .expect("sparse trie task failed")
+                .state_root
+        };
+
+        let normal_sparse_root = sparse_root_for_updates(&normal_updates);
+        assert_eq!(
+            normal_sparse_root, normal_regular_root,
+            "normal execution state hook does not reproduce regular root through sparse trie task"
+        );
+
+        let sparse_root = sparse_root_for_updates(&blockstm_updates);
+        assert_eq!(
+            sparse_root, regular_root,
+            "sparse trie root differs from regular root for STM expiring-nonce TIP-20 batch"
+        );
+    }
+
+    #[test]
+    fn blockstm_txgen_expiring_nonce_state_matches_payload_reexecution() {
+        let chainspec = test_chainspec();
+        let token = tempo_precompiles::PATH_USD_ADDRESS;
+        let account_count = 10usize;
+        let batch_len = 50usize;
+        let block_timestamp = 1_700_000_000u64;
+        let valid_before = block_timestamp + 10;
+        let participant_balance = U256::from(1_000_000_000_000_000_000u128);
+        let signers = txgen_signers(account_count);
+        let participants = signers
+            .iter()
+            .map(PrivateKeySigner::address)
+            .collect::<Vec<_>>();
+
+        let mut txs = Vec::with_capacity(batch_len);
+        for idx in 0..batch_len {
+            let signer = &signers[idx % signers.len()];
+            let recipient = participants[(idx.wrapping_mul(17) + 1) % participants.len()];
+            txs.push(signed_expiring_tip20_transfer(
+                signer,
+                recipient,
+                U256::from(idx as u64 + 1),
+                valid_before,
+                300_000,
+                100_000_000_000,
+            ));
+        }
+
+        let build_db = || {
+            path_usd_state_with_balances_and_reward_flag(
+                participants
+                    .iter()
+                    .copied()
+                    .map(|participant| (participant, participant_balance)),
+                REWARD_FLAG_OPTED_OUT,
+            )
+        };
+        let build_hooked_executor = |mut db: State<EmptyDB>| {
+            let updates = Arc::new(Mutex::new(Vec::<EvmState>::new()));
+            let captured = updates.clone();
+            db.set_state_hook(Some(Box::new(move |state: &EvmState| {
+                captured.lock().unwrap().push(state.clone());
+            })));
+            let mut executor = TestExecutorBuilder::default()
+                .with_general_gas_limit(10_000_000_000)
+                .with_parent_beacon_block_root(B256::ZERO)
+                .with_spec(TempoHardfork::T6)
+                .build(db, &chainspec);
+            executor.evm_mut().ctx_mut().block.timestamp = U256::from(block_timestamp);
+            executor.evm_mut().ctx_mut().block.basefee = 1;
+            executor
+                .apply_pre_execution_changes()
+                .expect("pre-execution changes");
+            executor.evm_mut().db_mut().bump_bal_index();
+            (executor, updates)
+        };
+
+        let prestate_db = build_db();
+        let prestate = db_to_trie_state(&prestate_db);
+
+        let (mut blockstm_executor, blockstm_updates) = build_hooked_executor(build_db());
+        let batch = txs
+            .iter()
+            .map(|(recovered, tx_env)| Tip20TransferBlockstmTx {
+                tx_env: tx_env.clone(),
+                recovered,
+                fee_token: token,
+            })
+            .collect();
+        let stats = blockstm_executor
+            .execute_tip20_transfer_blockstm_batch(batch, token, |_, _| {})
+            .unwrap();
+        assert_eq!(stats.transaction_count, batch_len);
+
+        let blockstm_updates = blockstm_updates.lock().unwrap().clone();
+        let mut blockstm_poststate = prestate.clone();
+        apply_evm_state_updates_to_trie_state(&mut blockstm_poststate, &blockstm_updates);
+        let blockstm_root = state_root(blockstm_poststate.clone());
+
+        let (mut validation_executor, validation_updates) = build_hooked_executor(build_db());
+        for (expiring_nonce_idx, (recovered, tx_env)) in txs.iter().enumerate() {
+            let mut indexed_tx_env = tx_env.clone();
+            indexed_tx_env
+                .tempo_tx_env
+                .as_mut()
+                .expect("tempo tx env")
+                .expiring_nonce_idx = Some(expiring_nonce_idx);
+
+            validation_executor
+                .execute_transaction((indexed_tx_env, recovered))
+                .expect("payload re-execution transaction");
+            validation_executor.evm_mut().db_mut().bump_bal_index();
+        }
+
+        let validation_updates = validation_updates.lock().unwrap().clone();
+        let mut validation_poststate = prestate.clone();
+        apply_evm_state_updates_to_trie_state(&mut validation_poststate, &validation_updates);
+        let validation_root = state_root(validation_poststate.clone());
+
+        assert_eq!(
+            blockstm_root,
+            validation_root,
+            "STM state root differs from payload re-execution root:\n{}",
+            describe_trie_state_diff(&validation_poststate, &blockstm_poststate)
+        );
     }
 
     #[test]
