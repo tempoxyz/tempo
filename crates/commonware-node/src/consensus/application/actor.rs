@@ -764,8 +764,8 @@ impl Inner<Init> {
         let payload_build_elapsed = payload_build_start.elapsed();
         let payload_validation_work_elapsed = payload.validation_work_duration();
         let validation_latency_elapsed = payload.validation_latency_duration();
+        let execution_block_rlp_size_bytes = payload.rlp_block_size_bytes();
         let (block, block_access_list) = payload.into_execution_payload();
-        let execution_block_rlp_size_bytes = block.rlp_length();
         let proposal = Block::from_execution_block_with_encoded_size(
             block,
             block_access_list,

@@ -13322,11 +13322,15 @@ dependencies = [
 name = "tempo-payload-types"
 version = "1.8.1"
 dependencies = [
+ "alloy-consensus",
  "alloy-eips",
  "alloy-primitives",
+ "alloy-rlp",
  "alloy-rpc-types-engine",
  "alloy-rpc-types-eth",
  "derive_more",
+ "proptest",
+ "proptest-arbitrary-interop",
  "reth-ethereum-engine-primitives",
  "reth-node-api",
  "reth-payload-primitives",
@@ -13493,6 +13497,7 @@ dependencies = [
  "alloy-eips",
  "alloy-evm",
  "alloy-primitives",
+ "alloy-rlp",
  "alloy-signer",
  "alloy-signer-local",
  "alloy-sol-types",

@@ -5,6 +5,7 @@
 
 mod attrs;
 mod budget;
+mod payload_size;
 
 use alloy_primitives::{B256, Bytes};
 pub use attrs::TempoPayloadAttributes;
@@ -12,6 +13,7 @@ pub use budget::{
     MarshalPersistEstimator, ValidationLatencyEstimate, ValidationLatencyEstimator,
     ValidationLatencyWorkload, marshal_persist_estimate, observe_marshal_persist,
 };
+pub use payload_size::PayloadSizeTracker;
 use std::{sync::Arc, time::Duration};
 
 use alloy_eips::eip7685::Requests;
@@ -48,6 +50,8 @@ pub struct TempoBuiltPayload {
     validation_work_duration: Duration,
     /// Time validators are expected to spend validating this payload.
     validation_latency_duration: Duration,
+    /// RLP-encoded execution block size in bytes.
+    rlp_block_size_bytes: usize,
 }
 
 impl TempoBuiltPayload {
@@ -58,6 +62,7 @@ impl TempoBuiltPayload {
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
         validation_work_duration: Duration,
         validation_latency_duration: Duration,
+        rlp_block_size_bytes: usize,
     ) -> Self {
         Self {
             inner,
@@ -65,6 +70,7 @@ impl TempoBuiltPayload {
             executed_block,
             validation_work_duration,
             validation_latency_duration,
+            rlp_block_size_bytes,
         }
     }
 
@@ -84,6 +90,11 @@ impl TempoBuiltPayload {
     /// Returns the time validators are expected to spend validating this payload.
     pub fn validation_latency_duration(&self) -> Duration {
         self.validation_latency_duration
+    }
+
+    /// Returns the RLP-encoded execution block size in bytes.
+    pub fn rlp_block_size_bytes(&self) -> usize {
+        self.rlp_block_size_bytes
     }
 
     /// Converts the built payload into [`TempoExecutionData`].

@@ -401,14 +401,7 @@ where
         let mut cumulative_gas_used = 0;
         let mut cumulative_state_gas_used = 0u64;
         let mut non_payment_gas_used = 0;
-        // initial block size usage - size of withdrawals plus 1Kb of overhead for the block header
-        let mut block_size_used = attributes
-            .withdrawals
-            .as_ref()
-            .map(|w| w.length())
-            .unwrap_or(0)
-            + 1024
-            + attributes.extra_data().length();
+        let mut payload_size = attributes.payload_size_tracker();
         let mut payment_transactions = 0u64;
         let mut pool_transactions_yielded = 0u64;
         let mut pool_transactions_included = 0u64;
@@ -437,8 +430,7 @@ where
                 return false;
             }
 
-            // Account for the subblock's size
-            block_size_used += subblock.total_tx_size();
+            payload_size.add_subblock(subblock);
 
             true
         });
@@ -511,12 +503,20 @@ where
         let prepare_system_txs_start = Instant::now();
         let system_txs = self.build_seal_block_txs(executor.evm(), &subblocks);
         for tx in &system_txs {
-            block_size_used += tx.inner().length();
+            payload_size.add_transaction_length(tx.inner().length());
         }
         let prepare_system_txs_elapsed = prepare_system_txs_start.elapsed();
         self.metrics
             .prepare_system_transactions_duration_seconds
             .record(prepare_system_txs_elapsed);
+
+        let estimated_block_size = payload_size.estimated_block_size();
+        if is_osaka && estimated_block_size > MAX_RLP_BLOCK_SIZE {
+            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+                rlp_length: estimated_block_size,
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            }));
+        }
 
         let base_fee = executor.evm().block().basefee;
         let pool_fetch_start = Instant::now();
@@ -572,7 +572,7 @@ where
                     normal_transaction_fill_idle_elapsed,
                     build_time_multiplier,
                     marshal_persist,
-                    block_size_used,
+                    payload_size.estimated_block_size(),
                     validation_latency,
                     current_workload,
                 );
@@ -589,7 +589,7 @@ where
                         ?current_workload,
                         gas_used = cumulative_gas_used,
                         transactions = pool_transactions_included,
-                        block_size_used,
+                        estimated_rlp_block_size = payload_size.estimated_block_size(),
                         build_time_multiplier = build_time_multiplier as f64
                             / BUILD_TIME_MULTIPLIER_SCALE as f64,
                         "stopping pool transaction execution before payload build budget is exhausted"
@@ -667,7 +667,8 @@ where
             }
 
             let tx_rlp_length = pool_tx.transaction.encoded_length();
-            let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
+            let estimated_block_size_with_tx =
+                payload_size.estimated_block_size_with_transaction_length(tx_rlp_length);
 
             if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
                 best_txs.mark_invalid(
@@ -736,7 +737,7 @@ where
             executor.evm_mut().db_mut().bump_bal_index();
 
             pool_transactions_included += 1;
-            block_size_used += tx_rlp_length;
+            payload_size.add_transaction_length(tx_rlp_length);
             let _ = roots_tx.send((
                 BuilderTx::Pooled(pool_tx),
                 executor.receipts().last().unwrap().clone(),
@@ -1020,15 +1021,6 @@ where
             .is_prague_active_at_timestamp(attributes.timestamp)
             .then(|| execution_result.requests.clone());
 
-        let rlp_length = block.rlp_length();
-
-        if is_osaka && rlp_length > MAX_RLP_BLOCK_SIZE {
-            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
-                rlp_length,
-                max_rlp_length: MAX_RLP_BLOCK_SIZE,
-            }));
-        }
-
         let pool_transactions_inclusion_ratio = if pool_transactions_yielded == 0 {
             0.0
         } else {
@@ -1064,8 +1056,17 @@ where
                 validation_work_at_tx_cutoff,
             );
         }
+        let rlp_block_size_bytes = payload_size.finalize(&block);
+
+        if is_osaka && rlp_block_size_bytes > MAX_RLP_BLOCK_SIZE {
+            return Err(PayloadBuilderError::other(ConsensusError::BlockTooLarge {
+                rlp_length: rlp_block_size_bytes,
+                max_rlp_length: MAX_RLP_BLOCK_SIZE,
+            }));
+        }
+
         let recorded_block_size_bytes =
-            rlp_length + block_access_list.as_ref().map_or(0, Encodable::length);
+            rlp_block_size_bytes + block_access_list.as_ref().map_or(0, Encodable::length);
         let final_workload = ValidationLatencyWorkload::new(gas_used, total_transactions);
         let validation_latency_duration = validation_latency
             .and_then(|estimate| estimate.estimate(final_workload))
@@ -1135,6 +1136,7 @@ where
             Some(executed_block),
             validation_work_duration,
             validation_latency_duration,
+            rlp_block_size_bytes,
         );
 
         drop(db);
@@ -1378,8 +1380,9 @@ mod tests {
         }
         .try_into_recovered()
         .unwrap();
+        let rlp_length = block.rlp_length();
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, Duration::ZERO)
+        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, Duration::ZERO, rlp_length)
     }
 
     #[test]

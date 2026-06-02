@@ -13,6 +13,7 @@ use alloy_evm::FromRecoveredTx;
 use alloy_primitives::{
     Address, B256, Bytes, TxHash, TxKind, U256, bytes, keccak256, map::AddressMap,
 };
+use alloy_rlp::Encodable;
 use alloy_sol_types::SolInterface;
 use reth_evm::execute::WithTxEnv;
 use reth_primitives_traits::{InMemorySize, Recovered};
@@ -77,7 +78,7 @@ pub struct TempoPooledTransaction {
 }
 
 impl TempoPooledTransaction {
-    /// Create new instance of [Self] from the given consensus transactions and the encoded size.
+    /// Create new instance of [Self] from the given consensus transaction.
     pub fn new(transaction: Recovered<TempoTxEnvelope>) -> Self {
         let is_payment = transaction.is_payment_v2();
         let sender = transaction.signer();
@@ -94,7 +95,7 @@ impl TempoPooledTransaction {
         Self {
             inner: EthPooledTransaction {
                 cost,
-                encoded_length: transaction.encode_2718_len(),
+                encoded_length: transaction.length(),
                 blob_sidecar: EthBlobTransactionSidecar::None,
                 transaction,
             },
@@ -1244,6 +1245,17 @@ mod tests {
         let pooled = TempoPooledTransaction::from_pooled(recovered);
         assert_eq!(pooled.sender(), sender);
         assert_eq!(pooled.nonce(), nonce);
+    }
+
+    #[test]
+    fn test_encoded_length_is_block_rlp_length_for_typed_transactions() {
+        let aa = TxBuilder::aa(Address::random()).build();
+        assert_eq!(aa.encoded_length(), aa.inner().length());
+        assert!(aa.encoded_length() > aa.encode_2718_len());
+
+        let eip1559 = TxBuilder::eip1559(Address::random()).build_eip1559();
+        assert_eq!(eip1559.encoded_length(), eip1559.inner().length());
+        assert!(eip1559.encoded_length() > eip1559.encode_2718_len());
     }
 
     #[test]

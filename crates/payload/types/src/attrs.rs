@@ -1,5 +1,6 @@
-use crate::ValidationLatencyEstimate;
+use crate::{PayloadSizeTracker, ValidationLatencyEstimate};
 use alloy_primitives::{Address, B256, Bytes, Keccak256};
+use alloy_rlp::Encodable;
 use alloy_rpc_types_engine::PayloadId;
 use alloy_rpc_types_eth::Withdrawal;
 use reth_ethereum_engine_primitives::EthPayloadAttributes;
@@ -95,6 +96,17 @@ impl TempoPayloadAttributes {
     /// Returns the extra data to be included in the block header.
     pub fn extra_data(&self) -> &Bytes {
         &self.extra_data
+    }
+
+    /// Creates a payload size tracker initialized with attribute-provided RLP sizes.
+    pub fn payload_size_tracker(&self) -> PayloadSizeTracker {
+        PayloadSizeTracker::new(
+            self.withdrawals
+                .as_ref()
+                .map(Encodable::length)
+                .unwrap_or(0),
+            self.extra_data.length(),
+        )
     }
 
     /// Returns the proposer's public key.
