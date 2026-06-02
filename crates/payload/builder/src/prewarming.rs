@@ -186,9 +186,6 @@ impl BestTransactionsPrewarming {
                     storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary);
 
                 for touch in &touches {
-                    if prewarm.is_stopped() {
-                        return;
-                    }
                     if let Err(err) = touch.warm(evm) {
                         trace!(
                             target: "payload_builder",
