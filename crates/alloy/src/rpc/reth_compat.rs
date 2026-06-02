@@ -226,7 +226,7 @@ fn create_mock_native_multisig_sig(
         if signed_weight >= u64::from(init.threshold) {
             break;
         }
-        let signature = create_mock_primitive_signature(&owner.signature_type, None);
+        let signature = create_mock_primitive_signature(&SignatureType::Secp256k1, None);
         signatures.push(signature.to_bytes());
         signed_weight = signed_weight
             .checked_add(u64::from(owner.weight))
@@ -445,7 +445,6 @@ mod tests {
             salt: B256::repeat_byte(0x55),
             threshold: 1,
             owners: vec![MultisigOwner {
-                signature_type: SignatureType::Secp256k1,
                 owner: address!("0x1111111111111111111111111111111111111111"),
                 weight: 1,
             }],

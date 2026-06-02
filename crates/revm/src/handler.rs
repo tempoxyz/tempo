@@ -2752,7 +2752,7 @@ mod tests {
     };
     use tempo_primitives::transaction::{
         Call, InitMultisig, MultisigOwner, MultisigSignature, RecoveredTempoAuthorization,
-        SignatureType as PrimitiveSignatureType, TempoSignature, TempoSignedAuthorization,
+        TempoSignature, TempoSignedAuthorization,
         tt_signature::{P256SignatureWithPreHash, WebAuthnSignature},
     };
 
@@ -2770,12 +2770,10 @@ mod tests {
             threshold: 1,
             owners: vec![
                 MultisigOwner {
-                    signature_type: PrimitiveSignatureType::Secp256k1,
                     owner: Address::from([0x11; 20]),
                     weight: 1,
                 },
                 MultisigOwner {
-                    signature_type: PrimitiveSignatureType::Secp256k1,
                     owner: Address::from([0x22; 20]),
                     weight: 1,
                 },
@@ -3109,7 +3107,6 @@ mod tests {
             owners: signers
                 .iter()
                 .map(|signer| MultisigOwner {
-                    signature_type: PrimitiveSignatureType::Secp256k1,
                     owner: signer.address(),
                     weight: 1,
                 })
