@@ -868,7 +868,7 @@ where
 
         // Drop the state hook to signal that execution is complete and the sparse trie task can
         // finalize the state root.
-        db.set_state_hook(None);
+        executor.evm_mut().db_mut().set_state_hook(None);
 
         // cancel pre-warming, if any, by dropping the iter
         drop(best_txs);
