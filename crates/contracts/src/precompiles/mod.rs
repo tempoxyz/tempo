@@ -1,6 +1,7 @@
 pub mod account_keychain;
 pub mod address_registry;
 pub mod common_errors;
+pub mod feature_registry;
 pub mod nonce;
 pub mod receive_policy_guard;
 pub mod signature_verifier;
@@ -17,6 +18,7 @@ pub use account_keychain::*;
 pub use address_registry::*;
 use alloy_primitives::{Address, address};
 pub use common_errors::*;
+pub use feature_registry::*;
 pub use nonce::*;
 pub use receive_policy_guard::*;
 pub use signature_verifier::*;
