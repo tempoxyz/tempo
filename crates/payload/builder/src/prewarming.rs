@@ -10,10 +10,10 @@ use std::{
 use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
 use alloy_sol_types::SolInterface;
 use reth_evm::{Database, Evm, EvmEnvFor};
-use reth_revm::database::StateProviderDatabase;
 use reth_revm::{
     Database as RevmDatabase,
     cached::{CachedReads, CachedReadsDbMut},
+    database::StateProviderDatabase,
     state::{AccountInfo, Bytecode},
 };
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
