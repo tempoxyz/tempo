@@ -140,6 +140,19 @@ def txgen-bloat-accounts-per-token [bloat_mib: int, token_count: int] {
     (($available_for_balances / 64) / $token_count) | into int
 }
 
+def txgen-min-bloat-mib-for-recipient-end [recipient_end: int, token_count: int] {
+    if $recipient_end < 0 {
+        error make { msg: "recipient end must be non-negative" }
+    }
+    if $token_count <= 0 {
+        error make { msg: "bloat token count must be greater than zero" }
+    }
+
+    let overhead_per_token = 40 + 64
+    let required_bytes = ($recipient_end * 64 * $token_count) + ($token_count * $overhead_per_token) + 1
+    (($required_bytes + 1024 * 1024 - 1) / (1024 * 1024)) | into int
+}
+
 def --env txgen-configure-existing-recipients-env [preset_path: string, bloat_mib: int, token_count: int] {
     let preset_name = ($preset_path | path basename | str replace --regex '\.yml$' '')
     if $preset_name not-in $TXGEN_HELPER_EXISTING_RECIPIENTS_PRESETS {
@@ -152,7 +165,8 @@ def --env txgen-configure-existing-recipients-env [preset_path: string, bloat_mi
 
     let recipient_end = (txgen-bloat-accounts-per-token $bloat_mib $token_count)
     if $recipient_end <= $TXGEN_HELPER_EXISTING_RECIPIENTS_START {
-        error make { msg: $"preset ($preset_name) requires state bloat with more than ($TXGEN_HELPER_EXISTING_RECIPIENTS_START) accounts per token" }
+        let min_bloat_mib = (txgen-min-bloat-mib-for-recipient-end $TXGEN_HELPER_EXISTING_RECIPIENTS_START $token_count)
+        error make { msg: $"preset ($preset_name) requires state bloat with more than ($TXGEN_HELPER_EXISTING_RECIPIENTS_START) accounts per token; got ($recipient_end) from ($bloat_mib) MiB, use --bloat >= ($min_bloat_mib)" }
     }
 
     $env.TXGEN_EXISTING_RECIPIENTS_START = ($TXGEN_HELPER_EXISTING_RECIPIENTS_START | into string)
