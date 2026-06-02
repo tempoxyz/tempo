@@ -77,6 +77,7 @@ crate::sol! {
         function approve(address spender, uint256 amount) external returns (bool);
         function allowance(address owner, address spender) external view returns (uint256);
         function transferFrom(address from, address to, uint256 amount) external returns (bool);
+        function transferAsSystem(address from, address to, uint256 amount) external returns (bool);
         function mint(address to, uint256 amount) external;
         function burn(uint256 amount) external;
 

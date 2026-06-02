@@ -18,6 +18,7 @@ pub mod stablecoin_dex;
 pub mod tip20;
 pub mod tip20_channel_reserve;
 pub mod tip20_factory;
+pub mod tip20_stealth;
 pub mod tip403_registry;
 pub mod tip_fee_manager;
 pub mod validator_config;
@@ -31,8 +32,8 @@ use crate::{
     receive_policy_guard::ReceivePolicyGuard, signature_verifier::SignatureVerifier,
     stablecoin_dex::StablecoinDEX, storage::StorageCtx, tip_fee_manager::TipFeeManager,
     tip20::TIP20Token, tip20_channel_reserve::TIP20ChannelReserve, tip20_factory::TIP20Factory,
-    tip403_registry::TIP403Registry, validator_config::ValidatorConfig,
-    validator_config_v2::ValidatorConfigV2,
+    tip20_stealth::TIP20Stealth, tip403_registry::TIP403Registry,
+    validator_config::ValidatorConfig, validator_config_v2::ValidatorConfigV2,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_primitives::TempoAddressExt;
@@ -56,8 +57,8 @@ pub use tempo_contracts::precompiles::{
     ACCOUNT_KEYCHAIN_ADDRESS, ADDRESS_REGISTRY_ADDRESS, DEFAULT_FEE_TOKEN,
     NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, RECEIVE_POLICY_GUARD_ADDRESS,
     SIGNATURE_VERIFIER_ADDRESS, STABLECOIN_DEX_ADDRESS, TIP_FEE_MANAGER_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP403_REGISTRY_ADDRESS,
-    VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_FACTORY_ADDRESS, TIP20_STEALTH_ADDRESS,
+    TIP403_REGISTRY_ADDRESS, VALIDATOR_CONFIG_ADDRESS, VALIDATOR_CONFIG_V2_ADDRESS,
 };
 
 // Re-export storage layout helpers for read-only contexts (e.g., pool validation)
@@ -146,6 +147,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(SignatureVerifier::create_precompile(&cfg))
         } else if *address == RECEIVE_POLICY_GUARD_ADDRESS && cfg.spec.is_t6() {
             Some(ReceivePolicyGuard::create_precompile(&cfg))
+        } else if *address == TIP20_STEALTH_ADDRESS && cfg.spec.is_t6() {
+            Some(TIP20Stealth::create_precompile(&cfg))
         } else {
             None
         }
@@ -276,6 +279,13 @@ impl ReceivePolicyGuard {
     /// Creates the EVM precompile for this type.
     pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
         tempo_precompile!("ReceivePolicyGuard", cfg, |input| { Self::new() })
+    }
+}
+
+impl TIP20Stealth {
+    /// Creates the EVM precompile for this type.
+    pub fn create_precompile(cfg: &CfgEnv<TempoHardfork>) -> DynPrecompile {
+        tempo_precompile!("TIP20Stealth", cfg, |input| { Self::new() })
     }
 }
 
@@ -1167,6 +1177,13 @@ mod tests {
             "TIP20 channel reserve should not be registered before T5"
         );
 
+        // TIP20Stealth should be registered at T6
+        let stealth_precompile = precompiles.get(&TIP20_STEALTH_ADDRESS);
+        assert!(
+            stealth_precompile.is_none(),
+            "TIP20Stealth should not be registered before T6"
+        );
+
         // TIP20 tokens with prefix should be registered
         let tip20_precompile = precompiles.get(&PATH_USD_ADDRESS);
         assert!(
@@ -1211,6 +1228,25 @@ mod tests {
                 .get(&TIP20_CHANNEL_RESERVE_ADDRESS)
                 .is_some(),
             "TIP20 channel reserve should be registered at T5"
+        );
+    }
+
+    #[test]
+    fn test_tip20_stealth_registered_at_t6_only() {
+        let mut pre_t6 = CfgEnv::<TempoHardfork>::default();
+        pre_t6.set_spec_and_mainnet_gas_params(TempoHardfork::T5);
+        assert!(
+            tempo_precompiles(&pre_t6)
+                .get(&TIP20_STEALTH_ADDRESS)
+                .is_none(),
+            "TIP20Stealth should NOT be registered before T6"
+        );
+
+        let mut t6 = CfgEnv::<TempoHardfork>::default();
+        t6.set_spec_and_mainnet_gas_params(TempoHardfork::T6);
+        assert!(
+            tempo_precompiles(&t6).get(&TIP20_STEALTH_ADDRESS).is_some(),
+            "TIP20Stealth should be registered at T6"
         );
     }
 

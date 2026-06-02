@@ -28,7 +28,7 @@ use crate::{
     address_registry::AddressRegistry,
     error::{Result, TempoPrecompileError},
     receive_policy_guard::{InboundKind, ReceivePolicyGuard, RecoveryMode},
-    storage::{Handler, Mapping},
+    storage::{Handler, Mapping, StorageCtx},
     tip20::{rewards::UserRewardInfo, roles::DEFAULT_ADMIN_ROLE},
     tip20_factory::TIP20Factory,
     tip403_registry::{AuthRole, ITIP403Registry, TIP403Registry},
@@ -41,7 +41,7 @@ use std::sync::LazyLock;
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_contracts::precompiles::{
     DECIMALS as TIP20_DECIMALS, ReceivePolicyGuardError, STABLECOIN_DEX_ADDRESS,
-    TIP20_CHANNEL_RESERVE_ADDRESS,
+    TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_STEALTH_ADDRESS,
 };
 use tempo_precompiles_macros::contract;
 use tempo_primitives::TempoAddressExt;
@@ -901,6 +901,48 @@ impl TIP20Token {
         Ok(true)
     }
 
+    /// Transfers `amount` from `from` to `to` without checking allowances. For use by trusted
+    /// system precompiles that must credit a caller-specified recipient exactly.
+    pub fn system_transfer_as(
+        &mut self,
+        caller: Address,
+        from: Address,
+        to: Address,
+        amount: U256,
+    ) -> Result<bool> {
+        let spec = self.storage.spec();
+        if !crate::address_registry::is_implicitly_approved(caller, spec) {
+            return Err(TIP20Error::unauthorized().into());
+        }
+
+        let to = Recipient::direct(to);
+        self.check_not_paused()?;
+        to.validate()?;
+        self.ensure_transfer_authorized(from, to.target)?;
+        self.check_and_update_spending_limit(from, amount)?;
+
+        if self.storage.spec().is_t6()
+            && TIP403Registry::new()
+                .validate_receive_policy(self.address, from, to.target)?
+                .is_some()
+        {
+            return Err(TIP20Error::policy_forbids().into());
+        }
+
+        self._transfer(from, &to, amount)?;
+        Ok(true)
+    }
+
+    /// ABI-facing system transfer primitive. Direct user calls revert unless the caller is a
+    /// trusted system precompile.
+    pub fn transfer_as_system(
+        &mut self,
+        msg_sender: Address,
+        call: ITIP20::transferAsSystemCall,
+    ) -> Result<bool> {
+        self.system_transfer_as(msg_sender, call.from, call.to, call.amount)
+    }
+
     /// Debits `spender`'s allowance on `owner`. No-op when unlimited.
     fn consume_allowance(&mut self, owner: Address, spender: Address, amount: U256) -> Result<()> {
         let allowed = self.get_allowance(owner, spender)?;
@@ -1398,7 +1440,10 @@ impl Recipient {
     /// - the zero address (preventing accidental burns)
     /// - an address with the TIP-20 prefix (preventing transfers to token contracts)
     pub(crate) fn validate(&self) -> Result<()> {
-        if self.target.is_zero() || self.target.is_tip20() {
+        if self.target.is_zero()
+            || self.target.is_tip20()
+            || (StorageCtx.spec().is_t6() && self.target == TIP20_STEALTH_ADDRESS)
+        {
             return Err(TIP20Error::invalid_recipient().into());
         }
         Ok(())
@@ -2608,6 +2653,104 @@ pub(crate) mod tests {
                 token.system_transfer_from(unlisted, from, amount),
                 Err(TempoPrecompileError::TIP20(TIP20Error::Unauthorized(_)))
             ));
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_system_transfer_as_t6_authorized() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let admin = Address::random();
+        let from = Address::random();
+        let to = Address::random();
+        let amount = U256::from(123);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(from, amount)
+                .apply()?;
+
+            token.system_transfer_as(TIP20_STEALTH_ADDRESS, from, to, amount)?;
+
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: from })?,
+                U256::ZERO
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: to })?,
+                amount
+            );
+            assert_eq!(
+                token.emitted_events().last().unwrap(),
+                &TIP20Event::transfer(from, to, amount).into_log_data()
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_as_system_t6_direct_user_call_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let admin = Address::random();
+        let from = Address::random();
+        let to = Address::random();
+        let amount = U256::from(123);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(from, amount)
+                .apply()?;
+
+            assert!(matches!(
+                token.transfer_as_system(from, ITIP20::transferAsSystemCall { from, to, amount }),
+                Err(TempoPrecompileError::TIP20(TIP20Error::Unauthorized(_)))
+            ));
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: from })?,
+                amount
+            );
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall { account: to })?,
+                U256::ZERO
+            );
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_t6_transfer_to_tip20_stealth_address_reverts() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        let admin = Address::random();
+        let from = Address::random();
+        let amount = U256::from(123);
+
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(from, amount)
+                .apply()?;
+
+            assert!(matches!(
+                token.transfer(
+                    from,
+                    ITIP20::transferCall {
+                        to: TIP20_STEALTH_ADDRESS,
+                        amount
+                    }
+                ),
+                Err(TempoPrecompileError::TIP20(TIP20Error::InvalidRecipient(_)))
+            ));
+            assert_eq!(
+                token.balance_of(ITIP20::balanceOfCall {
+                    account: TIP20_STEALTH_ADDRESS
+                })?,
+                U256::ZERO
+            );
 
             Ok(())
         })

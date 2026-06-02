@@ -19,7 +19,7 @@ use alloy::{
 use tempo_chainspec::hardfork::TempoHardfork;
 pub use tempo_contracts::precompiles::{
     AddrRegistryError, AddrRegistryEvent, IAddressRegistry, STABLECOIN_DEX_ADDRESS,
-    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS,
+    TIP_FEE_MANAGER_ADDRESS, TIP20_CHANNEL_RESERVE_ADDRESS, TIP20_STEALTH_ADDRESS,
 };
 use tempo_precompiles_macros::{Storable, contract};
 pub use tempo_primitives::{MasterId, TempoAddressExt, UserTag};
@@ -35,14 +35,15 @@ pub const IMPLICIT_APPROVAL_LIST: &[Address] = &[
     TIP20_CHANNEL_RESERVE_ADDRESS,
 ];
 
+/// TIP-1069 additions to the Implicit Approval List.
+pub const T6_IMPLICIT_APPROVAL_LIST: &[Address] = &[TIP20_STEALTH_ADDRESS];
+
 /// Returns `true` iff `addr` is on the [`IMPLICIT_APPROVAL_LIST`] for the given hardfork.
 ///
 /// Before `TempoHardfork::T5` (TIP-1035 activation), returns `false` for all addresses.
 pub fn is_implicitly_approved(addr: Address, hardfork: TempoHardfork) -> bool {
-    if !hardfork.is_t5() {
-        return false;
-    }
-    IMPLICIT_APPROVAL_LIST.contains(&addr)
+    (hardfork.is_t5() && IMPLICIT_APPROVAL_LIST.contains(&addr))
+        || (hardfork.is_t6() && T6_IMPLICIT_APPROVAL_LIST.contains(&addr))
 }
 
 /// [TIP-1022] virtual address registry contract.
@@ -202,6 +203,7 @@ mod tests {
             assert!(!registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
             assert!(!registry.is_implicitly_approved(STABLECOIN_DEX_ADDRESS));
             assert!(!registry.is_implicitly_approved(TIP20_CHANNEL_RESERVE_ADDRESS));
+            assert!(!registry.is_implicitly_approved(TIP20_STEALTH_ADDRESS));
             assert!(!registry.is_implicitly_approved(Address::random()));
             Ok(())
         })
@@ -214,6 +216,19 @@ mod tests {
             let registry = AddressRegistry::new();
             assert!(registry.is_implicitly_approved(TIP_FEE_MANAGER_ADDRESS));
             assert!(registry.is_implicitly_approved(STABLECOIN_DEX_ADDRESS));
+            assert!(registry.is_implicitly_approved(TIP20_CHANNEL_RESERVE_ADDRESS));
+            assert!(!registry.is_implicitly_approved(TIP20_STEALTH_ADDRESS));
+            assert!(!registry.is_implicitly_approved(Address::random()));
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn test_is_implicitly_approved_t6_adds_stealth() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let registry = AddressRegistry::new();
+            assert!(registry.is_implicitly_approved(TIP20_STEALTH_ADDRESS));
             assert!(registry.is_implicitly_approved(TIP20_CHANNEL_RESERVE_ADDRESS));
             assert!(!registry.is_implicitly_approved(Address::random()));
             Ok(())

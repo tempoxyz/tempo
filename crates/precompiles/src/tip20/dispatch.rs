@@ -26,6 +26,9 @@ const T5_ADDED: &[[u8; 4]] = &[
     ITIP20::setLogoURICall::SELECTOR,
 ];
 
+/// Selectors added at T6: TIP-1069 system transfer.
+const T6_ADDED: &[[u8; 4]] = &[ITIP20::transferAsSystemCall::SELECTOR];
+
 /// Decoded call variant — either a TIP-20 token call or a role-management call.
 enum TIP20Call {
     TIP20(ITIP20Calls),
@@ -66,6 +69,7 @@ impl Precompile for TIP20Token {
             &[
                 SelectorSchedule::new(TempoHardfork::T2).with_added(T2_ADDED),
                 SelectorSchedule::new(TempoHardfork::T5).with_added(T5_ADDED),
+                SelectorSchedule::new(TempoHardfork::T6).with_added(T6_ADDED),
             ],
             TIP20Call::decode,
             |call| match call {
@@ -125,6 +129,9 @@ impl Precompile for TIP20Token {
                 // State changing functions
                 TIP20Call::TIP20(ITIP20Calls::transferFrom(call)) => {
                     mutate(call, msg_sender, |s, c| self.transfer_from(s, c))
+                }
+                TIP20Call::TIP20(ITIP20Calls::transferAsSystem(call)) => {
+                    mutate(call, msg_sender, |s, c| self.transfer_as_system(s, c))
                 }
                 TIP20Call::TIP20(ITIP20Calls::transfer(call)) => {
                     mutate(call, msg_sender, |s, c| self.transfer(s, c))
@@ -772,8 +779,8 @@ mod tests {
         use crate::test_util::{assert_full_coverage, check_selector_coverage};
         use tempo_contracts::precompiles::{IRolesAuth::IRolesAuthCalls, ITIP20::ITIP20Calls};
 
-        // Use T5 hardfork so all selectors are active.
-        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        // Use T6 hardfork so all selectors are active.
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
         let admin = Address::random();
 
         StorageCtx::enter(&mut storage, || {
@@ -821,6 +828,42 @@ mod tests {
             assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
 
             Ok(())
+        })
+    }
+
+    #[test]
+    fn test_transfer_as_system_selector_gated_behind_t6() -> eyre::Result<()> {
+        let admin = Address::random();
+        let from = Address::random();
+        let to = Address::random();
+        let amount = U256::from(1);
+        let calldata = ITIP20::transferAsSystemCall { from, to, amount }.abi_encode();
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T5);
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(from, amount)
+                .apply()?;
+            let result = token.call(&calldata, from)?;
+            assert!(result.is_revert());
+            assert!(UnknownFunctionSelector::abi_decode(&result.bytes).is_ok());
+            Ok::<_, eyre::Report>(())
+        })?;
+
+        let mut storage = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut storage, || {
+            let mut token = TIP20Setup::create("Test", "TST", admin)
+                .with_issuer(admin)
+                .with_mint(from, amount)
+                .apply()?;
+            let result = token.call(&calldata, from)?;
+            assert!(result.is_revert());
+            assert_eq!(
+                TIP20Error::abi_decode(&result.bytes)?,
+                TIP20Error::unauthorized()
+            );
+            Ok::<_, eyre::Report>(())
         })
     }
 
