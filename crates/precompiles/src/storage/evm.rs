@@ -1,10 +1,15 @@
-use crate::{error::TempoPrecompileError, storage::PrecompileStorageProvider};
+use crate::{
+    STORAGE_GAS_TOKENS_ADDRESS,
+    error::TempoPrecompileError,
+    storage::PrecompileStorageProvider,
+    tip1060_storage_gas_token::{GasStateBackend, sstore_gas_state},
+};
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
 use revm::{
     context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
-    interpreter::gas::GasTracker,
+    interpreter::{StateLoad, gas::GasTracker},
     primitives::AddressMap,
     state::{AccountInfo, Bytecode},
 };
@@ -89,6 +94,72 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
             return Err(TempoPrecompileError::OutOfGas);
         }
         Ok(())
+    }
+}
+
+impl<'a> GasStateBackend for EvmPrecompileStorageProvider<'a> {
+    type Error = TempoPrecompileError;
+
+    #[inline]
+    fn out_of_gas() -> Self::Error {
+        TempoPrecompileError::OutOfGas
+    }
+
+    #[inline]
+    fn fatal_external() -> Self::Error {
+        TempoPrecompileError::Fatal("invalid storage gas-token account state".to_string())
+    }
+
+    #[inline]
+    fn gas_params(&self) -> &GasParams {
+        &self.gas_params
+    }
+
+    #[inline]
+    fn remaining_gas(&self) -> u64 {
+        self.gas_tracker.remaining()
+    }
+
+    #[inline]
+    fn charge_gas(&mut self, cost: u64) -> Result<(), Self::Error> {
+        self.deduct_gas(cost)
+    }
+
+    #[inline]
+    fn load_gas_token_account(&mut self) -> Result<(), Self::Error> {
+        self.internals.load_account(STORAGE_GAS_TOKENS_ADDRESS)?;
+        Ok(())
+    }
+
+    #[inline]
+    fn gas_token_sload(
+        &mut self,
+        key: U256,
+        skip_cold_load: bool,
+    ) -> Result<StateLoad<U256>, Self::Error> {
+        let mut account = self
+            .internals
+            .load_account_mut(STORAGE_GAS_TOKENS_ADDRESS)?;
+        let val = account.sload(key, skip_cold_load)?;
+        Ok(StateLoad::new(val.present_value, val.is_cold))
+    }
+
+    #[inline]
+    fn gas_token_sstore(&mut self, key: U256, value: U256) -> Result<(), Self::Error> {
+        self.internals
+            .load_account_mut(STORAGE_GAS_TOKENS_ADDRESS)?
+            .sstore(key, value, false)?;
+        Ok(())
+    }
+
+    #[inline]
+    fn token_tstore_increment(&mut self, key: U256) {
+        let pending = self.internals.tload(STORAGE_GAS_TOKENS_ADDRESS, key);
+        self.internals.tstore(
+            STORAGE_GAS_TOKENS_ADDRESS,
+            key,
+            pending.saturating_add(U256::from(1)),
+        );
     }
 }
 
@@ -197,17 +268,30 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
             self.deduct_gas(self.gas_params.sstore_static_gas())?;
         }
 
-        // dynamic gas
-        self.deduct_gas(
-            self.gas_params
-                .sstore_dynamic_gas(true, &result.data, result.is_cold),
-        )?;
+        // TIP-1060 (T6+): run the storage gas-token policy so precompile-driven storage
+        // writes honor the same accounting as the opcode-level SSTORE hook.
+        let outcome = if self.spec.is_t6() {
+            sstore_gas_state(self, address, &result.data)?
+        } else {
+            Default::default()
+        };
 
-        // Track state gas (cold SSTORE zero->non-zero only)
-        self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
+        if !outcome.skip_gas {
+            // dynamic gas
+            self.deduct_gas(self.gas_params.sstore_dynamic_gas(
+                true,
+                &result.data,
+                result.is_cold,
+            ))?;
+
+            // Track state gas (cold SSTORE zero->non-zero only)
+            self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;
+        }
 
         // refund gas.
-        self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
+        if !outcome.skip_refund {
+            self.refund_gas(self.gas_params.sstore_refund(true, &result.data));
+        }
 
         Ok(())
     }

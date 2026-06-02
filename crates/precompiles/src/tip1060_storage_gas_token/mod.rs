@@ -1,6 +1,9 @@
 //! State gas token precompile (TIP-1060).
 
 pub mod dispatch;
+pub mod gas_state;
+
+pub use gas_state::{GasStateBackend, sstore_gas_state};
 
 use crate::{
     STORAGE_GAS_TOKENS_ADDRESS,
@@ -9,7 +12,7 @@ use crate::{
 };
 use alloy::primitives::{Address, U256};
 use tempo_contracts::precompiles::{
-    IStorageGasTokens::Mode, StorageGasTokensError, StorageGasTokensEvent,
+    ITIP1060StorageGasTokens::Mode, TIP1060StorageGasTokensError, TIP1060StorageGasTokensEvent,
 };
 use tempo_precompiles_macros::{Storable, contract};
 
@@ -30,7 +33,7 @@ impl TryFrom<u8> for StorageGasMode {
             0 => Ok(Self::RefundTokens),
             1 => Ok(Self::PreserveTokens),
             2 => Ok(Self::DirectTokens),
-            _ => Err(StorageGasTokensError::invalid_mode().into()),
+            _ => Err(TIP1060StorageGasTokensError::invalid_mode().into()),
         }
     }
 }
@@ -43,7 +46,7 @@ impl TryFrom<Mode> for StorageGasMode {
             Mode::RefundTokens => Ok(Self::RefundTokens),
             Mode::PreserveTokens => Ok(Self::PreserveTokens),
             Mode::DirectTokens => Ok(Self::DirectTokens),
-            _ => Err(StorageGasTokensError::invalid_mode().into()),
+            _ => Err(TIP1060StorageGasTokensError::invalid_mode().into()),
         }
     }
 }
@@ -100,9 +103,9 @@ impl AccountState {
 /// solidity_mapping_slot = keccak256(abi.encode(account, base_slot))
 /// ```
 #[contract(addr = STORAGE_GAS_TOKENS_ADDRESS)]
-pub struct StorageGasToken {}
+pub struct TIP1060StorageGasToken {}
 
-impl StorageGasToken {
+impl TIP1060StorageGasToken {
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
@@ -121,7 +124,7 @@ impl StorageGasToken {
         state.mode = StorageGasMode::try_from(mode)?;
         self.write_state_of(msg_sender, state)?;
 
-        self.emit_event(StorageGasTokensEvent::mode_updated(msg_sender, mode))
+        self.emit_event(TIP1060StorageGasTokensEvent::mode_updated(msg_sender, mode))
     }
 
     #[inline]
