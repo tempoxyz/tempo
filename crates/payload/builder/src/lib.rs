@@ -653,19 +653,21 @@ where
             }
 
             let tx_rlp_length = pool_tx.transaction.encoded_length();
-            let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
 
-            if is_osaka && estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
-                best_txs.mark_invalid(
-                    &pool_tx,
-                    InvalidPoolTransactionError::OversizedData {
-                        size: estimated_block_size_with_tx,
-                        limit: MAX_RLP_BLOCK_SIZE,
-                    },
-                );
-                self.metrics.inc_pool_tx_skipped("oversized_block");
-                skipped_oversized_block = true;
-                continue;
+            if is_osaka {
+                let estimated_block_size_with_tx = block_size_used + tx_rlp_length;
+                if estimated_block_size_with_tx > MAX_RLP_BLOCK_SIZE {
+                    best_txs.mark_invalid(
+                        &pool_tx,
+                        InvalidPoolTransactionError::OversizedData {
+                            size: estimated_block_size_with_tx,
+                            limit: MAX_RLP_BLOCK_SIZE,
+                        },
+                    );
+                    self.metrics.inc_pool_tx_skipped("oversized_block");
+                    skipped_oversized_block = true;
+                    continue;
+                }
             }
 
             let tx_debug_repr = tracing::enabled!(Level::TRACE)
