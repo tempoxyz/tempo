@@ -206,8 +206,7 @@ where
 
 impl<Builder> Future for TempoPayloadJob<Builder>
 where
-    Builder: PayloadBuilder + Unpin + 'static,
-    Builder::Attributes: Unpin + Clone,
+    Builder: PayloadBuilder<Attributes = TempoPayloadAttributes> + Unpin + 'static,
     Builder::BuiltPayload: Unpin + Clone,
 {
     type Output = Result<(), PayloadBuilderError>;
@@ -215,12 +214,9 @@ where
     fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let this = self.get_mut();
 
-        if this.deadline.as_mut().poll(cx).is_ready() {
-            trace!(target: "payload_builder", "payload building deadline reached");
-            return Poll::Ready(Ok(()));
-        }
-
         loop {
+            let deadline_reached = this.deadline.as_mut().poll(cx).is_ready();
+
             if let Some(mut fut) = this.pending_block.take() {
                 match Pin::new(&mut fut).poll(cx) {
                     Poll::Ready(Ok(outcome)) => match outcome {
@@ -250,6 +246,18 @@ where
                     }
                     Poll::Pending => {
                         this.pending_block = Some(fut);
+                        if deadline_reached {
+                            if this.has_controlled_pending_build() {
+                                trace!(
+                                    target: "payload_builder",
+                                    id = %this.config.payload_id(),
+                                    "payload building deadline reached for controlled pending build"
+                                );
+                                return Poll::Pending;
+                            }
+                            trace!(target: "payload_builder", "payload building deadline reached");
+                            return Poll::Ready(Ok(()));
+                        }
                         return Poll::Pending;
                     }
                 }
@@ -257,6 +265,11 @@ where
 
             if this.best_payload.is_frozen() {
                 return Poll::Pending;
+            }
+
+            if deadline_reached {
+                trace!(target: "payload_builder", "payload building deadline reached");
+                return Poll::Ready(Ok(()));
             }
 
             std::task::ready!(this.interval.poll_tick(cx));
@@ -267,8 +280,7 @@ where
 
 impl<Builder> PayloadJob for TempoPayloadJob<Builder>
 where
-    Builder: PayloadBuilder + Unpin + 'static,
-    Builder::Attributes: Unpin + Clone,
+    Builder: PayloadBuilder<Attributes = TempoPayloadAttributes> + Unpin + 'static,
     Builder::BuiltPayload: Unpin + Clone,
 {
     type PayloadAttributes = Builder::Attributes;
@@ -375,6 +387,15 @@ impl<P> PayloadState<P> {
     }
 }
 
+impl<Builder> TempoPayloadJob<Builder>
+where
+    Builder: PayloadBuilder<Attributes = TempoPayloadAttributes>,
+{
+    fn has_controlled_pending_build(&self) -> bool {
+        self.pending_block.is_some() && self.config.attributes.payload_build_control().is_some()
+    }
+}
+
 /// Future that resolves the best payload available for a job.
 #[derive(Debug)]
 pub struct ResolveBestPayload<Payload> {
@@ -445,6 +466,92 @@ impl<P> Future for PendingPayload<P> {
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
         let res = std::task::ready!(Pin::new(&mut self.payload).poll(cx));
         Poll::Ready(res.map_err(Into::into).and_then(|res| res))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reth_primitives_traits::SealedHeader;
+    use tempo_payload_types::PayloadBuildControl;
+
+    #[derive(Debug, Clone)]
+    struct TestPayloadBuilder;
+
+    impl PayloadBuilder for TestPayloadBuilder {
+        type Attributes = TempoPayloadAttributes;
+        type BuiltPayload = TempoBuiltPayload;
+
+        fn try_build(
+            &self,
+            _args: BuildArguments<Self::Attributes, Self::BuiltPayload>,
+        ) -> Result<BuildOutcome<Self::BuiltPayload>, PayloadBuilderError> {
+            unreachable!("test polls an already pending build")
+        }
+
+        fn build_empty_payload(
+            &self,
+            _config: PayloadConfig<Self::Attributes, HeaderForPayload<Self::BuiltPayload>>,
+        ) -> Result<Self::BuiltPayload, PayloadBuilderError> {
+            unreachable!("test polls an already pending build")
+        }
+    }
+
+    fn pending_job(
+        with_build_control: bool,
+    ) -> (
+        TempoPayloadJob<TestPayloadBuilder>,
+        oneshot::Sender<Result<BuildOutcome<TempoBuiltPayload>, PayloadBuilderError>>,
+    ) {
+        let mut attributes =
+            TempoPayloadAttributes::new(None, 1, 0, Default::default(), None, Vec::new);
+        if with_build_control {
+            attributes = attributes
+                .with_payload_build_control(PayloadBuildControl::new(Duration::from_millis(1)));
+        }
+        let parent_header = Arc::new(SealedHeader::seal_slow(TempoHeader::default()));
+        let (tx, rx) = oneshot::channel();
+
+        (
+            TempoPayloadJob {
+                config: PayloadConfig::new(parent_header, attributes, PayloadId::new([0; 8])),
+                executor: Runtime::test(),
+                deadline: Box::pin(tokio::time::sleep_until(
+                    tokio::time::Instant::now() - Duration::from_millis(1),
+                )),
+                interval: tokio::time::interval(Duration::from_secs(60)),
+                best_payload: PayloadState::Missing,
+                pending_block: Some(PendingPayload {
+                    _cancel: CancelOnDrop::default(),
+                    payload: rx,
+                }),
+                cached_reads: CachedReads::default(),
+                execution_cache: None,
+                trie_handle: None,
+                payload_task_limiter: Arc::new(Semaphore::new(1)),
+                builder: TestPayloadBuilder,
+            },
+            tx,
+        )
+    }
+
+    #[tokio::test]
+    async fn controlled_pending_build_survives_elapsed_deadline() {
+        let (job, _tx) = pending_job(true);
+
+        assert!(tokio::time::timeout(Duration::from_millis(50), job)
+            .await
+            .is_err());
+    }
+
+    #[tokio::test]
+    async fn uncontrolled_pending_build_expires_elapsed_deadline() {
+        let (job, _tx) = pending_job(false);
+
+        assert!(matches!(
+            tokio::time::timeout(Duration::from_millis(50), job).await,
+            Ok(Ok(()))
+        ));
     }
 }
 
