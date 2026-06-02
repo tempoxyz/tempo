@@ -1088,88 +1088,29 @@ fn synthetic_tip20_result_gas(
     let mut original_values = HashMap::<StorageKey, U256>::new();
     let mut present_values = HashMap::<StorageKey, U256>::new();
 
+    seed_fee_reserve_gas_state(
+        plan,
+        execution,
+        base_state,
+        cfg,
+        &mut meter,
+        &mut original_values,
+        &mut present_values,
+    )?;
+
     for action in plan.actions.iter().filter_map(|action| match action {
         Tip20BlockstmAction::Transfer(action) => Some(action),
         _ => None,
     }) {
-        meter.add_regular(input_cost(action.calldata_len()))?;
-        for key in Tip20BlockstmAction::Transfer(action.clone()).read_set() {
-            meter.sload(key, cfg.gas_params())?;
-            original_values
-                .entry(key)
-                .or_insert_with(|| tx_storage_value(execution, base_state, key));
-            present_values
-                .entry(key)
-                .or_insert_with(|| tx_storage_value(execution, base_state, key));
-        }
-
-        if !action.amount.is_zero() {
-            let from_key = balance_key(action.token, action.from);
-            let to_key = balance_key(action.token, action.to);
-            let from_balance = decode_balance_state(
-                *present_values
-                    .entry(from_key)
-                    .or_insert_with(|| tx_storage_value(execution, base_state, from_key)),
-            )?;
-            let to_balance = decode_balance_state(
-                *present_values
-                    .entry(to_key)
-                    .or_insert_with(|| tx_storage_value(execution, base_state, to_key)),
-            )?;
-            let new_from = from_balance
-                .amount
-                .checked_sub(action.amount)
-                .ok_or(Tip20TransferBlockstmFallback::InsufficientBalance)?;
-            let new_to = to_balance
-                .amount
-                .checked_add(action.amount)
-                .ok_or(Tip20TransferBlockstmFallback::BalanceOverflow)?;
-            let new_from_raw = encode_balance(
-                new_from,
-                from_balance.inactive_write_flag(),
-                cfg.spec.is_t6(),
-            );
-            let new_to_raw =
-                encode_balance(new_to, to_balance.inactive_write_flag(), cfg.spec.is_t6());
-
-            meter.sstore(
-                from_key,
-                *original_values
-                    .entry(from_key)
-                    .or_insert_with(|| tx_storage_value(execution, base_state, from_key)),
-                present_values[&from_key],
-                new_from_raw,
-                cfg.gas_params(),
-            )?;
-            present_values.insert(from_key, new_from_raw);
-            meter.sstore(
-                to_key,
-                *original_values
-                    .entry(to_key)
-                    .or_insert_with(|| tx_storage_value(execution, base_state, to_key)),
-                present_values[&to_key],
-                new_to_raw,
-                cfg.gas_params(),
-            )?;
-            present_values.insert(to_key, new_to_raw);
-        }
-
-        meter.log(
-            &tip20_transfer_log(action.token, action.from, action.to, action.amount),
-            cfg.gas_params(),
+        meter_tip20_transfer_action_gas(
+            action,
+            execution,
+            base_state,
+            cfg,
+            &mut meter,
+            &mut original_values,
+            &mut present_values,
         )?;
-        if let Some(memo) = action.memo {
-            meter.log(
-                &tip20_transfer_with_memo_log(
-                    action.token,
-                    action.from,
-                    action.to,
-                    action.amount,
-                    memo,
-                ),
-                cfg.gas_params(),
-            )?;
-        }
     }
 
     let regular_gas = initial
@@ -1193,6 +1134,230 @@ fn synthetic_tip20_result_gas(
         initial.floor_gas(),
         state_gas,
     ))
+}
+
+fn seed_fee_reserve_gas_state(
+    plan: &Tip20TransferBlockstmPlan,
+    execution: &Tip20BlockstmTxExecution,
+    base_state: &Tip20BlockstmBaseState,
+    cfg: &CfgEnv<TempoHardfork>,
+    meter: &mut SyntheticTip20GasMeter,
+    original_values: &mut HashMap<StorageKey, U256>,
+    present_values: &mut HashMap<StorageKey, U256>,
+) -> Result<(), Tip20TransferBlockstmFallback> {
+    for action in &plan.actions {
+        let Tip20BlockstmAction::FeeReserve {
+            token,
+            fee_payer,
+            amount,
+        } = action
+        else {
+            continue;
+        };
+
+        // Fee reserve gas is excluded from receipts, but its storage accesses still warm the
+        // transaction access set before the user TIP-20 calls execute.
+        meter.warm_storage(paused_key(*token));
+        meter.warm_storage(transfer_policy_key(*token));
+        let payer_key = balance_key(*token, *fee_payer);
+        let manager_key = balance_key(*token, TIP_FEE_MANAGER_ADDRESS);
+        meter.warm_storage(payer_key);
+        meter.warm_storage(manager_key);
+
+        if amount.is_zero() {
+            continue;
+        }
+
+        let payer_raw = synthetic_present_value(
+            present_values,
+            original_values,
+            execution,
+            base_state,
+            payer_key,
+        );
+        let manager_raw = synthetic_present_value(
+            present_values,
+            original_values,
+            execution,
+            base_state,
+            manager_key,
+        );
+        let payer_balance = decode_balance_state(payer_raw)?;
+        let manager_balance = decode_balance_state(manager_raw)?;
+        let new_payer = payer_balance
+            .amount
+            .checked_sub(*amount)
+            .ok_or(Tip20TransferBlockstmFallback::InsufficientBalance)?;
+        let new_manager = manager_balance
+            .amount
+            .checked_add(*amount)
+            .ok_or(Tip20TransferBlockstmFallback::BalanceOverflow)?;
+
+        present_values.insert(
+            payer_key,
+            encode_balance(
+                new_payer,
+                payer_balance.inactive_write_flag(),
+                cfg.spec.is_t6(),
+            ),
+        );
+        present_values.insert(
+            manager_key,
+            encode_balance(new_manager, manager_balance.reward_flag, cfg.spec.is_t6()),
+        );
+    }
+
+    Ok(())
+}
+
+fn meter_tip20_transfer_action_gas(
+    action: &Tip20TransferAction,
+    execution: &Tip20BlockstmTxExecution,
+    base_state: &Tip20BlockstmBaseState,
+    cfg: &CfgEnv<TempoHardfork>,
+    meter: &mut SyntheticTip20GasMeter,
+    original_values: &mut HashMap<StorageKey, U256>,
+    present_values: &mut HashMap<StorageKey, U256>,
+) -> Result<(), Tip20TransferBlockstmFallback> {
+    let gas_params = cfg.gas_params();
+
+    meter.add_regular(input_cost(action.calldata_len()))?;
+    meter.warm_account_info(gas_params)?;
+    meter.sload(paused_key(action.token), gas_params)?;
+    meter.sload(transfer_policy_key(action.token), gas_params)?;
+    meter.tload(gas_params)?;
+    meter.sload(receive_policy_key(action.to), gas_params)?;
+
+    let from_key = balance_key(action.token, action.from);
+    let to_key = balance_key(action.token, action.to);
+
+    meter.sload(from_key, gas_params)?;
+    let from_balance = decode_balance_state(synthetic_present_value(
+        present_values,
+        original_values,
+        execution,
+        base_state,
+        from_key,
+    ))?;
+    if from_balance.amount < action.amount {
+        return Err(Tip20TransferBlockstmFallback::InsufficientBalance);
+    }
+
+    let from_flag = meter_tip20_t6_reward_update(
+        from_key,
+        execution,
+        base_state,
+        cfg,
+        meter,
+        original_values,
+        present_values,
+    )?;
+    let to_flag = meter_tip20_t6_reward_update(
+        to_key,
+        execution,
+        base_state,
+        cfg,
+        meter,
+        original_values,
+        present_values,
+    )?;
+    if from_flag != REWARD_FLAG_OPTED_OUT || to_flag != REWARD_FLAG_OPTED_OUT {
+        return Err(Tip20TransferBlockstmFallback::RewardActive);
+    }
+
+    if !action.amount.is_zero() {
+        let from_present_raw = synthetic_present_value(
+            present_values,
+            original_values,
+            execution,
+            base_state,
+            from_key,
+        );
+        let from_present = decode_balance_state(from_present_raw)?;
+        let new_from = from_present
+            .amount
+            .checked_sub(action.amount)
+            .ok_or(Tip20TransferBlockstmFallback::InsufficientBalance)?;
+        let new_from_raw = encode_balance(new_from, from_flag, cfg.spec.is_t6());
+        meter.sstore(
+            from_key,
+            synthetic_original_value(original_values, execution, base_state, from_key),
+            from_present_raw,
+            new_from_raw,
+            gas_params,
+        )?;
+        present_values.insert(from_key, new_from_raw);
+
+        meter.sload(to_key, gas_params)?;
+        let to_present_raw = synthetic_present_value(
+            present_values,
+            original_values,
+            execution,
+            base_state,
+            to_key,
+        );
+        let to_present = decode_balance_state(to_present_raw)?;
+        let new_to = to_present
+            .amount
+            .checked_add(action.amount)
+            .ok_or(Tip20TransferBlockstmFallback::BalanceOverflow)?;
+        let new_to_raw = encode_balance(new_to, to_flag, cfg.spec.is_t6());
+        meter.sstore(
+            to_key,
+            synthetic_original_value(original_values, execution, base_state, to_key),
+            to_present_raw,
+            new_to_raw,
+            gas_params,
+        )?;
+        present_values.insert(to_key, new_to_raw);
+    }
+
+    meter.log(
+        &tip20_transfer_log(action.token, action.from, action.to, action.amount),
+        gas_params,
+    )?;
+    if let Some(memo) = action.memo {
+        meter.log(
+            &tip20_transfer_with_memo_log(
+                action.token,
+                action.from,
+                action.to,
+                action.amount,
+                memo,
+            ),
+            gas_params,
+        )?;
+    }
+
+    Ok(())
+}
+
+fn meter_tip20_t6_reward_update(
+    balance_key: StorageKey,
+    execution: &Tip20BlockstmTxExecution,
+    base_state: &Tip20BlockstmBaseState,
+    cfg: &CfgEnv<TempoHardfork>,
+    meter: &mut SyntheticTip20GasMeter,
+    original_values: &mut HashMap<StorageKey, U256>,
+    present_values: &mut HashMap<StorageKey, U256>,
+) -> Result<u8, Tip20TransferBlockstmFallback> {
+    if !cfg.spec.is_t6() {
+        return Err(Tip20TransferBlockstmFallback::RewardActive);
+    }
+
+    meter.sload(balance_key, cfg.gas_params())?;
+    let balance = decode_balance_state(synthetic_present_value(
+        present_values,
+        original_values,
+        execution,
+        base_state,
+        balance_key,
+    ))?;
+    if balance.reward_flag != REWARD_FLAG_OPTED_OUT {
+        return Err(Tip20TransferBlockstmFallback::RewardActive);
+    }
+
+    Ok(REWARD_FLAG_OPTED_OUT)
 }
 
 fn synthetic_initial_gas(
@@ -1273,6 +1438,10 @@ struct SyntheticTip20GasMeter {
 }
 
 impl SyntheticTip20GasMeter {
+    fn warm_storage(&mut self, key: StorageKey) {
+        self.warm_storage.insert(key);
+    }
+
     fn add_regular(&mut self, amount: u64) -> Result<(), Tip20TransferBlockstmFallback> {
         self.regular_gas = self
             .regular_gas
@@ -1287,6 +1456,17 @@ impl SyntheticTip20GasMeter {
             .checked_add(amount)
             .ok_or(Tip20TransferBlockstmFallback::GasOverflow)?;
         Ok(())
+    }
+
+    fn warm_account_info(
+        &mut self,
+        gas_params: &GasParams,
+    ) -> Result<(), Tip20TransferBlockstmFallback> {
+        self.add_regular(gas_params.warm_storage_read_cost())
+    }
+
+    fn tload(&mut self, gas_params: &GasParams) -> Result<(), Tip20TransferBlockstmFallback> {
+        self.add_regular(gas_params.warm_storage_read_cost())
     }
 
     fn sload(
@@ -1336,6 +1516,33 @@ impl SyntheticTip20GasMeter {
             gas::LOG + gas_params.log_cost(log.topics().len() as u8, log.data.data.len() as u64),
         )
     }
+}
+
+fn synthetic_original_value(
+    original_values: &mut HashMap<StorageKey, U256>,
+    execution: &Tip20BlockstmTxExecution,
+    base_state: &Tip20BlockstmBaseState,
+    key: StorageKey,
+) -> U256 {
+    *original_values
+        .entry(key)
+        .or_insert_with(|| tx_storage_value(execution, base_state, key))
+}
+
+fn synthetic_present_value(
+    present_values: &mut HashMap<StorageKey, U256>,
+    original_values: &mut HashMap<StorageKey, U256>,
+    execution: &Tip20BlockstmTxExecution,
+    base_state: &Tip20BlockstmBaseState,
+    key: StorageKey,
+) -> U256 {
+    if let Some(value) = present_values.get(&key) {
+        return *value;
+    }
+
+    let value = synthetic_original_value(original_values, execution, base_state, key);
+    present_values.insert(key, value);
+    value
 }
 
 fn tx_storage_value(
@@ -1614,16 +1821,24 @@ fn receive_policy_key(account: Address) -> StorageKey {
     }
 }
 
+fn paused_key(token: Address) -> StorageKey {
+    StorageKey {
+        address: token,
+        slot: tip20_slots::PAUSED,
+    }
+}
+
+fn transfer_policy_key(token: Address) -> StorageKey {
+    StorageKey {
+        address: token,
+        slot: tip20_slots::TRANSFER_POLICY_ID,
+    }
+}
+
 fn token_state_read_set(token: Address) -> [StorageKey; 4] {
     [
-        StorageKey {
-            address: token,
-            slot: tip20_slots::PAUSED,
-        },
-        StorageKey {
-            address: token,
-            slot: tip20_slots::TRANSFER_POLICY_ID,
-        },
+        paused_key(token),
+        transfer_policy_key(token),
         StorageKey {
             address: token,
             slot: tip20_slots::GLOBAL_REWARD_PER_TOKEN,
@@ -1660,14 +1875,18 @@ mod tests {
     use crate::test_utils::{TestExecutorBuilder, test_chainspec};
     use alloy_consensus::{Signed, TxLegacy};
     use alloy_eips::eip2930::{AccessList, AccessListItem};
-    use alloy_evm::FromRecoveredTx;
+    use alloy_evm::{FromRecoveredTx, block::TxResult};
     use alloy_primitives::{Signature, address};
     use alloy_sol_types::SolCall;
     use reth_revm::{
         State,
         state::{AccountInfo, Bytecode},
     };
-    use revm::database::states::plain_account::PlainStorage;
+    use revm::database::{EmptyDB, states::plain_account::PlainStorage};
+    use tempo_precompiles::{
+        storage::{StorageCtx, hashmap::HashMapStorageProvider},
+        test_util::TIP20Setup,
+    };
     use tempo_primitives::{
         MasterId, TempoSignature, TempoTransaction, UserTag,
         subblock::TEMPO_SUBBLOCK_NONCE_KEY_PREFIX,
@@ -1771,6 +1990,44 @@ mod tests {
 
     fn precompile_marker_info() -> AccountInfo {
         AccountInfo::default().with_code(Bytecode::new_legacy([0xef].into()))
+    }
+
+    fn path_usd_state_with_balances(
+        balances: impl IntoIterator<Item = (Address, U256)>,
+    ) -> State<EmptyDB> {
+        let mut provider = HashMapStorageProvider::new_with_spec(1, TempoHardfork::T6);
+        StorageCtx::enter(&mut provider, || {
+            let mut setup = TIP20Setup::path_usd(SENDER)
+                .with_issuer(SENDER)
+                .clear_events();
+            for (account, balance) in balances {
+                setup = setup.with_mint(account, balance);
+            }
+            setup.apply().expect("pathUSD setup must succeed");
+        });
+
+        let mut db = State::builder().with_bundle_update().build();
+        let mut storage_by_account: HashMap<Address, PlainStorage> = HashMap::new();
+        for (address, slot, value) in provider.into_storage() {
+            storage_by_account
+                .entry(address)
+                .or_default()
+                .insert(slot, value);
+        }
+        let inserted_accounts = storage_by_account.keys().copied().collect::<HashSet<_>>();
+        for (address, storage) in storage_by_account {
+            db.insert_account_with_storage(address, precompile_marker_info(), storage);
+        }
+        for address in [
+            tempo_precompiles::PATH_USD_ADDRESS,
+            NONCE_PRECOMPILE_ADDRESS,
+            TIP_FEE_MANAGER_ADDRESS,
+        ] {
+            if !inserted_accounts.contains(&address) {
+                db.insert_account(address, precompile_marker_info());
+            }
+        }
+        db
     }
 
     fn usd_currency_word() -> U256 {
@@ -2503,9 +2760,8 @@ mod tests {
         db.insert_account(TIP_FEE_MANAGER_ADDRESS, precompile_marker_info());
         let mut executor = TestExecutorBuilder::default()
             .with_general_gas_limit(1_000_000_000)
+            .with_spec(TempoHardfork::T6)
             .build(db, &chainspec);
-        executor.inner.evm.cfg.spec = TempoHardfork::T6;
-        executor.inner.evm.cfg.gas_params = tempo_gas_params(TempoHardfork::T6);
 
         let mut txs = Vec::with_capacity(batch_len);
         let mut nonce_keys = Vec::with_capacity(batch_len);
@@ -2548,6 +2804,102 @@ mod tests {
                 U256::ONE
             );
         }
+    }
+
+    #[test]
+    fn blockstm_2d_nonce_gas_matches_normal_execution() {
+        let chainspec = test_chainspec();
+        let token = tempo_precompiles::PATH_USD_ADDRESS;
+        let batch_len = 4usize;
+        let sender_balance = U256::from(1_000_000_000_000u64);
+        let recipients = (0..batch_len)
+            .map(|i| Address::from_word(B256::with_last_byte(0xb0 + i as u8)))
+            .collect::<Vec<_>>();
+
+        let build_db = || {
+            path_usd_state_with_balances(
+                std::iter::once((SENDER, sender_balance)).chain(
+                    recipients
+                        .iter()
+                        .copied()
+                        .map(|recipient| (recipient, U256::from(100))),
+                ),
+            )
+        };
+        let build_executor = |db| {
+            TestExecutorBuilder::default()
+                .with_general_gas_limit(1_000_000_000)
+                .with_spec(TempoHardfork::T6)
+                .build(db, &chainspec)
+        };
+
+        let mut txs = Vec::with_capacity(batch_len);
+        for (i, recipient) in recipients.iter().copied().enumerate() {
+            let nonce_key = U256::from(u64::MAX - i as u64);
+            let (recovered, tx_env) = aa_blockstm_tx_with_gas(
+                vec![transfer_call_to_token(token, recipient, U256::from(1))],
+                nonce_key,
+                350_000,
+            );
+            txs.push((recovered, tx_env));
+        }
+
+        let mut normal_executor = build_executor(build_db());
+        let mut normal_block_gas = Vec::with_capacity(batch_len);
+        let mut normal_validator_fees = Vec::with_capacity(batch_len);
+        for (idx, (recovered, tx_env)) in txs.iter().enumerate() {
+            let result = normal_executor
+                .execute_transaction_without_commit((tx_env.clone(), recovered))
+                .unwrap();
+            assert!(
+                result.result().result.is_success(),
+                "normal tx {idx} failed: {:?}",
+                result.result().result
+            );
+            normal_block_gas.push(result.block_gas_used());
+            normal_validator_fees.push(result.validator_fee());
+            normal_executor.commit_transaction(result);
+        }
+        let normal_cumulative_gas = normal_executor
+            .receipts()
+            .iter()
+            .map(|receipt| receipt.cumulative_gas_used)
+            .collect::<Vec<_>>();
+
+        let mut blockstm_executor = build_executor(build_db());
+        let batch = txs
+            .iter()
+            .map(|(recovered, tx_env)| Tip20TransferBlockstmTx {
+                tx_env: tx_env.clone(),
+                recovered,
+                fee_token: token,
+            })
+            .collect();
+        let mut blockstm_block_gas = Vec::with_capacity(batch_len);
+        let mut blockstm_validator_fees = Vec::with_capacity(batch_len);
+        let stats = blockstm_executor
+            .execute_tip20_transfer_blockstm_batch(batch, token, |_, result| {
+                blockstm_block_gas.push(result.block_gas_used());
+                blockstm_validator_fees.push(result.validator_fee());
+            })
+            .unwrap();
+        let blockstm_cumulative_gas = blockstm_executor
+            .receipts()
+            .iter()
+            .map(|receipt| receipt.cumulative_gas_used)
+            .collect::<Vec<_>>();
+
+        assert_eq!(stats.transaction_count, batch_len);
+        assert_eq!(stats.retry_count, 0);
+        assert_eq!(
+            blockstm_block_gas, normal_block_gas,
+            "per-transaction block gas differs from normal execution"
+        );
+        assert_eq!(
+            blockstm_cumulative_gas, normal_cumulative_gas,
+            "receipt cumulative gas differs from normal execution"
+        );
+        assert_eq!(blockstm_validator_fees, normal_validator_fees);
     }
 
     #[test]
