@@ -14,7 +14,6 @@ crate::sol! {
 
         struct Feature {
             uint64 minimumSupportedVersionKey;
-            uint256[] requiredFeatureBitmap;
             FeatureStatus status;
             uint64 activationEpoch;
         }
@@ -33,8 +32,7 @@ crate::sol! {
         /// @notice Registers a new pending feature.
         function registerFeature(
             uint64 featureId,
-            uint64 minimumSupportedVersionKey,
-            uint256[] calldata requiredFeatureBitmap
+            uint64 minimumSupportedVersionKey
         ) external;
 
         /// @notice Registers a minimum version checkpoint that can be used for feature activation.
@@ -110,11 +108,8 @@ crate::sol! {
         /// @notice Returns whether a feature has quorum support from the active validator set.
         function hasQuorum(uint64 featureId) external view returns (bool);
 
-        /// @notice Returns whether a feature's required features are already active from earlier epochs.
-        function requiredFeaturesSatisfied(uint64 featureId) external view returns (bool);
-
         /// @notice Emitted when a feature is registered.
-        event FeatureRegistered(uint64 featureId, uint64 minimumSupportedVersionKey, uint256[] requiredFeatureBitmap);
+        event FeatureRegistered(uint64 featureId, uint64 minimumSupportedVersionKey);
 
         /// @notice Emitted when a minimum version checkpoint is registered.
         event MinimumVersionCheckpointRegistered(uint64 minimumVersionKey);
@@ -138,7 +133,6 @@ crate::sol! {
         event FeatureActivationFailed(
             uint64 featureId,
             uint64 activationEpoch,
-            bool requiredFeaturesSatisfied,
             bool quorumSatisfied
         );
 
@@ -171,9 +165,6 @@ crate::sol! {
 
         /// @notice Feature is not registered.
         error FeatureNotRegistered();
-
-        /// @notice Required feature bitmap is malformed, self-referential, cyclic, or references an unregistered feature.
-        error InvalidRequiredFeatureBitmap();
 
         /// @notice Feature is not pending.
         error FeatureNotPending();
