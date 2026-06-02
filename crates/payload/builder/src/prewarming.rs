@@ -240,8 +240,13 @@ impl Iterator for BestTransactionsPrewarming {
     type Item = BestTransaction;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if let Ok(Some(tx)) = self.transactions_rx.try_recv() {
-            return Some(tx);
+        loop {
+            match self.transactions_rx.try_recv() {
+                Ok(Some(tx)) => return Some(tx),
+                Ok(None) => {}
+                Err(mpsc::TryRecvError::Empty) => break,
+                Err(mpsc::TryRecvError::Disconnected) => return None,
+            }
         }
         self.commands_tx
             .send(BestTransactionsCommand::Advance)
