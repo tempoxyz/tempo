@@ -246,6 +246,7 @@ mod tests {
     };
     use sha2::{Digest, Sha256};
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::ITIP1060StorageCredits::{self, Mode};
     use tempo_precompiles::{
         AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
         nonce::NonceManager,
@@ -1929,20 +1930,132 @@ mod tests {
             .unwrap();
     }
 
-    /// Read back the TIP-1060 token balance stored for `owner` from the gas-token contract.
-    fn gas_token_balance(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> u64 {
+    /// Read back the TIP-1060 token state stored for `owner` from the gas-token contract.
+    fn gas_token_state(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> AccountState {
         let slot = TIP1060StorageCredits::slot(owner);
         let word = evm
             .ctx
             .db()
             .storage_ref(STORAGE_CREDITS_ADDRESS, slot)
             .unwrap();
-        AccountState::from_word(word).unwrap().balance
+        AccountState::from_word(word).unwrap()
+    }
+
+    /// Read back the TIP-1060 token balance stored for `owner` from the gas-token contract.
+    fn gas_token_balance(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> u64 {
+        gas_token_state(evm, owner).balance
+    }
+
+    fn tip1060_abi_mode(mode: CreditMode) -> Mode {
+        match mode {
+            CreditMode::Refund => Mode::Refund,
+            CreditMode::Preserve => Mode::Preserve,
+            CreditMode::Direct => Mode::Direct,
+        }
+    }
+
+    /// Appends bytecode that calls the TIP-1060 precompile's `setMode(mode)` as the
+    /// currently executing contract.
+    fn append_tip1060_set_mode_call(bytecode_bytes: &mut Vec<u8>, mode: CreditMode) {
+        let input_bytes = ITIP1060StorageCredits::setModeCall {
+            newMode: tip1060_abi_mode(mode),
+        }
+        .abi_encode();
+
+        for (i, &byte) in input_bytes.iter().enumerate() {
+            assert!(i <= u8::MAX as usize);
+            bytecode_bytes.extend_from_slice(&[
+                opcode::PUSH1,
+                byte,
+                opcode::PUSH1,
+                i as u8,
+                opcode::MSTORE8,
+            ]);
+        }
+
+        bytecode_bytes.extend_from_slice(&[
+            opcode::PUSH1,
+            0x00, // retSize
+            opcode::PUSH1,
+            0x00, // retOffset
+            opcode::PUSH1,
+            input_bytes.len() as u8, // argsSize
+            opcode::PUSH1,
+            0x00, // argsOffset
+            opcode::PUSH1,
+            0x00, // value
+        ]);
+        bytecode_bytes.push(opcode::PUSH20);
+        bytecode_bytes.extend_from_slice(STORAGE_CREDITS_ADDRESS.as_slice());
+        bytecode_bytes.extend_from_slice(&[
+            opcode::PUSH3,
+            0x0f,
+            0x42,
+            0x40, // gas = 1_000_000
+            opcode::CALL,
+            opcode::POP,
+        ]);
+    }
+
+    fn create_then_set_mode_bytecode(mode: CreditMode) -> Bytecode {
+        let mut bytecode_bytes = vec![opcode::PUSH1, 0x01, opcode::PUSH1, 0x00, opcode::SSTORE];
+        append_tip1060_set_mode_call(&mut bytecode_bytes, mode);
+        bytecode_bytes.push(opcode::STOP);
+        Bytecode::new_raw(bytecode_bytes.into())
+    }
+
+    /// TIP-1060 settlement regression: a RefundTokens-mode create records a pending
+    /// refund-eligible creation, but if the account ends the transaction with zero token balance,
+    /// settlement must not treat mode bits as spendable tokens.
+    #[test]
+    fn test_tip1060_pending_refund_settlement_ignores_mode_bits() -> eyre::Result<()> {
+        for mode in [CreditMode::Refund, CreditMode::Preserve, CreditMode::Direct] {
+            let key_pair = P256KeyPair::random();
+            let caller = key_pair.address;
+            let contract = Address::repeat_byte(0x62);
+
+            let mut evm = create_funded_evm_t6(caller);
+            evm.ctx.db_mut().insert_account_info(
+                contract,
+                AccountInfo {
+                    code: Some(create_then_set_mode_bytecode(mode)),
+                    ..Default::default()
+                },
+            );
+
+            // The first SSTORE runs in the default RefundTokens mode and creates one pending
+            // refund-eligible creation. The subsequent precompile call selects the final mode;
+            // no storage is cleared, so the account has no token to settle against.
+            let tx = TxBuilder::new()
+                .call(contract, &[])
+                .gas_limit(2_000_000)
+                .build();
+            let signed_tx = key_pair.sign_tx(tx)?;
+            let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+            let result = evm.transact_commit(tx_env)?;
+            assert!(
+                result.is_success(),
+                "pending-refund mode-change tx should succeed in {mode:?} mode"
+            );
+
+            let state = gas_token_state(&evm, contract);
+            assert_eq!(
+                state.balance, 0,
+                "settlement must not consume mode bits as token balance in {mode:?} mode"
+            );
+            assert_eq!(
+                state.mode, mode,
+                "settlement must preserve the final storage-creation mode in {mode:?} mode"
+            );
+        }
+
+        Ok(())
     }
 
     /// TIP-1060: a single transaction that creates then clears the same storage slot
-    /// (SSTORE 0->1 followed by SSTORE 1->0), exercised under the three storage-creation
-    /// modes. Only the create (0->x) leg is mode-sensitive, so the gas used differs per mode:
+    /// (SSTORE 0->1 followed by SSTORE 1->0), exercised under the three storage-creation modes.
+    /// Only the create (0->x) leg is mode-sensitive, so the gas used differs per mode:
     /// - `PreserveTokens` charges the full EVM/state gas as normal,
     /// - `DirectTokens` has no token to spend at create time (balance starts at 0), so it also
     ///   charges the full create cost,

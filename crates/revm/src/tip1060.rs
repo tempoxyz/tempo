@@ -1,10 +1,13 @@
 //! TIP-1060 specific implementations.
 
-use crate::evm::{TempoContext, TempoEvm};
+use crate::{
+    TempoInvalidTransaction,
+    evm::{TempoContext, TempoEvm},
+};
 use alloy_evm::Database;
 use alloy_primitives::{Address, U256};
 use revm::{
-    context::{Host as _, JournalTr},
+    context::{Host as _, JournalTr, result::EVMError},
     context_interface::cfg::GasParams,
     interpreter::{
         Gas, InstructionContext, InstructionResult, SStoreResult, StateLoad,
@@ -14,7 +17,7 @@ use revm::{
 };
 use tempo_precompiles::{
     STORAGE_CREDITS_ADDRESS,
-    tip1060_storage_credits::{StorageCreditsBackend, sstore_storage_credits},
+    tip1060_storage_credits::{AccountState, StorageCreditsBackend, sstore_storage_credits},
 };
 
 /// Applies the storage credits refund accrued during a transaction.
@@ -29,7 +32,7 @@ use tempo_precompiles::{
 pub fn apply_refund<DB: Database, I>(
     evm: &mut TempoEvm<DB, I>,
     gas: &mut Gas,
-) -> Result<(), DB::Error> {
+) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
     let journal = &mut evm.inner.ctx.journaled_state;
 
     // Snapshot the transient (key, sstores) pairs at the storage credits contract written during this
@@ -49,20 +52,25 @@ pub fn apply_refund<DB: Database, I>(
         }
 
         // SLOAD the current persistent value and add the transient credit on top.
-        let credit = journal.sload(STORAGE_CREDITS_ADDRESS, key)?.data;
+        let old_word = journal.sload(STORAGE_CREDITS_ADDRESS, key)?.data;
+        let mut state =
+            AccountState::from_word(old_word).map_err(|err| EVMError::Custom(err.to_string()))?;
 
-        let new_credit = if credit > sstores_num {
-            refunds += sstores_num.as_limbs()[0];
-            credit - sstores_num
-        } else {
-            refunds += credit.as_limbs()[0];
-            U256::ZERO
-        };
+        let pending = sstores_num.as_limbs()[0];
+        let settled = pending.min(state.balance);
+
+        if settled == 0 {
+            continue;
+        }
 
         // SSTORE the accumulated total back into the contract's persistent storage.
-        if new_credit != credit {
-            journal.sstore(STORAGE_CREDITS_ADDRESS, key, new_credit)?;
-        }
+        state.balance -= settled;
+        refunds += settled;
+
+        let new_word = state.into_word();
+        debug_assert_ne!(new_word, old_word);
+
+        journal.sstore(STORAGE_CREDITS_ADDRESS, key, new_word)?;
     }
 
     // TODO use gas_params for proper constant.
