@@ -1,8 +1,8 @@
 use crate::{
     STORAGE_GAS_TOKENS_ADDRESS,
     error::TempoPrecompileError,
-    state_gas_token::{GasStateBackend, sstore_gas_state_inner},
     storage::PrecompileStorageProvider,
+    tip1060_storage_gas_token::{GasStateBackend, sstore_gas_state},
 };
 use alloy::primitives::{Address, Log, LogData, U256};
 use alloy_evm::EvmInternals;
@@ -137,7 +137,9 @@ impl<'a> GasStateBackend for EvmPrecompileStorageProvider<'a> {
         key: U256,
         skip_cold_load: bool,
     ) -> Result<StateLoad<U256>, Self::Error> {
-        let mut account = self.internals.load_account_mut(STORAGE_GAS_TOKENS_ADDRESS)?;
+        let mut account = self
+            .internals
+            .load_account_mut(STORAGE_GAS_TOKENS_ADDRESS)?;
         let val = account.sload(key, skip_cold_load)?;
         Ok(StateLoad::new(val.present_value, val.is_cold))
     }
@@ -151,13 +153,17 @@ impl<'a> GasStateBackend for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
-    fn gas_token_tload(&mut self, key: U256) -> U256 {
-        self.internals.tload(STORAGE_GAS_TOKENS_ADDRESS, key)
-    }
-
-    #[inline]
-    fn gas_token_tstore(&mut self, key: U256, value: U256) {
-        self.internals.tstore(STORAGE_GAS_TOKENS_ADDRESS, key, value);
+    fn token_tstore_increment(&mut self, key: U256) {
+        let pending: u64 = self
+            .internals
+            .tload(STORAGE_GAS_TOKENS_ADDRESS, key)
+            .try_into()
+            .expect("saturates at u64::MAX");
+        self.internals.tstore(
+            STORAGE_GAS_TOKENS_ADDRESS,
+            key,
+            U256::from(pending.saturating_add(1)),
+        );
     }
 }
 
@@ -269,17 +275,18 @@ impl<'a> PrecompileStorageProvider for EvmPrecompileStorageProvider<'a> {
         // TIP-1060 (T6+): run the storage gas-token policy so precompile-driven storage
         // writes honor the same accounting as the opcode-level SSTORE hook.
         let outcome = if self.spec.is_t6() {
-            sstore_gas_state_inner(self, address, &result.data)?
+            sstore_gas_state(self, address, &result.data)?
         } else {
             Default::default()
         };
 
         if !outcome.skip_gas {
             // dynamic gas
-            self.deduct_gas(
-                self.gas_params
-                    .sstore_dynamic_gas(true, &result.data, result.is_cold),
-            )?;
+            self.deduct_gas(self.gas_params.sstore_dynamic_gas(
+                true,
+                &result.data,
+                result.is_cold,
+            ))?;
 
             // Track state gas (cold SSTORE zero->non-zero only)
             self.deduct_state_gas(self.gas_params.sstore_state_gas(&result.data))?;

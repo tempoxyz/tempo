@@ -1,6 +1,6 @@
 //! Backend-agnostic TIP-1060 SSTORE gas-token accounting.
 //!
-//! [`sstore_gas_state_inner`] implements the storage gas-token policy that runs
+//! [`sstore_gas_state`] implements the storage gas-token policy that runs
 //! after a storage slot is written. It is driven through the [`GasStateBackend`]
 //! trait so the exact same logic can be reused from two places:
 //!
@@ -8,14 +8,14 @@
 //! - [`EvmPrecompileStorageProvider`](crate::storage::evm::EvmPrecompileStorageProvider)
 //!   so precompile-driven storage writes honor the same accounting.
 
-use super::{AccountState, StorageGasMode, StorageGasToken};
+use super::{AccountState, StorageGasMode, TIP1060StorageGasToken};
 use alloy::primitives::{Address, U256};
 use revm::{
     context_interface::cfg::GasParams,
     interpreter::{SStoreResult, StateLoad, instruction_context::GasStateOutcome},
 };
 
-/// Storage and gas operations required by [`sstore_gas_state_inner`].
+/// Storage and gas operations required by [`sstore_gas_state`].
 ///
 /// All storage operations target the storage gas-token contract; the concrete
 /// address is supplied by the implementor so this trait stays free of revm
@@ -54,11 +54,9 @@ pub trait GasStateBackend {
     /// SSTORE a slot of the gas-token contract (cold load is never skipped here).
     fn gas_token_sstore(&mut self, key: U256, value: U256) -> Result<(), Self::Error>;
 
-    /// TLOAD a slot of the gas-token contract.
-    fn gas_token_tload(&mut self, key: U256) -> U256;
-
-    /// TSTORE a slot of the gas-token contract.
-    fn gas_token_tstore(&mut self, key: U256, value: U256);
+    /// Increments the pending refund count held in the gas-token contract's
+    /// transient storage at `key` (TLOAD the current count, add one, TSTORE).
+    fn token_tstore_increment(&mut self, key: U256);
 }
 
 /// Applies the TIP-1060 storage gas-token policy for a single SSTORE.
@@ -67,7 +65,7 @@ pub trait GasStateBackend {
 /// the original/present/new slot values for `owner`. Returns a [`GasStateOutcome`]
 /// telling the caller whether to skip the normal dynamic/state-gas accounting
 /// (`skip_gas`) and/or the refund accounting (`skip_refund`).
-pub fn sstore_gas_state_inner<B: GasStateBackend>(
+pub fn sstore_gas_state<B: GasStateBackend>(
     backend: &mut B,
     owner: Address,
     values: &SStoreResult,
@@ -94,7 +92,7 @@ pub fn sstore_gas_state_inner<B: GasStateBackend>(
 
     backend.load_gas_token_account()?;
 
-    let account_slot = StorageGasToken::slot(owner);
+    let account_slot = TIP1060StorageGasToken::slot(owner);
     let additional_cold_cost = backend.gas_params().cold_storage_additional_cost();
     let skip_cold = backend.remaining_gas() < additional_cold_cost;
     let storage = backend.gas_token_sload(account_slot, skip_cold)?;
@@ -130,11 +128,7 @@ pub fn sstore_gas_state_inner<B: GasStateBackend>(
             StorageGasMode::RefundTokens => {
                 // Skip refund as it will happen at the end of the transaction.
                 outcome.skip_refund = true;
-                let pending: u64 = backend
-                    .gas_token_tload(account_slot)
-                    .try_into()
-                    .expect("saturates at u64::MAX");
-                backend.gas_token_tstore(account_slot, U256::from(pending.saturating_add(1)));
+                backend.token_tstore_increment(account_slot);
             }
         }
     }

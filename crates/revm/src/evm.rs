@@ -18,7 +18,7 @@ use revm::{
 use tempo_chainspec::hardfork::TempoHardfork;
 use tempo_precompiles::{
     STORAGE_GAS_TOKENS_ADDRESS as GAS_TOKEN,
-    state_gas_token::{GasStateBackend, sstore_gas_state_inner},
+    tip1060_storage_gas_token::{GasStateBackend, sstore_gas_state},
 };
 
 /// The Tempo EVM context type.
@@ -231,7 +231,7 @@ where
 /// Opcode-level [`GasStateBackend`] adapter over an [`InstructionContext`].
 ///
 /// Bridges the revm host/interpreter to the backend-agnostic
-/// [`sstore_gas_state_inner`] so the SSTORE opcode runs the same TIP-1060
+/// [`sstore_gas_state`] so the SSTORE opcode runs the same TIP-1060
 /// gas-token policy as precompile-driven storage writes.
 struct InterpreterGasState<'a, 'b, DB: Database> {
     context: &'a mut InstructionContext<'b, TempoContext<DB>, EthInterpreter>,
@@ -298,13 +298,16 @@ impl<DB: Database> GasStateBackend for InterpreterGasState<'_, '_, DB> {
     }
 
     #[inline]
-    fn gas_token_tload(&mut self, key: U256) -> U256 {
-        self.context.host.tload(GAS_TOKEN, key)
-    }
-
-    #[inline]
-    fn gas_token_tstore(&mut self, key: U256, value: U256) {
-        self.context.host.tstore(GAS_TOKEN, key, value);
+    fn token_tstore_increment(&mut self, key: U256) {
+        let pending: u64 = self
+            .context
+            .host
+            .tload(GAS_TOKEN, key)
+            .try_into()
+            .expect("saturates at u64::MAX");
+        self.context
+            .host
+            .tstore(GAS_TOKEN, key, U256::from(pending.saturating_add(1)));
     }
 }
 
@@ -321,7 +324,7 @@ where
         owner: Address,
         values: &SStoreResult,
     ) -> Result<GasStateOutcome, InstructionResult> {
-        sstore_gas_state_inner(&mut InterpreterGasState { context }, owner, values)
+        sstore_gas_state(&mut InterpreterGasState { context }, owner, values)
     }
 }
 
