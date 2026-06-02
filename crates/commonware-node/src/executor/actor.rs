@@ -34,6 +34,8 @@ use super::{
     Config,
     ingress::{CanonicalizeHead, Command, Message},
 };
+#[cfg(feature = "bal")]
+use crate::fast_path::FastPathPayloadCache;
 use crate::{
     consensus::{Digest, block::Block},
     executor::ingress::CanonicalizeAndBuild,
@@ -112,6 +114,9 @@ pub(crate) struct Actor<TContext> {
     /// The mailbox of the marshal actor. Used to backfill blocks.
     marshal: crate::alias::marshal::Mailbox,
 
+    #[cfg(feature = "bal")]
+    fast_path_payloads: FastPathPayloadCache,
+
     last_canonicalized: LastCanonicalized,
 
     /// The interval at which to send a forkchoice update heartbeat to the
@@ -179,6 +184,8 @@ where
             execution_node,
             last_finalized_height,
             marshal,
+            #[cfg(feature = "bal")]
+            fast_path_payloads,
             fcu_heartbeat_interval,
             public_key,
         } = config;
@@ -200,6 +207,8 @@ where
             last_execution_finalized_height,
             mailbox,
             marshal,
+            #[cfg(feature = "bal")]
+            fast_path_payloads,
             last_canonicalized: LastCanonicalized {
                 forkchoice: ForkchoiceState {
                     head_block_hash: head_num_hash.hash,
@@ -557,6 +566,29 @@ where
         block: Block,
         acknowledgment: Exact,
     ) -> eyre::Result<()> {
+        #[cfg(feature = "bal")]
+        if let Some(executed_block) =
+            self.fast_path_payloads
+                .take(block.digest(), block.height(), block.block_hash())
+        {
+            let block_digest = block.digest();
+            if let Err(error) = self
+                .execution_node
+                .add_ons_handle
+                .beacon_engine_handle
+                .insert_executed_block(executed_block)
+            {
+                warn!(%error, block.digest = %block_digest, "failed inserting finalized built payload");
+            } else {
+                debug!(
+                    block.digest = %block_digest,
+                    block.height = %block.height(),
+                    block.hash = %block.block_hash(),
+                    "inserted finalized built payload through fast path",
+                );
+            }
+        }
+
         let (response, rx) = oneshot::channel();
         self.canonicalize(
             Span::current(),

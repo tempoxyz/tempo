@@ -19,6 +19,8 @@ mod ingress;
 pub(super) use actor::Actor;
 pub(crate) use ingress::Mailbox;
 
+#[cfg(feature = "bal")]
+use crate::fast_path::FastPathPayloadCache;
 use crate::{epoch::SchemeProvider, subblocks};
 
 pub(super) async fn init<TContext>(
@@ -53,6 +55,9 @@ pub(super) struct Config<TContext> {
 
     /// A handle to the execution node to verify and create new payloads.
     pub(super) execution_node: Arc<TempoFullNode>,
+
+    #[cfg(feature = "bal")]
+    pub(super) fast_path_payloads: FastPathPayloadCache,
 
     /// A handle to the subblocks service to get subblocks for proposals.
     pub(crate) subblocks: Option<subblocks::Mailbox>,

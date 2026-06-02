@@ -8,6 +8,8 @@ use commonware_runtime::{Clock, Metrics, Pacer, Spawner};
 mod actor;
 mod ingress;
 
+#[cfg(feature = "bal")]
+use crate::fast_path::FastPathPayloadCache;
 pub(crate) use actor::Actor;
 use eyre::WrapErr as _;
 use futures::channel::mpsc;
@@ -40,6 +42,9 @@ pub(crate) struct Config {
 
     /// The mailbox of the marshal actor. Used to backfill blocks.
     pub(crate) marshal: crate::alias::marshal::Mailbox,
+
+    #[cfg(feature = "bal")]
+    pub(crate) fast_path_payloads: FastPathPayloadCache,
 
     /// The interval at which to send a forkchoice update heartbeat to the
     /// execution layer.

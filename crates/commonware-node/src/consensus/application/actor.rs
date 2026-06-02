@@ -66,6 +66,8 @@ use super::{
     Mailbox,
     ingress::{Broadcast, Genesis, Message, Propose, Verify},
 };
+#[cfg(feature = "bal")]
+use crate::fast_path::FastPathPayloadCache;
 use crate::{
     consensus::{Digest, block::Block},
     epoch::SchemeProvider,
@@ -287,6 +289,8 @@ where
                 marshal: config.marshal,
 
                 execution_node: config.execution_node,
+                #[cfg(feature = "bal")]
+                fast_path_payloads: config.fast_path_payloads,
                 executor: config.executor,
 
                 subblocks: config.subblocks,
@@ -395,6 +399,8 @@ struct Inner<TState> {
     marshal: crate::alias::marshal::Mailbox,
 
     execution_node: Arc<TempoFullNode>,
+    #[cfg(feature = "bal")]
+    fast_path_payloads: FastPathPayloadCache,
     executor: crate::executor::Mailbox,
     subblocks: Option<subblocks::Mailbox>,
     scheme_provider: SchemeProvider,
@@ -523,7 +529,7 @@ impl Inner<Init> {
             started_at: propose_start,
         } = request;
 
-        let (proposal_digest, fast_path_executed_block) = {
+        let proposal_digest = {
             let mut payload_id_rx: Option<PendingPayloadId> = None;
             let mut proposal = Box::pin(async {
                 // Follow the commonware marshal::standard::inline application:
@@ -590,7 +596,13 @@ impl Inner<Init> {
                 };
 
                 let digest = block.digest();
-                let fast_path_executed_block = if let Some(proposal_return) = proposal_return {
+                if let Some(proposal_return) = proposal_return {
+                    #[cfg(feature = "bal")]
+                    let block_height = block.height();
+                    #[cfg(feature = "bal")]
+                    let block_hash = block.block_hash();
+                    let fast_path_executed_block = proposal_return.fast_path_executed_block;
+
                     let persist_start = Instant::now();
                     if !self.marshal.proposed(round, block).await {
                         bail!("marshal actor rejected persisting proposal");
@@ -602,12 +614,30 @@ impl Inner<Init> {
 
                     // Keep waiting for the remaining return time, if there's anything left after building the block.
                     context.sleep_until(proposal_return.time).await;
-                    proposal_return.fast_path_executed_block
-                } else {
-                    None
-                };
 
-                eyre::Ok((digest, fast_path_executed_block))
+                    if let Some(executed_block) = fast_path_executed_block {
+                        #[cfg(feature = "bal")]
+                        {
+                            self.fast_path_payloads.insert(
+                                digest,
+                                block_height,
+                                block_hash,
+                                executed_block,
+                            );
+                            debug!(
+                                proposal.digest = %digest,
+                                proposal.height = %block_height,
+                                proposal.hash = %block_hash,
+                                "cached gated built payload for finalization fast path",
+                            );
+                        }
+
+                        #[cfg(not(feature = "bal"))]
+                        let _ = executed_block;
+                    }
+                }
+
+                eyre::Ok(digest)
             });
 
             tokio::select! {
@@ -638,16 +668,6 @@ impl Inner<Init> {
                 channel was already closed"
             )
         })?;
-
-        if let Some(executed_block) = fast_path_executed_block
-            && let Err(error) = self
-                .execution_node
-                .add_ons_handle
-                .beacon_engine_handle
-                .insert_executed_block(executed_block)
-        {
-            warn!(%error, proposal.digest = %proposal_digest, "failed inserting gated built payload");
-        }
 
         Ok(())
     }
@@ -1490,6 +1510,8 @@ impl Inner<Uninit> {
             my_mailbox: self.my_mailbox,
             marshal: self.marshal,
             execution_node: self.execution_node,
+            #[cfg(feature = "bal")]
+            fast_path_payloads: self.fast_path_payloads,
             executor: self.executor.clone(),
             state: Init {
                 dkg_manager,
