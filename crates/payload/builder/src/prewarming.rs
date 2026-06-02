@@ -44,6 +44,7 @@ impl BestTransactionsPrewarming {
         executor: TaskExecutor,
         provider: Provider,
         cache: Option<SavedCache>,
+        cache_fill_on_miss: bool,
         parent_hash: B256,
         evm_env: EvmEnvFor<TempoEvmConfig>,
         best_txs: Txs,
@@ -59,6 +60,7 @@ impl BestTransactionsPrewarming {
             provider,
             parent_hash,
             cache,
+            cache_fill_on_miss,
             evm_env,
             stop: stop.clone(),
         };
@@ -290,6 +292,7 @@ struct PrewarmingExecutionContext<Provider> {
     provider: Provider,
     parent_hash: B256,
     cache: Option<SavedCache>,
+    cache_fill_on_miss: bool,
     evm_env: EvmEnvFor<TempoEvmConfig>,
     stop: Arc<AtomicBool>,
 }
@@ -313,10 +316,18 @@ where
         };
 
         if let Some(cache) = &self.cache {
-            state_provider = Box::new(CachedStateProvider::new_prewarm(
-                state_provider,
-                cache.cache().clone(),
-            ));
+            state_provider = if self.cache_fill_on_miss {
+                Box::new(CachedStateProvider::new_prewarm(
+                    state_provider,
+                    cache.cache().clone(),
+                ))
+            } else {
+                Box::new(CachedStateProvider::new(
+                    state_provider,
+                    cache.cache().clone(),
+                    None,
+                ))
+            };
         }
 
         let state_provider = StateProviderDatabase::new(state_provider);
@@ -804,6 +815,7 @@ mod tests {
             executor.clone(),
             provider,
             None,
+            true,
             parent_header.hash(),
             evm_env,
             TestBestTransactions::new(txs, log),

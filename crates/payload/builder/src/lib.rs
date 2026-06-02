@@ -383,6 +383,8 @@ where
             .unwrap_or_else(|| parent_header.hash());
         let cache_wrapped_under_bal =
             cfg!(feature = "bal") && attributes.speculative_parent().is_some();
+        // Speculative BAL prewarm may share validation's cache, so it can read but must not fill.
+        let prewarm_cache_fill_on_miss = !cache_wrapped_under_bal;
 
         let state_setup_start = Instant::now();
         let _state_setup_span = debug_span!(target: "payload_builder", "state_setup").entered();
@@ -617,6 +619,7 @@ where
                 self.executor.clone(),
                 self.provider.clone(),
                 execution_cache,
+                prewarm_cache_fill_on_miss,
                 prewarm_parent_hash,
                 executor.evm().evm_env(),
                 best_txs,
