@@ -1,10 +1,6 @@
 use crate::evm::{TempoContext, TempoGasState};
 use alloy_evm::Database;
 use revm::{
-    context_interface::{
-        context::SStoreResult,
-        host::{GasStateOutcome, GasStateTr, LoadError},
-    },
     handler::instructions::EthInstructions,
     interpreter::{
         Instruction, InstructionContext, InstructionResult,
@@ -12,7 +8,6 @@ use revm::{
         interpreter::EthInterpreter,
         push,
     },
-    primitives::Address,
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 

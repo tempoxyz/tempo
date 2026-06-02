@@ -3,12 +3,16 @@ use alloy_evm::{Database, precompiles::PrecompilesMap};
 use alloy_primitives::{Address, U256};
 use revm::{
     Context, Inspector,
-    context::{Cfg, CfgEnv, ContextError, Evm, FrameStack, GasStateOutcome, Host},
+    context::{Cfg, CfgEnv, ContextError, Evm, FrameStack},
     handler::{
         EthFrame, EvmTr, FrameInitOrResult, FrameTr, ItemOrResult, instructions::EthInstructions,
     },
     inspector::InspectorEvmTr,
-    interpreter::{InitialAndFloorGas, interpreter::EthInterpreter},
+    interpreter::{
+        InitialAndFloorGas, InstructionContext, InstructionResult, SStoreResult,
+        instruction_context::{GasStateOutcome, GasStateTr},
+        interpreter::EthInterpreter,
+    },
 };
 use tempo_chainspec::hardfork::TempoHardfork;
 
@@ -223,27 +227,28 @@ where
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) struct TempoGasState;
 
-impl<DB> GasStateTr<TempoContext<DB>> for TempoGasState
+impl<DB> GasStateTr<EthInterpreter, TempoContext<DB>> for TempoGasState
 where
     DB: Database,
 {
     fn sstore_gas_state(
-        host: &mut TempoContext<DB>,
+        context: &mut InstructionContext<'_, TempoContext<DB>, EthInterpreter>,
         owner: Address,
         vals: &SStoreResult,
-    ) -> Result<GasStateOutcome, LoadError> {
+    ) -> Result<GasStateOutcome, InstructionResult> {
         if vals.is_new_eq_present() {
             return Ok(GasStateOutcome::default());
         }
 
         if vals.is_original_zero() && vals.is_present_zero() && !vals.is_new_zero() {
-            host.sstore(address, key, value)
+            let _ = (context, owner);
             // TODO: consume storage gas token balance for `_owner` and return the
             // corresponding `GasStateOutcome`.
             return Ok(GasStateOutcome::default());
         }
 
         if !vals.is_present_zero() && vals.is_new_zero() {
+            let _ = (context, owner);
             // TODO: mint/refill storage gas token balance for `_owner` and return the
             // corresponding `GasStateOutcome`.
             return Ok(GasStateOutcome::default());
