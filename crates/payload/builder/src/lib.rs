@@ -729,9 +729,6 @@ where
             ));
         };
 
-        // cancel pre-warming, if any, by dropping the iter
-        drop(best_txs);
-
         let elapsed_at_tx_cutoff = start.elapsed();
         let validation_work_at_tx_cutoff =
             elapsed_at_tx_cutoff.saturating_sub(normal_transaction_fill_idle_elapsed);
@@ -869,12 +866,15 @@ where
         // Drop the roots task handle to trigger finalization
         drop(roots_tx);
 
-        let (evm, execution_result) = executor.finish()?;
-        let evm_env = evm.into_env();
-
         // Drop the state hook to signal that execution is complete and the sparse trie task can
         // finalize the state root.
         db.set_state_hook(None);
+
+        // cancel pre-warming, if any, by dropping the iter
+        drop(best_txs);
+
+        let (evm, execution_result) = executor.finish()?;
+        let evm_env = evm.into_env();
 
         // merge all transitions into bundle state before deriving the hashed post-state
         db.merge_transitions(BundleRetention::Reverts);
