@@ -32,8 +32,8 @@ impl Precompile for FeatureRegistry {
                 IFeatureRegistryCalls::activationQuorum(_) => {
                     unsupported::<IFeatureRegistry::activationQuorumCall>()
                 }
-                IFeatureRegistryCalls::scheduledFeaturesTip(_) => {
-                    unsupported::<IFeatureRegistry::scheduledFeaturesTipCall>()
+                IFeatureRegistryCalls::scheduledFeaturesTip(call) => {
+                    view(call, |_| self.scheduled_features_tip())
                 }
                 IFeatureRegistryCalls::setSupportedFeaturesTip(_) => {
                     unsupported::<IFeatureRegistry::setSupportedFeaturesTipCall>()
@@ -94,6 +94,52 @@ mod tests {
     }
 
     #[test]
+    fn scheduled_features_tip_defaults_to_zero() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let registry = FeatureRegistry::new();
+            let scheduled = registry.scheduled_features_tip()?;
+            assert_eq!(scheduled.featuresTip, 0);
+            assert_eq!(scheduled.activationEpoch, 0);
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn scheduled_features_tip_reads_schedule_fields() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            registry.scheduled_features_tip.write(13)?;
+            registry.scheduled_activation_epoch.write(21)?;
+
+            let scheduled = registry.scheduled_features_tip()?;
+            assert_eq!(scheduled.featuresTip, 13);
+            assert_eq!(scheduled.activationEpoch, 21);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn scheduled_features_tip_preserves_active_features_tip() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            registry.features_tip.write(7)?;
+            registry.scheduled_features_tip.write(13)?;
+            registry.scheduled_activation_epoch.write(21)?;
+
+            assert_eq!(registry.features_tip()?, 7);
+            let scheduled = registry.scheduled_features_tip()?;
+            assert_eq!(scheduled.featuresTip, 13);
+            assert_eq!(scheduled.activationEpoch, 21);
+
+            Ok(())
+        })
+    }
+
+    #[test]
     fn features_tip_dispatch_returns_encoded_cursor() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
@@ -104,6 +150,26 @@ mod tests {
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(!result.is_revert());
             assert_eq!(u64::abi_decode(&result.bytes)?, 11);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn scheduled_features_tip_dispatch_returns_encoded_schedule() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+            registry.scheduled_features_tip.write(34)?;
+            registry.scheduled_activation_epoch.write(55)?;
+
+            let call = IFeatureRegistry::scheduledFeaturesTipCall {};
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(!result.is_revert());
+            let decoded =
+                IFeatureRegistry::scheduledFeaturesTipCall::abi_decode_returns(&result.bytes)?;
+            assert_eq!(decoded.featuresTip, 34);
+            assert_eq!(decoded.activationEpoch, 55);
 
             Ok(())
         })
