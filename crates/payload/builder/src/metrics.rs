@@ -14,6 +14,8 @@ use reth_trie_common::{
 use std::time::Instant;
 use tracing::debug_span;
 
+use crate::budget::PayloadBudgetDecision;
+
 #[derive(Metrics, Clone)]
 #[metrics(scope = "tempo_payload_builder")]
 pub(crate) struct TempoPayloadBuilderMetrics {
@@ -153,6 +155,41 @@ impl TempoPayloadBuilderMetrics {
     pub(crate) fn inc_block_build_stop_reason(&self, reason: BlockBuildStopReason) {
         metrics::counter!("tempo_payload_builder_block_build_stop_total", "reason" => reason.as_str())
             .increment(1);
+    }
+
+    /// Records the budget components at the point pool transaction execution stops.
+    #[inline]
+    pub(crate) fn record_build_budget_decision(&self, decision: PayloadBudgetDecision) {
+        let validator_source = decision.validator_validation_source.as_str();
+        metrics::counter!(
+            "tempo_payload_builder_build_budget_decisions_total",
+            "validator_source" => validator_source,
+        )
+        .increment(1);
+
+        for (component, duration) in [
+            ("budget", decision.budget),
+            ("elapsed", decision.elapsed),
+            ("idle", decision.idle_elapsed),
+            ("work_elapsed", decision.work_elapsed),
+            ("builder_work", decision.predicted_builder_work),
+            ("validator_work", decision.predicted_validator_work),
+            ("marshal_persist", decision.marshal_persist),
+            ("total_reserved", decision.total_reserved),
+        ] {
+            metrics::histogram!(
+                "tempo_payload_builder_build_budget_decision_duration_seconds",
+                "component" => component,
+                "validator_source" => validator_source,
+            )
+            .record(duration.as_secs_f64());
+            metrics::gauge!(
+                "tempo_payload_builder_build_budget_decision_duration_seconds_last",
+                "component" => component,
+                "validator_source" => validator_source,
+            )
+            .set(duration.as_secs_f64());
+        }
     }
 
     /// Increments the counter for subblocks dropped due to expired transactions.

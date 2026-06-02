@@ -14,7 +14,7 @@ use reth_trie_common::ordered_root::OrderedTrieRootEncodedBuilder;
 use crate::{
     budget::{
         BUILD_TIME_MULTIPLIER_SCALE, decay_build_time_multiplier, observed_build_time_multiplier,
-        payload_budget_exhausted, scaled_build_time_multiplier,
+        payload_budget_decision, scaled_build_time_multiplier,
     },
     metrics::{BlockBuildStopReason, InstrumentedFinishProvider, TempoPayloadBuilderMetrics},
     prewarming::BestTransactionsPrewarming,
@@ -568,7 +568,7 @@ where
                     cumulative_gas_used,
                     pool_transactions_included as usize,
                 );
-                if payload_budget_exhausted(
+                let budget_decision = payload_budget_decision(
                     elapsed,
                     normal_transaction_fill_idle_elapsed,
                     build_time_multiplier,
@@ -576,18 +576,27 @@ where
                     marshal_persist,
                     validator_validation,
                     validator_validation_shape,
-                ) {
+                );
+                if budget_decision.exhausted() {
                     let estimated_marshal_persist = marshal_persist.estimate(block_size_used);
                     let estimated_validator_validation = validator_validation
                         .and_then(|estimate| estimate.estimate(validator_validation_shape));
-                    debug!(
+                    self.metrics.record_build_budget_decision(budget_decision);
+                    info!(
                         target: "payload_builder",
                         ?elapsed,
                         ?normal_transaction_fill_idle_elapsed,
                         ?build_budget,
+                        predicted_builder_work = ?budget_decision.predicted_builder_work,
+                        predicted_validator_work = ?budget_decision.predicted_validator_work,
+                        validator_validation_source =
+                            budget_decision.validator_validation_source.as_str(),
+                        total_reserved = ?budget_decision.total_reserved,
                         ?estimated_marshal_persist,
                         ?estimated_validator_validation,
                         ?validator_validation_shape,
+                        gas_used = cumulative_gas_used,
+                        transactions = pool_transactions_included,
                         block_size_used,
                         build_time_multiplier = build_time_multiplier as f64
                             / BUILD_TIME_MULTIPLIER_SCALE as f64,
@@ -1065,6 +1074,13 @@ where
         }
         let recorded_block_size_bytes =
             rlp_length + block_access_list.as_ref().map_or(0, Encodable::length);
+        let final_validation_shape =
+            ValidatorValidationShape::new(recorded_block_size_bytes, gas_used, total_transactions);
+        let (validator_validation_duration, validator_validation_source) = validator_validation
+            .and_then(|estimate| estimate.estimate(final_validation_shape))
+            .map_or((validation_work_duration, "fallback"), |duration| {
+                (duration, "feedback")
+            });
 
         self.metrics.payload_build_duration_seconds.record(elapsed);
         let gas_per_second = block.gas_used() as f64 / elapsed.as_secs_f64();
@@ -1096,6 +1112,8 @@ where
             total_transactions,
             ?elapsed,
             ?validation_work_duration,
+            ?validator_validation_duration,
+            validator_validation_source,
             ?normal_transaction_fill_elapsed,
             ?normal_transaction_fill_idle_elapsed,
             ?total_subblock_transaction_execution_elapsed,
@@ -1128,7 +1146,8 @@ where
             block_access_list,
             Some(executed_block),
             validation_work_duration,
-            rlp_length,
+            validator_validation_duration,
+            recorded_block_size_bytes,
         );
 
         drop(db);
@@ -1374,7 +1393,7 @@ mod tests {
         .unwrap();
         let rlp_length = block.rlp_length();
         let eth = EthBuiltPayload::new(Arc::new(block), U256::ZERO, None, None);
-        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, rlp_length)
+        TempoBuiltPayload::new(eth, None, None, Duration::ZERO, Duration::ZERO, rlp_length)
     }
 
     #[test]

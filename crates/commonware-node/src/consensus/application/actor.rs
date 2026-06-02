@@ -814,7 +814,8 @@ impl Inner<Init> {
             .wrap_err_with(|| format!("failed getting payload for payload ID `{payload_id}`"))?;
 
         let payload_build_elapsed = payload_build_start.elapsed();
-        let payload_validation_elapsed = payload.validation_work_duration();
+        let payload_validation_work_elapsed = payload.validation_work_duration();
+        let validator_validation_elapsed = payload.validator_validation_duration();
         let block_size_bytes = payload.rlp_block_size_bytes();
         let validator_marshal_persist = marshal_persist.estimate(block_size_bytes);
         let proposal_elapsed = propose_start.elapsed();
@@ -824,12 +825,13 @@ impl Inner<Init> {
         let return_delay = self
             .proposal_return_budget
             .saturating_sub(proposal_elapsed)
-            .saturating_sub(payload_validation_elapsed)
+            .saturating_sub(validator_validation_elapsed)
             .saturating_sub(validator_marshal_persist);
         debug!(
             proposal_elapsed = %display_duration(proposal_elapsed),
             build_time = %display_duration(payload_build_elapsed),
-            validation_time = %display_duration(payload_validation_elapsed),
+            payload_validation_work = %display_duration(payload_validation_work_elapsed),
+            validator_validation_time = %display_duration(validator_validation_elapsed),
             validator_marshal_persist = %display_duration(validator_marshal_persist),
             return_time = %display_duration(return_delay),
             block_size_bytes,

@@ -41,11 +41,13 @@ pub struct TempoBuiltPayload {
     block_access_list: Option<Bytes>,
     /// The executed block data, used to skip re-execution in the engine tree.
     executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
-    /// Time validators are expected to spend reproducing this payload's build work.
+    /// Replayable builder work for this payload.
     ///
-    /// This excludes proposer-only idle waiting, but includes replayable work
-    /// such as transaction execution and non-interruptible `builder_finish`.
+    /// This excludes proposer-only idle waiting, but includes transaction
+    /// execution and non-interruptible `builder_finish`.
     validation_work_duration: Duration,
+    /// Time validators are expected to spend validating this payload.
+    validator_validation_duration: Duration,
     /// RLP-encoded block size used for proposal return marshal estimates and
     /// learning the rate used by future builder budgets.
     rlp_block_size_bytes: usize,
@@ -58,6 +60,7 @@ impl TempoBuiltPayload {
         block_access_list: Option<Bytes>,
         executed_block: Option<BuiltPayloadExecutedBlock<TempoPrimitives>>,
         validation_work_duration: Duration,
+        validator_validation_duration: Duration,
         rlp_block_size_bytes: usize,
     ) -> Self {
         Self {
@@ -65,6 +68,7 @@ impl TempoBuiltPayload {
             block_access_list,
             executed_block,
             validation_work_duration,
+            validator_validation_duration,
             rlp_block_size_bytes,
         }
     }
@@ -77,9 +81,14 @@ impl TempoBuiltPayload {
         )
     }
 
-    /// Returns the time validators are expected to spend reproducing this payload's build work.
+    /// Returns replayable builder work for this payload.
     pub fn validation_work_duration(&self) -> Duration {
         self.validation_work_duration
+    }
+
+    /// Returns the time validators are expected to spend validating this payload.
+    pub fn validator_validation_duration(&self) -> Duration {
+        self.validator_validation_duration
     }
 
     /// Returns the RLP-encoded block size in bytes.
