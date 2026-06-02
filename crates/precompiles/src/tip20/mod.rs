@@ -998,10 +998,12 @@ impl TIP20Token {
         self.grant_default_admin(msg_sender, admin)
     }
 
+    #[inline]
     fn get_balance(&self, account: Address) -> Result<UserState> {
         self.balances[account].read()
     }
 
+    #[inline]
     fn set_balance(&mut self, account: Address, amount: UserState) -> Result<()> {
         self.balances[account].write(amount)
     }
@@ -1018,6 +1020,7 @@ impl TIP20Token {
         self.total_supply.write(amount)
     }
 
+    #[inline]
     pub fn check_not_paused(&self) -> Result<()> {
         if self.paused()? {
             return Err(TIP20Error::contract_paused().into());
@@ -1119,6 +1122,7 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `PolicyForbids` — sender or recipient is not authorized by the active transfer policy
+    #[inline]
     pub fn ensure_transfer_authorized(&self, from: Address, to: Address) -> Result<()> {
         if !self.is_transfer_authorized(from, to)? {
             return Err(TIP20Error::policy_forbids().into());
@@ -1143,6 +1147,7 @@ impl TIP20Token {
     ///
     /// # Errors
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
+    #[inline]
     pub fn check_and_update_spending_limit(&mut self, from: Address, amount: U256) -> Result<()> {
         AccountKeychain::new().authorize_transfer(from, self.address, amount)
     }
@@ -1270,6 +1275,7 @@ impl TIP20Token {
     /// - `Paused` — token transfers are currently paused
     /// - `InsufficientBalance` — sender balance lower than fee amount
     /// - `SpendingLimitExceeded` — access key spending limit exceeded
+    #[inline]
     pub fn transfer_fee_pre_tx(&mut self, from: Address, amount: U256) -> Result<()> {
         // This function respects the token's pause state and will revert if the token is paused.
         // transfer_fee_post_tx is intentionally allowed to execute even when the token is paused.
