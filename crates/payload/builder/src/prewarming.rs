@@ -7,17 +7,20 @@ use std::{
     },
 };
 
-use alloy_primitives::{Address, B256, Bytes, TxKind, U256};
+use alloy_primitives::{
+    Address, B256, Bytes, TxKind, U256,
+    map::{Entry, U256Map},
+};
 use alloy_sol_types::SolInterface;
 use reth_evm::{Database, Evm, EvmEnvFor};
 use reth_revm::{
     Database as RevmDatabase,
-    cached::{CachedReads, CachedReadsDbMut},
+    cached::{CachedAccount, CachedReads},
     database::StateProviderDatabase,
     state::{AccountInfo, Bytecode},
 };
 use reth_storage_api::{StateProviderBox, StateProviderFactory};
-use reth_tasks::TaskExecutor;
+use reth_tasks::{TaskExecutor, WorkerPool};
 use reth_transaction_pool::{
     BestTransactions, PoolTransaction, error::InvalidPoolTransactionError,
 };
@@ -33,7 +36,166 @@ use tempo_primitives::TempoAddressExt;
 use tempo_transaction_pool::best::{AsBestTransaction, BestTransaction};
 use tracing::trace;
 
-type PrewarmDatabase<'a> = CachedReadsDbMut<'a, StateProviderDatabase<StateProviderBox>>;
+type PrewarmStateProviderDatabase = StateProviderDatabase<StateProviderBox>;
+type PrewarmEvmState = Option<TempoEvm<PrewarmDatabase<PrewarmStateProviderDatabase>>>;
+
+/// Worker-local database used by prewarming.
+///
+/// `cached` accumulates reads across transactions on the same worker, while `recording` is swapped
+/// in per transaction so those reads can be handed to builder execution as an overlay.
+#[derive(Debug)]
+struct PrewarmDatabase<DB> {
+    db: DB,
+    cached: CachedReads,
+    recording: Option<CachedReads>,
+}
+
+impl<DB> PrewarmDatabase<DB> {
+    fn new(db: DB) -> Self {
+        Self {
+            db,
+            cached: CachedReads::default(),
+            recording: None,
+        }
+    }
+
+    fn start_recording(&mut self, cached: CachedReads) {
+        debug_assert!(self.recording.is_none());
+        self.recording = Some(cached);
+    }
+
+    fn finish_recording(&mut self) -> CachedReads {
+        self.recording.take().unwrap_or_default()
+    }
+
+    fn record_basic(&mut self, address: Address, info: &Option<AccountInfo>) {
+        if let Some(recording) = &mut self.recording {
+            recording
+                .accounts
+                .entry(address)
+                .or_insert_with(|| CachedAccount {
+                    info: info.clone(),
+                    storage: U256Map::default(),
+                });
+        }
+    }
+
+    fn record_storage(
+        &mut self,
+        address: Address,
+        index: U256,
+        info: &Option<AccountInfo>,
+        value: U256,
+    ) {
+        if let Some(recording) = &mut self.recording {
+            let account = recording
+                .accounts
+                .entry(address)
+                .or_insert_with(|| CachedAccount {
+                    info: info.clone(),
+                    storage: U256Map::default(),
+                });
+            if info.is_some() {
+                account.storage.entry(index).or_insert(value);
+            }
+        }
+    }
+
+    fn record_code(&mut self, code_hash: B256, code: &Bytecode) {
+        if let Some(recording) = &mut self.recording {
+            recording
+                .contracts
+                .entry(code_hash)
+                .or_insert_with(|| code.clone());
+        }
+    }
+
+    fn record_block_hash(&mut self, number: u64, hash: B256) {
+        if let Some(recording) = &mut self.recording {
+            recording.block_hashes.entry(number).or_insert(hash);
+        }
+    }
+}
+
+impl<DB: RevmDatabase> RevmDatabase for PrewarmDatabase<DB> {
+    type Error = DB::Error;
+
+    fn basic(&mut self, address: Address) -> Result<Option<AccountInfo>, Self::Error> {
+        let info = match self.cached.accounts.entry(address) {
+            Entry::Occupied(entry) => entry.get().info.clone(),
+            Entry::Vacant(entry) => {
+                let info = self.db.basic(address)?;
+                entry.insert(CachedAccount {
+                    info: info.clone(),
+                    storage: U256Map::default(),
+                });
+                info
+            }
+        };
+
+        self.record_basic(address, &info);
+        Ok(info)
+    }
+
+    fn code_by_hash(&mut self, code_hash: B256) -> Result<Bytecode, Self::Error> {
+        let code = match self.cached.contracts.entry(code_hash) {
+            Entry::Occupied(entry) => entry.get().clone(),
+            Entry::Vacant(entry) => entry.insert(self.db.code_by_hash(code_hash)?).clone(),
+        };
+
+        self.record_code(code_hash, &code);
+        Ok(code)
+    }
+
+    fn storage(&mut self, address: Address, index: U256) -> Result<U256, Self::Error> {
+        let (info, value) = match self.cached.accounts.entry(address) {
+            Entry::Occupied(mut acc_entry) => {
+                let info = acc_entry.get().info.clone();
+                if info.is_some() {
+                    let value = match acc_entry.get_mut().storage.entry(index) {
+                        Entry::Occupied(entry) => *entry.get(),
+                        Entry::Vacant(entry) => *entry.insert(self.db.storage(address, index)?),
+                    };
+                    (info, value)
+                } else {
+                    (info, U256::ZERO)
+                }
+            }
+            Entry::Vacant(acc_entry) => {
+                let info = self.db.basic(address)?;
+                if info.is_some() {
+                    let value = self.db.storage(address, index)?;
+                    let mut account = CachedAccount {
+                        info: info.clone(),
+                        storage: U256Map::default(),
+                    };
+                    account.storage.insert(index, value);
+                    acc_entry.insert(account);
+                    (info, value)
+                } else {
+                    acc_entry.insert(CachedAccount {
+                        info: None,
+                        storage: U256Map::default(),
+                    });
+                    (info, U256::ZERO)
+                }
+            }
+        };
+
+        self.record_storage(address, index, &info, value);
+        Ok(value)
+    }
+
+    fn block_hash(&mut self, number: u64) -> Result<B256, Self::Error> {
+        let hash = match self.cached.block_hashes.entry(number) {
+            Entry::Occupied(entry) => *entry.get(),
+            Entry::Vacant(entry) => *entry.insert(self.db.block_hash(number)?),
+        };
+
+        self.record_block_hash(number, hash);
+        Ok(hash)
+    }
+}
 
 /// A reusable map containing reads collected by prewarming one transaction.
 #[derive(Debug)]
@@ -47,8 +209,18 @@ impl PooledPrewarmedState {
         self.cached.as_ref().expect("pooled state is present")
     }
 
+    #[cfg(test)]
     fn cached_mut(&mut self) -> &mut CachedReads {
         self.cached.as_mut().expect("pooled state is present")
+    }
+
+    fn take_cached(&mut self) -> CachedReads {
+        self.cached.take().expect("pooled state is present")
+    }
+
+    fn replace_cached(&mut self, cached: CachedReads) {
+        debug_assert!(self.cached.is_none());
+        self.cached = Some(cached);
     }
 }
 
@@ -331,6 +503,8 @@ impl BestTransactionsPrewarming {
         Provider: StateProviderFactory + Clone + 'static,
     {
         let pool = executor.prewarming_pool();
+        let prewarm = ctx.prewarm.clone();
+        pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
 
         pool.in_place_scope(|scope| {
             let mut advance = |ctx: &mut BestTransactionsPrewarmingContext<Txs, Provider>| {
@@ -423,6 +597,9 @@ impl BestTransactionsPrewarming {
                 }
             }
         });
+
+        pool.clear();
+        WorkerPool::with_worker_mut(|worker| worker.clear());
     }
 
     fn fill_lookahead<Txs, Provider>(
@@ -476,62 +653,67 @@ impl BestTransactionsPrewarming {
             };
         }
 
-        'prewarm: {
-            let Some(mut evm) = prewarm.evm_for_state(state.cached_mut()) else {
-                return PrewarmResult {
-                    sequence,
-                    tx,
-                    state,
-                };
+        WorkerPool::with_worker_mut(|worker| {
+            let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
+                return;
             };
+
+            evm.db_mut().start_recording(state.take_cached());
 
             let tx_hash = *tx.hash();
 
-            let touched = if is_tip20_transfer_transaction(&tx) {
-                let touches =
-                    storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary);
+            let touched = 'prewarm: {
+                if is_tip20_transfer_transaction(&tx) {
+                    let touches =
+                        storage_touches_for_transaction(&tx, prewarm.evm_env.block_env.beneficiary);
 
-                for touch in &touches {
-                    if prewarm.is_stopped() {
-                        break 'prewarm;
+                    for touch in &touches {
+                        if prewarm.is_stopped() {
+                            break 'prewarm None;
+                        }
+                        if let Err(err) = touch.warm(evm) {
+                            trace!(
+                                target: "payload_builder",
+                                %err,
+                                ?tx_hash,
+                                "Failed to prewarm transaction storage"
+                            );
+                            break 'prewarm None;
+                        }
                     }
-                    if let Err(err) = touch.warm(&mut evm) {
+
+                    Some(Some(touches.len()))
+                } else {
+                    if prewarm.is_stopped() {
+                        break 'prewarm None;
+                    }
+
+                    if let Err(err) = evm.transact_raw(tx.transaction.clone_tx_env()) {
                         trace!(
                             target: "payload_builder",
                             %err,
                             ?tx_hash,
-                                "Failed to prewarm transaction storage"
+                            "Failed to prewarm transaction by execution"
                         );
-                        break 'prewarm;
+                        break 'prewarm None;
                     }
-                }
 
-                Some(touches.len())
-            } else {
-                if prewarm.is_stopped() {
-                    break 'prewarm;
+                    Some(None)
                 }
-
-                if let Err(err) = evm.transact_raw(tx.transaction.clone_tx_env()) {
-                    trace!(
-                        target: "payload_builder",
-                        %err,
-                        ?tx_hash,
-                        "Failed to prewarm transaction by execution"
-                    );
-                    break 'prewarm;
-                }
-
-                None
             };
 
-            trace!(
-                target: "payload_builder",
-                touched,
-                ?tx_hash,
-                "Prewarmed transaction"
-            );
-        }
+            let cached = evm.db_mut().finish_recording();
+            state.replace_cached(cached);
+
+            if let Some(touched) = touched {
+                trace!(
+                    target: "payload_builder",
+                    touched,
+                    ?tx_hash,
+                    "Prewarmed transaction"
+                );
+            }
+        });
 
         PrewarmResult {
             sequence,
@@ -618,10 +800,7 @@ impl<Provider> PrewarmingExecutionContext<Provider>
 where
     Provider: StateProviderFactory + Clone + 'static,
 {
-    fn evm_for_state<'a>(
-        &self,
-        cached: &'a mut CachedReads,
-    ) -> Option<TempoEvm<PrewarmDatabase<'a>>> {
+    fn evm_for_ctx(&self) -> PrewarmEvmState {
         let state_provider = match self.provider.state_by_block_hash(self.parent_hash) {
             Ok(provider) => provider,
             Err(err) => {
@@ -635,7 +814,7 @@ where
             }
         };
 
-        let state_provider = cached.as_db_mut(StateProviderDatabase::new(state_provider));
+        let state_provider = PrewarmDatabase::new(StateProviderDatabase::new(state_provider));
         let mut evm_env = self.evm_env.clone();
         evm_env.cfg_env.disable_nonce_check = true;
         evm_env.cfg_env.disable_balance_check = true;
@@ -1195,6 +1374,65 @@ mod tests {
     }
 
     #[test]
+    fn prewarm_database_records_worker_cache_hits_per_transaction() {
+        let address = Address::random();
+        let slot = U256::from(7);
+        let code_hash = B256::repeat_byte(0x42);
+        let block_number = 12;
+        let block_hash = B256::repeat_byte(0xaa);
+        let code = Bytecode::new_legacy(Bytes::from_static(&[0x01]));
+        let account = AccountInfo {
+            nonce: 7,
+            ..Default::default()
+        };
+
+        let mut fallback = OverlayTestDb::default();
+        fallback.accounts.insert(address, Some(account.clone()));
+        fallback.storage.insert((address, slot), U256::from(99));
+        fallback.contracts.insert(code_hash, code.clone());
+        fallback.block_hashes.insert(block_number, block_hash);
+
+        let mut db = PrewarmDatabase::new(fallback);
+        db.start_recording(CachedReads::default());
+        assert_eq!(db.storage(address, slot).unwrap(), U256::from(99));
+        assert_eq!(db.code_by_hash(code_hash).unwrap(), code);
+        assert_eq!(db.block_hash(block_number).unwrap(), block_hash);
+        let first = db.finish_recording();
+        assert_eq!(db.db.basic_reads, 1);
+        assert_eq!(db.db.storage_reads, 1);
+        assert_eq!(db.db.code_reads, 1);
+        assert_eq!(db.db.block_hash_reads, 1);
+        assert_eq!(
+            first.accounts.get(&address).unwrap().info,
+            Some(account.clone())
+        );
+        assert_eq!(
+            first.accounts.get(&address).unwrap().storage.get(&slot),
+            Some(&U256::from(99))
+        );
+        assert_eq!(first.contracts.get(&code_hash), Some(&code));
+        assert_eq!(first.block_hashes.get(&block_number), Some(&block_hash));
+
+        db.start_recording(CachedReads::default());
+        assert_eq!(db.basic(address).unwrap(), Some(account.clone()));
+        assert_eq!(db.storage(address, slot).unwrap(), U256::from(99));
+        assert_eq!(db.code_by_hash(code_hash).unwrap(), code);
+        assert_eq!(db.block_hash(block_number).unwrap(), block_hash);
+        let second = db.finish_recording();
+        assert_eq!(db.db.basic_reads, 1);
+        assert_eq!(db.db.storage_reads, 1);
+        assert_eq!(db.db.code_reads, 1);
+        assert_eq!(db.db.block_hash_reads, 1);
+        assert_eq!(second.accounts.get(&address).unwrap().info, Some(account));
+        assert_eq!(
+            second.accounts.get(&address).unwrap().storage.get(&slot),
+            Some(&U256::from(99))
+        );
+        assert_eq!(second.contracts.get(&code_hash), Some(&code));
+        assert_eq!(second.block_hashes.get(&block_number), Some(&block_hash));
+    }
+
+    #[test]
     fn overlay_serves_prewarmed_reads_before_fallback() {
         let address = Address::random();
         let missing = Address::random();
@@ -1496,30 +1734,6 @@ mod tests {
         wait_until(|| {
             let log = log.lock().unwrap();
             log.no_updates == 1 && log.skip_blobs == vec![true]
-        });
-    }
-
-    #[test]
-    fn prewarming_does_not_use_shared_worker_state_slot() {
-        let executor = TaskExecutor::test();
-        let pool = executor.prewarming_pool();
-        pool.init::<usize>(|existing| existing.map(|value| *value).unwrap_or(1));
-
-        let sender = Address::random();
-        let txs = vec![test_tx(sender, 0)];
-        let log = Arc::new(Mutex::new(TestLog::default()));
-        let mut prewarming = prewarming_with_executor(executor.clone(), txs, log);
-
-        assert!(prewarming.next().is_some());
-
-        pool.broadcast(pool.current_num_threads(), |worker| {
-            assert_eq!(*worker.get::<usize>(), 1);
-        });
-
-        drop(prewarming);
-
-        pool.broadcast(pool.current_num_threads(), |worker| {
-            assert_eq!(*worker.get::<usize>(), 1);
         });
     }
 }
