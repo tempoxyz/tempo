@@ -110,14 +110,15 @@ pub fn sstore_gas_state<B: GasStateBackend>(
     } else {
         match gas_token_state.mode {
             StorageGasMode::DirectTokens => {
-                outcome.skip_refund = true;
-                outcome.skip_gas = true;
-
                 if gas_token_state.balance > 0 {
                     // Consume the gas token credit and charge 20k for the SSTORE.
                     backend.charge_gas(20_000)?;
                     gas_token_state.balance -= 1;
                     was_changed = true;
+
+                    // only if there is token available, skip refund and gas
+                    outcome.skip_refund = true;
+                    outcome.skip_gas = true;
                 }
                 // If no token is available, leave both regular and state gas enabled so
                 // revm charges the full zero-to-nonzero creation cost after this hook.

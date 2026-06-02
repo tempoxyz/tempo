@@ -1535,19 +1535,34 @@ where
         Ok(())
     }
 
+    #[inline]
+    fn last_frame_result(
+        &mut self,
+        evm: &mut Self::Evm,
+        original_reservoir: u64,
+        frame_result: &mut FrameResult,
+    ) -> Result<(), Self::Error> {
+        MainnetHandler::<_, Self::Error, _>::default().last_frame_result(
+            evm,
+            original_reservoir,
+            frame_result,
+        )?;
+        tip1060::apply_refund(evm, frame_result.gas_mut())?;
+        Ok(())
+    }
+
     fn reimburse_caller(
         &self,
         evm: &mut Self::Evm,
-        exec_result: &mut <<Self::Evm as EvmTr>::Frame as FrameTr>::FrameResult,
+        exec_result: &mut FrameResult,
     ) -> Result<(), Self::Error> {
         // TIP-1060: flush transient storage gas-token refunds into persistent storage.
-        tip1060::apply_refund(evm)?;
+        let gas = exec_result.gas_mut();
         // Call collectFeePostTx on TipFeeManager precompile
         let context = &mut evm.inner.ctx;
         let tx = context.tx();
         let basefee = u128::from(context.block().basefee());
         let mut effective_gas_price = tx.effective_gas_price(basefee);
-        let gas = exec_result.gas();
         let gas_used = gas.used().saturating_sub(gas.reservoir());
         if context.cfg.spec.is_t6() && tx.is_discounted_payment() {
             // TIP-1059 subtracts only the base-fee discount. The transaction-derived priority-fee

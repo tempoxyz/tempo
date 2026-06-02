@@ -7,7 +7,7 @@ use revm::{
     context::{Host as _, JournalTr},
     context_interface::cfg::GasParams,
     interpreter::{
-        InstructionContext, InstructionResult, SStoreResult, StateLoad,
+        Gas, InstructionContext, InstructionResult, SStoreResult, StateLoad,
         instruction_context::{GasStateOutcome, GasStateTr},
         interpreter::EthInterpreter,
     },
@@ -25,29 +25,48 @@ use tempo_precompiles::{
 /// transient storage at the gas-token contract, the transient value is added on top of the
 /// current persistent value under the same key.
 ///
-pub fn apply_refund<DB: Database, I>(evm: &mut TempoEvm<DB, I>) -> Result<(), DB::Error> {
+/// Returns number of credits applied.
+pub fn apply_refund<DB: Database, I>(
+    evm: &mut TempoEvm<DB, I>,
+    gas: &mut Gas,
+) -> Result<(), DB::Error> {
     let journal = &mut evm.inner.ctx.journaled_state;
 
-    // Snapshot the transient (key, credit) pairs at the gas-token contract written during this
+    // Snapshot the transient (key, sstores) pairs at the gas-token contract written during this
     // tx, so we don't borrow `transient_storage` while mutating the journal below.
-    let credits: Vec<_> = journal
+    let sstores: Vec<_> = journal
         .transient_storage
         .iter()
         .filter(|((address, _), _)| *address == GAS_TOKEN)
         .map(|((_, key), credit)| (*key, *credit))
         .collect();
 
-    for (key, credit) in credits {
-        if credit.is_zero() {
+    let mut refunds = 0;
+
+    for (key, sstores_num) in sstores {
+        if sstores_num.is_zero() {
             continue;
         }
 
         // SLOAD the current persistent value and add the transient credit on top.
-        let current = journal.sload(GAS_TOKEN, key)?.data;
+        let credit = journal.sload(GAS_TOKEN, key)?.data;
+
+        let new_credit = if credit > sstores_num {
+            refunds += sstores_num.as_limbs()[0];
+            credit - sstores_num
+        } else {
+            refunds += credit.as_limbs()[0];
+            U256::ZERO
+        };
 
         // SSTORE the accumulated total back into the contract's persistent storage.
-        journal.sstore(GAS_TOKEN, key, current.saturating_add(credit))?;
+        if new_credit != credit {
+            journal.sstore(GAS_TOKEN, key, new_credit)?;
+        }
     }
+
+    // TODO use gas_params for proper constant.
+    gas.erase_cost(refunds * 230_000);
 
     Ok(())
 }
