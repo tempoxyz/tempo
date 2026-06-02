@@ -144,7 +144,8 @@ pub fn extend_tempo_precompiles(precompiles: &mut PrecompilesMap, cfg: &CfgEnv<T
             Some(AccountKeychain::create_precompile(&cfg))
         } else if *address == VALIDATOR_CONFIG_V2_ADDRESS {
             Some(ValidatorConfigV2::create_precompile(&cfg))
-        } else if *address == FEATURE_REGISTRY_ADDRESS {
+        // TODO(TIP-1063): update this gate to T7 before merging.
+        } else if *address == FEATURE_REGISTRY_ADDRESS && cfg.spec.is_t6() {
             Some(FeatureRegistry::create_precompile(&cfg))
         } else if *address == SIGNATURE_VERIFIER_ADDRESS && cfg.spec.is_t3() {
             Some(SignatureVerifier::create_precompile(&cfg))
