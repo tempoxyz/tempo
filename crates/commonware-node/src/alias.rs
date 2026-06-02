@@ -22,7 +22,7 @@ pub(crate) mod marshal {
     use reth_node_builder::NodeTypesWithDBAdapter;
     use reth_provider::providers::BlockchainProvider;
     use tempo_node::{TempoFullNode, node::TempoNode};
-    use tracing::{info, instrument};
+    use tracing::instrument;
 
     use crate::{
         consensus::{Digest, block::Block},
@@ -91,17 +91,14 @@ pub(crate) mod marshal {
         /// Mailbox for sending messages to [`Self::actor`].
         pub mailbox: Mailbox,
 
-        /// `max(marshal_stored_height, reth_finalized_height)` after
-        /// advancing marshal's sync floor to that height. The engine uses
-        /// this to seed the executor and other actors that need to know
-        /// where the chain starts replaying from.
+        /// `max(marshal_stored_height, reth_finalized_height)`. The engine uses
+        /// this to seed the executor and other actors.
         pub last_finalized_height: Height,
     }
 
     /// Initialize the marshal actor and its backing finalized-blocks store
     /// (the finalizations-by-height archive plus the [`Hybrid`] finalized
-    /// blocks store), and advance marshal's sync floor to
-    /// `max(marshal_stored_height, reth_finalized_height)`.
+    /// blocks store).
     ///
     /// Both the consensus and follow engines must initialize marshal in
     /// exactly the same way so that nodes can switch modes without data
@@ -172,10 +169,6 @@ pub(crate) mod marshal {
         )
         .await;
 
-        // Floor marshal at reth's last finalized block so we don't try to
-        // re-sync history that the execution layer already finalized. The
-        // mailbox message is buffered until the actor starts; `set_floor` only
-        // ever advances, so sending it unconditionally is safe.
         let reth_finalized_height = execution_node
             .provider
             .canonical_in_memory_state()
@@ -183,14 +176,6 @@ pub(crate) mod marshal {
             .map(|nh| nh.number)
             .unwrap_or(0);
         let last_finalized_height = marshal_stored_height.max(Height::new(reth_finalized_height));
-        if last_finalized_height > marshal_stored_height {
-            info!(
-                marshal_stored = %marshal_stored_height,
-                reth_finalized = reth_finalized_height,
-                "advancing marshal sync floor to reth's finalized block"
-            );
-            mailbox.set_floor(last_finalized_height).await;
-        }
 
         Ok(Initialized {
             actor,
