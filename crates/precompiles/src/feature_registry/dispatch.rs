@@ -29,8 +29,8 @@ impl Precompile for FeatureRegistry {
             |call| match call {
                 IFeatureRegistryCalls::featuresTip(call) => view(call, |_| self.features_tip()),
                 IFeatureRegistryCalls::owner(_) => unsupported::<IFeatureRegistry::ownerCall>(),
-                IFeatureRegistryCalls::activationQuorum(_) => {
-                    unsupported::<IFeatureRegistry::activationQuorumCall>()
+                IFeatureRegistryCalls::activationQuorum(call) => {
+                    view(call, |_| self.activation_quorum())
                 }
                 IFeatureRegistryCalls::scheduledFeaturesTip(call) => {
                     view(call, |_| self.scheduled_features_tip())
@@ -62,7 +62,10 @@ impl Precompile for FeatureRegistry {
 mod tests {
     use super::*;
     use crate::storage::{StorageCtx, hashmap::HashMapStorageProvider};
-    use alloy::sol_types::{SolCall, SolError, SolValue};
+    use alloy::{
+        primitives::U256,
+        sol_types::{SolCall, SolError, SolValue},
+    };
     use tempo_chainspec::features::HIGHEST_ACTIVE_PROTOCOL_FEATURE_ID_SLOT;
     use tempo_contracts::precompiles::UnknownFunctionSelector;
 
@@ -89,6 +92,18 @@ mod tests {
             registry.features_tip.write(7)?;
             assert_eq!(registry.features_tip()?, 7);
 
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn activation_quorum_returns_fixed_threshold() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let registry = FeatureRegistry::new();
+            let quorum = registry.activation_quorum()?;
+            assert_eq!(quorum.numerator, U256::from(4));
+            assert_eq!(quorum.denominator, U256::from(5));
             Ok(())
         })
     }
@@ -150,6 +165,24 @@ mod tests {
             let result = registry.call(&call.abi_encode(), Address::ZERO)?;
             assert!(!result.is_revert());
             assert_eq!(u64::abi_decode(&result.bytes)?, 11);
+
+            Ok(())
+        })
+    }
+
+    #[test]
+    fn activation_quorum_dispatch_returns_encoded_threshold() -> eyre::Result<()> {
+        let mut storage = HashMapStorageProvider::new(1);
+        StorageCtx::enter(&mut storage, || {
+            let mut registry = FeatureRegistry::new();
+
+            let call = IFeatureRegistry::activationQuorumCall {};
+            let result = registry.call(&call.abi_encode(), Address::ZERO)?;
+            assert!(!result.is_revert());
+            let decoded =
+                IFeatureRegistry::activationQuorumCall::abi_decode_returns(&result.bytes)?;
+            assert_eq!(decoded.numerator, U256::from(4));
+            assert_eq!(decoded.denominator, U256::from(5));
 
             Ok(())
         })
