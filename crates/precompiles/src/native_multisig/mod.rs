@@ -4,12 +4,11 @@ pub mod dispatch;
 
 pub use tempo_contracts::precompiles::INativeMultisig;
 use tempo_contracts::precompiles::{
-    INativeMultisig::SignatureType as AbiSignatureType, NATIVE_MULTISIG_ADDRESS,
-    NativeMultisigError, NativeMultisigEvent,
+    NATIVE_MULTISIG_ADDRESS, NativeMultisigError, NativeMultisigEvent,
 };
 use tempo_precompiles_macros::{Storable, contract};
 use tempo_primitives::transaction::{
-    InitMultisig, MAX_MULTISIG_OWNERS, MultisigOwner, SignatureType, derive_multisig_account,
+    InitMultisig, MAX_MULTISIG_OWNERS, MultisigOwner, derive_multisig_account,
     derive_multisig_config_id, is_valid_multisig_account, validate_multisig_config,
 };
 
@@ -19,38 +18,8 @@ use crate::{
 };
 use alloy::primitives::{Address, B256};
 
-#[repr(u8)]
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
-pub enum StoredSignatureType {
-    #[default]
-    Secp256k1,
-    P256,
-    WebAuthn,
-}
-
-impl From<SignatureType> for StoredSignatureType {
-    fn from(value: SignatureType) -> Self {
-        match value {
-            SignatureType::Secp256k1 => Self::Secp256k1,
-            SignatureType::P256 => Self::P256,
-            SignatureType::WebAuthn => Self::WebAuthn,
-        }
-    }
-}
-
-impl From<StoredSignatureType> for SignatureType {
-    fn from(value: StoredSignatureType) -> Self {
-        match value {
-            StoredSignatureType::Secp256k1 => Self::Secp256k1,
-            StoredSignatureType::P256 => Self::P256,
-            StoredSignatureType::WebAuthn => Self::WebAuthn,
-        }
-    }
-}
-
 #[derive(Debug, Clone, Default, PartialEq, Eq, Storable)]
 pub struct StoredMultisigOwner {
-    pub signature_type: StoredSignatureType,
     pub owner: Address,
     pub weight: u32,
 }
@@ -244,7 +213,6 @@ impl From<&InitMultisig> for StoredMultisigConfig {
 impl From<&MultisigOwner> for StoredMultisigOwner {
     fn from(value: &MultisigOwner) -> Self {
         Self {
-            signature_type: value.signature_type.into(),
             owner: value.owner,
             weight: value.weight,
         }
@@ -271,7 +239,6 @@ fn abi_config_to_init(
 
 fn abi_owner_to_init(value: INativeMultisig::MultisigOwner) -> Result<MultisigOwner> {
     Ok(MultisigOwner {
-        signature_type: abi_signature_type(value.signatureType)?,
         owner: value.owner,
         weight: value.weight,
     })
@@ -294,7 +261,6 @@ fn validate_abi_config_shape(
     let mut total_weight = 0u64;
     let mut prev_owner = None;
     for owner in owners {
-        abi_signature_type(owner.signatureType)?;
         if owner.owner.is_zero() {
             return Err(NativeMultisigError::invalid_owner().into());
         }
@@ -342,7 +308,6 @@ fn stored_config_to_init(value: StoredMultisigConfig) -> Result<InitMultisig> {
 
 fn stored_owner_to_init(value: StoredMultisigOwner) -> MultisigOwner {
     MultisigOwner {
-        signature_type: value.signature_type.into(),
         owner: value.owner,
         weight: value.weight,
     }
@@ -357,26 +322,8 @@ fn stored_config_to_abi(value: StoredMultisigConfig) -> INativeMultisig::Multisi
 
 fn stored_owner_to_abi(value: StoredMultisigOwner) -> INativeMultisig::MultisigOwner {
     INativeMultisig::MultisigOwner {
-        signatureType: stored_signature_type(value.signature_type),
         owner: value.owner,
         weight: value.weight,
-    }
-}
-
-fn abi_signature_type(value: AbiSignatureType) -> Result<SignatureType> {
-    match value {
-        AbiSignatureType::Secp256k1 => Ok(SignatureType::Secp256k1),
-        AbiSignatureType::P256 => Ok(SignatureType::P256),
-        AbiSignatureType::WebAuthn => Ok(SignatureType::WebAuthn),
-        _ => Err(NativeMultisigError::invalid_signature_type().into()),
-    }
-}
-
-fn stored_signature_type(value: StoredSignatureType) -> AbiSignatureType {
-    match value {
-        StoredSignatureType::Secp256k1 => AbiSignatureType::Secp256k1,
-        StoredSignatureType::P256 => AbiSignatureType::P256,
-        StoredSignatureType::WebAuthn => AbiSignatureType::WebAuthn,
     }
 }
 
@@ -396,12 +343,10 @@ mod tests {
             threshold: 1,
             owners: vec![
                 MultisigOwner {
-                    signature_type: SignatureType::Secp256k1,
                     owner: address!("0000000000000000000000000000000000000011"),
                     weight: 1,
                 },
                 MultisigOwner {
-                    signature_type: SignatureType::Secp256k1,
                     owner: address!("0000000000000000000000000000000000000022"),
                     weight: 1,
                 },
@@ -412,12 +357,10 @@ mod tests {
     fn abi_owners() -> Vec<INativeMultisig::MultisigOwner> {
         vec![
             INativeMultisig::MultisigOwner {
-                signatureType: AbiSignatureType::Secp256k1,
                 owner: address!("0000000000000000000000000000000000000011"),
                 weight: 1,
             },
             INativeMultisig::MultisigOwner {
-                signatureType: AbiSignatureType::Secp256k1,
                 owner: address!("0000000000000000000000000000000000000022"),
                 weight: 1,
             },
