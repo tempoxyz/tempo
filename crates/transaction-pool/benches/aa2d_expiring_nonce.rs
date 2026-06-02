@@ -102,9 +102,9 @@ fn aa2d_expiring_nonce_50k(c: &mut Criterion) {
     group.bench_function("advance_best_transactions_with_attributes", |b| {
         b.iter_batched(
             || pool.best_transactions_with_attributes(attributes),
-            |mut best| {
+            |best| {
                 let mut count = 0usize;
-                while let Some(tx) = best.next() {
+                for tx in best {
                     black_box(tx);
                     count += 1;
                 }
@@ -117,9 +117,9 @@ fn aa2d_expiring_nonce_50k(c: &mut Criterion) {
     group.bench_function("advance_best_transactions_with_lower_base_fee", |b| {
         b.iter_batched(
             || pool.best_transactions_with_attributes(lower_attributes),
-            |mut best| {
+            |best| {
                 let mut count = 0usize;
-                while let Some(tx) = best.next() {
+                for tx in best {
                     black_box(tx);
                     count += 1;
                 }
@@ -157,7 +157,7 @@ fn build_pool(provider: BenchProvider, runtime: &Runtime) -> BenchPool {
         .with_custom_tx_type(TempoTxType::AA as u8)
         .disable_balance_check()
         .build(InMemoryBlobStore::default());
-    let amm_cache = AmmLiquidityCache::new(provider.clone()).expect("failed to setup AMM cache");
+    let amm_cache = AmmLiquidityCache::new(provider).expect("failed to setup AMM cache");
     let validator = TempoTransactionValidator::new(
         inner,
         DEFAULT_AA_VALID_AFTER_MAX_SECS,

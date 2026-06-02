@@ -426,6 +426,7 @@ impl AA2dPool {
             ));
         }
 
+        // Create pending transaction
         let pending_tx = AA2dStoredTransaction {
             submission_id: {
                 let id = self.submission_id;
@@ -460,8 +461,8 @@ impl AA2dPool {
         self.update_metrics();
 
         // Notify active BestAA2dTransactions iterators about the new pending transaction
-        if let Some(stored_tx) = pending_tx_update {
-            let _ = self.new_transaction_notifier.send(stored_tx);
+        if let Some(pending_tx) = pending_tx_update {
+            let _ = self.new_transaction_notifier.send(pending_tx);
         }
 
         // Expiring nonce transactions are always immediately pending
@@ -605,12 +606,12 @@ impl AA2dPool {
     }
 
     /// Returns the best, executable transactions for this sub-pool
-    #[allow(clippy::mutable_key_type)]
     pub(crate) fn best_transactions(&self) -> BestAA2dTransactions {
         self.best_transactions_with_base_fee(self.base_fee)
     }
 
     /// Returns the best, executable transactions for this sub-pool at `base_fee`.
+    #[expect(clippy::mutable_key_type)]
     pub(crate) fn best_transactions_with_base_fee(&self, base_fee: u64) -> BestAA2dTransactions {
         let expiring_nonce_order = if base_fee == self.base_fee {
             self.expiring_nonce_eviction_order.clone()
@@ -1831,14 +1832,6 @@ impl EvictionKey {
         }
     }
 
-    fn into_pending(self) -> PendingTransaction<TxOrdering> {
-        PendingTransaction {
-            submission_id: self.submission_id,
-            priority: self.priority,
-            transaction: self.tx.inner.transaction.clone(),
-        }
-    }
-
     /// Returns the transaction's priority.
     fn priority(&self) -> &Priority<u64> {
         &self.priority
@@ -2025,10 +2018,13 @@ impl BestAA2dTransactions {
                             self.independent.insert(tx.clone());
                         }
                     }
-                    self.by_id.insert(id, AA2dStoredTransaction {
-                        submission_id: tx.submission_id,
-                        transaction: tx.transaction,
-                    });
+                    self.by_id.insert(
+                        id,
+                        AA2dStoredTransaction {
+                            submission_id: tx.submission_id,
+                            transaction: tx.transaction,
+                        },
+                    );
                 }
             } else {
                 break;
