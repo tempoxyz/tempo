@@ -301,8 +301,7 @@ where
             match token_state.mode {
                 GasStateMode::DirectTokens => {
                     outcome.skip_refund = true;
-                    outcome.skip_state_gas = true;
-                    outcome.skip_regular_gas = true;
+                    outcome.skip_gas = true;
 
                     if token_state.balance > 0 {
                         // Consume the gas token credit and charge 20k for the SSTORE.
