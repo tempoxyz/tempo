@@ -39,12 +39,9 @@ pub(crate) fn scaled_build_time_multiplier(multiplier: f64) -> u64 {
     (multiplier * BUILD_TIME_MULTIPLIER_SCALE as f64).round() as u64
 }
 
-fn scaled_duration(elapsed: Duration, multiplier: u64) -> Duration {
-    Duration::from_nanos(
-        (elapsed.as_nanos().saturating_mul(u128::from(multiplier))
-            / u128::from(BUILD_TIME_MULTIPLIER_SCALE))
-        .min(u128::from(u64::MAX)) as u64,
-    )
+fn scaled_nanos(elapsed: Duration, multiplier: u64) -> u128 {
+    elapsed.as_nanos().saturating_mul(u128::from(multiplier))
+        / u128::from(BUILD_TIME_MULTIPLIER_SCALE)
 }
 
 /// Returns true when the shared proposer/validator budget is exhausted.
@@ -67,14 +64,13 @@ pub(crate) fn payload_budget_exhausted(
     block_size_bytes: usize,
 ) -> bool {
     let work_elapsed = elapsed.saturating_sub(idle_elapsed);
-    let predicted_work = scaled_duration(work_elapsed, multiplier);
-    let marshal_persist = marshal_persist.estimate(block_size_bytes);
+    let predicted_work = scaled_nanos(work_elapsed, multiplier);
+    let marshal_persist = marshal_persist.estimate(block_size_bytes).as_nanos();
     idle_elapsed
-        .saturating_add(predicted_work)
-        .saturating_add(predicted_work)
-        .saturating_add(marshal_persist)
-        .saturating_add(marshal_persist)
-        >= budget
+        .as_nanos()
+        .saturating_add(predicted_work.saturating_mul(2))
+        .saturating_add(marshal_persist.saturating_mul(2))
+        >= budget.as_nanos()
 }
 
 /// Computes the observed total-work to tx-cutoff-work multiplier.
