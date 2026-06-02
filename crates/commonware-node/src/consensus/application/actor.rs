@@ -143,26 +143,26 @@ struct SpeculativeBuild {
 
 #[cfg(feature = "bal")]
 impl SpeculativeBuildRegistry {
-    async fn replace(&self, execution_node: &TempoFullNode, build: SpeculativeBuild) {
-        self.stop_active(execution_node, "replaced_by_new_verify")
-            .await;
-        *self.active.lock().await = Some(build);
+    async fn replace(&self, execution_node: Arc<TempoFullNode>, build: SpeculativeBuild) {
+        let old = self.active.lock().await.replace(build);
+        if let Some(old) = old {
+            Self::spawn_cancel(execution_node, old, "replaced_by_new_verify");
+        }
     }
 
-    async fn stop_active(&self, execution_node: &TempoFullNode, reason: &'static str) {
-        let Some(mut build) = self.active.lock().await.take() else {
-            return;
-        };
-        build.cancel(execution_node, reason).await;
+    async fn stop_active(&self, execution_node: Arc<TempoFullNode>, reason: &'static str) {
+        if let Some(build) = self.active.lock().await.take() {
+            Self::spawn_cancel(execution_node, build, reason);
+        }
     }
 
     async fn stop_if_finalized_past_parent(
         &self,
-        execution_node: &TempoFullNode,
+        execution_node: Arc<TempoFullNode>,
         finalized_height: Height,
         reason: &'static str,
     ) {
-        let Some(mut build) = ({
+        let Some(build) = ({
             let mut active = self.active.lock().await;
             if active
                 .as_ref()
@@ -175,7 +175,7 @@ impl SpeculativeBuildRegistry {
         }) else {
             return;
         };
-        build.cancel(execution_node, reason).await;
+        Self::spawn_cancel(execution_node, build, reason);
     }
 
     async fn take_matching(&self, parent_digest: Digest) -> Option<SpeculativeBuild> {
@@ -188,6 +188,27 @@ impl SpeculativeBuildRegistry {
         } else {
             None
         }
+    }
+
+    fn spawn_cancel(
+        execution_node: Arc<TempoFullNode>,
+        mut build: SpeculativeBuild,
+        reason: &'static str,
+    ) {
+        debug!(
+            parent.digest = %build.parent_digest,
+            parent.height = %build.parent_height,
+            reason,
+            "scheduled speculative payload build cancellation",
+        );
+
+        let task_executor = execution_node.task_executor.clone();
+        // Cancelling can wait for payload-id delivery and pending payload resolution.
+        // Keep that work on the execution-side task executor so a stale build
+        // cannot consume the consensus view budget before block verification starts.
+        task_executor.spawn_task(async move {
+            build.cancel(execution_node.as_ref(), reason).await;
+        });
     }
 }
 
@@ -440,7 +461,7 @@ impl Inner<Init> {
         self.state
             .speculative_builds
             .stop_if_finalized_past_parent(
-                &self.execution_node,
+                self.execution_node.clone(),
                 finalized_height,
                 "finalized_past_speculative_parent",
             )
@@ -1333,7 +1354,7 @@ impl Inner<Init> {
 
         self.state
             .speculative_builds
-            .replace(&self.execution_node, build)
+            .replace(self.execution_node.clone(), build)
             .await;
         self.metrics
             .speculative_payload_builds_started_from_verify
@@ -1359,7 +1380,7 @@ impl Inner<Init> {
         #[cfg(feature = "bal")]
         self.state
             .speculative_builds
-            .stop_active(&self.execution_node, "new_handle_verify")
+            .stop_active(self.execution_node.clone(), "new_handle_verify")
             .await;
 
         let block_request = self
@@ -1459,7 +1480,7 @@ impl Inner<Init> {
                 #[cfg(feature = "bal")]
                 self.state
                     .speculative_builds
-                    .stop_active(&self.execution_node, "parent_validation_error")
+                    .stop_active(self.execution_node.clone(), "parent_validation_error")
                     .await;
                 return Err(error).wrap_err("failed verifying block against execution layer");
             }
@@ -1484,7 +1505,7 @@ impl Inner<Init> {
             #[cfg(feature = "bal")]
             self.state
                 .speculative_builds
-                .stop_active(&self.execution_node, "parent_validation_failed")
+                .stop_active(self.execution_node.clone(), "parent_validation_failed")
                 .await;
         }
         Ok(is_good)
