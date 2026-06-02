@@ -502,7 +502,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{TempoBlockEnv, TempoEvm};
+    use crate::{TempoBlockEnv, TempoEvm, TempoTxEnvInner};
     use alloy_primitives::{address, uint};
     use reth_evm::EvmInternals;
     use revm::{
@@ -527,11 +527,11 @@ mod tests {
             caller,
             ..Default::default()
         };
-        let tx = TempoTxEnv {
+        let tx = TempoTxEnv::new(TempoTxEnvInner {
             inner: tx_env,
             fee_token: Some(fee_token),
             ..Default::default()
-        };
+        });
 
         let mut db = EmptyDB::default();
         let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
@@ -551,10 +551,7 @@ mod tests {
             caller,
             ..Default::default()
         };
-        let tx = TempoTxEnv {
-            inner: tx_env,
-            ..Default::default()
-        };
+        let tx = TempoTxEnv::from(tx_env);
 
         let mut db = EmptyDB::default();
         let result_token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
@@ -590,10 +587,7 @@ mod tests {
             caller,
             ..Default::default()
         };
-        let tx = TempoTxEnv {
-            inner: tx_env,
-            ..Default::default()
-        };
+        let tx = TempoTxEnv::from(tx_env);
 
         let mut db = EmptyDB::default();
         let result_token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
@@ -608,10 +602,7 @@ mod tests {
             caller,
             ..Default::default()
         };
-        let tx = TempoTxEnv {
-            inner: tx_env,
-            ..Default::default()
-        };
+        let tx = TempoTxEnv::from(tx_env);
 
         let mut db = EmptyDB::default();
         let result_token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
@@ -641,10 +632,7 @@ mod tests {
             caller,
             ..Default::default()
         };
-        let tx = TempoTxEnv {
-            inner: tx_env,
-            ..Default::default()
-        };
+        let tx = TempoTxEnv::from(tx_env);
 
         let mut db = EmptyDB::default();
         let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
@@ -665,10 +653,7 @@ mod tests {
             ..Default::default()
         };
 
-        let tx = TempoTxEnv {
-            inner: tx_env,
-            ..Default::default()
-        };
+        let tx = TempoTxEnv::from(tx_env);
 
         let token = db.get_fee_token(tx, caller, TempoHardfork::Genesis)?;
         assert_eq!(token, token_in);

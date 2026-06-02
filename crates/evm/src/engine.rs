@@ -94,9 +94,7 @@ impl RecoveredTx<TempoTxEnvelope> for RecoveredInBlock {
 impl ToTxEnv<TempoTxEnv> for RecoveredInBlock {
     fn to_tx_env(&self) -> TempoTxEnv {
         let mut tx_env = TempoTxEnv::from_recovered_tx(self.tx(), *self.signer());
-        if let Some(tempo_tx_env) = tx_env.tempo_tx_env.as_mut() {
-            tempo_tx_env.expiring_nonce_idx = self.expiring_nonce_idx;
-        }
+        tx_env.expiring_nonce_idx = self.expiring_nonce_idx;
 
         tx_env
     }
