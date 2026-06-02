@@ -335,6 +335,34 @@ mod tests {
     }
 
     #[test]
+    fn payload_budget_scales_validator_feedback_for_larger_current_block() {
+        let validator_validation = validator_validation_estimate(
+            ValidatorValidationShape::new(0, 100, 10),
+            Duration::from_millis(100),
+        );
+        let decision = payload_budget_decision(
+            Duration::from_millis(100),
+            Duration::ZERO,
+            1_350_000,
+            Duration::from_millis(335),
+            MarshalPersistEstimator::default(),
+            validator_validation,
+            ValidatorValidationShape::new(0, 200, 10),
+        );
+
+        assert_eq!(
+            decision.validator_validation_source,
+            ValidatorValidationSource::Feedback
+        );
+        assert_eq!(
+            decision.predicted_validator_work,
+            Duration::from_millis(200)
+        );
+        assert_eq!(decision.total_reserved, Duration::from_millis(335));
+        assert!(decision.exhausted());
+    }
+
+    #[test]
     fn payload_budget_accounts_for_marshal_persist_twice() {
         let marshal_persist = MarshalPersistEstimator::from_ns_per_byte(1_000);
 
