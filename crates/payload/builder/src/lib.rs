@@ -872,12 +872,12 @@ where
         let (evm, execution_result) = executor.finish()?;
         let evm_env = evm.into_env();
 
-        // merge all transitions into bundle state before deriving the hashed post-state
-        db.merge_transitions(BundleRetention::Reverts);
-
         // Drop the state hook to signal that execution is complete and the sparse trie task can
         // finalize the state root.
         db.set_state_hook(None);
+
+        // merge all transitions into bundle state before deriving the hashed post-state
+        db.merge_transitions(BundleRetention::Reverts);
 
         let hashed_state = if let Some(Ok(hashed_state)) = trie_handle
             .as_mut()
