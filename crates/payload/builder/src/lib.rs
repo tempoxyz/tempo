@@ -359,7 +359,6 @@ where
             trie_handle.is_some()
             // `--dev` mode does not use the shared-trie builder flow.
             && !self.is_dev;
-
         macro_rules! check_cancel {
             () => {
                 if cancel.is_cancelled() {
@@ -541,10 +540,24 @@ where
         maybe_override_fee_recipient(&mut executor, &attributes);
 
         if let Some(ref handle) = trie_handle {
-            executor
-                .evm_mut()
-                .db_mut()
-                .set_state_hook(Some(Box::new(handle.state_hook())));
+            if handle.is_deferred_parent_pending() {
+                debug!(
+                    target: "payload_builder",
+                    id = %payload_id,
+                    parent_hash = %parent_header.hash(),
+                    parent_number = parent_header.number(),
+                    "flattening payload-builder sparse-trie updates while parent validation is pending"
+                );
+                executor
+                    .evm_mut()
+                    .db_mut()
+                    .set_state_hook(Some(Box::new(handle.state_hook_flatten_while_deferred())));
+            } else {
+                executor
+                    .evm_mut()
+                    .db_mut()
+                    .set_state_hook(Some(Box::new(handle.state_hook())));
+            }
         }
 
         executor.apply_pre_execution_changes().map_err(|err| {
