@@ -1,11 +1,14 @@
 //! ABI dispatch for the storage gas tokens precompile.
 
-use crate::{Precompile, charge_input_cost, dispatch_call, gas_state::GasToken, mutate_void, view};
+use crate::{
+    Precompile, charge_input_cost, dispatch_call, mutate_void, state_gas_token::StorageGasToken,
+    view,
+};
 use alloy::{primitives::Address, sol_types::SolInterface};
 use revm::precompile::PrecompileResult;
 use tempo_contracts::precompiles::IStorageGasTokens::IStorageGasTokensCalls;
 
-impl Precompile for GasToken {
+impl Precompile for StorageGasToken {
     fn call(&mut self, calldata: &[u8], msg_sender: Address) -> PrecompileResult {
         if let Some(err) = charge_input_cost(&mut self.storage, calldata) {
             return err;
@@ -50,7 +53,7 @@ mod tests {
     fn test_storage_gas_tokens_selector_coverage() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
         StorageCtx::enter(&mut storage, || {
-            let mut gas_token = GasToken::new();
+            let mut gas_token = StorageGasToken::new();
 
             let unsupported = check_selector_coverage(
                 &mut gas_token,

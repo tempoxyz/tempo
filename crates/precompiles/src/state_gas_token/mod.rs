@@ -1,4 +1,4 @@
-//! Storage gas token state and precompile (TIP-1060).
+//! State gas token precompile (TIP-1060).
 
 pub mod dispatch;
 
@@ -15,14 +15,14 @@ use tempo_precompiles_macros::{Storable, contract};
 
 #[repr(u8)]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
-pub enum GasStateMode {
+pub enum StorageGasMode {
     #[default]
     RefundTokens,
     PreserveTokens,
     DirectTokens,
 }
 
-impl TryFrom<u8> for GasStateMode {
+impl TryFrom<u8> for StorageGasMode {
     type Error = TempoPrecompileError;
 
     fn try_from(value: u8) -> Result<Self> {
@@ -35,7 +35,7 @@ impl TryFrom<u8> for GasStateMode {
     }
 }
 
-impl TryFrom<Mode> for GasStateMode {
+impl TryFrom<Mode> for StorageGasMode {
     type Error = TempoPrecompileError;
 
     fn try_from(mode: Mode) -> Result<Self> {
@@ -48,23 +48,23 @@ impl TryFrom<Mode> for GasStateMode {
     }
 }
 
-impl From<GasStateMode> for Mode {
-    fn from(mode: GasStateMode) -> Self {
+impl From<StorageGasMode> for Mode {
+    fn from(mode: StorageGasMode) -> Self {
         match mode {
-            GasStateMode::RefundTokens => Self::RefundTokens,
-            GasStateMode::PreserveTokens => Self::PreserveTokens,
-            GasStateMode::DirectTokens => Self::DirectTokens,
+            StorageGasMode::RefundTokens => Self::RefundTokens,
+            StorageGasMode::PreserveTokens => Self::PreserveTokens,
+            StorageGasMode::DirectTokens => Self::DirectTokens,
         }
     }
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Storable)]
-pub struct GasTokenState {
+pub struct AccountState {
     pub balance: u64,
-    pub mode: GasStateMode,
+    pub mode: StorageGasMode,
 }
 
-impl GasTokenState {
+impl AccountState {
     /// Decodes a packed storage gas token state word.
     ///
     /// Layout:
@@ -89,7 +89,7 @@ impl GasTokenState {
     }
 }
 
-/// TIP-1060 gas token precompile, which tracks per-account gas token state.
+/// TIP-1060 state gas token precompile, which tracks per-account gas token state.
 ///
 /// Unlike the Solidity-compatible `Mapping<Address, GasState>` layout, account state is stored
 /// directly at the account-derived slot: the 20-byte address is left-padded to 32 bytes and used
@@ -100,25 +100,25 @@ impl GasTokenState {
 /// solidity_mapping_slot = keccak256(abi.encode(account, base_slot))
 /// ```
 #[contract(addr = STORAGE_GAS_TOKENS_ADDRESS)]
-pub struct GasToken {}
+pub struct StorageGasToken {}
 
-impl GasToken {
+impl StorageGasToken {
     pub fn initialize(&mut self) -> Result<()> {
         self.__initialize()
     }
 
-    pub fn state_of(&self, account: Address) -> Result<GasTokenState> {
-        GasTokenState::handle(Self::slot(account), LayoutCtx::FULL, self.address).read()
+    pub fn state_of(&self, account: Address) -> Result<AccountState> {
+        AccountState::handle(Self::slot(account), LayoutCtx::FULL, self.address).read()
     }
 
     #[inline]
-    fn write_state_of(&mut self, account: Address, state: GasTokenState) -> Result<()> {
-        GasTokenState::handle(Self::slot(account), LayoutCtx::FULL, self.address).write(state)
+    fn write_state_of(&mut self, account: Address, state: AccountState) -> Result<()> {
+        AccountState::handle(Self::slot(account), LayoutCtx::FULL, self.address).write(state)
     }
 
     pub fn set_mode(&mut self, msg_sender: Address, mode: Mode) -> Result<()> {
         let mut state = self.state_of(msg_sender)?;
-        state.mode = GasStateMode::try_from(mode)?;
+        state.mode = StorageGasMode::try_from(mode)?;
         self.write_state_of(msg_sender, state)?;
 
         self.emit_event(StorageGasTokensEvent::mode_updated(msg_sender, mode))
