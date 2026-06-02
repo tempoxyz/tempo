@@ -11,7 +11,7 @@ use alloy_evm::{
         receipt_builder::{ReceiptBuilder, ReceiptBuilderCtx},
     },
 };
-use alloy_primitives::{Address, B256, U256};
+use alloy_primitives::{Address, B256, Bytes, Log, U256};
 use alloy_rlp::Decodable;
 use commonware_codec::DecodeExt;
 use commonware_cryptography::{
@@ -21,7 +21,7 @@ use commonware_cryptography::{
 use reth_evm::block::StateDB;
 use reth_revm::{
     Inspector,
-    context::result::ResultAndState,
+    context::result::{ExecutionResult, Output, ResultAndState, ResultGas, SuccessReason},
     state::{Account, Bytecode, EvmState},
 };
 use std::collections::{HashMap, HashSet};
@@ -106,6 +106,54 @@ pub struct TempoTxResult {
 }
 
 impl TempoTxResult {
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn new_blockstm_tip20_success(
+        tx: &TempoTxEnvelope,
+        state: EvmState,
+        logs: Vec<Log>,
+        gas: ResultGas,
+        next_section: BlockSection,
+        is_payment: bool,
+        block_gas_used: u64,
+        validator_fee: U256,
+    ) -> Self {
+        Self {
+            inner: EthTxResult {
+                result: ResultAndState::new(
+                    ExecutionResult::Success {
+                        reason: SuccessReason::Return,
+                        gas,
+                        logs,
+                        output: Output::Call(Bytes::new()),
+                    },
+                    state,
+                ),
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            next_section,
+            is_payment,
+            tx: matches!(next_section, BlockSection::SubBlock { .. }).then(|| tx.clone()),
+            block_gas_used,
+            validator_fee,
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn with_blockstm_storage_overlay(mut self, overlay: EvmState) -> Self {
+        for (address, overlay_account) in overlay {
+            let account = self.inner.result.state.entry(address).or_insert_with(|| {
+                let mut account = Account::from(reth_revm::state::AccountInfo::default());
+                account.mark_touch();
+                account
+            });
+            account.mark_touch();
+            account.storage.extend(overlay_account.storage);
+        }
+
+        self
+    }
+
     /// Returns the block gas consumed by this transaction.
     pub fn block_gas_used(&self) -> u64 {
         self.block_gas_used
@@ -695,7 +743,10 @@ mod tests {
     use alloy_rlp::Encodable;
     use commonware_cryptography::{Signer, ed25519::PrivateKey};
     use reth_chainspec::EthChainSpec;
-    use reth_revm::{State, state::AccountInfo};
+    use reth_revm::{
+        State,
+        state::{AccountInfo, EvmStorageSlot, TransactionId},
+    };
     use revm::{
         context::result::{ExecutionResult, ResultGas},
         database::EmptyDB,
@@ -1324,6 +1375,99 @@ mod tests {
 
         assert_eq!(gas_output.tx_gas_used(), 21000);
         assert_eq!(executor.section(), BlockSection::NonShared);
+    }
+
+    #[test]
+    fn test_blockstm_storage_overlay_preserves_canonical_account_state() {
+        let tx = create_legacy_tx();
+        let canonical_address = Address::repeat_byte(0x11);
+        let overlay_only_address = Address::repeat_byte(0x22);
+        let canonical_slot = U256::from(1);
+        let overlay_slot = U256::from(2);
+
+        let mut canonical_account = Account::from(AccountInfo {
+            nonce: 7,
+            balance: U256::from(11),
+            ..Default::default()
+        });
+        canonical_account.mark_touch();
+        canonical_account.storage.insert(
+            canonical_slot,
+            EvmStorageSlot::new_changed(U256::ZERO, U256::from(3), TransactionId::ZERO),
+        );
+
+        let mut result = TempoTxResult {
+            inner: EthTxResult {
+                result: ResultAndState {
+                    result: ExecutionResult::Success {
+                        reason: revm::context::result::SuccessReason::Return,
+                        gas: ResultGas::default().with_total_gas_spent(21000),
+                        logs: vec![],
+                        output: revm::context::result::Output::Call(Bytes::new()),
+                    },
+                    state: EvmState::default(),
+                },
+                blob_gas_used: 0,
+                tx_type: tx.tx_type(),
+            },
+            next_section: BlockSection::NonShared,
+            is_payment: false,
+            tx: None,
+            block_gas_used: 21000,
+            validator_fee: U256::ZERO,
+        };
+        result
+            .inner
+            .result
+            .state
+            .insert(canonical_address, canonical_account);
+
+        let mut existing_overlay_account = Account::from(AccountInfo::default());
+        existing_overlay_account.mark_touch();
+        existing_overlay_account.storage.insert(
+            overlay_slot,
+            EvmStorageSlot::new_changed(U256::from(4), U256::from(5), TransactionId::ZERO),
+        );
+
+        let mut overlay_only_account = Account::from(AccountInfo::default());
+        overlay_only_account.mark_touch();
+        overlay_only_account.storage.insert(
+            overlay_slot,
+            EvmStorageSlot::new_changed(U256::ZERO, U256::from(8), TransactionId::ZERO),
+        );
+
+        let mut overlay = EvmState::default();
+        overlay.insert(canonical_address, existing_overlay_account);
+        overlay.insert(overlay_only_address, overlay_only_account);
+
+        let result = result.with_blockstm_storage_overlay(overlay);
+        let canonical_account = result
+            .inner
+            .result
+            .state
+            .get(&canonical_address)
+            .expect("canonical account must remain present");
+        assert_eq!(canonical_account.info.nonce, 7);
+        assert_eq!(canonical_account.info.balance, U256::from(11));
+        assert_eq!(
+            canonical_account.storage[&canonical_slot].present_value(),
+            U256::from(3)
+        );
+        assert_eq!(
+            canonical_account.storage[&overlay_slot].present_value(),
+            U256::from(5)
+        );
+
+        let overlay_only_account = result
+            .inner
+            .result
+            .state
+            .get(&overlay_only_address)
+            .expect("overlay-only account must be inserted");
+        assert_eq!(
+            overlay_only_account.storage[&overlay_slot].present_value(),
+            U256::from(8)
+        );
     }
 
     #[test]

@@ -786,6 +786,29 @@ mod tests {
             Duration::from_millis(50)
         );
         assert_eq!(node_cmd.ext.node_args.builder_build_time_multiplier, 1.35);
+        assert!(
+            !node_cmd
+                .ext
+                .node_args
+                .builder_enable_blockstm_tip20_transfers
+        );
+
+        let cli = TempoCli::try_parse_from([
+            "tempo",
+            "node",
+            "--dev",
+            "--builder.enable-blockstm-tip20-transfers",
+        ])
+        .unwrap();
+        let Commands::Node(node_cmd) = cli.command else {
+            panic!("expected node command");
+        };
+        assert!(
+            node_cmd
+                .ext
+                .node_args
+                .builder_enable_blockstm_tip20_transfers
+        );
 
         let cli = TempoCli::try_parse_from([
             "tempo",
