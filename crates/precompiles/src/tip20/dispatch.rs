@@ -26,6 +26,11 @@ const T5_ADDED: &[[u8; 4]] = &[
     ITIP20::setLogoURICall::SELECTOR,
 ];
 
+const TIP20_SELECTOR_SCHEDULES: [SelectorSchedule<'static>; 2] = [
+    SelectorSchedule::new(TempoHardfork::T2).with_added(T2_ADDED),
+    SelectorSchedule::new(TempoHardfork::T5).with_added(T5_ADDED),
+];
+
 /// Decoded call variant — either a TIP-20 token call or a role-management call.
 enum TIP20Call {
     TIP20(ITIP20Calls),
@@ -63,10 +68,7 @@ impl Precompile for TIP20Token {
 
         dispatch_call(
             calldata,
-            &[
-                SelectorSchedule::new(TempoHardfork::T2).with_added(T2_ADDED),
-                SelectorSchedule::new(TempoHardfork::T5).with_added(T5_ADDED),
-            ],
+            &TIP20_SELECTOR_SCHEDULES,
             TIP20Call::decode,
             |call| match call {
                 // Metadata functions (no calldata decoding needed)
