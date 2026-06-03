@@ -371,24 +371,6 @@ impl<'evm> StorageCtx {
         block_env: &'evm dyn Block,
         cfg: &CfgEnv<TempoHardfork>,
         tx_env: &'evm impl Transaction,
-        f: impl FnOnce() -> R,
-    ) -> R
-    where
-        J: JournalTr<Database: Database> + Debug,
-    {
-        let internals = EvmInternals::new(journal, block_env, cfg, tx_env);
-        let mut provider = EvmPrecompileStorageProvider::new_max_gas(internals, cfg);
-
-        // The core logic of setting up thread-local storage is here.
-        Self::enter(&mut provider, f)
-    }
-
-    /// Like [`enter_evm`](Self::enter_evm), but records EVM actions into `actions`.
-    pub fn enter_evm_with_actions<J, R>(
-        journal: &'evm mut J,
-        block_env: &'evm dyn Block,
-        cfg: &CfgEnv<TempoHardfork>,
-        tx_env: &'evm impl Transaction,
         actions: EvmActions,
         f: impl FnOnce() -> R,
     ) -> R
@@ -410,7 +392,7 @@ impl<'evm> StorageCtx {
         C: ContextTr<Cfg = CfgEnv<TempoHardfork>, Journal: Debug, Db: Database>,
     {
         let (tx, block, cfg, journal) = ctx.tx_block_cfg_journal_mut();
-        Self::enter_evm(journal, block, cfg, tx, f)
+        Self::enter_evm(journal, block, cfg, tx, EvmActions::default(), f)
     }
 
     /// Like [`enter_ctx`](Self::enter_ctx), but meters storage access under `gas_limit`
@@ -447,7 +429,14 @@ impl<'evm> StorageCtx {
     {
         // Delegate all the setup logic to `enter_evm`.
         // We just need to provide a closure that `enter_evm` expects.
-        Self::enter_evm(journal, block_env, cfg, tx_env, || f(P::default()))
+        Self::enter_evm(
+            journal,
+            block_env,
+            cfg,
+            tx_env,
+            EvmActions::default(),
+            || f(P::default()),
+        )
     }
 }
 

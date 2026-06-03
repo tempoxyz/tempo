@@ -421,6 +421,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
         &self,
         evm: &mut TempoEvm<DB, I>,
     ) -> Result<(), EVMError<DB::Error, TempoInvalidTransaction>> {
+        let actions = evm.actions.clone();
         let ctx = evm.ctx_mut();
         let channel_open_context_hash = ctx.tx.channel_open_context_hash();
 
@@ -431,6 +432,7 @@ impl<DB: alloy_evm::Database, I> TempoEvmHandler<DB, I> {
             &ctx.block,
             &ctx.cfg,
             &ctx.tx,
+            actions,
             || {
                 let mut keychain = AccountKeychain::new();
                 keychain.set_tx_origin(ctx.tx.caller())?;
@@ -1017,7 +1019,7 @@ where
                 .ok_or(TempoInvalidTransaction::ExpiringNonceMissingValidBefore)?;
 
             let block_timestamp = block.timestamp().saturating_to::<u64>();
-            StorageCtx::enter_evm(journal, block, cfg, tx, || {
+            StorageCtx::enter_evm(journal, block, cfg, tx, actions.clone(), || {
                 let mut nonce_manager = NonceManager::new();
 
                 let prev_ptr = if let Some(expiring_nonce_idx) = tempo_tx_env.expiring_nonce_idx {
@@ -1073,7 +1075,7 @@ where
             })?;
         } else if !nonce_key.is_zero() {
             // 2D nonce transaction
-            StorageCtx::enter_evm(journal, block, cfg, tx, || {
+            StorageCtx::enter_evm(journal, block, cfg, tx, actions.clone(), || {
                 let mut nonce_manager = NonceManager::new();
 
                 if !cfg.is_nonce_check_disabled() {
@@ -1298,16 +1300,15 @@ where
             let checkpoint = journal.checkpoint();
 
             let skip_liquidity_check = evm.skip_liquidity_check;
-            let result =
-                StorageCtx::enter_evm_with_actions(journal, &block, cfg, tx, actions, || {
-                    TipFeeManager::new().collect_fee_pre_tx(
-                        fee_payer,
-                        fee_token,
-                        gas_balance_spending,
-                        block.beneficiary(),
-                        skip_liquidity_check,
-                    )
-                });
+            let result = StorageCtx::enter_evm(journal, &block, cfg, tx, actions, || {
+                TipFeeManager::new().collect_fee_pre_tx(
+                    fee_payer,
+                    fee_token,
+                    gas_balance_spending,
+                    block.beneficiary(),
+                    skip_liquidity_check,
+                )
+            });
 
             if let Err(err) = result {
                 // Revert the journal to checkpoint before `collectFeePreTx` call if something went wrong.
@@ -1581,13 +1582,8 @@ where
         let (journal, block, tx) = (&mut context.journaled_state, &context.block, &context.tx);
         let beneficiary = context.block.beneficiary();
 
-        let credited = StorageCtx::enter_evm_with_actions(
-            &mut *journal,
-            block,
-            &context.cfg,
-            tx,
-            actions,
-            || {
+        let credited =
+            StorageCtx::enter_evm(&mut *journal, block, &context.cfg, tx, actions, || {
                 let mut fee_manager = TipFeeManager::new();
 
                 if !actual_spending.is_zero() || !refund_amount.is_zero() {
@@ -1607,8 +1603,7 @@ where
                 } else {
                     Ok(U256::ZERO)
                 }
-            },
-        )?;
+            })?;
 
         // Stash the per-tx credit so `TempoBlockExecutor` can surface it on `TempoTxResult`
         // for payload scoring. Reset to zero on every tx entry below in `validate_env`.
