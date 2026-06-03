@@ -198,10 +198,6 @@ impl Tip20TransferBlockstmPlan {
     fn read_set(&self) -> &[StorageKey] {
         &self.accesses.read_set
     }
-
-    fn write_set(&self) -> &[StorageKey] {
-        &self.accesses.write_set
-    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -413,10 +409,6 @@ struct Tip20TransferAction {
 }
 
 impl Tip20TransferAction {
-    fn calldata_len(&self) -> usize {
-        self.calldata_len
-    }
-
     fn read_set(&self) -> impl Iterator<Item = StorageKey> {
         token_state_read_set(self.token)
             .into_iter()
@@ -788,7 +780,7 @@ fn execute_tip20_transfer_plan_with_deltas(
 ) -> Result<Tip20BlockstmTxExecution, Tip20TransferBlockstmFallback> {
     let mut execution = Tip20BlockstmTxExecution {
         reads: HashMap::with_capacity(plan.read_set().len()),
-        writes: HashMap::with_capacity(plan.write_set().len()),
+        writes: HashMap::with_capacity(plan.accesses.write_set.len()),
     };
 
     for key in plan.read_set().iter().copied() {
@@ -1259,7 +1251,7 @@ fn meter_tip20_transfer_action_gas(
 ) -> Result<(), Tip20TransferBlockstmFallback> {
     let gas_params = cfg.gas_params();
 
-    meter.add_regular(input_cost(action.calldata_len()))?;
+    meter.add_regular(input_cost(action.calldata_len))?;
     meter.warm_account_info(gas_params)?;
     meter.sload(paused_key(action.token), gas_params)?;
     meter.sload(transfer_policy_key(action.token), gas_params)?;
@@ -2726,7 +2718,7 @@ mod tests {
             slot: tip20_slots::TRANSFER_POLICY_ID,
         }));
 
-        let write_set = plan.write_set();
+        let write_set = &plan.accesses.write_set;
         assert!(write_set.contains(&balance_key(TOKEN, SENDER)));
         assert!(write_set.contains(&balance_key(TOKEN, recipient)));
         assert!(write_set.contains(&balance_key(TOKEN, TIP_FEE_MANAGER_ADDRESS)));
