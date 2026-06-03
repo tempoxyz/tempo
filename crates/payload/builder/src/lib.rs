@@ -590,6 +590,10 @@ where
                         .map_err(PayloadBuilderError::evm)?;
 
                 let blockstm_start = Instant::now();
+                let _blockstm_prewarm_workers = blockstm::PrewarmWorkerStateGuard::new(
+                    &self.executor,
+                    blockstm_prewarm.as_ref(),
+                );
                 let mut planner = blockstm::Planner::new(
                     &self.executor,
                     blockstm::PlanningContext {

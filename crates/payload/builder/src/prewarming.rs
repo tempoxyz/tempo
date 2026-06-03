@@ -312,6 +312,16 @@ pub(crate) struct PrewarmingExecutionContext<Provider> {
     stop: Arc<AtomicBool>,
 }
 
+impl<Provider> PrewarmingExecutionContext<Provider> {
+    pub(crate) fn is_stopped(&self) -> bool {
+        self.stop.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn stop(&self) {
+        self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
 impl<Provider> PrewarmingExecutionContext<Provider>
 where
     Provider: StateProviderFactory + Clone + 'static,
@@ -359,14 +369,6 @@ where
         evm_env.cfg_env.disable_balance_check = true;
 
         Some(TempoEvm::new(state_provider, evm_env))
-    }
-
-    pub(crate) fn is_stopped(&self) -> bool {
-        self.stop.load(Ordering::Relaxed)
-    }
-
-    fn stop(&self) {
-        self.stop.store(true, Ordering::Relaxed);
     }
 }
 

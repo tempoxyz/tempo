@@ -70,6 +70,38 @@ struct PlanningResult {
     item: Result<PlannedTransfer, Tip20TransferBlockstmFallback>,
 }
 
+/// Initializes prewarm worker state for one BlockSTM payload build and clears it on exit.
+pub(crate) struct PrewarmWorkerStateGuard<'a> {
+    pool: Option<&'a WorkerPool>,
+}
+
+impl<'a> PrewarmWorkerStateGuard<'a> {
+    pub(crate) fn new<Provider>(
+        executor: &'a TaskExecutor,
+        prewarm: Option<&PrewarmingExecutionContext<Provider>>,
+    ) -> Self
+    where
+        Provider: StateProviderFactory + Clone + 'static,
+    {
+        let Some(prewarm) = prewarm else {
+            return Self { pool: None };
+        };
+
+        let pool = executor.prewarming_pool();
+        pool.init::<PrewarmEvmState>(|_| prewarm.evm_for_ctx());
+
+        Self { pool: Some(pool) }
+    }
+}
+
+impl Drop for PrewarmWorkerStateGuard<'_> {
+    fn drop(&mut self) {
+        if let Some(pool) = self.pool {
+            pool.clear();
+        }
+    }
+}
+
 /// Ordered TIP-20 BlockSTM planner backed by the payload prewarming worker pool.
 pub(crate) struct Planner<'a, Provider> {
     pool: &'a WorkerPool,
@@ -191,6 +223,21 @@ where
     }
 }
 
+impl<Provider> Drop for Planner<'_, Provider> {
+    fn drop(&mut self) {
+        if let Some(prewarm) = &self.prewarm {
+            prewarm.stop();
+        }
+
+        while self.pending_jobs > 0 {
+            match self.rx.recv() {
+                Ok(_) => self.pending_jobs -= 1,
+                Err(_) => break,
+            }
+        }
+    }
+}
+
 fn prewarm_tip20_transfer_plan<Provider>(
     prewarm: &PrewarmingExecutionContext<Provider>,
     plan: &Tip20TransferBlockstmPlan,
@@ -204,7 +251,7 @@ fn prewarm_tip20_transfer_plan<Provider>(
     }
 
     WorkerPool::with_worker_mut(|worker| {
-        let Some(evm) = worker.get_or_init::<PrewarmEvmState>(|| prewarm.evm_for_ctx()) else {
+        let Some(evm) = worker.get_mut::<PrewarmEvmState>().as_mut() else {
             return;
         };
 
