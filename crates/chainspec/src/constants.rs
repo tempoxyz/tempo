@@ -30,16 +30,22 @@ pub mod gas {
     /// - Economic: 1,000 microdollars = 0.001 USD = 0.1 cents
     pub const TEMPO_T1_BASE_FEE: u64 = 20_000_000_000;
 
-    /// TIP-1067 base fee cap.
+    /// TIP-1067 base fee cap: below the T1 fixed base fee.
     pub const TEMPO_T6_BASE_FEE_CAP: u64 = 12_000_000_000;
 
-    /// TIP-1067 base fee floor: one twentieth of the T1 fixed base fee.
+    /// TIP-1067 base fee floor: one twentieth of the TIP-1067 cap.
     pub const TEMPO_T6_BASE_FEE_FLOOR: u64 = TEMPO_T6_BASE_FEE_CAP / 20;
 
     /// TIP-1067 gas target for the dynamic base fee controller.
     pub const TEMPO_T6_BASE_FEE_GAS_TARGET: u64 = 10_000_000;
 
-    /// Synthetic TIP-1067 gas params.
+    /// TIP-1067 uses EIP-1559's base-fee update formula with a fixed 10M gas target.
+    ///
+    /// The params are `(max_change_denominator = 8, elasticity_multiplier = 1)`: `8` keeps the
+    /// standard EIP-1559 maximum 12.5% per-block base-fee delta, while `1` prevents EIP-1559's
+    /// usual target-halving because TIP-1067 supplies [`TEMPO_T6_BASE_FEE_GAS_TARGET`] directly.
+    ///
+    /// [TIP-1067]: <https://docs.tempo.xyz/protocol/tips/tip-1067>
     pub const TEMPO_T6_BASE_FEE_PARAMS: BaseFeeParams = BaseFeeParams::new(8, 1);
 
     /// Returns the TIP-1067 base fee for the child of a block.

@@ -23,12 +23,11 @@
 //! 6. Add `vivace_time: Option<u64>` arg to `xtask/src/genesis_args.rs`
 //! 7. Add insertion of `"vivaceTime"` to chain_config.extra_fields
 
-use crate::{constants::gas, spec::tempo_t6_next_block_base_fee};
+use crate::constants::gas;
 use alloy_eips::eip7825::MAX_TX_GAS_LIMIT_OSAKA;
 #[cfg(feature = "evm")]
 use alloy_evm::revm::primitives::hardfork::SpecId;
 use alloy_hardforks::hardfork;
-use tempo_primitives::TempoHeader;
 
 /// Single-source hardfork definition macro. Append a new variant and everything else is generated:
 ///
@@ -207,27 +206,6 @@ tempo_hardfork! (
 );
 
 impl TempoHardfork {
-    /// Returns the base fee for this hardfork in attodollars.
-    ///
-    /// Attodollars are the atomic gas accounting units at 10^-18 USD precision. Individual attodollars are not representable onchain (since TIP-20 tokens only have 6 decimals), but the unit is used for gas accounting.
-    /// - Pre-T1: 10 billion attodollars per gas
-    /// - T1+: 20 billion attodollars per gas (targets ~0.1 cent per TIP-20 transfer)
-    ///
-    /// Economic conversion: ceil(basefee × gas_used / 10^12) = cost in microdollars (TIP-20 tokens)
-    pub fn base_fee(&self, parent: &TempoHeader) -> u64 {
-        if self.is_t6() {
-            let parent_base_fee = parent
-                .inner
-                .base_fee_per_gas
-                .expect("tempo blocks are expected to have a base fee");
-            tempo_t6_next_block_base_fee(parent_base_fee, parent.inner.gas_used)
-        } else if self.is_t1() {
-            gas::TEMPO_T1_BASE_FEE
-        } else {
-            gas::TEMPO_T0_BASE_FEE
-        }
-    }
-
     /// Returns the fixed general gas limit for T1+, or None for pre-T1.
     /// - Pre-T1: None
     /// - T1+: 30M gas (fixed)

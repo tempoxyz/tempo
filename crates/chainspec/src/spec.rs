@@ -405,9 +405,9 @@ mod tests {
     };
     use alloy_primitives::hex;
     use commonware_codec::Encode as _;
+    use reth_chainspec::EthChainSpec;
     #[cfg(feature = "cli")]
     use reth_chainspec::{ForkCondition, Hardforks};
-    use reth_chainspec::EthChainSpec;
     #[cfg(feature = "cli")]
     use reth_cli::chainspec::ChainSpecParser as _;
     use tempo_primitives::Header;
@@ -655,7 +655,7 @@ mod tests {
 
         assert_eq!(
             chainspec.next_block_base_fee(&parent, 11),
-            Some(1_250_000_000)
+            Some(750_000_000)
         );
     }
 
