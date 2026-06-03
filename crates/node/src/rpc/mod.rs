@@ -8,7 +8,7 @@ pub mod simulate;
 pub mod token;
 
 pub use admin::{TempoAdminApi, TempoAdminApiServer};
-use alloy_primitives::B256;
+use alloy_primitives::{Address, B256};
 use alloy_rpc_types_eth::{Log, ReceiptWithBloom};
 pub use consensus::{TempoConsensusApiServer, TempoConsensusRpc};
 pub use eth_ext::{TempoEthExt, TempoEthExtApiServer};
@@ -16,7 +16,9 @@ pub use fork_schedule::{TempoForkScheduleApiServer, TempoForkScheduleRpc};
 use futures::{TryFutureExt, future::Either};
 pub use operator::{TempoOperatorApiServer, TempoOperatorRpc};
 use reth_errors::RethError;
-use reth_primitives_traits::{HeaderTy, Recovered, TransactionMeta, WithEncoded};
+use reth_primitives_traits::{
+    AlloyBlockHeader as _, HeaderTy, NodePrimitives, Recovered, TransactionMeta, TxTy, WithEncoded,
+};
 use reth_rpc_eth_api::{FromEthApiError, IntoEthApiError, RpcTxReq};
 use reth_transaction_pool::{PoolTransaction, PoolTx, TransactionOrigin, TransactionPool};
 pub use simulate::{TempoSimulate, TempoSimulateApiServer, TempoSimulateV1Response};
@@ -24,17 +26,28 @@ use std::{marker::PhantomData, sync::Arc};
 pub use tempo_alloy::rpc::TempoTransactionRequest;
 use tempo_chainspec::{TempoChainSpec, hardfork::TempoHardfork};
 use tempo_evm::TempoStateAccess;
-use tempo_precompiles::{NONCE_PRECOMPILE_ADDRESS, nonce::NonceManager, storage::StorageActions};
-use tempo_primitives::transaction::TEMPO_EXPIRING_NONCE_KEY;
+use tempo_precompiles::{
+    NATIVE_MULTISIG_ADDRESS, NONCE_PRECOMPILE_ADDRESS,
+    native_multisig::NativeMultisig,
+    nonce::NonceManager,
+    storage::{StorageActions, packing::extract_from_word},
+};
+use tempo_primitives::transaction::{MAX_MULTISIG_OWNERS, TEMPO_EXPIRING_NONCE_KEY};
 pub use token::{TempoToken, TempoTokenApiServer};
 
 use crate::rpc::error::TempoEthApiError;
 use alloy::primitives::{U256, uint};
+use alloy_eips::{BlockId, eip2718::Encodable2718};
 use alloy_evm::{EvmFactory, block::BlockExecutorFactory};
+use alloy_network::{TransactionBuilder, TransactionBuilder4844};
+use alloy_rpc_types_eth::state::EvmOverrides;
 use reth_chainspec::{EthereumHardforks, Hardforks};
-use reth_ethereum::tasks::{
-    Runtime,
-    pool::{BlockingTaskGuard, BlockingTaskPool},
+use reth_ethereum::{
+    evm::revm::database::StateProviderDatabase,
+    tasks::{
+        Runtime,
+        pool::{BlockingTaskGuard, BlockingTaskPool},
+    },
 };
 use reth_evm::{
     ConfigureEvm, EvmEnvFor, TxEnvFor,
@@ -45,7 +58,7 @@ use reth_node_builder::rpc::{EthApiBuilder, EthApiCtx};
 use reth_provider::{ChainSpecProvider, ProviderError};
 use reth_rpc::{DynRpcConverter, eth::EthApi};
 use reth_rpc_eth_api::{
-    EthApiTypes, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
+    EthApiTypes, RpcConvert, RpcConverter, RpcNodeCore, RpcNodeCoreExt,
     helpers::{
         Call, EthApiSpec, EthBlocks, EthCall, EthFees, EthState, EthTransactions, LoadBlock,
         LoadFee, LoadPendingBlock, LoadReceipt, LoadState, LoadTransaction, SpawnBlocking, Trace,
@@ -57,9 +70,10 @@ use reth_rpc_eth_api::{
     transaction::{ConvertReceiptInput, ReceiptConverter},
 };
 use reth_rpc_eth_types::{
-    EthApiError, EthStateCache, FeeHistoryCache, GasPriceOracle, PendingBlock, SignError,
-    builder::config::PendingBlockKind, receipt::EthReceiptConverter,
+    EthApiError, EthStateCache, FeeHistoryCache, FillTransaction, GasPriceOracle, PendingBlock,
+    SignError, builder::config::PendingBlockKind, receipt::EthReceiptConverter,
 };
+use reth_storage_api::BlockReaderIdExt;
 use tempo_alloy::{TempoNetwork, rpc::TempoTransactionReceipt};
 use tempo_evm::{TempoBlockEnv, TempoHaltReason, TempoInvalidTransaction};
 use tempo_primitives::{
@@ -375,6 +389,132 @@ where
     }
 }
 
+fn populate_native_multisig_simulation_hints(
+    request: &mut TempoTransactionRequest,
+    db: &mut impl Database<Error: Into<EthApiError>>,
+) -> Result<(), EthApiError> {
+    if request.multisig_init.is_some()
+        || (request.multisig_config_id.is_some() && request.multisig_signature_count.is_some())
+    {
+        return Ok(());
+    }
+
+    let Some(from) = request.from else {
+        return Ok(());
+    };
+
+    let Some((config_id, signature_count)) = load_native_multisig_simulation_hints(
+        from,
+        request.multisig_config_id,
+        request.multisig_signature_count,
+        db,
+    )?
+    else {
+        return Ok(());
+    };
+
+    request.multisig_config_id.get_or_insert(config_id);
+    request
+        .multisig_signature_count
+        .get_or_insert(signature_count);
+
+    Ok(())
+}
+
+fn load_native_multisig_simulation_hints(
+    from: Address,
+    multisig_config_id: Option<B256>,
+    multisig_signature_count: Option<usize>,
+    db: &mut impl Database<Error: Into<EthApiError>>,
+) -> Result<Option<(B256, usize)>, EthApiError> {
+    let config_id_slot = NativeMultisig::config_id_storage_slot(from);
+    let config_id_word = db
+        .storage(NATIVE_MULTISIG_ADDRESS, config_id_slot)
+        .map_err(Into::into)?;
+    if config_id_word.is_zero() {
+        return Ok(None);
+    }
+
+    let config_id = if let Some(config_id) = multisig_config_id {
+        config_id
+    } else {
+        let config_id = B256::from(config_id_word.to_be_bytes::<32>());
+        if config_id.is_zero() {
+            return Err(EthApiError::InvalidParams(
+                "native multisig account is missing config_id".to_string(),
+            ));
+        }
+        config_id
+    };
+
+    let signature_count = match multisig_signature_count {
+        Some(signature_count) => signature_count,
+        None => native_multisig_signature_count_for_threshold(from, config_id, db)?,
+    };
+
+    Ok(Some((config_id, signature_count)))
+}
+
+fn native_multisig_signature_count_for_threshold(
+    account: Address,
+    config_id: B256,
+    db: &mut impl Database<Error: Into<EthApiError>>,
+) -> Result<usize, EthApiError> {
+    let (threshold_slot, threshold_offset) =
+        NativeMultisig::config_threshold_storage_slot(account, config_id);
+    let threshold = read_native_multisig_u32(db, threshold_slot, threshold_offset)?;
+    if threshold == 0 {
+        return Err(EthApiError::InvalidParams(
+            "native multisig config has zero threshold".to_string(),
+        ));
+    }
+
+    let (owners_len_slot, owners_len_offset) =
+        NativeMultisig::config_owners_len_storage_slot(account, config_id);
+    let owner_count = read_native_multisig_u32(db, owners_len_slot, owners_len_offset)? as usize;
+    if owner_count == 0 {
+        return Err(EthApiError::InvalidParams(
+            "native multisig config has no owners".to_string(),
+        ));
+    }
+    if owner_count > MAX_MULTISIG_OWNERS {
+        return Err(EthApiError::InvalidParams(
+            "native multisig config has too many owners".to_string(),
+        ));
+    }
+
+    let mut signed_weight = 0u64;
+    for index in 0..owner_count {
+        let (weight_slot, weight_offset) =
+            NativeMultisig::config_owner_weight_storage_slot(account, config_id, index);
+        let weight = read_native_multisig_u32(db, weight_slot, weight_offset)?;
+        signed_weight = signed_weight
+            .checked_add(u64::from(weight))
+            .ok_or_else(|| {
+                EthApiError::InvalidParams("native multisig owner weight overflow".to_string())
+            })?;
+        if signed_weight >= u64::from(threshold) {
+            return Ok(index + 1);
+        }
+    }
+
+    Err(EthApiError::InvalidParams(
+        "native multisig signature weight below threshold".to_string(),
+    ))
+}
+
+fn read_native_multisig_u32(
+    db: &mut impl Database<Error: Into<EthApiError>>,
+    slot: U256,
+    offset: Option<usize>,
+) -> Result<u32, EthApiError> {
+    let word = db
+        .storage(NATIVE_MULTISIG_ADDRESS, slot)
+        .map_err(Into::into)?;
+    extract_from_word::<u32>(word, offset.unwrap_or_default(), 4)
+        .map_err(|err| EthApiError::InvalidParams(err.to_string()))
+}
+
 impl<N> EthFees for TempoEthApi<N> where N: TempoEthApiBounds {}
 
 impl<N> Trace for TempoEthApi<N> where N: TempoEthApiBounds {}
@@ -451,6 +591,9 @@ where
         mut request: TempoTransactionRequest,
         mut db: impl Database<Error: Into<EthApiError>>,
     ) -> Result<TxEnvFor<Self::Evm>, Self::Error> {
+        populate_native_multisig_simulation_hints(&mut request, &mut db)
+            .map_err(Self::Error::from_eth_err)?;
+
         if let Some(nonce_key) = request.nonce_key
             && !nonce_key.is_zero()
             && request.nonce.is_none()
@@ -481,7 +624,166 @@ impl<N> LoadTransaction for TempoEthApi<N> where N: TempoEthApiBounds {}
 impl<N> EthTransactions for TempoEthApi<N>
 where
     N: TempoEthApiBounds,
+    <Self as RpcNodeCore>::Primitives: NodePrimitives<SignedTx = TempoTxEnvelope>,
 {
+    #[allow(clippy::manual_async_fn)]
+    fn fill_transaction(
+        &self,
+        mut request: RpcTxReq<Self::NetworkTypes>,
+    ) -> impl Future<Output = Result<FillTransaction<TxTy<Self::Primitives>>, Self::Error>> + Send
+    where
+        Self: EthApiSpec + LoadBlock + EstimateCall + LoadFee,
+    {
+        async move {
+            if request.as_ref().value().is_none() {
+                request.as_mut().set_value(U256::ZERO);
+            }
+
+            if request.as_ref().nonce().is_none() {
+                let nonce = self.next_available_nonce_for(&request).await?;
+                request.as_mut().set_nonce(nonce);
+            }
+
+            let chain_id = self.chain_id();
+            request.as_mut().set_chain_id(chain_id.to());
+
+            if let Some(from) = request.as_ref().from {
+                let mut value = serde_json::to_value(&request).map_err(|err| {
+                    Self::Error::from_eth_err(EthApiError::InvalidParams(err.to_string()))
+                })?;
+                let (needs_hints, config_id_hint, signature_count_hint) = {
+                    let object = value.as_object().ok_or_else(|| {
+                        Self::Error::from_eth_err(EthApiError::InvalidParams(
+                            "transaction request must serialize as an object".to_string(),
+                        ))
+                    })?;
+                    let has_init = object.contains_key("multisigInit");
+                    let has_config_id = object.contains_key("multisigConfigId");
+                    let has_signature_count = object.contains_key("multisigSignatureCount");
+                    let config_id_hint = object
+                        .get("multisigConfigId")
+                        .map(|value| serde_json::from_value(value.clone()))
+                        .transpose()
+                        .map_err(|err| {
+                            Self::Error::from_eth_err(EthApiError::InvalidParams(err.to_string()))
+                        })?;
+                    let signature_count_hint = object
+                        .get("multisigSignatureCount")
+                        .map(|value| serde_json::from_value(value.clone()))
+                        .transpose()
+                        .map_err(|err| {
+                            Self::Error::from_eth_err(EthApiError::InvalidParams(err.to_string()))
+                        })?;
+                    (
+                        !(has_init || has_config_id && has_signature_count),
+                        config_id_hint,
+                        signature_count_hint,
+                    )
+                };
+
+                if needs_hints {
+                    let hints = self
+                        .spawn_blocking_io(move |this| {
+                            let state = this.latest_state()?;
+                            let mut db = StateProviderDatabase::new(state);
+                            load_native_multisig_simulation_hints(
+                                from,
+                                config_id_hint,
+                                signature_count_hint,
+                                &mut db,
+                            )
+                            .map_err(Self::Error::from_eth_err)
+                        })
+                        .await?;
+
+                    if let Some((config_id, signature_count)) = hints {
+                        let object = value.as_object_mut().expect("checked as object above");
+                        object.entry("multisigConfigId".to_string()).or_insert(
+                            serde_json::to_value(config_id).map_err(|err| {
+                                Self::Error::from_eth_err(EthApiError::InvalidParams(
+                                    err.to_string(),
+                                ))
+                            })?,
+                        );
+                        object
+                            .entry("multisigSignatureCount".to_string())
+                            .or_insert(serde_json::to_value(signature_count).map_err(|err| {
+                                Self::Error::from_eth_err(EthApiError::InvalidParams(
+                                    err.to_string(),
+                                ))
+                            })?);
+                        request = serde_json::from_value(value).map_err(|err| {
+                            Self::Error::from_eth_err(EthApiError::InvalidParams(err.to_string()))
+                        })?;
+                    }
+                }
+            }
+
+            if request.as_ref().has_eip4844_fields()
+                && request.as_ref().max_fee_per_blob_gas().is_none()
+            {
+                let blob_fee = <Self as LoadFee>::blob_base_fee(self).await?;
+                request.as_mut().set_max_fee_per_blob_gas(blob_fee.to());
+            }
+
+            if request.as_ref().sidecar.is_some()
+                && request.as_ref().blob_versioned_hashes.is_none()
+            {
+                request.as_mut().populate_blob_hashes();
+            }
+
+            if request.as_ref().gas_limit().is_none() {
+                let estimated_gas = <Self as EstimateCall>::estimate_gas_at(
+                    self,
+                    request.clone(),
+                    BlockId::pending(),
+                    EvmOverrides::default(),
+                )
+                .await?;
+                request.as_mut().set_gas_limit(estimated_gas.to());
+            }
+
+            if request.as_ref().gas_price().is_none() {
+                let tip = if let Some(tip) = request.as_ref().max_priority_fee_per_gas() {
+                    tip
+                } else {
+                    let tip = <Self as LoadFee>::suggested_priority_fee(self)
+                        .await?
+                        .to::<u128>();
+                    request.as_mut().set_max_priority_fee_per_gas(tip);
+                    tip
+                };
+                if request.as_ref().max_fee_per_gas().is_none() {
+                    let header = self
+                        .provider()
+                        .latest_header()
+                        .map_err(Self::Error::from_eth_err)?;
+                    let base_fee = header
+                        .and_then(|h| h.base_fee_per_gas())
+                        .unwrap_or_default();
+                    request
+                        .as_mut()
+                        .set_max_fee_per_gas(u128::from(base_fee) + tip);
+                }
+            }
+
+            let request: TempoTransactionRequest =
+                serde_json::from_value(serde_json::to_value(request).map_err(|err| {
+                    Self::Error::from_eth_err(EthApiError::InvalidParams(err.to_string()))
+                })?)
+                .map_err(|err| {
+                    Self::Error::from_eth_err(EthApiError::InvalidParams(err.to_string()))
+                })?;
+            let tx: TxTy<Self::Primitives> = self
+                .inner
+                .converter()
+                .build_simulate_v1_transaction(request)?;
+            let raw = tx.encoded_2718().into();
+
+            Ok(FillTransaction { raw, tx })
+        }
+    }
+
     fn signers(&self) -> &SignersForRpc<Self::Provider, Self::NetworkTypes> {
         self.inner.signers()
     }
