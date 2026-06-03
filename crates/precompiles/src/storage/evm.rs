@@ -37,39 +37,22 @@ impl<'a> EvmPrecompileStorageProvider<'a> {
         is_static: bool,
         gas_params: GasParams,
     ) -> Self {
-        Self::new_with_consensus_epoch(
-            internals,
-            gas_limit,
-            reservoir,
-            spec,
-            amsterdam_eip8037_enabled,
-            is_static,
-            gas_params,
-            None,
-        )
-    }
-
-    pub fn new_with_consensus_epoch(
-        internals: EvmInternals<'a>,
-        gas_limit: u64,
-        reservoir: u64,
-        spec: TempoHardfork,
-        amsterdam_eip8037_enabled: bool,
-        is_static: bool,
-        gas_params: GasParams,
-        consensus_epoch: Option<u64>,
-    ) -> Self {
         Self {
             internals,
             gas_tracker: GasTracker::new(gas_limit, gas_limit, reservoir),
             spec,
             amsterdam_eip8037_enabled,
-            consensus_epoch,
+            consensus_epoch: None,
             is_static,
             gas_params,
             #[cfg(debug_assertions)]
             checkpoint_stack: Vec::new(),
         }
+    }
+
+    pub fn with_consensus_epoch(mut self, consensus_epoch: Option<u64>) -> Self {
+        self.consensus_epoch = consensus_epoch;
+        self
     }
 
     /// Creates a new storage provider with maximum gas limit and non-static context.
