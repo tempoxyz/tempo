@@ -70,7 +70,11 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     owner: Address,
     values: &SStoreResult,
 ) -> Result<GasStateOutcome, B::Error> {
-    let mut outcome = GasStateOutcome::default();
+    // TIP-1060 removes the legacy storage-clearing gas refunds.
+    let mut outcome = GasStateOutcome {
+        skip_gas: false,
+        skip_refund: true,
+    };
 
     if values.is_new_eq_present() {
         return Ok(outcome);
@@ -110,25 +114,20 @@ pub fn sstore_storage_credits<B: StorageCreditsBackend>(
     } else {
         match storage_credits.mode {
             CreditMode::Direct => {
+                // Only if there is a credit available, skip gas
                 if storage_credits.balance > 0 {
                     // Consume the storage credit and charge 20k for the SSTORE.
                     backend.charge_gas(20_000)?;
                     storage_credits.balance -= 1;
                     was_changed = true;
-
-                    // only if there is a credit available, skip refund and gas
-                    outcome.skip_refund = true;
                     outcome.skip_gas = true;
                 }
-                // If no token is available, leave both regular and state gas enabled so
-                // revm charges the full zero-to-nonzero creation cost after this hook.
+                // Otherwise, leave gas enabled so revm charges full creation costs.
             }
             CreditMode::Preserve => {
                 // Do nothing, so revm takes care of gas accounting after this hook.
             }
             CreditMode::Refund => {
-                // Skip refund as it will happen at the end of the transaction.
-                outcome.skip_refund = true;
                 backend.credit_tstore_increment(account_slot);
             }
         }

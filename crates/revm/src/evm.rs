@@ -246,6 +246,7 @@ mod tests {
     };
     use sha2::{Digest, Sha256};
     use tempo_chainspec::hardfork::TempoHardfork;
+    use tempo_contracts::precompiles::ITIP1060StorageCredits::{self, Mode};
     use tempo_precompiles::{
         AuthorizedKey, NONCE_PRECOMPILE_ADDRESS, PATH_USD_ADDRESS, STORAGE_CREDITS_ADDRESS,
         nonce::NonceManager,
@@ -385,7 +386,6 @@ mod tests {
     /// Creates a T6-enabled EVM with a funded account.
     /// This activates the TIP-1060 SSTORE gas-token hook while keeping the
     /// TIP-1016 state-gas split disabled to match production.
-
     fn create_funded_evm_t6(address: Address) -> TempoEvm<CacheDB<EmptyDB>, ()> {
         let db = CacheDB::new(EmptyDB::new());
         let mut cfg = CfgEnv::<TempoHardfork>::default();
@@ -1929,20 +1929,159 @@ mod tests {
             .unwrap();
     }
 
-    /// Read back the TIP-1060 token balance stored for `owner` from the gas-token contract.
-    fn gas_token_balance(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> u64 {
+    /// Read back the TIP-1060 token state stored for `owner` from the gas-token contract.
+    fn gas_token_state(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> AccountState {
         let slot = TIP1060StorageCredits::slot(owner);
         let word = evm
             .ctx
             .db()
             .storage_ref(STORAGE_CREDITS_ADDRESS, slot)
             .unwrap();
-        AccountState::from_word(word).unwrap().balance
+        AccountState::from_word(word).unwrap()
+    }
+
+    /// Read back the TIP-1060 token balance stored for `owner` from the gas-token contract.
+    fn gas_token_balance(evm: &TempoEvm<CacheDB<EmptyDB>, ()>, owner: Address) -> u64 {
+        gas_token_state(evm, owner).balance
+    }
+
+    fn tip1060_abi_mode(mode: CreditMode) -> Mode {
+        match mode {
+            CreditMode::Refund => Mode::Refund,
+            CreditMode::Preserve => Mode::Preserve,
+            CreditMode::Direct => Mode::Direct,
+        }
+    }
+
+    /// Appends bytecode that calls TIP-1060 precompile's `setMode(mode)` as the executing contract.
+    fn append_tip1060_set_mode_call(bytecode_bytes: &mut Vec<u8>, mode: CreditMode) {
+        let input_bytes = ITIP1060StorageCredits::setModeCall {
+            newMode: tip1060_abi_mode(mode),
+        }
+        .abi_encode();
+
+        for (i, &byte) in input_bytes.iter().enumerate() {
+            assert!(i <= u8::MAX as usize);
+            // PUSH1 <byte> PUSH1 <offset> MSTORE8  (write calldata byte at memory[offset])
+            bytecode_bytes.extend_from_slice(&[
+                opcode::PUSH1,
+                byte,
+                opcode::PUSH1,
+                i as u8,
+                opcode::MSTORE8,
+            ]);
+        }
+
+        // PUSH1 0x00 PUSH1 0x00 PUSH1 <argsSize> PUSH1 0x00 PUSH1 0x00
+        // (retSize=0, retOffset=0, argsSize=input length, argsOffset=0, value=0)
+        bytecode_bytes.extend_from_slice(&bytes!("60006000"));
+        bytecode_bytes.extend_from_slice(&[opcode::PUSH1, input_bytes.len() as u8]);
+        bytecode_bytes.extend_from_slice(&bytes!("60006000"));
+        // PUSH20 <STORAGE_CREDITS_ADDRESS>
+        bytecode_bytes.push(opcode::PUSH20);
+        bytecode_bytes.extend_from_slice(STORAGE_CREDITS_ADDRESS.as_slice());
+        // PUSH3 0x0f4240 CALL POP  (call with 1_000_000 gas and discard success flag)
+        bytecode_bytes.extend_from_slice(&bytes!("620f4240f150"));
+    }
+
+    /// TIP-1060: First SSTORE runs in Refund (default) mode  and creates a pending refund-eligible
+    /// creation, then a precompile call selects the final mode. Since no account slot is cleared,
+    /// it ends the transaction with zero token balance.
+    #[test]
+    fn test_tip1060_pending_refund_settlement_ignores_mode_bits() -> eyre::Result<()> {
+        for mode in [CreditMode::Refund, CreditMode::Preserve, CreditMode::Direct] {
+            let key_pair = P256KeyPair::random();
+            let caller = key_pair.address;
+            let contract = Address::repeat_byte(0x62);
+
+            // Bytecode starts with a 0->1 create in RefundTokens mode:
+            // PUSH1 0x01 PUSH1 0x00 SSTORE  (store 0x01 at slot 0)
+            let mut bytecode = bytes!("6001600055").to_vec();
+            append_tip1060_set_mode_call(&mut bytecode, mode);
+            bytecode.push(opcode::STOP);
+
+            let mut evm = create_funded_evm_t6(caller);
+            evm.ctx.db_mut().insert_account_info(
+                contract,
+                AccountInfo {
+                    code: Some(Bytecode::new_raw(bytecode.into())),
+                    ..Default::default()
+                },
+            );
+
+            let tx = TxBuilder::new()
+                .call(contract, &[])
+                .gas_limit(2_000_000)
+                .build();
+            let signed_tx = key_pair.sign_tx(tx)?;
+            let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+            let result = evm.transact_commit(tx_env)?;
+            assert!(result.is_success());
+
+            let state = gas_token_state(&evm, contract);
+            assert_eq!(
+                state.balance, 0,
+                "settlement must not consume mode bits as token balance in {mode:?} mode"
+            );
+            assert_eq!(
+                state.mode, mode,
+                "settlement must preserve the final storage-creation mode in {mode:?} mode"
+            );
+        }
+
+        Ok(())
+    }
+
+    /// TIP-1060 clearing regression: deleting a nonzero slot should mint one token, but the
+    /// pre-existing SSTORE clearing refund must be removed.
+    #[test]
+    fn test_tip1060_sstore_clear_mints_token_without_legacy_refund() -> eyre::Result<()> {
+        // PUSH1 0x00 PUSH1 0x00 SSTORE STOP: clear slot 0.
+        let clear_bytecode = Bytecode::new_raw(bytes!("600060005500"));
+
+        let key_pair = P256KeyPair::random();
+        let caller = key_pair.address;
+        let contract = Address::repeat_byte(0x63);
+
+        let mut evm = create_funded_evm_t6(caller);
+        evm.ctx.db_mut().insert_account_info(
+            contract,
+            AccountInfo {
+                code: Some(clear_bytecode),
+                ..Default::default()
+            },
+        );
+        evm.ctx
+            .db_mut()
+            .insert_account_storage(contract, U256::ZERO, U256::ONE)?;
+
+        let tx = TxBuilder::new()
+            .call(contract, &[])
+            .gas_limit(500_000)
+            .build();
+        let signed_tx = key_pair.sign_tx(tx)?;
+        let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
+
+        let result = evm.transact_commit(tx_env)?;
+        assert!(result.is_success(), "clear tx should succeed");
+        assert_eq!(
+            result.gas().inner_refunded(),
+            0,
+            "TIP-1060 removes the legacy SSTORE clearing refund"
+        );
+        assert_eq!(
+            gas_token_balance(&evm, contract),
+            1,
+            "clearing a nonzero slot should mint one storage gas token"
+        );
+
+        Ok(())
     }
 
     /// TIP-1060: a single transaction that creates then clears the same storage slot
-    /// (SSTORE 0->1 followed by SSTORE 1->0), exercised under the three storage-creation
-    /// modes. Only the create (0->x) leg is mode-sensitive, so the gas used differs per mode:
+    /// (SSTORE 0->1 followed by SSTORE 1->0), exercised under the three storage-creation modes.
+    /// Only the create (0->x) leg is mode-sensitive, so the gas used differs per mode:
     /// - `PreserveTokens` charges the full EVM/state gas as normal,
     /// - `DirectTokens` has no token to spend at create time (balance starts at 0), so it also
     ///   charges the full create cost,
@@ -1972,9 +2111,9 @@ mod tests {
         // `apply_refund` consumes the minted token against that credit, so it lands at 0 while the
         // others keep the minted token at 1.
         let cases = [
-            (CreditMode::Refund, 283_268u64, 0u64),
-            (CreditMode::Preserve, 513_268u64, 1u64),
-            (CreditMode::Direct, 513_268u64, 1u64),
+            (CreditMode::Refund, 303_168u64, 0u64),
+            (CreditMode::Preserve, 533_168u64, 1u64),
+            (CreditMode::Direct, 533_168u64, 1u64),
         ];
 
         for (mode, expected_gas, expected_balance) in cases {
