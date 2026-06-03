@@ -1262,20 +1262,7 @@ mod tests {
 
     #[test]
     fn test_receive_policy_type_cache_t5_t6_boundary() -> eyre::Result<()> {
-        for (hardfork, expected_sender_type, expected_token_type, expected_sloads) in [
-            (
-                TempoHardfork::T5,
-                ITIP403Registry::PolicyType::BLACKLIST,
-                ITIP403Registry::PolicyType::WHITELIST,
-                3,
-            ),
-            (
-                TempoHardfork::T6,
-                ITIP403Registry::PolicyType::WHITELIST,
-                ITIP403Registry::PolicyType::BLACKLIST,
-                1,
-            ),
-        ] {
+        for (hardfork, expected_sloads) in [(TempoHardfork::T5, 3), (TempoHardfork::T6, 1)] {
             let mut storage = HashMapStorageProvider::new_with_spec(1, hardfork);
             let account = Address::random();
             let admin = Address::random();
@@ -1313,6 +1300,17 @@ mod tests {
             StorageCtx::enter(&mut storage, || {
                 let registry = TIP403Registry::new();
                 let policy = registry.receive_policy(account)?;
+                let (expected_sender_type, expected_token_type) = if hardfork.is_t6() {
+                    (
+                        ITIP403Registry::PolicyType::WHITELIST,
+                        ITIP403Registry::PolicyType::BLACKLIST,
+                    )
+                } else {
+                    (
+                        ITIP403Registry::PolicyType::BLACKLIST,
+                        ITIP403Registry::PolicyType::WHITELIST,
+                    )
+                };
                 assert_eq!(policy.senderPolicyId, sender_policy_id);
                 assert_eq!(policy.senderPolicyType, expected_sender_type);
                 assert_eq!(policy.tokenFilterId, token_filter_id);
