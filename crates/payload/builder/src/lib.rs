@@ -544,6 +544,8 @@ where
             .pool_fetch_duration_seconds
             .record(pool_fetch_start.elapsed());
 
+        let mut gas_used_values = vec![];
+
         let execution_start = Instant::now();
         let _block_fill_span = debug_span!(target: "payload_builder", "block_fill").entered();
         let mut skipped_oversized_block = false;
@@ -687,6 +689,8 @@ where
 
                     // Notify transactions iterator about the new state.
                     best_txs.on_new_result(result);
+
+                    gas_used_values.push(result.block_gas_used());
                 },
             );
             if let Err(err) = execution_result {
@@ -1092,6 +1096,10 @@ where
             ?builder_finish_elapsed,
             "Built payload"
         );
+
+        if block.number() >= 400 {
+            info!("gas_used", gas_used_values);
+        }
 
         let block = Arc::new(block);
         let block_access_list: Option<Bytes> =
