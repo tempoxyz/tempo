@@ -572,21 +572,20 @@ where
                 .take(block.digest(), block.height(), block.block_hash())
         {
             let block_digest = block.digest();
-            if let Err(error) = self
+            self
                 .execution_node
                 .add_ons_handle
                 .beacon_engine_handle
-                .insert_executed_block(executed_block)
-            {
-                warn!(%error, block.digest = %block_digest, "failed inserting finalized built payload");
-            } else {
-                debug!(
-                    block.digest = %block_digest,
-                    block.height = %block.height(),
-                    block.hash = %block.block_hash(),
-                    "inserted finalized built payload through fast path",
-                );
-            }
+                .insert_executed_block_and_wait(executed_block)
+                .pace(&self.context, Duration::from_millis(20))
+                .await
+                .wrap_err("failed inserting finalized built payload")?;
+            debug!(
+                block.digest = %block_digest,
+                block.height = %block.height(),
+                block.hash = %block.block_hash(),
+                "inserted finalized built payload through fast path",
+            );
         }
 
         let (response, rx) = oneshot::channel();
