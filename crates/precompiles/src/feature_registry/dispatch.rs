@@ -79,7 +79,9 @@ mod tests {
         primitives::U256,
         sol_types::{SolCall, SolError, SolValue},
     };
-    use tempo_chainspec::features::HIGHEST_ACTIVE_PROTOCOL_FEATURE_ID_SLOT;
+    use tempo_chainspec::{
+        epoch::EPOCH_LENGTH_BLOCKS, features::HIGHEST_ACTIVE_PROTOCOL_FEATURE_ID_SLOT,
+    };
     use tempo_contracts::precompiles::{FeatureRegistryError, UnknownFunctionSelector};
 
     fn initialize_validator_config_owner(owner: Address) -> eyre::Result<()> {
@@ -314,7 +316,7 @@ mod tests {
     #[test]
     fn schedule_features_tip_rejects_non_future_activation_epoch() -> eyre::Result<()> {
         let mut storage = HashMapStorageProvider::new(1);
-        storage.set_block_number(FEATURE_REGISTRY_EPOCH_LENGTH * 21);
+        storage.set_block_number(EPOCH_LENGTH_BLOCKS * 21);
         let owner = Address::repeat_byte(0x01);
         StorageCtx::enter(&mut storage, || {
             initialize_validator_config_owner(owner)?;

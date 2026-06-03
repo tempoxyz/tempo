@@ -9,13 +9,13 @@ use crate::{
     validator_config_v2::ValidatorConfigV2,
 };
 use alloy::primitives::{Address, U256};
+use tempo_chainspec::epoch::block_to_epoch;
 use tempo_contracts::precompiles::{FeatureRegistryError, FeatureRegistryEvent, IFeatureRegistry};
 use tempo_precompiles_macros::contract;
 
 // Activation requires 80% support from the active validator set, represented exactly as 4/5.
 const ACTIVATION_QUORUM_NUMERATOR: u64 = 4;
 const ACTIVATION_QUORUM_DENOMINATOR: u64 = 5;
-const FEATURE_REGISTRY_EPOCH_LENGTH: u64 = 21_600;
 
 /// Protocol feature registry.
 ///
@@ -94,7 +94,7 @@ impl FeatureRegistry {
             return Err(FeatureRegistryError::features_tip_already_scheduled().into());
         }
 
-        if call.activationEpoch <= self.storage.block_number() / FEATURE_REGISTRY_EPOCH_LENGTH {
+        if call.activationEpoch <= block_to_epoch(self.storage.block_number()) {
             return Err(FeatureRegistryError::activation_epoch_not_future().into());
         }
 
