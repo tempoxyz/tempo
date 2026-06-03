@@ -2058,7 +2058,7 @@ mod tests {
 
         let tx = TxBuilder::new()
             .call(contract, &[])
-            .gas_limit(500_000)
+            .gas_limit(2_000_000)
             .build();
         let signed_tx = key_pair.sign_tx(tx)?;
         let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
@@ -2084,10 +2084,9 @@ mod tests {
     /// Only the create (0->x) leg is mode-sensitive, so the gas used differs per mode:
     /// - `Preserve` charges the full EVM/state gas as normal,
     /// - `Direct` has no storage credit to spend at create time (balance starts at 0), so it also
-    ///   charges the full create cost,
+    ///   charges the full create cost (identical to `Preserve`),
     /// - `Refund` charges the full create gas but accrues a deferred storage credit that
-    ///   `apply_refund` flushes at end-of-tx, erasing the create gas so the reported gas drops
-    ///   to the intrinsic floor.
+    ///   `apply_refund` settles at end-of-tx, erasing 230_000 gas, so it ends up the cheapest.
     ///
     /// The storage credit balance corroborates the mechanism: the clear (x->0) leg mints one
     /// storage credit in every mode, but `Refund` consumes that minted storage credit against its
@@ -2100,20 +2099,20 @@ mod tests {
 
         // (mode, expected gas used, expected post-tx storage credit balance).
         //
-        // Gas: Preserve and Direct both charge the full create cost (Direct has
-        // no storage credit to spend at create time), so their gas matches. Refund charges the same
-        // create cost during execution, but the deferred storage credit is flushed in `post_execution`
-        // (before the result gas is snapshotted), erasing the create gas; what remains is below
-        // the EIP-7623 intrinsic floor, so the reported gas clamps to it (21_000).
+        // Gas: `Preserve` and `Direct` both charge the full create cost (`Direct` has no storage
+        // credit to spend at create time), so their gas matches. The credit-slot bookkeeping write
+        // is charged a flat reset cost in every mode, so it does not skew the comparison. `Refund`
+        // additionally erases 230_000 at end-of-tx via the deferred storage credit, so it ends up
+        // the cheapest by exactly that amount.
         //
-        // Balance: the clear (x->0) leg mints one storage credit in every mode. Refund
+        // Balance: the clear (x->0) leg mints one storage credit in every mode. `Refund`
         // *additionally* accrues a deferred storage credit on the create (0->x) leg into transient
         // storage; at end-of-tx `apply_refund` consumes the minted storage credit against that
-        // storage credit, so it lands at 0 while the others keep the minted storage credit at 1.
+        // credit, so it lands at 0 while the others keep the minted storage credit at 1.
         let cases = [
-            (CreditMode::Refund, 303_168u64, 0u64),
-            (CreditMode::Preserve, 533_168u64, 1u64),
-            (CreditMode::Direct, 533_168u64, 1u64),
+            (CreditMode::Refund, 305_968u64, 0u64),
+            (CreditMode::Preserve, 535_968u64, 1u64),
+            (CreditMode::Direct, 535_968u64, 1u64),
         ];
 
         for (mode, expected_gas, expected_balance) in cases {
@@ -2136,7 +2135,7 @@ mod tests {
 
             let tx = TxBuilder::new()
                 .call(contract, &[])
-                .gas_limit(600_000)
+                .gas_limit(2_000_000)
                 .build();
             let signed_tx = key_pair.sign_tx(tx)?;
             let tx_env = TempoTxEnv::from_recovered_tx(&signed_tx, caller);
@@ -2177,8 +2176,9 @@ mod tests {
     /// `Preserve`/`Refund` pay the full creation cost regardless of balance.
     ///
     /// The storage credit balance is checked after each transaction to make the mechanism explicit:
-    /// `Direct` consumes the minted storage credit (balance drops to 0), `Refund` keeps
-    /// accruing deferred storage credits, and `Preserve` leaves the create leg untouched.
+    /// `Direct` consumes the minted storage credit (balance drops to 0), `Refund` settles its
+    /// deferred storage credits against minted ones (also 0), and `Preserve` leaves the create leg
+    /// untouched (1).
     #[test]
     fn test_tip1060_minted_storage_credits_affect_second_tx() -> eyre::Result<()> {
         // Bytecode:
@@ -2192,20 +2192,21 @@ mod tests {
 
         // (mode, expected second-tx gas, expected balance after tx1, expected balance after tx2).
         //
-        // Gas: the storage credit minted by the first tx's clear leg is only *spent* on the second tx's
-        // create leg under Direct (flat charge instead of full state gas); Refund
-        // and Preserve ignore the balance on a create and pay the full cost.
+        // Gas: the storage credit minted by the first tx's clear leg is only *spent* on the second
+        // tx's create leg under `Direct` (flat charge instead of full state gas); `Refund` and
+        // `Preserve` ignore the balance on a create and pay the full cost.
         //
         // Balance traces the mechanism behind the gas:
-        // - Refund: tx1 → 2 (clear mint + deferred create storage credit), tx2's create accrues
-        //   another deferred storage credit flushed at end-of-tx → 3. Storage credits are never spent here.
-        // - Preserve: tx1 → 1 (clear mint only); tx2's create touches nothing → stays 1.
-        // - Direct: tx1 → 1 (clear mint); tx2's create *consumes* the storage credit → 0, which is
-        //   exactly why the second tx is cheap.
+        // - `Refund`: tx1 mints a storage credit on the clear leg and accrues a deferred create
+        //   credit; `apply_refund` settles the minted credit against it → 0. tx2's create accrues
+        //   another deferred credit but there is no minted credit to settle it against → stays 0.
+        // - `Preserve`: tx1 → 1 (clear mint only); tx2's create touches nothing → stays 1.
+        // - `Direct`: tx1 → 1 (clear mint); tx2's create *consumes* the storage credit → 0, which
+        //   is exactly why the second tx is cheap.
         let cases = [
             (CreditMode::Refund, 282_994u64, 0u64, 0u64),
             (CreditMode::Preserve, 282_994u64, 1u64, 1u64),
-            (CreditMode::Direct, 50_894u64, 1u64, 0u64),
+            (CreditMode::Direct, 53_694u64, 1u64, 0u64),
         ];
 
         for (mode, expected_second_gas, expected_credit_tx1, expected_credit_tx2) in cases {
@@ -2228,7 +2229,7 @@ mod tests {
             let tx1 = TxBuilder::new()
                 .call(contract, &[])
                 .nonce(0)
-                .gas_limit(600_000)
+                .gas_limit(2_000_000)
                 .build();
             let signed_tx1 = key_pair.sign_tx(tx1)?;
             let tx_env1 = TempoTxEnv::from_recovered_tx(&signed_tx1, caller);
@@ -2248,7 +2249,7 @@ mod tests {
             let tx2 = TxBuilder::new()
                 .call(contract, &[0x01])
                 .nonce(1)
-                .gas_limit(600_000)
+                .gas_limit(2_000_000)
                 .build();
             let signed_tx2 = key_pair.sign_tx(tx2)?;
             let tx_env2 = TempoTxEnv::from_recovered_tx(&signed_tx2, caller);
@@ -2264,9 +2265,9 @@ mod tests {
                 "T6 second-tx create gas should be exact in {mode:?} mode"
             );
 
-            // The post-tx2 balance shows the mechanism behind the gas: Direct spends the
-            // minted storage credit (→ 0), Refund keeps accruing deferred storage credits (→ 3), and
-            // Preserve leaves the create leg untouched (→ 1).
+            // The post-tx2 balance shows the mechanism behind the gas: `Direct` spends the minted
+            // storage credit (→ 0), `Refund` settles its deferred storage credits to 0, and
+            // `Preserve` leaves the create leg untouched (→ 1).
             assert_eq!(
                 storage_credit_balance(&evm, contract),
                 expected_credit_tx2,
@@ -2439,7 +2440,7 @@ mod tests {
         assert_eq!(storage_credit_balance(&evm, contract), 0);
         assert_eq!(
             result.tx_gas_used(),
-            308_068,
+            310_868,
             "one 230k deferred storage credit is applied"
         );
 
@@ -2501,8 +2502,9 @@ mod tests {
 
         assert_eq!(
             direct.tx_gas_used(),
-            300_862,
-            "Direct gets the synchronous discount without an additional 230k settlement refund"
+            303_662,
+            "Direct gets the synchronous discount without an additional 230k settlement refund \
+             (plus the 2.8k nonzero->nonzero credit-slot store)"
         );
         assert_eq!(
             refund.tx_gas_used(),

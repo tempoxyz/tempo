@@ -9,7 +9,7 @@ use alloy_evm::EvmInternals;
 use revm::{
     context::{Block, CfgEnv, journaled_state::JournalCheckpoint},
     context_interface::cfg::{GasParams, gas},
-    interpreter::{StateLoad, gas::GasTracker},
+    interpreter::{SStoreResult, StateLoad, gas::GasTracker},
     primitives::AddressMap,
     state::{AccountInfo, Bytecode},
 };
@@ -143,11 +143,15 @@ impl<'a> StorageCreditsBackend for EvmPrecompileStorageProvider<'a> {
     }
 
     #[inline]
-    fn store_credits(&mut self, key: U256, value: U256) -> Result<(), Self::Error> {
+    fn store_credits(
+        &mut self,
+        key: U256,
+        value: U256,
+    ) -> Result<StateLoad<SStoreResult>, Self::Error> {
         self.internals
             .load_account_mut(STORAGE_CREDITS_ADDRESS)?
-            .sstore(key, value, false)?;
-        Ok(())
+            .sstore(key, value, false)
+            .map_err(Into::into)
     }
 
     #[inline]
